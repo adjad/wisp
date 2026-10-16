@@ -35,6 +35,23 @@ struct TodayBlock: Decodable, Identifiable {
     let kind: String
     let task_id: String?
     let warnings: [String]
+    let pattern_id: String?
+
+    var evidenceLabel: String {
+        switch kind {
+        case "calendar": return "Calendar"
+        case "manual": return "Fixed Wisp event"
+        case "behavior": return "Tentative busy period · behavioral evidence"
+        case "behavior_away": return "Computer inactivity · availability unknown"
+        case "suggestion": return "Source-backed suggestion · estimated duration"
+        default: return "\(kind.capitalized) · estimated duration"
+        }
+    }
+
+    var inferenceIgnoreHelp: String {
+        kind == "behavior_away" ? "Ignore this possible time away for the selected day" :
+            "Ignore this tentative busy period for the selected day"
+    }
 }
 struct TodayDeadline: Decodable, Identifiable {
     let id: String
@@ -73,6 +90,11 @@ struct TodayPlan: Decodable {
     let deadlines: [TodayDeadline]
     let all_day: [TodayBlock]
     let unscheduled: [TodayUnscheduled]
+    let workspace: DailyWorkspace?
+    let workspace_error: String?
+    var displayBlocks: [TodayBlock] { workspace?.proposed_plan.blocks ?? blocks }
+    var displayUnscheduled: [TodayUnscheduled] { workspace?.proposed_plan.unscheduled ?? unscheduled }
+    var displayWarnings: [String] { workspace?.proposed_plan.warnings ?? warnings }
 }
 
 @MainActor
@@ -371,13 +393,16 @@ struct TodayView: View {
     @State private var endHour = 18
     @State private var hoursDirty = false
     @State private var editingTask: TodayTask?
+    @State private var selectedTab = 1
+    @State private var showingEmailSettings = false
 
     @MainActor
     init() { self.init(model: TodayModel()) }
 
     @MainActor
-    init(model: TodayModel, onPresentation: ((TodayPresentation) -> Void)? = nil) {
+    init(model: TodayModel, onPresentation: ((TodayPresentation) -> Void)? = nil, initialTab: Int = 1) {
         _model = StateObject(wrappedValue: model)
+        _selectedTab = State(initialValue: initialTab)
         self.onPresentation = onPresentation
     }
 
@@ -399,8 +424,8 @@ struct TodayView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading) {
-                    Text("Your day").font(.largeTitle.bold())
-                    Text("Make room for what matters.").foregroundStyle(.secondary)
+                    Text("Daily Summary").font(.largeTitle.bold())
+                    Text("What matters, and a realistic plan for it.").foregroundStyle(.secondary)
                 }
                 Spacer()
                 DatePicker("Day", selection: Binding(get: { model.selectedDate }, set: { date in
@@ -430,24 +455,39 @@ struct TodayView: View {
                     Task { await model.refresh() }
                 }
             if !model.error.isEmpty { Text(model.error).foregroundStyle(.red).textSelection(.enabled) }
+            HStack {
+                Picker("Daily summary view", selection: $selectedTab) {
+                    Text("Needs my attention").tag(0)
+                    Text("Day plan").tag(1)
+                }.pickerStyle(.segmented).frame(maxWidth: 460)
+                Spacer()
+                Button("Email my day plan…", systemImage: "envelope") { showingEmailSettings = true }
+            }
             if let plan = visiblePlan {
                 sourceStatus(plan)
+                if let error = plan.workspace_error { Text(error).font(.caption).foregroundStyle(.orange) }
+                if selectedTab == 0 {
+                    DailyAttentionView(workspace: plan.workspace, model: model)
+                } else {
                 workingHours(plan)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        if !plan.warnings.isEmpty {
+                        if !plan.displayWarnings.isEmpty {
                             GroupBox("Plan needs attention") {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    ForEach(plan.warnings, id: \.self) { Text($0).frame(maxWidth: .infinity, alignment: .leading) }
+                                    ForEach(plan.displayWarnings, id: \.self) { Text($0).frame(maxWidth: .infinity, alignment: .leading) }
                                 }.padding(4)
                             }
                         }
-                        taskForm
                         agenda(plan)
-                        if !plan.unscheduled.isEmpty {
+                        if let workspace = plan.workspace {
+                            Text(workspace.explanation).font(.caption).foregroundStyle(.secondary)
+                            Text(workspace.behavior_detail).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if !plan.displayUnscheduled.isEmpty {
                             GroupBox("Still to fit") {
                                 VStack(alignment: .leading, spacing: 10) {
-                                    ForEach(plan.unscheduled) { item in
+                                    ForEach(plan.displayUnscheduled) { item in
                                         VStack(alignment: .leading) {
                                             Text(item.title).bold()
                                             Text(item.reason).font(.caption).foregroundStyle(.secondary)
@@ -466,10 +506,12 @@ struct TodayView: View {
                                 }.padding(6)
                             }
                         }
+                        DisclosureGroup("Make time for something else") { taskForm }
                         taskList(plan)
                         Text("Calendar and Reminders stay unchanged. Task durations are your estimates. Flexible slots update as your day changes; pin one to keep its time.")
                             .font(.caption).foregroundStyle(.secondary)
                     }.padding(.trailing, 6)
+                }
                 }
             } else {
                 ContentUnavailableView("Your day is loading", systemImage: "calendar",
@@ -483,6 +525,7 @@ struct TodayView: View {
             onPresentation?(next)
         }
         .sheet(item: $editingTask) { task in TodayTaskEditor(task: task, model: model) }
+        .sheet(isPresented: $showingEmailSettings) { DailyEmailSettingsView(today: model) }
         .task {
             while !Task.isCancelled {
                 if model.reconcileClock() { hoursDirty = false }
@@ -495,7 +538,10 @@ struct TodayView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in refreshForClockChange() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshForClockChange() }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in refreshForClockChange() }
-        .onReceive(NotificationCenter.default.publisher(for: TodayWindow.didShowNotification)) { _ in refreshForClockChange() }
+        .onReceive(NotificationCenter.default.publisher(for: TodayWindow.didShowNotification)) { note in
+            if let tab = note.userInfo?["tab"] as? Int { selectedTab = tab }
+            refreshForClockChange()
+        }
         .onChange(of: model.plan?.generated_at) { _, _ in
             if !hoursDirty, let p = model.plan {
                 startHour = p.preferences.start_minute / 60
@@ -596,20 +642,29 @@ struct TodayView: View {
         GroupBox("Itinerary") {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(plan.all_day) { block in Text("All day  ·  \(block.title)").foregroundStyle(.secondary) }
-                if plan.blocks.isEmpty { Text("No time blocks yet.").foregroundStyle(.secondary) }
-                ForEach(plan.blocks) { block in
+                if plan.displayBlocks.isEmpty { Text("No time blocks yet.").foregroundStyle(.secondary) }
+                ForEach(plan.displayBlocks) { block in
                     HStack(alignment: .top) {
                         Text(model.clock(block.start) + (block.end.map { "–" + model.clock($0) } ?? "–?"))
                             .font(.caption.monospacedDigit()).frame(width: 148, alignment: .leading)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(block.title).bold()
-                            Text(block.kind == "calendar" ? "Calendar" : block.kind == "manual" ? "Fixed Wisp event" : "\(block.kind.capitalized) · estimated duration")
+                            Text(block.evidenceLabel)
                                 .font(.caption).foregroundStyle(.secondary)
                             ForEach(Array(block.warnings.enumerated()), id: \.offset) { _, warning in
                                 Text(warning).font(.caption).foregroundStyle(.orange)
                             }
                         }
                         Spacer()
+                        if let pattern = block.pattern_id {
+                            Button("Use this time") {
+                                Task {
+                                    _ = await model.mutate("/assistant/today/workspace/availability", method: "POST",
+                                        body: ["day": model.day, "timezone": model.timezone.identifier,
+                                               "window": pattern, "ignored": true])
+                                }
+                            }.help(block.inferenceIgnoreHelp).disabled(model.busy)
+                        }
                         if let id = block.task_id, let task = plan.tasks.first(where: { $0.id == id }) {
                             Button(task.pinned_start == nil ? "Pin" : "Unpin") {
                                 Task {
@@ -721,13 +776,13 @@ enum TodayWindow {
     private static var window: NSWindow?
     @discardableResult
     static func show(model: TodayModel? = nil, onPresentation: ((TodayPresentation) -> Void)? = nil,
-                     present: Bool = true) -> NSWindow {
+                     present: Bool = true, initialTab: Int = 1) -> NSWindow {
         if window == nil {
             let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 800),
                                    styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            created.title = "Wisp · Today"
+            created.title = "Wisp · Daily Summary"
             created.contentView = NSHostingView(rootView: TodayView(model: model ?? TodayModel(),
-                                                                    onPresentation: onPresentation))
+                                                                    onPresentation: onPresentation, initialTab: initialTab))
             created.isReleasedWhenClosed = false
             created.center()
             window = created
@@ -737,7 +792,7 @@ enum TodayWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
-        NotificationCenter.default.post(name: didShowNotification, object: nil)
+        NotificationCenter.default.post(name: didShowNotification, object: nil, userInfo: ["tab": initialTab])
         return existing
     }
 }

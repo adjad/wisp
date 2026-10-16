@@ -57,7 +57,9 @@ class PipelineTests(unittest.TestCase):
                     "Contents/Resources/backend/.venv/bin/python3", "Contents/Resources/backend/service/main.py",
                     "Contents/Resources/backend/service/config/models.yaml", "Contents/Resources/backend/service/config/policy.yaml",
                     "Contents/Resources/backend/service/skills/bundled/interview-me/SKILL.md",
-                    "Contents/Resources/backend/service/skills/bundled/idea-refine/SKILL.md"):
+                    "Contents/Resources/backend/service/skills/bundled/idea-refine/SKILL.md",
+                    "Contents/Resources/backend/service/skills/bundled/mac-controls/SKILL.md",
+                    "Contents/Resources/backend/service/skills/bundled/mac-controls/controls.sh"):
             path = bundle / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture")
@@ -68,6 +70,8 @@ class PipelineTests(unittest.TestCase):
         return bundle
 
     def engine_fixture(self, bundle):
+        # Dummy vendor bytes target structure/licence contracts. Tests that
+        # bypass the overlay explicitly do so at their validation call only.
         engine = bundle / p.engine_build.ENGINE_DIR
         for rel in ("py/bin/python3.11", "omlx/server.py", "omlx/cli.py", "omlx_web/index.html",
                     "sp/mlx/core.cpython-311-darwin.so", "sp/mlx/lib/mlx.metallib"):
@@ -93,7 +97,8 @@ class PipelineTests(unittest.TestCase):
         bundle = self.fixture()
         engine = self.engine_fixture(bundle)
         (engine / "omlx/server.py").unlink()
-        with self.assertRaisesRegex(p.BuildError, "Engine is missing omlx/server.py"):
+        with patch.object(p.engine_build.guard_overlay, "verify", return_value=None), \
+                self.assertRaisesRegex(p.BuildError, "Engine is missing omlx/server.py"):
             p.validate_structure(bundle, self.meta)
 
     def add_engine_package(self, engine, name, version, licence, text):
@@ -108,12 +113,21 @@ class PipelineTests(unittest.TestCase):
         engine = self.engine_fixture(bundle)
         self.add_engine_package(engine, "fixturepkg", "1.0", "MIT", "Permission is hereby granted, free of charge")
         engine_licenses.write_notices(bundle)
-        p.validate_structure(bundle, self.meta)
+        with patch.object(p.engine_build.guard_overlay, "verify", return_value=None):
+            p.validate_structure(bundle, self.meta)
+
+    def test_engine_json_requires_guard_overlay_without_fixture_stub(self):
+        bundle = self.fixture()
+        self.engine_fixture(bundle)
+        engine_licenses.write_notices(bundle)
+        with self.assertRaisesRegex(p.BuildError, "guard overlay is missing or changed"):
+            p.validate_structure(bundle, self.meta)
 
     def test_engine_bundle_requires_third_party_notices(self):
         bundle = self.fixture()
         self.engine_fixture(bundle)
-        with self.assertRaisesRegex(p.BuildError, "Missing third-party notice"):
+        with patch.object(p.engine_build.guard_overlay, "verify", return_value=None), \
+                self.assertRaisesRegex(p.BuildError, "Missing third-party notice"):
             p.validate_structure(bundle, self.meta)
 
     def test_engine_notice_must_list_every_shipped_package(self):
@@ -121,7 +135,8 @@ class PipelineTests(unittest.TestCase):
         engine = self.engine_fixture(bundle)
         engine_licenses.write_notices(bundle)
         self.add_engine_package(engine, "latecomer", "2.0", "MIT", "Permission is hereby granted, free of charge")
-        with self.assertRaisesRegex(p.BuildError, "does not list latecomer"):
+        with patch.object(p.engine_build.guard_overlay, "verify", return_value=None), \
+                self.assertRaisesRegex(p.BuildError, "does not list latecomer"):
             p.validate_structure(bundle, self.meta)
 
     def test_unreviewed_copyleft_package_fails_the_licence_gate(self):

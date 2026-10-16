@@ -27,7 +27,7 @@ class SanitizedHTTPStatusError(httpx.HTTPStatusError):
     """Remote status failure with no provider-controlled request or response data."""
 
 
-from .inference_errors import ModelLoadError
+from .inference_errors import EngineGuardUnavailableError, ModelLoadError, ModelMemoryLimitError
 
 
 # Remote output is untrusted and must stay bounded independently of timeouts.
@@ -198,6 +198,13 @@ class OMLXClient:
             self._credential_transport.invalidate()
 
     def _check_response(self, response):
+        if self.managed and response.headers.get("x-wisp-guard-refusal") == "1":
+            # The authenticated local producer supplies a fixed marker. Never
+            # parse/retain its body or retry a refused model operation.
+            if response.status_code == 503:
+                raise EngineGuardUnavailableError() from None
+            if response.status_code == 507:
+                raise ModelMemoryLimitError() from None
         if not self.managed and not response.is_success:
             # Provider-controlled redirect locations and error bodies may echo
             # private data. Do not retain the real request either: it contains
@@ -505,7 +512,11 @@ class OMLXClient:
             raise EndpointConfigurationError("Only managed local models can be loaded")
         with engine_epoch.operation():
             r = await self._client.post(f"/v1/models/{model}/load")
-        r.raise_for_status()
+        if r.status_code == 507:
+            # The managed engine refused admission. Do not echo its diagnostics
+            # or convert a refusal into a successful residency/automatic retry.
+            raise ModelMemoryLimitError() from None
+        self._check_response(r)
 
     async def ensure_only(self, model: str, *, settle_timeout: float = 60.0,
                           exclusive: bool = False, emit=None) -> None:
@@ -633,7 +644,7 @@ class OMLXClient:
             for k in self._keep_warm - loaded - {model}:
                 try:
                     await self.load(k)
-                except httpx.HTTPError:
+                except (httpx.HTTPError, ModelMemoryLimitError, EngineGuardUnavailableError):
                     pass  # optional keep-warm reload cannot fail the requested model
 
     async def chat(
@@ -839,6 +850,10 @@ class OMLXClient:
         # assistant history on the next turn.
         if self.managed:
             _demote_unclosed_think(final_message, finish_reason)
+        # Cut off by max_tokens before any answer: lets the agent loop tell a
+        # budget exhaustion (a retry reproduces it) from an unparseable reply.
+        if finish_reason == "length" and not tool_calls and not final_message["content"].strip():
+            final_message["_truncated"] = True
         yield {"kind": "final", "message": final_message}
 
     def activity_key(self, model: str) -> str:

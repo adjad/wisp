@@ -211,9 +211,13 @@ final class SettingsLoader: ObservableObject {
     @Published var fullAccess = false
     @Published var idleMinutes: Double = 5
     @Published var humanizerEnabled = false
-    @Published var behaviorEnabled = true
+    @Published var behaviorEnabled: Bool? = nil
+    @Published var behaviorChanging = false
+    @Published var behaviorStatus: String?
     @Published var behaviorRemote = false
     @Published var behaviorPhraser = true
+    private var behaviorControlEpoch: String?
+    private var behaviorRequestGeneration: UInt64 = 0
     @Published var behaviorForgetStatus: String?
     @Published var cloudPreset = "openrouter"
     @Published var cloudBaseURL = "https://openrouter.ai"
@@ -285,13 +289,13 @@ final class SettingsLoader: ObservableObject {
     // them there, change them here, or an offline Settings pane shows models
     // the user never chose.
     let fallbackModels = [
-        "Ling-3.0-tiny-oQ4e",
+        "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
     ]
     let fallbackRoles = [
-        "fast": "Ling-3.0-tiny-oQ4e",
-        "coding": "Ling-3.0-tiny-oQ4e",
-        "reasoning": "Ling-3.0-tiny-oQ4e",
-        "general": "Ling-3.0-tiny-oQ4e",
+        "fast": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
+        "coding": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
+        "reasoning": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
+        "general": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
     ]
     private let client = WispClient()
 
@@ -959,22 +963,60 @@ final class SettingsLoader: ObservableObject {
     }
 
     func refreshBehavior() async {
-        guard let settings = await client.behaviorSettings() else { return }
-        if let on = settings["enabled"] as? Bool { behaviorEnabled = on }
+        guard !behaviorChanging else { return }
+        behaviorRequestGeneration &+= 1
+        await readBehaviorSettings(generation: behaviorRequestGeneration)
+    }
+
+    private func readBehaviorSettings(generation: UInt64) async {
+        let settings = await client.behaviorSettings()
+        guard generation == behaviorRequestGeneration else { return }
+        guard let settings, settings["updates_settled"] as? Bool == true,
+              let on = settings["enabled"] as? Bool,
+              let epoch = settings["control_epoch"] as? String else {
+            behaviorEnabled = nil
+            behaviorControlEpoch = nil
+            behaviorStatus = "Couldn't confirm learning settings. Wisp may still be learning. Check status or try turning it off."
+            return
+        }
+        behaviorEnabled = on
+        behaviorControlEpoch = epoch
         behaviorRemote = settings["remote_active"] as? Bool ?? false
         behaviorPhraser = settings["phraser"] as? Bool ?? true
+        behaviorStatus = nil
     }
 
     func setBehaviorEnabled(_ on: Bool) {
-        behaviorEnabled = on
+        guard !behaviorChanging else { return }
+        behaviorRequestGeneration &+= 1
+        let generation = behaviorRequestGeneration
+        let controlEpoch = behaviorControlEpoch
+        behaviorControlEpoch = nil
+        behaviorChanging = true
+        behaviorStatus = on ? "Turning learning on. Waiting for confirmation…"
+                            : "Turning learning off. Waiting for confirmation…"
         Task {
-            // Re-read the real state on failure so the switch never shows a
-            // position the backend did not accept.
-            if let actual = await client.setBehaviorEnabled(on) {
+            if let receipt = await client.setBehaviorEnabled(on, controlEpoch: controlEpoch),
+               let actual = receipt["enabled"] as? Bool,
+               let epoch = receipt["control_epoch"] as? String {
+                guard generation == self.behaviorRequestGeneration else { return }
                 self.behaviorEnabled = actual
+                self.behaviorControlEpoch = epoch
+                self.behaviorRemote = receipt["remote_active"] as? Bool ?? false
+                self.behaviorPhraser = receipt["phraser"] as? Bool ?? true
+                self.behaviorStatus = nil
             } else {
-                await self.refreshBehavior()
+                // A lost response may mean the write succeeded. Only a fresh
+                // authoritative read can resolve it; double failure is unknown.
+                await self.readBehaviorSettings(generation: generation)
             }
+            guard generation == self.behaviorRequestGeneration else { return }
+            if let actual = self.behaviorEnabled, actual != on {
+                self.behaviorStatus = actual
+                    ? "Wisp confirmed that learning is still on. The requested change was not accepted."
+                    : "Wisp confirmed that learning is still off. The requested change was not accepted."
+            }
+            self.behaviorChanging = false
         }
     }
 
@@ -1036,9 +1078,17 @@ struct SettingsView: View {
     /// inference server is configured (the learned summary is part of the prompt,
     /// and wording / event labeling would send calendar titles to that server).
     private var behaviorExplanation: String {
-        let sources = "Learns from your calendar, reminders, message timing (never message text) "
-            + "and how you use Wisp. Nudges at most 4 a day. "
-        guard loader.behaviorEnabled else {
+        if loader.behaviorChanging {
+            return loader.behaviorStatus ?? "Updating learning settings. Waiting for confirmation…"
+        }
+        guard let enabled = loader.behaviorEnabled else {
+            return loader.behaviorStatus
+                ?? "Learning status has not been confirmed. Wisp may still be learning. Check status or turn learning off."
+        }
+        let sources = "Learns from your calendar, reminders, message timing and how you use Wisp. "
+            + "Optional app, website, email and message interpretation has separate source controls in What Wisp has learned. "
+            + "Nudges at most 4 a day. "
+        guard enabled else {
             return "Off. Wisp is not learning your routines or sending nudges. What it already "
                 + "learned stays on this Mac and is still deleted automatically as it ages; "
                 + "use Forget to erase it now."
@@ -1057,12 +1107,23 @@ struct SettingsView: View {
             + "and event categorization are off, so calendar titles are not sent for them."
     }
 
+    private var behaviorLearningLabel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Learn my routines")
+                .font(.system(size: 14, weight: .medium))
+            Text(behaviorExplanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private var panes: [Pane] {
         #if WISP_SETTINGS_QA
         [Pane(id: "models", title: "Models", symbol: "cpu")]
         #else
         [Pane(id: "general", title: "General", symbol: "slider.horizontal.3"),
          Pane(id: "models", title: "Models", symbol: "cpu"),
+         Pane(id: "google", title: "Google", symbol: "envelope.badge.shield.half.filled"),
          Pane(id: "activity", title: "Activity", symbol: "clock.arrow.circlepath"),
          Pane(id: "privacy", title: "Privacy", symbol: "hand.raised")]
         #endif
@@ -1510,6 +1571,9 @@ struct SettingsView: View {
                 // Background/scheduled work — currently just the mail history
                 // scan. Backed by SyncProgress.shared for the live bar, which
                 // MailReader's batch loop updates directly (same process).
+                if selectedPane == "google" {
+                    GoogleSettingsPane()
+                }
                 if selectedPane == "activity" {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Activity").font(.title2.weight(.medium))
@@ -1595,19 +1659,31 @@ struct SettingsView: View {
 
                         Divider()
 
-                        Toggle(isOn: Binding(
-                            get: { loader.behaviorEnabled },
-                            set: { loader.setBehaviorEnabled($0) })) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Learn my routines")
-                                    .font(.system(size: 14, weight: .medium))
-                                Text(behaviorExplanation)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                        if loader.behaviorEnabled != nil {
+                            Toggle(isOn: Binding(
+                                get: { loader.behaviorEnabled == true },
+                                set: { loader.setBehaviorEnabled($0) })) {
+                                behaviorLearningLabel
+                            }
+                            .toggleStyle(.switch)
+                            .tint(Theme.accent)
+                            .disabled(loader.behaviorChanging)
+                            if !loader.behaviorChanging, let status = loader.behaviorStatus {
+                                Text(status).font(.caption).foregroundStyle(.secondary)
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                behaviorLearningLabel
+                                HStack {
+                                    Button("Check status") {
+                                        Task { await loader.refreshBehavior() }
+                                    }
+                                    Button("Turn learning off") { loader.setBehaviorEnabled(false) }
+                                }
+                                .controlSize(.small)
+                                .disabled(loader.behaviorChanging)
                             }
                         }
-                        .toggleStyle(.switch)
-                        .tint(Theme.accent)
 
                         HStack(spacing: 10) {
                             Button("See what Wisp learned") { LearnedWindow.shared.show() }
@@ -1632,26 +1708,15 @@ struct SettingsView: View {
 
                         Divider()
 
-                        // Wisp reads whatever Mail/Calendar accounts are
-                        // already configured in Mail.app/Calendar.app — every
-                        // linked account shows up automatically once granted,
-                        // and Wisp already tells them apart (see the
-                        // `account` param on summarize_emails/view_emails/
-                        // get_upcoming/get_past_events). Adding an account
-                        // itself is a macOS step, deliberately NOT something
-                        // Wisp does for you: only the OS should ever hold
-                        // your email password/OAuth token, never a
-                        // third-party app. This just opens the right System
-                        // Settings pane.
+                        // Native accounts remain managed by macOS. Google inbox
+                        // connections are optional and configured separately.
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Linked Accounts")
                                 .font(.system(size: 14, weight: .medium))
-                            Text("Wisp automatically reads every account already set up in "
-                                 + "Mail.app and Calendar.app, and can tell them apart when "
-                                 + "you ask about a specific one (e.g. \"what's in my work "
-                                 + "email\"). To add another account, use macOS's own "
-                                 + "Internet Accounts settings — Wisp never handles your "
-                                 + "email password or sign-in directly.")
+                            Text("Wisp reads permitted Mail and Calendar accounts configured in macOS. "
+                                 + "Mail’s local cache can be out of date while Mail is closed. "
+                                 + "Use Settings ▸ Google to connect each Google inbox directly and see its last successful refresh. "
+                                 + "Other native accounts can be added in Internet Accounts settings.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Button("Open Internet Accounts Settings…") {

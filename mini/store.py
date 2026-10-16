@@ -81,26 +81,7 @@ class Store:
             raise ValueError("Invalid store capacity")
         self.max_results, self.max_bytes, self.max_occurrences = max_results, max_bytes, max_occurrences
         self.path = private_directory(state_dir) / "node.sqlite3"
-        # Refuse non-regular, shared, or symlink state; never overwrite corruption.
-        for path in (self.path, Path(str(self.path) + "-wal"), Path(str(self.path) + "-shm")):
-            if path.is_symlink():
-                raise StoreUnavailable("Invalid state file")
-            if path.exists():
-                info = path.stat()
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
-                    raise StoreUnavailable("State file must be private")
-                if path == self.path and info.st_size < 100:
-                    raise StoreUnavailable("Invalid existing database")
-        self.require_capacity(preflight=True)
-        created = False
-        try:
-            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            pass
-        else:
-            os.close(fd)
-            created = True
-        with self.connect(write=True, initializing=True) as db:
+        with self.connect(write=True, initializing=True) as (db, created):
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise StoreUnavailable("Invalid database")
             tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -146,6 +127,40 @@ class Store:
             if db.execute("PRAGMA foreign_key_check").fetchone():
                 raise StoreUnavailable("Invalid database relationships")
 
+    def _prepare_state(self):
+        """Inspect/create state while holding the existing volume write lease."""
+        # Refuse non-regular, shared, or symlink state; never overwrite corruption.
+        for path in (self.path, Path(str(self.path) + "-wal"), Path(str(self.path) + "-shm")):
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                raise StoreUnavailable("Invalid state file")
+            # SQLite can unlink its last WAL/SHM while a pathname lookup still
+            # holds that inode. Only this otherwise-private tombstone permits
+            # one new lookup; validate any current replacement normally.
+            if (path != self.path and stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                    and not info.st_mode & 0o077 and info.st_nlink == 0):
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    continue
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+                raise StoreUnavailable("State file must be private")
+            if path == self.path and info.st_size < 100:
+                raise StoreUnavailable("Invalid existing database")
+        self.require_capacity(preflight=True)
+        created = False
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+            created = True
+        return created
+
     def require_capacity(self, growth=0, *, preflight=False):
         from mini.resources import GB, integer
         integer(growth)
@@ -161,11 +176,15 @@ class Store:
         db = None
         volume = None
         try:
+            if initializing and not write:
+                raise StoreUnavailable("Initialization requires write admission")
             if write:
                 from mini.resources import volume_lease
                 lease = volume_lease(self.path.parent, timeout=0.25)
                 lease.__enter__()
                 volume = lease
+            if initializing:
+                created = self._prepare_state()
             # mode=rw prevents accidental recreation if state disappears at runtime.
             db = sqlite3.connect(self.path.as_uri() + "?mode=rw", uri=True, timeout=0.25, isolation_level=None)
             db.row_factory = sqlite3.Row
@@ -177,7 +196,7 @@ class Store:
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             if write:
                 self.require_capacity(1048576)
-            yield db
+            yield (db, created) if initializing else db
             if write:
                 self.require_capacity()
             db.commit()

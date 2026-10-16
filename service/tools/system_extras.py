@@ -8,8 +8,8 @@ are ONE tool with an enum rather than seven near-identical schemas, and the
 reason is retrieval accuracy, not tidiness — seven schemas differing only in a
 noun are exactly the case a small model picks wrong from, and each one costs
 ~200 tokens of every menu it appears in. Wi-Fi power, VoiceOver and dark/auto
-appearance joined the same enum in 2026-10; `set_volume` keeps its own tool
-because volume is a level, not a boolean.
+appearance joined the same enum in 2026-10. Wisp has no volume tool (set_volume
+and get_volume were retired in 2026-10).
 
 WHAT IS DELIBERATELY MISSING
 ----------------------------
@@ -214,7 +214,7 @@ def setting_key(setting: str) -> str:
     "toggle_setting",
     "Turn a named macOS setting on or off: wifi, bluetooth, do_not_disturb, "
     "low_power_mode, firewall, airdrop, voiceover, dark_mode, or auto_appearance "
-    "(follow the system light/dark schedule). For sound use set_volume.",
+    "(follow the system light/dark schedule). It cannot change the volume.",
     {
         "type": "object",
         "properties": {
@@ -240,7 +240,7 @@ def toggle_setting(setting: str, on: bool) -> str:
     fn = _SETTINGS.get(key)
     if fn is None:
         return (f"(error: I can't toggle {setting!r}. Options: "
-                f"{', '.join(sorted(_SETTINGS))}. Sound uses set_volume.)")
+                f"{', '.join(sorted(_SETTINGS))}.)")
     return fn(bool(on))
 
 

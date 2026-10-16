@@ -8691,89 +8691,6 @@
    ]
   },
   {
-   "id": "device-001",
-   "domain": "device",
-   "styles": [],
-   "prompt": "turn the volume down",
-   "last_user": null,
-   "last_assistant": null,
-   "last_tools": null,
-   "expect": "action",
-   "need": [
-    [
-     "set_volume"
-    ]
-   ],
-   "force": null,
-   "forbid": [
-    "delete_path",
-    "forward_email",
-    "place_call",
-    "reply_to_email",
-    "schedule_send",
-    "send_email",
-    "send_message",
-    "trash_file"
-   ],
-   "avoid": []
-  },
-  {
-   "id": "device-002",
-   "domain": "device",
-   "styles": [],
-   "prompt": "set volume to 30%",
-   "last_user": null,
-   "last_assistant": null,
-   "last_tools": null,
-   "expect": "action",
-   "need": [
-    [
-     "set_volume"
-    ]
-   ],
-   "force": null,
-   "forbid": [
-    "delete_path",
-    "forward_email",
-    "place_call",
-    "reply_to_email",
-    "schedule_send",
-    "send_email",
-    "send_message",
-    "trash_file"
-   ],
-   "avoid": []
-  },
-  {
-   "id": "device-003",
-   "domain": "device",
-   "styles": [
-    "terse"
-   ],
-   "prompt": "mute",
-   "last_user": null,
-   "last_assistant": null,
-   "last_tools": null,
-   "expect": "action",
-   "need": [
-    [
-     "set_volume"
-    ]
-   ],
-   "force": null,
-   "forbid": [
-    "delete_path",
-    "forward_email",
-    "place_call",
-    "reply_to_email",
-    "schedule_send",
-    "send_email",
-    "send_message",
-    "trash_file"
-   ],
-   "avoid": []
-  },
-  {
    "id": "device-004",
    "domain": "device",
    "styles": [],
@@ -8840,8 +8757,7 @@
    "expect": "action",
    "need": [
     [
-     "open_app",
-     "music"
+     "open_app"
     ]
    ],
    "force": null,
@@ -8869,33 +8785,6 @@
    "need": [
     [
      "quit_app"
-    ]
-   ],
-   "force": null,
-   "forbid": [
-    "delete_path",
-    "forward_email",
-    "place_call",
-    "reply_to_email",
-    "schedule_send",
-    "send_email",
-    "send_message",
-    "trash_file"
-   ],
-   "avoid": []
-  },
-  {
-   "id": "device-008",
-   "domain": "device",
-   "styles": [],
-   "prompt": "lock my screen",
-   "last_user": null,
-   "last_assistant": null,
-   "last_tools": null,
-   "expect": "action",
-   "need": [
-    [
-     "lock_screen"
     ]
    ],
    "force": null,
@@ -8978,62 +8867,6 @@
    "need": [
     [
      "set_timer"
-    ]
-   ],
-   "force": null,
-   "forbid": [
-    "delete_path",
-    "forward_email",
-    "place_call",
-    "reply_to_email",
-    "schedule_send",
-    "send_email",
-    "send_message",
-    "trash_file"
-   ],
-   "avoid": []
-  },
-  {
-   "id": "device-012",
-   "domain": "device",
-   "styles": [],
-   "prompt": "play some jazz",
-   "last_user": null,
-   "last_assistant": null,
-   "last_tools": null,
-   "expect": "action",
-   "need": [
-    [
-     "music",
-     "open_app",
-     "play_audio"
-    ]
-   ],
-   "force": null,
-   "forbid": [
-    "delete_path",
-    "forward_email",
-    "place_call",
-    "reply_to_email",
-    "schedule_send",
-    "send_email",
-    "send_message",
-    "trash_file"
-   ],
-   "avoid": []
-  },
-  {
-   "id": "device-013",
-   "domain": "device",
-   "styles": [],
-   "prompt": "pause the music",
-   "last_user": null,
-   "last_assistant": null,
-   "last_tools": null,
-   "expect": "action",
-   "need": [
-    [
-     "music"
     ]
    ],
    "force": null,
@@ -9205,36 +9038,6 @@
    "need": [
     [
      "system_status"
-    ]
-   ],
-   "force": null,
-   "forbid": [
-    "delete_path",
-    "forward_email",
-    "place_call",
-    "reply_to_email",
-    "schedule_send",
-    "send_email",
-    "send_message",
-    "trash_file"
-   ],
-   "avoid": []
-  },
-  {
-   "id": "device-020",
-   "domain": "device",
-   "styles": [
-    "slang",
-    "ambiguous_ref"
-   ],
-   "prompt": "crank it up",
-   "last_user": null,
-   "last_assistant": null,
-   "last_tools": null,
-   "expect": "action",
-   "need": [
-    [
-     "set_volume"
     ]
    ],
    "force": null,
@@ -11293,8 +11096,7 @@
    "expect": "action",
    "need": [
     [
-     "open_app",
-     "music"
+     "open_app"
     ]
    ],
    "force": null,
@@ -14999,7 +14801,6 @@
      "clear_reminders",
      "clear_past_reminders",
      "forget",
-     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15026,7 +14827,6 @@
      "clear_reminders",
      "clear_past_reminders",
      "forget",
-     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15053,7 +14853,6 @@
      "clear_reminders",
      "clear_past_reminders",
      "forget",
-     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15080,7 +14879,6 @@
      "clear_reminders",
      "clear_past_reminders",
      "forget",
-     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15107,7 +14905,6 @@
      "clear_reminders",
      "clear_past_reminders",
      "forget",
-     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15134,7 +14931,6 @@
      "clear_reminders",
      "clear_past_reminders",
      "forget",
-     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15161,7 +14957,6 @@
      "clear_reminders",
      "clear_past_reminders",
      "forget",
-     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15188,7 +14983,6 @@
      "clear_reminders",
      "clear_past_reminders",
      "forget",
-     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15215,7 +15009,6 @@
      "clear_reminders",
      "clear_past_reminders",
      "forget",
-     "delete_path",
      "complete_reminder"
     ]
    ],

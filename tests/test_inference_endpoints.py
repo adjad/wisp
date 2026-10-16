@@ -10,6 +10,7 @@ import pytest
 from service import config
 from service.config.endpoints import Endpoint, Target, endpoint, role_target, EndpointConfigurationError
 from service.inference.omlx_client import OMLXClient, IncompleteStreamError, ModelLoadError
+from service.inference.inference_errors import ModelMemoryLimitError
 from service.inference.heartbeat import with_heartbeats
 
 
@@ -91,7 +92,9 @@ def test_load_unload_errors_raise(status):
         c = await mocked_client(lambda req: httpx.Response(status))
         try:
             for method in (c.load, c.unload):
-                with pytest.raises(httpx.HTTPStatusError):
+                expected = (ModelMemoryLimitError if status == 507 and method == c.load
+                            else httpx.HTTPStatusError)
+                with pytest.raises(expected):
                     await method("model")
         finally:
             await c.aclose()

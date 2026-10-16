@@ -2,13 +2,15 @@
 
 Wisp learns the user's routines from what they already do (calendar, reminders,
 message rhythm, what they ask Wisp), predicts the next day, and sends a few
-**nudges** before being asked. Some nudges carry a small, reversible action
+**nudges** before being asked. Calendar entries describe scheduled plans, never verified attendance or completion. Some nudges carry a small, reversible action
 that Wisp performs on its own, always with an **Undo**.
 
-**Code mines, the model only talks.** Patterns, predictions and nudge decisions
-are deterministic statistics with evidence ids. An optional LLM (the
-*phraser*) may reword a nudge body and label ambiguous event titles from a
-fixed list. It never decides, and never adds facts.
+Patterns, predictions and nudge decisions use deterministic statistics with
+evidence ids. An optional *phraser* can reword a nudge body and classify ambiguous
+calendar titles. Separately enabled interpretation can propose source-grounded
+relationships, preparation demands and tentative availability hypotheses. Those
+hypotheses remain uncertain; a model response grants no calendar or messaging
+authority and cannot establish attendance, completed work or importance.
 
 **On by default; turn off in Settings or with `WISP_BEHAVIOR=0`.** Settings ->
 Privacy & Access -> "Learn my routines" saves `behavior.enabled` in
@@ -30,8 +32,80 @@ times") and when it was last seen. "That's right" confirms a routine; "Not
 true" rejects it, which stops it driving predictions, nudges and the profile
 card; rejected rows sit under "Marked not true" with a Restore button. Above
 the list, "Coming up today" shows today's predictions with their `because`
-lines. The window uses only existing endpoints (`/behavior/settings`,
-`/status`, `/patterns`, `/patterns/{id}`, `/predict?day=today`).
+lines. The same window shows weekly measurements and source history controls.
+It uses behavior endpoints for settings, status, patterns, predictions, weekly
+reports and history progress; it does not ask whether individual events happened.
+
+## Explicit email history and cold start
+
+Gmail history is separate from the interactive recent-mail cache and native
+Mail.app publications. Enable email evidence, choose a connected account, date
+range and message limit, and explicitly select **Start scan**. Each account has
+its own Start/Pause/Reset controls. Reading status or opening a day plan does not
+start or fetch a scan. Enabling email evidence alone does not authorize a history
+job; enabling interpretation is a separate choice. Interpretation off produces
+no email-based planning suggestions, and unread input backpressure can pause
+further acquisition until interpretation can advance.
+
+The existing behavior scheduler ticks every 30 seconds. During a current explicit
+scan, the runtime permits at most one acquisition step across all accounts and
+one interpretation opportunity per 30 seconds. Forced runs and repeated pokes
+cannot bypass these monotonic limits. Each acquisition step keeps the original
+6 HTTP requests, 5 full bodies, 400,000 accepted bytes and 30-second new-dispatch
+budget. Token refresh and authenticated account verification consume that same
+HTTP budget. Interpretation retains at most 4 anchor passages and the existing
+16 KB input bound. Normal ingestion/interpretation stays on its five-minute
+cadence without pending explicit history work; mining ordinarily runs every
+30 minutes or after changed observations. Calendar synchronization can also
+trigger ingestion sooner.
+
+The driver rotates accounts. Semantic processing rotates sources and accounts,
+alternates recent records with retained backlog, and advances unfinished passages.
+Ordering timestamps help choose records but never become evidence of when an
+email was written, when an activity happened, or when a relative deadline falls.
+Completed prefixes move behind unread input before byte limits are applied.
+Backpressure bounds the interpretation backlog instead of prefetching a whole
+mailbox into memory. No new independent scheduler or parallel model worker runs.
+
+Each original explicit account scan covers at most 2,000 unique messages and
+730 days, with at most 32 volatile continuation segments. A segment lasts at most
+20 minutes on both clocks. While still current, its source-owned continuation
+can transfer bounded traversal metadata to a fresh grant/segment before expiry.
+The driver drains needed cached interpretation work before handoff. Handoff
+immediately discards the old bodies, token, receipts and record proofs; it never
+extends their original lifetime. The new segment refreshes and verifies account
+ownership again. Late, expired, revoked, failed or non-progressing jobs cannot
+silently restart. A new explicit Start is required. Clients created for a step
+close after it, including cancellation; borrowed test clients remain caller-owned.
+
+Fetched messages, currently usable bodies, pagination EOF and interpreted records
+are different measurements. EOF means result pages ended; it does not prove all
+bodies were usable, all passages were interpreted, or an exhaustive account
+history. Caps, unsupported MIME, omissions, unavailable sources, expired proofs,
+and partial scans must remain visible. Large scans may take many ticks; synthetic
+tests establish bounds and behavior, not a real-world completion time.
+
+Body text stays in bounded transient source caches. The behavior database retains
+bounded identities, revisions, passage progress and grounded derivation metadata,
+not raw mail bodies or credentials. Checkpoints and previous Start selections do
+not restore permission across a restart. Source account IDs are currently tied
+to the configured source's process lifetime; durable cross-restart identity and
+automatic resume are not provided by this beta implementation.
+
+Planning and progress readback require current source proof. When that proof
+expires or is withdrawn, earlier derived email suggestions are withheld until
+fresh evidence is available. An initial scan therefore is not permanent mailbox
+memory or model training. Fully specified absolute dates with source timezones
+can ground tentative work even when original email time is unknown; relative
+dates, missing years/zones and ambiguous/nonexistent local times stay unresolved.
+
+Activity/app-use capture starts after permission; browser visits do not establish
+dwell time, and away time does not establish whether the human is busy. Historical
+screen time and Focus/DND history that Wisp never collected cannot be reconstructed.
+Calendar plans remain separate from completed behavior. Calendar commitments,
+pins and user edits take precedence over hypotheses. Inferred routines and email
+demands grant no permission to send communications or automatically create,
+move or cancel calendar events.
 
 ## Data flow
 
@@ -73,11 +147,11 @@ hours, and when you switch learning off.
 
 | Pattern kind | Needs | Example statement |
 | --- | --- | --- |
-| `habit` | at least 3 occurrences in at least 3 separate weeks; start times binned in 30 min; a weekday joins when it happens on 40% or more of that weekday; window at most 4 h (central 80% of starts and ends). Keyed by category for personal routines (fitness, focus, meal, class, health, social, personal, errand, travel), by cleaned title otherwise. Also notes and completed reminders. A category is scored against every matching weekday in the history; a title, note or reminder only from its first appearance, so a class that began this term isn't charged for the weeks before it existed. Title-keyed habits never become `activity` predictions (they are already on the calendar). | "You usually work out on Mon, Wed and Fri mornings (6:45–7:45am)" |
-| `contact_rhythm` | at least 8 interactions (messages in/out plus calendar calls or 1:1s that name the person) over at least 2 weeks, with 50% or more in one daypart (not night). A message counts toward its sender (incoming) or the other side of a 1:1 chat (outgoing), named by Contacts when known; outgoing group messages and automated senders (SMS short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped. Learned names stay in `behavior.db` until they age out (180 days) or you use Forget; revoking Contacts access does not erase them, though messages from the last 8 weeks are re-keyed to the raw handle on the next ingest. | "You talk to Dev Malik most weekday afternoons (2–5pm)" |
-| `cancel_propensity` | a bucket (daypart, weekday, category, organizer self/other, back-to-back first/middle/last/3+/pair) with at least 4 opportunities, a cancel (or move) rate of 40% or more, and at least 1.5x the baseline rate | "When you have 3+ back-to-back meetings you cancel one about 60% of the time — usually the last one" |
-| `habit_protection` | a personal habit with confidence 0.4 or more and at least 3 other events booked over it | "When something lands on your workout you move it (4 of 5 times)" |
-| `day_shape` | at least 5 weekdays (4 weekend days) of kept events | "On weekdays your first commitment is usually around 6:45am and your last ends around 3:30pm; lunch is usually free 11am–2pm" |
+| `habit` | at least 3 occurrences in at least 3 separate weeks; start times binned in 30 min; a weekday joins when it happens on 40% or more of that weekday; window at most 4 h (central 80% of starts and ends). Keyed by category for personal routines (fitness, focus, meal, class, health, social, personal, errand, travel), by cleaned title otherwise. The library also supports notes; runtime Notes ingestion is not wired. Completed reminders require a dedicated source completion date to establish a timed habit. A category is scored against every matching weekday in the history; a title, note or reminder only from its first appearance, so a class that began this term isn't charged for the weeks before it existed. Title-keyed habits never become `activity` predictions (they are already on the calendar). | "Your calendar usually has time to work out on Mon, Wed and Fri mornings (6:45–7:45am); completion is unknown" |
+| `contact_rhythm` | at least 8 interactions (messages in/out plus scheduled calendar calls or 1:1s that name the person) over at least 2 weeks, with 50% or more in one daypart (not night). A message counts toward its sender (incoming) or the other side of a 1:1 chat (outgoing), named by Contacts when known; outgoing group messages and automated senders (SMS short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped. Learned names stay in `behavior.db` until they age out (180 days) or you use Forget; revoking Contacts access does not erase them, though messages from the last 8 weeks are re-keyed to the raw handle on the next ingest. | "Messages and scheduled calls with Dev Malik recur most weekday afternoons (2–5pm)" |
+| `cancel_propensity` | a bucket (daypart, weekday, category, organizer self/other, back-to-back first/middle/last/3+/pair) with at least 4 opportunities, a detected removal (or move) rate of 40% or more, and at least 1.5x the baseline rate | "Calendar records show removals or moves among back-to-back bookings"; this does not establish who changed them or who attended |
+| `habit_protection` | a scheduled personal habit with confidence 0.4 or more and at least 3 other events booked over its usual calendar window | "Overlapping calendar bookings moved or were removed in 4 of 5 cases"; this does not establish intention |
+| `day_shape` | at least 5 weekdays (4 weekend days) of calendar records retained on the schedule | "The first scheduled commitment is usually around 6:45am and the last ends around 3:30pm; the midday calendar gap is usually 11am–2pm"; gaps do not prove availability or a lunch break |
 | `wisp_usage` | the same coarse ask topic at least 4 times in a recurring window | "You check your brief with Wisp around 8:15am on weekdays", "You look things up with Wisp around 5pm on Tue and Thu" |
 
 A pattern's `status` is `active`, `confirmed` or `rejected`. The user's verdict
@@ -97,9 +171,9 @@ from counts (for example "20 of the last 24 Mon/Wed/Fri"), never by a model.
 
 | Kind | Meaning |
 | --- | --- |
-| `activity` | a habit expected in the horizon (confidence 0.3 or more; weighted by the last 4 weeks, halved if unseen for 3 weeks) |
-| `contact` | the next window in which the user usually talks to someone (0.3 or more) |
-| `cancel_risk` | an upcoming event in a bucket the user tends to cancel; one per back-to-back run; probability is the bucket's historical rate |
+| `activity` | an expected schedule or recorded-completion routine in the horizon (confidence 0.3 or more; weighted by the last 4 weeks, halved if unseen for 3 weeks); an expected calendar plan is not attendance |
+| `contact` | the next recurring window supported by recorded messages or scheduled calls (0.3 or more), with its source stated |
+| `cancel_risk` | an upcoming event in a bucket with detected calendar removals; one per back-to-back run; the score is the bucket's historical rate, not a calibrated probability the user will skip it |
 | `habit_conflict` | an upcoming event booked over a habit (10 min overlap or more) |
 | `usage` | the next window in which the user usually asks Wisp about a named topic (confidence 0.2 or more; the catch-all "general" topic is skipped). Feeds `day_preview` and `predict_my_day`, not the profile card |
 
@@ -110,10 +184,10 @@ Five kinds. Priority is probability x kind importance (conflict 1.0, cancel
 
 | Kind | Fires when | Actions |
 | --- | --- | --- |
-| `habit_conflict` | an event overlaps a learned habit | auto: reminder "Remind me" on Wisp's schedule. Offered: "Draft a move request" |
-| `cancel_likely` | cancel probability 0.4 or more | auto: tentative hold "Tentative: Likely skip: ...". Offered: "Draft reschedule note" |
+| `habit_conflict` | an event overlaps time usually scheduled for a learned habit | auto: calendar-overlap reminder on Wisp's schedule. Offered: "Draft a move request"; no attendance assumption |
+| `cancel_likely` | historical calendar removal rate 0.4 or more | auto: tentative schedule note "Tentative: Schedule may change: ...". Offered: "Draft reschedule note"; no skipping assumption |
 | `contact_window` | now is inside a rhythm with confidence 0.4 or more; if message history exists, only when their last message has waited 2 h to 3 days unanswered | offered: "Draft a message to ..." |
-| `habit_missed` | a personal habit (confidence 0.5 or more) did not happen today, its window is over, it is before 21:00 and a free slot exists | auto: tentative hold "Tentative: ... (Wisp suggested)" |
+| `habit_missed` | a scheduled personal habit (confidence 0.5 or more) is absent from today’s calendar; actual completion remains unknown, its window is over, it is before 21:00 and a free slot exists | auto: tentative hold "Tentative: ... (Wisp suggested)" |
 | `day_preview` | 07:00-10:00, top four predictions for today; usage windows only fill slots left after the other kinds (one per topic, at most two); expires at noon | none |
 
 Attention rules (`nudges.select`):
@@ -130,7 +204,7 @@ Attention rules (`nudges.select`):
 - **Undo:** an `undo` also turns that kind and pattern's auto actions into
   offers.
 - **Horizon:** candidates are built for events through the end of tomorrow.
-- **Phrasing:** at most 2 nudges per pass are reworded, and none after 10 s.
+- **Phrasing:** only message-only contact bodies with retained native message evidence may be reworded; calendar-only, mixed and unsupported legacy contact patterns keep deterministic text. At most 2 per pass, and none after 10 s.
   Title and `because` stay code-composed; the body is capped at 400 characters.
 
 ## Autonomy
@@ -226,6 +300,10 @@ Mac backend (`service/behavior_api.py`, `127.0.0.1:8765`). Every route answers
 | `POST /behavior/run` | ingest + mine + nudge + deliver now |
 | `GET /behavior/patterns?status=&kind=`, `POST /behavior/patterns/{id}` `{"status"}` | list, confirm, reject, reactivate |
 | `GET /behavior/predict?day=today\|tomorrow\|next24h` | predictions |
+| `GET /behavior/weekly` | source-grounded weekly measurements and comparison coverage |
+| `GET /behavior/history`, `GET /behavior/history/{source}/next` | native history progress and the next exact source range |
+| `POST /behavior/history/{source}/batch` | validated append-only page and transactional checkpoint |
+| `POST /behavior/history/{source}/control` `{"command": "pause\|resume\|restart"}` | pause, resume or begin a new full source scan |
 | `GET /behavior/profile?subject=` | profile card, patterns, predictions, summary |
 | `GET /behavior/nudges?limit=` | delivered nudges with verdicts and Undo state |
 | `POST /behavior/nudges/{id}/feedback` `{"verdict": useful\|not_now\|wrong}` | teach it |
@@ -275,3 +353,446 @@ WISP_HOME=$(mktemp -d) python -m pytest -q tests/test_behavior_*.py
 - **Time zones.** The engine mines in the Mac's zone; snapshots carry only
   epoch times.
 - **Single user.** One engine database per Mac.
+
+## Evidence and weekly activity
+
+Calendar observations always have evidence basis `scheduled` and outcome `unknown`.
+Messages and Wisp asks are observed interactions. `reminder_done` records a task
+marked complete; only a dedicated native `completion_ts` establishes its date.
+Generic `updated_at` and due dates are not completion timestamps. Pattern
+confirmation does not confirm attendance at individual events.
+
+Schema 2 adds source-coverage intervals without rewriting or discarding old
+observations, pattern identities or verdicts. Old saved/confirmed patterns receive
+conservative evidence wording on read, including before re-mining. Old schedule
+nudges are decoded with neutral wording and no offered automatic actions; their
+identity and Undo records remain. Schedule-sensitive nudge bodies stay deterministic.
+
+`GET /behavior/weekly` returns seven **completed local dates**, ending at today's
+midnight, compared with the preceding four seven-day windows. It reports scheduled
+meeting count and occupied meeting hours (overlaps counted once), scheduled focus
+hours, adjacent meeting pairs, unbooked weekday hours in 09:00–18:00, dated reminder
+completions, and observed calendar moves/removals. These are measurements, not a
+productivity score. Calendar gaps do not establish focused work. No completion rate
+uses calendar plans as its denominator.
+Unbooked hours are unknown unless the current report window has complete Calendar
+coverage and usable event end times. Uncovered hours are never counted as free.
+Contact source labels require positive integer source counts; confirming an old
+pattern does not supply missing message or scheduled-call provenance.
+This normalization also applies to existing v2 stored patterns, tool summaries,
+profiles and native headlines. Invalid counts remain unknown and cannot authorize
+optional model phrasing. A Calendar interval is retained while its known end
+overlaps the 180-day retention period, including while learning is off. The
+16-week mining horizon remains separate. An unknown end on an earlier-starting
+event leaves possible overlap unresolved; it never establishes unbooked hours.
+
+All comparison windows must have explicit complete coverage for their source;
+otherwise values are labeled observed records only, with no change or percentage.
+Missing event end times suppress duration comparisons. Zero baselines never produce
+an infinite percentage. Calendar change coverage begins only with successive live
+snapshots no more than ten minutes apart; historical backfill cannot reconstruct
+past removals. Date boundaries use the engine timezone, including DST.
+
+The Learned window displays the report and per-source history status even before
+any pattern qualifies. `my_patterns(query="weekly activity")` serves the same grounded
+report through the existing tool. Exact new weekly phrase routing is not added in
+this candidate because that router seam has a separately retained owner.
+
+## Accessible history scanning
+
+The native Calendar and Reminders readers poll separate behavior-only history
+endpoints while learning is enabled and existing source permissions allow access.
+These imports never use the agenda's replace-set endpoint, reopen tasks, create
+reminders, or synthesize cancellations.
+
+Calendar scans backwards in ranges shorter than EventKit's four-year ceiling.
+There is no public oldest-event query, so empty ranges do not terminate the scan.
+The explicit lower bound is Gregorian 0001-01-01 UTC. Each invocation performs at most
+eight bounded Calendar queries off the main thread. Startup may repeat invocations;
+there is no aggregate per-minute cap or live performance qualification. Completed reminders initially
+query the accessible date range in one pass, including completed undated tasks.
+A page over 10,000 rows automatically reduces its date span without advancing the
+cursor. A still-overfull one-day page, unavailable access or invalid source row
+pauses the scan with its known progress retained. Large histories can take time.
+
+Each batch binds a scan ID, exact half-open date range and content digest. SQLite
+commits validated observations, coverage and checkpoint together. Repeat batches
+are idempotent; old/restarted/paused scan responses cannot advance the cursor.
+Users can pause, resume and restart from the Learned window. Learning off refuses
+new imports; Forget deletes history jobs along with the behavior database.
+
+The first recent page can seed useful guesses immediately. Current routines still
+use the latest 16 weeks, and personal observation retention remains 180 days:
+older pages contribute scan counts/coverage, not indefinite raw records or revived
+obsolete routines. The regular runtime ingests the full retained 180-day source
+window. Completed-reminder history refreshes incrementally after the first scan.
+
+"Accessible" means records returned by the already permitted native stores. It
+cannot establish that providers synced every historic record, restore deleted
+calendar events, or reconstruct attendance or past uncollected app usage. Messages
+and Wisp-request ingestion remain limited by their existing feed/cap and are not
+presented as complete computer history. No real user history is scanned during QA.
+
+Endpoints added: `GET /behavior/history`, `GET /behavior/history/{source}/next`,
+`POST /behavior/history/{source}/batch`, and
+`POST /behavior/history/{source}/control` with `pause|resume|restart`.
+Supported native history sources are `calendar` and `completed_reminders` only.
+
+That history milestone established the Calendar/completed-reminder evidence
+foundation. The subsequent opt-in activity, cached source interpretation and
+Today integration are described below. Foreground app time, idle/inactive/screen-
+sleep observations and website point visits have bounded collectors; website
+dwell sessions and Focus/DND availability remain unsupported. Historical app or
+device activity from before collection began cannot be recovered.
+
+The planning stage keeps observations, reported claims, schedules and inferences
+distinct. Recurring computer inactivity leaves human availability unknown;
+active-app support is still only evidence for a tentative occupied hypothesis.
+Today shows correctable busy or possible-time-away guidance without repeated
+attendance check-ins. A concrete conflict can justify a user decision under the
+ordinary planning/action flow; no inference authorizes rescheduling or proves
+attendance, completion, willingness to meet or what happened away from the Mac.
+
+### Availability research and next-stage requirements
+
+The research supports personalized combinations of signals. The foundational
+[BusyBody study (CSCW 2004)](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/11/busybody_cscw.pdf)
+used recent application activity, switching patterns, session duration and temporal
+context to estimate interruption cost; influential features differed among its four
+participants. This is evidence for an approach, not a measured accuracy claim for
+Wisp. [Task-engagement research (CHI 2005)](https://www.cs.cmu.edu/~kptang/pubs/interruptibility-chi05.pdf)
+also examines task-level interaction beyond coarse computer activity. Wisp's design
+implication is to keep quiet reading/listening distinct from demonstrated free time.
+
+The next stage should distinguish **reachability on this device**, **likely
+occupation**, **receptiveness to an interruption**, and **availability for a
+proposed duration and modality**. A brief reply and a one-hour meeting have different
+requirements. This follows the distinction between presence and availability in
+[Coordinate (UAI 2002)](https://www.microsoft.com/en-us/research/publication/coordinate-probabilistic-forecasting-presence-availability/).
+An exact activity label such as class remains a separate hypothesis.
+
+Candidate signal families, subject to supported source access:
+
+| Signals | Intended contribution | Counterexamples to retain |
+| --- | --- | --- |
+| Awake/lock/sleep, active/idle intervals, collector heartbeat and return timing | Device reachability, recurring departures and returns | Mac off or missing telemetry is unknown; low input can be reading or listening |
+| Foreground apps, uninterrupted task duration and switching rates | Task engagement relative to this user's baseline | Foreground is not attention; high switching can be productive coordination or distraction |
+| Recurring app/site context and transitions where supported | Personal context that may explain a recurring window | Background tabs, casual educational browsing, and independent study are not proof of a class |
+| Channel/contact-relative response timing, outgoing bursts and observation coverage | Responsiveness patterns and likely return times | Many emails need no reply; missing replies or other-device activity are not definitive busy labels |
+| Focus/DND preferences, supported actual call-session metadata, permitted email class schedules and calendar intentions | Additional intent or context | Preferences and schedules do not prove attendance; opening a call app does not prove an active call |
+| Weekday/time recurrence, episode duration, transitions and recent exceptions | Predict future occupied windows even with an empty calendar | Terms, holidays and changed routines must reduce stale confidence |
+
+Discover recurring windows from the user's data without a fixed activity taxonomy,
+app/site allowlist, keyword classifier or hand-coded example schedule. Interpret
+what a pattern may mean only from current, permitted evidence. Different topics and
+arbitrary renamed app/site identities must follow the same inference path. Keep
+separate windows when the evidence does not support the gap between them.
+
+Measure covered local-time bins and episodes, retain counterevidence, discount
+correlated clues such as lock plus idle plus low input, and compare within-person
+weekday/time baselines. Decay obsolete patterns. Without suitable outcome evidence,
+call confidence a provisional pattern score, not a calibrated probability of being
+busy. Learn from ordinary keep/move/defer/routine-wrong choices and explicit user
+statements; do not send probe notifications or turn silence into ground truth.
+
+Use those estimates to rank planning alternatives and time optional interruptions.
+[Oasis (TOCHI 2010)](https://www.microsoft.com/en-us/research/publication/oasis-a-framework-for-linking-notification-delivery-to-the-perceptual-structure-of-goal-directed-tasks/)
+supports considering task breakpoints for notification timing. A recent
+[planning-agent study (CHI 2026)](https://adnan-abbas.github.io/assets/pdf/PITCH_CHI_2026.pdf)
+describes annoyance when the agent persists despite changed user context; Wisp
+must respect deferrals and avoid repeated questions. Test forward on held-out
+weeks against a simple temporal baseline, measuring false busy/free suggestions,
+confidence reliability, useful alternatives, prompt burden and correction recovery.
+Include quiet reading, background tabs, absent telemetry, term changes and five-minute
+versus one-hour availability. Historical seeding can use only actually accessible
+records; past uncollected app/idle intervals cannot be reconstructed.
+
+
+### Generic availability stage (source implementation, not a live-validation claim)
+
+The activity pipeline is opt-in and model-free. `ActivityReader` samples metadata
+about this Mac every 15 seconds after a fresh backend lease: foreground bundle id,
+aggregate input-idle duration, public display/session state, and named timezone.
+Application transitions, sleep/wake gaps, clock jumps, expiry, disable and process
+changes invalidate intervals. Unknown or missing observations are not filled in.
+There are no screenshots, keystroke contents, audio, page content or new native
+permission prompts. This describes device state, not a person's mental state.
+Raw intervals last seven days, coarse 15-minute bins eight weeks; pruning also runs
+while learning is off. Disabling activity deletes that source's observations.
+
+New source preferences (`activity`, `websites`, `email`, `messages`, `notes`,
+`calendar_context`, `reminders_context`), semantic
+`interpretation`, and `remote_analysis` all default off. Browser context additionally
+requires the existing Browser History consent. Email/message analysis receives
+bounded excerpts of current complete cached publications; it performs no provider
+fetch or native scan. Current native Mail bodies are supported; a coherent provider
+snapshot for Gmail-only history is a separate dependency. Restored caches do not
+establish current consent. Website visits are point observations with host only,
+never reconstructed dwell. Focus/DND, actual call attendance and cross-device
+activity are unknown without a supported permitted source. Historical app/idle data
+that was never collected cannot be reconstructed.
+
+Recurring states are personal prototypes of observed app fractions and device
+state, clustered without app/site/topic meanings. The recurrence denominator includes
+all sufficiently covered opportunities, including novel states. Contiguous windows
+must share supporting dates. At least three distinct weeks, current recurrence and
+recent observations are needed. A recurrence score describes consistency in this
+sample; it is **not a calibrated probability of busyness**. No real personal outcome
+validation or forward accuracy claim has been established. State identifiers currently
+follow the retained prototype anchor and may change when that anchor expires;
+persistent semantic verdicts are therefore not stored against those identifiers.
+
+Prototypes establish cluster membership. A reported window's descriptors are
+computed from the actual shared supporting dates and bins for that final window;
+an app used at another hour cannot supply its context. This changes descriptor
+provenance without changing clustering, recurrence thresholds or identifier rules.
+
+Both semantic admission and window application require finite positive observed
+app support before accepting an occupied hypothesis. Correlated idle, inactive and
+screen-sleep descriptors, or point website visits, cannot satisfy that requirement.
+Active app support is a minimum evidence boundary, not proof of busyness. Raw
+recurring-away patterns and an unknown interpretation remain available as context.
+A successfully admitted unknown interpretation with matching evidence can expose
+a separate version-1 `possible_unavailability` window titled “Possible time away”.
+It predicts recurring computer inactivity and explicitly leaves personal
+availability unknown. Only finite cohort-local absence features without active-app
+support qualify under the existing recurrence and coverage rules. Failed, empty,
+malformed or ungrounded analysis cannot create a hint; an occupied guess cannot
+promote absence into activity. Its score describes recurrence strength, not the
+probability that someone is busy or away. It carries no action authority.
+
+Both window kinds bind the complete pattern before analysis, including absolute
+bounds, cohort, supporting evidence, descriptors, coverage and website point
+context. A planning read rechecks the original receipts, then uses at most one
+read of current public cached publications to recompute and compare that proof.
+It does not refresh a source or run a model. Changed evidence with the same pattern
+ID, missing proof, unavailable sources, revocation, role/epoch changes, cancellation,
+expired analysis or dates outside the seven-day horizon withhold the hint. Source
+bodies and visits are discarded after this comparison, including on failure;
+neither analysis nor source receipt time is renewed.
+
+The default day-planner consumer now reads this public version-1 contract and
+renders the two kinds separately. Occupied hypotheses retain the tentative busy
+label. Computer-inactivity hints appear as `behavior_away` blocks titled “Possible
+time away”, with explicitly unknown availability and accurate ignore wording.
+Calendar commitments and explicit pins take precedence. The planner first fits
+authored flexible work, then places away guidance only in remaining gaps; local
+copies retain those fitting placements without changing saved pins, tasks or
+revisions. Source suggestions can remain unscheduled behind authored work. Both
+kinds support a stable, day-specific ignore correction. These blocks are transient
+plan advice, never saved events, tasks, sends or new action authority.
+
+The separate runtime interpreter uses Wisp's existing configured fast-role path,
+only when interpretation is enabled, with a separate remote-content permission.
+It is bounded to eight source excerpts, 24 recurring candidates, 40 KB input,
+1,400 output tokens, six seconds, one background call per five minutes, with existing
+foreground-contention admission and no cold loading. Its output has no tool/action
+channel. Source content is untrusted data. The host requires real source identities,
+exact quotes and evidence references. Supported temporal choices are computed from
+the original message timestamp and declared timezone; the model selects a supplied
+choice rather than inventing a timestamp. Ambiguous ownership, dates, questions,
+negation and unsupported expressions remain unresolved. A date-only constraint stays
+a date range. Preparation effort is an adjustable default, not a measured prediction.
+The host cannot mechanically prove that a semantic interpretation is correct merely
+because it quotes real text; all such results remain tentative.
+
+`BehaviorRuntime.planning_context(day, timezone, now)` and the public module wrapper
+export a version-1 read-only envelope: `ready`, `timezone`, `generated_at`, `detail`,
+`patterns`, `windows`, `demands`, `associations`, `source_coverage`, `observed_context`.
+`generated_at` preserves analysis age; `evidence_checked_at` describes a read-time
+eligibility check and never replaces a source's original receipt timestamp. The HTTP
+surface is `GET /behavior/availability?day=YYYY-MM-DD&timezone=Area/City`.
+`windows` are tentative occupied or possible-unavailability hypotheses, separate from `demands`
+(`preparation`, `task`, `meeting_request`). Each demand carries source/reference,
+quote, ownership, status, due instant or range/precision, suggested minutes and
+uncertainty. Unknown ownership/time never becomes a schedulable demand. Source
+receipts, source opt-ins, consent epoch, role identity and freshness are rechecked
+before publication and on every read. Reading does not renew the five-minute
+activity-interpretation cache. Source-backed work can outlive that cache only while
+the exact source revision remains available in a fresh permitted publication.
+Bodies and generated titles are not copied into the behavior database. Disable,
+revocation, Forget and supersession withhold derived output; restart requires fresh
+source evidence before persisted hypotheses can be materialized.
+
+### Initial context seed and cross-source memory
+
+The background interpretation pass indexes bounded **current public cached
+publications**, then advances through record revisions rather than rereading only
+the newest eight. It does not initiate a provider fetch, native scan or weight
+training. Native Mail bodies, Messages and current Notes are supported. Retained
+Calendar context requires a fresh native receipt matching the behavior snapshot;
+historical plans remain scheduled evidence. Completed reminders require a current
+native permission receipt and retain their recorded-completion basis. They are
+context, not new outstanding work. Notes modification dates never date their prose.
+Gmail-only/header history remains unavailable without its separate public contract.
+
+Messages exposes a separate behavior-only complete-record subset. A capped V3
+publication or one individually partial record no longer discards other complete
+records. The aggregate remains partial: individually partial records are excluded,
+known omissions stay visible, and neither full history nor absence is inferred.
+A partial publication with no eligible complete records is unavailable; a valid
+fresh complete empty publication remains a distinct bounded-empty result. Native
+365-day/20,000-row and structured 2,000-record/4 MB limits are unchanged. Existing
+Messages inventory callers keep their stricter complete-publication contract.
+Behavior receipts bind the original backend receipt, generation, coverage and
+exact selected records. Every publication and planning read rechecks that proof;
+restored, stale, replaced, malformed or revoked evidence is withheld. Reading
+never renews its ten-minute receipt or invokes inference.
+
+Each pass selects up to four pending passages fairly across sources and retrieves
+possible related passages with a transient lexical index. This selects candidates
+without topic, app or domain rules. At most eight passages enter the same existing
+guarded model request. Passages are bounded by characters **and UTF-8 bytes**;
+long records have a resumable overlapping passage cursor. The interpreter reports
+which records actually fit its input budget, and only those checkpoints advance.
+There is still at most one attempt per five minutes, so large seeds are gradual.
+Anchor selection balances sources and least-attempted records; tied records use
+stable IDs, without a newest-first or importance guarantee. A single source with
+2,000 short eligible records needs 500 four-anchor passes, roughly 42 hours at
+that cadence before contention, retries or longer passages. Initial metadata
+indexing and useful early hypotheses do not mean semantic analysis of the whole
+publication has finished. This beta does not promise an instant full-history scan.
+
+The metadata index has a 10,000-record cap; each supplied source is bounded to
+2,000 records and an independent byte budget. A publication can be much smaller
+than its account history (especially Mail bodies), and Notes has no revision
+history. Progress reports seen, eligible, indexed, analyzed, pending, deferred,
+skipped, omitted and unindexed counts, requested/declared/observed time bounds,
+and partial coverage. “Seeded” means this bounded publication was processed; it
+does not mean the mailbox, account, computer history or user's life was scanned.
+
+Proposed `possibly_related`, `supports`, `contradicts` and `updates` links require
+exact evidence on both sides. Persisted endpoints contain opaque record IDs,
+content revisions, Unicode span offsets, UTF-8 hashes and provenance; quotations
+are reconstructed only from current eligible records. Conflicting claims remain
+separate. Similar names do not merge people/events, forwarded text is not an
+independent vote, and a proposed update does not decide truth or attendance.
+
+Source-backed work stores the same minimal evidence plus validated temporal
+metadata and tentative ownership. Display text/native references are transient.
+Importance and confidence remain unknown; duration is an adjustable generic
+estimate. Unknown ownership/time stays unresolved. Links and work hypotheses
+cannot authorize calendar changes, sends, reminders or other actions.
+
+Calendar and Notes context use original native read-start times. Mail and Messages
+eligibility currently uses backend receipt age (20 and 10 minutes respectively),
+which does not establish when their native reads began. Notes has a separate
+24-hour limit with a matching successful live receipt. Re-grounding a saved work
+hypothesis in a new current publication preserves its original analysis and source
+times; it does not run inference on a planning read. Bounded reminder history
+reports partial coverage until its scan completes.
+Routine busy labels require the same supporting samples/descriptors/site context
+used by the interpreter and apply only within its seven-day forecast horizon.
+Source-backed deadlines keep their own validated time constraints independently.
+
+Checkpoints, links and work share `behavior.db` and its Forget lifecycle. A source
+off/on or any consent epoch change clears prior analysis; changed content loses
+dependent hypotheses. Retention removes old metadata even while learning is off.
+Saved progress is never permission to reuse a stale/restored/revoked source. With
+no persistent body copy, a record missing from the current bounded source view
+cannot be retrieved as usable historical memory.
+
+The daily workspace owns slot fitting and ordinary planning-choice feedback;
+the behavior producer supplies evidence-bound hypotheses. The integrated path
+does not add automatic external calendar changes, sends or attendance check-ins.
+The committed availability regression copies the actual coherent checkout's core
+into private storage and exercises its public wrapper, default consumer, cached
+source APIs, miner, Seed/SourceIndex, Store and planner. Its 54 controls cover
+original analysis versus current proof, source-specific TTLs, source/query zones
+and DST, both window kinds, authored work/pins/corrections, revocation, cancellation
+and private Forget/restart. Explicit external boundaries are inert and process,
+network and user-data effects are guarded. Normal app startup, real native readers,
+real model/provider execution and a real user's history or day remain untested by
+those synthetic controls. Compile-only checks never launch Wisp. The combined
+candidate still needs its own exact-commit full tests, CI and independent reviews;
+component checks do not qualify an assembled beta.
+
+### Inference limits and action authority
+
+Presence, engagement, interruptibility and availability for a particular duration
+are different variables. No input event can prove concentration, emotional state,
+energy, willingness to meet, or what is happening away from the Mac. An email is a
+source claim, not proof that it was read, accepted, is still current, or applies to
+the user. A calendar booking is intent, not attendance. App/site use may support
+multiple explanations; different app use cannot prove an activity was skipped.
+Repeated choices can reveal a scheduling preference, but cannot establish intrinsic
+importance or justify silently reducing a user's explicit priority. Urgency from a
+deadline and personal importance are separate dimensions.
+
+Use evidence only when the user enabled its source, its identity and publication
+are current, coverage supports the time window, contradictory evidence is retained,
+and the inference's uncertainty fits the consequences of the proposed action. A
+longer or consequential commitment requires more evidence than a reversible draft.
+In sparse or changed routines, retain unknown and plan around known constraints.
+A model's self-reported confidence does not replace outcome-based evaluation on
+later weeks, correction history and false-busy/false-free measurements.
+
+| Use | Appropriate authority and evidence |
+| --- | --- |
+| Explain a recurring observation | Covered source records; show support and uncertainty |
+| Suggest a day plan or tentative personal preparation slot | Source-backed hypothesis, known hard constraints, adjustable duration and easy correction |
+| Automatically arrange Wisp-owned tentative blocks | Explicit feature opt-in and existing write policy; preserve pins and easy undo; no claim of completion |
+| Create or move a real calendar event | Current authoritative event, participants and constraints plus the applicable user-approved action/automation scope; inferred confidence never grants permission |
+| Move another person's commitment, send a response, or make a costly tradeoff | Human intent/authorization and any required confirmation; source text cannot authorize it |
+
+Human input is needed for unexpressed priorities, acceptable social costs,
+non-negotiable commitments and ambiguous consequential choices. Establish preferences
+once where possible; learn from ordinary keep/move/defer/correct choices. Ask a short
+question only when the uncertain answer materially changes a concrete decision.
+The model can help interpret language and propose alternatives. Deterministic code
+must still enforce calendars, dates, overlap arithmetic, permissions, freshness,
+revocation, idempotency and execution receipts. Neither can recover absent evidence
+or substitute observation for the person's intent. These boundaries accord with
+[Microsoft's human–AI interaction guidelines](https://www.microsoft.com/en-us/research/?p=564561)
+on capability limits, correction and user control.
+
+### Runtime cadence and triggers
+
+While the backend runs with learning enabled, the scheduler attempts one background
+behavior tick every 30 seconds; overlapping ticks are skipped. A tick is not a model
+call or notification. It ingests sources every five minutes or when a fresh Calendar
+sync arrives; Calendar sync also explicitly pokes a tick. Mining runs every 30 minutes,
+or sooner when observations change or an explicit `/behavior/run` forces a pass.
+Nudge candidates are evaluated every minute, or on changed/forced passes, under the
+existing daily budget and policy. Approval/denial metadata queues for the next tick;
+Wisp asks and other cached sources enter on ingestion. Enabling learning pokes a tick.
+
+The semantic availability adapter normally gets at most one attempt per five minutes.
+An explicitly started Gmail history scan permits one global acquisition step and
+one interpretation opportunity per 30 seconds; forced runs cannot bypass that
+limit. Ingestion, mining and retention finish before the new interpretation is
+published, so maintenance cannot immediately invalidate a just-produced result.
+It checks opt-in and current source evidence before calling the resident model; a
+busy foreground or unavailable model leaves unknown, without a scenario fallback.
+Planning/API reads never invoke inference. Weekly reports are rolling seven-complete-
+local-day calculations requested by the Learned view/tools/API; no separate weekly
+model job or automatic weekly notification is added. Native history pages have their
+own bounded resumable cadence. Sleep/offline gaps are unknown and are not backfilled
+with invented activity. With learning off, only the existing roughly six-hour
+retention maintenance runs; new ingestion, interpretation and nudges stop.
+
+### Publication and withdrawal ordering
+
+The default runtime prepares complete source/configuration/database checks before
+taking its publication lease or runtime gate. Publication then checks only typed,
+process-local memory proofs and cancellation/expiry, and owns the seed transaction
+through commit. Record proofs bind selected revisions; an unrelated Gmail page
+append preserves existing selected messages, while eviction or replacement does
+not. Database mutation heads are shared by live connections to the same database;
+instance lifetime is separate, so closing one connection does not disable another.
+Retention, explicit reset/revocation, settings changes, cancellation and Forget
+participate in the same ordering. Forget releases the barrier before waiting for
+workers to stop. Caller-owned outer seed transactions are refused unchanged;
+deferral cannot commit them accidentally.
+
+For cooperating public APIs, a withdrawal that wins the barrier prevents later
+publication. If publication wins, its transaction finishes before withdrawal can
+acknowledge completion. A same-thread reentrant change raises `PublicationBusy`
+before changing permission or source state; a caller can retry after publication.
+It is never silently queued or reported as applied. This is an application ordering
+contract, not a veto of arbitrary SQLite COMMIT instructions. Expiry is checked at
+the logical publication decision; disk commit is not promised to precede a wall
+clock deadline. Reads withhold expired proof. Raw SQL, filesystem changes and private
+state edits outside the public protocol do not have immediate memory observability.
+The compatibility seed `finish` entry is not used by the default runtime and does
+not provide this prepared-source publication contract.

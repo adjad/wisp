@@ -41,6 +41,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import hashlib
+import math
+from service.publication_authority import Authority, Clock, Witness, mutating
 import re
 import threading
 import time
@@ -118,6 +120,10 @@ _raw_reference_scan: dict = {}
 _raw_snapshot_lock = threading.RLock()
 _raw_snapshot_generation = 0
 _raw_mail_snapshot: RawEmailSnapshot | None = None
+_raw_publication = Authority("native-mail-body")
+_raw_availability = Authority("native-mail-availability")
+_raw_publication_clock = None
+_raw_publication_monotonic = None
 # Raw bodies carry real PII (addresses, order numbers, party plans) — purge
 # after a week rather than let it sit in process memory indefinitely.
 # MailReader.swift re-syncs raw content every 15 minutes, so in practice this
@@ -128,18 +134,58 @@ _raw_mail_snapshot: RawEmailSnapshot | None = None
 # Restore whatever the last run had synced, so a backend restart doesn't leave
 # these empty until each source's next (potentially very slow) sync lands —
 # see cache_store's module docstring for the profile-build bug this fixes.
-# `_at` timestamps are deliberately set to now rather than persisted: they only
-# drive the raw cache's staleness TTL, and treating restored content as fresh
-# for one more TTL window is far better than treating it as instantly expired.
+# Header readiness is separate from server freshness. Raw bodies retain their
+# original persisted age so restarts and recomposition cannot extend the TTL.
 _headers = cache_store.load("email_headers")
 _history = cache_store.load("email_history")
 _raw_emails = cache_store.load("email_raw")
+def _source_receipt(value) -> float:
+    """Unknown or corrupt source metadata cannot attest a successful refresh."""
+    try:
+        stamp = float(value or 0)
+    except (ValueError, TypeError, OverflowError):
+        return 0.0
+    return stamp if math.isfinite(stamp) and 0 < stamp <= time.time() else 0.0
+
+
+def _cache_file_exists(name: str) -> bool | None:
+    """None means this adapter cannot attest filesystem provenance."""
+    path = getattr(cache_store, "_path", None)
+    if not callable(path):
+        return None
+    try:
+        return path(name).exists()
+    except OSError:
+        return None
+
+
+def _restored_native(part: str, fallback: str) -> str:
+    name = "email_mail_" + part
+    exists = _cache_file_exists(name)
+    if exists is None:
+        # Read-only staged adapters need not expose private metadata keys.
+        # Unknown provenance cannot promote display data into native data.
+        return ""
+    if exists:
+        return cache_store.load(name)
+    # Once source ownership was recorded, an unlabelled display cache may
+    # contain provider data. Missing native provenance must never adopt it.
+    return "" if _cache_file_exists("email_sources") is not False else fallback
+
+
+_swift_headers = _restored_native("headers", _headers)
+_swift_history = _restored_native("history", _history)
+_swift_raw = _restored_native("raw", _raw_emails)
 if _headers:
     _headers_at = time.time()
 if _history:
     _history_at = time.time()
 if _raw_emails:
-    _raw_emails_at = time.time()
+    try:
+        path = getattr(cache_store, "_path", None)
+        _raw_emails_at = path("email_raw").stat().st_mtime if callable(path) else 0.0
+    except OSError:
+        _raw_emails_at = 0.0
 
 # Managed QA's staged-import contract checks that summaries never construct a
 # model client at import time. Sender digests are deterministic, so this stays
@@ -148,18 +194,246 @@ _client = None
 
 
 def cache_emails(headers: str) -> None:
-    global _headers, _headers_at, _headers_sync_generation
-    _headers = headers or ""
+    global _headers, _headers_at, _headers_sync_generation, _swift_headers
+    _swift_headers = headers or ""
+    _refresh_native_bindings()
+    _headers = _compose_source(_swift_headers, "headers")
     _headers_at = time.time()
     _headers_sync_generation += 1
-    cache_store.save("email_headers", _headers)
+    _persist_composed_sources()
 
 
 def cache_history_headers(history: str) -> None:
-    global _history, _history_at
-    _history = history or ""
+    global _history, _history_at, _swift_history, _native_history_at
+    _swift_history = history or ""
+    _history = _compose_source(_swift_history, "history")
     _history_at = time.time()
-    cache_store.save("email_history", _history)
+    _native_history_at = _history_at
+    _persist_composed_sources()
+
+
+# Provider snapshots are separate from native Mail snapshots. A failed refresh
+# must preserve the last bytes and their original age, including after restart.
+_external_accounts: dict[str, dict] = {}
+_EXTERNAL_MAX_AGE = 300.0
+_native_headers_at = 0.0
+_native_source = ""
+# Only a cache predating both provenance files may inherit display-file age.
+# A modern composed cache (even with a fresh mtime) cannot attest its source.
+_native_raw_at = (_raw_emails_at if _cache_file_exists("email_mail_raw") is False
+                  and _cache_file_exists("email_sources") is False else 0.0)
+_native_history_at = 0.0
+
+
+def _restore_email_sources() -> None:
+    global _external_accounts, _native_headers_at, _native_source, _native_raw_at, _native_history_at
+    import json
+    if _cache_file_exists("email_sources") is None:
+        return
+    try:
+        saved = json.loads(cache_store.load("email_sources") or "{}")
+        _native_headers_at = _source_receipt(saved.get("native_headers_at"))
+        _native_source = str(saved.get("native_source") or "")
+        _native_raw_at = _source_receipt(saved.get("native_raw_at") or _native_raw_at)
+        _native_history_at = _source_receipt(saved.get("native_history_at"))
+        for address, item in saved.get("accounts", {}).items():
+            if isinstance(item, dict) and "@" in address:
+                _external_accounts[address] = {**item, "verified": False,
+                    "headers_verified": False, "history_verified": False, "raw_verified": False,
+                    **{part + "_at": _source_receipt(item.get(part + "_at"))
+                       for part in ("headers", "history", "raw")}}
+    except (ValueError, TypeError, AttributeError):
+        _external_accounts = {}
+
+
+def _save_email_sources() -> bool:
+    import json
+    if _cache_file_exists("email_sources") is None:
+        return False
+    saved = json.dumps({
+        "native_headers_at": _native_headers_at, "native_source": _native_source,
+        "native_raw_at": _native_raw_at, "native_history_at": _native_history_at,
+        "accounts": _external_accounts})
+    cache_store.save("email_sources", saved)
+    return cache_store.load("email_sources") == saved
+
+
+def _persist_composed_sources(*, purge: bool = True) -> None:
+    """Keep native provenance durable before writing any merged display data."""
+    if purge:
+        _purge_raw_if_expired(persist=False)
+    if _cache_file_exists("email_sources") is None:
+        return  # Read-only staged adapters cannot persist private provenance.
+    durable = True
+    for part, data in (("headers", _swift_headers), ("history", _swift_history),
+                       ("raw", _swift_raw), ("identity", "\n".join(_swift_identity))):
+        name = "email_mail_" + part
+        cache_store.save(name, data)
+        durable = (_cache_file_exists(name) is True and cache_store.load(name) == data) and durable
+    durable = _save_email_sources() and durable
+    if durable:
+        for name, data in (("email_headers", _headers), ("email_history", _history),
+                           ("email_raw", _raw_emails), ("identity_emails", "\n".join(_identity_emails))):
+            cache_store.save(name, data)
+
+
+def native_email_accounts() -> list[dict]:
+    found = {}
+    for row in _parse_header_records(_swift_headers) + _scan_marker_accounts(_swift_headers):
+        key = row.get("account_id") or row["account"]
+        if key:
+            found[key] = {"id": key, "name": row["account"]}
+    return list(found.values())
+
+
+def configure_external_accounts(accounts: dict[str, dict]) -> None:
+    """Only exact addresses or an explicit user-selected native ID are covered."""
+    global _external_accounts
+    selected = {}
+    for address, config in accounts.items():
+        key = address.strip().lower()
+        old = _external_accounts.get(key, {})
+        native_id = config.get("mail_account_id", "")
+        native_name = next((row["name"] for row in native_email_accounts() if row["id"] == native_id), "")
+        selected[key] = {**old, "mail_account_id": native_id,
+                         "mail_account_name": native_name or old.get("mail_account_name", ""),
+                         "headers": old.get("headers"), "history": old.get("history"),
+                         "raw": old.get("raw")}
+    _external_accounts = selected
+    _refresh_native_bindings()
+    _recompose_all()
+    cache_identity(_swift_identity)
+
+
+def _source_identity(record: str, *, raw: bool = False) -> tuple[str, str]:
+    if raw:
+        fields = record.split(_RAW_FS)
+        if len(fields) == 9:
+            return fields[2], fields[3]
+        if len(fields) == 8:
+            return fields[2], ""
+        return (fields[1], "") if len(fields) > 1 else ("", "")
+    if record.startswith(("H2\x01", "C2\x01", "C3\x01")):
+        fields = record.split("\x01")
+        if fields[0] == "H2":
+            return (fields[3], fields[4]) if len(fields) >= 5 else ("", "")
+        return (fields[1], fields[2]) if len(fields) >= 3 else ("", "")
+    fields = record.split(" | ", 4)
+    return ((fields[2] if fields[1] in ("R", "U") else fields[1]), "") if len(fields) > 2 else ("", "")
+
+
+def _refresh_native_bindings() -> None:
+    observed = native_email_accounts()
+    for address, item in _external_accounts.items():
+        exact = {row["id"] for row in observed if row["name"].casefold() == address}
+        item["inferred_native_id"] = next(iter(exact)) if len(exact) == 1 else ""
+
+
+def _covered_source(label: str, native_id: str, address: str, item: dict) -> bool:
+    bound = item.get("mail_account_id") or item.get("inferred_native_id")
+    return (not native_id and label.casefold() == address or native_id.casefold() == address or
+            bool(bound and native_id == bound))
+
+
+def _provider_selected(address: str, item: dict, part: str) -> bool:
+    if item.get(part) is None:
+        return False
+    stamp = _source_receipt(item.get(part + "_at"))
+    if part == "raw" and not stamp:
+        return False  # Rejected body receipts must not shadow valid native data.
+    if item.get(part + "_verified") and not item.get(part + "_error") and 0 <= time.time() - stamp <= _EXTERNAL_MAX_AGE:
+        return True
+    # A successful later native read is a better fallback than a failed provider
+    # snapshot. Its server freshness is still disclosed separately.
+    native_stamp = _source_receipt({"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at))
+    native = {"raw": _swift_raw, "history": _swift_history}.get(part, _swift_headers)
+    records = native.split(_RAW_RS if part == "raw" else "\n")
+    matched = any(_covered_source(*_source_identity(record, raw=part == "raw"), address, item)
+                  for record in records if record.strip())
+    if matched and _native_source == "mail_app" and native_stamp > stamp:
+        return False
+    return True
+
+
+def _compose_source(native: str, part: str) -> str:
+    if not any(item.get(part) is not None for item in _external_accounts.values()):
+        return native
+    raw = part == "raw"
+    separator = _RAW_RS if raw else "\n"
+    kept = []
+    for record in native.split(separator):
+        if not record.strip():
+            continue
+        label, native_id = _source_identity(record, raw=raw)
+        # No successful provider snapshot for this part? Keep its native fallback.
+        if not any(_provider_selected(address, item, part) and
+                   _covered_source(label, native_id, address, item)
+                   for address, item in _external_accounts.items()):
+            kept.append(record)
+    for address, item in _external_accounts.items():
+        if _provider_selected(address, item, part):
+            kept.extend(r for r in (item.get(part) or "").split(separator) if r.strip())
+    if not raw:
+        kept.sort(key=_row_ts, reverse=True)
+    return separator.join(kept)
+
+
+def _row_ts(row: str) -> float:
+    try:
+        return float(row.split("\x01", 2)[1] if row.startswith("H2\x01") else row.split(" | ", 1)[0])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _recompose_all() -> None:
+    global _headers, _history, _raw_emails
+    _headers = _compose_source(_swift_headers, "headers")
+    _history = _compose_source(_swift_history, "history")
+    _raw_emails = _compose_source(_swift_raw, "raw")
+
+
+def cache_external_emails(*, account: str, headers: str | None = None,
+                          history: str | None = None, raw: str | None = None) -> None:
+    global _headers_at, _history_at, _raw_emails_at, _headers_sync_generation
+    if account not in _external_accounts:
+        return  # Disconnected or superseded while the request was in flight.
+    now = time.time()
+    item = _external_accounts[account]
+    for part, data in (("headers", headers), ("history", history), ("raw", raw)):
+        if data is not None:
+            item[part] = data
+            item[part + "_at"] = now
+            item[part + "_error"] = ""
+            item[part + "_verified"] = True
+    if headers is not None:
+        item["verified"] = True
+        _headers_at = now
+        _headers_sync_generation += 1
+    if history is not None:
+        _history_at = now
+    if raw is not None:
+        _raw_emails_at = now
+    _recompose_all()
+    _persist_composed_sources()
+
+
+def external_email_error(account: str, part: str, reason: str) -> None:
+    if account in _external_accounts:
+        _external_accounts[account][part + "_error"] = reason
+        _recompose_all()
+        _persist_composed_sources()
+
+
+def _external_fresh() -> bool:
+    now = time.time()
+    return bool(_external_accounts) and all(
+        item.get("headers_verified") and not item.get("headers_error") and
+        0 < _source_receipt(item.get("headers_at")) and
+        0 <= now - _source_receipt(item.get("headers_at")) <= _EXTERNAL_MAX_AGE
+        for item in _external_accounts.values())
+
+
+_restore_email_sources()
 
 
 # The user's OWN email addresses, from Mail.app's configured accounts (pushed
@@ -185,11 +459,18 @@ def _is_placeholder(email: str) -> bool:
     return email.lower().strip().endswith(_PLACEHOLDER_DOMAINS)
 
 
+_swift_identity: list[str] = []
+
+
 def cache_identity(emails: list[str]) -> None:
-    global _identity_emails
-    _identity_emails = [e.strip() for e in (emails or [])
-                        if e and e.strip() and not _is_placeholder(e)]
-    cache_store.save("identity_emails", "\n".join(_identity_emails))
+    global _identity_emails, _swift_identity
+    _swift_identity = [e.strip() for e in (emails or [])
+                       if e and e.strip() and not _is_placeholder(e)]
+    _identity_emails = list(_swift_identity)
+    for address in _external_accounts:
+        if address not in (e.lower() for e in _identity_emails):
+            _identity_emails.append(address)
+    _persist_composed_sources()
 
 
 def get_identity_emails() -> list[str]:
@@ -198,27 +479,52 @@ def get_identity_emails() -> list[str]:
 
 _identity_emails = [e for e in cache_store.load("identity_emails").splitlines()
                     if e and not _is_placeholder(e)]
+_swift_identity = _restored_native("identity", "\n".join(
+    e for e in _identity_emails if e.casefold() not in _external_accounts)).splitlines()
 
 
+@mutating
 def set_email_availability(available: bool, reason: str = "",
                            syncing: bool = False, read_source: str = "") -> None:
     """Record whether the Swift MailReader's last sync could read the inbox."""
     global _email_available, _email_reason, _email_sync_pending, _email_read_source
-    _email_available = available
-    _email_reason = reason
-    _email_sync_pending = syncing and available
-    _email_read_source = read_source if read_source in {"local_index", "mail_app"} else ""
+    global _native_headers_at, _native_source
+    with _raw_snapshot_lock:
+        changed = _email_available is not available or _raw_availability.token() is None
+        if changed:
+            _raw_availability.withdraw()
+        _email_available = available
+        _email_reason = reason
+        _email_sync_pending = syncing and available
+        _email_read_source = read_source if read_source in {"local_index", "mail_app"} else ""
+        if available and not syncing:
+            _native_headers_at = time.time()
+            _native_source = _email_read_source
+            if _external_accounts:
+                _recompose_all()
+            _save_email_sources()
+        if available is True and changed:
+            _raw_availability.publish()
 
 
 def _no_inbox_message() -> str:
     """The right 'no data' message for the CURRENT sync state — only blames
     permission when the sync actually failed."""
+    if _external_accounts and not any(item.get("headers") is not None for item in _external_accounts.values()):
+        return ("I couldn’t refresh email from Google. No verified provider snapshot is available. "
+                + email_freshness_warning())
+    if _email_available is False and _external_fresh():
+        return "No emails found."
     if _email_available is False:
         reason = _email_reason or "Mail Automation access isn't granted"
-        return (f"(Can't read Mail: {reason}. Grant Wisp access in System Settings ▸ "
-                "Privacy & Security ▸ Automation ▸ Wisp ▸ Mail, then try again.)")
+        guidance = ("Grant Wisp access in System Settings ▸ Privacy & Security ▸ Automation ▸ Wisp ▸ Mail, then try again."
+                    if "automation" in reason.casefold() else "Open Mail and let it refresh, then try again.")
+        return (f"I couldn’t refresh Mail: {reason}. No usable cached emails are available, "
+                f"so I couldn’t verify your inbox. {guidance}")
     if _email_available is True:
-        # Sync worked, there's just nothing in the requested window.
+        # Local read completion cannot prove that the server inbox is empty.
+        if email_freshness_warning():
+            return "No emails found in the available cache; your current inbox could not be verified."
         return "No emails found."
     # Never synced yet — could be a just-launched race OR missing permission; don't
     # assert either. (Mail syncs within ~15s of launch; a retry usually resolves it.)
@@ -235,6 +541,10 @@ def email_sync_state() -> str:
     good fallback later, but they cannot answer "today" accurately until the
     app has told us its first live scan finished.
     """
+    if _external_fresh() or any(item.get("headers") is not None for item in _external_accounts.values()):
+        return "ready"
+    if any(item.get("headers_error") for item in _external_accounts.values()):
+        return "ready" if _parse_lines() else "unavailable"
     if _email_available is False:
         return "unavailable"
     if _email_sync_pending:
@@ -244,12 +554,98 @@ def email_sync_state() -> str:
     return "syncing"
 
 
-def email_freshness_warning() -> str:
-    """Read completion is not proof that Mail fetched everything from a server."""
-    if email_sync_state() == "ready" and _email_read_source == "local_index":
-        return ("Email is from Mail’s local cache. Newer messages may be missing; "
-                "open Mail and let it refresh, then try again.")
-    return ""
+def email_source_details(account: str | None = None, *, part: str = "headers") -> list[dict]:
+    now = time.time()
+    result = []
+    native = {"raw": _swift_raw, "history": _swift_history}.get(part, _swift_headers)
+    native_rows = []
+    for record in native.split(_RAW_RS if part == "raw" else "\n"):
+        if record.strip():
+            label, native_id = _source_identity(record, raw=part == "raw")
+            native_rows.append({"account": label, "account_id": native_id})
+    if part == "history" and not native_rows:
+        native_rows = native_email_accounts()
+        native_rows = [{"account": r["name"], "account_id": r["id"]} for r in native_rows]
+    selected = _resolve_account_groups(account, native_rows)[0] if account else None
+    for address, item in _external_accounts.items():
+        if selected is not None and _account_group(address, address) not in selected:
+            continue
+        stamp = _source_receipt(item.get(part + "_at"))
+        error = str(item.get(part + "_error") or "")
+        fresh = bool(item.get(part + "_verified") and stamp and not error and 0 <= now - stamp <= _EXTERNAL_MAX_AGE)
+        result.append({"account": address, "source": "gmail", "fresh": fresh,
+                       "last_success": stamp or None, "error": error,
+                       "age_seconds": max(0, now - stamp) if stamp else None})
+    observed = {}
+    for row in native_rows:
+        label, native_id = row["account"], row["account_id"]
+        if not label or selected is not None and _account_group(label, native_id) not in selected:
+            continue
+        if any(_provider_selected(address, item, part) and _covered_source(label, native_id, address, item)
+               for address, item in _external_accounts.items()):
+            continue
+        observed[native_id or label] = label
+    native_stamp = _source_receipt({"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at))
+    for label in observed.values():
+        # Mail.app read completion still cannot prove a server fetch completed.
+        result.append({"account": label, "source": _email_read_source or _native_source or "saved_cache",
+                       "fresh": bool(_email_read_source == "mail_app" and _email_available and
+                                     0 <= now - native_stamp <= _EXTERNAL_MAX_AGE),
+                       "last_success": native_stamp or None,
+                       "age_seconds": max(0, now - native_stamp) if native_stamp else None,
+                       "error": _email_reason if _email_available is False else ""})
+    return result
+
+
+def external_recent_complete(address: str) -> bool:
+    item = _external_accounts.get(address, {})
+    if (not item.get("headers_verified") or item.get("headers_error") or
+            not _source_receipt(item.get("headers_at")) or
+            not 0 <= time.time() - _source_receipt(item.get("headers_at")) <= _EXTERNAL_MAX_AGE):
+        return False
+    headers = item.get("headers")
+    if headers == "":
+        return True
+    if headers is None:
+        return False
+    return any(line.split("\x01")[0] == "C2" and len(line.split("\x01")) == 6 and
+               line.split("\x01")[4:] == ["0", "0"] for line in headers.splitlines())
+
+
+def _range_history(start: float, end: float) -> list[dict]:
+    return [row for row in _parse_header_records(_history, snapshot="history")
+            if start <= row["ts"] < end and not any(external_recent_complete(address) and
+                _account_group(row["account"], row.get("account_id", "")) == _account_group(address, address)
+                for address in _external_accounts)]
+
+
+def _history_warning(account: str | None = None) -> str:
+    return email_freshness_warning(account, part="history")
+
+
+def email_freshness_warning(account: str | None = None, *, part: str = "headers") -> str:
+    details = email_source_details(account, part=part)
+    warnings = []
+    for item in details:
+        if item["fresh"] or part == "history" and item["source"] == "gmail" and external_recent_complete(item["account"]):
+            continue
+        last = (datetime.fromtimestamp(item["last_success"]).strftime("%b %-d, %-I:%M %p")
+                if item["last_success"] else "unknown")
+        if item["source"] == "gmail":
+            reason = item["error"] or "a current Google refresh has not completed"
+            kind = "Gmail history cache" if part == "history" else "Gmail cache"
+            warnings.append(f"{item['account']}: {kind} is stale or unverified; last successful refresh {last}. {reason}.")
+        else:
+            failure = f" The latest Mail refresh failed: {item['error']}." if item["error"] else ""
+            warnings.append(f"{item['account']}: Email is from Mail’s local cache. Newer messages may be missing; "
+                            f"server freshness is unverified (last local {'history ' if part == 'history' else ''}read {last}). "
+                            f"To check for newer mail, open Mail and let it refresh.{failure}")
+    # Preserve the native diagnostic for successful empty local-index scans, too.
+    if not details and _email_read_source == "local_index":
+        warnings.append("Email is from Mail’s local cache. Newer messages may be missing; "
+                        "server freshness is unverified. To check for newer mail, open Mail and let it refresh."
+                        + (f" The latest Mail refresh failed: {_email_reason}." if _email_available is False and _email_reason else ""))
+    return "\n".join(warnings)
 
 
 def with_email_freshness_note(text: str, warning: str) -> str:
@@ -260,10 +656,19 @@ def with_email_freshness_note(text: str, warning: str) -> str:
 def _disclose_mail_freshness(function):
     @wraps(function)
     async def wrapped(*args, **kwargs):
-        # Capture BEFORE generation: a newer sync arriving during a model call
-        # must not silently remove the caveat for the older input snapshot.
-        warning = email_freshness_warning()
-        return with_email_freshness_note(await function(*args, **kwargs), warning)
+        # Digests are synchronous once readiness resolves. Inspect freshness
+        # after on-demand refresh so a successful retry removes the old caveat.
+        import inspect
+        bound = inspect.signature(function).bind_partial(*args, **kwargs)
+        account = bound.arguments.get("account")
+        part = "raw" if function.__name__.startswith("view_email") else "headers"
+        result = await function(*args, **kwargs)
+        warning = email_freshness_warning(account, part=part) if account or part == "raw" else email_freshness_warning()
+        if function.__name__ in {"summarize_inbox_for_day", "summarize_inbox_for_period"}:
+            history_warning = _history_warning(account)
+            if history_warning and history_warning != warning:
+                warning = "\n".join(filter(None, (warning, history_warning)))
+        return with_email_freshness_note(result, warning)
     return wrapped
 
 
@@ -417,6 +822,20 @@ def _raw_snapshot_candidate(raw: str, coverage: dict | None, stamp: float) -> Ra
                             hashlib.sha256(raw.encode("utf-8")).hexdigest())
 
 
+def provider_history_snapshot(provider, *, expected_receipt=None, required_refs=()):
+    """Pure, explicit provider evidence API; separate from native completeness.
+
+    No implicit source construction, cache warming, token refresh or network.
+    Callers must recheck the same receipt and record refs before using results.
+    Native-only raw_email_snapshot retains its existing admission contract.
+    """
+    from service.gmail_behavior_history import HistoryProvider
+    from service.gmail_source import PublicHistoryBridge
+    if not isinstance(provider, (HistoryProvider, PublicHistoryBridge)):
+        return None
+    return provider.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
+
+
 def raw_email_snapshot(*, expected_generation: int | None = None) -> RawEmailSnapshot | None:
     """Read once for coherent provenance, or None for ineligible evidence.
 
@@ -434,9 +853,11 @@ def raw_email_snapshot(*, expected_generation: int | None = None) -> RawEmailSna
         return snapshot
 
 
+@mutating
 def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
     global _raw_emails, _raw_emails_at, _raw_reference_scan
-    global _raw_mail_snapshot, _raw_snapshot_generation
+    global _raw_mail_snapshot, _raw_snapshot_generation, _swift_raw, _native_raw_at
+    global _raw_publication_clock, _raw_publication_monotonic
     raw = raw or ""
     stamp = time.time()
     scan = dict(coverage or {})
@@ -447,6 +868,10 @@ def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
     # bytes these account/message/coverage checks describe.
     candidate = _raw_snapshot_candidate(raw, scan, stamp)
     with _raw_snapshot_lock:
+        _raw_publication.withdraw()
+        _raw_publication_clock = Clock()
+        _raw_publication_monotonic = time.monotonic()
+        _raw_publication_clock.observe(stamp, _raw_publication_monotonic)
         _raw_snapshot_generation += 1
         snapshot = RawEmailSnapshot(_raw_snapshot_generation, candidate.synced_at,
             candidate.rows, candidate.accounts, candidate.failed_accounts, candidate.complete,
@@ -456,11 +881,37 @@ def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
             _raw_reference_scan = {**scan, "synced_at": stamp, "complete": False}
             _raw_mail_snapshot = snapshot
             return  # Preserve old display bytes, never their complete provenance.
-        _raw_emails, _raw_emails_at = raw, stamp
+        # Display bytes merge in Gmail rows; the evidence snapshot above stays
+        # Mail-only (task evidence/references address Mail messages).
+        _swift_raw = raw
+        _native_raw_at = stamp
+        _raw_emails = _compose_source(raw, "raw")
+        _raw_emails_at = stamp
         _raw_reference_scan = {**scan, "synced_at": stamp,
                                "decode_complete": candidate.decode_complete}
         _raw_mail_snapshot = snapshot  # Atomic body + identity + coverage publication.
-        cache_store.save("email_raw", raw)
+        _persist_composed_sources()
+        if snapshot.complete:
+            _raw_publication.publish()
+
+
+@mutating
+def prepare_publication_witness(snapshot):
+    """Qualify a captured native body publication outside the publish lease.
+
+    The returned witness never calls this getter, parses content, touches disk
+    or refreshes the source. Restored caches and caller-made copies cannot
+    acquire the live publication's stamp or extend its original receipt age.
+    """
+    with _raw_snapshot_lock:
+        if (type(snapshot) is not RawEmailSnapshot or _raw_mail_snapshot is not snapshot
+                or raw_email_snapshot(expected_generation=snapshot.generation) is not snapshot
+                or _raw_publication_clock is None or _raw_publication_monotonic is None):
+            return None
+        return Witness.combine(_raw_availability.token(),
+            _raw_publication.token(clock=_raw_publication_clock,
+                expires_wall=snapshot.synced_at+1200,
+                expires_monotonic=_raw_publication_monotonic+1200))
 
 
 def raw_reference_metadata() -> dict:
@@ -489,16 +940,41 @@ async def ensure_reply_source(timeout_seconds: float = 2.5) -> None:
         await asyncio.sleep(0.1)
 
 
-def _purge_raw_if_expired() -> None:
-    """Drop the raw cache once it's more than a week old (see _RAW_TTL_SECONDS).
-    Checked lazily on read rather than via a background task: same effect, no
-    extra scheduler needed."""
-    global _raw_emails, _raw_emails_at, _raw_mail_snapshot
+@mutating
+def _purge_raw_if_expired(*, persist: bool = True) -> None:
+    """Admit bodies only from source snapshots with a valid original receipt.
+
+    The composed display store is never evidence of ownership or receipt age.
+    Rebuild it on every read, including when no source needed expiration.
+    """
+    global _raw_emails, _raw_emails_at, _raw_mail_snapshot, _swift_raw, _native_raw_at
+    changed = False
     with _raw_snapshot_lock:
-        if _raw_emails_at and (time.time() - _raw_emails_at) > _RAW_TTL_SECONDS:
-            _raw_emails = ""
-            _raw_emails_at = 0.0
+        now = time.time()
+        def receipt(value) -> float:
+            stamp = _source_receipt(value)
+            return stamp if stamp and 0 <= now - stamp <= _RAW_TTL_SECONDS else 0.0
+
+        for item in _external_accounts.values():
+            if item.get("raw") is not None and not receipt(item.get("raw_at")):
+                item["raw"] = None
+                item["raw_at"] = 0
+                changed = True
+        if _swift_raw and not receipt(_native_raw_at):
+            _raw_publication.withdraw()
+            _swift_raw = ""
+            _native_raw_at = 0.0
             _raw_mail_snapshot = None
+            changed = True
+        admitted = _compose_source(_swift_raw, "raw")
+        changed = changed or admitted != _raw_emails
+        _raw_emails = admitted
+        stamps = [receipt(_native_raw_at)] if _swift_raw else []
+        stamps.extend(receipt(item.get("raw_at")) for item in _external_accounts.values()
+                      if item.get("raw") is not None)
+        _raw_emails_at = max(stamps, default=0.0)
+        if changed and persist:
+            _persist_composed_sources(purge=False)
 
 
 def _parse_raw() -> list[dict]:
@@ -701,11 +1177,14 @@ def _parse_header_records(text: str, *, snapshot: str = "") -> list[dict]:
 def _unique_records(rows: list[dict]) -> list[dict]:
     seen: set[tuple] = set()
     result: list[dict] = []
-    for row in sorted(rows, key=lambda r: r["ts"], reverse=True):
+    # Current read state wins over an older historical copy, even if that
+    # historical header has an anomalous date. Restore date order afterwards.
+    for row in sorted(rows, key=lambda r: (r.get("_snapshot") == "recent", r["ts"]), reverse=True):
         account = (row["account_id"] or row["account"]).casefold()
         identities = []
         if account and row.get("message_id"):
-            identities.append(("message", account, row["message_id"].casefold()))
+            identities.append(("message", _account_group(row["account"], row["account_id"]),
+                               row["message_id"].casefold()))
         if account and row.get("native_id"):
             identities.append(("native", account, row["native_id"].casefold()))
         if not identities:
@@ -716,6 +1195,7 @@ def _unique_records(rows: list[dict]) -> list[dict]:
         seen.update(identities)
         if not duplicate:
             result.append(row)
+    result.sort(key=lambda r: r["ts"], reverse=True)
     # Mail.app and the SQLite fallback use different native ID namespaces. A
     # producer switch can leave the same message in recent/history with
     # unrelated account/native IDs. Pair only across snapshots and producers,
@@ -779,9 +1259,14 @@ def header_scan_coverage(rows: list[dict], *, raw_headers: str | None = None,
     labels: dict[str, str] = {}
     native: dict[str, tuple[int, int, bool]] = {}
     incomplete: dict[str, str] = {}
-    q = (_ACCOUNT_FILLER_RE.sub("", account).strip().casefold() or account.strip().casefold()) if account else ""
+    scoped_keys = None
+    if account:
+        extra = rows + (_parse_header_records(raw_headers) + _scan_marker_accounts(raw_headers)
+                        if raw_headers is not None else [])
+        scoped_keys, _ = _resolve_account_groups(account, extra)
     def selected(key: str, label: str) -> bool:
-        return key == "*" or not q or q in key.casefold() or q in label.casefold()
+        return (key == "*" or scoped_keys is None or _account_group(label, key) in scoped_keys or
+                key == label and _account_group(label, "") in scoped_keys)
     if raw_headers is None:
         entries = [(row.get("account_id") or row.get("account") or "unknown",
                     row.get("account") or "Mail") for row in rows]
@@ -914,13 +1399,15 @@ def _cache_ready() -> bool:
     scan can explain a rowless cache without asserting an empty inbox.
     """
     coverage = header_scan_coverage([], raw_headers=_headers)
-    return bool(_parse_lines()) or coverage["attempted"] > 0 or bool(coverage["incomplete_accounts"])
+    return (bool(_parse_lines()) or bool(_scan_marker_accounts(_headers)) or
+            any(item.get("headers") is not None for item in _external_accounts.values()) or
+            coverage["attempted"] > 0 or bool(coverage["incomplete_accounts"]))
 
 
 def _raw_ready() -> bool:
     """Same idea for the verbatim/raw cache that backs view_emails."""
     _purge_raw_if_expired()
-    return bool(_raw_emails.strip())
+    return bool(_raw_emails.strip()) or any(item.get("raw") is not None for item in _external_accounts.values())
 
 
 async def _ensure_email_cache(*, want_raw: bool = False,
@@ -933,9 +1420,29 @@ async def _ensure_email_cache(*, want_raw: bool = False,
     subscriber) or the push doesn't arrive in time, we fall through and the
     caller's readiness guard reports the sync-aware 'still syncing' message.
     """
-    refresh_local = not want_raw and bool(email_freshness_warning())
+    parts = ("headers", "raw") if want_raw else ("headers",)
+    try:
+        from service import gmail_source
+        # The configured account list is authoritative even when it is empty.
+        # A restored provider snapshot must not outlive a disconnected account.
+        configured = gmail_source.connected_accounts()
+        if configured or _external_accounts:
+            configure_external_accounts(configured)
+        await gmail_source.refresh_if_stale(parts=parts)
+    except ImportError:
+        if _external_accounts:
+            configure_external_accounts({})
+    except Exception:  # Optional provider availability must not disable native Mail.
+        for address in list(_external_accounts):
+            for part in parts:
+                external_email_error(address, part, "Google refresh is unavailable; showing the last available cache")
+    sources = email_source_details(part="raw" if want_raw else "headers")
+    refresh_local = (
+        any(not row["fresh"] for row in sources) or
+        (not sources and (_email_read_source == "local_index" or bool(_swift_raw if want_raw else _swift_headers))))
     generation = _headers_sync_generation
-    if _raw_ready() if want_raw else email_sync_state() == "ready" and not refresh_local:
+    raw_generation = _raw_snapshot_generation
+    if (_raw_ready() if want_raw else email_sync_state() == "ready") and not refresh_local:
         return
     try:
         from service.assistant.hub import hub
@@ -950,7 +1457,7 @@ async def _ensure_email_cache(*, want_raw: bool = False,
     deadline = time.time() + max(0.0, timeout_seconds)
     while time.time() < deadline:
         await asyncio.sleep(0.2)
-        if (_raw_ready() if want_raw else (
+        if ((_raw_ready() and (not refresh_local or _raw_snapshot_generation > raw_generation)) if want_raw else (
                 email_sync_state() == "unavailable" or
                 (email_sync_state() == "ready" and
                  (not refresh_local or _headers_sync_generation > generation)))):
@@ -990,69 +1497,83 @@ def _fmt_line(account: str, sender: str, subject: str) -> str:
 _ACCOUNT_FILLER_RE = re.compile(r"\b(?:e-?mail|account|inbox|mail)\b", re.I)
 
 
+def _account_query(account: str) -> str:
+    return _ACCOUNT_FILLER_RE.sub("", account).strip().casefold() or account.strip().casefold()
+
+
+def _account_group(label: str, native_id: str) -> tuple[str, str]:
+    for address, item in _external_accounts.items():
+        if native_id.casefold() == address or not native_id and label.casefold() == address:
+            return ("native", item.get("mail_account_id") or item.get("inferred_native_id") or address)
+    return ("native", native_id) if native_id else ("legacy", label.casefold())
+
+
+def _account_catalog(extra: list[dict]) -> dict:
+    # Header queries never inspect history or bodies to discover identities.
+    # Raw lookups pass retained native body identities explicitly below.
+    groups = {}
+    inventory = (_parse_header_records(_headers) + _parse_header_records(_swift_headers) +
+                 _scan_marker_accounts(_swift_headers) + extra)
+    def add(label, native_id):
+        key = _account_group(label, native_id)
+        group = groups.setdefault(key, {"ids": set(), "labels": set()})
+        if native_id:
+            group["ids"].add(native_id.casefold())
+        if label:
+            group["labels"].add(label.casefold())
+    for row in inventory:
+        add(str(row.get("account") or ""), str(row.get("account_id") or ""))
+    for address, item in _external_accounts.items():
+        add(address, address)
+        bound = item.get("mail_account_id") or item.get("inferred_native_id")
+        if bound:
+            add(str(item.get("mail_account_name") or address), str(bound))
+    return groups
+
+
+def _resolve_account_groups(account: str, extra: list[dict] | None = None) -> tuple[set, dict]:
+    groups = _account_catalog(extra or [])
+    q = _account_query(account)
+    exact_id = {key for key, group in groups.items() if account.strip().casefold() in group["ids"]}
+    exact_label = {key for key, group in groups.items() if q in group["labels"]}
+    partial = {key for key, group in groups.items() if any(q in name for name in group["labels"] | group["ids"])}
+    return exact_id or exact_label or partial, groups
+
+
 def _filter_account(rows: list, account: str | None) -> list:
     if not account:
         return rows
-    # Strip generic words ("email", "account"...) before matching, so "UCSC
-    # email" reaches the "ucsc" that actually appears in the cached identifier
-    # rather than failing to match the whole phrase. See _unknown_account_message
-    # for why this alone isn't sufficient.
-    q = _ACCOUNT_FILLER_RE.sub("", account).strip().lower() or account.strip().lower()
-    return [r for r in rows if q in r[1].lower()]
+    keys, _ = _resolve_account_groups(account, [{"account": r[1], "account_id": ""} for r in rows])
+    return [r for r in rows if _account_group(r[1], "") in keys]
 
 
 def _filter_account_records(rows: list[dict], account: str | None) -> list[dict]:
     if not account:
         return rows
-    q = _ACCOUNT_FILLER_RE.sub("", account).strip().casefold() or account.strip().casefold()
-    return [r for r in rows if q in r["account"].casefold() or
-            q in r.get("account_id", "").casefold()]
+    keys, _ = _resolve_account_groups(account, rows)
+    return [r for r in rows if _account_group(r["account"], r.get("account_id", "")) in keys]
 
 
 def _raw_account_scope(rows: list[dict], account: str | None) -> tuple[list[dict], str]:
-    """Resolve a body lookup to one account identity without widening its scope.
-
-    Header labels can lag behind the body cache, and two native accounts can
-    share one display label. Exact native IDs take precedence over partial
-    label matches; a duplicate label must be clarified before exposing bodies.
-    Unscoped body lookups deliberately retain their cross-account behavior.
-    """
+    """Resolve identities before labels; replacement must not erase ambiguity."""
     if not account or not account.strip():
         return rows, ""
-    selector = account.strip()
-    q = _ACCOUNT_FILLER_RE.sub("", selector).strip().casefold() or selector.casefold()
-    identities: dict[tuple[str, str], dict] = {}
-    for row in rows:
-        label = str(row.get("account") or "")
-        native_id = str(row.get("account_id") or "")
-        key = ("native", native_id) if native_id else ("legacy", label.casefold())
-        identities.setdefault(key, {"account": label, "account_id": native_id})
-    candidates = list(identities.items())
-    exact_ids = [(key, row) for key, row in candidates
-                 if row["account_id"] and row["account_id"] == selector]
-    exact_labels = [(key, row) for key, row in candidates
-                    if row["account"].casefold() == q]
-    matches = exact_ids or exact_labels or [(key, row) for key, row in candidates
-                                          if q in row["account"].casefold()]
-    if not matches:
-        # Keep the established corrective account names when headers prove
-        # them, while allowing a newer raw-only account to resolve above.
-        problem = _unknown_account_message(account)
-        if problem:
-            return [], problem
-        known = ", ".join(sorted({row["account"] for _, row in candidates if row["account"]}))
+    retained = []
+    for record in _swift_raw.split(_RAW_RS):
+        if record.strip():
+            label, native_id = _source_identity(record, raw=True)
+            retained.append({"account": label, "account_id": native_id})
+    keys, groups = _resolve_account_groups(account, rows + retained)
+    if not keys:
         return [], (f"(error: no cached email account matches {account!r}. "
-                    f"{'Available body-cache accounts: ' + known + '. ' if known else ''}"
                     "Choose an account from the synced Mail data; no other account was searched.)")
-    if len(matches) != 1:
-        choices = "; ".join(f"{row['account']} (account ID: {row['account_id'] or 'unavailable'})"
-                            for _, row in matches)
+    if len(keys) != 1:
+        choices = "; ".join(f"{', '.join(sorted(groups[key]['labels']))} (account ID: {key[1] or 'unavailable'})"
+                            for key in sorted(keys))
         return [], (f"(error: several email accounts match {account!r}: {choices}. "
                     "Which one? Use an exact account ID, or rename the accounts in Mail and sync again.)")
-    selected = matches[0][0]
-    return [row for row in rows
-            if (("native", str(row.get("account_id"))) if row.get("account_id")
-                else ("legacy", str(row.get("account") or "").casefold())) == selected], ""
+    return [row for row in rows if _account_group(str(row.get("account") or ""),
+                                                  str(row.get("account_id") or "")) in keys], ""
 
 
 def _email_body_block(row: dict) -> str:
@@ -1621,10 +2142,10 @@ async def summarize_inbox_for_day(day: str, account: str | None = None,
     except ValueError:
         return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
     cached = _parse_header_records(_headers, snapshot="recent")
-    recent = [r for r in cached if start <= r["ts"] < end]
-    history = [r for r in _parse_header_records(_history, snapshot="history") if start <= r["ts"] < end]
-    scoped = _filter_account_records(recent + history, account)
-    rows = _unique_records(scoped)
+    history = _range_history(start, end)
+    candidates = _filter_account_records(cached + history, account)
+    scoped = [r for r in candidates if start <= r["ts"] < end]
+    rows = [r for r in _unique_records(candidates) if start <= r["ts"] < end]
     if not rows and not unread:
         return _empty_range_message(label, start, end, account)
     coverage = header_scan_coverage(cached, raw_headers=_headers, account=account)
@@ -1724,6 +2245,10 @@ def _empty_range_message(label: str, start: float, end: float,
     entirely as user-facing prose because this pre-synthesized tool can be
     returned directly without another model narration pass.
     """
+    if email_freshness_warning(account) or _history_warning(account):
+        return (f"I couldn’t verify whether you have email for {label}. No matching messages "
+                "were found in the available cache; this does not mean your inbox is empty. "
+                "Other dates may have cached emails.")
     rows = _filter_account_records(_parse_header_records(_headers), account)
     coverage = header_scan_coverage(rows, raw_headers=_headers, account=account)
     history_coverage = header_scan_coverage([], raw_headers=_history, account=account,
@@ -1804,13 +2329,13 @@ async def summarize_inbox_for_period(period: str, account: str | None = None,
     except BadPeriod as e:
         return str(e)
     cached = _parse_header_records(_headers, snapshot="recent")
-    recent = [r for r in cached if start <= r["ts"] < end]
     # The recent cache only reaches back ~5-7 weeks, so any range older than
     # that needs the deeper ~2-year history scan — merged, not substituted,
     # because a range can straddle the boundary between the two.
-    history = [r for r in _parse_header_records(_history, snapshot="history") if start <= r["ts"] < end]
-    scoped = _filter_account_records(recent + history, account)
-    rows = _unique_records(scoped)
+    history = _range_history(start, end)
+    candidates = _filter_account_records(cached + history, account)
+    scoped = [r for r in candidates if start <= r["ts"] < end]
+    rows = [r for r in _unique_records(candidates) if start <= r["ts"] < end]
     if not rows and not unread:
         return _empty_range_message(label, start, end, account)
     coverage = header_scan_coverage(cached, raw_headers=_headers, account=account)
@@ -1944,7 +2469,7 @@ async def summarize_emails(day: str | None = None, count: int = 20,
     state = email_sync_state()
     if state == "syncing":
         return email_syncing_message()
-    if state == "unavailable":
+    if state == "unavailable" and not (_email_available is False and _parse_header_records(_swift_headers)):
         return _no_inbox_message()
     if account and (msg := _unknown_account_message(account)):
         return msg
@@ -1966,6 +2491,7 @@ def _matches(query: str, sender: str, to: str, subject: str, body: str) -> bool:
     return any(q in f.lower() for f in (sender, to, subject, body))
 
 
+@_disclose_mail_freshness
 async def view_emails_impl(query: str | None = None, day: str | None = None,
                            count: int = 5, account: str | None = None,
                            period: str | None = None,
@@ -1975,7 +2501,11 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     # dead-ending on "no raw content cached" and forcing a retry.
     await _ensure_email_cache(want_raw=True)
     _purge_raw_if_expired()
-    if _email_available is False:
+    if not _raw_emails.strip() and _external_accounts and all(
+            item.get("raw") == "" for item in _external_accounts.values()):
+        return "No emails found in the available body snapshot." if not email_freshness_warning(account, part="raw") else (
+            "No messages are available in the saved body cache; I couldn’t verify whether you have new email.")
+    if _email_available is False and not _raw_emails.strip():
         return _no_inbox_message()
     if not _raw_emails.strip():
         return ("(No raw email content cached right now — either Mail.app hasn't synced "

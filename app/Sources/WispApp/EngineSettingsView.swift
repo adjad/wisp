@@ -194,8 +194,12 @@ struct EngineSettingsView: View {
                         Button("Built-in engine") { selectedMode.wrappedValue = .bundled }
                             .disabled(!engine.bundledAvailable)
                         Button("My installed oMLX") { selectedMode.wrappedValue = .externalOmlx }
-                        if let url = engine.adminURL {
-                            Divider()
+                        Divider()
+                        if engine.mode == .bundled {
+                            Button("Set up engine and models…") {
+                                NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+                            }
+                        } else if let url = engine.adminURL {
                             Button("Open engine dashboard") { NSWorkspace.shared.open(url) }
                         }
                     }

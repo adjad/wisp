@@ -163,10 +163,10 @@ def _habit_conflicts(inp: Inputs, by_id: dict[str, Pattern]) -> list[Nudge]:
         prefix = "Gym" if habit.stats.get("key") == "fitness" else (habit.stats.get("label") or habit.subject)
         end_min = habit.window.end_minute
         title = f"{pr.subject} overlaps your {noun}"
-        body = (f"{pr.subject} ({_when(pr.ts, inp.now, inp.tz)}) lands on your usual {noun} "
-                f"({fmt_range(habit.window.start_minute, end_min)}).")
+        body = (f"{pr.subject} ({_when(pr.ts, inp.now, inp.tz)}) lands on time usually scheduled for your {noun} "
+                f"({fmt_range(habit.window.start_minute, end_min)}). Whether the activity happens is unknown.")
         remind = Action("add_reminder", {
-            "title": f"{prefix} moved? — {pr.subject} overlaps your usual {noun}",
+            "title": f"Review calendar overlap: {pr.subject} / {prefix}",
             "when_ts": max(inp.now, pr.ts - 12 * 3600), "notes": pr.because}, auto=True,
             label="Remind me")
         draft = Action("open_prompt", {
@@ -186,16 +186,16 @@ def _cancel_likely(inp: Inputs, by_id: dict[str, Pattern]) -> list[Nudge]:
         if pr.kind != "cancel_risk" or pr.probability < CANCEL_NUDGE_MIN_PROB or not pr.refs:
             continue
         p = by_id.get(pr.pattern_id)
-        hold = Action("add_hold", {"title": f"Likely skip: {pr.subject}", "when_ts": pr.ts,
+        hold = Action("add_hold", {"title": f"Schedule may change: {pr.subject}", "when_ts": pr.ts,
                                    "end_ts": pr.end_ts or pr.ts + 1800, "tentative": True,
-                                   "notes": pr.because}, auto=True, label="Hold as likely skip")
+                                   "notes": pr.because}, auto=True, label="Tentative schedule note")
         draft = Action("open_prompt", {"prompt": f"Draft a reschedule note for {pr.subject}"},
                        label="Draft reschedule note")
         why = f" {p.statement}." if p is not None else ""
         out.append(Nudge(
             id=nudge_id("cancel_likely", pr.refs[0]), kind="cancel_likely",
-            title=f"You might skip {pr.subject}",
-            body=f"{pr.subject} ({_when(pr.ts, inp.now, inp.tz)}) looks like one you usually drop.{why}",
+            title=f"The schedule for {pr.subject} may change",
+            body=f"{pr.subject} ({_when(pr.ts, inp.now, inp.tz)}) resembles bookings that were removed or moved on your calendar.{why}",
             because=pr.because, created_at=inp.now, expires_at=pr.ts, priority=pr.probability,
             pattern_ids=(pr.pattern_id,) if pr.pattern_id else (), evidence=tuple(pr.refs) + (
                 tuple(p.evidence[-2:]) if p else ()), actions=(hold, draft)))
@@ -215,21 +215,26 @@ def _contact_windows(inp: Inputs) -> list[Nudge]:
         name = p.subject
         last_in, last_out = inp.last_messages.get(name, (None, None))
         rng = fmt_range(w.start_minute, w.end_minute)
-        verb = p.stats.get("verb", "talk to")
-        if p.stats.get("messages") or last_in or last_out:
+        mixed, has_messages = predict._contact_source_counts(p)
+        source = ("Messages and scheduled calls" if mixed and has_messages else
+                  "Scheduled calls" if mixed else "Recorded messages" if has_messages else
+                  "Contact timing (source details unavailable)")
+        timing = (f"{source} with {name} recur in this window ({rng}); attendance is unknown" if mixed else
+                  f"Recorded messages with {name} recur in this window ({rng})" if has_messages else
+                  f"Saved contact window with {name}: {rng}; source details are unavailable")
+        if has_messages or last_in is not None or last_out is not None:
             if (last_in is None or (last_out is not None and last_out >= last_in)
                     or not (UNANSWERED_AFTER_S < inp.now - last_in < UNANSWERED_STALE_S)):
                 continue
             hours = int((inp.now - last_in) // 3600)
-            body = (f"{name} messaged you {hours}h ago and hasn't heard back — and this is when you "
-                    f"usually {verb} them ({rng}).")
-            because = (f"Unanswered for {hours}h; {p.support} of the last {p.opportunities} "
-                       f"{p.stats.get('days', 'days')} you were in touch {rng}")
+            body = f"{name} messaged you {hours}h ago; no later reply is recorded. {timing}."
+            because = (f"{source} on {p.support} of the last {p.opportunities} "
+                       f"{p.stats.get('days', 'days')} ({rng}); no later recorded reply for {hours}h")
             title = f"Reply to {name}?"
         else:
-            body = f"This is usually when you {verb} {name} ({rng})."
-            because = f"{p.support} of the last {p.opportunities} {p.stats.get('days', 'days')} ({rng})"
-            title = f"Time to {verb} {name}?"
+            body = timing + "."
+            because = f"{source} on {p.support} of the last {p.opportunities} {p.stats.get('days', 'days')} ({rng})"
+            title = f"Review contact window with {name}?"
         out.append(Nudge(
             id=nudge_id("contact_window", f"{name}|{today.isoformat()}"), kind="contact_window",
             title=title, body=body, because=because, created_at=inp.now,
@@ -240,17 +245,23 @@ def _contact_windows(inp: Inputs) -> list[Nudge]:
     return out
 
 
-def _preview_item(pr: Prediction, tz: tzinfo) -> str:
+def _preview_item(pr: Prediction, tz: tzinfo, patterns: dict[str, Pattern]) -> str:
     t = _clock(pr.ts, tz)
     if pr.kind == "activity":
-        return f"{pr.subject} around {t}"
+        p = patterns.get(pr.pattern_id)
+        label = "Expected schedule" if p is None or p.stats.get("basis", "scheduled") == "scheduled" else "Possible routine"
+        return f"{label}: {pr.subject} around {t}"
     if pr.kind == "cancel_risk":
-        return f"{pr.subject} at {t} may get skipped"
+        return f"the schedule for {pr.subject} at {t} may change"
     if pr.kind == "habit_conflict":
         return f"{pr.subject} at {t} clashes with a routine"
     if pr.kind == "usage":
         return f"{predict.usage_phrase(pr.subject)} with Wisp around {t}"
-    return f"talk with {pr.subject} from {t}"
+    p = patterns.get(pr.pattern_id)
+    calls, messages = predict._contact_source_counts(p)
+    source = ("Messages and scheduled calls" if calls and messages else "Scheduled calls" if calls
+              else "Recorded message window" if messages else "Contact timing (source details unavailable)")
+    return f"{source} with {pr.subject} from {t}"
 
 
 def _day_preview(inp: Inputs) -> list[Nudge]:
@@ -277,7 +288,8 @@ def _day_preview(inp: Inputs) -> list[Nudge]:
         picked.append(p)
     top = picked[:4]
     top.sort(key=lambda p: p.ts)
-    body = "Likely today: " + "; ".join(_preview_item(p, inp.tz) for p in top) + "."
+    patterns = {p.id: p for p in inp.patterns}
+    body = "Likely today: " + "; ".join(_preview_item(p, inp.tz, patterns) for p in top) + "."
     pids = tuple(dict.fromkeys(p.pattern_id for p in top if p.pattern_id))
     return [Nudge(id=nudge_id("day_preview", today.isoformat()), kind="day_preview",
                   title="Your day, as Wisp sees it", body=body,
@@ -307,9 +319,9 @@ def _habit_missed(inp: Inputs) -> list[Nudge]:
         verb = miners.habit_verb("category", h.stats.get("key", ""), label)
         out.append(Nudge(
             id=nudge_id("habit_missed", f"{h.id}|{today.isoformat()}"), kind="habit_missed",
-            title=f"No {noun} today?",
-            body=f"You usually {verb} {when_phrase(h.window.weekdays, h.stats.get('daypart', 'morning'))}"
-                 f" and it didn't happen today. {_clock(s, inp.tz)} is free.",
+            title=f"{label} isn't on your calendar today",
+            body=f"Your calendar usually includes {label} {when_phrase(h.window.weekdays, h.stats.get('daypart', 'morning'))}. "
+                 f"It isn't on your calendar today; completion is unknown. {_clock(s, inp.tz)} is unbooked.",
             because=f"{label} on {h.support} of the last {h.opportunities} {h.stats.get('days', 'days')}",
             created_at=inp.now, expires_at=s, priority=h.confidence, pattern_ids=(h.id,),
             evidence=tuple(h.evidence[-3:]),

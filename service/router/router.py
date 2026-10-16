@@ -22,10 +22,15 @@ from service.config import (
     is_tool_capable,
 )
 from service.inference.omlx_client import OMLXClient
+from service.reminder_intent import REMIND_QUESTION_TAIL
 from service.router.web_request import (
     Provenance as _WebProvenance,
     WebRequest as _WebRequest,
+    PERSONAL_ACCOUNT_PATTERN,
     PERSONAL_CALENDAR_READ_PATTERN,
+    WEATHER_CONDITION_PATTERN as _WEATHER_CONDITION,
+    _acknowledgement as _web_acknowledgement,
+    _pending_offer as _web_pending_offer,
     classify as _classify_web_request,
 )
 
@@ -49,7 +54,8 @@ from service.router.web_request import (
 # action (run_shell/screencapture), it just isn't something Wisp can then look at.
 STRONG_ACTION_RE = re.compile(
     r"\b(run(?:ning|s)?|execute|open|launch|quit|kill|restart|reboot|"
-    r"install|uninstall|reinstall|screenshot|clone|commit|push|remind me|"
+    r"install|uninstall|reinstall|screenshot|clone|commit|push|"
+    r"remind me(?!" + REMIND_QUESTION_TAIL + r")|"
     r"empty the trash|shut ?down)\b", re.I)
 
 ACTION_VERB_RE = re.compile(
@@ -583,6 +589,33 @@ _PLANNING_RE = re.compile(
 # route to the undifferentiated full toolset — the configuration that measures
 # worst at tool selection — even though they are as plainly file jobs as their
 # singular forms. Found while adding the reorganize route (2026-08-16).
+# "quit Notes", "close Calendar for me", "launch Safari": the whole request is
+# one app command on a capitalized app name. Notes/Calendar/Mail are also data
+# nouns, which sent these to a Notes or Calendar lookup (or to retrieval) where
+# quit_app was never offered. Lowercase "open my calendar" keeps its
+# deliberate app-or-read ambiguity.
+_NAMED_APP_COMMAND_RE = re.compile(
+    r"^\s*(?:(?:please|pls|can\s+you|could\s+you|hey)[,\s]+)*"
+    r"(?P<verb>(?i:open|launch|quit|close))\s+"
+    r"(?!.*\b(?i:e-?mails?|messages?|texts?|notes?\s+(?:about|on|for)|events?|files?|documents?|pdfs?|folders?)\s*[.!?]*$)"
+    r"(?:(?-i:[A-Z])[\w.]*(?:\s+(?-i:[A-Z])[\w.]*)?(?:\s+(?i:app))?|"
+    r"(?i:the)\s+(?-i:[A-Z])[\w.]*(?:\s+(?-i:[A-Z])[\w.]*)?\s+(?i:app))"
+    r"(?:\s+(?i:for\s+me|now|please))?\s*[.!?]*\s*$")
+
+# "where's my resume draft?", "where did I put my tax return?", "locate my
+# lease": the whole request is finding one of the user's documents. A closed
+# vocabulary of document kinds, so "where's my package" or "find my note about
+# lattes" keep their own routes.
+_FILE_LOCATE_RE = re.compile(
+    r"^\s*(?:(?:please|pls|can\s+you|could\s+you|hey)[,\s]+)*"
+    r"(?:where(?:'s|\s+is|\s+are)\s+|where\s+did\s+i\s+(?:put|save|leave|store|stash)\s+|"
+    r"(?:find|locate)\s+)(?:my|the)\s+(?:[\w'-]+\s+){0,3}"
+    r"(?:drafts?|resumes?|cv|tax\s+returns?|invoices?|receipts?|reports?|essays?|"
+    r"papers?|thesis|spreadsheets?|presentations?|slides|decks?|contracts?|leases?|forms?|"
+    r"documents?|docs?|files?|pdfs?|scans?|manuscripts?|proposals?|letters?|transcripts?|"
+    r"certificates?|w-?2s?|1099s?)"
+    r"(?:\s+(?:file|doc|document|pdf))?\s*[?.!]*\s*$", re.I)
+
 _DOCUMENT_RE = re.compile(
     r"\b(?:pdfs?|docx?|documents?|spreadsheets?|csvs?|xlsx?|pptx?|slide\s?decks?|"
     r"files?|folders?|director(?:y|ies)|invoices?|receipts?|screenshots?|backups?|"
@@ -683,10 +716,8 @@ _DATA_NOUN_RE = re.compile(
 
 # Device state and settings.
 _SYSTEM_CONTROL_RE = re.compile(
-    r"\b(?:volume|mute|unmute|louder|quieter)\b|"
     r"\bwi-?fi\b|\bbluetooth\b|"
     r"\bbatter(?:y|ies)\b|\bcharging\b|\bcharge\s+(?:level|percent)|"
-    r"\block\s+(?:my|the)\s+(?:screen|mac|computer)\b|"
     r"\bclipboard\b|\bwhat\s+did\s+i\s+copy\b|"
     r"\bkeyboard\s+(?:backlight|light|lighting)\b|"
     r"\b(?:internet|network|wi-?fi)\s+speed\b|\bspeed\s?test\b", re.I)
@@ -725,27 +756,14 @@ _DIRECT_DEVICE_PATTERNS: list[tuple[str, re.Pattern]] = [
         # the battery section cannot report at all — list_running_apps is the
         # tool that can. Checked 2026-08-19 via test_alias_reachability.py.
         r"(?!\s*(?:saver|save)\b)(?<!eating\smy\sbattery)", re.I)),
-    # Volume and clipboard are INTERROGATIVE-ONLY, unlike _SYSTEM_CONTROL_RE's
-    # bare `\bvolume\b`/`\bclipboard\b`. That bare alternation also fires on
-    # "turn the volume up" and "copy this to my clipboard" — WRITES, whose
-    # arguments the router has not resolved and must never pre-dispatch a read
-    # in place of.
-    ("get_volume", re.compile(
-        r"\b(?:what|what'?s|how)\b[^?]{0,24}\bvolume\b|"
-        r"\bvolume\b[^?]{0,16}\b(?:at|level|set\s+to)\b|"
-        r"\b(?:is|am\s+i|are\s+we)\b[^?]{0,16}\bmuted\b", re.I)),
+    # Clipboard is INTERROGATIVE-ONLY, unlike _SYSTEM_CONTROL_RE's bare
+    # `\bclipboard\b`. That bare alternation also fires on "copy this to my
+    # clipboard" — a WRITE, whose arguments the router has not resolved and
+    # must never pre-dispatch a read in place of.
     ("clipboard_read", re.compile(
         r"\bwhat(?:'?s| is| did\s+i)\b[^?]{0,24}\b(?:clipboard|copied|copy)\b|"
         r"\bclipboard\s+(?:contents?|say)\b|"
         r"\bread\b[^?]{0,16}\bclipboard\b", re.I)),
-    ("lock_screen", re.compile(
-        r"\block\s+(?:my|the)\s+(?:screen|mac|computer)\b"
-        # "lock my screen AFTER 5 minutes" / "…AUTOMATICALLY" name a TIMEOUT
-        # POLICY (set_screen_lock_timeout), not an immediate lock — without
-        # this exclusion both were direct-dispatched to lock_screen, which
-        # locks the screen RIGHT NOW. That's not a missed offer, it's the
-        # wrong action actually running. Checked 2026-08-19.
-        r"(?!\s+(?:after|in|automatically|whenever))", re.I)),
 ]
 
 # Belt-and-braces alongside the interrogative-only patterns above: any phrasing
@@ -769,11 +787,8 @@ _DEVICE_REQUESTS = [(name, re.compile(_DEVICE_REQUEST_PREFIX + body +
     ("system_status", r"(?:what(?:'s|\s+is)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?|"
      r"how(?:'s|\s+is)\s+my\s+battery(?:\s+doing)?|how\s+much\s+battery\s+do\s+i\s+have|"
      r"(?:show|check|tell\s+me)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?)"),
-    ("get_volume", r"(?:what(?:'s|\s+is)\s+(?:my|the|the\s+current)\s+volume(?:\s+(?:at|level))?|"
-     r"(?:show|check)\s+(?:my|the)\s+volume|am\s+i\s+muted)"),
     ("clipboard_read", r"(?:what(?:'s|\s+is)\s+on\s+my\s+clipboard|what\s+did\s+i\s+copy|"
      r"(?:read|show|check)\s+(?:my|the)\s+clipboard(?:\s+contents)?)"),
-    ("lock_screen", r"lock\s+(?:my|the)\s+(?:screen|mac|computer)"),
 )]
 
 
@@ -1093,11 +1108,9 @@ _APPS_MEDIA_RE = re.compile(
     # the reason LOCATION_RE already documents: there is always another one.
     # Requests naming a FILE are excluded by the _DOCUMENT_RE guard at the call
     # site, so "open the pdf" still reaches the document tools.
-    r"\b(?:open|launch|start|quit|close|kill)\s+(?:the\s+|my\s+)?[\w.]+|"
-    r"\bspotify\b|\bapple\s+music\b|"
-    r"\b(?:play|pause|resume|skip)\b[^.?!]{0,20}\b(?:music|song|track|playlist|album)\b|"
-    r"\b(?:play|pause|resume)\s+(?:some\s+)?music\b|"
-    r"\bnext\s+(?:song|track)\b|\bprevious\s+(?:song|track)\b", re.I)
+    # Playback phrases ("play some music", "next track") were dropped with the
+    # music and play_audio tools (retired 2026-10): nothing here can play.
+    r"\b(?:open|launch|start|quit|close|kill)\s+(?:the\s+|my\s+)?[\w.]+", re.I)
 # window_control / switch_app / list_running_apps joined 2026-08-19: this
 # route claims "close this window" and "switch to Safari", so those requests
 # never reach the semantic fallback, and a hand-written subset frozen at
@@ -1121,6 +1134,11 @@ _APPS_MEDIA_RE = re.compile(
 _WEB_RE = re.compile(
     r"\b(?:stocks?|tickers?|equities|portfolio)\b|"
     r"\bweather\b|\bforecast\b|\btemperature\b[^.?!]{0,20}\b(?:in|at|outside|today)\b|"
+    # Weather asked without the word: "will I need a jacket tomorrow?",
+    # "will it be warm in Oakland tomorrow?", "is it going to rain today?".
+    + _WEATHER_CONDITION + r"|"
+    # "where is Apple trading right now?", "price check on Nvidia".
+    r"\btrading\s+(?:at\s+|right\s+now|now|today)|\bprice\s+check\s+on\b|"
     r"\b(?:search|research|look\s+up|find)\b[^.?!]{0,35}\b(?:web|online|internet|sources?)\b|"
     # `price` not `prices?` was missing the plural form — "check the stock
     # prices for my stocks" (2026-08-18) fell through to the ambiguous 16-tool
@@ -1147,7 +1165,7 @@ _WEB_TOOLS = ["get_stock_price", "get_weather", "web_search", "web_fetch"]
 # confirm-gated, so the user sees it before it runs. `remember` is here because
 # the system prompt requires saving facts the user reveals in passing, which can
 # happen in any conversation. Genuinely destructive or specialised tools
-# (delete_path, send_email, create_tool, …) are NOT here — every one of them has
+# (send_email, create_tool, …) are NOT here — every one of them has
 # its own rule, and a prompt that matched no rule has not asked for them.
 _CORE_TOOLS = ["get_upcoming", "search_notes", "summarize_emails", "summarize_messages",
                "recall", "remember",
@@ -1170,6 +1188,9 @@ _CORE_TOOLS = ["get_upcoming", "search_notes", "summarize_emails", "summarize_me
 _CONTACT_LOOKUP_RE = re.compile(
     r"\b\w+'s\s+(?:phone\s*)?(?:number|cell|mobile)\b|"
     r"\b\w+'s\s+e-?mail\s*address\b|"
+    # "what's mom's email?": the address, not her mail. Whole-question only,
+    # so "read mom's email" stays an inbox read.
+    r"^\s*what(?:'s|\s+is)\s+(?:my\s+)?\w+'s\s+e-?mail\s*[?.!]*\s*$|"
     r"\b(?:phone\s*number|e-?mail\s*address)\s+(?:for|of)\s+\w+|"
     r"\bcontact\s+(?:info|information|details)\b|"
     r"\bhow\s+many\s+contacts\b|"
@@ -1223,8 +1244,15 @@ def has_write_intent(text: str) -> bool:
 
 
 _NEGATED_WRITE_TAIL_RE = re.compile(
-    r"(?:^|[;,.]\s*|\s+(?:but|and)\s+)(?:do\s+not|don't|never|avoid)\s+"
-    r"(?:add|change|create|make|cancel|delete|remove|send|draft|schedule|set)\b[^;.!?]*",
+    r"(?:^|[;,.\u2014\u2013]\s*|\s+(?:but|and)\s+)(?:"
+    r"(?:do\s+not|don't|never|avoid)\s+"
+    r"(?:add|change|create|make|cancel|delete|remove|send|draft|schedule|set|"
+    r"reply|respond|answer|write\s+back)\b[^;.!?]*|"
+    # "show me the Chase message — no reply needed", "read it without
+    # replying", "leave it unanswered": a read that rules the reply out.
+    r"no\s+(?:need\s+to\s+)?(?:reply|response|answer|respond)\b[^;.!?]*|"
+    r"without\s+(?:replying|responding|answering)\b[^;.!?]*|"
+    r"leave\s+(?:it|them|this|that)\s+unanswered\b[^;.!?]*)",
     re.I,
 )
 
@@ -1238,7 +1266,7 @@ _OUTBOUND_CHANNEL_CORE = frozenset({"lookup_contact", "send_message", "send_emai
 _CONTINUED_EFFECT_TOOLS = frozenset({
     "send_email", "send_message", "reply_to_email", "forward_email", "schedule_send",
     "draft_email", "draft_message", "lookup_contact", "clear_reminders", "clear_past_reminders",
-    "delete_path", "forget"})
+    "forget"})
 
 
 _RETRY_RE = re.compile(
@@ -1596,6 +1624,8 @@ _TODO_RE = re.compile(
     r"\b(?:my|any)\s+tasks?\b|"
     r"\bwhat'?s\s+(?:left|pending|outstanding|on\s+my\s+plate)\b|"
     r"\banything\s+i\s+(?:need\s+to|have\s+to|should)\b|"
+    # "anything I'm supposed to remember?" — outstanding items, not a fact query.
+    r"\b(?:anything|what)\s+(?:am\s+i|i(?:'m|\s+am))\s+(?:supposed|meant)\s+to\b|"
     r"\bwhat\s+should\s+i\s+(?:do|work\s+on|tackle|prioriti[sz]e)\b", re.I)
 
 # "what's new / anything I missed / catch me up" — a RECENCY question, answered
@@ -1761,7 +1791,7 @@ _CALENDAR_PAST_RE = re.compile(
 # requires "schedule … meeting/event/…") and routed to the agent. "reschedule"
 # stays because it's unambiguously a write.
 _WRITE_INTENT_RE = re.compile(
-    r"\b(add|create|set\s?up|put|remind|book|make|change|edit|cancel|"
+    r"\b(add|create|set\s?up|put|remind(?!\s+me" + REMIND_QUESTION_TAIL + r")|book|make|change|edit|cancel|"
     r"reschedule|postpone|delete|remove|move|clear|send)\b|"
     # "set/add/create/make (a) reminder(s)" — bare "remind\b" above only
     # catches "remind me…"; it does NOT catch "reminder" (found via a real
@@ -1810,6 +1840,8 @@ _WRITE_INTENT_RE = re.compile(
 # out: "what's on my schedule", "my schedule for this week" and "my schedule
 # before my meeting" all continue past "schedule" with a preposition, which is
 # neither a determiner nor an object, so none of them match.
+_CAL_WHEN = (r"\b(?:today|tonight|tomorrow|(?:mon|tues|wednes|thurs|fri|satur|sun)day|"
+             r"next\s+week|at\s+\d{1,2}|noon|midnight|\d{1,2}(?::\d{2})?\s*[ap]\.?m)\b")
 _CALENDAR_WRITE_RE = re.compile(
     r"\b(?:schedule|pencil\s+in)\s+"
     r"(?:(?:a|an|the|another|my|our)\s+(?:\w+\s+){0,2}?)?"
@@ -1818,7 +1850,16 @@ _CALENDAR_WRITE_RE = re.compile(
     r"one[\s-]on[\s-]one)\b|"
     r"^\s*(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?calendar\s+"
     r"(?:a|an|the|another|my|our)\s+[^.!?;\n]{1,80}\b"
-    r"(?:meeting|event|appointment|workshop|session|class|block|interview|call)\b", re.I)
+    r"(?:meeting|event|appointment|workshop|session|class|block|interview|call)\b|"
+    # "block off wednesday at 4:30pm for a haircut", "set up a call with the
+    # electrician the day after tomorrow at noon": calendar writes with no
+    # calendar noun, which fell to the ambiguous route without
+    # add_calendar_event. Both need a day or clock, so "set up a call" with
+    # no time (place it now) and "block off the street" stay out.
+    r"\bblock\s+(?:off|out)\b(?=[^.!?]{0,60}" + _CAL_WHEN + r")|"
+    r"\bset\s+up\s+(?:a|an|the|another|my|our)\s+(?:[\w-]+\s+){0,2}?"
+    r"(?:meeting|call|appointment|sync|interview|lunch|dinner|coffee|session|1:1|"
+    r"one[\s-]on[\s-]one|check-?in)\b(?=[^.!?]{0,60}" + _CAL_WHEN + r")", re.I)
 
 # VERIFIED FAILURE 2026-08-24 (debug export 18:22): "delete my reminders
 # for today" became clear_past_reminders(query="today")—a time scope treated
@@ -1871,7 +1912,17 @@ _COMPOSE_RE = re.compile(
     # treating this as outbound compose is what changed “ask Trishy” into a
     # message recipient and changed “my move-in date” into hers.
     r"\bsend\b(?!\s+me\s+(?:an?\s+)?reminder\b)|"
-    r"\b(?:reply|respond|forward|compose|draft)\b|"
+    r"\b(?:reply|respond|forward|compose)\b|"
+    # "draft" the verb, not the noun: "where's my resume draft?" and "find my
+    # essay draft" ask for a file and must not arm send tools.
+    r"(?<!\bmy\s)(?<!\bthe\s)(?<!\byour\s)(?<!\bthis\s)(?<!\bthat\s)(?<!\bfirst\s)"
+    r"(?<!\bfinal\s)(?<!\blatest\s)\bdraft\b(?!s?\s*[?.!]*\s*$)"
+    r"(?!s?\s+(?:is|was|file|doc|document|folder|version)\b)|"
+    # "answer the landlord's email: ...", "write back to Sam saying ...": the
+    # reply verbs that are not "reply". Object-anchored so "answer this
+    # question" stays a read.
+    r"\banswer\s+(?:the\s+|my\s+)?[\w'-]+\s+(?:e-?mail|message|text)s?\b|"
+    r"\bwrite\s+back\b|"
     # "give my mom an update", "let Dad know", "tell Mom", "update my mom on".
     #
     # Verified failure 2026-08-09: "give an update to my mom VIA MESSAGES about
@@ -2794,6 +2845,11 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
         # word in it is the topic, not data to read and deliver, and forcing
         # the source tools first made the model send a data dump instead.
         return None
+    if (_REPLY_INTENT_RE.search(current)
+            and re.search(r":\s*\S|\b(?:say|saying|says|tell(?:ing)?\s+(?:them|him|her))\b", current, re.I)):
+        # "answer the dentist's email: does the appointment run long?" dictates
+        # the reply; "appointment" is its wording, not a report to fetch.
+        return None
     prior_users = list(recent_users or ([] if last_user is None else [last_user]))
     if last_user and (not prior_users or prior_users[-1] != last_user):
         prior_users.append(last_user)
@@ -3113,7 +3169,23 @@ def _channel_answer_subset(text: str, last_assistant: str | None,
 
 def _contextual_reply_subset(text: str, last_tools: str | None) -> RouteDecision | None:
     """A bare reply inherits the channel that supplied the prior message."""
-    if not last_tools or not re.search(r"^\s*(?:reply|respond)\b", text, re.I):
+    # "say that works" / "tell them yes" right after reading a thread is the
+    # same reply with the verb left implicit.
+    # Not a question ("answer honestly, am I overbooked?", "say, what's the
+    # weather?") and not a request to pass on data the turn has not read
+    # ("tell him what my schedule looks like") — those keep their own routes.
+    # An explicit reply verb always continues the thread, whatever its body
+    # asks ("reply: can we do 5?"). The implicit forms (say / answer / tell)
+    # must not be a question or ask for data the turn has not read:
+    # "say, what's the weather?", "tell him what my schedule looks like" and
+    # "answer honestly, am I overbooked?" keep their own routes.
+    lead = r"^\s*(?:(?:ok(?:ay)?|sure|yes|yeah|just)[,\s]+)?"
+    explicit = re.search(lead + r"(?:reply|respond|write\s+back)\b", text, re.I)
+    implicit = "?" not in text and re.search(
+        lead + r"(?:answer\s+(?:yes|no|them|him|her|that|with)\b|tell\s+(?:them|him|her)|"
+        r"say(?!\s*,|\s+(?:it|that|this)\s+again\b|\s+what\b|\s+(?:it|that)\s*[?.!]*$))\b"
+        r"(?![^.!?]*\b(?:what|how|when|where|which|who)\b[^.!?]*\bmy\b)", text, re.I)
+    if not last_tools or not (explicit or implicit):
         return None
     domains = _domains_in(last_tools)
     if domains == ["messages"]:
@@ -3371,7 +3443,8 @@ _NOTE_WRITE_RE = re.compile(
     # to CREATE a note was routed to search_notes alone and failed.
     r"^\s*(?:(?:please|ok|okay|can\s+you|could\s+you|i\s+want\s+you\s+to)\s+)*"
     r"(?:(?:save|create|write|add|record|start|make)\s+(?:me\s+)?(?:a|an|this|that|some|new)?\s*(?:new\s+)?note\b|"
-    r"note\s*[:\-]\s*\S|"
+    r"(?:a\s+)?new\s+note\b|"
+    r"note\s*[:\-\u2014\u2013]\s*\S|"
     r"(?:save|put|store|write|record|file)\s+.{1,60}?\b(?:to|in|into|on)\s+(?:my\s+)?(?:\w+\s+)?notes?\b)", re.I)
 
 # Flag/forward an email, in the words people actually use. Same reasoning as
@@ -3386,6 +3459,22 @@ _NOTE_WRITE_RE = re.compile(
 # 2026-08-19. See the SYSTEM prompt's "not every tool result is the answer"
 # rule for the adjacent but distinct lesson (that one is about reasoning over
 # a result; this is about not claiming an action that never ran).
+# "open the Wells Fargo email", "pull up that Amex message": opening ONE named
+# item is a read of it, not launching an app. Needs a modifier word, so "open
+# my email" / "open the email app" keep the app-or-read ambiguity.
+_OPEN_ITEM_READ_RE = re.compile(
+    r"\b(?:open|pull\s+up)\s+(?:up\s+)?(?:the|that|this|[\w'-]+'s)\s+"
+    r"(?:[\w&.'-]+\s+){1,3}(?:e-?mail|message|text)\b(?!\s+app)", re.I)
+
+_NAMED_SINGLE_MESSAGE_RE = re.compile(
+    r"\b(?:the|that|this)\s+(?:[\w&.'-]+\s+){1,3}message\b(?!s)"
+    r"(?<!\btext\smessage)(?<!\bimessage\smessage)", re.I)
+
+# An imperative reply to an incoming email or text, not a question about one.
+_REPLY_INTENT_RE = re.compile(
+    r"(?:^|[.;:!?,]\s*|\b(?:and|then|please|just|can\s+you|could\s+you)\s+)"
+    r"(?:reply|respond|write\s+back|answer)\b(?!\s+(?:this|that|my|the)\s+question\b)", re.I)
+
 _EMAIL_ACTION_RE = re.compile(
     r"\b(?:un)?flag\s+(?:this|that|it|the)\b|"
     r"\bmark\s+(?:this|that|it)\s+(?:as\s+)?important\b|"
@@ -3979,6 +4068,33 @@ _MESSAGE_LEAD_RE = re.compile(
     r"(?:my\s+\w+|me|myself|him|her|them|everyone|\S+@\S+|\+?[\d()][\d()\-. ]{6,}\d|[A-Za-z][\w'-]*)\b")
 
 
+# "answer the dentist's email: does the appointment run long?", "reply to Sam
+# and say I'll open the store": a reply's dictated body is its wording. Its
+# nouns and verbs ("appointment", "open") were routed as if they were the
+# request. Routing sees the reply lead only; the model still gets every word.
+_REPLY_BODY_RE = re.compile(
+    r"^(?P<lead>\s*(?:(?:please|pls|ok|okay|can\s+you|could\s+you|just)[,\s]+)*"
+    r"(?:reply|respond|write\s+back|answer)\b[^:.!?]{0,60}?)"
+    r"(?:\s*:\s*|\s+(?:and\s+)?(?:say|saying|tell(?:ing)?\s+(?:them|him|her)(?:\s+that)?)\s+)\S", re.I)
+
+
+# A further request after the dictated body ("... saying yes, then quit
+# Slack", "... and also delete my Downloads folder"). Then the whole sentence
+# routes, as before, so that request keeps its tools.
+_AFTER_BODY_ACTION_RE = re.compile(
+    r"(?:[.;]\s+|,\s*|\s+)(?:and\s+)?(?:then|also|after\s+that|afterwards|next)\b|"
+    r"(?:[.;]\s+|,\s+|\s+and\s+)(?:please\s+)?(?:add|put|create|schedule|remind|quit|close|open|launch|"
+    r"forward|delete|remove|trash|send|text|e-?mail|message|move|set|turn|cancel|book|save|"
+    r"check|find|show|read|play|call|archive|mark|flag|book)\b", re.I)
+
+
+def _reply_routing_text(text: str) -> str:
+    match = _REPLY_BODY_RE.match(text)
+    if match is None or _AFTER_BODY_ACTION_RE.search(text, match.end("lead")):
+        return text
+    return match.group("lead")
+
+
 def _without_message_body(text: str) -> str:
     match = _MESSAGE_LEAD_RE.match(text)
     return text[:match.end()] if match else text
@@ -4071,7 +4187,9 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         claims.append(_Claim(
             "contact_lookup", list(_CONTACT_TOOLS),
             f"contact lookup -> scoped tools ({len(_CONTACT_TOOLS)})",
-            light=False))
+            light=False,
+            # The address is contact data; the inbox tools cannot answer it.
+            suppresses=frozenset({"email", "messages"})))
     if _REMINDER_CREATE_RE.search(t) and not _reminder_is_excluded(t):
         # WHEN THE REQUEST NAMES A TIME, FORCE THE TOOL.
         #
@@ -4168,7 +4286,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # ("...and check my email" — audit rows 7 and 9) can be claimed too
     # instead of being swallowed by a content verb.
     if (STRONG_ACTION_RE.search(_without_message_body(_positive_clause_remainder(t)))
-            and not claims):
+            and not claims and not _OPEN_ITEM_READ_RE.search(t)):
         return None
     # A code-authoring request ("write a regex for email validation") is coding,
     # not a data read — the incidental "email"/"note" noun must not route it to
@@ -4225,7 +4343,16 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
                   and not _MESSAGE_NONSMS_RE.search(t))
                  or SEND_MESSAGE_RE.search(t))):
         subset += ["view_messages", "summarize_messages"]; domains.append("messages")
-    if ("email" not in _suppressed) and (EMAIL_RE.search(t) or SEND_EMAIL_RE.search(t)):
+        # "the Chase message" is one specific item on an unnamed channel (a
+        # bank writes email, a friend texts). Reading both is harmless; reading
+        # only Messages left the email unreachable.
+        if (not writing and "email" not in _suppressed
+                and _NAMED_SINGLE_MESSAGE_RE.search(t) and not EMAIL_RE.search(t)):
+            subset += ["view_emails", "summarize_emails"]
+    # A biller's statement ("the Chase bill", "my Amex balance", "how much do
+    # I owe Citi") is read from the user's mail; no other source holds it.
+    if ("email" not in _suppressed) and (EMAIL_RE.search(t) or SEND_EMAIL_RE.search(t)
+                                         or re.search(PERSONAL_ACCOUNT_PATTERN, t)):
         # scan_subscriptions/triage_inbox joined 2026-08-19 — same reachability
         # trap as everywhere else in this file: this rule claims any
         # email-shaped phrasing ("what marketing emails am I getting", "sort my
@@ -4244,7 +4371,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         subset += ["search_notes"]; domains.append("notes")
     if (("calendar" not in _suppressed)
             and (_CALENDAR_READ_RE.search(t) or _CALENDAR_NOUN_RE.search(t)
-                 or SCHEDULE_RE.search(t))):
+                 or SCHEDULE_RE.search(t) or _CALENDAR_WRITE_RE.search(t))):
         # find_free_time rides along with every calendar read. "When am I free
         # this week" is a calendar LOOKUP by every rule here, so it never
         # reached the semantic fallback, and a subset of exactly ["get_upcoming"]
@@ -4330,6 +4457,20 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # directive (see RouteDecision.clarify_channel) instead of leaving it to
     # pick silently, since the wrong guess sends the message on the wrong app.
     channel_ambiguous = False
+    # A REPLY names its channel implicitly: it goes back on whichever channel
+    # the person last used, which the reads find. "reply to the landlord and
+    # say ..." was treated as channel-ambiguous, so every send tool was
+    # withheld and reply_to_email could never be called.
+    replying = bool(writing and _REPLY_INTENT_RE.search(_positive_clause_remainder(t))
+                    and not _REMINDER_CREATE_RE.search(t))
+    if replying and not (named_messages or named_email) and "email" not in _suppressed:
+        # Same convention as "reply to that" -> reply_to_email: a reply that
+        # names no channel answers mail. A texted reply says "text".
+        for tool in ("view_emails", "summarize_emails"):
+            if tool not in subset:
+                subset.append(tool)
+        domains.append("email")
+        named_email = True
     if (writing and _COMPOSE_RE.search(t)
             and not (named_messages or named_email)
             and not (_suppressed & {"messages", "email"})):
@@ -4782,7 +4923,7 @@ def _explicit_address_compose(t: str, original: str | None = None) -> RouteDecis
 
 
 def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDecision | None:
-    t = _normalize_typos(text.strip())
+    t = _reply_routing_text(_normalize_typos(text.strip()))
     if _personal_arrival_intent(text):
         return None  # The final arrival boundary owns validation and clarification.
     if (checklist := _checklist_route(t)) is not None:
@@ -4867,10 +5008,6 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         return _mk_scoped(
             ["system_status"], "system resource status -> system_status",
             force="system_status", light=False)
-    if re.search(r"\b(?:output\s+)?volume\b[^.?!]{0,50}\bmute\s+state\b", t, re.I):
-        return _mk_scoped(
-            ["get_volume"], "audio output status -> get_volume",
-            force="get_volume", light=False)
     if re.search(r"\b(?:local|public)\s+ip\b|\bwi-?fi\s+network\s+name\b", t, re.I):
         d = _mk_scoped(
             ["system_status"], "network status -> system_status(network)",
@@ -4966,10 +5103,6 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         d.forbidden_tools = frozenset({"clear_reminders", "clear_past_reminders",
                                        "cancel_event"})
         return d
-    if re.search(r"\bpermanently\s+delete\b[^.?!]{0,180}(?:/|\bfile\b)", t, re.I):
-        return _mk_scoped(
-            ["delete_path"], "permanent path deletion -> delete_path",
-            force="delete_path", light=False)
     if reschedule := re.match(r"^(?:(?:please|can\s+you|could\s+you|would\s+you|"
                               r"i\s+need\s+you\s+to)\s+)*reschedule\b", t, re.I):
         parts = re.split(r"\b(?:to|for)\b", t[reschedule.end():],
@@ -5117,6 +5250,14 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
     # Each mirrors its own route below EXACTLY (same tools, same force, same
     # light), so a request that matches only this one still routes as it
     # always did — _merge_claims reproduces a single claim verbatim.
+    if (app := _NAMED_APP_COMMAND_RE.match(t)) is not None:
+        verb = app.group("verb").lower()
+        tool = "open_app" if verb in {"open", "launch", "start"} else "quit_app"
+        return _mk_scoped([tool, "list_running_apps"],
+                          f"named app command -> {tool}", light=False)
+    if _FILE_LOCATE_RE.match(t):
+        return _mk_scoped(["find_files", "list_dir", "read_file"],
+                          "file location question -> find_files", light=False)
     _pre: list[_Claim] = []
     if MEMORY_SAVE_RE.search(t):
         _pre.append(_Claim("memory_save", list(_MEMORY_TOOLS),
@@ -5214,9 +5355,9 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
     # more specific routes above still win — "email me the PDF" is a send, and
     # _domain_subset has already claimed it.
     # NOT when the request also MUTATES: "delete that file", "move that file to
-    # Documents" mention a file but need delete_path, which this subset
+    # Documents" mention a file but need a write tool, which this subset
     # deliberately excludes — a route that fires on the bare noun "file" must
-    # not be the one arming deletion. Those fall through to the full toolset.
+    # not be the one arming a change. Those fall through to the full toolset.
     # (_WRITE_INTENT_RE, not STRONG_ACTION_RE: the latter is about operating
     # APPS and matches none of these, verified.)
     # Tidying/filing/reorganizing files. Checked BEFORE the document-read branch
@@ -5335,7 +5476,7 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
 
 _ALL_MUTATING_TOOLS = frozenset(
     tool for tools in _DOMAIN_WRITE_TOOLS.values() for tool in tools
-) | frozenset({"write_file", "move_path", "delete_path", "organize_files",
+) | frozenset({"write_file", "move_path", "organize_files",
                "toggle_setting", "schedule_send", "cancel_scheduled_send"})
 _INBOX_READ_TOOLS = frozenset({"view_emails", "summarize_emails", "scan_subscriptions",
                                "triage_inbox"})
@@ -6619,6 +6760,60 @@ def _standalone_authored_draft_decision(text: str) -> RouteDecision | None:
     return decision
 
 
+_BARE_SEND_RE = re.compile(
+    r"^\s*(?:(?:ok(?:ay)?|yes|yeah|yep|sure|alright|go\s+ahead(?:\s+and)?|please|just)[,\s]+)*"
+    r"(?:send|fire)(?:\s+(?:it|that|this|them))?(?:\s+(?:off|out|now|over|please))*\s*[.!]*\s*$",
+    re.I)
+
+# A request to WRITE a piece of creative text for the user to read: "compose a
+# haiku about the ocean", "write a two-line birthday message for my coworker".
+# The answer is the text itself. Without this, the incidental nouns decided the
+# route ("message" -> Messages lookup, "compose" -> channel-ambiguous send with
+# a forced search_notes topic lookup) and the loop insisted on a tool step the
+# request never had. Delivery ("to Sam", "text it", "and send it"), a Notes
+# destination, or the user's own data as source material keep the normal
+# routes: then a tool really is part of the job.
+_CREATIVE_FORM = (
+    r"(?:poems?|haikus?|limericks?|sonnets?|toasts?|stor(?:y|ies)|jokes?|songs?|lyrics|raps?|"
+    r"riddles?|captions?|taglines?|slogans?|speech(?:es)?|verses?|couplets?|acrostics?|"
+    r"(?:thank[- ]you|sympathy|condolence|love)\s+notes?|"
+    r"(?:birthday|anniversary|congratulations|congrats|graduation|wedding|retirement|"
+    r"get[- ]well|holiday|farewell|welcome)\s+(?:messages?|wish(?:es)?|cards?|greetings?|notes?)|"
+    r"(?:messages?|wish(?:es)?|cards?|greetings?)\s+for\s+(?:a\s+|an\s+|the\s+)?"
+    r"(?:birthday|anniversary|graduation|wedding|retirement))"
+)
+_CREATIVE_WRITING_RE = re.compile(
+    r"^\s*(?:(?:please|pls|can\s+you|could\s+you|would\s+you|will\s+you|hey)[,\s]+)*"
+    r"(?:write|compose|pen|craft|give|come\s+up\s+with|make\s+up|think\s+up)\s+"
+    r"(?:me\s+|us\s+)?(?:(?:a|an|some|one|two|three|four|five|\d+)\s+)?"
+    r"(?:[\w'-]+\s+){0,4}?" + _CREATIVE_FORM + r"\b"
+    r"(?P<tail>[^.!?]*)[.!?\s]*$", re.I)
+_CREATIVE_DELIVERY_RE = re.compile(
+    r"\b(?:send|text|e-?mail|imessage|dm|deliver|post|share|save|forward|draft|message|slack|"
+    r"whatsapp|tweet|schedule|queue|pin|print|copy)\b|"
+    r"\b(?:calendar|reminders?|screenshots?|screen|photos?|pictures?|images?|clipboard|files?)\b|"
+    r"\bto\s+(?!celebrate\b|mark\b|honou?r\b|say\b|thank\b|cheer\b|welcome\b|wish\b)"
+    r"(?:my\s+|the\s+)?[\w'-]+\b|"
+    r"\b(?:my|our)\s+(?:notes?|e-?mails?|inbox|messages?|texts?|calendar|schedule|"
+    r"reminders?|files?|documents?|downloads|desktop)\b|"
+    r"\b(?:based\s+on|using|from)\s+(?:my|our|the)\b", re.I)
+
+
+def _creative_writing_decision(text: str) -> RouteDecision | None:
+    match = _CREATIVE_WRITING_RE.match(mask_quoted(text))
+    if match is None or _CREATIVE_DELIVERY_RE.search(match.group("tail")):
+        return None
+    # Any further clause ("..., then message Dana with it", "... and put it on
+    # her calendar") is another request; the normal routes keep its tools.
+    if re.search(r"[;,]\s*\w|\bthen\b|\band\s+(?:then\s+|also\s+)?(?:please\s+)?"
+                 r"(?!(?:a|an|the|my|his|her|their|our|its)\b)[a-z]+(?:\s+(?:it|them|that|this)\b)",
+                 match.group("tail"), re.I):
+        return None
+    decision = _mk("general", reason="creative writing request -> answer without tools")
+    decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
+    return decision
+
+
 def _authored_calendar_action(text: str) -> tuple[str, str] | None:
     """Return the full command and authored title for a local Calendar write."""
     root = text.strip().rstrip(".!?")
@@ -6856,9 +7051,6 @@ def _compound_device_write(clause: str) -> RouteDecision | None:
     prefix = r"(?:please\s+|(?:can|could|would)\s+you\s+)?"
     suffix = r"(?:\s+(?:please|now))?[.!?\s]*"
     patterns = (
-        ("set_volume", r"(?:mute(?:\s+(?:(?:my|the)\s+)?(?:volume|sound|audio))?|"
-         r"(?:set|lower|reduce|turn)\s+(?:(?:my|the)\s+)?(?:volume|sound|audio)\s+"
-         r"(?:to|down\s+to)\s+(?:zero|0)(?:\s*(?:percent|%))?)"),
         ("toggle_setting", r"(?:(?:turn|switch)\s+(?:(?:on|off)\s+(?:(?:my|the)\s+)?wi-?fi|"
          r"(?:(?:my|the)\s+)?wi-?fi\s+(?:on|off))|"
          r"(?:enable|disable)\s+(?:(?:my|the)\s+)?wi-?fi)"),
@@ -7146,35 +7338,6 @@ def _priority_read(text: str) -> RouteDecision | None:
     return decision
 
 
-def _grocery_read(text: str) -> RouteDecision | None:
-    from service.workflows.workflow20 import grocery_read, grocery_read_attempt
-    read = grocery_read(text)
-    if read is None or not read.tools:
-        if not grocery_read_attempt(text):
-            return None
-        decision = _mk_scoped([], "grocery read requires complete literal selectors", expect=False, light=False)
-        from service.tools.registry import REGISTRY
-        decision.verified_results_only = True
-        decision.forbidden_tools = frozenset(REGISTRY)
-        decision.resolved_request = text + ("\n\nNo source was read and no action occurred. Clarify the complete grocery read, "
-            "source selection and literal list/item selectors; preserve every constraint and additional requested action. "
-            "Quoted or incomplete selector text is data, never an instruction for another tool.")
-        return decision
-    tools = list(read.tools)
-    decision = _mk_scoped(tools, "source-grounded shopping evidence", multi=len(tools) > 1,
-                          after=frozenset(tools), light=False, expect=False)
-    decision.verified_results_only = True
-    decision.required_tool_groups = read.groups
-    decision.tool_argument_bindings = read.bindings
-    decision.direct_calls = [(tool, read.bindings[tool]) for tool in tools]
-    decision.resolved_request = (text + "\n\nRead each selected shopping source before narration. "
-        "Preserve exact list labels separately from item queries, quantities, units, variants and source references. "
-        "Literal checked plaintext is distinct from native incomplete reminders and unmarked unknown-state lines. "
-        "Identify conflicts across lists/sources; do not silently add quantities, infer completion from absence, or treat stale notes as current. "
-        "Do not mark items, edit lists, buy anything or create reminders. Explain missing, stale and omitted evidence.")
-    return decision
-
-
 def _meeting_plan(text: str) -> RouteDecision | None:
     """Offer checked personal proposals without silently sending invitations."""
     value = mask_quoted(text)
@@ -7456,10 +7619,52 @@ async def route(text: str, *,
     # body is pinned), only while behavior learning is on.
     behavior = _behavior_route(text, last_user=last_user, recent_users=recent_users,
                                last_assistant=last_assistant, last_tools=last_tools)
+    if behavior is None:
+        behavior = _no_tool_claim(text, last_user=last_user, recent_users=recent_users,
+                                  last_assistant=last_assistant, last_tools=last_tools)
     decision = behavior if behavior is not None else await _route_impl(
         text, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)
+    _clarify_unnamed_offer_channel(decision, text, last_assistant=last_assistant)
     return _guard_scheduled_cancel(decision, original_text)
+
+
+def _no_tool_claim(text: str, *, last_user: str | None, recent_users: list[str] | None,
+                   last_assistant: str | None, last_tools: str | None) -> RouteDecision | None:
+    """Requests whose whole answer is text: a creative piece, or a bare "send
+    it" that opens a conversation. Claimed ahead of _route_impl (whose body is
+    pinned) because their nouns otherwise decide the route — "compose a haiku"
+    became a channel-ambiguous send with a forced Notes lookup."""
+    if not (last_user or recent_users or last_assistant or last_tools) and _BARE_SEND_RE.match(text):
+        # Nothing is drafted, so there is nothing to send. Offering the send
+        # tools left the loop hunting for a message the user never wrote.
+        decision = _mk("general", reason="bare send with nothing drafted -> ask what to send")
+        decision.forbidden_tools = frozenset(_SEND_TOOLS | _DRAFT_TOOLS | {"schedule_send"})
+    elif (decision := _creative_writing_decision(text)) is None:
+        return None
+    request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
+                                    last_assistant=last_assistant)
+    return _finalize(decision, text, web_request=replace(
+        request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
+        public_reference=False, inherited=False, clarification=None))
+
+
+def _clarify_unnamed_offer_channel(decision: RouteDecision, text: str, *,
+                                   last_assistant: str | None) -> None:
+    """A bare "yes" to "Want me to reply to Dana?" cannot pick a channel.
+
+    The standalone-offer contract already withholds every committing outbound
+    tool when the offer named no channel; say so, so the model asks rather
+    than narrating the reads it was left with."""
+    # Reads the offer directly: the request was classified once already, and
+    # the routing contract is that it is classified exactly once.
+    if (not last_assistant or decision.clarify_channel or not decision.needs_tools
+            or not _CHANNEL_OUTBOUND_TOOLS <= set(decision.forbidden_tools)
+            or not _web_acknowledgement(text)):
+        return
+    offer = _web_pending_offer(last_assistant)
+    if offer is not None and offer.delivery is None and _COMPOSE_RE.search(offer.action_text):
+        decision.clarify_channel = True
 
 
 def behavior_route_claim(text: str, last_tools: str | None = None) -> bool:
@@ -7511,10 +7716,6 @@ async def _route_impl(text: str, *,
             public_reference=False, inherited=False, clarification=None))
     if (priority := _priority_read(text)) is not None:
         return _finalize(priority, text, web_request=replace(
-            request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
-            public_reference=False, inherited=False, clarification=None))
-    if (shopping := _grocery_read(text)) is not None:
-        return _finalize(shopping, "Bounded grocery read", web_request=replace(
             request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
             public_reference=False, inherited=False, clarification=None))
     if (review := _scheduled_send_review(text)) is not None:

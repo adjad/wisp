@@ -19,8 +19,13 @@ import sqlite3
 import threading
 import time
 import uuid
+import weakref
+import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 
+from service.publication_authority import (Authority, LIVE_CLOCK, Witness, revocation,
+    PublicationLease, PublicationUnavailable, owned_write, assert_mutation_allowed)
 from service.assistant.recovery import recovery_guidance
 from service.paths import MOE_DIR
 
@@ -200,15 +205,111 @@ CREATE TABLE IF NOT EXISTS notify_log (
 );
 """
 
+class _BehaviorReceiptHead:
+    """Shared by live connections to one database; never restored from disk."""
+    def __init__(self):
+        self.authority = Authority("native-reminders-permission", owner=self)
+        self.metadata = None
+        self.expires_monotonic = 0.0
+
+
+_behavior_receipt_heads = weakref.WeakValueDictionary()
+_behavior_receipt_registry_lock = threading.RLock()
+
+
+def _behavior_reminders_receipt(value):
+    if (type(value) is not dict or value.get("available") is not True
+            or value.get("syncing") is not False):
+        return None
+    diagnostics = value.get("diagnostics")
+    if (type(diagnostics) is not dict or diagnostics.get("complete", True) is not True
+            or diagnostics.get("partial", False) is not False):
+        return None
+    last, started = value.get("last_sync"), value.get("snapshot_started_at")
+    if any(type(t) not in (int, float) or not math.isfinite(t) or t <= 0 for t in (last, started)):
+        return None
+    coverage = tuple(diagnostics.get(key) for key in ("coverage_start", "coverage_end"))
+    if any(t is not None and (type(t) not in (int, float) or not math.isfinite(t)) for t in coverage):
+        return None
+    return (last, started, *coverage)
+
+
+_delivery_issuer = object()
+
+
+_BEHAVIOR_RECEIPTS_SCHEMA = """CREATE TABLE IF NOT EXISTS assistant_behavior_action_receipts (
+    owner_id TEXT NOT NULL, nudge_id TEXT NOT NULL, action_index INTEGER NOT NULL CHECK(action_index>=0),
+    commitment_id TEXT NOT NULL UNIQUE, receipt_state TEXT NOT NULL CHECK(receipt_state IN ('active','consumed')),
+    type TEXT, kind TEXT, title TEXT, context TEXT, when_ts REAL, end_ts REAL, created_at REAL,
+    PRIMARY KEY(owner_id,nudge_id,action_index),
+    CHECK((receipt_state='active' AND type IS NOT NULL AND kind IS NOT NULL
+           AND type IN ('add_reminder','add_hold') AND kind IN ('reminder','event')
+           AND ((type='add_reminder' AND kind='reminder' AND end_ts IS NULL) OR (type='add_hold' AND kind='event'))
+           AND title IS NOT NULL AND context IS NOT NULL AND when_ts IS NOT NULL AND created_at IS NOT NULL)
+       OR (receipt_state='consumed' AND type IS NULL AND kind IS NULL AND title IS NULL AND context IS NULL
+           AND when_ts IS NULL AND end_ts IS NULL AND created_at IS NULL))
+)"""
+_BEHAVIOR_RECEIPT_PAYLOAD = ("type","kind","title","context","when_ts","end_ts","created_at")
+
+
+def behavior_owner_id(home):
+    """One canonical home encoding, outside publication; never source permission."""
+    canonical = Path(home).expanduser().resolve()
+    return hashlib.sha256(b"wisp.behavior-owner.v1\0"+os.fsencode(canonical)).hexdigest()
+
+
+@dataclass(frozen=True,eq=False,repr=False)
+class PreparedNudgeWrite:
+    store: object
+    runtime: object
+    data: str
+    binding: object
+    issuer: object
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("Prepared delivery writes cannot restore authority")
+
+
+@dataclass(frozen=True,eq=False,repr=False)
+class CommittedNudge:
+    plan: PreparedNudgeWrite
+    event_id: str
+    payload: str
+    pending: bool
+    issuer: object
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("Delivery receipts cannot restore authority")
+
+
 class AssistantStore:
     def __init__(self, path: Path = DB_PATH) -> None:
+        assert_mutation_allowed()
         path = path.expanduser().resolve()
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        self._delivery_writer = Authority("assistant-nudge-writer",owner=self)
+        self._delivery_writer.publish()
+        self._nudge_plans = weakref.WeakSet()
+        self._nudge_receipts = weakref.WeakSet()
         self._transaction_write: bool | None = None
+        self._behavior_receipt_stages = []
+        # Resolve aliases once, outside transaction locks/SQL. A fresh process
+        # has no head and cannot recover native permission from persisted JSON.
+        try:
+            identity_stat = path.stat()
+            identity = (identity_stat.st_dev, identity_stat.st_ino)
+        except OSError:
+            identity = ("path", str(path))
+        with revocation(), _behavior_receipt_registry_lock:
+            head = _behavior_receipt_heads.get(identity)
+            if head is None:
+                head = _BehaviorReceiptHead()
+                _behavior_receipt_heads[identity] = head
+            self._behavior_receipt_head = head
         try:
             with self._db:
                 # Lock before inspecting schema so simultaneous startups cannot
@@ -309,6 +410,8 @@ class AssistantStore:
                 self._db.execute("""CREATE TABLE IF NOT EXISTS calendar_event_ends (
                     commitment_id TEXT PRIMARY KEY, end_ts REAL NOT NULL
                 )""")
+                self._db.execute(_BEHAVIOR_RECEIPTS_SCHEMA)
+                self._validate_behavior_receipt_schema()
                 self._db.execute("""CREATE TABLE IF NOT EXISTS today_source_sync (
                     source TEXT PRIMARY KEY, payload TEXT NOT NULL
                 )""")
@@ -327,6 +430,119 @@ class AssistantStore:
         except BaseException:
             self._db.close()
             raise
+
+    def _validate_behavior_receipt_schema(self):
+        # This new, solely owned schema has no historical alternative forms.
+        # Finding its name is insufficient: malformed constraints must fail
+        # explicitly rather than silently misattribute cleanup ownership.
+        actual = self._db.execute("SELECT sql FROM sqlite_master WHERE type='table' "
+                                  "AND name='assistant_behavior_action_receipts'").fetchone()
+        expected = _BEHAVIOR_RECEIPTS_SCHEMA.replace("CREATE TABLE IF NOT EXISTS","CREATE TABLE",1)
+        def normalized(sql):
+            # Preserve whitespace inside literals/quoted identifiers: a
+            # malformed CHECK for 'acti ve' must not normalize to 'active'.
+            result,quote = [],None
+            for char in sql:
+                if quote is not None:
+                    result.append(char)
+                    if char==quote:
+                        quote = None
+                elif char in {"'",'"'}:
+                    result.append(char)
+                    quote = char
+                elif not char.isspace():
+                    result.append(char)
+            return "".join(result)
+        if actual is None or normalized(actual[0])!=normalized(expected):
+            raise RuntimeError("Incompatible behavior-action receipt schema; database preserved")
+        columns = self._db.execute("PRAGMA table_info(assistant_behavior_action_receipts)").fetchall()
+        names = [row["name"] for row in columns]
+        if (names!=["owner_id","nudge_id","action_index","commitment_id","receipt_state",*_BEHAVIOR_RECEIPT_PAYLOAD]
+                or tuple(row["pk"] for row in columns[:3])!=(1,2,3)):
+            raise RuntimeError("Incompatible behavior-action receipt identity; database preserved")
+        unique_cid = False
+        for index in self._db.execute("PRAGMA index_list(assistant_behavior_action_receipts)").fetchall():
+            quoted = index["name"].replace('"','""')
+            indexed = [row["name"] for row in self._db.execute(f'PRAGMA index_info("{quoted}")')]
+            unique_cid |= bool(index["unique"] and not index["partial"] and indexed==["commitment_id"])
+        if not unique_cid:
+            raise RuntimeError("Behavior-action receipt CID uniqueness is unavailable; database preserved")
+
+    @staticmethod
+    def _behavior_item_matches(current, receipt, end):
+        return (current is not None and current["id"]==receipt["commitment_id"]
+            and current["source"]==MANUAL_SOURCE and current["source_id"]==receipt["commitment_id"]
+            and current["status"]=="active" and current["updated_at"]==current["created_at"]
+            and all(current[key]==receipt[key] for key in ("kind","title","context","when_ts","created_at"))
+            and end==receipt["end_ts"])
+
+    def assert_behavior_cleanup_available(self):
+        """Cleanup owns its durable commit and never joins a caller's unit."""
+        assert_mutation_allowed()
+        with revocation(),self._lock:
+            if self._db.in_transaction:
+                raise PublicationUnavailable("Behavior cleanup cannot join a caller transaction")
+
+    def drop_behavior_events(self):
+        """Durably erase learned nudge events without joining a caller unit."""
+        assert_mutation_allowed()
+        with revocation(),self._lock:
+            self.assert_behavior_cleanup_available()
+            with self._write_transaction():
+                count = self._db.execute("DELETE FROM assistant_events WHERE kind='nudge' "
+                                         "AND dedupe_key LIKE 'behavior:%'").rowcount
+            return int(count or 0)
+
+    def forget_behavior_actions(self, owner_id):
+        """Erase exact owned items; persist only scrubbed suppression identities.
+
+        Consumed IDs also exclude legacy cleanup after interruption/restart.
+        They cannot grant source access, recreate an item or publish an event.
+        """
+        assert_mutation_allowed()
+        if type(owner_id) is not str or len(owner_id)!=64 or any(c not in "0123456789abcdef" for c in owner_id):
+            raise ValueError("A canonical behavior owner identity is required")
+        with revocation(),self._lock:
+            self.assert_behavior_cleanup_available()
+            return self._forget_behavior_actions_owned(owner_id)
+
+    def _forget_behavior_actions_owned(self, owner_id):
+        # Called only while the ordinary outer revocation and Store lock are
+        # held, with no preexisting transaction. No connection/callback escapes.
+        removed,covered,kept = [],[],0
+        with self._write_transaction():
+            # Any exact durable claim supersedes a weaker legacy ledger,
+            # including claims belonging to a different home. Read only opaque
+            # IDs here; cleanup and payload consumption stay owner-scoped.
+            covered = [row[0] for row in self._db.execute(
+                "SELECT commitment_id FROM assistant_behavior_action_receipts ORDER BY commitment_id")]
+            receipts = self._db.execute("SELECT * FROM assistant_behavior_action_receipts WHERE owner_id=? "
+                                       "ORDER BY nudge_id,action_index",(owner_id,)).fetchall()
+            for receipt in receipts:
+                cid = receipt["commitment_id"]
+                current = self._db.execute("SELECT * FROM commitments WHERE id=?",(cid,)).fetchone()
+                end = self._db.execute("SELECT end_ts FROM calendar_event_ends WHERE commitment_id=?",(cid,)).fetchone()
+                if receipt["receipt_state"]=="consumed":
+                    kept += int(current is not None)
+                    continue
+                if self._behavior_item_matches(current,receipt,end[0] if end is not None else None):
+                    deleted = self._db.execute("DELETE FROM commitments WHERE id=?",(cid,))
+                    if deleted.rowcount!=1:
+                        raise PublicationUnavailable("Owned behavior item was not deleted")
+                    deleted_end = self._db.execute("DELETE FROM calendar_event_ends WHERE commitment_id=?",(cid,))
+                    if deleted_end.rowcount!=int(end is not None):
+                        raise PublicationUnavailable("Owned behavior end was not deleted")
+                    self._db.execute("DELETE FROM notify_log WHERE commitment_id=?",(cid,))
+                    removed.append({"type":receipt["type"],"title":receipt["title"],"when_ts":receipt["when_ts"]})
+                elif current is not None:
+                    kept += 1
+                changed = self._db.execute("UPDATE assistant_behavior_action_receipts SET receipt_state='consumed',"
+                    "type=NULL,kind=NULL,title=NULL,context=NULL,when_ts=NULL,end_ts=NULL,created_at=NULL "
+                    "WHERE owner_id=? AND nudge_id=? AND action_index=? AND receipt_state='active'",
+                    (owner_id,receipt["nudge_id"],receipt["action_index"]))
+                if changed.rowcount!=1:
+                    raise PublicationUnavailable("Behavior-action consumption did not persist")
+        return {"removed":removed,"kept":kept,"covered":tuple(covered)}
 
     def _has_interrupted_migration(self) -> bool:
         return self._db.execute(
@@ -480,6 +696,200 @@ class AssistantStore:
             except (KeyError, TypeError, ValueError):
                 continue
 
+    def _nudge_bucket(self, minute):
+        rows = self._db.execute(
+            "SELECT * FROM commitments WHERE status='active' AND when_ts>=? AND when_ts<? ORDER BY id LIMIT 1001",
+            (minute,minute+60)).fetchall()
+        if len(rows)>1000:
+            raise PublicationUnavailable("Delivery uniqueness coverage is incomplete")
+        return [dict(row) for row in rows]
+
+    def prepare_nudge_write(self, runtime, nudge_json, event, actions, prior, now, expires_at):
+        """Prepare only immutable values and exact owned-SQL consistency facts."""
+        owner_id = behavior_owner_id(runtime.home)
+        if owner_id!=runtime._owner_id:
+            raise PublicationUnavailable("Runtime home identity changed")
+        nudge = json.loads(nudge_json)
+        if (event.get("type")!="nudge" or event.get("nudge_id")!=nudge["id"]
+                or len(actions)>8 or type(now) not in (int,float) or not math.isfinite(now)):
+            raise ValueError("A bounded canonical nudge is required")
+        units,performed,buckets,owned,receipts,cid_receipts = [],[],{},{},{},{}
+        planned = set()
+        prior = {row["idx"]:row for row in prior}
+        with self._lock:
+            if self._db.in_transaction:
+                raise PublicationUnavailable("Delivery cannot join a caller transaction")
+            for action in actions:
+                idx = action["idx"]
+                previous = prior.get(idx)
+                if previous is not None and (previous["undone_at"] is not None or not previous.get("commitment_id")):
+                    continue
+                cid = previous["commitment_id"] if previous is not None else action["id"]
+                receipt = self._db.execute("SELECT * FROM assistant_behavior_action_receipts "
+                    "WHERE owner_id=? AND nudge_id=? AND action_index=?",(owner_id,nudge["id"],idx)).fetchone()
+                claim = self._db.execute("SELECT * FROM assistant_behavior_action_receipts WHERE commitment_id=?",(cid,)).fetchone()
+                receipts[str(idx)] = dict(receipt) if receipt is not None else None
+                cid_receipts[cid] = dict(claim) if claim is not None else None
+                if (claim is not None and (claim["owner_id"],claim["nudge_id"],claim["action_index"])!=(owner_id,nudge["id"],idx)
+                        or receipt is not None and receipt["commitment_id"]!=cid):
+                    raise PublicationUnavailable("Behavior-action ownership identity conflicts")
+                existing = self._db.execute("SELECT * FROM commitments WHERE id=?",(cid,)).fetchone()
+                end = self._db.execute("SELECT end_ts FROM calendar_event_ends WHERE commitment_id=?",(cid,)).fetchone()
+                actual_end = end[0] if end is not None else None
+                owned[cid] = dict(row=dict(existing) if existing is not None else None,end=actual_end)
+                if receipt is not None:
+                    if receipt["receipt_state"]=="consumed":
+                        continue
+                    if any(receipt[key]!=action[key] for key in ("type","kind","title","context","when_ts","end_ts")):
+                        raise PublicationUnavailable("Immutable behavior-action receipt changed")
+                    if not self._behavior_item_matches(existing,receipt,actual_end):
+                        continue
+                    if previous is not None and (previous["commitment_id"]!=cid
+                            or previous["created_at"]!=receipt["created_at"]
+                            or any(previous[key]!=receipt[key] for key in ("type","title","when_ts"))):
+                        raise PublicationUnavailable("Runtime receipt does not match its Store ownership")
+                    performed.append(dict(nudge_id=nudge["id"],idx=idx,type=receipt["type"],commitment_id=cid,
+                        title=receipt["title"],when_ts=receipt["when_ts"],created_at=receipt["created_at"]))
+                    continue
+                if previous is not None:
+                    # A retry can advertise Undo only for a real surviving,
+                    # untouched local item. A deleted/completed/edited item is
+                    # never recreated or adopted merely from the old ledger.
+                    if (existing is not None and existing["source"]==MANUAL_SOURCE and existing["source_id"]==cid
+                            and existing["status"]=="active" and existing["updated_at"]==existing["created_at"]
+                            and existing["created_at"]==previous["created_at"] and actual_end==action["end_ts"]
+                            and existing["context"] in {action["context"],action["context"].rsplit(" [",1)[0]}
+                            and all(existing[key]==action[key] for key in ("kind","title","when_ts"))):
+                        performed.append(dict(nudge_id=nudge["id"],idx=idx,type=previous["type"],
+                            commitment_id=previous["commitment_id"],title=previous["title"],
+                            when_ts=previous["when_ts"],created_at=previous["created_at"]))
+                    continue
+                if existing is not None:
+                    # No retrospective attribution from a deterministic CID
+                    # or matching context. Only a real old ledger (above) or
+                    # the atomic Store receipt can establish ownership.
+                    continue
+                minute = int(action["when_ts"]//60)*60
+                bucket = buckets.setdefault(str(minute),self._nudge_bucket(minute))
+                duplicate_key = minute,action["title"].casefold()
+                if duplicate_key in planned or any(" ".join(str(row["title"] or "").split()).casefold()==action["title"].casefold()
+                       for row in bucket):
+                    continue
+                units.append(action)
+                planned.add(duplicate_key)
+                performed.append(dict(nudge_id=nudge["id"],idx=idx,type=action["type"],
+                    commitment_id=cid,title=action["title"],when_ts=action["when_ts"],created_at=now))
+            key = "behavior:"+nudge["id"]
+            old_event = self._db.execute("SELECT * FROM assistant_events WHERE dedupe_key=?",(key,)).fetchone()
+            old_event = dict(old_event) if old_event is not None else None
+        indices = {row["idx"] for row in performed}
+        for idx,action in enumerate(event.get("actions") or []):
+            action["auto"] = idx in indices
+        event["auto_performed"] = [dict(type=row["type"],title=row["title"],when_ts=row["when_ts"],
+                                          action_index=row["idx"]) for row in performed]
+        event["can_undo"] = bool(performed)
+        event_json = json.dumps(event,sort_keys=True,allow_nan=False)
+        if len(event_json.encode())>65536:
+            raise PublicationUnavailable("Delivery event exceeds its bound")
+        if old_event is not None and (old_event["kind"]!="nudge" or old_event["payload"]!=event_json):
+            raise PublicationUnavailable("Immutable delivery identity has changed")
+        data = json.dumps(dict(nudge_id=nudge["id"],nudge_json=nudge_json,event_json=event_json,
+            event_id=old_event["id"] if old_event else uuid.uuid4().hex,key=key,units=units,performed=performed,
+            buckets=buckets,owned=owned,receipts=receipts,cid_receipts=cid_receipts,owner_id=owner_id,
+            old_event=old_event,now=now,expires_at=expires_at),
+            sort_keys=True,allow_nan=False)
+        if len(data.encode())>262144:
+            raise PublicationUnavailable("Delivery preparation exceeds its bound")
+        binding = owned_write(self._delivery_writer,self,runtime,hashlib.sha256(data.encode()).hexdigest())
+        plan = PreparedNudgeWrite(self,runtime,data,binding,_delivery_issuer)
+        self._nudge_plans.add(plan)
+        return plan
+
+    def _require_nudge_write(self, lease, plan, runtime):
+        if (type(lease) is not PublicationLease or type(plan) is not PreparedNudgeWrite
+                or plan.issuer is not _delivery_issuer or plan.store is not self or plan.runtime is not runtime
+                or plan not in self._nudge_plans
+                or not lease.authorizes(plan.binding,authority=self._delivery_writer,owner=self,
+                    context=runtime,key=hashlib.sha256(plan.data.encode()).hexdigest())):
+            raise PublicationUnavailable("Exact active owned delivery capability required")
+        return json.loads(plan.data)
+
+    def commit_nudge_actions(self, lease, plan, runtime):
+        """Fixed owned write; never expose a connection or run a caller callback."""
+        data = self._require_nudge_write(lease,plan,runtime)
+        with self._lock:
+            if self._db.in_transaction:
+                raise PublicationUnavailable("Delivery cannot join a caller transaction")
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                for minute,expected in data["buckets"].items():
+                    if self._nudge_bucket(int(minute))!=expected:
+                        raise PublicationUnavailable("Delivery uniqueness changed")
+                for cid,expected in data["owned"].items():
+                    row = self._db.execute("SELECT * FROM commitments WHERE id=?",(cid,)).fetchone()
+                    end = self._db.execute("SELECT end_ts FROM calendar_event_ends WHERE commitment_id=?",(cid,)).fetchone()
+                    if dict(row=dict(row) if row is not None else None,end=end[0] if end is not None else None)!=expected:
+                        raise PublicationUnavailable("Owned action changed")
+                for idx,expected in data["receipts"].items():
+                    row = self._db.execute("SELECT * FROM assistant_behavior_action_receipts "
+                        "WHERE owner_id=? AND nudge_id=? AND action_index=?",(data["owner_id"],data["nudge_id"],int(idx))).fetchone()
+                    if (dict(row) if row is not None else None)!=expected:
+                        raise PublicationUnavailable("Behavior-action receipt changed")
+                for cid,expected in data["cid_receipts"].items():
+                    row = self._db.execute("SELECT * FROM assistant_behavior_action_receipts WHERE commitment_id=?",(cid,)).fetchone()
+                    if (dict(row) if row is not None else None)!=expected:
+                        raise PublicationUnavailable("Behavior-action CID claim changed")
+                for action in data["units"]:
+                    self._db.execute(
+                        "INSERT INTO commitments(id,source,source_id,kind,title,context,when_ts,status,confidence,created_at,updated_at) "
+                        "VALUES(?,?,?,?,?,?,?,'active',1.0,?,?)",
+                        (action["id"],MANUAL_SOURCE,action["id"],action["kind"],action["title"],action["context"],
+                         action["when_ts"],data["now"],data["now"]))
+                    if action["end_ts"] is not None:
+                        self._db.execute("INSERT INTO calendar_event_ends(commitment_id,end_ts) VALUES(?,?)",
+                                         (action["id"],action["end_ts"]))
+                    self._db.execute("INSERT INTO assistant_behavior_action_receipts "
+                        "(owner_id,nudge_id,action_index,commitment_id,receipt_state,type,kind,title,context,when_ts,end_ts,created_at) "
+                        "VALUES(?,?,?,?,'active',?,?,?,?,?,?,?)",
+                        (data["owner_id"],data["nudge_id"],action["idx"],action["id"],action["type"],action["kind"],
+                         action["title"],action["context"],action["when_ts"],action["end_ts"],data["now"]))
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
+        return tuple(data["performed"])
+
+    def commit_nudge_event(self, lease, plan, runtime):
+        data = self._require_nudge_write(lease,plan,runtime)
+        with self._lock:
+            if self._db.in_transaction:
+                raise PublicationUnavailable("Delivery cannot join a caller transaction")
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                old = self._db.execute("SELECT * FROM assistant_events WHERE dedupe_key=?",(data["key"],)).fetchone()
+                if (dict(old) if old is not None else None)!=data["old_event"]:
+                    raise PublicationUnavailable("Delivery event changed")
+                if old is None:
+                    self._db.execute("INSERT INTO assistant_events(id,kind,payload,dedupe_key,target,created_at,expires_at) "
+                        "VALUES(?,'nudge',?,?,'{}',?,?)",(data["event_id"],data["event_json"],data["key"],data["now"],data["expires_at"]))
+                row = self._db.execute("SELECT id,payload,state FROM assistant_events WHERE dedupe_key=?",(data["key"],)).fetchone()
+                if row is None or row["payload"]!=data["event_json"]:
+                    raise PublicationUnavailable("Canonical event was not persisted")
+                result = CommittedNudge(plan,row["id"],row["payload"],row["state"]=="pending",_delivery_issuer)
+                self._db.commit()
+                self._nudge_receipts.add(result)
+                return result
+            except BaseException:
+                self._db.rollback()
+                raise
+
+    def validate_committed_nudge(self, lease, result, runtime):
+        if (type(result) is not CommittedNudge or result.issuer is not _delivery_issuer
+                or result not in self._nudge_receipts):
+            raise PublicationUnavailable("An actual committed delivery receipt is required")
+        self._require_nudge_write(lease,result.plan,runtime)
+        return result
+
     @contextmanager
     def transaction(self, *, write: bool = True):
         """Serialize a coherent database unit, with nested rollback savepoints.
@@ -489,7 +899,9 @@ class AssistantStore:
         commit independently. All write decisions must start with write=True;
         a read transaction must not be upgraded across concurrent connections.
         """
-        with self._lock:
+        # The outer order also covers composed/nested receipt writes. No
+        # source lock can be held while waiting for a publication to finish.
+        with revocation(), self._lock:
             nested = self._db.in_transaction
             if nested and write and self._transaction_write is False:
                 raise RuntimeError("Cannot upgrade a read transaction to a write transaction")
@@ -499,13 +911,38 @@ class AssistantStore:
                              "BEGIN IMMEDIATE" if write else "BEGIN")
             if not nested:
                 self._transaction_write = write
+            frame = {"receipt": None}
+            self._behavior_receipt_stages.append(frame)
             try:
                 yield self._db
                 if nested:
                     self._db.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    if len(self._behavior_receipt_stages) > 1 and frame["receipt"] is not None:
+                        self._behavior_receipt_stages[-2]["receipt"] = frame["receipt"]
                 else:
+                    candidate = frame["receipt"]
+                    if candidate is not None:
+                        row = self._db.execute("SELECT payload FROM today_source_sync WHERE source='reminders'").fetchone()
+                        if row is None or row["payload"] != candidate[0]:
+                            candidate = None
                     self._db.commit()
+                    # Only a successfully committed actual native receipt can
+                    # arm the process-local permission head. No SQL in checks.
+                    if candidate is not None:
+                        _, metadata, deadline = candidate
+                        now = time.time()
+                        if all(0 <= now-t < 1200 for t in metadata[:2]) and time.monotonic() < deadline:
+                            self._behavior_receipt_head.metadata = metadata
+                            self._behavior_receipt_head.expires_monotonic = deadline
+                            self._behavior_receipt_head.authority.publish()
             except BaseException:
+                # A failed attempted receipt never revives an older/pending
+                # permission, even when its SQL savepoint is rolled back.
+                if frame["receipt"] is not None:
+                    self._behavior_receipt_head.authority.withdraw()
+                    self._behavior_receipt_head.metadata = None
+                    for previous in self._behavior_receipt_stages:
+                        previous["receipt"] = None
                 if nested:
                     self._db.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
                     self._db.execute(f"RELEASE SAVEPOINT {savepoint}")
@@ -513,12 +950,32 @@ class AssistantStore:
                     self._db.rollback()
                 raise
             finally:
+                self._behavior_receipt_stages.pop()
                 self._transaction_write = previous_mode
 
     @contextmanager
     def _write_transaction(self):
         with self.transaction():
             yield
+
+    def prepare_behavior_source_publication_witness(self, source, snapshot) -> Witness | None:
+        """Only current native Reminders permission metadata, never task content.
+
+        Copied DTO fields must match both current SQL and a process-issued
+        successfully committed native receipt. Reads never renew its lifetime.
+        """
+        if source != "reminders":
+            return None
+        with revocation(), self._lock:
+            metadata = _behavior_reminders_receipt(snapshot)
+            head = self._behavior_receipt_head
+            if metadata is None or metadata != head.metadata or self._db.in_transaction:
+                return None
+            row = self._db.execute("SELECT payload FROM today_source_sync WHERE source='reminders'").fetchone()
+            if row is None or metadata != _behavior_reminders_receipt(json.loads(row["payload"])):
+                return None
+            return Witness.combine(head.authority.token(clock=LIVE_CLOCK,
+                expires_wall=min(metadata[:2])+1200, expires_monotonic=head.expires_monotonic))
 
     def today_snapshot(self, day: str, timezone: str) -> dict:
         from service.assistant.today import day_bounds
@@ -1144,6 +1601,11 @@ class AssistantStore:
         from service.assistant.today import RevisionConflict, number
         if source not in {"calendar", "reminders"}:
             return
+        if source == "reminders":
+            self._behavior_receipt_head.authority.withdraw()
+            self._behavior_receipt_head.metadata = None
+            for frame in self._behavior_receipt_stages:
+                frame["receipt"] = None
         started = diagnostics.get("snapshot_started_at")
         if started is not None:
             started = number(started, "snapshot_started_at")
@@ -1159,12 +1621,27 @@ class AssistantStore:
         for key, value in coverage.items():
             if value is not None:
                 coverage[key] = number(value, key)
-        receipt = dict(available=available, syncing=bool(diagnostics.get("syncing")),
-                       reason="Up to date" if available else "Source is unavailable or syncing",
+        complete, partial = diagnostics.get("complete", True), diagnostics.get("partial", False)
+        current = available and complete is True and partial is False
+        if "complete" in diagnostics or "partial" in diagnostics:
+            # Invalid latest metadata must not leave an older successful receipt
+            # eligible. Keep only typed completeness proof, never diagnostic rows.
+            coverage.update(complete=complete if type(complete) is bool else False,
+                            partial=partial if type(partial) is bool else True)
+        receipt = dict(available=current, syncing=bool(diagnostics.get("syncing")),
+                       reason="Up to date" if current else (
+                           "Source snapshot is incomplete" if available else "Source is unavailable or syncing"),
                        last_sync=min(now, started) if started is not None else now, snapshot_started_at=started, diagnostics=coverage)
+        payload = json.dumps(receipt, allow_nan=False)
         self._db.execute("INSERT INTO today_source_sync(source,payload) VALUES (?,?) "
                          "ON CONFLICT(source) DO UPDATE SET payload=excluded.payload",
-                         (source, json.dumps(receipt, allow_nan=False)))
+                         (source, payload))
+        if (source == "reminders" and diagnostics.get("authorized") is True
+                and diagnostics.get("available") is not False):
+            metadata = _behavior_reminders_receipt(receipt)
+            if metadata is not None and self._behavior_receipt_stages:
+                deadline = time.monotonic()+min(metadata[:2])+1200-now
+                self._behavior_receipt_stages[-1]["receipt"] = (payload, metadata, deadline)
 
     def today_source_unavailable(self, source: str, diagnostics: dict) -> None:
         with self._write_transaction():
@@ -1468,15 +1945,15 @@ class AssistantStore:
 
     def add_manual(self, title: str, when_ts: float, kind: str = "reminder",
                    context: str | None = None, *, source: str = MANUAL_SOURCE) -> dict:
+        assert_mutation_allowed()
         cid = uuid.uuid4().hex
         now = time.time()
-        with self._lock:
+        with self._write_transaction():
             self._db.execute(
                 "INSERT INTO commitments (id, source, source_id, kind, title, context, "
                 "when_ts, status, confidence, created_at, updated_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (cid, source, cid, kind, title, context, when_ts, "active", 1.0, now, now))
-            self._db.commit()
         return self.get(cid)
 
     def delete(self, cid: str) -> bool:
@@ -1526,11 +2003,11 @@ class AssistantStore:
         return changed
 
     def set_status(self, cid: str, status: str) -> bool:
-        with self._lock:
+        assert_mutation_allowed()
+        with self._write_transaction():
             cur = self._db.execute(
                 "UPDATE commitments SET status=?, updated_at=? WHERE id=?",
                 (status, time.time(), cid))
-            self._db.commit()
         return cur.rowcount > 0
 
     def mark_notified(self, cid: str, stage: str) -> None:
@@ -1546,13 +2023,13 @@ class AssistantStore:
         twin's id. Writing the stage to the whole group is cheap, idempotent,
         and immunizes whichever member ends up surviving.
         """
-        now = time.time()
-        ids = [cid] + self.duplicate_ids(cid)
-        with self._lock:
+        assert_mutation_allowed()
+        with self._write_transaction():
+            now = time.time()
+            ids = [cid] + self.duplicate_ids(cid)
             self._db.executemany(
                 "INSERT OR IGNORE INTO notify_log (commitment_id, stage, sent_at) "
                 "VALUES (?,?,?)", [(i, stage, now) for i in ids])
-            self._db.commit()
 
     def already_notified(self, cid: str, stage: str) -> bool:
         row = self._db.execute(

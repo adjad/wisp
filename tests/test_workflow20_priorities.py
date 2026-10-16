@@ -324,3 +324,23 @@ def test_priority_http_excluded_sources_cannot_enter_through_history_or_memory(k
     assert old not in model_input and remembered not in model_input
     assert memory_calls == []
     assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+def test_period_word_passed_as_query_is_not_a_content_filter(isolated):
+    # Ling V3 re-called the tool with query="tomorrow" (2026-10-14); the literal
+    # filter then matched no title and "no calendar occurrence was found".
+    base = dispatch(include_email=False, include_messages=False, include_notes=False)
+    for word in ("tomorrow", "Today", "this week", "tmrow"):
+        result = dispatch(query=word, include_email=False, include_messages=False, include_notes=False)
+        assert result["sources"]["calendar"]["records"] == base["sources"]["calendar"]["records"] != []
+        assert result["sources"]["reminders"]["records"] == base["sources"]["reminders"]["records"]
+        assert result["scope"]["query"] == "" and word.strip() in result["scope"]["query_ignored"]
+    real = dispatch(query="Fictional review", include_email=False, include_messages=False,
+                    include_notes=False)["sources"]
+    assert [row["title"] for row in real["calendar"]["records"]] == ["Fictional review"]
+    assert "query_ignored" not in dispatch(query="Fictional review")["scope"]
+
+
+def test_records_carry_local_times_so_the_model_never_converts_epochs(isolated):
+    row = dispatch(include_email=False, include_messages=False, include_notes=False)["sources"]["calendar"]["records"][0]
+    assert row["when_local"] and row["end_local"] and not row["when_local"].isdigit()

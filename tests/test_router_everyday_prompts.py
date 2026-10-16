@@ -374,7 +374,7 @@ def test_body_literals_in_named_companions_do_not_bypass_contact_proof(
         streams.append(kwargs)
         offered = {tool["function"]["name"] for tool in kwargs.get("tools", [])}
         proposed = [
-            ("lookup_contact", {"name": "Dad"}), ("set_volume", {"level": 0}),
+            ("lookup_contact", {"name": "Dad"}), ("toggle_setting", {"setting": "wifi", "on": False}),
             ("send_message", {"to": "+16505550999", "text": "wrong model body"}),
             ("add_reminder", {"title": "wrong model title", "when_iso": "2099-01-01T09:00"}),
         ]
@@ -395,13 +395,13 @@ def test_body_literals_in_named_companions_do_not_bypass_contact_proof(
     clauses = [f'Text Mom saying "{body}"', "Remind me to buy milk tomorrow"]
     if not send_first:
         clauses.reverse()
-    events = asyncio.run(request("Mute my volume; " + "; ".join(clauses)))
+    events = asyncio.run(request("Turn off Wi-Fi; " + "; ".join(clauses)))
     assert [args for name, args in calls if name == "lookup_contact"] == [{"name": "Mom"}]
     if valid:
         expected = {"to": "+1 (650) 555-0134", "text": body}
         assert [args for name, args in calls if name == "send_message"] == [expected]
         assert [item["args"] for item in approvals] == [expected]
-        assert len(calls) == 4 and ("set_volume", {"level": 0}) in calls
+        assert len(calls) == 4 and ("toggle_setting", {"setting": "wifi", "on": False}) in calls
         assert [row[0] for row in assistant._db.execute("SELECT title FROM commitments")] == ["buy milk"]
     else:
         assert calls == [("lookup_contact", {"name": "Mom"})] and approvals == []

@@ -1,0 +1,67 @@
+{
+  "path": "omlx/process_memory_enforcer.py",
+  "input_sha256": "afc72e5875c844536166b09f2e8d55aec0580024109cddbfb858be119172641f",
+  "output_sha256": "b94a9e26f729535143f944ef849979bdd58f94922b4225bb16975bb666e3702c",
+  "edits": [
+    {
+      "old": "logger = logging.getLogger(__name__)",
+      "new": "# Modified by Wisp: pinned memory-guard evidence/admission overlay.\nfrom . import wisp_guard as _wisp_guard\n\nlogger = logging.getLogger(__name__)",
+      "count": 1
+    },
+    {
+      "old": "        self._pressure_reclaim_grace_polls = 0\n        if self._prefill_memory_guard:\n",
+      "new": "        _wisp_guard.reset(self)\n        self._pressure_reclaim_grace_polls = 0\n        if self._prefill_memory_guard:\n",
+      "count": 1
+    },
+    {
+      "old": "    def _get_ceiling_breakdown(self) -> dict[str, int]:",
+      "new": "    @_wisp_guard.sampled\n    def _get_ceiling_breakdown(self) -> dict[str, int]:",
+      "count": 1
+    },
+    {
+      "old": "    def _propagate_memory_limit(self) -> None:",
+      "new": "    @_wisp_guard.propagating\n    def _propagate_memory_limit(self) -> None:",
+      "count": 1
+    },
+    {
+      "old": "                return {**terms, \"dynamic\": self._get_static_ceiling()}",
+      "new": "                _wisp_guard.note_source(self, \"static_fallback\")\n                return {**terms, \"dynamic\": self._get_static_ceiling()}",
+      "count": 1
+    },
+    {
+      "old": "            terms[\"free\"] = available",
+      "new": "            _wisp_guard.note_source(self, \"available_memory\")\n            terms[\"free\"] = available",
+      "count": 1
+    },
+    {
+      "old": "            terms[\"free\"] = stats[\"free\"]",
+      "new": "            _wisp_guard.note_source(self, \"host_statistics64\")\n            terms[\"free\"] = stats[\"free\"]",
+      "count": 1
+    },
+    {
+      "old": "            return {\"static\": 0, \"dynamic\": 0, \"metal_cap\": 0, \"hard_limit\": 0}",
+      "new": "            _wisp_guard.note_source(self, \"disabled\")\n            return {\"static\": 0, \"dynamic\": 0, \"metal_cap\": 0, \"hard_limit\": 0}",
+      "count": 1
+    },
+    {
+      "old": "        if self._memory_guard_tier == \"custom\":\n            dynamic_ceiling =",
+      "new": "        if self._memory_guard_tier == \"custom\":\n            _wisp_guard.note_source(self, \"custom\")\n            dynamic_ceiling =",
+      "count": 1
+    },
+    {
+      "old": "                if (\n                    type(engine).__name__ == \"DFlashEngine\"\n                    and getattr(engine, \"_fallback_engine\", None) is None\n                ):\n                    continue\n",
+      "new": "",
+      "count": 1
+    },
+    {
+      "old": "                engine_type = type(engine).__name__",
+      "new": "                _wisp_guard.unresolved(self)\n                engine_type = type(engine).__name__",
+      "count": 1
+    },
+    {
+      "old": "            try:\n                await self._check_and_enforce()\n                await self._check_ttl()\n            except asyncio.CancelledError:\n                break\n            except Exception as e:\n                logger.error(f\"Process memory enforcer error: {e}\")",
+      "new": "            _wisp_guard.begin_iteration(self)\n            try:\n                await self._check_and_enforce()\n                await self._check_ttl()\n                _wisp_guard.complete_iteration(self)\n            except asyncio.CancelledError:\n                _wisp_guard.fail_iteration(self)\n                break\n            except Exception as e:\n                _wisp_guard.fail_iteration(self)\n                logger.error(f\"Process memory enforcer error: {e}\")",
+      "count": 1
+    }
+  ]
+}

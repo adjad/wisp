@@ -1,0 +1,30 @@
+- id: files_downloads
+  prompt: "List the files in my Downloads folder."
+  expect: [{tool: list_dir, args: {path: {icontains: downloads}}}]
+  answer: {contains_any: [invoice, tax, hike_photos]}
+- id: files_find_tax
+  prompt: "where is my tax return?"
+  expect: [{any_of: [find_files, list_dir]}]
+  answer: {contains_all: ["{tax_file}"]}
+- id: files_documents
+  prompt: "what's in my Documents folder?"
+  expect: [{tool: list_dir, args: {path: {icontains: documents}}}]
+  answer: {contains_any: [lease, budget_2026]}
+- id: files_find_invoice
+  prompt: "find my invoice pdf"
+  expect: [{any_of: [find_files, list_dir]}]
+  answer: {contains_all: ["{invoice_file}"]}
+- id: files_read_notes_txt
+  prompt: "read ~/Documents/notes.txt"
+  expect: [{tool: read_file, args: {path: {icontains: notes.txt}}}]
+  answer: {contains_any: [windshield, insurance]}
+- id: files_move_photos
+  split: dev
+  prompt: "move hike_photos.zip from Downloads into my Documents folder"
+  expect: [{tool: move_path, args: {source: {icontains: hike_photos}, destination: {icontains: documents}}}]
+  forbid: [run_shell, run_applescript]
+- id: files_missing_passport
+  split: dev
+  prompt: "where's my passport scan?"
+  expect: [{any_of: [find_files, list_dir]}]
+  answer: {contains_any: ["no ", "couldn't", "not find", "don't see", "nothing", "didn't"]}

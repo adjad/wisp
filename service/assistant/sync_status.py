@@ -60,7 +60,10 @@ def source_status(source: str) -> dict:
                 "state": email.email_sync_state(), "count": 0,
                 "reason": email._email_reason,
                 "read_source": email._email_read_source,
-                "warning": email.email_freshness_warning()}
+                "warning": email.email_freshness_warning(),
+                "accounts": email.email_source_details(),
+                "fresh": bool(email.email_source_details()) and all(
+                    row["fresh"] for row in email.email_source_details())}
     if source == "messages":
         from service.tools.imessage_tools import messages_sync_state
         return {"id": source, "label": _LABELS[source],
@@ -89,10 +92,10 @@ def sources_snapshot(source_ids: Iterable[str] = DAILY_SOURCE_IDS) -> dict:
             "Waiting for current data; intermediate progress unavailable" if state == "syncing" else
             "Turned off" if state == "disabled" else
             (source.get("reason") or "Could not read this source"))
-        if source.get("warning"):
-            source["progress_detail"] = "Local Mail read complete; server freshness unverified"
+        if source.get("warning") and state == "ready":
+            source["progress_detail"] = "Cached email available; some accounts are stale or unverified"
         elif source["id"] == "email" and state == "ready":
-            source["progress_detail"] = "Mail data read"
+            source["progress_detail"] = "Email refreshed" if source.get("fresh") else "Email data read"
         if source["id"] == "browser_history" and state == "syncing":
             from service.tools.browser_history_tools import _BROWSERS, _completed
             completed = len(_completed.intersection(_BROWSERS))
@@ -137,6 +140,12 @@ async def _ensure_sources(sources: Iterable[str], timeout_seconds: float = 2.5) 
     # local-only snapshot until the next five-minute timer. Completion of this
     # retry requires a NEW header push; the existing ready flag is not enough.
     from service.tools import email_tools as email
+    if "email" in wanted:
+        try:   # direct Gmail read: fresh mail with Mail.app closed
+            from service import gmail_source
+            await gmail_source.refresh_if_stale()
+        except Exception:  # noqa: BLE001 — falls back to the Mail path
+            pass
     refresh_local = "email" in wanted and bool(email.email_freshness_warning())
     email_generation = email._headers_sync_generation
     # A ready flag describes the previous native snapshot, not the state of

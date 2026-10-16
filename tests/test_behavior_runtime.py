@@ -26,6 +26,10 @@ def at(hour, minute=0, day=0):
 
 class FakeEngine:
     def __init__(self, path=None, nudges=()):
+        from service.publication_authority import Authority
+        self._fixture_authority = Authority("explicit-test-engine")
+        self._fixture_authority.publish()
+        self._fixture_grants = {}
         self.path = path
         self.obs: dict[str, Observation] = {}
         self.snapshots: dict[str, dict] = {}
@@ -103,9 +107,28 @@ class FakeEngine:
             from dataclasses import replace
             n = replace(n, seq=len(self._nudges) + 1)
             self._nudges.append(n)
+            from service.publication_authority import Witness
+            self._fixture_grants[n.id] = (json.dumps(n.to_dict(),sort_keys=True,allow_nan=False),
+                Witness((self._fixture_authority.token(),)),("wisp",))
             out.append(n)
         self._queued = []
         return out
+
+    def signal_settings(self):
+        from service.behavior.activity import DEFAULTS
+        return {"settings":dict(DEFAULTS),"epoch":"explicit-test-engine"}
+
+    def prepare_settings_publication_token(self, expected):
+        from service.publication_authority import Witness
+        return Witness((self._fixture_authority.token(),)) if expected==self.signal_settings() else None
+
+    def queued_nudge_authority(self, nudge, now):
+        grant = self._fixture_grants.get(nudge.id)
+        if (grant is not None and grant[1].current()
+                and grant[0]==json.dumps(nudge.to_dict(),sort_keys=True,allow_nan=False)
+                and (nudge.expires_at is None or nudge.expires_at>now)):
+            return grant
+        return None
 
     def nudges_since(self, cursor=0, limit=50):
         rows = [n for n in self._nudges if n.seq > cursor][:limit]
@@ -131,14 +154,31 @@ class FakeEngine:
         return {"observations": kinds, "patterns": len(self._patterns), "nudge_cursor": len(self._nudges)}
 
 
-class FakeHub:
-    def __init__(self):
-        self.events = []
-
-    async def publish(self, event, *, dedupe_key=None, target=None, durable=True, expires_at=None):
-        self.events.append({"event": event, "dedupe_key": dedupe_key, "durable": durable,
-                            "expires_at": expires_at})
-        return {**event, "event_id": f"ev{len(self.events)}"}
+def FakeHub():
+    """Legacy fixture name: record the real synchronous Hub/Store delivery."""
+    from service.assistant.hub import Hub
+    hub = Hub()
+    hub.events = []
+    hub._fixture_recording = True
+    publish = hub.publish_committed_sync
+    def record(lease,receipt,runtime,loop):
+        event = publish(lease,receipt,runtime,loop)
+        if receipt.pending:
+            data = json.loads(receipt.plan.data)
+            hub.events.append(dict(event=event,dedupe_key=data["key"],durable=True,
+                                   expires_at=data["expires_at"]))
+            if event.get("auto_performed"):
+                hub.events.append(dict(event={"type":"changed"},dedupe_key=None,durable=False,expires_at=None))
+        return event
+    hub.publish_committed_sync = record
+    publish_normal = hub.publish_sync
+    def record_normal(event,**kwargs):
+        result = publish_normal(event,**kwargs)
+        hub.events.append(dict(event=result,dedupe_key=kwargs.get("dedupe_key"),
+            durable=kwargs.get("durable",True),expires_at=kwargs.get("expires_at")))
+        return result
+    hub.publish_sync = record_normal
+    return hub
 
 
 def gym_conflict_nudge(nid="n1", expires=None):
@@ -193,11 +233,781 @@ def make_runtime(tmp_path, engine=None, *, calendar=None, messages=None, clock=l
         session_db_fn=lambda: (_ for _ in ()).throw(RuntimeError("no sessions in tests")),
         clock=clock)
     rt.calls = calls
+    original_tick = rt.tick
+    async def bound_tick(store,hub,**kwargs):
+        if getattr(hub,"_fixture_recording",False):
+            hub._store = store
+        return await original_tick(store,hub,**kwargs)
+    rt.tick = bound_tick
     return rt, engine
 
 
 def tick(rt, store, hub, now=NOW, force=False):
     return asyncio.run(rt.tick(store, hub, now=now, force=force))
+
+
+@pytest.fixture
+def queued_delivery(tmp_path, monkeypatch, store):
+    """Real Engine/Store/Hub; only candidate discovery and native source are synthetic."""
+    from service.assistant.hub import Hub
+    from service.behavior.engine import BehaviorEngine
+    from service.behavior import nudges
+    from service.publication_authority import Authority, Witness
+    from service.safety import policy
+
+    policy.set_read_only(False)
+    engine = BehaviorEngine(tmp_path / "queued-engine.db", clock=lambda: NOW, tz="UTC")
+    observation = Observation(id="cal:g:1", kind="event_scheduled", ts=NOW+3600,
+                              subject="Arbitrary activity", source="calendar")
+    engine.observe([observation])
+    pattern = Pattern(id="p_gym", kind="habit", subject="arbitrary",
+                      statement="Repeated activity", support=8, opportunities=10,
+                      confidence=.8, evidence=(observation.id,))
+    engine._store.replace_patterns([pattern],NOW)
+    engine._store.meta_set("last_mined_at",NOW)
+    source = Authority("synthetic-native-calendar")
+    source.publish()
+    runtime = br.BehaviorRuntime(tmp_path / "queued-home",local_factory=lambda path:engine,
+        clock=lambda:NOW,nudge_sources_fn=lambda store,now:{"calendar":Witness.combine(source.token())})
+    inputs = runtime._prepare_nudge_inputs(store,NOW)
+    assert inputs is not None
+    candidates = [gym_conflict_nudge()]
+    monkeypatch.setattr(nudges,"build_candidates",lambda inputs:list(candidates))
+    created = engine.generate_nudges(NOW)
+    assert len(created)==1
+    runtime._stage_queued_nudge(created[0],inputs,NOW)
+    assert created[0].id in runtime._queued_delivery
+    hub = Hub(store)
+    yield runtime,engine,hub,created[0],source,candidates
+    runtime.close()
+
+
+def _delivery_counts(runtime,store):
+    return tuple(store._db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                 for table in ("commitments","calendar_event_ends","assistant_events"))+tuple(
+        runtime._db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in ("actions","nudges"))
+
+
+def test_queued_real_delivery_records_actions_before_event_and_supports_undo(queued_delivery,store):
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    async def run():
+        queue = hub.subscribe()
+        event = await runtime.deliver(store,hub,nudge,NOW)
+        assert event is not None and event["can_undo"]
+        assert len(event["auto_performed"])==2
+        assert queue.get_nowait()==event
+        assert queue.get_nowait()=={"type":"changed"}
+        assert queue.empty()
+        assert _delivery_counts(runtime,store)==(2,1,1,2,1)
+        row = store.event(event["event_id"])
+        assert row["payload"]=={k:v for k,v in event.items() if k!="event_id"}
+        assert len(runtime.undo(store,nudge.id))==2
+        assert store.event(event["event_id"])["state"]=="ack"
+        hub.unsubscribe(queue)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("withdraw",["reject","mute","undo","source","stop","safety"])
+def test_queued_prepared_revocation_has_zero_effects(queued_delivery,store,withdraw):
+    from service.behavior.engine import BehaviorEngine
+    from service.publication_authority import PublicationUnavailable
+    from service.safety import policy
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    other = BehaviorEngine(engine._store.path,clock=lambda:NOW,tz="UTC")
+    async def run():
+        queue = hub.subscribe()
+        loop = hub.prepare_nudge_delivery(store)
+        prepared = runtime._prepare_delivery(store,nudge,NOW)
+        assert prepared is not None
+        if withdraw=="reject":
+            other.set_pattern_status("p_gym","rejected")
+        elif withdraw=="mute":
+            other.feedback(Feedback(nudge_id=nudge.id,verdict="wrong",ts=NOW))
+        elif withdraw=="undo":
+            runtime.undo(store,nudge.id)
+        elif withdraw=="source":
+            source.withdraw()
+        elif withdraw=="stop":
+            runtime.stop()
+        else:
+            policy.set_read_only(True)
+        with pytest.raises(PublicationUnavailable):
+            runtime._commit_delivery(store,hub,prepared,loop)
+        assert _delivery_counts(runtime,store)==(0,0,0,0,0)
+        assert queue.empty()
+        if withdraw=="source":
+            source.publish()
+            assert runtime._prepare_delivery(store,nudge,NOW) is None
+        hub.unsubscribe(queue)
+    try:
+        asyncio.run(run())
+    finally:
+        other.close()
+        policy.set_read_only(False)
+
+
+def test_queued_partial_delivery_raises_and_retries_without_duplicate_actions(queued_delivery,store,monkeypatch):
+    from service.publication_authority import PublicationUnavailable
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    original = store.commit_nudge_event
+    def fail(*args):
+        raise PublicationUnavailable("synthetic failure after action ledger")
+    async def run():
+        queue = hub.subscribe()
+        monkeypatch.setattr(store,"commit_nudge_event",fail)
+        with pytest.raises(br.DeliveryIncomplete):
+            await runtime.deliver(store,hub,nudge,NOW)
+        assert _delivery_counts(runtime,store)==(2,1,0,2,0)
+        assert queue.empty()
+        monkeypatch.setattr(store,"commit_nudge_event",original)
+        event = await runtime.deliver(store,hub,nudge,NOW)
+        assert event is not None and event["can_undo"]
+        assert _delivery_counts(runtime,store)==(2,1,1,2,1)
+        hub.unsubscribe(queue)
+    asyncio.run(run())
+
+
+def test_queued_delivery_wins_before_cross_engine_rejection_ack(queued_delivery,store,monkeypatch):
+    import threading
+    from service.behavior.engine import BehaviorEngine
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    other = BehaviorEngine(engine._store.path,clock=lambda:NOW,tz="UTC")
+    attempted,acknowledged = threading.Event(),threading.Event()
+    errors = []
+    def reject():
+        attempted.set()
+        try:
+            other.set_pattern_status("p_gym","rejected")
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            acknowledged.set()
+    worker = threading.Thread(target=reject)
+    original = store.commit_nudge_actions
+    def held(lease,plan,owner):
+        worker.start()
+        assert attempted.wait(2)
+        assert not acknowledged.wait(.03)
+        return original(lease,plan,owner)
+    monkeypatch.setattr(store,"commit_nudge_actions",held)
+    async def run():
+        event = await runtime.deliver(store,hub,nudge,NOW)
+        assert event is not None
+        assert _delivery_counts(runtime,store)==(2,1,1,2,1)
+    try:
+        asyncio.run(run())
+        worker.join(2)
+        assert acknowledged.is_set() and not worker.is_alive() and not errors
+        assert store.event_by_key("behavior:"+nudge.id)["state"]=="pending"
+        assert len(runtime.undo(store,nudge.id))==2
+    finally:
+        worker.join(2)
+        other.close()
+
+
+def test_queued_commit_refuses_reentrant_mutations_before_clock_or_sql(queued_delivery,store,monkeypatch):
+    from service.publication_authority import PublicationBusy
+    from service.safety import policy,grants
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    original = store.commit_nudge_actions
+    calls = []
+    def forbidden(*args,**kwargs):
+        raise AssertionError("Preparation or injectable clock ran inside commit")
+    def held(lease,plan,owner):
+        mutations = [lambda:runtime.feedback(store,nudge.id,"wrong"),
+                     lambda:runtime.undo(store,nudge.id),runtime.stop,
+                     lambda:engine.set_pattern_status("p_gym","rejected"),
+                     source.withdraw,lambda:policy.set_read_only(True),
+                     lambda:grants.revoke("web_fetch")]
+        for mutate in mutations:
+            before = _delivery_counts(runtime,store)
+            with pytest.raises(PublicationBusy):
+                mutate()
+            assert _delivery_counts(runtime,store)==before
+            calls.append(1)
+        with pytest.raises(PublicationBusy):
+            with store.transaction():
+                raise AssertionError("Ordinary transaction entered")
+        return original(lease,plan,owner)
+    async def run():
+        loop = hub.prepare_nudge_delivery(store)
+        prepared = runtime._prepare_delivery(store,nudge,NOW)
+        assert prepared is not None
+        from service import config
+        with monkeypatch.context() as patch:
+            patch.setattr(runtime,"clock",forbidden)
+            patch.setattr(runtime,"policy_block",forbidden)
+            patch.setattr(runtime,"_nudge_sources_fn",forbidden)
+            patch.setattr(hub,"publish",forbidden)
+            patch.setattr(config,"models_config",forbidden)
+            patch.setattr(store,"commit_nudge_actions",held)
+            assert runtime._commit_delivery(store,hub,prepared,loop)["can_undo"]
+        assert len(calls)==7
+    asyncio.run(run())
+
+
+def test_queued_owned_write_rejects_wrong_identity_thread_closed_and_serialization(queued_delivery,store):
+    import pickle
+    import threading
+    from dataclasses import replace
+    from service.publication_authority import PublicationBusy,PublicationUnavailable,publication
+    from service.assistant.store import AssistantStore
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    other = AssistantStore(store.path.parent / "other.db")
+    prepared = runtime._prepare_delivery(store,nudge,NOW)
+    assert prepared is not None
+    errors = []
+    with publication(prepared.witness,writes=(prepared.plan.binding,)) as lease:
+        for candidate,owner,target in [(prepared.plan,object(),store),
+                (prepared.plan,runtime,other),
+                (replace(prepared.plan,data=prepared.plan.data+" "),runtime,store)]:
+            with pytest.raises(PublicationUnavailable):
+                target.commit_nudge_actions(lease,candidate,owner)
+        def wrong_thread():
+            try:
+                store.commit_nudge_actions(lease,prepared.plan,runtime)
+            except PublicationUnavailable:
+                errors.append("refused")
+        worker = threading.Thread(target=wrong_thread)
+        worker.start()
+        worker.join(2)
+        assert not worker.is_alive() and errors==["refused"]
+        for value in (prepared,prepared.plan,prepared.plan.binding,lease):
+            with pytest.raises(TypeError):
+                pickle.dumps(value)
+        with pytest.raises(PublicationBusy):
+            with publication(prepared.witness):
+                pass
+    with pytest.raises(PublicationUnavailable):
+        store.commit_nudge_actions(lease,prepared.plan,runtime)
+    assert _delivery_counts(runtime,store)==(0,0,0,0,0)
+
+
+def test_queued_later_insertions_do_not_revoke_original_batch_grants(queued_delivery,store):
+    from dataclasses import replace
+    runtime,engine,hub,first,source,candidates = queued_delivery
+    original = engine.queued_nudge_authority(first,NOW)
+    inputs = runtime._prepare_nudge_inputs(store,NOW)
+    candidates[:] = [replace(gym_conflict_nudge("n2"),kind="cancel_likely",actions=()),
+                     replace(gym_conflict_nudge("n3"),kind="day_preview",actions=())]
+    created = engine.generate_nudges(NOW)
+    assert len(created)==2
+    for nudge in created:
+        runtime._stage_queued_nudge(nudge,inputs,NOW)
+    assert original[1].current()
+    assert engine.queued_nudge_authority(first,NOW)[1] is original[1]
+    async def run():
+        for nudge in [first,*created]:
+            assert await runtime.deliver(store,hub,nudge,NOW) is not None
+        assert _delivery_counts(runtime,store)==(2,1,3,2,3)
+    asyncio.run(run())
+
+
+def test_queued_expired_original_and_restart_never_rebind(queued_delivery,store):
+    from service.publication_authority import PublicationUnavailable
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    prepared = runtime._prepare_delivery(store,nudge,NOW)
+    assert prepared is not None
+    reading = engine._delivery_clock.read()
+    engine._delivery_clock.observe(nudge.expires_at+1,reading[1]+nudge.expires_at-NOW+1)
+    async def run():
+        loop = hub.prepare_nudge_delivery(store)
+        with pytest.raises(PublicationUnavailable):
+            runtime._commit_delivery(store,hub,prepared,loop)
+        assert await runtime.deliver(store,hub,nudge,NOW) is None
+        fresh = br.BehaviorRuntime(runtime.home,local_factory=lambda path:engine,clock=lambda:NOW)
+        try:
+            assert await fresh.deliver(store,hub,nudge,NOW) is None
+        finally:
+            fresh.close()
+        assert _delivery_counts(runtime,store)==(0,0,0,0,0)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("phase",["before_actions","after_actions","ledger","after_event","fanout"])
+def test_queued_partial_failure_phases_retry_actual_effects_once(queued_delivery,store,monkeypatch,phase):
+    import sqlite3
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    actions,event,fanout = store.commit_nudge_actions,store.commit_nudge_event,hub.publish_committed_sync
+    def failure(*args,**kwargs):
+        raise RuntimeError("synthetic delivery failure")
+    def after_actions(*args):
+        actions(*args)
+        failure()
+    def after_event(*args):
+        event(*args)
+        failure()
+    async def run():
+        queue = hub.subscribe()
+        if phase in {"before_actions","after_actions"}:
+            monkeypatch.setattr(store,"commit_nudge_actions",failure if phase=="before_actions" else after_actions)
+        elif phase=="ledger":
+            runtime._db.set_authorizer(lambda op,table,*args:
+                sqlite3.SQLITE_DENY if op==sqlite3.SQLITE_INSERT and table=="actions" else sqlite3.SQLITE_OK)
+        elif phase=="after_event":
+            monkeypatch.setattr(store,"commit_nudge_event",after_event)
+        else:
+            monkeypatch.setattr(hub,"publish_committed_sync",failure)
+        try:
+            with pytest.raises(br.DeliveryIncomplete):
+                await runtime.deliver(store,hub,nudge,NOW)
+        finally:
+            runtime._db.set_authorizer(None)
+        counts = _delivery_counts(runtime,store)
+        assert counts=={"before_actions":(0,0,0,0,0),"after_actions":(2,1,0,0,0),
+            "ledger":(2,1,0,0,0),"after_event":(2,1,1,2,0),"fanout":(2,1,1,2,1)}[phase]
+        assert queue.empty() and nudge.id in runtime._incomplete_deliveries
+        monkeypatch.setattr(store,"commit_nudge_actions",actions)
+        monkeypatch.setattr(store,"commit_nudge_event",event)
+        monkeypatch.setattr(hub,"publish_committed_sync",fanout)
+        result = await runtime.deliver(store,hub,nudge,NOW)
+        assert result is not None and result["can_undo"]
+        assert _delivery_counts(runtime,store)==(2,1,1,2,1)
+        assert nudge.id not in runtime._incomplete_deliveries
+        assert queue.get_nowait()==result and queue.get_nowait()=={"type":"changed"}
+        assert queue.empty()
+        hub.unsubscribe(queue)
+    asyncio.run(run())
+
+
+def test_queued_tick_keeps_partial_cursor_and_never_silently_drops_withdrawn_retry(queued_delivery,store,monkeypatch):
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    monkeypatch.setattr(runtime,"work",lambda *args,**kwargs:([nudge],"local"))
+    original = store.commit_nudge_event
+    def failure(*args):
+        raise RuntimeError("event write failed")
+    async def run():
+        monkeypatch.setattr(store,"commit_nudge_event",failure)
+        assert await runtime.tick(store,hub,now=NOW)==[]
+        assert runtime.kv_get("cursor:local","0")=="0"
+        assert "DeliveryIncomplete" in runtime.errors["deliver"]
+        assert _delivery_counts(runtime,store)==(2,1,0,2,0)
+        source.withdraw()
+        monkeypatch.setattr(store,"commit_nudge_event",original)
+        assert await runtime.tick(store,hub,now=NOW)==[]
+        assert runtime.kv_get("cursor:local","0")=="0"
+        assert "DeliveryIncomplete" in runtime.errors["deliver"]
+        assert _delivery_counts(runtime,store)==(2,1,0,2,0)
+    asyncio.run(run())
+
+
+def test_queued_logical_commit_finishes_when_time_expires_during_own_sql(queued_delivery,store,monkeypatch):
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    original = store.commit_nudge_actions
+    def expired(lease,plan,owner):
+        reading = engine._delivery_clock.read()
+        engine._delivery_clock.observe(nudge.expires_at+1,reading[1]+nudge.expires_at-NOW+1)
+        assert not lease.current()
+        return original(lease,plan,owner)
+    monkeypatch.setattr(store,"commit_nudge_actions",expired)
+    async def run():
+        result = await runtime.deliver(store,hub,nudge,NOW)
+        assert result is not None and result["can_undo"]
+        assert _delivery_counts(runtime,store)==(2,1,1,2,1)
+    asyncio.run(run())
+
+
+def test_queued_copy_cannot_change_prepared_identity_or_committed_payload(queued_delivery,store):
+    from dataclasses import replace
+    from service.publication_authority import PublicationUnavailable,publication
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    prepared = runtime._prepare_delivery(store,nudge,NOW)
+    async def run():
+        loop = hub.prepare_nudge_delivery(store)
+        for copy in (replace(prepared),replace(prepared,nudge_id="forged")):
+            with pytest.raises(PublicationUnavailable):
+                runtime._commit_delivery(store,hub,copy,loop)
+        with publication(prepared.witness,writes=(prepared.plan.binding,)) as lease:
+            with pytest.raises(PublicationUnavailable):
+                store.commit_nudge_actions(lease,replace(prepared.plan),runtime)
+        original = store.commit_nudge_event
+        def validate(lease,plan,owner):
+            receipt = original(lease,plan,owner)
+            with pytest.raises(PublicationUnavailable):
+                hub.publish_committed_sync(lease,replace(receipt,payload='{"type":"forged"}'),runtime,loop)
+            return receipt
+        store.commit_nudge_event = validate
+        try:
+            assert runtime._commit_delivery(store,hub,prepared,loop)["nudge_id"]==nudge.id
+            assert _delivery_counts(runtime,store)==(2,1,1,2,1)
+        finally:
+            store.commit_nudge_event = original
+    asyncio.run(run())
+
+
+def test_queued_preparation_and_commit_refuse_caller_transactions(queued_delivery,store):
+    from service.publication_authority import PublicationUnavailable
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    runtime._db.execute("BEGIN")
+    try:
+        with pytest.raises(PublicationUnavailable):
+            runtime._prepare_delivery(store,nudge,NOW)
+        assert runtime._db.in_transaction
+    finally:
+        runtime._db.rollback()
+    store._db.execute("BEGIN")
+    try:
+        with pytest.raises(PublicationUnavailable):
+            runtime._prepare_delivery(store,nudge,NOW)
+        assert store._db.in_transaction
+    finally:
+        store._db.rollback()
+    prepared = runtime._prepare_delivery(store,nudge,NOW)
+    async def run():
+        loop = hub.prepare_nudge_delivery(store)
+        runtime._db.execute("BEGIN")
+        try:
+            with pytest.raises(PublicationUnavailable):
+                runtime._commit_delivery(store,hub,prepared,loop)
+            assert runtime._db.in_transaction
+        finally:
+            runtime._db.rollback()
+        store._db.execute("BEGIN")
+        try:
+            with pytest.raises(br.DeliveryIncomplete):
+                runtime._commit_delivery(store,hub,prepared,loop)
+            assert store._db.in_transaction
+        finally:
+            store._db.rollback()
+        assert _delivery_counts(runtime,store)==(0,0,0,0,0)
+    asyncio.run(run())
+
+
+def test_queued_missing_evidence_is_not_an_implicit_source_grant(queued_delivery,store):
+    from dataclasses import replace
+    runtime,engine,hub,nudge,source,candidates = queued_delivery
+    inputs = runtime._prepare_nudge_inputs(store,NOW)
+    candidates[:] = [replace(gym_conflict_nudge("unknown"),kind="day_preview",evidence=("missing:evidence",))]
+    [unknown] = engine.generate_nudges(NOW)
+    runtime._stage_queued_nudge(unknown,inputs,NOW)
+    assert unknown.id not in runtime._queued_delivery
+    assert asyncio.run(runtime.deliver(store,hub,unknown,NOW)) is None
+    assert _delivery_counts(runtime,store)==(0,0,0,0,0)
+
+
+def test_queued_safety_aba_during_full_preparation_never_rearms_original(queued_delivery,store,monkeypatch):
+    from service.safety import policy
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    original = runtime.policy_block
+    checked = []
+    def changed(action):
+        result = original(action)
+        policy.set_read_only(True)
+        policy.set_read_only(False)
+        checked.append(1)
+        return result
+    monkeypatch.setattr(runtime,"policy_block",changed)
+    assert runtime._prepare_delivery(store,nudge,NOW) is None
+    assert checked and not policy.read_only()
+    assert _delivery_counts(runtime,store)==(0,0,0,0,0)
+
+
+def test_queued_actual_hub_replays_canonical_event_and_preserves_legacy_refusal(queued_delivery,store):
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    async def run():
+        result = await runtime.deliver(store,hub,nudge,NOW)
+        stream = hub.events(rotate_after=.1)
+        try:
+            replay = await anext(stream)
+            assert replay==result
+        finally:
+            await stream.aclose()
+        canonical = await hub.publish({"type":"nudge","body":"forged"},dedupe_key="behavior:"+nudge.id)
+        assert canonical==result
+        for kind in ("create_apple_reminder","update_apple_reminder","delete_apple_reminder"):
+            with pytest.raises(ValueError,match="legacy Reminders"):
+                await hub.publish({"type":kind})
+        assert _delivery_counts(runtime,store)==(2,1,1,2,1)
+        future = asyncio.new_event_loop()
+        hub._owner_loop = future
+        try:
+            with pytest.raises(ValueError,match="another event loop"):
+                hub.prepare_nudge_delivery(store)
+        finally:
+            future.close()
+    asyncio.run(run())
+
+
+def test_queued_withheld_cursor_advances_without_rearming_or_spending_budget(queued_delivery,store,monkeypatch):
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    runtime._stamps["local"] = {"ingest":NOW,"mine":NOW,"nudge":0}
+    runtime._availability_attempt = NOW
+    runtime._card = (NOW,"")
+    monkeypatch.setattr(runtime,"_refresh_availability",lambda now:None)
+    source.withdraw()
+    async def run():
+        assert await runtime.tick(store,hub,now=NOW)==[]
+        assert runtime.kv_get("cursor:local")==str(nudge.seq)
+        source.publish()
+        assert await runtime.tick(store,hub,now=NOW+61)==[]
+        assert runtime.kv_get("cursor:local")==str(nudge.seq)
+        assert len(engine.nudges_since(0)[0])==1
+        assert _delivery_counts(runtime,store)==(0,0,0,0,0)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("with_ledger",[False,True])
+def test_queued_partial_recovery_never_adopts_completed_or_edited_items(queued_delivery,store,monkeypatch,with_ledger):
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    actions,event = store.commit_nudge_actions,store.commit_nudge_event
+    def failure(*args):
+        if not with_ledger:
+            actions(*args)
+        raise RuntimeError("synthetic partial action")
+    async def run():
+        target = "commit_nudge_event" if with_ledger else "commit_nudge_actions"
+        monkeypatch.setattr(store,target,failure)
+        with pytest.raises(br.DeliveryIncomplete):
+            await runtime.deliver(store,hub,nudge,NOW)
+        with store.transaction() as db:
+            db.execute("UPDATE commitments SET status='completed',updated_at=? WHERE kind='reminder'",(NOW+1,))
+            db.execute("UPDATE commitments SET title='User edit',updated_at=? WHERE kind='event'",(NOW+1,))
+        monkeypatch.setattr(store,"commit_nudge_actions",actions)
+        monkeypatch.setattr(store,"commit_nudge_event",event)
+        result = await runtime.deliver(store,hub,nudge,NOW)
+        assert result is not None and not result["can_undo"] and result["auto_performed"]==[]
+        assert len(store._db.execute("SELECT * FROM commitments").fetchall())==2
+        assert store._db.execute("SELECT title FROM commitments WHERE kind='event'").fetchone()[0]=="User edit"
+        assert len(runtime.actions_for(nudge.id))==(2 if with_ledger else 0)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("writer",["add_manual","set_status","mark_notified"])
+def test_queued_legacy_store_writers_refuse_reentry_without_owned_capability(queued_delivery,store,writer,monkeypatch):
+    import sqlite3
+    from service.assistant import store as store_module
+    from service.publication_authority import PublicationBusy,publication
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    manual = store.add_manual("Existing user item",NOW+600)
+    prepared = runtime._prepare_delivery(store,nudge,NOW)
+    operations = {"add_manual":lambda:store.add_manual("Unowned write",NOW+300),
+                  "set_status":lambda:store.set_status(manual["id"],"completed"),
+                  "mark_notified":lambda:store.mark_notified(manual["id"],"due")}
+    with publication(prepared.witness,writes=(prepared.plan.binding,)):
+        def forbidden(*args,**kwargs):
+            raise AssertionError("Store mutation reached clock/UUID/query before Busy")
+        with monkeypatch.context() as patch:
+            patch.setattr(store_module.time,"time",forbidden)
+            patch.setattr(store_module.uuid,"uuid4",forbidden)
+            patch.setattr(store,"duplicate_ids",forbidden)
+            store._db.set_authorizer(lambda *args:sqlite3.SQLITE_DENY)
+            try:
+                with pytest.raises(PublicationBusy):
+                    operations[writer]()
+            finally:
+                store._db.set_authorizer(None)
+    assert store.get(manual["id"])["status"]=="active"
+    assert len(store._db.execute("SELECT * FROM commitments").fetchall())==1
+    assert store._db.execute("SELECT COUNT(*) FROM notify_log").fetchone()[0]==0
+
+
+@pytest.mark.parametrize("writer",["add_manual","set_status","mark_notified"])
+def test_queued_legacy_store_writer_waits_for_actual_delivery(queued_delivery,store,writer,monkeypatch):
+    import threading
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    manual = store.add_manual("Existing user item",NOW+600)
+    attempted,acknowledged = threading.Event(),threading.Event()
+    errors = []
+    operations = {"add_manual":lambda:store.add_manual("User addition",NOW+300),
+                  "set_status":lambda:store.set_status(manual["id"],"completed"),
+                  "mark_notified":lambda:store.mark_notified(manual["id"],"due")}
+    def mutate():
+        attempted.set()
+        try:
+            operations[writer]()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            acknowledged.set()
+    worker = threading.Thread(target=mutate)
+    original = store.commit_nudge_actions
+    def held(*args):
+        worker.start()
+        assert attempted.wait(2) and not acknowledged.wait(.03)
+        return original(*args)
+    monkeypatch.setattr(store,"commit_nudge_actions",held)
+    try:
+        assert asyncio.run(runtime.deliver(store,hub,nudge,NOW))["can_undo"]
+    finally:
+        worker.join(2)
+    assert acknowledged.is_set() and not worker.is_alive() and errors==[]
+    if writer=="add_manual":
+        assert store._db.execute("SELECT COUNT(*) FROM commitments WHERE title='User addition'").fetchone()[0]==1
+    elif writer=="set_status":
+        assert store.get(manual["id"])["status"]=="completed"
+    else:
+        assert store.already_notified(manual["id"],"due")
+    # Ordinary nested writers remain part of their caller's rollback unit.
+    with pytest.raises(RuntimeError,match="rollback"):
+        with store.transaction():
+            store.add_manual("Rolled back",NOW+900)
+            store.set_status(manual["id"],"active")
+            store.mark_notified(manual["id"],"rolled-back")
+            raise RuntimeError("rollback")
+    assert store._db.execute("SELECT COUNT(*) FROM commitments WHERE title='Rolled back'").fetchone()[0]==0
+    assert not store.already_notified(manual["id"],"rolled-back")
+
+
+@pytest.mark.parametrize("table",["commitments","calendar_event_ends","assistant_behavior_action_receipts"])
+def test_queued_store_item_end_and_receipt_creation_are_atomic(queued_delivery,store,table):
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    store._db.execute(f"CREATE TEMP TRIGGER fail_atomic BEFORE INSERT ON {table} "
+                      "BEGIN SELECT RAISE(ABORT,'synthetic atomic failure'); END")
+    async def run():
+        queue = hub.subscribe()
+        with pytest.raises(br.DeliveryIncomplete):
+            await runtime.deliver(store,hub,nudge,NOW)
+        assert _delivery_counts(runtime,store)==(0,0,0,0,0) and queue.empty()
+        assert store._db.execute("SELECT COUNT(*) FROM assistant_behavior_action_receipts").fetchone()[0]==0
+        store._db.execute("DROP TRIGGER fail_atomic")
+        result = await runtime.deliver(store,hub,nudge,NOW)
+        assert result is not None and result["can_undo"]
+        assert _delivery_counts(runtime,store)==(2,1,1,2,1)
+        assert store._db.execute("SELECT COUNT(*) FROM assistant_behavior_action_receipts WHERE receipt_state='active'").fetchone()[0]==2
+        hub.unsubscribe(queue)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("change",["receipt","item","end","cid"])
+def test_queued_receipt_item_and_end_cas_across_two_store_connections(queued_delivery,store,monkeypatch,change):
+    from service.assistant.store import AssistantStore
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    original = store.commit_nudge_event
+    def fail(*args):
+        raise RuntimeError("synthetic event failure")
+    async def run():
+        monkeypatch.setattr(store,"commit_nudge_event",fail)
+        with pytest.raises(br.DeliveryIncomplete):
+            await runtime.deliver(store,hub,nudge,NOW)
+        monkeypatch.setattr(store,"commit_nudge_event",original)
+        prepared = runtime._prepare_delivery(store,nudge,NOW)
+        assert prepared is not None
+        other = AssistantStore(store.path)
+        try:
+            with other.transaction() as db:
+                if change=="receipt":
+                    db.execute("UPDATE assistant_behavior_action_receipts SET created_at=created_at+1 WHERE action_index=0")
+                elif change=="item":
+                    db.execute("UPDATE commitments SET title='User edit',updated_at=updated_at+1 WHERE kind='reminder'")
+                elif change=="end":
+                    db.execute("UPDATE calendar_event_ends SET end_ts=end_ts+60")
+                else:
+                    db.execute("UPDATE assistant_behavior_action_receipts SET commitment_id='changed-cid' WHERE action_index=0")
+            before = _delivery_counts(runtime,store)
+            loop = hub.prepare_nudge_delivery(store)
+            queue = hub.subscribe()
+            try:
+                with pytest.raises(br.DeliveryIncomplete):
+                    runtime._commit_delivery(store,hub,prepared,loop)
+                assert _delivery_counts(runtime,store)==before and queue.empty()
+            finally:
+                hub.unsubscribe(queue)
+        finally:
+            other._db.close()
+    asyncio.run(run())
+
+
+def test_behavior_receipt_upgrade_reopen_preserves_legacy_store(tmp_path):
+    from service.assistant.store import AssistantStore,behavior_owner_id
+    path = tmp_path/"legacy.db"
+    original = AssistantStore(path)
+    manual = original.add_manual("Existing legacy item",NOW+600)
+    event = original.enqueue_event({"type":"nudge","body":"Existing event"},dedupe_key="existing")
+    with original.transaction() as db:
+        db.execute("DROP TABLE assistant_behavior_action_receipts")
+    original._db.close()
+    for _ in range(2):
+        upgraded = AssistantStore(path)
+        try:
+            assert upgraded.get(manual["id"])["title"]=="Existing legacy item"
+            assert upgraded.event(event["id"])["payload"]["body"]=="Existing event"
+            assert upgraded.forget_behavior_actions(behavior_owner_id(tmp_path/"unused-home"))=={
+                "removed":[],"kept":0,"covered":()}
+        finally:
+            upgraded._db.close()
+
+
+@pytest.mark.parametrize("malformed",["missing_columns","missing_unique","wrong_state","wrong_pk"])
+def test_behavior_receipt_malformed_preexisting_schema_refuses_without_replacement(tmp_path,malformed):
+    from service.assistant.store import AssistantStore,_BEHAVIOR_RECEIPTS_SCHEMA
+    path = tmp_path/"malformed.db"
+    original = AssistantStore(path)
+    manual = original.add_manual("Preserve this item",NOW+600)
+    definitions = {"missing_columns":"CREATE TABLE assistant_behavior_action_receipts(owner_id TEXT)",
+        "missing_unique":_BEHAVIOR_RECEIPTS_SCHEMA.replace("commitment_id TEXT NOT NULL UNIQUE","commitment_id TEXT NOT NULL"),
+        "wrong_state":_BEHAVIOR_RECEIPTS_SCHEMA.replace("'active','consumed'","'acti ve','consumed'"),
+        "wrong_pk":_BEHAVIOR_RECEIPTS_SCHEMA.replace("PRIMARY KEY(owner_id,nudge_id,action_index)","PRIMARY KEY(owner_id,action_index,nudge_id)")}
+    with original.transaction() as db:
+        db.execute("DROP TABLE assistant_behavior_action_receipts")
+        db.execute(definitions[malformed])
+    before = original._db.execute("SELECT sql FROM sqlite_master WHERE name='assistant_behavior_action_receipts'").fetchone()[0]
+    original._db.close()
+    with pytest.raises(RuntimeError,match="receipt schema"):
+        AssistantStore(path)
+    import sqlite3
+    with sqlite3.connect(path) as inspect:
+        assert inspect.execute("SELECT title FROM commitments WHERE id=?",(manual["id"],)).fetchone()[0]=="Preserve this item"
+        assert inspect.execute("SELECT sql FROM sqlite_master WHERE name='assistant_behavior_action_receipts'").fetchone()[0]==before
+
+
+def test_behavior_owner_identity_uses_one_canonical_home_encoding(tmp_path):
+    from service.assistant.store import behavior_owner_id
+    home = tmp_path/"home"
+    home.mkdir()
+    alias = tmp_path/"alias"
+    alias.symlink_to(home,target_is_directory=True)
+    assert behavior_owner_id(home)==behavior_owner_id(alias)==behavior_owner_id(home/".."/"home")
+    assert behavior_owner_id(tmp_path/"different")!=behavior_owner_id(home)
+
+
+@pytest.mark.parametrize("collision",["cid","primary_key"])
+def test_queued_receipt_identity_collision_is_refused_before_effects(queued_delivery,store,collision):
+    from service.publication_authority import PublicationUnavailable
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    prepared = runtime._prepare_delivery(store,nudge,NOW)
+    data = json.loads(prepared.plan.data)
+    action = data["units"][0]
+    owner = "f"*64 if collision=="cid" else runtime._owner_id
+    cid = action["id"] if collision=="cid" else "foreign-commitment-id"
+    with store.transaction() as db:
+        db.execute("INSERT INTO assistant_behavior_action_receipts "
+            "(owner_id,nudge_id,action_index,commitment_id,receipt_state,type,kind,title,context,when_ts,end_ts,created_at) "
+            "VALUES(?,?,?,?,'active',?,?,?,?,?,?,?)",(owner,nudge.id,action["idx"],cid,action["type"],
+            action["kind"],action["title"],action["context"],action["when_ts"],action["end_ts"],NOW))
+    with pytest.raises(PublicationUnavailable,match="ownership identity conflicts"):
+        runtime._prepare_delivery(store,nudge,NOW)
+    assert _delivery_counts(runtime,store)==(0,0,0,0,0)
+
+
+def test_queued_consumed_receipts_never_recreate_items_or_adopt_reused_cid(queued_delivery,store,monkeypatch):
+    runtime,engine,hub,nudge,source,_ = queued_delivery
+    original = store.commit_nudge_event
+    def fail(*args):
+        raise RuntimeError("synthetic event failure")
+    async def run():
+        monkeypatch.setattr(store,"commit_nudge_event",fail)
+        with pytest.raises(br.DeliveryIncomplete):
+            await runtime.deliver(store,hub,nudge,NOW)
+        monkeypatch.setattr(store,"commit_nudge_event",original)
+        old = dict(store._db.execute("SELECT * FROM commitments WHERE kind='reminder'").fetchone())
+        cleaned = store.forget_behavior_actions(runtime._owner_id)
+        assert len(cleaned["removed"])==2
+        assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]==0
+        # Reuse the exact CID with matching old text/time/creation identity:
+        # consumed ownership is still a permanent no-recreation disposition.
+        with store.transaction() as db:
+            columns = list(old)
+            db.execute("INSERT INTO commitments("+",".join(columns)+") VALUES("+",".join("?" for _ in columns)+")",
+                       tuple(old.values()))
+        result = await runtime.deliver(store,hub,nudge,NOW)
+        assert result is not None and not result["can_undo"] and result["auto_performed"]==[]
+        again = store.forget_behavior_actions(runtime._owner_id)
+        assert again["removed"]==[] and again["kept"]==1 and len(again["covered"])==2
+        assert store.get(old["id"]) is not None
+        assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]==1
+        assert store._db.execute("SELECT COUNT(*) FROM assistant_behavior_action_receipts WHERE receipt_state='consumed'").fetchone()[0]==2
+    asyncio.run(run())
 
 
 # --------------------------------------------------------------------------
@@ -297,7 +1107,7 @@ def test_nudge_published_with_app_event_shape_and_auto_actions(tmp_path, store):
     assert [a["type"] for a in ev["actions"]] == ["add_reminder", "add_hold", "open_prompt"]
     assert ev["can_undo"] is True
     assert [a["type"] for a in ev["auto_performed"]] == ["add_reminder", "add_hold"]
-    assert row["event_id"] == "ev1"
+    assert store.event(row["event_id"])["dedupe_key"]=="behavior:n1"
     # The reversible actions landed on Wisp's own schedule; open_prompt did not run.
     rows = {r["title"]: r for r in (dict(x) for x in store._db.execute("SELECT * FROM commitments"))}
     assert set(rows) == {"Pack gym bag", "Tentative: Gym"}
@@ -413,9 +1223,10 @@ def test_calendar_snapshot_maps_ids_and_detects_cancellation(tmp_path, store):
     tick(rt, store, FakeHub())
     source, ids, start, end, taken = eng.snapshot_calls[-1]
     assert source == "calendar" and taken == NOW - 5
-    # Every calendar, past and upcoming, but no all-day events.
+    # All-day plans stay available for calendar-load reports; habit miners exclude them.
     assert sorted(ids) == sorted([f"cal:g:{int(at(6, 30, -1))}", f"cal:t:{int(at(16, 0, 1))}",
-                                  f"cal:b:{int(at(17, 0, 1))}", f"cal:r:{int(at(11, 0, 1))}"])
+                                  f"cal:b:{int(at(17, 0, 1))}", f"cal:r:{int(at(11, 0, 1))}",
+                                  f"cal:h:{int(at(0, 0, 2))}"])
     sync_ = eng.obs[f"cal:t:{int(at(16, 0, 1))}"]
     assert sync_.kind == "event" and sync_.end_ts == at(16, 30, 1) and sync_.source_id == "t"
     assert sync_.attrs["calendar"] == "Work"
@@ -813,6 +1624,67 @@ def test_message_timestamps_accept_rfc3339_and_numbers():
     assert br._message_ts("not a time") is None and br._message_ts(None) is None
 
 
+def test_drain_guard_refuses_only_caller_scopes_and_restores_after_exceptions():
+    from service.publication_authority import (
+        Authority, PublicationBusy, Witness, assert_drain_allowed,
+        assert_mutation_allowed, publication, revocation,
+    )
+    authority = Authority("drain-guard-control")
+    authority.publish()
+    witness = Witness.combine(authority.token())
+    assert_drain_allowed()
+    class ControlledFailure(Exception):
+        pass
+    with pytest.raises(ControlledFailure):
+        with revocation():
+            assert_mutation_allowed()
+            with pytest.raises(PublicationBusy):
+                assert_drain_allowed()
+            with pytest.raises(ControlledFailure):
+                with revocation():
+                    assert_mutation_allowed()
+                    with pytest.raises(PublicationBusy):
+                        assert_drain_allowed()
+                    raise ControlledFailure()
+            # An inner exception must not clear the caller's ownership.
+            with pytest.raises(PublicationBusy):
+                assert_drain_allowed()
+            # Ordinary nested mutations remain supported.
+            authority.publish()
+            raise ControlledFailure()
+    assert_drain_allowed()
+    witness = Witness.combine(authority.token())
+    with pytest.raises(ControlledFailure):
+        with publication(witness):
+            with pytest.raises(PublicationBusy):
+                assert_drain_allowed()
+            raise ControlledFailure()
+    assert_drain_allowed()
+    with revocation():
+        authority.publish()
+    assert_drain_allowed()
+
+
+def test_drain_guard_is_thread_local_and_never_waits_for_another_threads_barrier():
+    import threading
+    from service.publication_authority import assert_drain_allowed, revocation
+    completed,errors = threading.Event(),[]
+    def check():
+        try:
+            assert_drain_allowed()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            completed.set()
+    worker = threading.Thread(target=check,daemon=True)
+    with revocation():
+        worker.start()
+        # The guard reads its own scope only; it must not acquire the barrier.
+        assert completed.wait(2)
+    worker.join(3)
+    assert not worker.is_alive() and not errors
+
+
 def test_counterpart_keeps_people_and_drops_automated_senders():
     person = lambda d, conv, sender="": br._counterpart({"direction": d, "conversation": conv, "sender": sender})
     assert person("incoming", "any;-;+15555550101", "+15555550101") == "+15555550101"
@@ -832,3 +1704,37 @@ def test_a_failing_contact_lookup_falls_back_to_the_handle(tmp_path):
     rt, eng = make_runtime(tmp_path, messages=messages, contact_name_fn=boom)
     assert rt._ingest_messages(NOW) is True
     assert eng.obs["msg:m1"].subject == "+15555550101"
+
+
+@pytest.mark.parametrize("mode", ["enabled", "off"])
+def test_observation_retention_keeps_only_valid_overlapping_calendar_intervals(tmp_path, monkeypatch, mode):
+    from service.behavior.store import Store, OBSERVATION_RETENTION_S
+    from service.behavior.types import Observation
+    from service.assistant import behavior_runtime
+    now = 1792051200.0
+    cutoff = now-OBSERVATION_RETENTION_S
+    home = tmp_path / mode
+    store = Store(home / behavior_runtime.ENGINE_DB)
+    rows = [Observation("end-before", "event", now-190*86400, end_ts=cutoff-1),
+            Observation("end-at", "event", now-190*86400, end_ts=cutoff),
+            Observation("end-after", "event", now-190*86400, end_ts=cutoff+1),
+            Observation("end-now", "event", now-190*86400, end_ts=now),
+            Observation("unknown-end", "event", now-190*86400),
+            Observation("invalid-end", "event", now-190*86400, end_ts=float("inf")),
+            Observation("old-message", "message_in", now-190*86400, end_ts=now),
+            Observation("old-reminder", "reminder_done", now-190*86400, end_ts=now),
+            Observation("point-at", "event", cutoff),
+            Observation("recent-message", "message_in", cutoff+1)]
+    try:
+        store.upsert_observations(rows)
+        if mode == "enabled":
+            result = store.prune(now)
+        else:
+            def prohibited(*_args, **_kwargs):
+                raise AssertionError("Off-state retention constructed a runtime")
+            monkeypatch.setattr(behavior_runtime, "get_runtime", prohibited)
+            result = behavior_runtime.age_out(home=home, now=now)
+        assert result["observations"] == 5
+        assert {r.id for r in store.observations()} == {"end-at", "end-after", "end-now", "point-at", "recent-message"}
+    finally:
+        store.close()

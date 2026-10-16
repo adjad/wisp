@@ -788,27 +788,29 @@ def test_identical_shell_and_timer_writes_are_not_repeated(monkeypatch, _fake_to
 
 def test_device_and_media_controls_may_repeat_identical_writes(monkeypatch, _fake_tools):
     calls = []
-    _replace_body(monkeypatch, "music", calls, "Skipped to next track.")
-    args = {"action": "next", "app": "spotify"}
-    _run_real(PlanClient([plan("call_tools", ("music", args)), plan("call_tools", ("music", args)),
-                          plan("answer")]), ("music",), "skip two tracks in Spotify")
-    assert calls == [("music", args), ("music", args)]
+    _replace_body(monkeypatch, "open_app", calls, "Opened Safari.")
+    args = {"name": "Safari"}
+    _run_real(PlanClient([plan("call_tools", ("open_app", args)), plan("call_tools", ("open_app", args)),
+                          plan("answer")]), ("open_app",), "open Safari, then open it again")
+    assert calls == [("open_app", args), ("open_app", args)]
     calls.clear()
-    _replace_body(monkeypatch, "set_volume", calls, "Volume changed.")
-    _run_real(PlanClient([plan("call_tools", ("set_volume", {"level": n})) for n in (10, 50, 10)]
-                         + [plan("answer")]), ("set_volume",), "set volume to 10, then 50, then 10")
-    assert calls == [("set_volume", {"level": n}) for n in (10, 50, 10)]
+    _replace_body(monkeypatch, "window_control", calls, "Window changed.")
+    _run_real(PlanClient([plan("call_tools", ("window_control", {"action": a}))
+                          for a in ("minimize", "zoom", "minimize")]
+                         + [plan("answer")]), ("window_control",), "minimize, zoom, then minimize the window")
+    assert calls == [("window_control", {"action": a}) for a in ("minimize", "zoom", "minimize")]
 
 
 def test_a_write_resets_the_identical_read_cap(monkeypatch, _fake_tools):
     calls = []
-    _replace_body(monkeypatch, "get_volume", calls, "Volume: 25%")
-    _replace_body(monkeypatch, "set_volume", calls, "Volume set to 10%")
-    _run_real(PlanClient([plan("call_tools", ("get_volume", {})), plan("call_tools", ("get_volume", {})),
-                          plan("call_tools", ("set_volume", {"level": 10})),
-                          plan("call_tools", ("get_volume", {})), plan("answer")]),
-              ("get_volume", "set_volume"), "check the volume twice, set it to 10%, then check it")
-    assert [n for n, _ in calls] == ["get_volume", "get_volume", "set_volume", "get_volume"]
+    _replace_body(monkeypatch, "clipboard_read", calls, "old text")
+    _replace_body(monkeypatch, "clipboard_write", calls, "copied 8 chars to the clipboard")
+    _run_real(PlanClient([plan("call_tools", ("clipboard_read", {})), plan("call_tools", ("clipboard_read", {})),
+                          plan("call_tools", ("clipboard_write", {"text": "new text"})),
+                          plan("call_tools", ("clipboard_read", {})), plan("answer")]),
+              ("clipboard_read", "clipboard_write"),
+              "read my clipboard twice, copy 'new text', then read it again")
+    assert [n for n, _ in calls] == ["clipboard_read", "clipboard_read", "clipboard_write", "clipboard_read"]
 
 
 def test_the_read_cap_counts_planned_arguments_not_filtered_ones(monkeypatch):

@@ -371,8 +371,48 @@ final class WispClient {
 
     // GET /behavior/status | /behavior/patterns | /behavior/predict | /behavior/profile
     func behaviorGet(_ endpoint: String) async -> [String: Any]? {
-        guard ["status", "patterns", "predict", "profile"].contains(endpoint) else { return nil }
+        guard ["status", "patterns", "predict", "profile", "weekly", "history", "signals", "email-history"].contains(endpoint) else { return nil }
         return await behaviorRequest("GET", "behavior/\(endpoint)")
+    }
+
+    func behaviorEmailHistoryControl(_ body: [String: Any]) async -> [String: Any]? {
+        guard let command = body["command"] as? String,
+              ["start", "pause", "reset"].contains(command) else { return nil }
+        return await behaviorRequest("POST", "behavior/email-history/control", body: body)
+    }
+
+    func behaviorActivityLease(_ client: String) async -> [String: Any]? {
+        await behaviorRequest("GET", "behavior/activity/lease", query: [URLQueryItem(name: "client", value: client)])
+    }
+
+    func behaviorActivityBatch(lease: [String: Any], intervals: [[String: Any]]) async -> Bool {
+        await behaviorRequest("POST", "behavior/activity", body: ["lease": lease, "intervals": intervals]) != nil
+    }
+
+    func setBehaviorSignal(_ name: String, enabled: Bool) async -> [String: Any]? {
+        await behaviorRequest("PUT", "behavior/signals", body: [name: enabled])
+    }
+
+    func behaviorHistoryNext(_ source: String) async -> [String: Any]? {
+        guard ["calendar", "completed_reminders"].contains(source) else { return nil }
+        return await behaviorRequest("GET", "behavior/history/\(source)/next")
+    }
+
+    func behaviorHistoryBatch(_ source: String, job: [String: Any], rows: [[String: Any]],
+                              complete: Bool, reason: String = "") async -> Bool {
+        guard ["calendar", "completed_reminders"].contains(source),
+              let scanID = job["scan_id"] as? String,
+              let start = job["page_start"], let end = job["page_end"] else { return false }
+        return await behaviorRequest("POST", "behavior/history/\(source)/batch", body: [
+            "scan_id": scanID, "start_ts": start, "end_ts": end,
+            "rows": rows, "complete": complete, "reason": reason], timeout: 60) != nil
+    }
+
+    func behaviorHistoryControl(_ source: String, command: String) async -> Bool {
+        guard ["calendar", "completed_reminders"].contains(source),
+              ["pause", "resume", "restart"].contains(command) else { return false }
+        return await behaviorRequest("POST", "behavior/history/\(source)/control",
+                                     body: ["command": command]) != nil
     }
 
     // GET /behavior/predict?day=today|tomorrow -> {"predictions": [...]}
@@ -381,22 +421,49 @@ final class WispClient {
         return await behaviorRequest("GET", "behavior/predict", query: [URLQueryItem(name: "day", value: day)])
     }
 
-    // GET/PUT /behavior/settings -> "Learn my routines" (on by default). Returns the
-    // state in effect, or nil when the backend can't be reached; a WISP_BEHAVIOR
+    // "Learn my routines" (on by default). Mutations require a settled receipt;
+    // enabling also requires a fresh one-shot epoch. A plain GET is a snapshot.
+    // Returns nil when confirmation is unavailable; a WISP_BEHAVIOR
     // launch override can make the effective state differ from the request.
     func behaviorEnabled() async -> Bool? {
         await behaviorRequest("GET", "behavior/settings")?["enabled"] as? Bool
     }
 
-    func setBehaviorEnabled(_ on: Bool) async -> Bool? {
-        await behaviorRequest("PUT", "behavior/settings", body: ["enabled": on])?["enabled"] as? Bool
+    func setBehaviorEnabled(_ on: Bool, controlEpoch: String?) async -> [String: Any]? {
+        var body: [String: Any] = ["enabled": on]
+        if on {
+            // Capture the visible receipt at the click; an old intent cannot
+            // mint a newer permit after a later status check has fenced it.
+            guard let epoch = Self.validBehaviorControlEpoch(controlEpoch) else { return nil }
+            body["control_epoch"] = epoch
+        }
+        // OFF itself fences earlier enables. Send it even when a status check
+        // would wait behind a slow update; never require a successful read first.
+        return Self.settledBehaviorSettings(
+            await behaviorRequest("PUT", "behavior/settings", body: body))
     }
 
-    // GET /behavior/settings, whole payload: "enabled", "remote_active" (a remote
+    // POST /behavior/settings/check, whole payload: "enabled", "remote_active" (a remote
     // inference profile is pinned) and "phraser" (nudge wording / event labeling
     // requests are allowed to leave the Mac's local model).
     func behaviorSettings() async -> [String: Any]? {
-        await behaviorRequest("GET", "behavior/settings")
+        Self.settledBehaviorSettings(await behaviorRequest("POST", "behavior/settings/check"))
+    }
+
+    private static func settledBehaviorSettings(_ object: [String: Any]?) -> [String: Any]? {
+        guard let result = object,
+              result["updates_settled"] as? Bool == true,
+              result["enabled"] is Bool,
+              validBehaviorControlEpoch(result["control_epoch"]) != nil
+        else { return nil }
+        return result
+    }
+
+    private static func validBehaviorControlEpoch(_ value: Any?) -> String? {
+        guard let epoch = value as? String, epoch.utf8.count == 64,
+              epoch.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+        else { return nil }
+        return epoch
     }
 
     // DELETE /behavior/data {"confirm": true} -> deletes what Wisp learned and the

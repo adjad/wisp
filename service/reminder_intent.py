@@ -6,8 +6,17 @@ from datetime import datetime, timedelta
 
 from service.tasks.temporal import DAYPART_HOURS as STANDARD_PART_OF_DAY_HOURS
 
+# "remind me what I had on last week" asks to be TOLD. With an infinitive or a
+# time it is still a reminder: "remind me who to call at 3pm", "remind me where
+# I parked at 5pm".
+REMIND_QUESTION_TAIL = (
+    r"\s+(?:of\s+)?(?:what|who|where|which|how)\b"
+    r"(?![^.?!]*(?:\bto\s+[a-z]|\bat\s+\d|\b(?:tomorrow|tonight|today|noon|midnight|later)\b|"
+    r"\d\s*[ap]\.?m\b|\bin\s+(?:an?|\d+)\s+(?:minutes?|hours?|days?)\b|"
+    r"(?<!last\s)\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b))"
+)
 REMINDER_CREATE_RE = re.compile(
-    r"\bremind me\b|\b(?:send|give)\s+me\s+(?:an?\s+)?reminder\b|"
+    r"\bremind me\b(?!" + REMIND_QUESTION_TAIL + r")|\b(?:send|give)\s+me\s+(?:an?\s+)?reminder\b|"
     r"\b(?:remember|don'?t forget)\s+to\s+\w+|"
     r"\b(?:add|create|set(?:\s+up)?|make|schedule)\s+"
     r"(?:me\s+)?(?:(?:an?|the|my)\s+)?(?:reminders?|alarm)\b"

@@ -1,0 +1,33 @@
+- id: dev_battery
+  prompt: "How's my battery health?"
+  expect: [{tool: system_status}]
+  answer: {contains_any: ["{battery}", Normal]}
+- id: dev_open_calculator
+  prompt: "Open the Calculator app."
+  expect: [{tool: open_app, args: {name: {icontains: calculator}}}]
+  forbid: [quit_app, run_shell, run_applescript]
+- id: dev_timer
+  prompt: "Set a timer for 10 minutes"
+  expect: [{tool: set_timer}]
+  forbid: [add_reminder, run_shell]
+- id: dev_wifi_off
+  prompt: "turn off wifi"
+  expect: [{tool: toggle_setting, args: {setting: {icontains: wi}, "on": {in: [false, "false", "off"]}}}]
+  forbid: [run_shell]
+- id: dev_quit_calculator
+  prompt: "quit the Calculator app"
+  expect: [{tool: quit_app, args: {name: {icontains: calculator}}}]
+  forbid: [run_shell, run_applescript]
+- id: dev_focus_timer
+  prompt: "set a 25 minute timer for focus"
+  expect: [{tool: set_timer}]
+  forbid: [add_reminder]
+- id: dev_battery_percent
+  split: dev
+  prompt: "what percent is my battery at?"
+  expect: [{tool: system_status}]
+  answer: {contains_all: ["{battery}"]}
+- id: dev_open_spotify
+  split: dev
+  prompt: "open spotify"
+  expect: [{tool: open_app, args: {name: {icontains: spotify}}}]

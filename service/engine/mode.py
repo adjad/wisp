@@ -25,27 +25,40 @@ def _version(text: str) -> tuple[int, ...]:
     return tuple((list(map(int, re.findall(r"\d+", text))) + [0, 0, 0])[:3])
 
 
-def unsupported_reason(root: Path | None = None, mac_version: str | None = None) -> str | None:
-    """Why the bundled engine cannot run on this Mac, else None.
-
-    The engine's own minimum macOS comes from the ENGINE.json written at packaging time
-    (MLX targets a newer macOS than the app). A source checkout has no ENGINE.json and is
-    not gated. Used to fall back to the external engine instead of failing at launch."""
+def _compatibility(root: Path | None, mac_version: str | None) -> tuple[str | None, str | None]:
     document = (root or engine_code_root()) / "ENGINE.json"
     try:
-        needed = json.loads(document.read_text()).get("minimum_macos", "")
+        needed = json.loads(document.read_text()).get("minimum_macos")
     except FileNotFoundError:
-        return None
+        return None, None  # A source checkout has no packaged engine requirement.
     except (OSError, ValueError, AttributeError, RecursionError):
-        return "The bundled engine's ENGINE.json is unreadable"
-    if not isinstance(needed, str) or (needed and re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){0,2}", needed) is None):
-        return "The bundled engine's macOS requirement is invalid"
+        return None, "The bundled engine's ENGINE.json is unreadable"
+    if not isinstance(needed, str) or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){0,2}", needed) is None:
+        return None, "The bundled engine's macOS requirement is invalid"
     current = mac_version if mac_version is not None else platform.mac_ver()[0]
     if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){0,2}", current) is None:
         current = ""
-    if needed and _version(current) < _version(needed):
-        return f"The bundled engine needs macOS {needed} or newer (this Mac has {current or 'unknown'})"
-    return None
+    if _version(current) < _version(needed):
+        return needed, f"The bundled engine needs macOS {needed} or newer (this Mac has {current or 'unknown'})"
+    return needed, None
+
+
+def unsupported_reason(root: Path | None = None, mac_version: str | None = None) -> str | None:
+    """The packaged engine's requirement, independently of the app's macOS floor.
+
+    No ENGINE.json means a source checkout. An existing but malformed manifest
+    cannot establish compatibility and must not bypass the startup/mode gate.
+    """
+    return _compatibility(root, mac_version)[1]
+
+
+def bundled_compatibility(root: Path | None = None, mac_version: str | None = None) -> dict:
+    """Setup facts that remain visible after falling back to an external engine."""
+    root = root or engine_code_root()
+    minimum, reason = _compatibility(root, mac_version)
+    available = engine_present(root) and reason is None
+    return {"available": available, "minimum_macos": minimum,
+            "unavailable_reason": reason or (None if available else "The built-in engine is not included in this build.")}
 
 
 def _overlay_selection() -> tuple[bool, str | None]:

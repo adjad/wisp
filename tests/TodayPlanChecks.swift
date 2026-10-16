@@ -43,6 +43,27 @@ struct TodayPlanChecks {
         check(false, message)
     }
 
+    @MainActor
+    static func evidenceLabelChecks() throws {
+        func block(_ kind: String) throws -> TodayBlock {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "id": "fixture-hold", "title": "Possible time away", "start": 1000.0, "end": 2000.0,
+                "kind": kind, "warnings": ["Availability is unknown"], "pattern_id": "opaque-pattern"
+            ] as [String: Any])
+            return try JSONDecoder().decode(TodayBlock.self, from: data)
+        }
+        let away = try block("behavior_away")
+        check(away.evidenceLabel == "Computer inactivity · availability unknown")
+        check(!away.evidenceLabel.lowercased().contains("busy"))
+        check(away.inferenceIgnoreHelp == "Ignore this possible time away for the selected day")
+        check(away.pattern_id == "opaque-pattern" && away.task_id == nil)
+        let busy = try block("behavior")
+        check(busy.evidenceLabel == "Tentative busy period · behavioral evidence")
+        check(busy.inferenceIgnoreHelp == "Ignore this tentative busy period for the selected day")
+        check(try block("calendar").evidenceLabel == "Calendar")
+        check(try block("suggestion").evidenceLabel == "Source-backed suggestion · estimated duration")
+    }
+
     // Run with WISP_TODAY_WINDOW_CHECK=1 in an isolated macOS GUI session. The
     // same retained NSWindow and SwiftUI view are exercised without Wisp or a service.
     @MainActor
@@ -154,6 +175,7 @@ struct TodayPlanChecks {
     }
     @MainActor
     static func main() async throws {
+        try evidenceLabelChecks()
         let zone = TimeZone(identifier: "America/Los_Angeles")!
         let model = TodayModel(timezone: zone)
         check(model.clock(instant("2026-09-24T07:00:00Z").timeIntervalSince1970) == "12:00 AM")
@@ -466,9 +488,76 @@ struct TodayPlanChecks {
         check(!String(describing: diagnosticsModel.diagnosticSnapshot().metadata).contains("PRIVATE"))
         diagnosticsModel.selectDate(instant("2026-09-25T08:00:00Z"))
         check(diagnosticsModel.diagnosticSnapshot().metadata["client_outcome"] as? String == "not_loaded")
+        try await dailyWorkspaceChecks()
         if ProcessInfo.processInfo.environment["WISP_TODAY_WINDOW_CHECK"] == "1" {
             try await windowChecks()
         }
         print("\(count) passed, 0 failed, 0 skipped")
+    }
+
+    @MainActor
+    static func dailyWorkspaceChecks() async throws {
+        let original = try planData(day: "2026-10-14", zone: "America/Los_Angeles", blocks: ["Saved calendar event"])
+        var object = try JSONSerialization.jsonObject(with: original) as! [String: Any]
+        object["workspace"] = [
+            "attention": [["id": "r", "source": "reminders", "title": "Assignment", "reason": "Due today",
+                           "quote": "", "due_ts": 2000.0, "priority": 1, "reference": "reminders:native-id",
+                           "suggested_minutes": 25, "needs_review": false]],
+            "attention_omitted": 2,
+            "source_coverage": [["source": "notes", "ready": false, "detail": "Unavailable", "inspected": 0, "omitted": 3]],
+            "behavior_detail": "Tentative supported evidence", "explanation": "Sources first",
+            "proposed_plan": ["blocks": [["id": "busy", "title": "Likely busy", "start": 1000.0, "end": 2000.0,
+                "kind": "behavior", "pattern_id": "routine", "warnings": ["Tentative"]]],
+                "unscheduled": [["task_id": "task", "title": "Study", "reason": "No contiguous gap"]], "warnings": ["Source incomplete"]]
+        ]
+        let enriched = try JSONDecoder().decode(TodayPlan.self, from: JSONSerialization.data(withJSONObject: object))
+        check(enriched.blocks.first?.title == "Saved calendar event", "Workspace must preserve original planner output")
+        check(enriched.displayBlocks.first?.pattern_id == "routine" && enriched.displayBlocks.first?.kind == "behavior")
+        check(enriched.displayWarnings == ["Source incomplete"] && enriched.displayUnscheduled.first?.title == "Study")
+        check(enriched.workspace?.attention.first?.reference == "reminders:native-id" && enriched.workspace?.attention_omitted == 2)
+        let fallback = try JSONDecoder().decode(TodayPlan.self, from: original)
+        check(fallback.displayBlocks.first?.title == "Saved calendar event" && fallback.workspace == nil)
+
+        let today = TodayModel(timezone: TimeZone(identifier: "America/Los_Angeles"), now: { instant("2026-10-14T15:00:00Z") })
+        func settingsData() throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["settings": ["enabled": false, "revision": 3,
+                "recipient": "me@example.test", "timezone": "America/Los_Angeles", "minute": 495, "start_day": "2026-10-15"],
+                "own_addresses": ["me@example.test"], "identity_ready": true, "identity_detail": "Synthetic account",
+                "consent_current": false, "delivery_allowed": true] as [String: Any])
+        }
+        let email = DailyEmailModel()
+        var pending: CheckedContinuation<(Data, URLResponse), Error>?
+        var requests: [String] = []
+        var hold = true
+        today.transport = { request in
+            requests.append(request.url!.path)
+            if request.url!.path.hasSuffix("/enable") {
+                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                check(body["confirmed"] as? Bool == true && body["token"] as? String == String(repeating: "x", count: 32))
+                return (Data("{\"detail\":\"Review expired\"}".utf8), HTTPURLResponse(url: request.url!, statusCode: 409, httpVersion: nil, headerFields: nil)!)
+            }
+            if request.url!.path.hasSuffix("/preview") {
+                return (try JSONSerialization.data(withJSONObject: ["token": String(repeating: "x", count: 32),
+                    "subject": "Example plan", "body": "Synthetic sources", "explanation": "Future plans change"]), response(request))
+            }
+            if hold {
+                return try await withCheckedThrowingContinuation { continuation in pending = continuation }
+            }
+            return (try settingsData(), response(request))
+        }
+        let loading = Task { await email.load(today) }
+        while pending == nil { await Task.yield() }
+        check(email.busy && email.status == nil)
+        await email.review(today)
+        check(requests.count == 1 && email.preview == nil, "No mutation may race a pending settings read")
+        let request = URLRequest(url: URL(string: "http://127.0.0.1:1/assistant/today/workspace/email")!)
+        hold = false
+        pending!.resume(returning: (try settingsData(), response(request)))
+        await loading.value
+        check(!email.busy && email.recipient == "me@example.test" && email.hour == 8 && email.minute == 15)
+        await email.review(today)
+        check(email.preview?.body == "Synthetic sources")
+        await email.enable(today)
+        check(email.error == "Review expired", "Successful settings refresh must preserve an enable error")
     }
 }

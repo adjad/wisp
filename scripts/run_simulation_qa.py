@@ -81,6 +81,7 @@ PROFILE_TESTS = {
     "conversation": {
         "tests/test_conversation_memory.py",
         "tests/test_conversational_skills.py",
+        "tests/test_mac_controls_skill.py",
         "tests/test_contextual_outbound_routing.py",
         "tests/test_workflow_bindings.py",
         "tests/test_workflow_engine.py",
@@ -90,6 +91,8 @@ PROFILE_TESTS = {
         "tests/test_daily_summary_history_independence.py",
         "tests/test_email_digest_presentation.py",
         "tests/test_email_scoping.py",
+        "tests/test_gmail_source.py",
+        "tests/test_google_workspace.py",
         "tests/test_linked_documents.py",
         "tests/test_mail_history_wire.py",
         "tests/test_message_attribution.py",
@@ -187,6 +190,7 @@ PROFILE_TESTS = {
         "tests/test_router_execution_contract.py",
         "tests/test_router_no_vision.py",
         "tests/test_router_scoping.py",
+        "tests/test_router_dataset_findings.py",
         "tests/test_router_roster_models.py",
         "tests/test_fast_path_intent.py",
         "tests/test_reminder_compound_allowance.py",
@@ -197,6 +201,7 @@ PROFILE_TESTS = {
         "tests/test_routing_semantic_correctness.py",
         "tests/test_semantic_routing.py",
         "tests/test_tool_consolidation.py",
+        "tests/test_terse_tool_schemas.py",
         "tests/test_search_reliability.py",
         "tests/test_short_circuit.py",
     },
@@ -209,6 +214,9 @@ PROFILE_TESTS = {
 ADDITIONAL_FULL_TESTS = {
     # Scorer self-test on synthetic fixtures; tmp_path files only, no model or network.
     "tests/test_memory_eval_scorer.py",
+    # Toolbench matchers/scorer/report on hand-built trajectories and fake-world
+    # tools called directly; temp WISP_HOME, no model, network or tool execution.
+    "tests/test_toolbench.py",
     # Planner eval --dry-run in a temp HOME/WISP_HOME: builds menus, no model, oMLX or tool execution.
     "tests/test_eval_planner_dry_run.py",
     # Inert bounded attestation store; supplied facts and manual interleavings only.
@@ -267,11 +275,18 @@ ADDITIONAL_FULL_TESTS = {
     # disposable temp directories with a private HOME; no oMLX, user data or network.
     "tests/test_bundled_attribution.py",
     "tests/test_bundled_engine_api.py",
+    "tests/test_engine_downloads.py",
     "tests/test_bundled_engine.py",
     "tests/test_bundled_engine_mode.py",
     # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.
     "tests/test_engine_packaging.py",
     "tests/test_engine_licenses.py",
+    # Pure fake enforcers/tasks, synthetic package bytes and intercepted HTTP.
+    # No engine/model/native launch, real provider or host memory probes.
+    "tests/test_engine_guard_proof.py",
+    "tests/test_engine_guard_overlay.py",
+    "tests/test_engine_guard_client.py",
+    "tests/test_engine_guard_admission.py",
     "tests/test_bundled_engine_startup.py",
     # Attestation reuse (lease, fence, shadow) on in-process fakes with a fake clock, this
     # process's own loopback sockets and one disposable bash child; no oMLX or port 8000.
@@ -340,6 +355,9 @@ ADDITIONAL_FULL_TESTS = {
     # Agent-loop stall on refused repeats: scripted fake client and fake
     # registry tools only; no model, network, subprocess, or user state.
     "tests/test_loop_repeat_stall.py",
+    # Truncated narration fallback and evidence rendering: scripted fake client
+    # and fake registry tool only; no model, network, subprocess, or user state.
+    "tests/test_task_evidence_fallback.py",
     # Prompt scoped to the fitted toolset and the skills catalog gate: scripted
     # fake client and the packaged prompt only; no model, network, subprocess,
     # or user state.
@@ -363,6 +381,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_think_leak.py",
     "tests/test_timeranges.py",
     "tests/test_today_plan.py",
+    # Daily workspace: pure source fixtures, private disposable SQLite, fixed
+    # verified-self identity, fake policy/outbox and ASGI transport; no effects.
+    "tests/test_daily_workspace.py",
+    "tests/test_day_plan_email.py",
     "tests/test_user_reported_regressions_20260902.py",
     "tests/test_user_reported_regressions_20260903.py",
     "tests/test_user_reported_regressions_20260903_noon.py",
@@ -374,9 +396,30 @@ ADDITIONAL_FULL_TESTS = {
     # TestClient/httpx MockTransport (no listener) and FakeHub; no model, Keychain,
     # Calendar, Messages or network.
     "tests/test_behavior_api.py",
+    # Generic availability: disposable histories/receipts, injected completions,
+    # and a pure interval Swift harness; no native collector, model or network.
+    "tests/test_behavior_availability.py",
+    "tests/test_behavior_activity_native.py",
+    "tests/test_behavior_interpreter.py",
+    # Supplied fake snapshots/analyzers, disposable behavior DBs and metadata-only
+    # history/relation checks; no native, provider, real model or user-state access.
+    "tests/test_behavior_source_index.py",
+    # Publication ordering and history use synthetic authorities, MockTransport,
+    # fake source snapshots and disposable databases; no real accounts or native IO.
+    "tests/test_gmail_behavior_history.py",
+    "tests/test_behavior_gmail_history.py",
+    "tests/test_behavior_config_authority_changes.py",
+    "tests/test_behavior_history_driver.py",
+    "tests/test_behavior_publication_boundary.py",
+    "tests/test_native_source_publication_stamps.py",
+    "tests/test_retained_source_publication_stamps.py",
+    "tests/test_behavior_associations.py",
     "tests/test_behavior_boundary.py",
     "tests/test_behavior_engine.py",
     "tests/test_behavior_miners.py",
+    # Compiles actual Swift sources, then exercises pure mapping/transport
+    # guards only; no EventKit store, native app, model or personal data access.
+    "tests/test_behavior_native_history.py",
     "tests/test_behavior_persona.py",
     "tests/test_behavior_phraser.py",
     "tests/test_behavior_predict_nudges.py",
@@ -384,6 +427,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_behavior_routing.py",
     "tests/test_behavior_runtime.py",
     "tests/test_behavior_tools.py",
+    "tests/test_behavior_weekly_history.py",
     # Remote-inference mode: fictional example profile, patched sockets, mocked
     # transports and AST-selected main functions; no network, Keychain or model.
     "tests/test_remote_inference_client.py",
@@ -403,7 +447,6 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_compiler.py",
     "tests/test_workflow20_daily.py",
     "tests/test_workflow20_files.py",
-    "tests/test_workflow20_groceries.py",
     "tests/test_workflow20_knowledge.py",
     "tests/test_workflow20_meeting.py",
     "tests/test_workflow20_meeting_approval.py",
