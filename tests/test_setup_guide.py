@@ -16,6 +16,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.responses import StreamingResponse
 
+from service.inference.inference_errors import ModelLoadError
 from service.setup import catalog, guide
 from service.setup.engines import EngineProfile, EngineState, detect_external_engines
 from service.setup.hardware import Hardware, current_hardware, detect_hardware
@@ -582,6 +583,7 @@ def _chat_pipeline(raw):
         events.append("ensure")
 
     route = {"Any": Any, "HTTPException": HTTPException, "StreamingResponse": StreamingResponse, "setup_guide": guide,
+             "ModelLoadError": ModelLoadError,
              "role_target": target, "remote_only_profile": lambda: None,
              "ensure_omlx": ensure, "client": Managed()}
     _functions(root / "service/main.py", {"chat"}, route)

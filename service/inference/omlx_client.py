@@ -27,7 +27,7 @@ class SanitizedHTTPStatusError(httpx.HTTPStatusError):
     """Remote status failure with no provider-controlled request or response data."""
 
 
-from .inference_errors import ModelLoadError
+from .inference_errors import ModelLoadError, ModelMemoryLimitError
 
 
 # Remote output is untrusted and must stay bounded independently of timeouts.
@@ -505,6 +505,10 @@ class OMLXClient:
             raise EndpointConfigurationError("Only managed local models can be loaded")
         with engine_epoch.operation():
             r = await self._client.post(f"/v1/models/{model}/load")
+        if r.status_code == 507:
+            # The managed engine refused admission. Do not echo its diagnostics
+            # or convert a refusal into a successful residency/automatic retry.
+            raise ModelMemoryLimitError() from None
         r.raise_for_status()
 
     async def ensure_only(self, model: str, *, settle_timeout: float = 60.0,
@@ -633,7 +637,7 @@ class OMLXClient:
             for k in self._keep_warm - loaded - {model}:
                 try:
                     await self.load(k)
-                except httpx.HTTPError:
+                except (httpx.HTTPError, ModelMemoryLimitError):
                     pass  # optional keep-warm reload cannot fail the requested model
 
     async def chat(

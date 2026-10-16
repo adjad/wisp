@@ -1135,7 +1135,6 @@ async def chat(body: dict[str, Any]):
         max_tokens = min(max_tokens, _direct_generation_budget(target)[0])
     owned = None
     if target.endpoint.managed:
-        await ensure_omlx()
         active = client
         model = body.get("model") or target.model
     else:
@@ -1148,6 +1147,8 @@ async def chat(body: dict[str, Any]):
                 body.get("messages") or [{"role": "user", "content": body["prompt"]}])
     streaming_started = False
     try:
+        if target.endpoint.managed:
+            await ensure_omlx()
         if profile is not None:
             await _prepare_remote_inference(active)
         await active.ensure_only(model)
@@ -1173,6 +1174,9 @@ async def chat(body: dict[str, Any]):
                     "setup_test": "complete_visible_assistant_v1"}
         msg = resp["choices"][0]["message"]
         return {"model": model, "content": msg.get("content"), "usage": resp.get("usage")}
+    except ModelLoadError as exc:
+        # Readiness/admission failed before any successful chat/setup result.
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     finally:
         if owned and not streaming_started:
             await owned.aclose()
