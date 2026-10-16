@@ -12,13 +12,60 @@ import re
 
 # Shared with the router's calendar-read rule. Full-source matching in
 # provenance prevents a qualified public event from becoming a private read.
+_AGENDA_DAY = (
+    r"(?:today|tonight|tomorrow|the\s+weekend|(?:this|next)\s+(?:week|weekend)|"
+    r"(?:(?:this|next|on)\s+)?(?:mon|tues|wednes|thurs|fri|satur|sun)day)"
+)
 PERSONAL_CALENDAR_READ_PATTERN = (
     r"(?:(?:(?:show|tell|give)\s+me|what(?:'s| is| are))\s+(?:the\s+)?"
     r"(?:(?:today|tomorrow)'s\s+(?:schedule|agenda|calendar|appointments?|meetings?|events?)|"
     r"(?:schedule|agenda|calendar|appointments?|meetings?|events?)\s+for\s+(?:today|tomorrow))|"
     r"(?:any\s+(?:meetings?|appointments?|events?|classes)|"
     r"what\s+(?:meetings?|appointments?|events?|classes)\s+(?:are|is)\s+(?:scheduled|planned))"
-    r"(?:\s+(?:for\s+)?(?:today|tomorrow|this\s+(?:week|weekend)|next\s+week))?)"
+    r"(?:\s+(?:for\s+)?(?:today|tomorrow|this\s+(?:week|weekend)|next\s+week))?|"
+    # A bare day asked about with an agenda predicate and no other subject:
+    # "what's tomorrow looking like?", "is tomorrow busy for me?", "anything
+    # planned for sunday?", "do I have anything on sunday". The day IS the
+    # whole question, so it can only mean the user's own schedule; these were
+    # read as current public information and sent to web_search.
+    r"(?:what|how)(?:'s|\s+is|\s+does)\s+(?:my\s+)?" + _AGENDA_DAY
+    + r"\s+look(?:s|ing)?(?:\s+like)?(?:\s+for\s+me)?|"
+    r"(?:is|are)\s+(?:my\s+)?" + _AGENDA_DAY
+    + r"\s+(?:busy|free|packed|open|full|clear)(?:\s+for\s+me)?|"
+    r"(?:(?:is\s+there|do\s+i\s+have|have\s+i\s+got|got)\s+)?anything\s+"
+    r"(?:(?:planned|happening|scheduled|going\s+on|on)\s+)?(?:for\s+|on\s+)?" + _AGENDA_DAY + r")"
+)
+
+# The user's own account with a named biller: "the Chase bill", "my Wells Fargo
+# balance", "how much do I owe Amex". Those statements arrive in the user's
+# mail; "what's the Chase bill this month?" was read as current public
+# information and sent to web_search. Brand words are capitalised (no re.I on
+# the whole pattern), which keeps "the electricity bill in Texas" public.
+PERSONAL_ACCOUNT_PATTERN = (
+    r"(?i:\b(?:my|the)\s+)(?:[A-Z][\w&.'-]*\s+){1,3}"
+    r"(?i:(?:credit\s+card\s+|card\s+)?(?:bills?|statements?|balances?(?!\s+sheets?\b)|payments?|"
+    r"minimum\s+payments?|amount\s+due|due\s+date)\b)|"
+    r"(?i:\bhow\s+much\s+do\s+i\s+owe\b|"
+    r"\bmy\s+(?:credit\s+card|card|bank|utility|phone|electric(?:ity)?|internet|water|gas|cable)\s+"
+    r"(?:bills?|statements?|balances?|payments?)\b)"
+)
+
+# Weather asked without the word "weather": "will I need a jacket tomorrow?",
+# "will it be warm in Oakland tomorrow?", "is it going to rain today?".
+WEATHER_CONDITION_PATTERN = (
+    r"(?:\b(?:going\s+to|gonna|will\s+it|is\s+it|chance\s+of|any)\s+(?:be\s+)?"
+    r"(?:rain(?:ing|y)?|snow(?:ing|y)?|sunny|cloudy|windy|stormy|storm(?:ing)?|hail(?:ing)?|"
+    r"drizzl(?:e|ing)|thunderstorms?|showers?)\b|"
+    r"\b(?:need|bring|wear|take|pack)\s+(?:a\s+|an\s+|my\s+)?(?:jacket|coat|umbrella|sweater|"
+    r"hoodie|raincoat|sunscreen|layers|scarf|gloves)\b(?![^.?!]{0,40}\b(?:remind|reminder)\b)|"
+    r"\b(?:will|is)\s+it\s+(?:be\s+|going\s+to\s+be\s+|get\s+)?(?:warm|cold|hot|chilly|freezing|"
+    r"cool|nice|humid|muggy)\b(?=[^.?!]{0,30}\b(?:outside|out|today|tomorrow|tonight|this\s+"
+    r"(?:morning|afternoon|evening|weekend)|in\s+(?-i:[A-Z])\w+)))"
+)
+# The questions get_weather / get_stock_price answer by themselves.
+DATA_TOOL_QUESTION_PATTERN = (
+    r"\b(?:weather|forecast|temperature)\b|" + WEATHER_CONDITION_PATTERN + r"|"
+    r"\btrading\s+(?:at\s+|right\s+now|now|today)|\bprice\s+check\s+on\b"
 )
 
 
@@ -714,12 +761,20 @@ def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, boo
     # (it was a router-direct web search). The complete shape is required.
     if re.fullmatch(_PERSONAL_INBOX_QUESTION + r"[.!?]*", _root(t), re.I):
         return Provenance.PRIVATE, False
+    # Replying to someone answers the user's own correspondence, whatever the
+    # dictated body says ("answer the landlord's email: is the laundry room
+    # affected too?" was a public follow-up needing clarification).
+    if _matches(r"^(?:reply|respond|answer|write\s+back)\b", _root(t)):
+        return Provenance.PRIVATE, False
+    if re.search(PERSONAL_ACCOUNT_PATTERN, t):
+        return Provenance.PRIVATE, False
     public, ambiguous_owner = False, False
     for position in re.finditer(r"\b", t):
         owner = _OWNER.match(t, position.start())
         if owner is None:
             continue
-        if owner.group("owner").lower() in {"what", "who", "how", "it", "there", "here", "that", "let"}:
+        if owner.group("owner").lower() in {"what", "who", "how", "it", "there", "here", "that", "let",
+                                            "where", "when", "why", "which", "he", "she"}:
             continue
         resource = owner.group("resource")
         # Public resource grammar, not a company/name allowlist.
@@ -750,6 +805,9 @@ def _independent(text: str, *, fragment: bool = False) -> bool:
         return True
     if _matches(r"\b(?:analysis|explanation|story|plot|novel|chapter|scene|function|reminder|timer|fictional)\b", root):
         return True
+    # "new note — Groceries: eggs" creates a local item; "new" is not recency.
+    if _matches(r"^(?:(?:a|another)\s+)?new\s+(?:note|list|checklist|to-?do|reminder|event|calendar\s+event)\b", root):
+        return True
     if _matches(r"\b(?:in|within|of)\s+(?:(?:the|this|that)\s+)?(?:movie|film|book|episode|fiction)\b(?!\s+(?:industry|business|market|sector|bans?))", root):
         return True
     if _matches(r"^(?:give\b.*\bheads\s+up\b|tell\s+(?!me\b)\S+)", root):
@@ -759,6 +817,13 @@ def _independent(text: str, *, fragment: bool = False) -> bool:
 
 def _current(text: str, scopes: tuple[TimeScope, ...]) -> bool:
     t = _root(text)
+    if (re.search(DATA_TOOL_QUESTION_PATTERN, t, re.I)
+            and not _matches(r"\b(?:news|headlines?|articles?|markets?|economy|earnings)\b", t)):
+        # Weather and quote questions have their own data tools; a
+        # router-direct web_search withheld get_weather from "what's the
+        # forecast for Oakland tomorrow?". Explicit "search the web" requests
+        # are composed separately and keep the public-web contract.
+        return False
     if _independent(t) and not _matches(r"^(?:give|show|tell|update|brief)\b", t):
         return False
     if _matches(r"\b(?:in|during)\s+(?:the\s+)?\d{4}s?\b", t) and not _matches(r"\b(?:latest|current|today|now)\b", t):
@@ -950,6 +1015,8 @@ def _parse_request(text: str, last_user: str | None = None, *,
     if followup and followup.group(2) and (_explicit(source) or _matches(
             r"^(?:what|who|where|when|which|how|give|tell|show|has|have|did|is|are|will)\b", _root(source))):
         followup = None  # A complete current question is not a topic fragment.
+    if followup and _matches(r"^(?:reply|respond|answer|write\s+back)\b", _root(source)):
+        followup = None  # "...: is the laundry room affected too?" is a dictated reply body.
     topic = next(group for group in followup.groups() if group is not None) if followup else followup_text
     fragment = bool(followup) or bool(last_user and _scopes(topic) and not _without_scope(topic, _scopes(topic)))
     provenance, public = _provenance(source, fragment=fragment)

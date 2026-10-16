@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 from service.tasks.temporal import DAYPART_HOURS as STANDARD_PART_OF_DAY_HOURS
 
 REMINDER_CREATE_RE = re.compile(
-    r"\bremind me\b|\b(?:send|give)\s+me\s+(?:an?\s+)?reminder\b|"
+    # "remind me what I had on last week" asks to be TOLD, not to schedule.
+    r"\bremind me\b(?!\s+(?:what|who|where|which|how)\b|\s+of\s+what\b)|\b(?:send|give)\s+me\s+(?:an?\s+)?reminder\b|"
     r"\b(?:remember|don'?t forget)\s+to\s+\w+|"
     r"\b(?:add|create|set(?:\s+up)?|make|schedule)\s+"
     r"(?:me\s+)?(?:(?:an?|the|my)\s+)?(?:reminders?|alarm)\b"

@@ -381,8 +381,16 @@ def test_message_body_words_never_turn_a_send_into_a_draft(prompt, tool):
     assert decision.force_first_tool not in decision.forbidden_tools
 
 
-@pytest.mark.parametrize("prompt", ["reply to Sam saying I'll send it tomorrow",
-                                    "send Dan the file, I can send it now",
+def test_reply_body_words_never_turn_a_reply_into_a_draft():
+    # A reply that names no channel answers mail (the "reply to that" ->
+    # reply_to_email convention; Mellum R1 ROUTER_FINDINGS mail_reply_landlord).
+    # The body's "send it" must not make it draft-only.
+    decision = _route("reply to Sam saying I'll send it tomorrow")
+    assert not R._self_send_instruction("reply to Sam saying I'll send it tomorrow")
+    assert {"reply_to_email", "send_email"} <= _reachable(decision), decision.reason
+
+
+@pytest.mark.parametrize("prompt", ["send Dan the file, I can send it now",
                                     "tell Dan I'll send it over tonight"])
 def test_channel_ambiguous_body_cases_route_exactly_as_on_main(prompt):
     # No channel named: both committing channel tools wait for "text or email?"

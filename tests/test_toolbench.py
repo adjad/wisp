@@ -165,6 +165,18 @@ def test_runaway_format_answer_and_errors():
     assert v.passed and v.labels == ["empty_response"]  # soft on its own
 
 
+def test_tool_argument_error_is_a_soft_label():
+    """A rejected-arguments tool result used to leave no trace in the verdict."""
+    t = traj([("view_emails", {"q": "Chase"})], [("view_emails", {"query": "Chase"})])
+    t["steps"][1]["tool_errors"] = ["(error calling view_emails({'q': 'Chase'}): unexpected argument(s) ['q'].)"]
+    v = score(case(expect=(Step(("view_emails",)),)), t, registry_names=NAMES, today=TODAY)
+    assert v.passed and v.labels == ["tool_error"]
+    assert "error calling view_emails" in v.notes[0]
+    clean = score(case(expect=(Step(("view_emails",)),)), traj([("view_emails", {"query": "Chase"})]),
+                  registry_names=NAMES, today=TODAY)
+    assert "tool_error" not in clean.labels
+
+
 # -------------------------------------------------------------------- world
 
 def test_fakes_are_query_relevant_and_record_effects():
@@ -292,3 +304,17 @@ def test_heldout_shingles_match_v31_format():
     assert want in {i["full"] for i in data["items"]}
     dev = hashlib.sha1("dev only prompt".encode()).hexdigest()[:12]
     assert dev not in {i["full"] for i in data["items"]}
+
+
+def test_bench_client_records_new_tool_errors_per_step():
+    from scripts.toolbench.runner import bench_client_class
+    client = object.__new__(bench_client_class())
+    client.steps = []
+    err = "(error calling add_reminder({'when': 'x'}): missing required argument(s) ['title'].)"
+    history = [{"role": "user", "content": "remind me"},
+               {"role": "assistant", "content": "", "tool_calls": []},
+               {"role": "tool", "content": err}]
+    first = client._new_step(history[:1], None)
+    second = client._new_step(history, None)
+    third = client._new_step(history + [{"role": "tool", "content": "Reminder added."}], None)
+    assert first["tool_errors"] == [] and second["tool_errors"] == [err] and third["tool_errors"] == []
