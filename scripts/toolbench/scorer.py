@@ -6,6 +6,7 @@ trajectories. The trajectory is what runner.py records:
     {"route": {"tool_subset": [...] | None, "direct_calls": [[name, args], ...],
                "force_first_tool": str | None, "needs_tools": bool, ...},
      "steps": [{"calls": [{"name", "args", "parse_error"}], "content": str,
+                "tool_errors": [str],  # loop argument errors fed back before this step
                 "error": str | None, "seconds": float, "ttft": float | None,
                 "prompt_tokens_est": int, "output_chars": int}],
      "final": str, "seconds": float, "error": str | None, "timeout": bool,
@@ -28,7 +29,7 @@ from scripts.toolbench.cases import Case
 from scripts.toolbench.matchers import match_args
 
 # Labels that do NOT fail a case on their own.
-SOFT = frozenset({"over_call", "empty_response"})
+SOFT = frozenset({"over_call", "empty_response", "tool_error"})
 
 LABELS = (
     "route_fault",        # the router never offered (or direct-called) a needed tool — same for every model
@@ -47,6 +48,7 @@ LABELS = (
     "text_tool_call",     # a tool call written into the visible answer instead of emitted as a call
     "reasoning_leak",     # planning prose ("We need to check what the user asked…") as the answer
     "empty_response",     # a step returned no text and no call (soft; oMLX drops calls to unoffered tools)
+    "tool_error",         # a tool result was the loop's "(error calling …)" argument error (soft)
     "empty_answer",       # no final text at all
     "ungrounded_answer",  # the answer misses a fact it must state, or states one it must not
     "error",              # the turn raised
@@ -179,6 +181,12 @@ def score(case: Case, traj: dict, *, registry_names: set[str], today: date) -> V
     if len(model) > case.call_budget:
         labels.append("over_call")
         notes.append(f"{len(model)} calls > budget {case.call_budget}")
+    # A call the registry rejected for its arguments still "happened", so the
+    # expectation can pass on a retry; keep the stumble visible.
+    tool_errors = [e for s in steps for e in (s.get("tool_errors") or ())]
+    if tool_errors:
+        labels.append("tool_error")
+        notes += [e[:160] for e in tool_errors]
     max_steps = traj.get("max_steps") or 8
     if len(steps) >= max_steps and steps[-1].get("calls"):
         labels.append("runaway")

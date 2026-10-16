@@ -176,6 +176,11 @@ def _request_clauses(text: str) -> tuple[str, ...]:
                       masked[:match.start()], re.I)
                 and re.match(r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b", masked[match.end():], re.I)):
             continue
+        # A fronted time adverbial scopes the clause after it: "on friday,
+        # remind me to ..." is one reminder, not a bare "on friday" task.
+        if (masked[match.start()] == ","
+                and _TEMPORAL_ONLY.fullmatch(masked[courtesy_end:match.start()].strip(" *_"))):
+            continue
         if masked[match.end():].strip(" .!?*_"):
             boundaries.append(match.span())
     # Also reject a temporal prefix followed by unexplained outer prose even
