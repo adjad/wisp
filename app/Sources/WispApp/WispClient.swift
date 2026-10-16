@@ -429,32 +429,41 @@ final class WispClient {
         await behaviorRequest("GET", "behavior/settings")?["enabled"] as? Bool
     }
 
-    func setBehaviorEnabled(_ on: Bool) async -> Bool? {
+    func setBehaviorEnabled(_ on: Bool, controlEpoch: String?) async -> [String: Any]? {
         var body: [String: Any] = ["enabled": on]
         if on {
-            guard let checked = await behaviorSettings(),
-                  let epoch = checked["control_epoch"] as? String else { return nil }
+            // Capture the visible receipt at the click; an old intent cannot
+            // mint a newer permit after a later status check has fenced it.
+            guard let epoch = Self.validBehaviorControlEpoch(controlEpoch) else { return nil }
             body["control_epoch"] = epoch
         }
         // OFF itself fences earlier enables. Send it even when a status check
         // would wait behind a slow update; never require a successful read first.
-        guard let result = await behaviorRequest("PUT", "behavior/settings", body: body),
-              result["updates_settled"] as? Bool == true else { return nil }
-        return result["enabled"] as? Bool
+        return Self.settledBehaviorSettings(
+            await behaviorRequest("PUT", "behavior/settings", body: body))
     }
 
     // POST /behavior/settings/check, whole payload: "enabled", "remote_active" (a remote
     // inference profile is pinned) and "phraser" (nudge wording / event labeling
     // requests are allowed to leave the Mac's local model).
     func behaviorSettings() async -> [String: Any]? {
-        guard let result = await behaviorRequest("POST", "behavior/settings/check"),
+        Self.settledBehaviorSettings(await behaviorRequest("POST", "behavior/settings/check"))
+    }
+
+    private static func settledBehaviorSettings(_ object: [String: Any]?) -> [String: Any]? {
+        guard let result = object,
               result["updates_settled"] as? Bool == true,
               result["enabled"] is Bool,
-              let epoch = result["control_epoch"] as? String,
-              epoch.utf8.count == 64,
-              epoch.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+              validBehaviorControlEpoch(result["control_epoch"]) != nil
         else { return nil }
         return result
+    }
+
+    private static func validBehaviorControlEpoch(_ value: Any?) -> String? {
+        guard let epoch = value as? String, epoch.utf8.count == 64,
+              epoch.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+        else { return nil }
+        return epoch
     }
 
     // DELETE /behavior/data {"confirm": true} -> deletes what Wisp learned and the

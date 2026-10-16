@@ -216,6 +216,7 @@ final class SettingsLoader: ObservableObject {
     @Published var behaviorStatus: String?
     @Published var behaviorRemote = false
     @Published var behaviorPhraser = true
+    private var behaviorControlEpoch: String?
     private var behaviorRequestGeneration: UInt64 = 0
     @Published var behaviorForgetStatus: String?
     @Published var cloudPreset = "openrouter"
@@ -971,12 +972,15 @@ final class SettingsLoader: ObservableObject {
         let settings = await client.behaviorSettings()
         guard generation == behaviorRequestGeneration else { return }
         guard let settings, settings["updates_settled"] as? Bool == true,
-              let on = settings["enabled"] as? Bool else {
+              let on = settings["enabled"] as? Bool,
+              let epoch = settings["control_epoch"] as? String else {
             behaviorEnabled = nil
+            behaviorControlEpoch = nil
             behaviorStatus = "Couldn't confirm learning settings. Wisp may still be learning. Check status or try turning it off."
             return
         }
         behaviorEnabled = on
+        behaviorControlEpoch = epoch
         behaviorRemote = settings["remote_active"] as? Bool ?? false
         behaviorPhraser = settings["phraser"] as? Bool ?? true
         behaviorStatus = nil
@@ -986,13 +990,20 @@ final class SettingsLoader: ObservableObject {
         guard !behaviorChanging else { return }
         behaviorRequestGeneration &+= 1
         let generation = behaviorRequestGeneration
+        let controlEpoch = behaviorControlEpoch
+        behaviorControlEpoch = nil
         behaviorChanging = true
         behaviorStatus = on ? "Turning learning on. Waiting for confirmation…"
                             : "Turning learning off. Waiting for confirmation…"
         Task {
-            if let actual = await client.setBehaviorEnabled(on) {
+            if let receipt = await client.setBehaviorEnabled(on, controlEpoch: controlEpoch),
+               let actual = receipt["enabled"] as? Bool,
+               let epoch = receipt["control_epoch"] as? String {
                 guard generation == self.behaviorRequestGeneration else { return }
                 self.behaviorEnabled = actual
+                self.behaviorControlEpoch = epoch
+                self.behaviorRemote = receipt["remote_active"] as? Bool ?? false
+                self.behaviorPhraser = receipt["phraser"] as? Bool ?? true
                 self.behaviorStatus = nil
             } else {
                 // A lost response may mean the write succeeded. Only a fresh

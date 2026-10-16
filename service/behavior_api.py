@@ -110,7 +110,11 @@ class _SettingsUpdates:
             if previous is not None:
                 await self._settle(previous)
             previous = None  # Do not retain a chain of failed task tracebacks.
-            return (await _apply_behavior_settings(value)) | {"updates_settled": True}
+            payload = await _apply_behavior_settings(value)
+            # The receipt supplies the permit for a *future explicit action*.
+            # A client must not fetch a new permit inside an older enable intent.
+            self.epoch = secrets.token_hex(32)
+            return payload | {"updates_settled": True, "control_epoch": self.epoch}
 
         task = asyncio.create_task(apply())
         self.tail = task

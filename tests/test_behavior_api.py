@@ -164,6 +164,13 @@ def test_checked_settings_fences_enables_not_yet_accepted_and_replays(client, mo
     assert client.put("/behavior/settings", json={"enabled": True}).status_code == 422
     snapshot = client.get("/behavior/settings").json()
     assert "control_epoch" not in snapshot and "updates_settled" not in snapshot
+    # A settled mutation itself supplies the permit for the next explicit user
+    # action. The client must not mint a new one inside an already pending ON.
+    off = client.put("/behavior/settings", json={"enabled": False}).json()
+    assert off["enabled"] is False and len(off["control_epoch"]) == 64
+    assert off["control_epoch"] != current["control_epoch"]
+    assert client.put("/behavior/settings", json={
+        "enabled": True, "control_epoch": off["control_epoch"]}).status_code == 200
 
 
 @pytest.mark.asyncio
