@@ -261,3 +261,59 @@ def test_supposed_to_remember_reads_reminders():
 def test_bare_send_with_no_conversation_offers_nothing_to_send(prompt):
     d = _route(prompt)
     assert not d.needs_tools and not (_offered(d) & SENDS)
+
+
+# --- Release Auditor findings on the first candidate (330b62a3) -----------------
+
+@pytest.mark.parametrize("prompt,tool", [
+    ("reply to Sam saying yes. Then quit Slack", "quit_app"),
+    ("respond to the landlord saying fine, then forward his email to Dana", "forward_email"),
+])
+def test_a_request_after_a_dictated_reply_body_keeps_its_tools(prompt, tool):
+    assert tool in _offered(_route(prompt))
+
+
+_THREAD = {"last_user": "any texts from Sam?", "last_assistant": "Sam: dinner?", "last_tools": "view_messages"}
+
+
+@pytest.mark.parametrize("prompt,kw,tool", [
+    ("tell him what my schedule looks like tomorrow", _THREAD, "get_upcoming"),
+    ("say, what's the weather today?", _THREAD, "get_weather"),
+    ("answer honestly, am I overbooked this week?",
+     {"last_user": "check my email", "last_assistant": "2 new emails", "last_tools": "view_emails"}, None),
+])
+def test_questions_after_a_thread_are_not_replies(prompt, kw, tool):
+    d = _route(prompt, **kw)
+    assert d.reason != "reply continues previous Messages thread"
+    assert d.reason != "reply continues previous email thread"
+    if tool:
+        assert tool in _offered(d), d.reason
+
+
+@pytest.mark.parametrize("prompt", [
+    "remind me who to call at 3pm tomorrow", "remind me what to pick up at 6pm",
+    "remind me where I parked at 5pm", "remind me how much to pay the plumber on Friday",
+])
+def test_remind_me_wh_with_a_time_or_infinitive_is_still_a_reminder(prompt):
+    from service.reminder_intent import REMINDER_CREATE_RE
+    assert REMINDER_CREATE_RE.search(prompt)
+    assert "calendar+past lookup" not in _route(prompt).reason
+
+
+@pytest.mark.parametrize("prompt", [
+    "write a poem for the retirement party, then message Dana with it",
+    "write a love note for my wife and put it on her calendar",
+    "write a birthday message for Sam and slack it",
+    "come up with a caption for my latest screenshot",
+])
+def test_creative_writing_with_a_further_request_keeps_tools(prompt):
+    assert _route(prompt).needs_tools
+
+
+def test_hold_off_is_not_a_calendar_write():
+    assert "add_calendar_event" not in _offered(_route("hold off sending until monday"))
+
+
+@pytest.mark.parametrize("prompt", ["Close the Deal", "Kill Bill", "exit Interview Notes", "start Monday"])
+def test_capitalised_non_apps_are_not_named_app_commands(prompt):
+    assert not _route(prompt).reason.startswith("named app command")
