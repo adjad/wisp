@@ -23,6 +23,7 @@ def _env(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "USER_CONFIG", tmp_path / "cfg" / "config.yaml")
     config._user_overlay.cache_clear()
     config.models_config.cache_clear()
+    monkeypatch.setattr(behavior_api, "_settings_updates", behavior_api._SettingsUpdates())
     br.set_runtime(None)
     yield
     br.set_runtime(None)
@@ -41,6 +42,168 @@ def client():
     app = FastAPI()
     app.include_router(behavior_api.router)
     return TestClient(app)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_first", [False, True])
+@pytest.mark.parametrize("fail_first", [False, True])
+async def test_settings_reads_and_later_off_wait_for_accepted_write(
+    monkeypatch, cancel_first, fail_first
+):
+    """A client timeout must not release a still-running settings worker."""
+    import threading
+
+    import httpx
+
+    from service import config
+    from service.tools import behavior_tools
+
+    config.set_behavior_enabled(False)
+    original_write = config.set_behavior_enabled
+    entered, release = threading.Event(), threading.Event()
+    writes = []
+
+    def controlled_write(value):
+        writes.append((value, "started"))
+        if value:
+            entered.set()
+            assert release.wait(5), "test did not release the controlled writer"
+            if fail_first:
+                writes.append((value, "failed"))
+                raise OSError("fictional private write failure")
+        result = original_write(value)
+        writes.append((value, "finished"))
+        return result
+
+    monkeypatch.setattr(config, "set_behavior_enabled", controlled_write)
+    monkeypatch.setattr(behavior_tools, "sync_availability", lambda: None)
+    monkeypatch.setattr(br, "age_out", lambda: None)
+    monkeypatch.setattr(br, "poke", lambda *args: None)
+    monkeypatch.setattr(br, "invalidate_email_history", lambda *args: None)
+    monkeypatch.setattr(behavior_api, "_store_hub", lambda: (None, None))
+    monkeypatch.setattr(behavior_api._settings_updates, "MAX_PENDING", 2)
+    app = FastAPI()
+    app.include_router(behavior_api.router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as api:
+        epoch = (await api.post("/behavior/settings/check")).json()["control_epoch"]
+        first = asyncio.create_task(api.put("/behavior/settings", json={"enabled": True, "control_epoch": epoch}))
+        read = later = None
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            if cancel_first:
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+                abandoned_check = asyncio.create_task(api.post("/behavior/settings/check"))
+                for _ in range(50):
+                    await asyncio.sleep(0)
+                assert not abandoned_check.done()
+                abandoned_check.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await abandoned_check
+            read = asyncio.create_task(api.post("/behavior/settings/check"))
+            later = asyncio.create_task(api.put("/behavior/settings", json={"enabled": False}))
+            # The loop stays responsive while the worker is held. Invalid
+            # requests must be rejected without waiting for that worker.
+            invalid = await api.put("/behavior/settings", json={"enabled": "no"})
+            assert invalid.status_code == 422
+            for _ in range(50):
+                await asyncio.sleep(0)
+            assert not read.done(), "GET certified the old value before an accepted write settled"
+            assert not later.done(), "a later OFF acknowledged while an older enable could still apply"
+            assert writes == [(True, "started")]
+            overflow = await api.put("/behavior/settings", json={"enabled": False})
+            assert overflow.status_code == 503 and overflow.headers["Retry-After"] == "2"
+        finally:
+            release.set()
+            results = await asyncio.gather(
+                *(t for t in (first, read, later) if t is not None), return_exceptions=True
+            )
+        assert not isinstance(results[-1], BaseException)
+        assert later.result().status_code == 200
+        assert later.result().json()["enabled"] is False
+        assert later.result().json()["updates_settled"] is True
+        assert read.result().status_code == 200
+        assert read.result().json()["enabled"] is False
+        assert read.result().json()["updates_settled"] is True
+        assert config.get_behavior_enabled() is False
+        assert writes == [(True, "started"), (True, "failed" if fail_first else "finished"),
+                          (False, "started"), (False, "finished")]
+        if not cancel_first:
+            assert first.result().status_code == (409 if fail_first else 200)
+
+
+def test_checked_settings_fences_enables_not_yet_accepted_and_replays(client, monkeypatch):
+    from service import config
+    monkeypatch.setattr(br, "poke", lambda *args: None)
+    monkeypatch.setattr(br, "age_out", lambda: None)
+    monkeypatch.setattr(behavior_api, "_store_hub", lambda: (None, None))
+    assert client.put("/behavior/settings", json={"enabled": False}).status_code == 200
+    first = client.post("/behavior/settings/check").json()
+    assert first["enabled"] is False and first["updates_settled"] is True
+    # This represents an enable delayed before reaching the handler. A new
+    # Settings instance/status check must fence it without remembering its ID.
+    second = client.post("/behavior/settings/check").json()
+    assert first["control_epoch"] != second["control_epoch"]
+    assert client.put("/behavior/settings", json={
+        "enabled": True, "control_epoch": first["control_epoch"]}).status_code == 409
+    assert config.get_behavior_enabled() is False
+    # An explicit OFF also fences older enables, even from a legacy caller.
+    assert client.put("/behavior/settings", json={"enabled": False}).status_code == 200
+    assert client.put("/behavior/settings", json={
+        "enabled": True, "control_epoch": second["control_epoch"]}).status_code == 409
+    current = client.post("/behavior/settings/check").json()
+    enabled = client.put("/behavior/settings", json={
+        "enabled": True, "control_epoch": current["control_epoch"]})
+    assert enabled.status_code == 200 and enabled.json()["updates_settled"] is True
+    assert config.get_behavior_enabled() is True
+    assert client.put("/behavior/settings", json={
+        "enabled": True, "control_epoch": current["control_epoch"]}).status_code == 409
+    assert client.put("/behavior/settings", json={"enabled": True}).status_code == 422
+    snapshot = client.get("/behavior/settings").json()
+    assert "control_epoch" not in snapshot and "updates_settled" not in snapshot
+    # A settled mutation itself supplies the permit for the next explicit user
+    # action. The client must not mint a new one inside an already pending ON.
+    off = client.put("/behavior/settings", json={"enabled": False}).json()
+    assert off["enabled"] is False and len(off["control_epoch"]) == 64
+    assert off["control_epoch"] != current["control_epoch"]
+    assert client.put("/behavior/settings", json={
+        "enabled": True, "control_epoch": off["control_epoch"]}).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_interrupted_internal_settings_worker_cannot_certify_off(monkeypatch):
+    import httpx
+
+    entered = asyncio.Event()
+
+    async def interrupted_write(value):
+        entered.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(behavior_api, "_apply_behavior_settings", interrupted_write)
+    app = FastAPI()
+    app.include_router(behavior_api.router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as api:
+        request = asyncio.create_task(api.put("/behavior/settings", json={"enabled": False}))
+        await asyncio.wait_for(entered.wait(), 2)
+        # This is an internal worker failure, distinct from cancelling the HTTP
+        # caller (covered above). Its completion can no longer be certified.
+        behavior_api._settings_updates.tail.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        for method, path, body in (
+            ("GET", "/behavior/settings", None),
+            ("POST", "/behavior/settings/check", None),
+            ("PUT", "/behavior/settings", {"enabled": False}),
+        ):
+            response = await api.request(method, path, json=body)
+            assert response.status_code == 503
+            assert "updates_settled" not in response.json()
 
 
 @pytest.fixture
@@ -76,6 +239,37 @@ def test_disabled_status_and_409(client, monkeypatch):
         resp = getattr(client, method)(path, json=body) if body is not None else getattr(client, method)(path)
         assert resp.status_code == 409, path
         assert "Learn my routines" in resp.json()["detail"]
+
+
+def test_email_history_routes_require_explicit_current_account_control(client, monkeypatch, tmp_path):
+    from service.behavior.engine import BehaviorEngine
+    from tests.test_behavior_gmail_history import CoreBridgeBackend, command, NOW as HISTORY_NOW
+    monkeypatch.setenv("WISP_BEHAVIOR","1")
+    backend = CoreBridgeBackend([HISTORY_NOW])
+    runtime = br.BehaviorRuntime(tmp_path/"history",clock=lambda:HISTORY_NOW,
+        local_factory=lambda p:BehaviorEngine(p,tz="UTC",clock=lambda:HISTORY_NOW),
+        role_key_fn=lambda:"synthetic-local",gmail_history_backend=backend)
+    monkeypatch.setattr(behavior_api,"_runtime",lambda:runtime)
+    try:
+        runtime.call("configure_signals",{"email":True},HISTORY_NOW)
+        response = client.get("/behavior/email-history")
+        assert response.status_code == 200 and backend.opened == []
+        assert response.json()["accounts"][0]["state"] == "off"
+        body = command(runtime._email_history)
+        assert client.post("/behavior/email-history/control",json=body|{"email_consent":True}).status_code == 422
+        assert backend.opened == []
+        started = client.post("/behavior/email-history/control",json=body)
+        assert started.status_code == 200 and len(backend.opened) == 1
+        assert started.json()["accounts"][0]["counts"]["fetched"] == 0
+        assert client.post("/behavior/email-history/control",json=body).status_code == 409
+        assert client.get("/behavior/email-history").status_code == 200 and len(backend.opened) == 1
+        paused = client.post("/behavior/email-history/control",json=command(runtime._email_history,"pause"))
+        assert paused.status_code == 200 and paused.json()["accounts"][0]["state"] == "paused"
+        assert runtime._email_history.cached_getters() == ()
+        runtime.call("configure_signals",{"email":False},HISTORY_NOW)
+        assert client.post("/behavior/email-history/control",json=command(runtime._email_history)).status_code == 409
+    finally:
+        runtime.stop();runtime.close()
 
 
 def test_run_publishes_and_status(client, live, store):
@@ -124,18 +318,36 @@ def test_feedback(client, live):
 
 
 def test_undo_reverts_auto_actions_and_pings(client, live, store):
+    import httpx
     rt, engine, hub = live
-    client.post("/behavior/run")
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 2
-    data = client.post("/behavior/nudges/n1/undo").json()
-    assert data["ok"] and len(data["removed"]) == 2
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
-    assert engine.feedbacks[-1].verdict == "undo"
-    assert hub.events[-1]["event"] == {"type": "changed"}
-    assert client.post("/behavior/nudges/unknown/undo").status_code == 404
-    listed = {n["id"]: n for n in client.get("/behavior/nudges").json()["nudges"]}
-    assert set(listed) == {"n1", "n2"} and listed["n1"]["verdict"] == "undo"
-    assert listed["n1"]["can_undo"] is False and all(a["undone"] for a in listed["n1"]["auto_performed"])
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app),base_url="http://test") as api:
+            assert (await api.post("/behavior/run")).status_code==200
+            assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 2
+            persisted = store.event_by_key("behavior:n1")
+            before = len(hub.events)
+            queue = hub.subscribe()   # same owning loop, after the initial delivery ping
+            try:
+                data = (await api.post("/behavior/nudges/n1/undo")).json()
+                assert data["ok"] and len(data["removed"]) == 2
+                assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+                assert engine.feedbacks[-1].verdict == "undo"
+                assert hub.events[-1]["event"] == {"type": "changed"}
+                assert hub.events[before:]==[dict(event={"type":"changed"},dedupe_key=None,
+                                                 durable=False,expires_at=None)]
+                assert queue.get_nowait()=={"type":"changed"} and queue.empty()
+                assert store.event(persisted["id"])["state"]=="ack"
+                assert store._db.execute("SELECT COUNT(*) FROM assistant_events WHERE dedupe_key='behavior:n1'").fetchone()[0]==1
+                assert (await api.post("/behavior/nudges/unknown/undo")).status_code == 404
+                listed = {n["id"]: n for n in (await api.get("/behavior/nudges")).json()["nudges"]}
+                assert set(listed) == {"n1", "n2"} and listed["n1"]["verdict"] == "undo"
+                assert listed["n1"]["can_undo"] is False and all(a["undone"] for a in listed["n1"]["auto_performed"])
+                assert (await api.post("/behavior/nudges/n1/undo")).json()["removed"]==[]
+                assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]==0
+                assert store.event_by_key("behavior:n1")["id"]==persisted["id"]
+            finally:
+                hub.unsubscribe(queue)
+    asyncio.run(run())
 
 
 def test_act_open_prompt_and_offered_reminder(client, live, store):
@@ -206,7 +418,8 @@ def test_setting_off_then_on_takes_effect_without_restart(client, live, monkeypa
     assert all(REGISTRY[n].unavailable_reason for n in BEHAVIOR_TOOL_NAMES)
     # ...and what was learned is kept, not cleared.
     assert br._runtime is rt and rt.home.exists() and (rt.home / br.RUNTIME_DB).exists()
-    on = client.put("/behavior/settings", json={"enabled": True}).json()
+    epoch = client.post("/behavior/settings/check").json()["control_epoch"]
+    on = client.put("/behavior/settings", json={"enabled": True, "control_epoch": epoch}).json()
     assert on["enabled"] is True and config.get_behavior_enabled() is True
     assert client.get("/behavior/nudges").status_code == 200
     assert not any(REGISTRY[n].unavailable_reason for n in BEHAVIOR_TOOL_NAMES)
@@ -218,7 +431,8 @@ def test_env_override_beats_the_setting_both_ways(client, monkeypatch):
     client.put("/behavior/settings", json={"enabled": False})
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
     assert _core(client.get("/behavior/settings").json()) == {"enabled": True, "setting": False, "env_override": True}
-    client.put("/behavior/settings", json={"enabled": True})
+    epoch = client.post("/behavior/settings/check").json()["control_epoch"]
+    client.put("/behavior/settings", json={"enabled": True, "control_epoch": epoch})
     monkeypatch.setenv("WISP_BEHAVIOR", "0")
     assert _core(client.get("/behavior/settings").json()) == {"enabled": False, "setting": True, "env_override": False}
     assert config.get_behavior_enabled() is True              # the saved choice is untouched

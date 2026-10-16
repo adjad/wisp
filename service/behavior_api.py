@@ -10,6 +10,7 @@ sending or changing anything.
 from __future__ import annotations
 
 import asyncio
+import secrets
 import sqlite3
 from typing import Any
 
@@ -44,6 +45,102 @@ _ERASING = "Wisp is erasing what it learned right now. Try again in a moment."
 _ERASED = "What Wisp learned was just erased, so this nudge is gone."
 _PATTERN_STATUSES = ("active", "confirmed", "rejected")
 _VERDICTS = ("useful", "not_now", "wrong")
+
+
+class _SettingsUpdates:
+    """Order accepted writes and fence enables that have not arrived yet.
+
+    HTTP cancellation cannot cancel an accepted operation's disk worker. One
+    process-local, single-use epoch replaces an unbounded request-ID registry.
+    """
+
+    MAX_PENDING = 16
+
+    def __init__(self):
+        self.epoch = secrets.token_hex(32)
+        self.tail: asyncio.Task | None = None
+        self.pending = 0
+        self.interrupted = False
+
+    def _healthy(self):
+        if self.interrupted or (self.tail is not None and self.tail.cancelled()):
+            raise HTTPException(503, "A learning settings update was interrupted. Restart Wisp and check its status.")
+
+    def _finished(self, task):
+        self.pending -= 1
+        if task.cancelled():
+            self.interrupted = True
+        else:
+            task.exception()  # Observe errors even if the HTTP caller disconnected.
+
+    async def _settle(self, task):
+        self._healthy()
+        if not task.done() and task.get_loop() is not asyncio.get_running_loop():
+            self.interrupted = True
+            self._healthy()
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                self.interrupted = True
+                self._healthy()
+            raise
+        except Exception:
+            # A completed failed save has no worker left to apply later. The
+            # next save/status may recover; an interrupted worker cannot.
+            pass
+        self._healthy()
+
+    def submit(self, value, epoch):
+        self._healthy()
+        if value and epoch is None:
+            raise HTTPException(422, "Check learning settings before enabling them.")
+        if epoch is not None and (not isinstance(epoch, str) or epoch != self.epoch):
+            raise HTTPException(409, "Learning settings changed. Check their status and try again.")
+        if self.pending >= self.MAX_PENDING:
+            raise HTTPException(503, "Learning settings are still updating. Try again shortly.",
+                                headers={"Retry-After": "2"})
+        # Register and consume before the request's first await. Any older
+        # unaccepted enable is now fenced, including one from a closed window.
+        self.epoch = secrets.token_hex(32)
+        previous = self.tail
+
+        async def apply():
+            nonlocal previous
+            if previous is not None:
+                await self._settle(previous)
+            previous = None  # Do not retain a chain of failed task tracebacks.
+            payload = await _apply_behavior_settings(value)
+            # The receipt supplies the permit for a *future explicit action*.
+            # A client must not fetch a new permit inside an older enable intent.
+            self.epoch = secrets.token_hex(32)
+            return payload | {"updates_settled": True, "control_epoch": self.epoch}
+
+        task = asyncio.create_task(apply())
+        self.tail = task
+        self.pending += 1
+        task.add_done_callback(self._finished)
+        return task
+
+    async def read(self, *, fence=False):
+        self._healthy()
+        if fence:
+            self.epoch = secrets.token_hex(32)
+        while True:
+            tail = self.tail
+            if tail is not None:
+                await self._settle(tail)
+            if tail is self.tail:
+                break
+        # No await between the stable tail, final fence and state snapshot.
+        payload = _settings_payload()
+        if fence:
+            self.epoch = secrets.token_hex(32)
+            return payload | {"updates_settled": True, "control_epoch": self.epoch}
+        return payload  # A legacy GET is a snapshot, not a completion receipt.
+
+
+_settings_updates = _SettingsUpdates()
 
 
 def _runtime() -> behavior_runtime.BehaviorRuntime:
@@ -86,19 +183,38 @@ def _settings_payload() -> dict[str, Any]:
 async def behavior_settings() -> dict[str, Any]:
     """The "Learn my routines" setting. ``enabled`` is what is in effect: a
     ``WISP_BEHAVIOR`` launch override beats the saved ``setting``."""
-    return _settings_payload()
+    return await _settings_updates.read()
+
+
+@router.post("/settings/check")
+async def check_behavior_settings() -> dict[str, Any]:
+    """Settle accepted updates and fence older enables still in transit."""
+    return await _settings_updates.read(fence=True)
 
 
 @router.put("/settings")
 async def set_behavior_settings(body: dict[str, Any] | None = None) -> dict[str, Any]:
     """Turn behavior learning on or off now, without restarting Wisp. Off stops
     ingesting, mining and nudging; what was learned is kept (use ``DELETE /behavior/data``
-    to erase it) but is still aged out (180 days / 30 days)."""
+    to erase it) but is still aged out (180 days / 30 days).
+
+    Enabling requires the fresh control_epoch returned by POST /settings/check.
+    OFF also accepts a bare boolean so revocation never needs a successful read.
+    Every accepted write fences older unaccepted enables; its settled receipt
+    is returned only after earlier writes and its own worker have completed.
+    """
     value = _body(body).get("enabled")
     if type(value) is not bool:
         raise HTTPException(status_code=422, detail="enabled must be true or false")
+    operation = _settings_updates.submit(value, _body(body).get("control_epoch"))
+    return await asyncio.shield(operation)
+
+
+async def _apply_behavior_settings(value: bool) -> dict[str, Any]:
     from service.config import set_behavior_enabled
     from service.tools.behavior_tools import sync_availability
+    if value is False:
+        behavior_runtime.invalidate_email_history("Learning was switched off")
     try:
         await asyncio.to_thread(set_behavior_enabled, value)
     except (ValueError, OSError, yaml.YAMLError) as exc:
@@ -132,6 +248,7 @@ async def behavior_forget(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="JSON object body required") from exc
     if not isinstance(body, dict) or body.get("confirm") is not True:
         raise HTTPException(status_code=422, detail="confirm must be true")
+    behavior_runtime.invalidate_email_history("Forget was requested")
     store, hub = _store_hub()
     result = await asyncio.to_thread(behavior_runtime.forget_all, store)
     try:
@@ -180,6 +297,100 @@ async def behavior_patterns(status: str | None = None, kind: str | None = None) 
         raise HTTPException(status_code=422, detail=f"kind must be one of {list(PATTERN_KINDS)}")
     patterns = await runtime.acall("patterns", status=status, kind=kind)
     return {"patterns": [p.to_dict() for p in patterns]}
+
+
+@router.get("/weekly")
+async def behavior_weekly() -> dict[str, Any]:
+    return await _runtime().acall("weekly")
+
+
+@router.get("/signals")
+async def behavior_signals():
+    runtime = _runtime()
+    return {**(await runtime.acall("signal_settings")), "activity": await runtime.acall("activity_summary"),
+            "seed": await asyncio.to_thread(runtime.seed_progress)}
+
+
+@router.put("/signals")
+async def behavior_signal_settings(body: dict[str, Any]):
+    try:
+        return await _runtime().acall("configure_signals", _body(body))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/activity/lease")
+async def behavior_activity_lease(client: str):
+    try:
+        return await _runtime().acall("activity_lease", client)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/activity")
+async def behavior_activity(body: dict[str, Any]):
+    try:
+        return await _runtime().acall("observe_activity", body)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail="Activity source changed or interval invalid") from exc
+
+
+@router.get("/availability")
+async def behavior_availability(day: str, timezone: str):
+    try:
+        return await asyncio.to_thread(_runtime().planning_context, day, timezone)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail="A local date and named timezone are required") from exc
+
+
+@router.get("/history")
+async def behavior_history() -> dict[str, Any]:
+    return {"sources": await _runtime().acall("history_status")}
+
+
+@router.get("/email-history")
+async def email_history_status() -> dict[str, Any]:
+    return _runtime().email_history_status()
+
+
+@router.post("/email-history/control")
+async def email_history_control(body: dict[str, Any]) -> dict[str, Any]:
+    from service.assistant.gmail_history_runtime import HistoryConflict, HistoryUnavailable
+    try:
+        # Pure source account/lease control, with no await or HTTP before a
+        # pause/reset withdraws prior proof. Fetching is separate source work.
+        return _runtime().email_history_control(_body(body))
+    except (HistoryConflict, HistoryUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="A current account, revision and explicit bounded scope are required") from exc
+
+
+@router.get("/history/{source}/next")
+async def behavior_history_next(source: str) -> dict[str, Any]:
+    try:
+        return await _runtime().acall("history_next", source)
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+
+
+@router.post("/history/{source}/batch")
+async def behavior_history_batch(source: str, body: dict[str, Any]) -> dict[str, Any]:
+    runtime = _runtime()
+    try:
+        result = await runtime.acall("history_ingest",source,body)
+        runtime.invalidate_card()
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+
+@router.post("/history/{source}/control")
+async def behavior_history_control(source: str, body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await _runtime().acall("history_control",source,_body(body).get("command"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
 
 
 @router.post("/patterns/{pattern_id}")

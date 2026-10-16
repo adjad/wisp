@@ -100,6 +100,8 @@ class FakeOmlx:
             item = queued.pop(0)
             if isinstance(item, Exception):
                 raise item
+            if isinstance(item, httpx.Response):
+                return item
             return httpx.Response(item, json={"error": "injected"})
         if purpose == "health":
             return httpx.Response(200, json={"status": "ok"})
@@ -628,6 +630,91 @@ def test_a_failed_residency_check_leaves_no_proof(engine):
         await turn.ensure_only(MODEL, exclusive=True)
         assert turn._residency is not None
     asyncio.run(go())
+
+
+def _capacity_refusal():
+    return httpx.Response(507, json={"detail": "FAKE_PRIVATE_MEMORY_SETTINGS /private/model/path"},
+                          headers={"x-private-config": "FAKE_PRIVATE_HEADER"})
+
+
+def test_capacity_refusal_has_no_proof_generation_or_automatic_retry(engine):
+    engine.fake.loaded = set()
+    engine.fake.failures["load"] = [_capacity_refusal()]
+
+    async def go():
+        turn = TurnInferenceClient(engine.client, main.ensure_omlx)
+        with pytest.raises(ModelLoadError, match="memory") as caught:
+            await turn.ensure_only(MODEL, exclusive=True)
+        assert turn._residency is None
+        assert turn._prepared_model is None
+        assert not hasattr(caught.value, "request") and not hasattr(caught.value, "response")
+        from service.errors import translate
+        retried = []
+
+        async def retry():
+            retried.append(True)
+
+        message, detail = translate(caught.value, retry_omlx=retry)
+        await asyncio.sleep(0)
+        assert retried == []
+        assert "memory" in message and "model_memory_limit" in detail
+        for private in (BASE, MODEL, "FAKE_PRIVATE", "/private/model/path", "507 Insufficient"):
+            assert private not in message + detail + repr(caught.value)
+        assert engine.fake.count("load") == 1 and engine.fake.count("chat") == 0
+        # A later explicit attempt can succeed; refusal grants no cached success.
+        await turn.ensure_only(MODEL, exclusive=True)
+        assert turn._residency is not None
+    asyncio.run(go())
+    assert engine.fake.count("load") == 2 and engine.fake.count("chat") == 0
+
+
+def test_optional_keep_warm_capacity_refusal_does_not_fail_requested_model(engine):
+    engine.client.set_keep_warm({MODEL, OTHER})
+    engine.fake.loaded = {MODEL}
+    engine.fake.failures["load"] = [_capacity_refusal()]
+
+    async def go():
+        turn = TurnInferenceClient(engine.client, main.ensure_omlx)
+        await turn.ensure_only(MODEL)
+        assert turn._prepared_model == MODEL
+        # Optional warmup failure never proves that the whole warm set loaded.
+        assert turn._residency is None
+    asyncio.run(go())
+    assert engine.fake.loaded == {MODEL}
+    assert engine.fake.count("load") == 1 and engine.fake.count("chat") == 0
+
+
+@pytest.mark.parametrize("options", [{"stream": False}, {"stream": True}, {"setup_test": True}])
+def test_chat_capacity_refusal_is_503_before_any_answer_or_setup_certificate(engine, options):
+    engine.fake.loaded = set()
+    engine.fake.failures["load"] = [_capacity_refusal()]
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+                                     base_url="http://test") as app:
+            return await app.post("/chat", json={"prompt": "fictional setup probe", "role": "general",
+                                                   "model": MODEL, **options})
+    response = asyncio.run(go())
+    assert response.status_code == 503
+    body = response.json()
+    assert set(body) == {"detail"} and "memory" in body["detail"]
+    assert "complete_visible_assistant_v1" not in response.text
+    for private in (BASE, MODEL, "FAKE_PRIVATE", "/private/model/path"):
+        assert private not in response.text
+    assert engine.fake.count("load") == 1 and engine.fake.count("chat") == 0
+
+
+def test_agent_capacity_refusal_has_one_safe_error_and_no_generation_or_replay(engine):
+    engine.fake.loaded = set()
+    engine.fake.failures["load"] = [_capacity_refusal()]
+    events = endpoint_turn("hello")
+    errors = [e for e in events if e["type"] == "error"]
+    assert len(errors) == 1 and "memory" in errors[0]["message"]
+    error = json.dumps(errors)
+    for private in (BASE, MODEL, "FAKE_PRIVATE", "/private/model/path"):
+        assert private not in error
+    assert any(e["type"] == "done" for e in events)
+    assert engine.fake.count("load") == 1 and engine.fake.count("chat") == 0
 
 
 def test_an_engine_that_returns_garbage_for_status_uses_the_full_start(engine):

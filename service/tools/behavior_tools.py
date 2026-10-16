@@ -24,8 +24,8 @@ def _unavailable() -> str:
     return "" if enabled() else _OFF
 
 
-_EMPTY = ("I haven't learned any reliable routines yet — I need a few more weeks of your calendar "
-          "and activity before I can describe patterns with confidence.")
+_EMPTY = ("I haven't learned any reliable routines yet. Existing accessible history can seed patterns "
+          "as sources finish syncing; check History scan in What Wisp learned for coverage.")
 
 # Everyday words -> what the engine's patterns say (subjects/categories/statements).
 _SYNONYMS = {
@@ -199,7 +199,7 @@ def predict_my_day(day: str = "tomorrow") -> str:
     label = ("Today" if day == "today" else "Tomorrow") + datetime.fromtimestamp(start).strftime(" (%A, %B %-d)")
     if not preds:
         return f"{label}: I don't have enough learned routine to predict anything specific yet."
-    names = {"activity": "likely", "cancel_risk": "may be cancelled", "contact": "likely to talk",
+    names = {"activity": "likely", "cancel_risk": "may be cancelled", "contact": "possible contact window",
              "habit_conflict": "conflicts with a habit", "usage": "you usually ask Wisp about this"}
     lines = [f"{label}, based on your learned routines (probabilities, not commitments):"]
     for p in preds[:12]:
@@ -215,18 +215,23 @@ def predict_my_day(day: str = "tomorrow") -> str:
     "my_patterns",
     "Search the user's learned routines for one question, e.g. 'when do I usually work out', 'who "
     "do I talk to in the afternoon', 'which meetings do I usually cancel'. Returns matching "
-    "patterns with evidence counts and pattern ids. Read-only.",
+    "patterns with evidence counts and pattern ids. Also answers 'weekly activity', 'weekly trends' "
+    "and 'what changed this week' with measurements from seven completed local dates, coverage and "
+    "the preceding four-week baseline. Read-only.",
     {"type": "object", "properties": {
         "query": {"type": "string", "description": "what to look for, in the user's words"},
     }, "required": ["query"]},
     category="assistant_read",
     unavailable_reason=_unavailable(),
     aliases=["when do I usually work out", "who do I talk to in the afternoon",
-             "which meetings do I usually cancel", "do I usually skip"],
+             "which meetings do I usually cancel", "do I usually skip", "weekly activity", "weekly trends",
+             "what changed this week"],
 )
 def my_patterns(query: str) -> str:
     if _runtime() is None:
         return _OFF
+    if re.search(r"\b(?:this week|last week|weekly|what changed|trends?)\b",query,re.I):
+        return str(_runtime().call("weekly").get("summary") or "No weekly observations yet.")
     patterns = _visible(list(_describe(None).get("patterns") or []))
     if not patterns:
         return _EMPTY

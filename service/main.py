@@ -1112,6 +1112,11 @@ async def set_idle_timeout(body: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/chat")
 async def chat(body: dict[str, Any]):
+    setup_test = body.get("setup_test", False)
+    if not isinstance(setup_test, bool):
+        raise HTTPException(status_code=422, detail="setup_test must be a boolean")
+    if setup_test and body.get("stream"):
+        raise HTTPException(status_code=422, detail="A setup test requires a complete, non-streaming answer")
     target = role_target(body.get("role") or models_config().get("default_role", "agent"))
     max_tokens = body.get("max_tokens", 8000)
     profile = remote_only_profile()
@@ -1130,7 +1135,6 @@ async def chat(body: dict[str, Any]):
         max_tokens = min(max_tokens, _direct_generation_budget(target)[0])
     owned = None
     if target.endpoint.managed:
-        await ensure_omlx()
         active = client
         model = body.get("model") or target.model
     else:
@@ -1143,6 +1147,8 @@ async def chat(body: dict[str, Any]):
                 body.get("messages") or [{"role": "user", "content": body["prompt"]}])
     streaming_started = False
     try:
+        if target.endpoint.managed:
+            await ensure_omlx()
         if profile is not None:
             await _prepare_remote_inference(active)
         await active.ensure_only(model)
@@ -1159,8 +1165,18 @@ async def chat(body: dict[str, Any]):
             streaming_started = True
             return StreamingResponse(gen(), media_type="text/plain")
         resp = await active.chat(model, messages, max_tokens=max_tokens)
+        if setup_test:
+            try:
+                visible = setup_guide.visible_test_answer(resp)
+            except ValueError as error:
+                raise HTTPException(status_code=502, detail=str(error)) from error
+            return {"model": model, "content": visible, "usage": resp.get("usage"),
+                    "setup_test": "complete_visible_assistant_v1"}
         msg = resp["choices"][0]["message"]
         return {"model": model, "content": msg.get("content"), "usage": resp.get("usage")}
+    except ModelLoadError as exc:
+        # Readiness/admission failed before any successful chat/setup result.
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     finally:
         if owned and not streaming_started:
             await owned.aclose()

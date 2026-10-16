@@ -168,11 +168,16 @@ def test_key_and_settings_persistence() -> None:
         again = EngineManager(layout)
         check("restart keeps the key", again.api_key == first.api_key)
         doc = json.loads(layout.settings_path.read_text())
+        check("fresh settings do not set a vendor memory profile", "memory" not in doc)
+        memory = {"memory_guard_tier": "balanced", "prefill_memory_guard": True,
+                  "max_process_memory": "70%", "max_model_memory": "60%"}
+        doc["memory"] = memory
         doc["scheduler"] = {"max_concurrent_requests": 3}
         doc["server"]["log_level"] = "debug"
         layout.settings_path.write_text(json.dumps(doc))
         again.prepare()
         kept = json.loads(layout.settings_path.read_text())
+        check("an existing memory profile and limits survive prepare", kept["memory"] == memory)
         check("foreign sections survive prepare", kept["scheduler"] == {"max_concurrent_requests": 3})
         check("foreign keys inside owned sections survive", kept["server"]["log_level"] == "debug")
         check("owned keys are restored", kept["server"]["port"] == again.port
@@ -180,6 +185,8 @@ def test_key_and_settings_persistence() -> None:
         kept["model"]["model_dirs"].append("/Volumes/Models")
         layout.settings_path.write_text(json.dumps(kept))
         again.prepare()
+        check("repeated prepare preserves memory settings",
+              json.loads(layout.settings_path.read_text())["memory"] == memory)
         dirs = json.loads(layout.settings_path.read_text())["model"]["model_dirs"]
         check("a model folder added in the admin UI survives prepare",
               "/Volumes/Models" in dirs and dirs[0] == str(layout.models_dir), str(dirs))

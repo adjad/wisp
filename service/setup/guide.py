@@ -5,6 +5,7 @@ the same logic serves the first-run guide, Settings, and tests.
 """
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 
@@ -17,6 +18,8 @@ TEXT_ROLES = ("fast", "general", "coding", "reasoning")
 ROLE_LABELS = {"fast": "Fast & routing", "general": "General & agentic",
                "coding": "Coding", "reasoning": "Reasoning"}
 OMLX_MIN_MACOS = 15
+# Legacy major-only wire field. The packaged engine's authoritative fractional
+# requirement is reported separately in bundled_engine.minimum_macos.
 # Same wording as Settings' local-provider panel. Loopback proves the app is on this
 # Mac, not that it keeps prompts there, so this must never claim more than that.
 EXTERNAL_ENGINE_DISCLOSURE = (
@@ -25,6 +28,33 @@ EXTERNAL_ENGINE_DISCLOSURE = (
     "too. Wisp does not automatically send earlier conversation summaries or remembered facts. "
     "Routing, summary generation, search and memory stay with managed models. A loopback app "
     "without an API key is not identity-verified; connect only one you trust.")
+
+
+def visible_test_answer(payload: object) -> str:
+    """Validate setup evidence before /chat discards completion metadata.
+
+    Keep the complete-visible-assistant contract used by the raw engine smoke.
+    This pure check never launches or queries an engine.
+    """
+    if isinstance(payload, dict) and payload.get("error") is not None:
+        raise ValueError("The model returned an error. Try again or pick another model.")
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "stop":
+        raise ValueError("The model did not finish its answer. Try again or pick another model.")
+    message = choice.get("message")
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        raise ValueError("The model returned no assistant answer. Try again or pick another model.")
+    content = message.get("content")
+    if not isinstance(content, str):
+        raise ValueError("The model returned no visible answer. Try again or pick another model.")
+    content = re.sub(r"(?is)<think>(?:(?!</?think>).)*</think>", "", content)
+    if "<think" in content.lower() or "</think" in content.lower():
+        raise ValueError("The model returned unfinished reasoning. Try again or pick another model.")
+    content = content.strip()
+    if not content:
+        raise ValueError("The model gave no visible answer. It may be spending its whole budget thinking; try again or pick another model.")
+    return content
 
 
 @dataclass(frozen=True)
@@ -40,7 +70,7 @@ def _entry(model_id: str, hardware: Hardware, tool_capable: list[str]) -> dict:
     if known:
         return {"id": model_id, "label": f"{known.label} · {known.quant}",
                 "size_gb": known.size_gb, "fit": catalog.fit(known, hardware.ram_gb),
-                "tested": True, "note": known.note}
+                "tested": known.tested, "note": known.note}
     return {"id": model_id, "label": model_id, "size_gb": None, "fit": "unknown",
             "tested": model_id in tool_capable,
             "note": "Not one of Wisp's tested models." if model_id not in tool_capable
@@ -48,7 +78,7 @@ def _entry(model_id: str, hardware: Hardware, tool_capable: list[str]) -> dict:
 
 
 def download_info(model_id: str | None, model_dir: str | None) -> dict | None:
-    """How to fetch a catalog model. Wisp never downloads weights by itself."""
+    """Catalogue details, including a manual fallback for external engines."""
     known = catalog.by_id(model_id) if model_id else None
     if not known or not known.repo:
         return None
@@ -76,9 +106,13 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
     built_in = engine is BUNDLED
 
     checks: list[dict] = []
-    if built_in:
+    if built_in and omlx.running:
         checks.append({"id": "engine", "state": "ok", "title": "Wisp's built-in engine is ready",
-                       "detail": "Wisp starts it when needed."})
+                       "detail": "The built-in engine is answering on this Mac."})
+    elif built_in:
+        checks.append({"id": "engine", "state": "warn", "title": "Start Wisp's built-in engine",
+                       "detail": "The engine isn't answering yet. Start it here, or retry if startup failed.",
+                       "action": "start_engine"})
     elif omlx.running:
         checks.append({"id": "engine", "state": "ok", "title": "oMLX is running",
                        "detail": "Wisp's main inference engine is ready."})
@@ -88,7 +122,7 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                        "action": "start_engine"})
     else:
         checks.append({"id": "engine", "state": "todo", "title": "Install oMLX",
-                       "detail": f"Wisp runs its assistant on oMLX, which needs macOS {OMLX_MIN_MACOS} or newer.",
+                       "detail": "Install an oMLX build compatible with this Mac, then open it once.",
                        "action": "install_omlx", "url": OMLX.url})
 
     missing = [r for r in TEXT_ROLES
@@ -98,8 +132,14 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
         checks.append({"id": "model", "state": "todo", "title": "Choose a model",
                        "detail": "Wisp will list your models once oMLX is running."})
     elif not chat_models:
-        checks.append({"id": "model", "state": "todo", "title": "Download a model",
-                       "detail": "No chat model is installed yet.", "action": "download_model"})
+        preferred = catalog.by_id(rec["first_choice"])
+        if preferred is not None and preferred.repo is None and rec["get"] is None:
+            checks.append({"id": "model", "state": "todo", "title": "Add a local model",
+                           "detail": f"Add {preferred.label}'s model folder to the engine's model directory, then check again.",
+                           "action": "add_local_model"})
+        else:
+            checks.append({"id": "model", "state": "todo", "title": "Download a model",
+                           "detail": "No chat model is installed yet.", "action": "download_model"})
     elif missing:
         names = ", ".join(sorted({roles.get(r, {}).get("model") or "(none)" for r in missing}))
         checks.append({"id": "model", "state": "todo", "title": "Pick an installed model",
@@ -116,10 +156,13 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                              else "Optional. Without it, Smart Search falls back to keyword matching."})
 
     ready = all(c["state"] == "ok" for c in checks if c["id"] in ("engine", "model"))
+    from service.engine.mode import bundled_compatibility
     return {
         "ready": ready,
+        "bundled_engine": bundled_compatibility(),
         "hardware": {"chip": hardware.chip, "ram_gb": hardware.ram_gb, "tier": hardware.tier},
-        "omlx": {"installed": built_in or omlx.installed, "running": omlx.running, "model_dir": omlx.model_dir,
+        "omlx": {"installed": built_in or omlx.installed, "running": omlx.running, "bundled": built_in,
+                 "model_dir": omlx.model_dir,
                  "min_macos": OMLX_MIN_MACOS, "url": OMLX.url,
                  # oMLX's own admin page has a Model Downloader for Hugging Face repos.
                  "admin_url": f"http://127.0.0.1:{engine.port}/admin" if built_in else omlx.admin_url},

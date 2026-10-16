@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+import threading
+import json
 
 # The server ends each app event stream on a timer (events(rotate_after=...))
 # and the app re-subscribes 3s later (OverlayModel.startAssistant). A
@@ -22,6 +24,8 @@ class Hub:
         self._subs: set[asyncio.Queue] = set()
         self._waiters: set[asyncio.Future] = set()
         self._last_unsubscribed: float | None = None
+        self._owner_loop = None
+        self._owner_thread = None
 
     @property
     def store(self):
@@ -72,6 +76,12 @@ class Hub:
     async def publish(self, event: dict, *, dedupe_key: str | None = None,
                       target: dict | None = None, durable: bool = True,
                       expires_at: float | None = None) -> dict:
+        return self.publish_sync(event,dedupe_key=dedupe_key,target=target,
+                                 durable=durable,expires_at=expires_at)
+
+    def publish_sync(self, event: dict, *, dedupe_key: str | None = None,
+                      target: dict | None = None, durable: bool = True,
+                      expires_at: float | None = None) -> dict:
         # The legacy Void bridge cannot return verified results. Refuse its
         # commands so callers cannot bypass the claimed Reminders protocol.
         if event.get('type') in {'create_apple_reminder', 'update_apple_reminder',
@@ -88,6 +98,36 @@ class Hub:
                 return event
         for q in list(self._subs):
             q.put_nowait(event)
+        return event
+
+    def prepare_nudge_delivery(self, store):
+        """Bind the actual store and loop before any publication lease."""
+        from service.assistant.store import AssistantStore, CommittedNudge
+        if type(self) is not Hub or type(store) is not AssistantStore or self.store is not store:
+            raise ValueError("Nudge delivery needs the actual matching Hub and Store")
+        loop = asyncio.get_running_loop()
+        if self._owner_loop is not None and self._owner_loop is not loop:
+            if not self._owner_loop.is_closed() or self._subs or self._waiters:
+                raise ValueError("Hub belongs to another event loop")
+        if any(type(q) is not asyncio.Queue or q._loop not in (None,loop) for q in self._subs):
+            raise ValueError("Hub subscriber belongs to another loop")
+        self._store,self._receipt_type = store,CommittedNudge
+        self._owner_loop,self._owner_thread = loop,threading.get_ident()
+        return loop
+
+    def publish_committed_sync(self, lease, receipt, runtime, loop):
+        """Fan out only a fixed writer's committed canonical row, with no await."""
+        if (self._owner_loop is not loop or asyncio.get_running_loop() is not loop
+                or self._owner_thread!=threading.get_ident() or type(receipt) is not self._receipt_type):
+            raise ValueError("Exact prepared delivery loop and receipt required")
+        self._store.validate_committed_nudge(lease,receipt,runtime)
+        event = {**json.loads(receipt.payload),"event_id":receipt.event_id}
+        if receipt.pending:
+            for q in list(self._subs):
+                q.put_nowait(event)
+            if event.get("auto_performed"):
+                for q in list(self._subs):
+                    q.put_nowait({"type":"changed"})
         return event
 
     async def events(self, rotate_after: float | None = None):

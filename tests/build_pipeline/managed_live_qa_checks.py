@@ -389,7 +389,26 @@ import Foundation
                  if name == "service" or name.startswith("service.")}
         attributes = {name: vars(module).copy() for name, module in saved.items()}
         try:
+            primitive_name = "service.publication_authority"
+            sentinel = types.ModuleType(primitive_name)
+            service = sys.modules.setdefault("service", types.ModuleType("service"))
+            sys.modules[primitive_name] = sentinel
+            service.publication_authority = sentinel
             secure_adapters(stage / "source/service", endpoint="http://127.0.0.1:8000")
+            self.assertNotIn(primitive_name, sys.modules)
+            self.assertFalse(hasattr(sys.modules["service"], "publication_authority"))
+            primitive = importlib.import_module(primitive_name)
+            primitive_path = stage / "source/service/publication_authority.py"
+            self.assertIsNot(primitive, sentinel)
+            self.assertEqual(Path(primitive.__file__).resolve(), primitive_path.resolve())
+            committed = subprocess.check_output(["git", "show",
+                f"{self.artifact}:service/publication_authority.py"], cwd=self.checkout)
+            self.assertEqual(primitive_path.read_bytes(), committed)
+            inventory = json.loads((stage / "qa-source-inventory.json").read_text())
+            self.assertEqual(inventory["service/publication_authority.py"]["sha256"],
+                             sha(primitive_path))
+            with zipfile.ZipFile(stage / "qa-source.pyz") as archive:
+                self.assertEqual(archive.read("service/publication_authority.py"), committed)
             for name in ("service.tools.email_tools", "service.tools.imessage_tools",
                          "service.assistant.brief", "service.message_content"):
                 sys.modules.pop(name, None)
@@ -406,6 +425,9 @@ import Foundation
             self.assertEqual(sys.modules["service.config"].user_facing_summary_kwargs(
                 "Ling-3.0-tiny-oQ4e"), {})
             quarantine = importlib.import_module("service.config.quarantine")
+            self.assertIs(email.Authority, primitive.Authority)
+            self.assertIs(messages.Authority, primitive.Authority)
+            self.assertIs(quarantine.Authority, primitive.Authority)
             self.assertIn(".wisp-summary-qa", str(quarantine.RecoveryGate().directory))
             messages._sync_completed = messages._available = True
             messages._lines = "\n".join((
@@ -425,6 +447,33 @@ import Foundation
             snapshot = messages.structured_messages_snapshot()
             self.assertEqual(snapshot["records"][0]["links"][0]["url"],
                              "https://example.test/a")
+        finally:
+            for name in list(sys.modules):
+                if name == "service" or name.startswith("service."):
+                    sys.modules.pop(name, None)
+            sys.modules.update(saved)
+            for name, module in saved.items():
+                vars(module).clear()
+                vars(module).update(attributes[name])
+
+    def test_missing_staged_primitive_cannot_use_cached_host_module(self):
+        stage = self.assemble()
+        (stage / "source/service/publication_authority.py").unlink()
+        saved = {name: module for name, module in sys.modules.items()
+                 if name == "service" or name.startswith("service.")}
+        attributes = {name: vars(module).copy() for name, module in saved.items()}
+        try:
+            primitive_name = "service.publication_authority"
+            sentinel = types.ModuleType(primitive_name)
+            service = sys.modules.setdefault("service", types.ModuleType("service"))
+            sys.modules[primitive_name] = sentinel
+            service.publication_authority = sentinel
+            secure_adapters(stage / "source/service", endpoint="http://127.0.0.1:8000")
+            self.assertNotIn(primitive_name, sys.modules)
+            self.assertFalse(hasattr(sys.modules["service"], "publication_authority"))
+            with self.assertRaisesRegex(ModuleNotFoundError, "service.publication_authority"):
+                importlib.import_module("service.tools.email_tools")
+            self.assertNotIn(primitive_name, sys.modules)
         finally:
             for name in list(sys.modules):
                 if name == "service" or name.startswith("service."):

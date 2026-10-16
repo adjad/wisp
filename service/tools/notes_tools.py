@@ -18,6 +18,7 @@ from functools import lru_cache
 from types import MappingProxyType
 from typing import Mapping
 
+from service.publication_authority import Authority, LIVE_CLOCK, Witness, mutating
 from service.tools import cache_store
 from service.tools.registry import register
 from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_period, resolve_span
@@ -31,6 +32,9 @@ _reason = ""
 _publication_lock = threading.RLock()
 _notes_generation = 0
 _notes_origin = "none"
+_publication_authority = Authority("native-notes")
+_publication_expires_monotonic = 0.0
+_issued_snapshot = None
 # Notes sync only ONCE A DAY (NotesReader.swift), so before this cache was
 # persisted a backend restart left it empty for up to 24h — long enough that
 # `build_profile` routinely ran with no notes at all. Restoring on import (and
@@ -85,17 +89,20 @@ def _clean_stamp(value, now: float) -> float:
     return stamp
 
 
+@mutating
 def cache_notes(raw: str, available: bool = True, reason: str = "",
                 snapshot_started_at: float | None = None) -> None:
     global _notes, _notes_at, _available, _reason, _snapshot_at
     global _snapshot_started_at, _received_at, _receipt_started
     global _receipt_available, _receipt_reason
-    global _notes_generation, _notes_origin
+    global _notes_generation, _notes_origin, _publication_expires_monotonic, _issued_snapshot
     with _publication_lock:
         now = time.time()
         started = _clean_stamp(snapshot_started_at, now)
         if started and _receipt_started and started < _receipt_started:
             return
+        _publication_authority.withdraw()
+        _issued_snapshot = None
         _notes_generation += 1
         _received_at, _receipt_started = now, started or _receipt_started
         _receipt_available, _receipt_reason = available, reason
@@ -106,7 +113,12 @@ def cache_notes(raw: str, available: bool = True, reason: str = "",
         _notes_at = _snapshot_at = now
         _snapshot_started_at = started
         _notes_origin = "live"
-        cache_store.save("notes", _notes)
+        body = _notes
+        _publication_expires_monotonic = time.monotonic() + _TTL_SECONDS - (now - (started or now))
+    # Pending/unready while persistence runs; never hold the source lock over I/O.
+    cache_store.save("notes", body)
+    with _publication_lock:
+        _publication_authority.publish()
 
 
 def notes_receipt() -> dict:
@@ -142,10 +154,13 @@ if _notes:
         _snapshot_at = _notes_at
 
 
+@mutating
 def _purge_if_expired() -> None:
-    global _notes, _notes_at, _available, _notes_generation, _notes_origin
+    global _notes, _notes_at, _available, _notes_generation, _notes_origin, _issued_snapshot
     with _publication_lock:
         if _notes_at and (time.time() - _notes_at) > _TTL_SECONDS:
+            _publication_authority.withdraw()
+            _issued_snapshot = None
             _notes = ""
             _notes_at = 0.0
             _available = None
@@ -176,8 +191,9 @@ def raw_notes_snapshot(*, limit: int = 500, byte_limit: int = 100_000) -> RawNot
     """
     if type(limit) is not int or not 1 <= limit <= 500 or type(byte_limit) is not int or not 1 <= byte_limit <= 100_000:
         raise ValueError("invalid Notes snapshot bounds")
+    global _issued_snapshot
+    _purge_if_expired()  # Outer revocation precedes the source lock.
     with _publication_lock:
-        _purge_if_expired()
         raw, generation, origin = _notes, _notes_generation, _notes_origin
         received, started = _snapshot_at, _snapshot_started_at
         receipt = MappingProxyType({"received_at": _received_at, "started_at": _receipt_started,
@@ -209,8 +225,36 @@ def raw_notes_snapshot(*, limit: int = 500, byte_limit: int = 100_000) -> RawNot
         reference = f"notes-local:{hashlib.sha256(record.encode('utf-8')).hexdigest()}:{index}"
         records.append(MappingProxyType({"modified_at": stamp, "title": title, "folder": folder,
                                         "body": body, "reference": reference, "native_id": None}))
-    return RawNotesSnapshot(generation, origin, received, started, receipt, tuple(records),
-                            total, malformed, omitted, digest)
+    snapshot = RawNotesSnapshot(generation, origin, received, started, receipt, tuple(records),
+                                total, malformed, omitted, digest)
+    with _publication_lock:
+        if generation == _notes_generation:
+            _issued_snapshot = snapshot
+    return snapshot
+
+
+def prepare_publication_witness(snapshot) -> Witness | None:
+    """Prepare immediately after capture; only an issued live immutable view qualifies.
+
+    A read can replace this bounded one-capture preparation slot, but never
+    invalidates a witness already prepared from the same source publication.
+    No bytes or getter callbacks are retained by the resulting memory witness.
+    """
+    with _publication_lock:
+        now = time.time()
+        if (type(snapshot) is not RawNotesSnapshot or snapshot is not _issued_snapshot
+                or snapshot.origin != "live" or snapshot.generation != _notes_generation
+                or _available is not True or _receipt_available is not True
+                or snapshot.malformed != 0
+                or any(type(v) not in (int, float) or not math.isfinite(v) or not 0 < v <= now
+                       for v in (snapshot.body_started_at, snapshot.body_received_at))
+                or snapshot.body_started_at != _snapshot_started_at
+                or snapshot.body_received_at != _snapshot_at
+                or _receipt_started != _snapshot_started_at or _received_at != _snapshot_at):
+            return None
+        return Witness.combine(_publication_authority.token(clock=LIVE_CLOCK,
+            expires_wall=min(snapshot.body_started_at, snapshot.body_received_at)+_TTL_SECONDS,
+            expires_monotonic=_publication_expires_monotonic))
 
 
 def _parse() -> list[dict]:

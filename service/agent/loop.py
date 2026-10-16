@@ -1187,6 +1187,23 @@ def _merge_results(results: list[tuple[str, str]]) -> str:
     return "\n\n".join(blocks)
 
 
+def _readable_results(results: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Swap structured evidence payloads for plain text before they reach the user.
+
+    `collect_task_evidence` returns JSON written for the model. When the model
+    produced no answer, the fallback below used to show that JSON verbatim —
+    2026-10-14, "what should I do tmrow": 10,879 characters of it, including
+    Messages verification codes.
+    """
+    from service.tools.task_evidence import render_evidence_text
+    out = []
+    for name, result in results:
+        if name == "collect_task_evidence" and (text := render_evidence_text(result)):
+            result = text
+        out.append((name, result))
+    return out
+
+
 def _meeting_safe(value):
     from service.tools.schedule_extras import redact_meeting_capabilities
     return redact_meeting_capabilities(value)
@@ -3096,8 +3113,16 @@ async def run_agent(
             # was told the opposite. Reasoning is not user-visible output: a
             # step with no content AND no tool call has produced nothing,
             # whatever it thought on the way there.
+            #
+            # A narration step that hit the token ceiling is not retried: the
+            # prompt, budget and thinking are unchanged, so the second attempt
+            # spends another full budget reaching the same cut-off. Measured
+            # 2026-10-14: "what should I do tmrow" ran two ~50s attempts for
+            # one fallback. Only when a tool result is already in hand, so the
+            # fallback has something to show; a first step still re-samples.
             if (not msg.get("tool_calls") and not (msg.get("content") or "").strip()
                     and not msg.get("_degenerate")
+                    and not (msg.get("_truncated") and clean_results)
                     and _attempt < attempts - 1):
                 # THE ANSWER IS EMPTY BUT SOMETHING MAY ALREADY BE ON SCREEN.
                 # This is the shape of the worst user-visible failure in the
@@ -3217,7 +3242,7 @@ async def run_agent(
             # its response. Fall through to the plain-text branch below instead.
             if not text.strip() and last_tool_result:
                 # Every clean source, not just the last one — see clean_results.
-                text = (_merge_results(clean_results) if clean_results
+                text = (_merge_results(_readable_results(clean_results)) if clean_results
                         else _STUCK_MESSAGE)
             elif not text.strip() and msg.get("_think_leak"):
                 # Nothing streamed that's worth keeping and no tool ran, so
@@ -4037,7 +4062,7 @@ async def run_agent(
         fallback = ("I couldn't complete every requested step. Still missing one of: "
                     + ", ".join(sorted(unmet)) + ".")
     elif clean_results:
-        fallback = _merge_results(clean_results)
+        fallback = _merge_results(_readable_results(clean_results))
     elif is_tool_error(last_tool_result):
         fallback = _STUCK_MESSAGE
     else:

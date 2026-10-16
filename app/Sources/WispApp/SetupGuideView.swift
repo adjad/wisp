@@ -13,6 +13,12 @@ struct SetupStatus: Decodable {
     struct Omlx: Decodable {
         let installed: Bool; let running: Bool; let modelDir: String?
         let minMacos: Int; let url: String; let adminUrl: String
+        let bundled: Bool?
+    }
+    struct BundledEngine: Decodable {
+        let available: Bool
+        let minimumMacos: String?
+        let unavailableReason: String?
     }
     struct ModelEntry: Decodable, Identifiable {
         let id: String; let label: String; let sizeGb: Double?
@@ -43,6 +49,7 @@ struct SetupStatus: Decodable {
     let ready: Bool
     let hardware: Hardware
     let omlx: Omlx
+    let bundledEngine: BundledEngine?
     let models: Models
     let roles: [RoleRow]
     let engines: [Engine]
@@ -54,6 +61,15 @@ struct SetupStatus: Decodable {
 
 @MainActor
 final class SetupGuideModel: ObservableObject {
+    struct DownloadTask: Decodable, Identifiable {
+        let model: String; let state: String; let progress: Double
+        let downloadedBytes: Double; let totalBytes: Double; let bytesPerSecond: Double
+        let message: String?
+        var id: String { model }
+        var active: Bool { state == "pending" || state == "downloading" }
+    }
+    private struct Downloads: Decodable { let tasks: [DownloadTask] }
+
     @Published var status: SetupStatus?
     @Published var loading = false
     @Published var busy: String?
@@ -63,6 +79,58 @@ final class SetupGuideModel: ObservableObject {
     @Published var copied: String?
     @Published var testResult: String?
     @Published var testing = false
+    @Published private(set) var testPassed = false
+    @Published var downloads: [DownloadTask] = []
+    @Published var downloadError: String?
+    @Published var statusIsCurrent = false
+    @Published var refreshError: String?
+    private var testGeneration = 0
+    private var statusGeneration = 0
+    private var downloadGeneration = 0
+    private var monitoringStopped = false
+    private let session: URLSession
+
+    init(session: URLSession = .shared) { self.session = session }
+
+    var readinessLabel: String {
+        guard statusIsCurrent, status?.ready == true else { return "Needs attention" }
+        return testPassed ? "Test passed" : "Ready to test"
+    }
+
+    private func invalidateTest() {
+        testGeneration += 1
+        testResult = nil
+        testPassed = false
+        testing = false
+    }
+
+    private func beginMutation() {
+        statusGeneration += 1
+        downloadGeneration += 1
+        statusIsCurrent = false
+        loading = false
+        invalidateTest()
+    }
+
+    private func configuration(_ status: SetupStatus?) -> [String] {
+        guard let status else { return [] }
+        return [status.omlx.adminUrl, String(status.omlx.bundled ?? false)]
+            + status.roles.map { "\($0.role):\($0.endpoint):\($0.model)" }.sorted()
+    }
+
+    private func accept(_ next: SetupStatus) {
+        if next.omlx.adminUrl != status?.omlx.adminUrl || next.omlx.bundled != status?.omlx.bundled {
+            downloadGeneration += 1
+            downloads = []
+            downloadError = nil
+        }
+        if !next.ready || configuration(next) != configuration(status) { invalidateTest() }
+        status = next
+        statusIsCurrent = true
+        if selectedModel == nil || !next.models.installed.contains(where: { $0.id == selectedModel }) {
+            selectedModel = next.models.use ?? next.models.installed.first?.id
+        }
+    }
     // Connecting another local app
     @Published var connectModel: [String: String] = [:]
     @Published var customPort = ""
@@ -79,7 +147,7 @@ final class SetupGuideModel: ObservableObject {
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
             throw APIError(errorDescription: detail ?? "Wisp returned an unexpected response.")
@@ -100,47 +168,123 @@ final class SetupGuideModel: ObservableObject {
 
     /// The backend may still be starting when the guide first opens, so retry briefly.
     func refresh(quiet: Bool = false) async {
+        guard !monitoringStopped else { return }
+        statusGeneration += 1
+        let generation = statusGeneration
         loading = true
-        defer { loading = false }
+        defer { if generation == statusGeneration { loading = false } }
         var lastError: Error?
         // Wait for a starting backend only on the first load; a refresh of what is
         // already on screen tries once and says so if it fails.
         for attempt in 0..<(status == nil ? 6 : 1) {
+            guard !monitoringStopped, !Task.isCancelled else { return }
             do {
                 let next = try decode(try await call("GET", "setup/status"))
-                status = next
-                if selectedModel == nil || !next.models.installed.contains(where: { $0.id == selectedModel }) {
-                    selectedModel = next.models.use ?? next.models.installed.first?.id
+                guard generation == statusGeneration, !monitoringStopped, !Task.isCancelled else { return }
+                accept(next)
+                refreshError = nil
+                if !quiet {
+                    message = nil
+                    messageIsError = false
                 }
-                if !quiet { message = nil }
                 return
             } catch {
+                guard generation == statusGeneration, !monitoringStopped, !Task.isCancelled else { return }
                 lastError = error
-                try? await Task.sleep(nanoseconds: UInt64(500_000_000 * (attempt + 1)))
+                do { try await Task.sleep(nanoseconds: UInt64(500_000_000 * (attempt + 1))) }
+                catch { return }
             }
         }
-        if let lastError {
-            fail(APIError(errorDescription: status == nil
+        if let lastError, generation == statusGeneration, !monitoringStopped {
+            statusIsCurrent = false
+            invalidateTest()
+            refreshError = status == nil
                 ? "Wisp's service isn't answering yet. Give it a few seconds, then choose Check again. (\(lastError.localizedDescription))"
-                : "Wisp couldn't refresh this list, so it is showing what it saw last. (\(lastError.localizedDescription))"))
+                : "Wisp couldn't refresh this list, so it is showing what it saw last. (\(lastError.localizedDescription))"
         }
     }
 
     func startEngine() async {
-        busy = "Starting oMLX…"
+        guard busy == nil else { return }
+        beginMutation()
+        busy = "Starting engine…"
         defer { busy = nil }
         do {
-            status = try decode(try await call("POST", "setup/start-engine", body: [:], timeout: 100))
+            if status?.omlx.bundled == true {
+                _ = try await call("POST", "engine/start", body: [:], timeout: 160)
+                await refresh()
+            } else {
+                accept(try decode(try await call("POST", "setup/start-engine", body: [:], timeout: 100)))
+                message = nil
+            }
+        } catch { fail(error) }
+    }
+
+    /// Poll only while this guide is visible. The engine owns transfer/resume
+    /// state, so closing and reopening setup does not cancel a download.
+    func monitor() async {
+        monitoringStopped = false
+        await refresh()
+        while !Task.isCancelled && !monitoringStopped {
+            if status?.omlx.bundled == true && busy == nil { await refreshDownloads() }
+            do { try await Task.sleep(nanoseconds: 3_000_000_000) }
+            catch { return }
+            guard !monitoringStopped else { return }
+            if busy == nil { await refresh(quiet: true) }
+        }
+    }
+
+    func stopMonitoring() {
+        monitoringStopped = true
+        downloadGeneration += 1
+        invalidateTest()
+    }
+
+    func shouldOfferRedownload(_ model: String) -> Bool {
+        downloads.first(where: { $0.model == model })?.state == "completed"
+            && !(status?.models.installed.contains(where: { $0.id == model }) ?? false)
+    }
+
+    func refreshDownloads(duringAction: Bool = false) async {
+        guard status?.omlx.bundled == true, !monitoringStopped,
+              busy == nil || duringAction else { return }
+        downloadGeneration += 1
+        let generation = downloadGeneration
+        do {
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            let next = try decoder.decode(Downloads.self, from: await call("GET", "engine/downloads")).tasks
+            guard generation == downloadGeneration, !monitoringStopped, !Task.isCancelled else { return }
+            downloads = next
+            downloadError = nil
+        } catch {
+            guard generation == downloadGeneration, !monitoringStopped, !Task.isCancelled else { return }
+            downloadError = "Wisp couldn't check the download. Choose Check again to retry."
+        }
+    }
+
+    func download(_ model: String, cancel: Bool = false) async {
+        guard busy == nil else { return }
+        downloadGeneration += 1
+        busy = cancel ? "Cancelling download…" : "Starting download…"
+        defer { busy = nil }
+        do {
+            _ = try await call("POST", cancel ? "engine/downloads/cancel" : "engine/downloads",
+                               body: ["model": model], timeout: 180)
+            await refreshDownloads(duringAction: true)
+            await refresh(quiet: true)
             message = nil
         } catch { fail(error) }
     }
 
     func apply(_ model: String) async {
+        guard busy == nil else { return }
+        beginMutation()
         busy = "Applying…"
         defer { busy = nil }
         do {
             let repointsReasoning = status?.roles.contains { $0.endpoint != "local" } ?? false
-            status = try decode(try await call("POST", "setup/apply", body: ["model": model]))
+            accept(try decode(try await call("POST", "setup/apply", body: ["model": model])))
             message = "Wisp will use \(model) for chat, tools, coding, and reasoning."
                 + (repointsReasoning ? " Reasoning had been pointed at another app; it now uses this model too." : "")
             messageIsError = false
@@ -148,6 +292,8 @@ final class SetupGuideModel: ObservableObject {
     }
 
     func connectExternal(port: Int, model: String, withTools: Bool = false) async {
+        guard busy == nil else { return }
+        beginMutation()
         busy = withTools ? "Testing tool calling… this can take up to a minute." : "Testing the connection…"
         defer { busy = nil }
         do {
@@ -188,23 +334,35 @@ final class SetupGuideModel: ObservableObject {
     }
 
     func test() async {
+        guard !testing, !monitoringStopped, !Task.isCancelled, statusIsCurrent, status?.ready == true else { return }
         testing = true
         testResult = nil
-        defer { testing = false }
+        testPassed = false
+        let generation = testGeneration
+        defer { if generation == testGeneration { testing = false } }
         let started = Date()
         do {
             let data = try await call("POST", "chat", body: [
                 "role": "general", "prompt": "Reply with the single word OK.", "max_tokens": 512,
+                "setup_test": true,
             ], timeout: 120)
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard generation == testGeneration, !Task.isCancelled else { return }
             let text = (object?["content"] as? String ?? "")
-                .replacingOccurrences(of: "(?s)<think>.*?</think>", with: "", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard object?["setup_test"] as? String == "complete_visible_assistant_v1" else {
+                testResult = "Wisp couldn't verify this test reply. Restart Wisp to use the matching backend, then try again."
+                return
+            }
             let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
-            testResult = text.isEmpty ? "The model replied but gave no visible answer. It may be spending its whole budget thinking; try again or pick another model."
-                                      : "Works — replied in \(seconds)s."
+            if text.isEmpty || text.lowercased().contains("<think") || text.lowercased().contains("</think") {
+                testResult = "The model replied but gave no visible answer. It may be spending its whole budget thinking; try again or pick another model."
+            } else {
+                testResult = "Works — replied in \(seconds)s."
+                testPassed = true
+            }
         } catch {
-            testResult = "That didn't work: \(error.localizedDescription)"
+            if generation == testGeneration, !Task.isCancelled { testResult = "That didn't work: \(error.localizedDescription)" }
         }
     }
 
@@ -252,7 +410,15 @@ struct SetupGuideView: View {
         .background(Theme.surface)
         .foregroundStyle(Theme.textPrimary)
         .preferredColorScheme(.dark)
-        .task { await model.refresh() }
+        .task { await model.monitor() }
+        .onDisappear { model.stopMonitoring() }
+        // The setup NSWindow is reused after close and retains its hosting
+        // view. Stop explicitly even when SwiftUI keeps that view alive.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
+            if let window = note.object as? NSWindow, window.title == "Wisp Setup" {
+                model.stopMonitoring()
+            }
+        }
     }
 
     /// The scrolling page. Internal so an offscreen renderer, which cannot draw a
@@ -274,6 +440,10 @@ struct SetupGuideView: View {
                     .foregroundStyle(model.messageIsError ? Color.orange : Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let error = model.refreshError {
+                Text(error).font(.callout).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(24)
     }
@@ -293,7 +463,8 @@ struct SetupGuideView: View {
             }
             Spacer()
             if let s = model.status {
-                pill(s.ready ? "Ready" : "Needs attention", on: s.ready)
+                pill(model.readinessLabel,
+                     on: s.ready && model.statusIsCurrent)
             }
         }
         .padding(.horizontal, 24).padding(.vertical, 18)
@@ -306,7 +477,8 @@ struct SetupGuideView: View {
                 Text(busy).font(.caption).foregroundStyle(Theme.textSecondary)
             }
             Spacer()
-            Button("Check again") { Task { await model.refresh() } }.disabled(model.busy != nil)
+            Button("Check again") { Task { await model.refresh(); await model.refreshDownloads() } }
+                .disabled(model.busy != nil)
             Button("Settings…") { openSettings() }
             Button("Done") { onDone() }.keyboardShortcut(.defaultAction)
         }
@@ -318,6 +490,14 @@ struct SetupGuideView: View {
     private func engineSection(_ s: SetupStatus) -> some View {
         let check = s.checks.first { $0.id == "engine" }
         return card(step: "1", title: "Engine", state: check?.state ?? "todo") {
+            if let bundled = s.bundledEngine, !bundled.available,
+               let reason = bundled.unavailableReason {
+                Text(reason).font(.callout).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("You can use a compatible external engine. Macs that cannot run local models can use Wisp's separately configured remote-only mode.")
+                    .font(.caption).foregroundStyle(Theme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let check {
                 Text(check.detail).font(.callout).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -327,7 +507,10 @@ struct SetupGuideView: View {
                         Text("Then open it once and choose Check again.")
                             .font(.caption).foregroundStyle(Theme.textMuted)
                     } else if check.action == "start_engine" {
-                        action("Start oMLX") { Task { await model.startEngine() } }
+                        action(s.omlx.bundled == true ? "Start engine" : "Start oMLX") {
+                            Task { await model.startEngine() }
+                        }
+                        .disabled(model.busy != nil)
                     }
                 }
             }
@@ -349,8 +532,10 @@ struct SetupGuideView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if s.models.installed.isEmpty {
-                Text(s.omlx.running ? "No chat model is installed in oMLX yet."
-                                    : "Your models will appear here once oMLX is running.")
+                Text(s.omlx.running ? (s.models.download == nil
+                                      ? "Add a local model to the engine's model folder to get started."
+                                      : "Download a model below to get started.")
+                                    : "Start the engine above to see your models.")
                     .font(.callout).foregroundStyle(Theme.textSecondary)
             } else {
                 VStack(spacing: 6) {
@@ -360,7 +545,7 @@ struct SetupGuideView: View {
                     action("Use this model") {
                         if let id = model.selectedModel { Task { await model.apply(id) } }
                     }
-                    .disabled(model.selectedModel == nil || model.busy != nil || !s.omlx.running)
+                    .disabled(model.selectedModel == nil || model.busy != nil || model.testing || !s.omlx.running || !model.statusIsCurrent)
                     Text("Sets chat, tools, coding, and reasoning.")
                         .font(.caption).foregroundStyle(Theme.textMuted)
                 }
@@ -370,18 +555,25 @@ struct SetupGuideView: View {
                              ? "Recommended for this Mac" : "A better fit for this Mac", tag: "main",
                              omlx: s.omlx)
             }
+            if s.models.recommended == "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
+               !s.models.installed.contains(where: { $0.id == s.models.recommended }) {
+                Text("This Mellum build uses an existing local model folder. There is no verified public download configured for it. Add the folder named \(s.models.recommended) to your engine's model directory, then choose Check again and Use this model.")
+                    .font(.caption).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let folder = s.omlx.modelDir {
+                    Text(folder).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                }
+                action("Open engine settings") { model.open(s.omlx.adminUrl) }
+            }
         }
     }
 
     private func recommendationText(_ s: SetupStatus) -> some View {
         let text: String
-        switch s.hardware.tier {
-        case "roomy", "comfortable":
-            text = "Ling 3.0 tiny at 6-bit runs comfortably here and gives the best quality."
-        case "standard":
-            text = "On a 16 GB Mac, the 5-bit or 4-bit Ling 3.0 tiny keeps plenty of memory free for your other apps."
-        default:
-            text = "Use the 4-bit Ling 3.0 tiny; it is the smallest build that still picks tools reliably."
+        if s.models.recommended == "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e" {
+            text = "Mellum 2.1 Wisp R1 merged oQ4e is Wisp's default model. Its model validation is pending."
+        } else {
+            text = "Mellum 2.1 Wisp R1 merged oQ4e is the default, with a conservative 24 GB memory requirement. This Mac is offered smaller alternatives; your existing model choices are preserved."
         }
         return Text(text).font(.callout).foregroundStyle(Theme.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -405,6 +597,7 @@ struct SetupGuideView: View {
                         }
                         if current.contains(entry.id) { pill("In use", on: true) }
                         fitBadge(entry.fit)
+                        if !entry.tested && entry.fit != "unknown" { pill("Not validated", on: false) }
                     }
                     Text(entry.note).font(.caption).foregroundStyle(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -454,7 +647,42 @@ struct SetupGuideView: View {
                 Text("\(d.label)\(d.sizeGb.map { String(format: " · %.1f GB", $0) } ?? "")")
                     .font(.caption).foregroundStyle(Theme.textSecondary)
             }
-            if omlx.running {
+            if omlx.bundled == true {
+                Text("Download from Hugging Face directly into Wisp. The engine handles progress and resumes interrupted transfers.")
+                    .font(.caption).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let task = model.downloads.first(where: { $0.model == d.model }) {
+                    if task.active {
+                        ProgressView(value: task.progress, total: 100)
+                        HStack {
+                            Text(downloadProgress(task)).font(.caption).foregroundStyle(Theme.textSecondary)
+                            Spacer()
+                            action("Cancel") { Task { await model.download(d.model, cancel: true) } }
+                                .disabled(model.busy != nil)
+                        }
+                    } else if task.state == "failed" || task.state == "cancelled" {
+                        Text(task.message ?? "Download cancelled. You can resume it here.")
+                            .font(.caption).foregroundStyle(.orange)
+                        action("Retry download") { Task { await model.download(d.model) } }
+                            .disabled(model.busy != nil)
+                    } else {
+                        Text("Download finished. Choose the installed model above, then Use this model.")
+                            .font(.caption).foregroundStyle(Theme.textSecondary)
+                        if model.shouldOfferRedownload(d.model) {
+                            Text("The model hasn't appeared yet. If its files are missing, download it again.")
+                                .font(.caption).foregroundStyle(Theme.textSecondary)
+                            action("Download again") { Task { await model.download(d.model) } }
+                                .disabled(model.busy != nil)
+                        }
+                    }
+                } else {
+                    action("Download model") { Task { await model.download(d.model) } }
+                        .disabled(model.busy != nil)
+                }
+                if let error = model.downloadError {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                }
+            } else if omlx.running {
                 Text("Wisp doesn't download models for you. The easiest way is oMLX's Model Downloader: "
                      + "open it, search for the name below, and download it.")
                     .font(.caption).foregroundStyle(Theme.textMuted)
@@ -473,18 +701,20 @@ struct SetupGuideView: View {
                     .font(.caption).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text(d.command)
-                .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
-            HStack {
-                action(model.copied == tag ? "Copied" : "Copy command") { model.copy(d.command, tag: tag) }
-                action("Open on Hugging Face") { model.open(d.url) }
-                Spacer()
+            if omlx.bundled != true {
+                Text(d.command)
+                    .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
+                HStack {
+                    action(model.copied == tag ? "Copied" : "Copy command") { model.copy(d.command, tag: tag) }
+                    action("Open on Hugging Face") { model.open(d.url) }
+                    Spacer()
+                }
+                Text("The Terminal route needs the `hf` tool: \(d.installHf). Then choose Check again.")
+                    .font(.caption2).foregroundStyle(Theme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text("The Terminal route needs the `hf` tool: \(d.installHf). Then choose Check again.")
-                .font(.caption2).foregroundStyle(Theme.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
@@ -541,6 +771,14 @@ struct SetupGuideView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
     }
 
+    private func downloadProgress(_ task: SetupGuideModel.DownloadTask) -> String {
+        let received = ByteCountFormatter.string(fromByteCount: Int64(task.downloadedBytes), countStyle: .file)
+        let total = ByteCountFormatter.string(fromByteCount: Int64(task.totalBytes), countStyle: .file)
+        let speed = ByteCountFormatter.string(fromByteCount: Int64(task.bytesPerSecond), countStyle: .file)
+        return task.totalBytes > 0 ? "\(Int(task.progress))% · \(received) of \(total) · \(speed)/s"
+                                  : "Preparing download…"
+    }
+
     private func connectRow(key: String, port: Int, models: [String]) -> some View {
         let binding = Binding<String>(
             get: { model.connectModel[key] ?? models.first ?? "" },
@@ -566,7 +804,7 @@ struct SetupGuideView: View {
         card(step: "5", title: "Try it", state: "info") {
             HStack {
                 action(model.testing ? "Testing…" : "Send a test message") { Task { await model.test() } }
-                    .disabled(model.testing || model.busy != nil || !s.ready)
+                    .disabled(model.testing || model.busy != nil || !s.ready || !model.statusIsCurrent)
                 if let result = model.testResult {
                     Text(result).font(.callout).foregroundStyle(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

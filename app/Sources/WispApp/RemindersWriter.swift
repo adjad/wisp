@@ -12,6 +12,7 @@ import EventKit
 final class RemindersWriter {
     private let store = EKEventStore()
     private var timer: Timer?
+    private var historyTask: Task<Void, Never>?
     private var changeObserver: NSObjectProtocol?
     private var pendingChangeSync: DispatchWorkItem?
     // Snapshot decisions and count are updated together on the main thread.
@@ -421,6 +422,7 @@ final class RemindersWriter {
                  startedAt: snapshotStartedAt, authoritative: false)
         }
         let calendars = store.calendars(for: .reminder)
+        startCompletedHistoryScan()
         if Self.reminderListsLookTransientlyMissing(
             calendarCount: calendars.count,
             previousRowCount: snapshotState.lastPostedReminderCount),
@@ -484,6 +486,56 @@ final class RemindersWriter {
         }
     }
 
+    /// Completed history is sent only to the behavior store. It cannot reopen
+    /// reminders, replace the active feed, or create an agenda item.
+    private func startCompletedHistoryScan() {
+        guard historyTask == nil else { return }
+        historyTask = Task { @MainActor [weak self] in
+            defer { self?.historyTask = nil }
+            guard self?.isAuthorized == true else { return }
+            guard let job = await WispClient.behaviorNativeHistoryRequest("GET", "behavior/history/completed_reminders/next"),
+                  job["state"] as? String == "scanning",
+                  let start = job["page_start"] as? Double,
+                  let end = job["page_end"] as? Double else { return }
+            let capture: ([[String: Any]]?, String) = await Task.detached(priority: .utility) {
+                let source = EKEventStore()
+                guard EKEventStore.authorizationStatus(for: .reminder) == .fullAccess,
+                      !source.calendars(for: .reminder).isEmpty else { return (nil,"access_unavailable") }
+                let predicate = source.predicateForCompletedReminders(
+                    withCompletionDateStarting: Date(timeIntervalSince1970: start),
+                    ending: Date(timeIntervalSince1970: end), calendars: nil)
+                let reminders: [EKReminder]? = await withCheckedContinuation { continuation in
+                    source.fetchReminders(matching: predicate) { continuation.resume(returning: $0) }
+                }
+                guard let reminders,
+                      EKEventStore.authorizationStatus(for: .reminder) == .fullAccess else { return (nil,"access_unavailable") }
+                guard reminders.count <= 10000 else { return (nil,"row_limit") }
+                var result: [[String: Any]] = []
+                for r in reminders {
+                    guard r.isCompleted, let completed = r.completionDate,
+                          !r.calendarItemIdentifier.isEmpty else { return (nil,"invalid_record") }
+                    let stamp = completed.timeIntervalSince1970
+                    // Native bounds may be inclusive. Backend intervals are half-open.
+                    guard stamp >= start && stamp < end else { continue }
+                    guard let row = Self.historyCompletionRow(id: r.calendarItemIdentifier,
+                        title: r.title ?? "(untitled)", completedAt: stamp, list: r.calendar?.title ?? "") else { return (nil,"invalid_record") }
+                    result.append(row)
+                }
+                return (result,"")
+            }.value
+            let rows = capture.0
+            _ = await WispClient.behaviorNativeHistoryBatch("completed_reminders", job: job, rows: rows ?? [],
+                complete: rows != nil, reason: capture.1)
+        }
+    }
+
+    static func historyCompletionRow(id: String, title: String, completedAt: Double?,
+                                      list: String) -> [String: Any]? {
+        guard !id.isEmpty, id.count <= 1000, let completedAt, completedAt.isFinite else { return nil }
+        return ["source_id": id, "title": String((title.isEmpty ? "(untitled)" : title).prefix(1000)),
+                "context": list, "completion_ts": completedAt]
+    }
+
     private func post(reminders: [[String: Any]], diagnostics: [String: Any],
                               startedAt: TimeInterval, authoritative: Bool,
                               undated: [[String: Any]]? = nil, undatedTotal: Int? = nil) {
@@ -516,5 +568,34 @@ final class RemindersWriter {
         }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         URLSession.shared.dataTask(with: req).resume()
+    }
+}
+
+// The native readers need only the base URL, preserving their isolated contract
+// harnesses. Transport follows the same app-wide trusted URLSession protocol.
+extension WispClient {
+    static func behaviorNativeHistoryRequest(_ method: String, _ path: String,
+                                             body: [String: Any]? = nil) async -> [String: Any]? {
+        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        request.httpMethod = method
+        request.timeoutInterval = 60
+        if let body {
+            guard let data = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = data
+        }
+        guard let (data,response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    static func behaviorNativeHistoryBatch(_ source: String, job: [String: Any], rows: [[String: Any]],
+                                          complete: Bool, reason: String) async -> Bool {
+        guard ["calendar", "completed_reminders"].contains(source),
+              let scanID = job["scan_id"] as? String, let first = job["page_start"],
+              let last = job["page_end"] else { return false }
+        return await behaviorNativeHistoryRequest("POST", "behavior/history/\(source)/batch", body: [
+            "scan_id": scanID, "start_ts": first, "end_ts": last, "rows": rows,
+            "complete": complete, "reason": reason]) != nil
     }
 }

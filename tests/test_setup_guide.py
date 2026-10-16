@@ -1,17 +1,28 @@
 """Synthetic checks for the guided inference setup. No network, no real Wisp state."""
 import asyncio
+import ast
+import copy
+import json
+import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
 from fastapi import HTTPException
+from starlette.responses import StreamingResponse
 
+from service.inference.inference_errors import ModelLoadError
 from service.setup import catalog, guide
 from service.setup.engines import EngineProfile, EngineState, detect_external_engines
 from service.setup.hardware import Hardware, current_hardware, detect_hardware
 
 Q6, Q5, Q4 = "Ling-3.0-tiny-oQ6e", "Ling-3.0-tiny-oQ5e", "Ling-3.0-tiny-oQ4e"
+MELLUM = "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
 EMBED = "Qwen3-Embedding-0.6B-4bit-DWQ"
 
 
@@ -51,7 +62,58 @@ def test_hardware_rounds_real_memory_and_survives_failure():
 
 # --- recommendations --------------------------------------------------------
 
-@pytest.mark.parametrize("ram,first", [(64, Q6), (24, Q6), (16, Q5), (12, Q4), (8, Q4), (0, Q4)])
+def test_mellum_local_default_is_discovered_without_a_fabricated_download():
+    missing = _status(ram=32, installed=[], roles=_roles(MELLUM))
+    assert missing["models"]["recommended"] == MELLUM
+    assert missing["models"]["download"] is None
+    assert _check(missing, "model")["action"] == "add_local_model"
+    assert "folder" in _check(missing, "model")["detail"].lower()
+    assert not missing["ready"]
+    found = _status(ram=32, installed=[Q6, MELLUM, EMBED], roles=_roles(MELLUM))
+    assert found["models"]["use"] == MELLUM
+    entry = next(m for m in found["models"]["installed"] if m["id"] == MELLUM)
+    assert entry["tested"] is False
+    assert entry["fit"] == "recommended"
+    assert found["ready"]  # Discovery/readiness is separate from inference qualification.
+    assert guide.download_info(MELLUM, "/models") is None
+
+
+def test_mellum_missing_does_not_prompt_an_unrequested_ling_upgrade():
+    result = catalog.recommend(32, [Q4])
+    assert result["first_choice"] == MELLUM
+    assert result["use"] == Q4
+    assert result["get"] is None
+    assert catalog.fit(catalog.by_id(MELLUM), 16) == "heavy"
+    assert catalog.recommend(16, [Q4, MELLUM])["use"] == Q4
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_mellum_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkeypatch, custom):
+    import service.config as config
+    overlay = tmp_path / "config.yaml"
+    value = {"roles": {"general": "chosen-chat", "agent": "chosen-agent"},
+             "inference": {"bindings": {"reasoning": {
+                 "endpoint": "local_provider", "model_id": "chosen-reasoning"}}}}
+    if custom:
+        overlay.write_text(json.dumps(value))
+    before = overlay.read_bytes() if custom else None
+    monkeypatch.setattr(config, "USER_CONFIG", overlay)
+    config._packaged_config.cache_clear()
+    config.models_config.cache_clear()
+    try:
+        result = config.models_config()
+        for role in ("router", "fast", "agent", "general", "coding", "reasoning"):
+            assert result["roles"][role] == (value["roles"].get(role, MELLUM) if custom else MELLUM)
+        assert result["roles"]["embedding"] == EMBED
+        if custom:
+            assert result["inference"]["bindings"]["reasoning"] == value["inference"]["bindings"]["reasoning"]
+            assert overlay.read_bytes() == before
+        else:
+            assert not overlay.exists()
+    finally:
+        config.models_config.cache_clear()
+
+@pytest.mark.parametrize("ram,first", [(64, MELLUM), (24, MELLUM), (16, Q5), (12, Q4), (8, Q4), (0, Q4)])
 def test_first_choice_follows_memory(ram, first):
     assert catalog.recommend(ram, [])["first_choice"] == first
 
@@ -63,19 +125,19 @@ def test_16gb_is_offered_a_download_it_can_actually_get():
     assert catalog.recommend(16, [Q5])["get"] is None
 
 
-def test_24gb_with_only_oq4e_is_offered_the_upgrade():
+def test_24gb_with_only_legacy_oq4e_keeps_it_without_an_unrelated_download():
     rec = catalog.recommend(24, [Q4])
-    assert rec["use"] == Q4 and rec["get"] == Q6
+    assert rec["use"] == Q4 and rec["get"] is None
 
 
 def test_best_installed_model_wins_and_nothing_is_offered_when_optimal():
-    rec = catalog.recommend(24, [Q4, Q6])
-    assert rec["use"] == Q6 and rec["get"] is None
+    rec = catalog.recommend(24, [Q4, Q6, MELLUM])
+    assert rec["use"] == MELLUM and rec["get"] is None
 
 
 def test_heavy_model_on_16gb_is_flagged_but_kept():
     assert catalog.fit(catalog.by_id(Q6), 16) == "heavy"
-    assert catalog.fit(catalog.by_id(Q6), 24) == "recommended"
+    assert catalog.fit(catalog.by_id(Q6), 24) == "good"
     assert catalog.fit(catalog.by_id(Q4), 24) == "good"
     assert catalog.recommend(16, [Q6])["use"] == Q6
 
@@ -92,8 +154,54 @@ def test_fresh_mac_needs_oMLX_first():
     s = _status(installed=(), running=False, is_installed=False)
     assert s["ready"] is False
     assert _check(s, "engine")["state"] == "todo" and _check(s, "engine")["action"] == "install_omlx"
-    assert "macOS 15" in _check(s, "engine")["detail"]
+    assert "compatible with this Mac" in _check(s, "engine")["detail"]
     assert s["omlx"]["min_macos"] == 15
+
+
+@pytest.mark.parametrize("macos,available", [("14.0", False), ("26.1", False),
+                                             ("26.2", True), ("27.0", True), ("", False)])
+def test_setup_preserves_packaged_requirement_after_external_fallback(tmp_path, monkeypatch, macos, available):
+    from service.engine import mode
+    (tmp_path / "py/bin").mkdir(parents=True)
+    (tmp_path / "py/bin/python3").write_text("synthetic interpreter placeholder")
+    (tmp_path / "ENGINE.json").write_text(json.dumps({"minimum_macos": "26.2"}))
+    monkeypatch.setattr(mode, "engine_code_root", lambda: tmp_path)
+    monkeypatch.setattr(mode.platform, "mac_ver", lambda: (macos, (), ""))
+    monkeypatch.setattr(guide, "main_engine_profile", lambda: guide.OMLX)
+
+    missing = _status(running=False, is_installed=False)
+    support = missing["bundled_engine"]
+    assert support["available"] is available
+    assert support["minimum_macos"] == "26.2"
+    assert (support["unavailable_reason"] is None) is available
+    assert not missing["ready"] and not missing["omlx"]["bundled"]
+    if not available:
+        assert "26.2" in support["unavailable_reason"]
+
+    # This bundled build's floor must not block an independently working engine.
+    working = _status(installed=[Q4], roles=_roles(Q4))
+    assert working["ready"] and not working["omlx"]["bundled"]
+    assert working["bundled_engine"] == support
+
+
+@pytest.mark.parametrize("document", [{}] + [{"minimum_macos": value} for value in
+    (None, "", False, 0, 26.2, "26.2.1.5", "invalid", {"secret": "opaque"})])
+def test_existing_manifest_cannot_omit_or_corrupt_its_requirement(tmp_path, document):
+    from service.engine import mode
+    (tmp_path / "ENGINE.json").write_text(json.dumps(document))
+    assert mode.unsupported_reason(tmp_path, "27.0") is not None
+    support = mode.bundled_compatibility(tmp_path, "27.0")
+    assert support["available"] is False and support["minimum_macos"] is None
+    assert support["unavailable_reason"] == "The bundled engine's macOS requirement is invalid"
+    assert "opaque" not in json.dumps(support)
+
+
+def test_source_checkout_remains_usable_without_packaged_engine_metadata(tmp_path):
+    from service.engine import mode
+    assert mode.unsupported_reason(tmp_path, "14.0") is None
+    assert mode.bundled_compatibility(tmp_path, "14.0") == {
+        "available": False, "minimum_macos": None,
+        "unavailable_reason": "The built-in engine is not included in this build."}
 
 
 def test_installed_but_stopped_engine_offers_start():
@@ -102,14 +210,14 @@ def test_installed_but_stopped_engine_offers_start():
 
 
 def test_running_with_no_chat_model_points_at_download():
-    s = _status(installed=[EMBED], running=True)
+    s = _status(ram=16, installed=[EMBED], running=True)
     assert _check(s, "model")["action"] == "download_model"
-    assert s["models"]["download"]["model"] == Q6
+    assert s["models"]["download"]["model"] == Q4
     assert s["ready"] is False
 
 
 def test_roles_pointing_at_an_uninstalled_model_are_caught():
-    # The default roster names oQ4e; the user only has oQ6e.
+    # A user's saved oQ4e selection is absent; they only have oQ6e.
     s = _status(installed=[Q6], roles=_roles(Q4))
     assert _check(s, "model")["state"] == "todo" and _check(s, "model")["action"] == "apply_model"
     assert Q4 in _check(s, "model")["detail"]
@@ -120,6 +228,18 @@ def test_ready_when_engine_runs_and_roles_resolve():
     s = _status(installed=[Q6, EMBED], roles=_roles(Q6))
     assert s["ready"] is True
     assert _check(s, "search")["state"] == "ok"
+
+
+def test_bundled_engine_needs_live_readiness_and_always_offers_retry(monkeypatch):
+    monkeypatch.setattr(guide, "main_engine_profile", lambda: guide.BUNDLED)
+    fresh = _status(installed=[], running=False, is_installed=False)
+    cached = _status(installed=[Q4], running=False, roles=_roles(Q4))
+    for status in (fresh, cached):
+        assert not status["ready"] and status["omlx"]["bundled"] is True
+        assert _check(status, "engine")["state"] == "warn"
+        assert _check(status, "engine")["action"] == "start_engine"
+    recovered = _status(installed=[Q4], running=True, roles=_roles(Q4))
+    assert recovered["ready"] and _check(recovered, "engine")["state"] == "ok"
 
 
 def test_roles_bound_to_another_endpoint_are_not_reported_missing():
@@ -140,7 +260,7 @@ def test_model_list_is_ranked_and_excludes_embedding_and_reranker():
     ids = [m["id"] for m in s["models"]["installed"]]
     assert ids == [Q6, Q4, "zzz-custom"]
     by_id = {m["id"]: m for m in s["models"]["installed"]}
-    assert by_id[Q6]["fit"] == "recommended" and by_id[Q6]["tested"] is True
+    assert by_id[Q6]["fit"] == "good" and by_id[Q6]["tested"] is True
     assert by_id["zzz-custom"]["fit"] == "unknown" and by_id["zzz-custom"]["tested"] is False
 
 
@@ -440,3 +560,170 @@ def test_status_route_falls_back_to_saved_models_when_engine_is_down(monkeypatch
     assert s["omlx"]["running"] is False and s["models"]["source"] == "saved"
     assert s["hardware"]["tier"] == "standard" and s["models"]["recommended"] == Q5
     assert _check(s, "engine")["action"] == "start_engine"
+
+
+# Extract only the actual functions under test: importing service.main starts
+# unrelated application machinery. All managed HTTP/loading/activity below is
+# synthetic; normalization, metadata validation and the route are production code.
+def _functions(path, names, namespace, *, methods=False):
+    tree = ast.parse(path.read_text())
+    nodes = (next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                  and n.name == "OMLXClient").body if methods else tree.body)
+    selected = [copy.deepcopy(n) for n in nodes
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
+    assert {n.name for n in selected} == set(names)
+    for node in selected:
+        node.decorator_list = []
+    import __future__
+    exec(compile(ast.Module(body=selected, type_ignores=[]), str(path), "exec",
+                 flags=__future__.annotations.compiler_flag), namespace)
+
+
+def _chat_pipeline(raw):
+    root = Path(__file__).resolve().parents[1]
+    events = []
+
+    class IncompleteStreamError(RuntimeError):
+        pass
+
+    ns = {"Any": Any, "json": json, "httpx": httpx, "IncompleteStreamError": IncompleteStreamError,
+          "engine_epoch": SimpleNamespace(begin=lambda: events.append("epoch"), end=lambda: None),
+          "idle": SimpleNamespace(begin=lambda *a: None, end=lambda *a: None)}
+    path = root / "service/inference/omlx_client.py"
+    _functions(path, {"_ensure_choices", "_demote_unclosed_think"}, ns)
+    _functions(path, {"chat", "_completion_data", "_check_response"}, ns, methods=True)
+
+    class Managed:
+        managed = True
+        api_prefix = "/v1"
+        provider = SimpleNamespace(name="omlx")
+        chat = ns["chat"]
+        _completion_data = staticmethod(ns["_completion_data"])
+        _check_response = ns["_check_response"]
+
+        def __init__(self):
+            self._client = self
+
+        def _fit_request(self, *args):
+            return args
+
+        def _payload(self, *args, **kwargs):
+            return {}
+
+        def activity_key(self, model):
+            return model
+
+        async def ensure_only(self, model):
+            events.append("load")
+
+        async def post(self, path, **kwargs):
+            events.append("http")
+            return httpx.Response(200, json=copy.deepcopy(raw), request=httpx.Request("POST", "http://synthetic.invalid" + path))
+
+    def target(role):
+        events.append("target")
+        return SimpleNamespace(role=role, model="Synthetic",
+                               endpoint=SimpleNamespace(name="local", managed=True))
+
+    async def ensure():
+        events.append("ensure")
+
+    route = {"Any": Any, "HTTPException": HTTPException, "StreamingResponse": StreamingResponse, "setup_guide": guide,
+             "ModelLoadError": ModelLoadError,
+             "role_target": target, "remote_only_profile": lambda: None,
+             "ensure_omlx": ensure, "client": Managed()}
+    _functions(root / "service/main.py", {"chat"}, route)
+    return route["chat"], events, IncompleteStreamError
+
+
+def _completion(text="OK", *, finish="stop", role="assistant", **extra):
+    return {"choices": [{"message": {"role": role, "content": text, **extra}, "finish_reason": finish}]}
+
+
+COMPLETION_CASES = [
+    ("complete_visible", _completion(), True),
+    ("closed_reasoning_and_answer", _completion("<think>secret</think> OK"), True),
+    ("uppercase_closed_and_answer", _completion("<THINK>secret</THINK> OK"), True),
+    ("separate_reasoning_and_answer", _completion(reasoning_content="secret"), True),
+    ("closed_reasoning_only", _completion("<think>secret</think>"), False),
+    ("uppercase_reasoning_only", _completion("<THINK>secret</THINK>"), False),
+    ("orphan_reasoning_close", _completion("secret</think>"), False),
+    ("length_with_separate_reasoning", _completion(finish="length", reasoning_content="secret"), False),
+    ("finish_error_with_text", _completion(finish="error"), False),
+    ("wrong_message_role", _completion(role="user"), False),
+    ("unfinished_lowercase", _completion("OK<think>unfinished"), False),
+    ("nested_reasoning", _completion("<think>outer<think>inner</think></think> OK"), False),
+    ("empty_answer", _completion("  "), False),
+    ("error_envelope", {**_completion(), "error": {"message": "synthetic failure"}}, False),
+    ("missing_choices", {}, False),
+]
+
+
+def _run_setup_pipeline(raw):
+    chat, events, incomplete = _chat_pipeline(raw)
+    try:
+        body = asyncio.run(chat({"role": "general", "prompt": "Reply with the single word OK.",
+                                 "max_tokens": 512, "setup_test": True}))
+        return 200, body, events
+    except HTTPException as error:
+        return error.status_code, {"detail": error.detail}, events
+    except incomplete:
+        return 503, {"detail": "Synthetic provider failure"}, events
+
+
+@pytest.mark.parametrize("name,raw,valid", COMPLETION_CASES, ids=[c[0] for c in COMPLETION_CASES])
+def test_setup_certificate_uses_actual_managed_completion_and_route(name, raw, valid):
+    status, body, events = _run_setup_pipeline(raw)
+    assert "http" in events
+    assert (status == 200) == valid
+    if valid:
+        assert body["setup_test"] == "complete_visible_assistant_v1"
+        assert body["content"] == "OK"
+    else:
+        assert status in (502, 503)
+        assert "setup_test" not in body
+
+
+@pytest.mark.parametrize("flag", [None, 0, 1, "true", [], {}])
+def test_setup_flag_is_strictly_boolean_before_any_effect(flag):
+    chat, events, _ = _chat_pipeline(_completion())
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(chat({"setup_test": flag, "role": "general", "prompt": "OK"}))
+    assert error.value.status_code == 422 and events == []
+
+
+def test_streaming_setup_test_is_rejected_before_any_effect():
+    chat, events, _ = _chat_pipeline(_completion())
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(chat({"setup_test": True, "stream": True, "role": "general", "prompt": "OK"}))
+    assert error.value.status_code == 422 and events == []
+
+
+@pytest.mark.parametrize("flag", [{}, {"setup_test": False}])
+def test_ordinary_chat_keeps_its_existing_response_contract(flag):
+    chat, _, _ = _chat_pipeline(_completion("ordinary", finish="length", reasoning_content="secret"))
+    body = asyncio.run(chat({"role": "general", "prompt": "OK", **flag}))
+    assert body == {"model": "Synthetic", "content": "ordinary", "usage": None}
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or shutil.which("swiftc") is None, reason="Requires macOS Swift compiler")
+def test_actual_completion_route_to_native_setup_certificate(tmp_path):
+    cases = []
+    for name, raw, valid in COMPLETION_CASES:
+        status, body, _ = _run_setup_pipeline(raw)
+        cases.append({"name": name, "status": status, "body": body, "expectedWorks": valid})
+    payload = tmp_path / "pipeline.json"
+    payload.write_text(json.dumps(cases))
+    root = Path(__file__).resolve().parents[1]
+    output = tmp_path / "SetupGuideChecks"
+    environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(tmp_path),
+                   "WISP_HOME": str(tmp_path), "TMPDIR": str(tmp_path)}
+    command = ["swiftc", "-swift-version", "5", "-module-cache-path", str(tmp_path / "module-cache"),
+               str(root / "tests/SetupGuideChecks.swift"), str(root / "app/Sources/WispApp/SetupGuideView.swift"),
+               str(root / "app/Sources/WispApp/Theme.swift"), "-o", str(output)]
+    compiled = subprocess.run(command, capture_output=True, text=True, env=environment, timeout=120)
+    assert compiled.returncode == 0, compiled.stderr[-5000:]
+    checked = subprocess.run([str(output), str(payload)], capture_output=True, text=True, env=environment, timeout=45)
+    assert checked.returncode == 0, checked.stderr[-7000:]
+    assert "setup model-state checks passed; all HTTP intercepted" in checked.stdout
+    print(checked.stdout.strip())

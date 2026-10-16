@@ -95,6 +95,25 @@ digest, and macOS floor against the lock. A build with `--engine-app` and no loc
 is a preview and cannot ship. Inspect included dependency licence metadata with
 `python build-support/engine.py inventory --app /Applications/oMLX.app`.
 
+After verifying that unchanged upstream input, staging applies the exact Wisp
+guard overlay in `build-support/engine_guard/`. The manifest pins each upstream
+Python file, exact transformations, the added proof module and resulting bytes;
+changed inputs or outputs refuse the build. `ENGINE.json` retains the upstream
+tree identity and separately records the overlay identity and effective derived
+tree before signing. Structure validation rechecks the modified Python files.
+The normal bundle manifest binds the final signed bytes. The signed source app
+and its upstream lock are never modified by staging.
+Changing the engine input also requires reviewing and updating this overlay;
+an unmatched engine is refused even for a preview.
+
+The existing authenticated engine status endpoint reports a bounded guard
+snapshot from actual propagation and successful enforcement iterations. Default
+guarded loads require fresh dynamic telemetry and a live enforcement task before
+allocation, including pinned startup, lazy text starts and engine fallbacks.
+Missing evidence produces a sanitized refusal rather than a retry or relaxed
+limit. Explicit custom/disabled user profiles retain their existing memory
+policy and are reported as unqualified for balanced-default testing.
+
 The engine currently needs macOS 26.2. Wisp's app deployment target remains
 macOS 14.0; the bundled engine is unavailable on systems below its recorded
 floor. The staged engine is approximately 716 MB uncompressed (the full oMLX.app

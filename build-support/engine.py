@@ -33,6 +33,8 @@ from collections.abc import Callable
 from email.parser import Parser
 from pathlib import Path
 
+import engine_guard_overlay as guard_overlay
+
 SUPPORT = Path(__file__).resolve().parent
 PRUNE = SUPPORT / "engine-prune.json"
 LOCK = SUPPORT / "engine.lock.json"
@@ -508,13 +510,21 @@ def stage(bundle: Path, app: Path, *, lock: dict | None, release: bool,
         target = engine / destination
         target.parent.mkdir(parents=True, exist_ok=True)
         os.symlink(link, target)
+    try:
+        overlay = guard_overlay.apply(engine, digest)
+    except (guard_overlay.OverlayError, OSError, ValueError, SyntaxError) as exc:
+        raise EngineBuildError("The pinned Wisp engine guard overlay could not be applied") from exc
+    effective_pairs = sorted([(name, engine / name) for name, _ in pairs] +
+                             [(guard_overlay.ADDITION, engine / guard_overlay.ADDITION)])
+    effective_digest = tree_digest(effective_pairs, links)
     minimum = minimum_macos(pairs, minos_reader)
     if lock is not None and minimum != lock["minimum_macos"]:
         raise EngineBuildError(f"Engine minimum macOS {minimum} differs from the lock ({lock['minimum_macos']})")
     document = {"schema": 1, "omlx_version": facts["version"], "omlx_build": facts["build"],
                 "source_tree_sha256": digest, "locked": lock is not None, "release_eligible": lock is not None,
                 "minimum_macos": minimum, "signing_identifier": ENGINE_SIGNING_ID,
-                "files": len(pairs), "dropped": sorted(prune["drop"])}
+                "files": len(effective_pairs), "dropped": sorted(prune["drop"]),
+                "guard_overlay": overlay, "effective_tree_sha256": effective_digest}
     (engine / "ENGINE.json").write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
     os.chmod(engine / "ENGINE.json", 0o644)
     return document
@@ -539,6 +549,10 @@ def validate_structure(bundle: Path, expected: dict | None = None) -> dict:
     if expected is not None and document != expected:
         raise EngineBuildError("ENGINE.json differs from what was staged")
     engine = bundle / ENGINE_DIR
+    try:
+        guard_overlay.verify(engine, document.get("guard_overlay"))
+    except (guard_overlay.OverlayError, OSError, ValueError) as exc:
+        raise EngineBuildError("The staged engine guard overlay is missing or changed") from exc
     for name in ("py/bin/python3", "py/bin/python3.11", "omlx/server.py", "omlx/cli.py",
                  "sp/mlx/core.cpython-311-darwin.so", "sp/mlx/lib/mlx.metallib"):
         if not (engine / name).exists():

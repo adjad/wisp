@@ -6,6 +6,7 @@ separate, optional input; this module does not collect or learn behavior.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime
 import hashlib
 import json
@@ -18,14 +19,16 @@ from service.assistant.today import build_plan, day_bounds
 SOURCES = ("calendar", "reminders", "email", "messages", "notes")
 MAX_ITEMS = 80
 MAX_SUGGESTIONS = 8
+BEHAVIOR_PROOF_MAX_AGE = 20 * 60
+SOURCE_RECEIPT_MAX_AGE = dict(email=1200, messages=600, notes=86400, calendar=1200, reminders=1200)
 _availability_provider = None
 
 
 def set_availability_provider(provider):
-    """Host-only composition hook for the separately owned behavior producer.
+    """Host/test override of the public ``planning_context`` v1 callable.
 
-    This is not registered as a tool, API or plugin callback. The producer owns
-    collection, permissions, generation fencing and evidence interpretation.
+    None restores lazy public-wrapper composition. No producer internals,
+    collection, inference or consent decisions belong to this consumer.
     """
     global _availability_provider
     if provider is not None and not callable(provider):
@@ -34,25 +37,51 @@ def set_availability_provider(provider):
 
 
 def availability_snapshot(day, timezone, now):
-    unavailable = dict(version=1, available=False, status="unavailable", generated_at=now,
-        timezone=timezone, reason="Behavioral availability is not available yet; no inferred time is reserved.",
-        windows=[], demands=[])
-    if _availability_provider is None:
-        return unavailable
+    """Read the public wrapper once; never cache or renew its evidence ages.
+
+    The producer must fence consent, generation, source revision and analysis
+    role on EVERY read. ``ready`` is permission to inspect hypotheses, not a
+    claim of complete coverage or free time. A missing producer is unavailable.
+    """
+    unavailable = dict(version=1, ready=False, available=False, timezone=timezone,
+        generated_at=None, evidence_checked_at=None, windows=[], demands=[],
+        associations=[], source_coverage={},
+        detail="Behavioral context is unavailable; availability is unknown and no inferred time is reserved.")
     try:
-        result = _availability_provider(day, timezone, now)
+        if not finite(now):
+            return unavailable
+        day_bounds(day, timezone)
+        provider = _availability_provider
+        if provider is None:
+            from service.assistant.behavior_runtime import planning_context
+            provider = planning_context
+        result = deepcopy(provider(day, timezone, now))
         return result if valid_availability(result, timezone, now) else unavailable
     except Exception:
         return unavailable
 
 
+def _fresh(stamp, now):
+    return finite(stamp) and 0 <= now - stamp <= BEHAVIOR_PROOF_MAX_AGE
+
+
+def _original(stamp, checked_at):
+    # Old analysis is durable when the public producer revalidates its exact
+    # current source revision. Never turn the checked time into analysis time.
+    return finite(stamp) and 0 < stamp <= checked_at
+
+
 def valid_availability(value, timezone, now):
-    return (isinstance(value, dict) and type(value.get("version")) is int and value["version"] == 1
-        and value.get("available") is True and value.get("status") == "current"
-        and value.get("timezone") == timezone and finite(value.get("generated_at"))
-        and 0 <= now - value["generated_at"] <= 20 * 60
-        and value.get("coverage") in ("adequate", "complete")
-        and isinstance(value.get("windows", []), list) and isinstance(value.get("demands", []), list))
+    """Actual public v1 envelope; source_coverage is descriptive, not global."""
+    return (finite(now) and isinstance(value, dict)
+        and type(value.get("version")) is int and value["version"] == 1
+        and value.get("ready") is True and value.get("timezone") == timezone
+        and _fresh(value.get("evidence_checked_at"), now)
+        and _original(value.get("generated_at"), value["evidence_checked_at"])
+        and all(isinstance(value.get(k, []), list) for k in ("windows", "demands", "associations"))
+        and isinstance(value.get("source_coverage", {}), dict)
+        and all(isinstance(k, str) and isinstance(v, str)
+                for k, v in value.get("source_coverage", {}).items()))
 
 
 def _refs(value):
@@ -79,6 +108,97 @@ def _item(source, identity, title, reason, *, quote="", due=None, priority=2, re
                 needs_review=source in {"email", "messages", "notes"})
 
 
+def _behavior_demand(demand, timezone, now, checked_at):
+    """Admit durable v1 work proof independently of recurrence scores.
+
+    The consumer cannot re-resolve a source revision: the public producer owns
+    that check. Missing endpoint/original receipt/analysis proof is withheld,
+    including the development producer's older cache-only demand shape.
+    """
+    if not isinstance(demand, dict):
+        return None
+    source, ident = demand.get("source"), demand.get("id")
+    quote, endpoint, reference = demand.get("quote"), demand.get("endpoint"), demand.get("reference")
+    if (source not in ("email", "messages", "notes", "calendar", "reminders")
+            or not isinstance(ident, str) or not 1 <= len(ident) <= 200
+            or demand.get("kind") not in ("preparation", "task", "meeting_request")
+            or not isinstance(demand.get("timezone"), str) or demand.get("ownership") not in ("user", "unknown")
+            or demand.get("status") not in ("tentative", "unresolved")
+            or demand.get("confidence") is not None or demand.get("importance") != "unknown"
+            or demand.get("action_authority") != "none"
+            or not isinstance(quote, str) or not 8 <= len(quote) <= 800
+            or not isinstance(endpoint, dict) or not isinstance(reference, dict)
+            or reference.get("source") != source or not _refs(demand.get("evidence"))
+            or not _original(demand.get("source_receipt_at"), checked_at)
+            or not _original(demand.get("analyzed_at"), checked_at)
+            or not 0 <= now - demand["source_receipt_at"] <= SOURCE_RECEIPT_MAX_AGE[source]):
+        return None
+    try:
+        ZoneInfo(demand["timezone"])
+        quote_hash = hashlib.sha256(quote.encode("utf-8")).hexdigest()
+    except (UnicodeEncodeError, ValueError, KeyError):
+        return None
+    start, end = endpoint.get("start"), endpoint.get("end")
+    if (endpoint.get("source") != source or endpoint.get("record_id") != demand.get("source_id")
+            or not isinstance(demand.get("source_id"), str) or not demand["source_id"]
+            or demand["source_id"] not in demand["evidence"]
+            or not isinstance(endpoint.get("revision"), str) or not endpoint["revision"]
+            or type(start) is not int or type(end) is not int or start < 0 or end - start != len(quote)
+            or endpoint.get("sha256") != quote_hash):
+        return None
+    observed = demand.get("observed_at")
+    if observed != endpoint.get("source_time") or (observed is not None and (not finite(observed) or observed > now)):
+        return None
+    due, span, precision = demand.get("due_ts"), demand.get("due_range"), demand.get("deadline_precision")
+    if precision == "unknown":
+        if span is not None or due is not None:
+            return None
+    elif (precision not in ("instant", "date") or not isinstance(span, list) or len(span) != 2
+          or not all(finite(v) for v in span) or span[0] >= span[1]
+          or (precision == "instant" and (not finite(due) or due != span[0]))
+          or (precision != "instant" and due is not None)):
+        return None
+    duration, basis = demand.get("suggested_minutes"), demand.get("duration_basis")
+    estimated = type(duration) is int and 1 <= duration <= 480 and basis == "adjustable default; not observed effort"
+    ownership = demand["ownership"]
+    reason = ("Tentative source-backed work; review relevance. " if ownership == "user" else
+              "Ownership is unknown; review the source before accepting work. ")
+    if precision == "unknown":
+        reason += "Deadline unknown; review timing. "
+    elif precision == "date":
+        reason += "Source gives a date range, not an exact deadline. "
+    reason += ("Adjustable default duration; not observed effort. " if estimated else
+               "Duration unknown; choose an estimate before adding work. ")
+    reason += "Importance is unknown. Ownership, effort and relevance remain uncertain."
+    uncertainty = demand.get("uncertainty", [])
+    if isinstance(uncertainty, str):
+        uncertainty = [uncertainty]
+    uncertainty = [clean(v, 120) for v in uncertainty[:5] if isinstance(v, str)] if isinstance(uncertainty, list) else []
+    if uncertainty:
+        reason += " Uncertainty: " + "; ".join(uncertainty)
+    item = _item("behavior", ident, demand.get("title") or "Review source-backed work", reason,
+                 quote=quote, due=due, priority=3)
+    # Preserve the exact quote and structured source locator. Never synthesize
+    # native URLs, a date instant, a confidence or a new publication timestamp.
+    item.update(quote=quote, reference=json.dumps(reference, sort_keys=True, ensure_ascii=False), source_id=demand["source_id"],
+        source_reference=deepcopy(reference), evidence=deepcopy(demand["evidence"]),
+        endpoint=deepcopy(endpoint), source_receipt_at=demand["source_receipt_at"],
+        analyzed_at=demand["analyzed_at"], analysis_timezone=demand["timezone"],
+        observed_at=observed, confidence=None,
+        time_evidence=deepcopy(demand.get("time_evidence")),
+        earliest_start=demand.get("earliest_start"),
+        priority_dimensions=deepcopy(demand.get("priority_dimensions")),
+        due_range=deepcopy(span), deadline_precision=precision, status=demand["status"],
+        needs_review=True, task_kind="task", ownership=ownership, demand_kind=demand["kind"],
+        duration_basis=basis, importance="unknown", uncertainty=uncertainty,
+        importance_hypothesis=demand.get("importance_hypothesis", "unknown"),
+        planning_duration=(duration if estimated and ownership == "user" and precision != "unknown"
+                           and demand["status"] == "tentative" and span[1] > now else None),
+        suggested_minutes=duration if estimated else 25,
+        planning_title="Review: " + item["title"])
+    return item
+
+
 def _remaining(start, end, occupied):
     """Keep only unlisted time; calendar commitments and explicit pins win."""
     parts = [(start, end)]
@@ -93,7 +213,7 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
 
     ``evidence`` contains source-labelled records and explicit readiness/coverage.
     ``behavior`` is an optional public availability result, never raw activity.
-    Its windows need current evidence, increasing bounds, >=0.65 confidence,
+    Its windows need current evidence, increasing bounds, >=0.65 recurrence strength,
     a named timezone, and a human-readable explanation. No percentage is shown:
     these scores are evidence strength, not calibrated forecast probabilities.
     """
@@ -162,45 +282,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     supported_behavior = valid_availability(behavior, timezone, now)
     if supported_behavior:
         for demand in behavior.get("demands", [])[:100]:
-            if not isinstance(demand, dict):
-                continue
-            due, confidence = demand.get("due_ts"), demand.get("confidence")
-            if (not isinstance(demand.get("id"), str) or not 1 <= len(demand["id"]) <= 200 or demand.get("current") is not True
-                    or not isinstance(demand.get("kind"), str) or not 1 <= len(demand["kind"]) <= 80
-                    or demand.get("timezone") != timezone or not clean(demand.get("quote"))
-                    or not _refs(demand.get("evidence_refs")) or not demand.get("source_reference")
-                    or demand.get("source") not in ("email", "messages", "notes", "reminders", "user")
-                    or not finite(confidence) or not .65 <= confidence <= 1
-                    or demand.get("coverage") not in ("adequate", "complete")
-                    or (due is not None and (not finite(due) or not now < due <= hi + 14 * 86400))):
-                continue
-            ownership = demand.get("ownership", "unknown")
-            if ownership not in ("user", "unknown", "unclear"):
-                continue
-            duration, basis = demand.get("suggested_minutes"), demand.get("duration_basis", "unknown")
-            estimated_duration = type(duration) is int and 1 <= duration <= 480 and basis in ("user", "source", "model", "default")
-            explicit_priority = demand.get("priority_basis") == "user" and type(demand.get("priority")) is int and demand["priority"] in (1, 2, 3)
-            reason = ("Source-backed work suggestion; review relevance. " if ownership == "user" else
-                      "Ownership is unclear; review the source before accepting work. ")
-            reason += (basis.capitalize() + " duration estimate; adjust it to suit your day. " if estimated_duration else
-                       "Duration unknown; choose an estimate before adding it to your day. ")
-            reason += "Your explicit priority applies." if explicit_priority else "Importance is unknown."
-            uncertainty = demand.get("uncertainty") or []
-            if isinstance(uncertainty, str):
-                uncertainty = [uncertainty]
-            uncertainty = [clean(value, 120) for value in uncertainty[:5] if isinstance(value, str)] if isinstance(uncertainty, list) else ["Uncertainty details unavailable"]
-            if uncertainty:
-                reason += " Uncertainty: " + "; ".join(uncertainty)
-            item = _item("behavior", demand["id"], demand.get("title") or "Review source-backed work",
-                reason, quote=demand["quote"], due=due, priority=demand["priority"] if explicit_priority else 3,
-                reference=demand["source_reference"])
-            item.update(needs_review=True, task_kind="task", ownership=ownership, demand_kind=demand["kind"],
-                        duration_basis=basis, importance="user priority" if explicit_priority else "unknown",
-                        uncertainty=uncertainty,
-                        planning_duration=duration if estimated_duration else None,
-                        suggested_minutes=duration if estimated_duration else 25,
-                        planning_title=item["title"] if ownership == "user" else "Review: " + item["title"])
-            items.append(item)
+            item = _behavior_demand(demand, timezone, now, behavior["evidence_checked_at"])
+            if item is not None:
+                items.append(item)
 
     for task in state["tasks"]:
         if task.get("status") == "active" and task.get("day") == day:
@@ -240,34 +324,56 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     occupied = [(max(lo, b["start"]), min(hi, b["end"])) for b in base["blocks"]
                 if finite(b.get("end")) and b["end"] > b["start"]
                 and (b.get("task_id") is None or b["task_id"] in pinned_ids)]
+    windows = []
     if supported_behavior:
-        behavior_detail = clean(behavior.get("reason") or "Tentative busy periods from current behavioral evidence.", 500)
+        behavior_detail = clean(behavior.get("detail") or "Tentative hypotheses; availability and coverage remain uncertain.", 500)
         for window in (behavior.get("windows") or [])[:100]:
             if not isinstance(window, dict):
                 continue
             ident, start, end = window.get("id"), window.get("start"), window.get("end")
-            score, stamp = window.get("confidence"), window.get("observed_at")
-            if (not isinstance(ident, str) or not 1 <= len(ident) <= 200 or ident in ignored or window.get("kind") != "busy"
+            score, stamp, kind = window.get("confidence"), window.get("observed_at"), window.get("kind")
+            if (not isinstance(ident, str) or not 1 <= len(ident) <= 200 or ident in ignored
+                    or kind not in ("busy", "possible_unavailability")
                     or window.get("current") is not True or not clean(window.get("because"))
-                    or window.get("timezone") != timezone or not _refs(window.get("evidence_refs"))
+                    or window.get("timezone") != timezone or not _refs(window.get("evidence"))
                     or not all(finite(v) for v in (start, end, score, stamp))
                     or not 0.65 <= score <= 1 or not 0 <= now - stamp <= 21 * 86400
                     or end <= start or end <= max(now, lo) or start >= hi
                     or window.get("coverage") not in ("adequate", "complete")):
                 continue
-            for index, (a, b) in enumerate(_remaining(max(lo, start), min(hi, end), occupied)):
-                behavioral.append(dict(id="behavior:" + str(ident) + ":" + str(index),
-                    source="manual", kind="event", title="Likely busy · " + clean(window.get("title") or "Usual routine"),
-                    when_ts=a, end_ts=b, all_day=False, pattern_id=str(ident),
-                    explanation=clean(window["because"], 500), confidence=score,
-                    coverage=window["coverage"]))
-    # Tentative windows prevent automatic flexible placement, never displace
-    # authored pins. The normal planner reports any conflicting explicit pin.
+            if kind == "possible_unavailability" and (
+                    window.get("prediction_target") != "computer_activity"
+                    or window.get("availability") != "unknown" or window.get("basis") != "inferred"
+                    or window.get("action_authority") != "none" or not isinstance(window.get("because"), str)):
+                continue
+            windows.append(window)
+
+    def reserve(kind, occupied):
+        for window in windows:
+            if window["kind"] != kind:
+                continue
+            away = kind == "possible_unavailability"
+            for index, (a, b) in enumerate(_remaining(max(lo, window["start"]), min(hi, window["end"]), occupied)):
+                behavioral.append(dict(id=("behavior-away:" if away else "behavior:") + window["id"] + ":" + str(index),
+                    source="manual", kind="event", title="Possible time away" if away else
+                        "Likely busy · " + clean(window.get("title") or "Usual routine"),
+                    when_ts=a, end_ts=b, all_day=False, pattern_id=window["id"], window_kind=kind,
+                    explanation=clean(window["because"], 500), confidence=window["confidence"],
+                    coverage=window["coverage"], evidence=deepcopy(window["evidence"]),
+                    observed_at=window["observed_at"], validation=window.get("validation"),
+                    semantic_reason=window.get("semantic_reason"), uncertainty=window.get("uncertainty")))
+
+    reserve("busy", occupied)
     authored_plan = build_plan(day, timezone, state["tasks"],
                                state["commitments"] + behavioral, state["preferences"], state["sources"], now=now)
     authored_starts = {b["task_id"]: b["start"] for b in authored_plan["blocks"] if b.get("task_id") is not None}
-    # Reserve actual authored placements before the planner sorts generated
-    # suggestions by urgency. These local copies never change a user's pins.
+    # Computer inactivity does not establish personal availability. Its optional
+    # advice can use only gaps left AFTER fitting authored work around busy time.
+    advisory_occupied = [(max(lo, b["start"]), min(hi, b["end"]) if finite(b.get("end")) else hi)
+                        for b in authored_plan["blocks"] if finite(b.get("start"))]
+    reserve("possible_unavailability", advisory_occupied)
+    # Local copies preserve fitting authored placements without changing pins,
+    # revisions, saved tasks or the existing busy-period planning contract.
     reserved_tasks = [dict(t, pinned_start=authored_starts[t["id"]])
                       if t.get("pinned_start") is None and t["id"] in authored_starts else t
                       for t in state["tasks"]]
@@ -278,8 +384,14 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     for block in proposal["blocks"]:
         if block["id"] in behavior_by_id:
             origin = behavior_by_id[block["id"]]
-            block.update(kind="behavior", pattern_id=origin["pattern_id"], evidence=origin["explanation"])
-            block["warnings"].append("Tentative · " + origin["explanation"])
+            away = origin["window_kind"] == "possible_unavailability"
+            block.update(kind="behavior_away" if away else "behavior", pattern_id=origin["pattern_id"], evidence=origin["explanation"],
+                evidence_refs=origin["evidence"], observed_at=origin["observed_at"],
+                recurrence_strength=origin["confidence"], validation=origin["validation"],
+                semantic_reason=origin["semantic_reason"], uncertainty=origin["uncertainty"])
+            if away:
+                block.update(prediction_target="computer_activity", availability="unknown", action_authority="none")
+            block["warnings"].append(("Tentative · availability is unknown. " if away else "Tentative · ") + origin["explanation"])
         elif block.get("task_id") in source_by_task:
             origin = source_by_task[block["task_id"]]
             block.update(task_id=None, kind="suggestion", evidence_id=origin["evidence_id"])
@@ -287,7 +399,13 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     proposal["tasks"] = state["tasks"]
     return dict(day=day, timezone=timezone, generated_at=now, attention=items[:MAX_ITEMS],
                 attention_omitted=max(0, len(items) - MAX_ITEMS), source_coverage=coverage,
-                behavior_detail=behavior_detail, proposed_plan=proposal,
+                behavior_detail=behavior_detail,
+                behavior_context=(dict(ready=True, generated_at=behavior["generated_at"],
+                    evidence_checked_at=behavior["evidence_checked_at"],
+                    source_coverage=deepcopy(behavior.get("source_coverage", {})),
+                    associations=deepcopy(behavior.get("associations", []))) if supported_behavior else
+                    dict(ready=False, generated_at=None, evidence_checked_at=None, source_coverage={}, associations=[])),
+                proposed_plan=proposal,
                 suggested_count=len(suggestions), tentative_count=len(behavioral),
                 explanation="Your sources establish commitments and work first. Review suggestions and estimated durations are adjustable; behavioral holds reserve only otherwise-unlisted time.")
 
@@ -299,6 +417,9 @@ def render(workspace, *, compact=False):
     rows = ["Needs my attention"]
     for item in workspace["attention"][:5 if compact else 12]:
         due = (" · " + datetime.fromtimestamp(item["due_ts"], zone).strftime("%b %-d, %-I:%M %p")) if item["due_ts"] is not None else ""
+        if item.get("deadline_precision") == "date" and item.get("due_range"):
+            dates = [datetime.fromtimestamp(v, zone).strftime("%b %-d, %-I:%M %p") for v in item["due_range"]]
+            due = " · source range [" + dates[0] + ", " + dates[1] + ")"
         rows.append(f"• {item['title']} [{item['source']}]{due} — {item['reason']}")
     if not workspace["attention"]:
         rows.append("No attention items in the available evidence. Check source coverage below.")
@@ -306,7 +427,8 @@ def render(workspace, *, compact=False):
     plan = workspace["proposed_plan"]
     for block in plan["blocks"][:8 if compact else 30]:
         end = "–" + clock(block["end"]) if block["end"] is not None else " (end unknown)"
-        qualifier = " · tentative" if block["kind"] == "behavior" else " · estimated" if block["kind"] == "suggestion" else ""
+        qualifier = (" · tentative · availability unknown" if block["kind"] == "behavior_away" else
+                     " · tentative" if block["kind"] == "behavior" else " · estimated" if block["kind"] == "suggestion" else "")
         rows.append(f"• {clock(block['start'])}{end} {block['title']}{qualifier}")
     if not plan["blocks"]:
         rows.append("No time blocks yet.")
@@ -316,6 +438,8 @@ def render(workspace, *, compact=False):
     rows.extend(["", "Source coverage"])
     rows.extend(f"• {s['source'].title()}: {s['detail']}" for s in workspace["source_coverage"])
     rows.append(workspace["behavior_detail"])
+    rows.extend(f"• Behavior {source}: {detail}" for source, detail in
+                workspace.get("behavior_context", {}).get("source_coverage", {}).items())
     return "\n".join(rows)
 
 

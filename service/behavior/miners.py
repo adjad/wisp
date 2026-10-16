@@ -302,7 +302,10 @@ def mine_habits(items: list[Local], spans: dict[str, date], now_dt: datetime) ->
             subject = key if kt == "category" else label
             window = Window(c.weekdays, c.start_minute, c.end_minute)
             part = daypart(c.start_minute)
-            statement = (f"You usually {habit_verb(kt, key, label)} {when_phrase(c.weekdays, part)} "
+            statement = (f"Your calendar usually has time to {habit_verb(kt,key,label)} {when_phrase(c.weekdays, part)} "
+                         f"({fmt_range(c.start_minute, c.end_minute)}); completion is unknown"
+                         if kt in {"category", "subject"} else
+                         f"You usually {habit_verb(kt, key, label)} {when_phrase(c.weekdays, part)} "
                          f"({fmt_range(c.start_minute, c.end_minute)})")
             durations = sorted(m.end_minute - m.minute for m in c.members)
             nxt = next_occurrence(window, now, tz)
@@ -405,7 +408,8 @@ def mine_contacts(messages: list[Local], conversations: list[Local], first: date
             when = when_phrase(weekdays, part)
         else:
             when = when_phrase(weekdays, part, most=True)
-        statement = f"You {verb} {name} {when} ({fmt_range(start, end)})"
+        statement = (f"Messages and scheduled calls with {name} recur {when} ({fmt_range(start, end)})"
+                     if n_calls else f"You exchange messages with {name} {when} ({fmt_range(start, end)})")
         all_days = sorted({x.day for x in inter})
         gaps = [(b - a).days for a, b in zip(all_days, all_days[1:])]
         latencies = []
@@ -759,9 +763,11 @@ def mine_all(observations: Iterable[Observation], now: float, tz: tzinfo) -> lis
 
     habit_items = [localize(o, tz) for o in events]
     habit_items += [localize(o, tz, default_s=15 * 60) for o in by_kind["note"]]
-    habit_items += [localize(o, tz, default_s=15 * 60) for o in by_kind["reminder_done"]]
+    from service.behavior.evidence import completion_time
+    dated_completions = [o for o in by_kind["reminder_done"] if completion_time(o) is not None]
+    habit_items += [localize(o, tz, default_s=15 * 60) for o in dated_completions]
     spans = {"category": ev_first, "subject": ev_first,
-             "note": _first_day(by_kind["note"], tz), "reminder": _first_day(by_kind["reminder_done"], tz)}
+             "note": _first_day(by_kind["note"], tz), "reminder": _first_day(dated_completions, tz)}
     habits = mine_habits(habit_items, spans, now_dt)
 
     messages = [localize(o, tz, default_s=60) for o in by_kind["message_in"] + by_kind["message_out"]]
@@ -775,7 +781,8 @@ def mine_all(observations: Iterable[Observation], now: float, tz: tzinfo) -> lis
                 + mine_day_shape(slots, ev_first, now_dt)
                 + mine_wisp_usage(asks, _first_day(by_kind["wisp_ask"], tz), now_dt))
     patterns.sort(key=lambda p: (p.kind, -p.confidence, p.id))
-    return patterns
+    from service.behavior.evidence import pattern_evidence
+    return [pattern_evidence(p) for p in patterns]
 
 
 def _first_day(obs: list[Observation], tz: tzinfo) -> date | None:

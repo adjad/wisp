@@ -275,11 +275,18 @@ ADDITIONAL_FULL_TESTS = {
     # disposable temp directories with a private HOME; no oMLX, user data or network.
     "tests/test_bundled_attribution.py",
     "tests/test_bundled_engine_api.py",
+    "tests/test_engine_downloads.py",
     "tests/test_bundled_engine.py",
     "tests/test_bundled_engine_mode.py",
     # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.
     "tests/test_engine_packaging.py",
     "tests/test_engine_licenses.py",
+    # Pure fake enforcers/tasks, synthetic package bytes and intercepted HTTP.
+    # No engine/model/native launch, real provider or host memory probes.
+    "tests/test_engine_guard_proof.py",
+    "tests/test_engine_guard_overlay.py",
+    "tests/test_engine_guard_client.py",
+    "tests/test_engine_guard_admission.py",
     "tests/test_bundled_engine_startup.py",
     # Attestation reuse (lease, fence, shadow) on in-process fakes with a fake clock, this
     # process's own loopback sockets and one disposable bash child; no oMLX or port 8000.
@@ -348,6 +355,9 @@ ADDITIONAL_FULL_TESTS = {
     # Agent-loop stall on refused repeats: scripted fake client and fake
     # registry tools only; no model, network, subprocess, or user state.
     "tests/test_loop_repeat_stall.py",
+    # Truncated narration fallback and evidence rendering: scripted fake client
+    # and fake registry tool only; no model, network, subprocess, or user state.
+    "tests/test_task_evidence_fallback.py",
     # Prompt scoped to the fitted toolset and the skills catalog gate: scripted
     # fake client and the packaged prompt only; no model, network, subprocess,
     # or user state.
@@ -386,9 +396,30 @@ ADDITIONAL_FULL_TESTS = {
     # TestClient/httpx MockTransport (no listener) and FakeHub; no model, Keychain,
     # Calendar, Messages or network.
     "tests/test_behavior_api.py",
+    # Generic availability: disposable histories/receipts, injected completions,
+    # and a pure interval Swift harness; no native collector, model or network.
+    "tests/test_behavior_availability.py",
+    "tests/test_behavior_activity_native.py",
+    "tests/test_behavior_interpreter.py",
+    # Supplied fake snapshots/analyzers, disposable behavior DBs and metadata-only
+    # history/relation checks; no native, provider, real model or user-state access.
+    "tests/test_behavior_source_index.py",
+    # Publication ordering and history use synthetic authorities, MockTransport,
+    # fake source snapshots and disposable databases; no real accounts or native IO.
+    "tests/test_gmail_behavior_history.py",
+    "tests/test_behavior_gmail_history.py",
+    "tests/test_behavior_config_authority_changes.py",
+    "tests/test_behavior_history_driver.py",
+    "tests/test_behavior_publication_boundary.py",
+    "tests/test_native_source_publication_stamps.py",
+    "tests/test_retained_source_publication_stamps.py",
+    "tests/test_behavior_associations.py",
     "tests/test_behavior_boundary.py",
     "tests/test_behavior_engine.py",
     "tests/test_behavior_miners.py",
+    # Compiles actual Swift sources, then exercises pure mapping/transport
+    # guards only; no EventKit store, native app, model or personal data access.
+    "tests/test_behavior_native_history.py",
     "tests/test_behavior_persona.py",
     "tests/test_behavior_phraser.py",
     "tests/test_behavior_predict_nudges.py",
@@ -396,6 +427,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_behavior_routing.py",
     "tests/test_behavior_runtime.py",
     "tests/test_behavior_tools.py",
+    "tests/test_behavior_weekly_history.py",
     # Remote-inference mode: fictional example profile, patched sockets, mocked
     # transports and AST-selected main functions; no network, Keychain or model.
     "tests/test_remote_inference_client.py",

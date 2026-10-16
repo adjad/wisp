@@ -16,6 +16,7 @@ import stat
 import weakref
 
 import httpx
+from service.publication_authority import Authority, assert_mutation_allowed, revocation
 
 
 class CredentialQuarantined(RuntimeError):
@@ -31,19 +32,31 @@ class RecoveryGate:
         self.callbacks = []
         self.clients = weakref.WeakSet()
         self.active = set()
+        self._publication = Authority("credential-recovery")
+        self._ready_generation = None
 
     @property
     def directory(self):
         return Path(self.home()) / ".moe"
 
     def invalidate(self):
-        if not self.blocked:
-            self.blocked = True
-            for client in self.clients:
-                client.headers.pop("Authorization", None)
-            for callback in self.callbacks:
-                callback()
+        if self.blocked:
+            raise CredentialQuarantined()
+        with revocation():
+            self._publication.withdraw()
+            if not self.blocked:
+                self.blocked = True
+                for client in self.clients:
+                    client.headers.pop("Authorization", None)
+                for callback in self.callbacks:
+                    callback()
         raise CredentialQuarantined()
+
+    def publication_token(self):
+        """Cached gate identity/readiness only; never checks files or clients."""
+        if self.blocked or self.expected is None or self._ready_generation != self.expected:
+            return None
+        return self._publication.token()
 
     def generation(self):
         parent = self.directory
@@ -76,14 +89,24 @@ class RecoveryGate:
     def check(self):
         if self.blocked:
             raise CredentialQuarantined()
+        assert_mutation_allowed()
         try:
             current = self.generation()
         except OSError:
             self.invalidate()
-        if self.expected is None:
-            self.expected = current
-        if self.expected != current:
-            self.invalidate()
+        # Full file observation is preparation, not part of a pure witness.
+        # Existing callers may already hold the provisioning SH flock. No
+        # publication path acquires that flock or calls check under its lease.
+        with revocation():
+            if self.blocked:
+                raise CredentialQuarantined()
+            if self.expected is None:
+                self.expected = current
+            if self.expected != current:
+                self.invalidate()
+            if self._ready_generation != current:
+                self._ready_generation = current
+                self._publication.publish()
 
     @contextmanager
     def lease(self):
@@ -115,6 +138,17 @@ class RecoveryGate:
 
 
 _gate = RecoveryGate(expected=os.environ.pop("WISP_CREDENTIAL_GENERATION", None))
+
+
+def current_gate():
+    """Cached source bootstrap identity, without credential/file observation."""
+    return _gate
+
+
+def publication_token(expected_gate):
+    """An old gate identity cannot acquire a replacement gate's authority."""
+    gate = _gate
+    return gate.publication_token() if expected_gate is gate else None
 
 
 def check():

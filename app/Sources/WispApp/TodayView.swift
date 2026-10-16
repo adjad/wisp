@@ -36,6 +36,22 @@ struct TodayBlock: Decodable, Identifiable {
     let task_id: String?
     let warnings: [String]
     let pattern_id: String?
+
+    var evidenceLabel: String {
+        switch kind {
+        case "calendar": return "Calendar"
+        case "manual": return "Fixed Wisp event"
+        case "behavior": return "Tentative busy period · behavioral evidence"
+        case "behavior_away": return "Computer inactivity · availability unknown"
+        case "suggestion": return "Source-backed suggestion · estimated duration"
+        default: return "\(kind.capitalized) · estimated duration"
+        }
+    }
+
+    var inferenceIgnoreHelp: String {
+        kind == "behavior_away" ? "Ignore this possible time away for the selected day" :
+            "Ignore this tentative busy period for the selected day"
+    }
 }
 struct TodayDeadline: Decodable, Identifiable {
     let id: String
@@ -633,9 +649,7 @@ struct TodayView: View {
                             .font(.caption.monospacedDigit()).frame(width: 148, alignment: .leading)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(block.title).bold()
-                            Text(block.kind == "calendar" ? "Calendar" : block.kind == "manual" ? "Fixed Wisp event" :
-                                 block.kind == "behavior" ? "Tentative busy period · behavioral evidence" :
-                                 block.kind == "suggestion" ? "Source-backed suggestion · estimated duration" : "\(block.kind.capitalized) · estimated duration")
+                            Text(block.evidenceLabel)
                                 .font(.caption).foregroundStyle(.secondary)
                             ForEach(Array(block.warnings.enumerated()), id: \.offset) { _, warning in
                                 Text(warning).font(.caption).foregroundStyle(.orange)
@@ -649,7 +663,7 @@ struct TodayView: View {
                                         body: ["day": model.day, "timezone": model.timezone.identifier,
                                                "window": pattern, "ignored": true])
                                 }
-                            }.help("Ignore this tentative busy period for the selected day").disabled(model.busy)
+                            }.help(block.inferenceIgnoreHelp).disabled(model.busy)
                         }
                         if let id = block.task_id, let task = plan.tasks.first(where: { $0.id == id }) {
                             Button(task.pinned_start == nil ? "Pin" : "Unpin") {
