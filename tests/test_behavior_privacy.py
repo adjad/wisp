@@ -259,7 +259,8 @@ def test_turning_learning_off_ages_out_now(client, tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(behavior_api.behavior_runtime, "age_out", lambda *a, **k: calls.append(1) or {})
     monkeypatch.setattr(behavior_api.behavior_runtime, "poke", lambda *a: None)
-    assert client.put("/behavior/settings", json={"enabled": True}).status_code == 200
+    epoch = client.post("/behavior/settings/check").json()["control_epoch"]
+    assert client.put("/behavior/settings", json={"enabled": True, "control_epoch": epoch}).status_code == 200
     assert calls == []
     assert client.put("/behavior/settings", json={"enabled": False}).status_code == 200
     assert calls == [1]
@@ -400,7 +401,8 @@ def test_unreadable_or_non_mapping_config_turns_learning_off(client, tmp_path, m
     assert isinstance(config.models_config(), dict)
     # PUT is a clear error, not a 500, and the file is not overwritten.
     for value in (True, False):
-        resp = client.put("/behavior/settings", json={"enabled": value})
+        epoch = client.post("/behavior/settings/check").json()["control_epoch"]
+        resp = client.put("/behavior/settings", json={"enabled": value, "control_epoch": epoch})
         assert resp.status_code == 409 and "settings file" in resp.json()["detail"]
     assert path.read_text() == content
     # The launch override still wins, as it always has.

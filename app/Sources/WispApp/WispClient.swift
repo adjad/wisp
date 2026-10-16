@@ -421,22 +421,40 @@ final class WispClient {
         return await behaviorRequest("GET", "behavior/predict", query: [URLQueryItem(name: "day", value: day)])
     }
 
-    // GET/PUT /behavior/settings -> "Learn my routines" (on by default). Returns the
-    // state in effect, or nil when the backend can't be reached; a WISP_BEHAVIOR
+    // "Learn my routines" (on by default). Mutations require a settled receipt;
+    // enabling also requires a fresh one-shot epoch. A plain GET is a snapshot.
+    // Returns nil when confirmation is unavailable; a WISP_BEHAVIOR
     // launch override can make the effective state differ from the request.
     func behaviorEnabled() async -> Bool? {
         await behaviorRequest("GET", "behavior/settings")?["enabled"] as? Bool
     }
 
     func setBehaviorEnabled(_ on: Bool) async -> Bool? {
-        await behaviorRequest("PUT", "behavior/settings", body: ["enabled": on])?["enabled"] as? Bool
+        var body: [String: Any] = ["enabled": on]
+        if on {
+            guard let checked = await behaviorSettings(),
+                  let epoch = checked["control_epoch"] as? String else { return nil }
+            body["control_epoch"] = epoch
+        }
+        // OFF itself fences earlier enables. Send it even when a status check
+        // would wait behind a slow update; never require a successful read first.
+        guard let result = await behaviorRequest("PUT", "behavior/settings", body: body),
+              result["updates_settled"] as? Bool == true else { return nil }
+        return result["enabled"] as? Bool
     }
 
-    // GET /behavior/settings, whole payload: "enabled", "remote_active" (a remote
+    // POST /behavior/settings/check, whole payload: "enabled", "remote_active" (a remote
     // inference profile is pinned) and "phraser" (nudge wording / event labeling
     // requests are allowed to leave the Mac's local model).
     func behaviorSettings() async -> [String: Any]? {
-        await behaviorRequest("GET", "behavior/settings")
+        guard let result = await behaviorRequest("POST", "behavior/settings/check"),
+              result["updates_settled"] as? Bool == true,
+              result["enabled"] is Bool,
+              let epoch = result["control_epoch"] as? String,
+              epoch.utf8.count == 64,
+              epoch.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+        else { return nil }
+        return result
     }
 
     // DELETE /behavior/data {"confirm": true} -> deletes what Wisp learned and the

@@ -970,7 +970,8 @@ final class SettingsLoader: ObservableObject {
     private func readBehaviorSettings(generation: UInt64) async {
         let settings = await client.behaviorSettings()
         guard generation == behaviorRequestGeneration else { return }
-        guard let settings, let on = settings["enabled"] as? Bool else {
+        guard let settings, settings["updates_settled"] as? Bool == true,
+              let on = settings["enabled"] as? Bool else {
             behaviorEnabled = nil
             behaviorStatus = "Couldn't confirm learning settings. Wisp may still be learning. Check status or try turning it off."
             return

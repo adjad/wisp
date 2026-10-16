@@ -118,7 +118,10 @@ def test_global_learning_settings_confirmation(tmp_path):
                    ("    private var panes:", "    private var behaviorLearningLabel:")
                    if marker in source[copy_start:])
     copy = source[copy_start:copy_end]
-    for segment in (properties, methods, copy):
+    client_source = (root / "app/Sources/WispApp/WispClient.swift").read_text()
+    client_methods = client_source[client_source.index("    func setBehaviorEnabled("):
+                                   client_source.index("    // DELETE /behavior/data")]
+    for segment in (properties, methods, copy, client_methods):
         assert "URLSession" not in segment and "NSApplication" not in segment
     extracted = tmp_path / "SettingsConsent.swift"
     extracted.write_text(
@@ -127,6 +130,7 @@ def test_global_learning_settings_confirmation(tmp_path):
         "private let client = WispClient()\n" + properties + methods + "\n}\n"
         "@MainActor struct BehaviorPrivacyCopy {\nlet loader: SettingsLoader\n" + copy
         + "\nvar text: String { behaviorExplanation }\n}\n"
+        + "extension WispClient {\n" + client_methods + "\n}\n"
     )
     env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "WISP_BEHAVIOR": "0"}
     for key, leaf in (("HOME", "home"), ("WISP_HOME", "state"), ("TMPDIR", "tmp")):

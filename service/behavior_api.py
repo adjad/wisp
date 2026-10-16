@@ -10,6 +10,7 @@ sending or changing anything.
 from __future__ import annotations
 
 import asyncio
+import secrets
 import sqlite3
 from typing import Any
 
@@ -44,6 +45,98 @@ _ERASING = "Wisp is erasing what it learned right now. Try again in a moment."
 _ERASED = "What Wisp learned was just erased, so this nudge is gone."
 _PATTERN_STATUSES = ("active", "confirmed", "rejected")
 _VERDICTS = ("useful", "not_now", "wrong")
+
+
+class _SettingsUpdates:
+    """Order accepted writes and fence enables that have not arrived yet.
+
+    HTTP cancellation cannot cancel an accepted operation's disk worker. One
+    process-local, single-use epoch replaces an unbounded request-ID registry.
+    """
+
+    MAX_PENDING = 16
+
+    def __init__(self):
+        self.epoch = secrets.token_hex(32)
+        self.tail: asyncio.Task | None = None
+        self.pending = 0
+        self.interrupted = False
+
+    def _healthy(self):
+        if self.interrupted or (self.tail is not None and self.tail.cancelled()):
+            raise HTTPException(503, "A learning settings update was interrupted. Restart Wisp and check its status.")
+
+    def _finished(self, task):
+        self.pending -= 1
+        if task.cancelled():
+            self.interrupted = True
+        else:
+            task.exception()  # Observe errors even if the HTTP caller disconnected.
+
+    async def _settle(self, task):
+        self._healthy()
+        if not task.done() and task.get_loop() is not asyncio.get_running_loop():
+            self.interrupted = True
+            self._healthy()
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                self.interrupted = True
+                self._healthy()
+            raise
+        except Exception:
+            # A completed failed save has no worker left to apply later. The
+            # next save/status may recover; an interrupted worker cannot.
+            pass
+        self._healthy()
+
+    def submit(self, value, epoch):
+        self._healthy()
+        if value and epoch is None:
+            raise HTTPException(422, "Check learning settings before enabling them.")
+        if epoch is not None and (not isinstance(epoch, str) or epoch != self.epoch):
+            raise HTTPException(409, "Learning settings changed. Check their status and try again.")
+        if self.pending >= self.MAX_PENDING:
+            raise HTTPException(503, "Learning settings are still updating. Try again shortly.",
+                                headers={"Retry-After": "2"})
+        # Register and consume before the request's first await. Any older
+        # unaccepted enable is now fenced, including one from a closed window.
+        self.epoch = secrets.token_hex(32)
+        previous = self.tail
+
+        async def apply():
+            nonlocal previous
+            if previous is not None:
+                await self._settle(previous)
+            previous = None  # Do not retain a chain of failed task tracebacks.
+            return (await _apply_behavior_settings(value)) | {"updates_settled": True}
+
+        task = asyncio.create_task(apply())
+        self.tail = task
+        self.pending += 1
+        task.add_done_callback(self._finished)
+        return task
+
+    async def read(self, *, fence=False):
+        self._healthy()
+        if fence:
+            self.epoch = secrets.token_hex(32)
+        while True:
+            tail = self.tail
+            if tail is not None:
+                await self._settle(tail)
+            if tail is self.tail:
+                break
+        # No await between the stable tail, final fence and state snapshot.
+        payload = _settings_payload()
+        if fence:
+            self.epoch = secrets.token_hex(32)
+            return payload | {"updates_settled": True, "control_epoch": self.epoch}
+        return payload  # A legacy GET is a snapshot, not a completion receipt.
+
+
+_settings_updates = _SettingsUpdates()
 
 
 def _runtime() -> behavior_runtime.BehaviorRuntime:
@@ -86,17 +179,34 @@ def _settings_payload() -> dict[str, Any]:
 async def behavior_settings() -> dict[str, Any]:
     """The "Learn my routines" setting. ``enabled`` is what is in effect: a
     ``WISP_BEHAVIOR`` launch override beats the saved ``setting``."""
-    return _settings_payload()
+    return await _settings_updates.read()
+
+
+@router.post("/settings/check")
+async def check_behavior_settings() -> dict[str, Any]:
+    """Settle accepted updates and fence older enables still in transit."""
+    return await _settings_updates.read(fence=True)
 
 
 @router.put("/settings")
 async def set_behavior_settings(body: dict[str, Any] | None = None) -> dict[str, Any]:
     """Turn behavior learning on or off now, without restarting Wisp. Off stops
     ingesting, mining and nudging; what was learned is kept (use ``DELETE /behavior/data``
-    to erase it) but is still aged out (180 days / 30 days)."""
+    to erase it) but is still aged out (180 days / 30 days).
+
+    Enabling requires the fresh control_epoch returned by POST /settings/check.
+    OFF also accepts a bare boolean so revocation never needs a successful read.
+    Every accepted write fences older unaccepted enables; its settled receipt
+    is returned only after earlier writes and its own worker have completed.
+    """
     value = _body(body).get("enabled")
     if type(value) is not bool:
         raise HTTPException(status_code=422, detail="enabled must be true or false")
+    operation = _settings_updates.submit(value, _body(body).get("control_epoch"))
+    return await asyncio.shield(operation)
+
+
+async def _apply_behavior_settings(value: bool) -> dict[str, Any]:
     from service.config import set_behavior_enabled
     from service.tools.behavior_tools import sync_availability
     if value is False:
