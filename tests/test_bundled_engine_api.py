@@ -174,7 +174,9 @@ def test_first_launch_and_stickiness() -> None:
                 check("built-in setup offers start before process answers", first["setup_engine"]["state"] == "warn"
                       and first["setup_engine"].get("action") == "start_engine"
                       and first["profile"] == "Wisp's built-in engine")
-                check("built-in setup offers model download", first["setup_model"].get("action") == "download_model")
+                check("built-in setup offers the local Mellum model folder",
+                      first["setup_model"].get("action") == "add_local_model"
+                      and "Mellum" in first["setup_model"]["detail"])
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)
         engine = fixture(root, present=False)
