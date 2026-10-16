@@ -317,3 +317,12 @@ def test_hold_off_is_not_a_calendar_write():
 @pytest.mark.parametrize("prompt", ["Close the Deal", "Kill Bill", "exit Interview Notes", "start Monday"])
 def test_capitalised_non_apps_are_not_named_app_commands(prompt):
     assert not _route(prompt).reason.startswith("named app command")
+
+
+@pytest.mark.parametrize("prompt", ["reply: can we do 5?", "reply saying are you free tomorrow?",
+                                    "respond and ask what time works?"])
+def test_an_explicit_reply_that_asks_a_question_stays_on_the_thread(prompt):
+    """Re-review of e9225717: the "?" guard sent these to email after a text."""
+    d = _route(prompt, **_THREAD)
+    assert d.reason == "reply continues previous Messages thread"
+    assert "send_message" in _offered(d)
