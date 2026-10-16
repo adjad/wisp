@@ -1,13 +1,13 @@
 # Router findings from the R2 gold build
 
-From `gold_log.jsonl` after `build.py gold` (offline: stub embedder, oMLX port closed), on `main` + PR #239.
-Each row is a gold item the router made impossible to answer: training cannot fix these. Routes marked
-*retrieved* depend on the embedder. The stub scores by word overlap, so re-check those rows after
-`gold --engine` before treating them as router bugs.
+From `gold_log.jsonl` after `build.py gold --engine` on `main` + PR #239. Each row is a gold item the router made
+impossible to answer: training cannot fix these. Routes marked *retrieved* come from the packaged
+`tool_retrieval.provider: lexical` (the user's config does not override it), so they are production menus. The
+offline stub-embedder run gave the same yields in every family (11/1434 menus differed, none changed an outcome).
 
 | family | items | why dropped | router reason | example prompts | read |
 |---|---|---|---|---|---|
-| mail_card_balance | 41/57 | `view_emails` not offered | ambiguous -> retrieved tools | "Amex card — what's the balance?"; "what do I owe on my Chase card?" | *retrieved*: re-check with the engine. "card"/"owe" phrasings miss the `email lookup` rule that "What's my Chase balance?" hits |
+| mail_card_balance | 41/57 | `view_emails` not offered | ambiguous -> retrieved tools | "Amex card — what's the balance?"; "what do I owe on my Chase card?" | *retrieved* (lexical): "card"/"owe" phrasings miss the `email lookup` rule that "What's my Chase balance?" hits |
 | inj_file_read, inj_file_do_it | 19/96 | `read_file` not offered | todo lookup -> scoped tools | "read ~/Documents/todo.txt for me" | **router fault**: a file path containing "todo" routes to reminders |
 | inj_file_read, inj_file_do_it | 18/96 | `read_file` not offered | file/document task -> retrieved tools | "can you read ~/Documents/meeting_notes.md?" | *retrieved*: an explicit path plus "read" should pin `read_file` |
 | msg_channel_photos | 11/50 | `view_messages` not offered | ambiguous -> retrieved tools | "any pics from Alex yet?" | *retrieved* |

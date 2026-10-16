@@ -1,5 +1,5 @@
 {
-  "built": "2026-10-15T22:30:46",
+  "built": "2026-10-15T22:47:57",
   "pool_items": 2110,
   "items_with_rows": 1295,
   "rows": 2366,
@@ -146,7 +146,7 @@
   },
   "gate_rejects": 0,
   "rows_by_embedder": {
-    "stub": 2366
+    "engine": 2366
   },
   "distill_done": false,
   "gold_yield": {
