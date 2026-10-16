@@ -375,6 +375,10 @@ async def lifespan(app: FastAPI):
             start_laya_warmup()
         started_tasks.append(asyncio.create_task(idle_unloader.run(client)))
         started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
+        # Direct Gmail read (idle unless connected). Local profile only: the
+        # remote-inference profile runs exactly the scheduler (see the comment below).
+        from service import gmail_source
+        started_tasks.append(asyncio.create_task(gmail_source.run()))
         from service import nodes
         started_tasks.append(asyncio.create_task(nodes.run()))
         from service.memory.api import worker as memory_worker
@@ -2828,6 +2832,63 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.get("/assistant/gmail/status")
+async def gmail_status() -> dict[str, Any]:
+    from service import gmail_source
+    return gmail_source.status()
+
+
+@app.post("/assistant/gmail/connect")
+async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
+    """Begin read-only Gmail consent. `client_id`/`client_secret` come from the
+    user's own Google Cloud Desktop OAuth client; open the returned `auth_url`
+    in a browser."""
+    from service import gmail_source
+    from service import google_workspace
+    saved_id, saved_secret = google_workspace.saved_credentials()
+    cfg = gmail_source.load_config()
+    client_id = str(body.get("client_id") or cfg.get("client_id") or saved_id or "")
+    secret = str(body.get("client_secret") or
+                 (cfg.get("client_secret") if client_id == cfg.get("client_id") else "") or "")
+    if not secret and client_id == (saved_id or client_id) and saved_id:
+        secret = saved_secret      # same client as the Workspace setup: reuse its secret
+    if not client_id:
+        return {"ok": False, "error": "client_id is required"}
+    native_id = str(body.get("mail_account_id") or "")
+    if native_id:
+        from service.tools.email_tools import native_email_accounts
+        if native_id not in {row["id"] for row in native_email_accounts()}:
+            return {"ok": False, "error": "That Mail account is no longer available; refresh Settings and select it again"}
+    try:
+        receipt = await gmail_source.begin_authorization(
+            client_id, secret, mail_account_id=native_id, include_receipt=True)
+    except gmail_source.GmailError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **receipt}
+
+
+@app.post("/assistant/gmail/disconnect")
+async def gmail_disconnect(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    _require_native_google_removal(request)
+    from service import gmail_source
+    await gmail_source.disconnect(str(body.get("account") or ""))
+    return {"ok": True}
+
+
+def _require_native_google_removal(request: Request) -> None:
+    """Removal is an explicit native-app JSON action, never a browser form.
+
+    Reject every browser Origin, including null, without trusting Host to
+    manufacture an allowed origin. Native URLSession requests have no Origin.
+    JSON also prevents a browser simple request from reaching the mutation.
+    """
+    if "origin" in request.headers:
+        raise HTTPException(status_code=403, detail="Use Wisp Settings to remove this integration")
+    media = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if media != "application/json":
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+
+
 @app.post("/assistant/sync/notes")
 async def assistant_sync_notes(body: dict[str, Any]) -> dict[str, Any]:
     """Receive raw Notes.app content from the Swift app (which holds Notes
@@ -3146,6 +3207,33 @@ async def list_mcp_servers() -> dict[str, Any]:
     """Configured MCP servers, whether each is running, and the tools it
     contributed. `config_path` is where the user edits the list."""
     return mcp_manager.status()
+
+
+@app.get("/assistant/google/workspace/status")
+async def google_workspace_status() -> dict[str, Any]:
+    from service import google_workspace
+    return google_workspace.status()
+
+
+@app.post("/assistant/google/workspace/enable")
+async def google_workspace_enable(body: dict[str, Any]) -> dict[str, Any]:
+    from service import google_workspace
+    return await google_workspace.enable(
+        str(body.get("client_id") or ""), str(body.get("client_secret") or ""),
+        str(body.get("email") or ""), str(body.get("tier") or "core"))
+
+
+@app.post("/assistant/google/workspace/disable")
+async def google_workspace_disable(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    _require_native_google_removal(request)
+    from service import google_workspace
+    return await google_workspace.disable()
+
+
+@app.post("/assistant/google/workspace/signin")
+async def google_workspace_signin(body: dict[str, Any]) -> dict[str, Any]:
+    from service import google_workspace
+    return await google_workspace.signin(str(body.get("email") or ""))
 
 
 @app.post("/mcp/reload")

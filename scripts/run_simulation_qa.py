@@ -91,6 +91,8 @@ PROFILE_TESTS = {
         "tests/test_daily_summary_history_independence.py",
         "tests/test_email_digest_presentation.py",
         "tests/test_email_scoping.py",
+        "tests/test_gmail_source.py",
+        "tests/test_google_workspace.py",
         "tests/test_linked_documents.py",
         "tests/test_mail_history_wire.py",
         "tests/test_message_attribution.py",
@@ -211,6 +213,9 @@ PROFILE_TESTS = {
 ADDITIONAL_FULL_TESTS = {
     # Scorer self-test on synthetic fixtures; tmp_path files only, no model or network.
     "tests/test_memory_eval_scorer.py",
+    # Toolbench matchers/scorer/report on hand-built trajectories and fake-world
+    # tools called directly; temp WISP_HOME, no model, network or tool execution.
+    "tests/test_toolbench.py",
     # Planner eval --dry-run in a temp HOME/WISP_HOME: builds menus, no model, oMLX or tool execution.
     "tests/test_eval_planner_dry_run.py",
     # Inert bounded attestation store; supplied facts and manual interleavings only.
@@ -365,6 +370,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_think_leak.py",
     "tests/test_timeranges.py",
     "tests/test_today_plan.py",
+    # Daily workspace: pure source fixtures, private disposable SQLite, fixed
+    # verified-self identity, fake policy/outbox and ASGI transport; no effects.
+    "tests/test_daily_workspace.py",
+    "tests/test_day_plan_email.py",
     "tests/test_user_reported_regressions_20260902.py",
     "tests/test_user_reported_regressions_20260903.py",
     "tests/test_user_reported_regressions_20260903_noon.py",
