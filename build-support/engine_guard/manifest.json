@@ -13,9 +13,9 @@
     {
       "path": "omlx/process_memory_enforcer.py",
       "input_sha256": "afc72e5875c844536166b09f2e8d55aec0580024109cddbfb858be119172641f",
-      "output_sha256": "734a7242fcdb9f8e13414dc8a8ea6eb9e6a9fcd470e726119827e7ffb32c4522",
+      "output_sha256": "b94a9e26f729535143f944ef849979bdd58f94922b4225bb16975bb666e3702c",
       "patch": "process_memory_enforcer.py.patch.json",
-      "patch_sha256": "5fb4f308e7c93d4d51441dc8fb173fdd3581b21a986836e7623c88bc28187726"
+      "patch_sha256": "9664aa09a21a03ec16179d7f7a3c3ec0e63bba82440bc70b37a824920ec5505e"
     },
     {
       "path": "omlx/engine_pool.py",

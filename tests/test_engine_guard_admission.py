@@ -7,6 +7,7 @@ import ast
 import asyncio
 import importlib.util
 import json
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -15,6 +16,14 @@ from unittest.mock import patch
 from tests import test_engine_guard_proof as fixtures
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def canonical_ast(value):
+    if isinstance(value, ast.AST):
+        return {"node": type(value).__name__, "fields": [[k, canonical_ast(v)] for k, v in ast.iter_fields(value)]}
+    if isinstance(value, list):
+        return [canonical_ast(v) for v in value]
+    return value
 
 
 class AdmissionTests(unittest.TestCase):
@@ -126,6 +135,65 @@ class AdmissionTests(unittest.TestCase):
                 self.assertEqual(child.allocations, 1)
                 self.assertFalse(self.proof.snapshot(self.guard)["qualified"])
                 self.assertEqual((self.guard._memory_guard_tier, self.guard._prefill_memory_guard), (tier, prefill))
+
+    def source_propagation(self, loaded, target, *, prefill=True):
+        """Only an extracted plain-Python decision branch runs with fake entries.
+
+        Its AST is independently compared to the exact patched vendor output
+        in source-bound mechanical evidence. No vendor module is imported.
+        """
+        fixture = json.loads((ROOT / "tests/fixtures/engine_guard/propagation_branch.json").read_text())
+        manifest = json.loads((ROOT / "build-support/engine_guard/manifest.json").read_text())
+        pinned = next(r for r in manifest["patches"] if r["path"] == "omlx/process_memory_enforcer.py")
+        self.assertEqual((fixture["input_sha256"], fixture["output_sha256"]),
+                         (pinned["input_sha256"], pinned["output_sha256"]))
+        self.assertEqual(hashlib.sha256(fixture["python"].encode()).hexdigest(), fixture["source_sha256"])
+        parsed = ast.parse(fixture["python"])
+        branch = parsed.body[0].body[0]
+        self.assertEqual(hashlib.sha256(json.dumps(canonical_ast(branch), sort_keys=True).encode()).hexdigest(),
+                         fixture["branch_ast_sha256"])
+        context = {"_wisp_guard": self.proof, "BaseNonStreamingEngine": type("BaseNonStreamingEngine", (), {}),
+                   "soft_limit": 20, "logger": SimpleNamespace(warning=lambda *a, **kw: None)}
+        exec(compile(parsed, "<pinned-scheduler-decision-branch-with-fakes>", "exec"), context)
+        class DFlashEngine:
+            _fallback_engine = None
+        engine = DFlashEngine()
+        engine._loaded = loaded
+        engine._prefill_guard = target
+        self.guard._engine_pool = SimpleNamespace(_entries={"model": SimpleNamespace(engine=engine)})
+        self.guard._resolve_scheduler = lambda entry: entry.engine._prefill_guard
+        self.guard._scheduler_resolve_warned = set()
+        self.guard._prefill_memory_guard = prefill
+        @self.proof.propagating
+        def branch_propagation(enforcer):
+            # Use the existing sampled fake, then the exact decision branch.
+            enforcer.calculate()
+            context["source_scheduler_branch"](enforcer)
+        self.guard._propagate_memory_limit = lambda: branch_propagation(self.guard)
+        self.proof.begin_iteration(self.guard)
+        self.guard._propagate_memory_limit()
+        self.proof.complete_iteration(self.guard)
+        return self.proof.snapshot(self.guard)
+
+    def test_loaded_primary_dflash_without_guard_cannot_qualify(self):
+        row = self.source_propagation(True, None)
+        self.assertFalse(row["qualified"])
+        self.assertEqual(row["reason"], "unpropagated")
+        with self.assertRaises(self.proof.GuardEvidenceUnavailable):
+            self.proof.require_admission(self.guard)
+
+    def test_genuinely_unloaded_dflash_is_not_a_missing_loaded_target(self):
+        self.assertTrue(self.source_propagation(False, None)["qualified"])
+
+    def test_loaded_dflash_with_resolved_guard_remains_eligible(self):
+        self.assertTrue(self.source_propagation(True, object())["qualified"])
+
+    def test_disabled_profile_never_claims_healthy_missing_dflash_guard(self):
+        row = self.source_propagation(True, None, prefill=False)
+        self.assertFalse(row["qualified"])
+        self.assertEqual(row["reason"], "disabled")
+        self.assertFalse(self.proof.require_admission(self.guard)["qualified"])
+        self.assertIs(self.guard._prefill_memory_guard, False)
 
 
 if __name__ == "__main__":
