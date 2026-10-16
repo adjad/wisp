@@ -24,11 +24,13 @@ Two rules keep this from becoming a hole in the safety model:
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from pathlib import Path
 
 from service.paths import MOE_DIR
+from service.publication_authority import Authority, Witness, assert_mutation_allowed, revocation
 
 GRANTS_PATH = MOE_DIR / "grants.json"
 
@@ -89,26 +91,91 @@ _RETIRED_INTO = {
 _lock = threading.Lock()
 
 
-def _load() -> dict:
+def _known_cache(data) -> bool:
+    if type(data) is not dict:
+        return False
+    for tool, entry in data.items():
+        if type(tool) is not str or not tool or type(entry) is not dict:
+            return False
+        if set(entry) - {"allow", "deny"}:
+            return False
+        for rules in entry.values():
+            if type(rules) is not list:
+                return False
+            for rule in rules:
+                if (type(rule) is not dict or set(rule) - {"scope", "granted_at", "all_behaviours"}
+                        or type(rule.get("scope", "")) is not str
+                        or "all_behaviours" in rule and type(rule["all_behaviours"]) is not bool):
+                    return False
+                stamp = rule.get("granted_at")
+                if "granted_at" in rule:
+                    if type(stamp) not in (int, float):
+                        return False
+                    try:
+                        if not math.isfinite(stamp):
+                            return False
+                    except OverflowError:
+                        return False
+    return True
+
+
+def _load_snapshot() -> tuple[dict, bool]:
     try:
         if GRANTS_PATH.exists():
-            data = json.loads(GRANTS_PATH.read_text())
+            duplicate = False
+            def pairs(items):
+                nonlocal duplicate
+                result = {}
+                for key, value in items:
+                    duplicate = duplicate or key in result
+                    result[key] = value
+                return result
+            data = json.loads(GRANTS_PATH.read_text(), object_pairs_hook=pairs)
             if isinstance(data, dict):
-                return data
+                return data, not duplicate and _known_cache(data)
+            return {}, False
+        return {}, not GRANTS_PATH.is_symlink()
     except Exception:  # noqa: BLE001 — a corrupt file must not break every turn
         pass
-    return {}
+    return {}, False
 
 
-_CACHE: dict = _load()
+def _load() -> dict:
+    """Read a snapshot only; no live cache replacement or epoch rearming."""
+    return _load_snapshot()[0]
+
+
+_CACHE, _proof_known = _load_snapshot()
+_publication = Authority("action-grants")
+if _proof_known:
+    _publication.publish()
+
+
+def publication_witness() -> Witness | None:
+    """Current process-owned cache proof, not proof of external file edits.
+
+    Call before full grant/policy preparation and retain this original witness.
+    """
+    token = _publication.token() if _proof_known else None
+    return Witness((token,)) if token is not None else None
 
 
 def _save() -> None:
-    try:
-        GRANTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        GRANTS_PATH.write_text(json.dumps(_CACHE, indent=2))
-    except Exception:  # noqa: BLE001
-        pass
+    # Private helper called under outer revocation THEN _lock by grant/revoke.
+    # Keep historical swallowed save errors, but never advertise failed proof.
+    global _proof_known
+    # Public writers already hold the outer lease before _lock; this nested
+    # lease also fences a direct private save without taking an inverted lock.
+    with revocation():
+        _publication.withdraw()
+        _proof_known = False
+        try:
+            GRANTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(_CACHE, indent=2)
+            if GRANTS_PATH.write_text(payload) == len(payload):
+                _proof_known = _known_cache(_CACHE)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def scope_for(tool: str, args: dict) -> str:
@@ -249,6 +316,7 @@ def grant(tool: str, args: dict | None = None, *, decision: str = "allow",
 
     `scoped=True` narrows it via scope_for; False makes it tool-wide.
     """
+    assert_mutation_allowed()
     if decision == "allow" and not is_grantable(tool, args):
         return {"ok": False, "error": f"{tool} always asks — it can't be pre-approved"}
     scope = scope_for(tool, args or {}) if scoped else ""
@@ -256,7 +324,8 @@ def grant(tool: str, args: dict | None = None, *, decision: str = "allow",
         # No behaviour named (a malformed call): a scoped answer has nothing
         # to attach to, and storing "" would silently widen it to every one.
         return {"ok": False, "error": f"{tool} needs a {_MERGED_SCOPES[tool][0]} to remember this"}
-    with _lock:
+    with revocation(), _lock:
+        _publication.withdraw()
         if decision == "allow" and tool in _MERGED_SCOPES:
             _split_retired_denies(tool, scope)
         entry = _entry(tool)
@@ -272,14 +341,17 @@ def grant(tool: str, args: dict | None = None, *, decision: str = "allow",
         other = "deny" if decision == "allow" else "allow"
         entry[other] = [r for r in entry.get(other, []) if r.get("scope", "") != scope]
         _save()
+        if _proof_known:
+            _publication.publish()
     return {"ok": True, "tool": tool, "decision": decision, "scope": scope}
 
 
 def revoke(tool: str, scope: str | None = None) -> bool:
     """Drop grants for a tool — all of them, or just one scope."""
-    with _lock:
+    with revocation(), _lock:
         if tool not in _CACHE:
             return False
+        _publication.withdraw()
         if scope is None:
             _CACHE.pop(tool)
         else:
@@ -289,6 +361,8 @@ def revoke(tool: str, scope: str | None = None) -> bool:
             if not _CACHE[tool].get("allow") and not _CACHE[tool].get("deny"):
                 _CACHE.pop(tool)
         _save()
+        if _proof_known:
+            _publication.publish()
     return True
 
 

@@ -602,13 +602,23 @@ class HistoryProvider:
         # Only builtin clocks run from a pure production witness. Injected
         # synthetic clock callbacks are sampled during source preparation.
         self._publication_clock = Clock(live=self._clock is time.time and self._monotonic is time.monotonic)
-        self._publication_clock.observe(self._clock(), self._monotonic())
+        self._sample_publication_clock()
         self._publication.publish()
+
+    def _sample_publication_clock(self):
+        if self._publication_clock.live:
+            # A currentness reader can use this exposed clock concurrently.
+            # Production sampling must be inside its own ordering operation.
+            self._publication_clock.read()
+        else:
+            # Injected callbacks run only during preparation, never from a
+            # publication/currentness check of the resulting numeric clock.
+            self._publication_clock.observe(self._clock(), self._monotonic())
 
     def _cache_witness(self, job, selected):
         if not selected or any(not row.body.eligible for row in selected):
             return None
-        self._publication_clock.observe(self._clock(), self._monotonic())
+        self._sample_publication_clock()
         tokens = [self._publication.token(clock=self._publication_clock,
             expires_wall=job.read_started_at+self.limits.ttl_seconds,
             expires_monotonic=job.monotonic_started_at+self.limits.ttl_seconds)]

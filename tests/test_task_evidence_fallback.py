@@ -134,3 +134,16 @@ def test_other_empty_steps_still_retry_and_still_render_readably(evidence_tool):
     out = run(client)
     assert client.calls == 3, "an unparseable empty reply keeps its re-sample"
     assert "task_window" not in out and "Vercel Ship SF" in out
+
+
+
+@pytest.mark.parametrize("end", ["2026-10-16T01:00:00-07:00", "2026-10-18T09:00:00-07:00"])
+def test_calendar_fallback_keeps_different_end_date(pacific, end):
+    from datetime import datetime
+    start = datetime.fromisoformat("2026-10-15T23:00:00-07:00").timestamp()
+    finish = datetime.fromisoformat(end).timestamp()
+    row = {"title":"Synthetic overnight work", "when_ts":start, "end_ts":finish}
+    T._add_local_times([row])
+    text = T.render_evidence_text(json.dumps({"task_window":{"period":"tomorrow"},
+                                             "sources":{"calendar":{"records":[row]}}}))
+    assert f"{row['when_local']} to {row['end_local']}" in text

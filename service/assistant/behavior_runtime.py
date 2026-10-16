@@ -47,13 +47,15 @@ import re
 import sqlite3
 import threading
 import time
+import weakref
 from collections import deque
+from dataclasses import dataclass
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from types import MappingProxyType
-from service.publication_authority import Authority, PublicationUnavailable, Witness, assert_mutation_allowed, mutating, publication, revocation
+from service.publication_authority import Authority, PublicationBusy, PublicationUnavailable, Witness, assert_drain_allowed, assert_mutation_allowed, mutating, publication, revocation
 
 log = logging.getLogger("wisp.behavior")
 
@@ -217,6 +219,42 @@ class RuntimeStopped(RuntimeError):
     written through it any more. Callers holding a stale reference refuse cleanly."""
 
 
+class DeliveryIncomplete(RuntimeError):
+    """A logical delivery entered its write sequence; retry/reconciliation is required.
+
+    The assistant and runtime databases are separate transactions. A failure
+    cannot be reported as an ordinary withheld nudge or advance its cursor.
+    """
+
+
+class ForgetIncomplete(RuntimeError):
+    """Known Store cleanup may finish while legacy ownership remains unknown."""
+    def __init__(self, reason, *, removed=(), kept=0):
+        super().__init__(reason)
+        self.known_removed_items = tuple(dict(item) for item in removed)
+        self.known_kept_items = kept
+        self.legacy_cleanup = "unknown"
+
+
+_delivery_issuer = object()
+
+
+@dataclass(frozen=True,eq=False,repr=False)
+class _PreparedDelivery:
+    runtime: object
+    store: object
+    nudge_id: str
+    payload: str
+    witness: Witness
+    plan: object
+    ledger: tuple
+    now: float
+    issuer: object
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("Prepared delivery cannot restore authority")
+
+
 class BehaviorRuntime:
     def __init__(self, home: Path | None = None, *,
                  local_factory: Callable[[Path], Any] | None = None,
@@ -225,10 +263,10 @@ class BehaviorRuntime:
                  calendar_sync_fn: Callable[[], dict] | None = None,
                  session_db_fn: Callable[[], Any] | None = None,
                  behavior_sources_fn=None, behavior_interpreter=None, role_key_fn=None,
-                 gmail_history_backend=None, gmail_history_client_factory=None,
+                 gmail_history_backend=None, gmail_history_client_factory=None, nudge_sources_fn=None,
                  history_monotonic: Callable[[], float] = time.monotonic,
                  clock: Callable[[], float] = time.time) -> None:
-        self.home = Path(home) if home is not None else _home()
+        self.home = (Path(home) if home is not None else _home()).expanduser().resolve()
         self._local_factory = local_factory or _default_local_factory
         self._messages_fn = messages_fn or _default_messages
         self._contact_name_fn = contact_name_fn or _default_contact_name
@@ -252,6 +290,10 @@ class BehaviorRuntime:
         self._availability_attempt = 0.0
         self._availability_cancel = threading.local()
         self._local_engine = None
+        self._nudge_sources_fn = nudge_sources_fn
+        self._queued_delivery = {}
+        self._prepared_deliveries = weakref.WeakSet()
+        self._incomplete_deliveries = set()
         self._stamps: dict[str, dict[str, Any]] = {}
         self._work_lock = threading.Lock()
         self._tick_lock: asyncio.Lock | None = None
@@ -269,6 +311,8 @@ class BehaviorRuntime:
         self._inflight = 0
         self._publication = Authority("behavior-runtime",owner=self)
         self.home.mkdir(parents=True, exist_ok=True)
+        from service.assistant.store import behavior_owner_id
+        self._owner_id = behavior_owner_id(self.home)
         self._db = sqlite3.connect(str(self.home / RUNTIME_DB), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         with self._db_lock, self._db:
@@ -979,6 +1023,162 @@ class BehaviorRuntime:
                            source="wisp") for r in rows if _finite(r["created_at"])]
         return bool(obs) and bool(self.call("observe", obs))
 
+    def _prepare_nudge_inputs(self, store, now):
+        """Capture original source grants before ingestion or generation, never on GET."""
+        from service.config import authority_changes, models_config
+        models_config()
+        snapshot = authority_changes.current()
+        if not snapshot.ready or not self.live():
+            return None
+        engine = self.local_engine()
+        settings = engine.signal_settings()
+        base = Witness.combine(self._publication.token(),authority_changes.publication_token(snapshot),
+                               engine.prepare_settings_publication_token(settings))
+        if base is None:
+            return None
+        if self._nudge_sources_fn is not None:
+            sources = dict(self._nudge_sources_fn(store,now))
+        else:
+            sources = {}
+            try:
+                from service.assistant.scheduler import prepare_behavior_source_publication_witness
+                sources["calendar"] = prepare_behavior_source_publication_witness("calendar",self._calendar_sync_fn())
+            except Exception:
+                sources["calendar"] = None
+            try:
+                day = datetime.fromtimestamp(now).date().isoformat()
+                metadata = store.today_snapshot(day,engine.tz)["sources"]["reminders"]
+                sources["reminders"] = store.prepare_behavior_source_publication_witness("reminders",metadata)
+            except Exception:
+                sources["reminders"] = None
+            try:
+                from service.tools import imessage_tools
+                captured = imessage_tools.behavior_messages_snapshot_with_receipt()
+                sources["messages"] = imessage_tools.prepare_publication_witness(captured)
+            except Exception:
+                sources["messages"] = None
+        sources["wisp"] = base
+        if not base.current():
+            return None
+        return base,sources
+
+    def _stage_queued_nudge(self, nudge, inputs, now):
+        if inputs is None:
+            return
+        base,sources = inputs
+        original = self.local_engine().queued_nudge_authority(nudge,now)
+        if original is None:
+            return
+        payload,policy,required = original
+        witness = Witness.combine(base,policy,*(sources.get(name) for name in required))
+        if witness is None:
+            return
+        with revocation(),self._gate:
+            if not self._stopped and witness.current() and nudge.id not in self._queued_delivery:
+                self._queued_delivery[nudge.id] = payload,witness
+                while len(self._queued_delivery)>256:
+                    self._queued_delivery.pop(next(iter(self._queued_delivery)))
+
+    def _prepare_delivery(self, store, nudge, now):
+        """Full admission and canonicalization; none of it runs in the commit lease."""
+        from service.behavior.types import Nudge
+        from service.safety import policy,grants
+        if type(nudge) is not Nudge or not _finite(now) or not self.live():
+            return None
+        original = self._queued_delivery.get(nudge.id)
+        if original is None or not original[1].current():
+            return None
+        payload = json.dumps(nudge.to_dict(),sort_keys=True,allow_nan=False)
+        if original[0]!=payload:
+            return None
+        queued = self.local_engine().queued_nudge_authority(nudge,now)
+        if queued is None or queued[0]!=payload:
+            return None
+        policy_proof,grant_proof = policy.publication_witness(),grants.publication_witness()
+        if policy_proof is None or grant_proof is None:
+            return None
+        with self._db_lock:
+            if self._db.in_transaction:
+                raise PublicationUnavailable("Delivery cannot join a runtime caller transaction")
+            prior = [dict(row) for row in self._db.execute("SELECT * FROM actions WHERE nudge_id=? ORDER BY idx",(nudge.id,))]
+            dismissed = self._db.execute("SELECT verdict FROM nudges WHERE id=?",(nudge.id,)).fetchone()
+            if dismissed is not None and dismissed[0] in {"wrong","not_now","undo"}:
+                return None
+            ledger = tuple(tuple(row.values()) for row in prior)
+        # Parsing the already canonical JSON detaches every mutable action map.
+        canonical = Nudge.from_dict(json.loads(payload))
+        actions = []
+        namespace = str(self.home.resolve())+":"+canonical.id
+        for idx,action in enumerate(canonical.actions):
+            if not action.auto or action.type not in {"add_reminder","add_hold"}:
+                continue
+            if self.policy_block(action) is not None:
+                continue
+            params = action.params
+            title = " ".join(str(params.get("title") or "").split())[:200]
+            when = params.get("when_ts")
+            if not title or not _finite(when) or when<now-60:
+                continue
+            kind = "event" if action.type=="add_hold" else "reminder"
+            if kind=="event" and not title.casefold().startswith(HOLD_PREFIX.strip().casefold()):
+                title = HOLD_PREFIX+title
+            cid = "behavior_"+hashlib.sha256((namespace+":"+str(idx)).encode()).hexdigest()[:32]
+            notes = " ".join(str(params.get("notes") or "").split())[:300]
+            context = BEHAVIOR_CONTEXT+(" — "+notes if notes else "")+" ["+cid+"]"
+            end = params.get("end_ts")
+            actions.append(dict(idx=idx,type=action.type,id=cid,title=title,when_ts=float(when),kind=kind,
+                context=context,end_ts=float(end) if kind=="event" and _finite(end) and end>when else None))
+        if not self.live() or not policy_proof.current() or not grant_proof.current() or not original[1].current():
+            return None
+        plan = store.prepare_nudge_write(self,payload,canonical.to_event(),actions,prior,float(now),canonical.expires_at)
+        witness = Witness.combine(original[1],queued[1],policy_proof,grant_proof,plan.binding.token)
+        if witness is None or not witness.current():
+            return None
+        prepared = _PreparedDelivery(self,store,nudge.id,payload,witness,plan,ledger,float(now),_delivery_issuer)
+        self._prepared_deliveries.add(prepared)
+        return prepared
+
+    def _commit_delivery(self, store, hub, prepared, loop):
+        """One explicit synchronous logical publication; no await or live callbacks."""
+        if (type(prepared) is not _PreparedDelivery or prepared.issuer is not _delivery_issuer
+                or prepared.runtime is not self or prepared.store is not store
+                or prepared not in self._prepared_deliveries):
+            raise PublicationUnavailable("Exact prepared runtime delivery required")
+        # Once publication accepts this witness it owns the entire ordered
+        # sequence. Later physical expiry is not reported as 'not delivered'.
+        with publication(prepared.witness,writes=(prepared.plan.binding,)) as lease,self._gate,self._db_lock:
+            if self._stopped or self._db.in_transaction:
+                raise PublicationUnavailable("Runtime cannot commit this delivery")
+            rows = tuple(tuple(row) for row in self._db.execute("SELECT * FROM actions WHERE nudge_id=? ORDER BY idx",(prepared.nudge_id,)))
+            if rows!=prepared.ledger:
+                raise PublicationUnavailable("Action ledger changed")
+            try:
+                result = self._write_delivery(lease,store,hub,prepared,loop)
+            except Exception as exc:
+                self._incomplete_deliveries.add(prepared.nudge_id)
+                raise DeliveryIncomplete("Local delivery requires retry or reconciliation") from exc
+            self._incomplete_deliveries.discard(prepared.nudge_id)
+            return result
+
+    def _write_delivery(self, lease, store, hub, prepared, loop):
+        performed = store.commit_nudge_actions(lease,prepared.plan,self)
+        # Preserve real action identities before any event can claim Undo.
+        # These are two databases, not a distributed crash transaction.
+        with self._db:
+            for row in performed:
+                self._db.execute("INSERT OR IGNORE INTO actions VALUES(?,?,?,?,?,?,?,NULL)",
+                    (row["nudge_id"],row["idx"],row["type"],row["commitment_id"],row["title"],row["when_ts"],row["created_at"]))
+                actual = self._db.execute("SELECT * FROM actions WHERE nudge_id=? AND idx=?",(prepared.nudge_id,row["idx"])).fetchone()
+                if actual is None or actual["undone_at"] is not None or any(actual[k]!=row[k] for k in
+                        ("type","commitment_id","title","when_ts","created_at")):
+                    raise PublicationUnavailable("Action receipt was not recorded")
+        receipt = store.commit_nudge_event(lease,prepared.plan,self)
+        with self._db:
+            self._db.execute("INSERT INTO nudges(id,payload,delivered_at,event_id) VALUES(?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET event_id=COALESCE(nudges.event_id,excluded.event_id)",
+                (prepared.nudge_id,prepared.payload,prepared.now,receipt.event_id))
+        return hub.publish_committed_sync(lease,receipt,self,loop)
+
     # ---- one pass of work (worker thread) ----------------------------------------
     def work(self, store, now: float, *, force: bool = False) -> tuple[list, str]:
         """Ingest/mine/generate as due. Returns (undelivered nudges, engine key)."""
@@ -988,6 +1188,7 @@ class BehaviorRuntime:
                 return [], key
             self._planning_store = store
             stamps = self._stamps.setdefault(key, {"ingest": 0.0, "mine": 0.0, "nudge": 0.0})
+            nudge_inputs = self._prepare_nudge_inputs(store,now)
             changed = self._flush_decisions()
             sync = {}
             try:
@@ -1007,7 +1208,8 @@ class BehaviorRuntime:
                     self.last["mine"] = now
                     self.invalidate_card()   # patterns changed: refreshed below
                 if force or changed or now - stamps["nudge"] >= NUDGE_EVERY_S:
-                    self.call("generate_nudges", now)
+                    for created in self.call("generate_nudges", now):
+                        self._stage_queued_nudge(created,nudge_inputs,now)
                     stamps["nudge"] = now
                     self.last["nudge"] = now
                     cursor = int(self.kv_get(f"cursor:{key}", "0") or 0)
@@ -1051,6 +1253,7 @@ class BehaviorRuntime:
     def perform_action(self, store, nudge_id: str, idx: int, action, now: float) -> dict | None:
         """Create one reversible Wisp-schedule item. Idempotent per (nudge, action).
         Raises ``RuntimeStopped`` (before touching anything) once the runtime is stopped."""
+        assert_mutation_allowed()
         with self._in_flight():
             return self._perform_action(store, nudge_id, idx, action, now)
 
@@ -1132,48 +1335,21 @@ class BehaviorRuntime:
             return None
 
     async def _deliver(self, store, hub, nudge, now: float) -> dict | None:
-        if nudge.expires_at is not None and _finite(nudge.expires_at) and float(nudge.expires_at) <= now:
+        from service.assistant.hub import Hub
+        if type(hub) is not Hub:
             return None
-        if not self.live():
+        loop = hub.prepare_nudge_delivery(store)
+        prepared = self._prepare_delivery(store,nudge,now)
+        if prepared is None:
+            if nudge.id in self._incomplete_deliveries:
+                raise DeliveryIncomplete("Incomplete local action cannot resume without its original evidence")
             return None
-        performed = []
-        for idx, action in enumerate(nudge.actions):
-            if action.auto and action.type in {"add_reminder", "add_hold"}:
-                if self.policy_block(action) is not None:
-                    continue           # downgraded to an offer: the nudge still goes out, nothing is written
-                if not self.live():    # switched off mid-delivery: check right before the write
-                    return None
-                try:
-                    done = self.perform_action(store, nudge.id, idx, action, now)
-                except Exception as exc:  # noqa: BLE001
-                    self.errors["action"] = f"{type(exc).__name__}: {exc}"[:200]
-                    done = None
-                if done:
-                    performed.append({"type": done["type"], "title": done["title"],
-                                      "when_ts": done["when_ts"], "action_index": idx})
-        event = nudge.to_event()
-        # "auto" tells the app an action is already done: true only for the
-        # actions actually performed (one skipped as already on file, or past
-        # its time, is still offered).
-        done_idx = {p["action_index"] for p in performed}
-        for idx, action in enumerate(event.get("actions") or []):
-            if isinstance(action, dict):
-                action["auto"] = idx in done_idx
-        event["auto_performed"] = performed
-        event["can_undo"] = bool(performed)
-        if not self.live():            # last check before anything becomes visible
+        try:
+            return self._commit_delivery(store,hub,prepared,loop)
+        except PublicationUnavailable:
+            # Only before-entry refusals reach here. A failure in the owned
+            # sequence raises DeliveryIncomplete so tick retains its cursor.
             return None
-        self.remember_nudge(nudge)
-        row = await hub.publish(event, dedupe_key=EVENT_PREFIX + nudge.id, expires_at=nudge.expires_at)
-        if isinstance(row, dict) and row.get("event_id"):
-            with self._db_lock, self._db:
-                self._db.execute("UPDATE nudges SET event_id=? WHERE id=?", (row["event_id"], nudge.id))
-        if performed:
-            try:
-                await hub.publish({"type": "changed"}, durable=False)
-            except Exception:  # noqa: BLE001
-                pass
-        return row
 
     def expire_events(self, store, now: float) -> None:
         """The hub replays every pending event; a nudge is useful only until it expires."""
@@ -1255,20 +1431,23 @@ class BehaviorRuntime:
             self.kv_set(f"cursor:{key}", str(max(int(nudge.seq), int(self.kv_get(f'cursor:{key}', '0') or 0))))
             if row is not None:
                 published.append(row)
+                self.errors.pop("deliver",None)
         self.last["tick"] = now
         return published
 
     # ---- user verdicts --------------------------------------------------------------
     def feedback(self, store, nudge_id: str, verdict: str) -> None:
+        assert_mutation_allowed()
         from service.behavior.types import Feedback
-        with self._in_flight():
+        with revocation(),self._in_flight():
             self.call("feedback", Feedback(nudge_id=nudge_id, verdict=verdict, ts=self.clock()))
             with self._db_lock, self._db:
                 self._db.execute("UPDATE nudges SET verdict=? WHERE id=?", (verdict, nudge_id))
             self.retire_event(store, nudge_id)
 
     def undo(self, store, nudge_id: str) -> list[dict]:
-        with self._in_flight():
+        assert_mutation_allowed()
+        with revocation(),self._in_flight():
             return self._undo(store, nudge_id)
 
     def _undo(self, store, nudge_id: str) -> list[dict]:
@@ -1281,6 +1460,8 @@ class BehaviorRuntime:
             if r.get("commitment_id"):
                 try:
                     store.delete(r["commitment_id"])
+                except PublicationBusy:
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     self.errors["undo"] = f"{type(exc).__name__}: {exc}"[:200]
                     continue
@@ -1290,6 +1471,8 @@ class BehaviorRuntime:
             removed.append({"type": r["type"], "title": r["title"], "when_ts": r["when_ts"]})
         try:
             self.feedback(store, nudge_id, "undo")
+        except PublicationBusy:
+            raise
         except Exception as exc:  # noqa: BLE001 — the reversal itself already happened
             self.errors["feedback"] = f"{type(exc).__name__}: {exc}"[:200]
             self.retire_event(store, nudge_id)
@@ -1311,7 +1494,7 @@ class BehaviorRuntime:
         except (KeyError, TypeError, ValueError):
             return False
 
-    def remove_untouched_auto_items(self, store) -> dict:
+    def remove_untouched_auto_items(self, store, *, excluded=()) -> dict:
         """Delete the still-active reminders/holds Wisp created on its own schedule that
         the user has not touched (same identity record ``undo`` uses). Edited, completed,
         moved or dismissed items are kept: they are the user's now."""
@@ -1320,7 +1503,10 @@ class BehaviorRuntime:
                 "SELECT * FROM actions WHERE undone_at IS NULL AND commitment_id IS NOT NULL")]
         removed: list[dict] = []
         kept = 0
+        excluded = frozenset(excluded)
         for r in rows:
+            if r["commitment_id"] in excluded:
+                continue
             try:
                 current = store.get(r["commitment_id"])
                 if current is None:
@@ -1330,9 +1516,11 @@ class BehaviorRuntime:
                     continue
                 store.delete(r["commitment_id"])
                 removed.append({"type": r["type"], "title": r["title"], "when_ts": r["when_ts"]})
-            except Exception as exc:  # noqa: BLE001 — one stubborn item never blocks the forget
+            except PublicationBusy:
+                raise
+            except Exception as exc:  # noqa: BLE001 — retain the ledger for a truthful retry
                 self.errors["forget"] = f"{type(exc).__name__}: {exc}"[:200]
-                kept += 1
+                raise RuntimeError("Behavior item cleanup incomplete; ownership evidence retained") from exc
         return {"removed": removed, "kept": kept}
 
     def delivered(self, limit: int = 20) -> list[dict]:
@@ -1443,7 +1631,10 @@ _runtime_lock = threading.Lock()
 # get_runtime() returns None, so nothing (a chat turn's profile card, a Calendar poke,
 # /behavior/status, a tool, an approval) can build a new runtime on the old files mid-erase.
 _forgetting = False
-_forget_lock = threading.Lock()      # one forget at a time
+_forget_lock = threading.Lock()      # serializes brief reservation transitions
+_forget_done = threading.Event()
+_forget_done.set()
+_forget_owner_thread = None
 
 
 def forgetting() -> bool:
@@ -1480,11 +1671,11 @@ def get_runtime() -> BehaviorRuntime | None:
 def _drop_nudge_events(store) -> int:
     """Remove delivered behavior nudges from the hub's durable queue: their text is learned data."""
     try:
-        with store.transaction() as db:
-            return int(db.execute("DELETE FROM assistant_events WHERE kind=? AND dedupe_key LIKE ?",
-                                  (EVENT_KIND, EVENT_PREFIX + "%")).rowcount or 0)
-    except Exception:  # noqa: BLE001
-        return 0
+        return store.drop_behavior_events()
+    except PublicationBusy:
+        raise
+    except Exception as exc:  # noqa: BLE001 — zero deleted is not evidence of successful erasure
+        raise RuntimeError("Behavior event cleanup incomplete") from exc
 
 
 def forget_all(store, home: Path | None = None) -> dict:
@@ -1495,37 +1686,82 @@ def forget_all(store, home: Path | None = None) -> dict:
     profile card cache, and drops pending nudge events. Items the user edited,
     completed or moved are kept. If learning is still on, Wisp starts over from
     the next ingest."""
-    global _runtime, _forgetting
-    assert_mutation_allowed()
-    explicit_home = Path(home) if home is not None else None
-    with _forget_lock:
-        with revocation(),_runtime_lock:
-            runtime = _runtime
-            if runtime is not None:
-                runtime._publication.withdraw()
-                runtime.invalidate_history("Behavior data is being forgotten")
-            _forgetting = True            # get_runtime() answers None until the files are gone
-            _runtime = None
-        try:
-            return _forget_locked(store, runtime, explicit_home)
-        finally:
-            with revocation(),_runtime_lock:
-                _forgetting = False
+    global _runtime, _forgetting, _forget_owner_thread
+    assert_drain_allowed()
+    if _forget_owner_thread==threading.get_ident():
+        raise PublicationBusy("This thread already owns Forget; retry outside it")
+    store.assert_behavior_cleanup_available()
+    from service.assistant.store import behavior_owner_id
+    explicit_home = Path(home).expanduser().resolve() if home is not None else None
+    requested_owner = behavior_owner_id(explicit_home) if explicit_home is not None else None
+    while True:
+        # Never wait for a previous Forget while holding the application
+        # barrier: it may need that barrier to finish an in-flight worker.
+        # Every actual private-lock acquisition retains the required order.
+        with revocation(),_forget_lock,_runtime_lock:
+            if _forgetting:
+                reserved = False
+            else:
+                reserved = True
+                store.assert_behavior_cleanup_available()
+                runtime = _runtime
+                if (runtime is not None and requested_owner is not None
+                        and requested_owner!=runtime._owner_id):
+                    raise ValueError("Requested home does not match the active behavior home")
+                if runtime is not None:
+                    runtime._publication.withdraw()
+                    runtime.invalidate_history("Behavior data is being forgotten")
+                _forgetting = True
+                _forget_owner_thread = threading.get_ident()
+                _forget_done.clear()
+                _runtime = None
+        if reserved:
+            break
+        _forget_done.wait()
+    try:
+        return _forget_locked(store, runtime, explicit_home)
+    finally:
+        with revocation(),_forget_lock,_runtime_lock:
+            _forgetting = False
+            _forget_owner_thread = None
+            _forget_done.set()
 
 
 def _forget_locked(store, runtime: BehaviorRuntime | None, explicit_home: Path | None) -> dict:
-    home = explicit_home or (runtime.home if runtime is not None else _home())
+    home = Path(explicit_home or (runtime.home if runtime is not None else _home())).expanduser().resolve()
+    from service.assistant.store import behavior_owner_id
+    owner_id = behavior_owner_id(home)
+    legacy_error = None
     if runtime is None and (home / RUNTIME_DB).exists():
         try:
             runtime = BehaviorRuntime(home)   # only to read the undo identities; never opens the engine
-        except Exception:  # noqa: BLE001 — an unreadable runtime db still gets deleted below
+        except Exception as exc:  # noqa: BLE001 — known Store cleanup still runs; legacy evidence survives
+            legacy_error = exc
             runtime = None
-    items: dict = {"removed": [], "kept": 0}
     if runtime is not None:
         runtime.stop()
-        try:
-            items = runtime.remove_untouched_auto_items(store)
-        finally:
+    try:
+        # Durable Store ownership also covers the action-before-runtime-ledger
+        # failure window, including a missing/corrupt runtime database. It is
+        # cleanup authority only; no Engine/source grant is opened or rearmed.
+        items = store.forget_behavior_actions(owner_id)
+        if legacy_error is not None:
+            raise ForgetIncomplete("Legacy behavior cleanup incomplete; runtime ownership could not be opened. "
+                                   "Surviving database evidence was preserved for retry.",
+                                   removed=items["removed"],kept=items["kept"]) from legacy_error
+        if runtime is not None:
+            try:
+                legacy = runtime.remove_untouched_auto_items(store,excluded=items["covered"])
+            except PublicationBusy:
+                raise
+            except Exception as exc:
+                raise ForgetIncomplete("Legacy behavior cleanup incomplete; ownership could not be read or erased. "
+                                       "Surviving database evidence was preserved for retry.",
+                                       removed=items["removed"],kept=items["kept"]) from exc
+            items["removed"].extend(legacy["removed"])
+            items["kept"] += legacy["kept"]
+    finally:
+        if runtime is not None:
             runtime.close()
     deleted = 0
     failed: list[str] = []

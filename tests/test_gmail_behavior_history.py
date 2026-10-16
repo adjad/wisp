@@ -737,3 +737,61 @@ class StrictMIME(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def test_live_cache_preparation_and_currentness_sample_in_one_clock_order(monkeypatch):
+    """Gmail preparation must not stage an old live tuple outside clock ordering."""
+    from concurrent.futures import ThreadPoolExecutor
+    import sys
+    now = [200., 10.]
+    held, release, attempted, finished = (threading.Event() for _ in range(4))
+    held_thread = [None]
+    def wall():
+        captured = now[0]
+        caller = sys._getframe(1).f_code.co_name
+        if (threading.get_ident() == held_thread[0] and not held.is_set()
+                and caller in {"_cache_witness", "read"}):
+            held.set()
+            assert release.wait(3)
+        return captured
+    monkeypatch.setattr(H.time, "time", wall)
+    monkeypatch.setattr(H.time, "monotonic", lambda: now[1])
+    scope = H.HistoryScope(100, 190, "inbox", 100)
+    account = H.AccountIdentity("gmail", "clock-account", "clock-connection", "clock-set")
+    admission = H.Admission(account, 1, 1, True, True, True, scope.digest)
+    provider = H.HistoryProvider(admission=lambda: admission, clock=H.time.time, monotonic=H.time.monotonic,
+        limits=H.Limits(body_bytes=80000,account_cache_bytes=8000000,
+                        global_cache_bytes=32000000,ttl_seconds=100))
+    try:
+        provider.control("start", scope=scope)
+        asyncio.run(provider.step(http=FakeHTTP(), token=token, budget=H.StepBudget(100,5,6,400000,30)))
+        original = provider.snapshot()
+        assert original and original.cache_witness.current()
+        assert provider._publication_clock._live
+        def prepare():
+            held_thread[0] = threading.get_ident()
+            return provider.snapshot()
+        def current():
+            attempted.set()
+            result = original.cache_witness.current()
+            finished.set()
+            return result
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pending = pool.submit(prepare)
+            try:
+                assert held.wait(3)
+                now[0] += 1
+                now[1] += 1
+                reader = pool.submit(current)
+                assert attempted.wait(3)
+                finished.wait(.2)
+            finally:
+                release.set()
+            after = pending.result(timeout=3)
+            assert reader.result(timeout=3)
+        assert after is not None and after.cache_witness is not None and after.cache_witness.current()
+        assert original.cache_witness.current()
+        assert provider.snapshot().cache_witness.current()
+    finally:
+        provider.invalidate()

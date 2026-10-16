@@ -286,3 +286,55 @@ def test_known_clock_rollback_cannot_rearm_a_native_witness(sources, name):
     assert not witness.current()
     clock.observe(now[0]+1, now[1]+1)
     assert not witness.current()
+
+
+
+def test_two_native_preparations_and_planning_reader_do_not_poison_shared_live_clock(sources, monkeypatch):
+    """Hold an older sample while another source and a cached plan read advance."""
+    import sys
+    modules, now, _, publish, getters = sources
+    shared = Clock()
+    for name in ("notes", "messages"):
+        monkeypatch.setattr(modules[name], "LIVE_CLOCK", shared)
+        publish(name)
+    original = modules["notes"].prepare_publication_witness(getters["notes"]())
+    assert original.current()
+    held, release, attempted, finished = (threading.Event() for _ in range(4))
+    held_thread = [None]
+    def wall():
+        captured = now[0]
+        if (threading.get_ident() == held_thread[0]
+                and sys._getframe(1).f_code is Clock.read.__code__ and not held.is_set()):
+            held.set()
+            assert release.wait(3)
+        return captured
+    monkeypatch.setattr(modules["notes"].time, "time", wall)
+    def first():
+        held_thread[0] = threading.get_ident()
+        return modules["notes"].prepare_publication_witness(getters["notes"]())
+    def other_source():
+        attempted.set()
+        result = modules["messages"].prepare_publication_witness(getters["messages"]())
+        finished.set()
+        return result
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        pending = pool.submit(first)
+        try:
+            assert held.wait(3)
+            now[0] += 1
+            now[1] += 1
+            second = pool.submit(other_source)
+            reader = pool.submit(original.current)
+            assert attempted.wait(3)
+            # A correct ordered clock blocks this competing sample; release the
+            # first read even then. No system clock is changed and no sleep is used.
+            finished.wait(.2)
+        finally:
+            release.set()
+        a, b = pending.result(timeout=3), second.result(timeout=3)
+        assert reader.result(timeout=3)
+    assert a is not None and b is not None and original.current()
+    assert a.current() and b.current()
+    for name in ("notes", "messages"):
+        fresh = modules[name].prepare_publication_witness(getters[name]())
+        assert fresh is not None and fresh.current()

@@ -295,7 +295,16 @@ def render_evidence_text(result: str) -> str | None:
         for row in events:
             start = row.get("when_local") or _local(row.get("when_ts"), all_day=bool(row.get("all_day"))) or "time unknown"
             end = row.get("end_local") or ("" if row.get("all_day") else _local(row.get("end_ts")) or "")
-            span = f"{start} to {end.rsplit(', ', 1)[-1]}" if end else start
+            same_day = False
+            try:
+                timestamps = row.get("when_ts"), row.get("end_ts")
+                if all(type(value) in (int, float) and math.isfinite(value) for value in timestamps):
+                    same_day = (dt.datetime.fromtimestamp(timestamps[0]).date()
+                                == dt.datetime.fromtimestamp(timestamps[1]).date())
+            except (OverflowError, OSError, ValueError):
+                pass
+            display_end = end.rsplit(', ', 1)[-1] if same_day else end
+            span = f"{start} to {display_end}" if end else start
             lines.append(f"- {span}: {title(row)}")
         if not events:
             lines.append("- Nothing found in the cached calendar for that window.")
