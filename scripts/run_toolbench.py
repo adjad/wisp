@@ -73,7 +73,7 @@ def _wisp_running() -> bool:
 
 
 def _row(run_id, model, case, trial, traj, verdict, variant="default") -> dict:
-    steps = [{k: s.get(k) for k in ("calls", "error", "ttft", "seconds", "prompt_tokens_est",
+    steps = [{k: s.get(k) for k in ("calls", "error", "tool_errors", "ttft", "seconds", "prompt_tokens_est",
                                      "output_chars", "reasoning_chars")}
              | {"content": (s.get("content") or "")[:600]} for s in traj.get("steps", ())]
     label = model if variant == "default" else f"{model} +{variant}"

@@ -182,6 +182,9 @@ def _install_fake_outbox(world) -> None:
     action_tools.app_request = request
 
 
+TOOL_ERROR_PREFIX = "(error calling "
+
+
 def bench_client_class():
     from service.inference.omlx_client import OMLXClient
     from service.agent.loop import _est_tokens
@@ -219,7 +222,13 @@ def bench_client_class():
             raise TimeoutError(f"{model} did not become resident in {timeout:.0f}s")
 
         def _new_step(self, messages, tools) -> dict:
+            # Argument errors the loop fed back since the previous model step.
+            seen = sum(len(st.get("tool_errors") or ()) for st in self.steps)
+            errors = [str(m.get("content") or "") for m in messages
+                      if m.get("role") == "tool"
+                      and str(m.get("content") or "").lstrip().startswith(TOOL_ERROR_PREFIX)]
             step = {"calls": [], "content": "", "reasoning_chars": 0, "error": None,
+                    "tool_errors": errors[seen:],
                     "ttft": None, "seconds": 0.0, "offered": [t["function"]["name"] for t in tools or ()],
                     "prompt_tokens_est": _est_tokens(messages) + _est_tokens(tools or []),
                     "output_chars": 0}
