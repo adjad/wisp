@@ -197,7 +197,18 @@ def bench_client_class():
             super().__init__(*a, **kw)
             self.steps = []
 
+        # oMLX samples deterministically without a seed, so repeated trials of
+        # one prompt come back identical; set a seed per trial for variety.
+        seed: int | None = None
+        # The agent loop sends temperature 0.0 on tool-selection steps, so a
+        # seed alone cannot vary them; set this to sample those steps too.
+        temperature: float | None = None
+
         def _thinking_kw(self, kw: dict) -> dict:
+            if self.seed is not None and "seed" not in kw:
+                kw = {**kw, "seed": self.seed}
+            if self.temperature is not None:
+                kw = {**kw, "temperature": self.temperature}
             if self.thinking != "off":
                 return kw
             ctk = dict(kw.get("chat_template_kwargs") or {})
@@ -218,11 +229,20 @@ def bench_client_class():
                 await asyncio.sleep(1.0)
             raise TimeoutError(f"{model} did not become resident in {timeout:.0f}s")
 
-        def _new_step(self, messages, tools) -> dict:
+        # True keeps each step's full request (messages, offered schemas,
+        # thinking flag) for building training rows; off for scoring runs.
+        capture: bool = False
+
+        def _new_step(self, messages, tools, kw=None) -> dict:
             step = {"calls": [], "content": "", "reasoning_chars": 0, "error": None,
                     "ttft": None, "seconds": 0.0, "offered": [t["function"]["name"] for t in tools or ()],
                     "prompt_tokens_est": _est_tokens(messages) + _est_tokens(tools or []),
                     "output_chars": 0}
+            if self.capture:
+                import copy
+                ctk = (kw or {}).get("chat_template_kwargs") or {}
+                step["request"] = {"messages": copy.deepcopy(messages), "tools": copy.deepcopy(tools or []),
+                                   "enable_thinking": ctk.get("enable_thinking", True) is not False}
             self.steps.append(step)
             return step
 
@@ -244,7 +264,7 @@ def bench_client_class():
                                           for tc in message.get("tool_calls") or ()))
 
         async def stream_events(self, model, messages, *, tools=None, **kw):
-            step = self._new_step(messages, tools)
+            step = self._new_step(messages, tools, self._thinking_kw(kw))
             t0 = time.monotonic()
             try:
                 async for ev in super().stream_events(model, messages, tools=tools, **self._thinking_kw(kw)):
@@ -260,7 +280,7 @@ def bench_client_class():
                 step["seconds"] = round(time.monotonic() - t0, 3)
 
         async def chat(self, model, messages, *, tools=None, **kw):
-            step = self._new_step(messages, tools)
+            step = self._new_step(messages, tools, self._thinking_kw(kw))
             t0 = time.monotonic()
             try:
                 resp = await super().chat(model, messages, tools=tools, **self._thinking_kw(kw))
@@ -273,6 +293,154 @@ def bench_client_class():
                 step["seconds"] = step["ttft"] = round(time.monotonic() - t0, 3)
 
     return BenchClient
+
+
+def scripted_client_class():
+    """A BenchClient that replays a gold plan instead of calling oMLX.
+
+    Each model step pops the next plan entry and streams it back exactly as
+    oMLX would (reasoning, content, final message with tool_calls), so the real
+    agent loop executes the gold calls against the world fakes and the captured
+    requests are byte-for-byte what Wisp would send at that step. A plan entry
+    is {"think": str, "calls": [(name, args), ...]} or {"think": str, "text": str}.
+    An entry marked "optional": True is skipped when none of its tools is
+    offered at that step (e.g. a lookup the route does not allow).
+    """
+    import json
+    Base = bench_client_class()
+
+    class ScriptedClient(Base):
+        plan: list[dict]
+        # Set when the plan could not be followed (a gold call the step did not
+        # offer, or the loop asked for more steps than the plan has).
+        failure: str = ""
+
+        async def make_resident(self, model, *, timeout=300.0):
+            return None
+
+        async def ensure_only(self, *a, **k):
+            return None
+
+        @staticmethod
+        def _called_this_turn(messages) -> set[str]:
+            last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
+            return {(tc.get("function") or {}).get("name", "") for m in messages[last_user + 1:]
+                    if m.get("role") == "assistant" for tc in (m.get("tool_calls") or ())}
+
+        def _next(self, offered: set[str], already: set[str] = frozenset()) -> dict | None:
+            while self.plan:
+                entry = self.plan.pop(0)
+                names = {n for n, _ in entry.get("calls", ())}
+                # The router may have made this call itself (direct_calls) before
+                # the model's first step; the gold plan then skips it.
+                if names and names <= already and not entry.get("repeat"):
+                    continue
+                if names and not names <= offered:
+                    if entry.get("optional"):
+                        continue
+                    self.failure = f"gold call {sorted(names - offered)} not offered"
+                    return None
+                return entry
+            self.failure = self.failure or "loop asked for a step the plan does not have"
+            return None
+
+        def _message(self, entry: dict | None, enable_thinking: bool) -> dict:
+            if entry is None:
+                return {"role": "assistant", "content": "", "reasoning_content": "", "tool_calls": None}
+            calls = [{"id": f"call_{i}_{abs(hash(json.dumps(a, sort_keys=True))) % 10**8}",
+                      "type": "function", "function": {"name": n, "arguments": json.dumps(a)}}
+                     for i, (n, a) in enumerate(entry.get("calls", ()))]
+            return {"role": "assistant", "content": entry.get("text", ""),
+                    "reasoning_content": entry.get("think", "") if enable_thinking else "",
+                    "tool_calls": calls or None}
+
+        async def stream_events(self, model, messages, *, tools=None, **kw):
+            kw = self._thinking_kw(kw)
+            step = self._new_step(messages, tools, kw)
+            on = ((kw.get("chat_template_kwargs") or {}).get("enable_thinking", True) is not False)
+            msg = self._message(self._next(set(step["offered"]), self._called_this_turn(messages)), on)
+            if msg["reasoning_content"]:
+                yield {"kind": "reasoning", "text": msg["reasoning_content"]}
+            if msg["content"]:
+                yield {"kind": "content", "text": msg["content"]}
+            self._finish(step, msg)
+            step["ttft"] = 0.0
+            yield {"kind": "final", "message": msg}
+
+        async def chat(self, model, messages, *, tools=None, **kw):
+            kw = self._thinking_kw(kw)
+            step = self._new_step(messages, tools, kw)
+            on = ((kw.get("chat_template_kwargs") or {}).get("enable_thinking", True) is not False)
+            msg = self._message(self._next(set(step["offered"]) | {"__none__"}, set()), on)
+            self._finish(step, msg)
+            return {"choices": [{"message": msg, "finish_reason": "stop"}]}
+
+    return ScriptedClient
+
+
+_REAL_CLOCK: dict = {}
+
+
+def set_clock(when) -> None:
+    """Pin "now" for Wisp's prompts and tools to `when` (a naive local datetime), or restore it (None).
+
+    Training worlds each get their own date so the model learns to resolve
+    "tomorrow" / "the coming Friday" against the date line in its prompt, not
+    against one memorised day. Replaces datetime.datetime / datetime.date and
+    time.strftime / time.localtime at the source (so lazy `from datetime import
+    datetime` inside a function sees it too) and rebinds service.* modules that
+    already captured the originals. time.time() and time.monotonic() stay real:
+    every timeout and latency measurement is unaffected.
+    """
+    import datetime as _dt
+    import sys
+    import time as _time
+
+    if not _REAL_CLOCK:
+        _REAL_CLOCK.update(datetime=_dt.datetime, date=_dt.date, strftime=_time.strftime,
+                           localtime=_time.localtime)
+    real_dt, real_date = _REAL_CLOCK["datetime"], _REAL_CLOCK["date"]
+    if when is None:
+        new_dt, new_date = real_dt, real_date
+        _time.strftime, _time.localtime = _REAL_CLOCK["strftime"], _REAL_CLOCK["localtime"]
+    else:
+        pinned = real_dt(when.year, when.month, when.day, when.hour, when.minute, when.second)
+
+        class FakeDatetime(real_dt):
+            @classmethod
+            def now(cls, tz=None):
+                return pinned if tz is None else pinned.astimezone().astimezone(tz)
+
+            @classmethod
+            def today(cls):
+                return pinned
+
+        class FakeDate(real_date):
+            @classmethod
+            def today(cls):
+                return pinned.date()
+
+        def localtime(secs=None):
+            return _REAL_CLOCK["localtime"](pinned.timestamp() if secs is None else secs)
+
+        def strftime(fmt, t=None):
+            return _REAL_CLOCK["strftime"](fmt, localtime() if t is None else t)
+
+        new_dt, new_date = FakeDatetime, FakeDate
+        _time.localtime, _time.strftime = localtime, strftime
+    old = {id(real_dt), id(real_date), id(_dt.datetime), id(_dt.date)}
+    _dt.datetime, _dt.date = new_dt, new_date
+    for name, mod in list(sys.modules.items()):
+        if not (name.startswith("service") or name.startswith("scripts.toolbench")) or mod is None:
+            continue
+        for attr in ("datetime", "date"):
+            val = getattr(mod, attr, None)
+            if isinstance(val, type) and id(val) in old | {id(c) for c in _clock_classes}:
+                setattr(mod, attr, new_dt if issubclass(val, real_dt) else new_date)
+    _clock_classes.update({new_dt, new_date})
+
+
+_clock_classes: set = set()
 
 
 THINKING_MODES = ("default", "narration-off", "off")
