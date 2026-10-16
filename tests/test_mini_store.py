@@ -278,7 +278,7 @@ def test_startup_rechecks_private_sidecar_unlinked_during_lookup(tmp_path, monke
     keeper.execute("BEGIN")
     keeper.execute("SELECT * FROM metadata").fetchall()
     sidecar = Path(str(db.path) + suffix)
-    original = Path.stat
+    original = Path.lstat
     observations = []
     lookups = []
 
@@ -300,7 +300,7 @@ def test_startup_rechecks_private_sidecar_unlinked_during_lookup(tmp_path, monke
             return removed
         return info
 
-    monkeypatch.setattr(Path, "stat", during_cleanup)
+    monkeypatch.setattr(Path, "lstat", during_cleanup)
     try:
         # Both ordinary reopens are valid; choose a deterministic pathname
         # lookup during them for the last-connection cleanup interleaving.
