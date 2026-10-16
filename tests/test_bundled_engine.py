@@ -32,8 +32,10 @@ PASS = FAIL = 0
 KEY = "a" * 64
 
 STUB = textwrap.dedent('''
+    print("fake engine: importing", flush=True)
     import json, sys
     from http.server import BaseHTTPRequestHandler, HTTPServer
+    print("fake engine: imports complete", flush=True)
     args = sys.argv[1:]
     port = int(args[args.index("--port") + 1])
     base = args[args.index("--base-path") + 1]
@@ -46,7 +48,10 @@ STUB = textwrap.dedent('''
             self.send_response(200 if ok else 401); self.end_headers()
             self.wfile.write(b"{}")
         def log_message(self, *a): pass
-    HTTPServer(("127.0.0.1", port), H).serve_forever()
+    print("fake engine: constructing HTTPServer", flush=True)
+    server = HTTPServer(("127.0.0.1", port), H)
+    print("fake engine: listening", flush=True)
+    server.serve_forever()
 ''')
 
 
@@ -83,6 +88,21 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     else:
         FAIL += 1
         print(f"  FAIL {name} {detail}")
+
+
+def startup_failure(manager: EngineManager) -> str:
+    """Capture the original fake child's status and bounded log before teardown."""
+    proc = manager._proc
+    status = ("no Popen handle" if proc is None else
+              f"pid={proc.pid}, returncode={proc.poll()} (None means running)")
+    try:
+        with manager.layout.log_path.open("rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - 4096))
+            tail = log.read(4096).decode("utf-8", errors="replace")
+    except OSError as exc:
+        tail = f"<could not read fake-child log: {exc}>"
+    return f"Fake engine startup failed: {status}\nengine.log tail (at most 4096 bytes):\n{tail}"
 
 
 def free_port() -> int:
@@ -204,7 +224,10 @@ def test_lifecycle() -> None:
         m = make(Path(t))
         try:
             m.start()
-            check("ready", asyncio.run(m.wait_ready(20)))
+            ready = asyncio.run(m.wait_ready(20))
+            check("ready", ready)
+            if not ready:
+                raise AssertionError(startup_failure(m))
             seen = (m.layout.base_path / "seen.log").read_text().split()
             check("readiness polling sent the API key to nobody", seen and all(h == "-" for h in seen), str(seen))
             check("pid recorded", m.layout.pid_path.exists())

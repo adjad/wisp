@@ -7,8 +7,8 @@ No live prompt replay or external send is part of this runner.
 Every module runs in its own process with its own disposable HOME/WISP_HOME.
 ``--jobs N`` (default: one per CPU) runs that many modules at once; ``--jobs 1``
 is the historical sequential, streaming run. ``--only-outside-simulation-qa``
-runs only modules that Simulation QA's full profile does not already run under
-its OS sandbox (pull-request CI uses it so the two gates do not repeat work).
+runs modules not covered by Simulation QA's full profile, plus the engine
+socket checks whose live branches are skipped inside its OS sandbox.
 """
 from pathlib import Path
 import argparse
@@ -193,17 +193,27 @@ def _classify_failures(
     )
 
 
-def _outside_simulation_qa(tests: list[Path]) -> list[Path]:
-    """Modules the Simulation QA full profile does not run.
+# These modules are listed in Simulation QA, but their real-listener branches
+# skip under its network sandbox. They also need an unrestricted PR run.
+UNSANDBOXED_SOCKET_TESTS = frozenset({
+    "tests/test_bundled_attribution.py",
+    "tests/test_bundled_engine.py",
+})
 
-    The full profile refuses manifest drift, so this is normally empty; any
-    module it would miss still runs here, never silently in neither gate.
+
+def _outside_simulation_qa(tests: list[Path]) -> list[Path]:
+    """Uncovered modules plus socket branches not exercised by the sandbox.
+
+    Filter once in discovery order, so membership in both groups never adds a
+    second execution. Ordinary fully covered modules are still deduplicated.
     """
     try:
         from scripts.run_simulation_qa import SAFE_FULL_TESTS
     except ModuleNotFoundError:  # Direct execution puts scripts/ first on sys.path.
         from run_simulation_qa import SAFE_FULL_TESTS
-    return [path for path in tests if str(path.relative_to(ROOT)) not in SAFE_FULL_TESTS]
+    return [path for path in tests
+            if str(path.relative_to(ROOT)) not in SAFE_FULL_TESTS
+            or str(path.relative_to(ROOT)) in UNSANDBOXED_SOCKET_TESTS]
 
 
 _OUTPUT_LOCK = threading.Lock()
@@ -285,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--only-outside-simulation-qa", action="store_true",
-        help="Run only modules Simulation QA's full profile does not run.",
+        help="Run uncovered modules and supplemental unrestricted engine socket checks.",
     )
     args = parser.parse_args(argv)
     jobs = max(1, os.cpu_count() or 1) if args.jobs is None else args.jobs
@@ -296,8 +306,8 @@ def main(argv: list[str] | None = None) -> int:
         covered = len(tests)
         tests = _outside_simulation_qa(tests)
         print(
-            f"Simulation QA's full profile runs {covered - len(tests)} of "
-            f"{covered} modules under its sandbox; running the other {len(tests)} here.",
+            f"Simulation QA supplement: running {len(tests)} of {covered} modules "
+            "for uncovered or unrestricted socket coverage.",
             flush=True,
         )
     commands = [_command(path) for path in tests]
