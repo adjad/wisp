@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "id": "wisp-engine-guard-v1",
+  "upstream_tree_sha256": "6ab831cade7cfd45d00ba4fd0338f328ffa694b84809b4edda6d6e0097588290",
+  "patches": [
+    {
+      "path": "omlx/engine/dflash.py",
+      "input_sha256": "20c2603485eea607bd8479f95fd34730b74e8a40d6ad5434c42afad1b3cb6ac9",
+      "output_sha256": "dbc2083c14f535eaf0df40833131be72cd6fe1a61426860f8cb0a7972d6876ed",
+      "patch": "dflash.py.patch.json",
+      "patch_sha256": "e5213eb60a6b58b6f87d96dd8194f2de814f907814d24c618eb3f458692b2d93"
+    },
+    {
+      "path": "omlx/process_memory_enforcer.py",
+      "input_sha256": "afc72e5875c844536166b09f2e8d55aec0580024109cddbfb858be119172641f",
+      "output_sha256": "734a7242fcdb9f8e13414dc8a8ea6eb9e6a9fcd470e726119827e7ffb32c4522",
+      "patch": "process_memory_enforcer.py.patch.json",
+      "patch_sha256": "5fb4f308e7c93d4d51441dc8fb173fdd3581b21a986836e7623c88bc28187726"
+    },
+    {
+      "path": "omlx/engine_pool.py",
+      "input_sha256": "06e9186c4a5dc640c8ef0d83918ee9dadc7fdbb81782415dae361a6b2e7e5b92",
+      "output_sha256": "29e8176487713aab8ebe71d29bb91c5ab20aea5f50469e2f71226b8a2cedb079",
+      "patch": "engine_pool.py.patch.json",
+      "patch_sha256": "7a7a0d1e403a2c46c691319a0dbb06388e1e334c69bbcf11e2a08f7787b84023"
+    },
+    {
+      "path": "omlx/server.py",
+      "input_sha256": "a79a0493b06e1f69326aab95f26b81b4653f9b6317f2e50d58efe483a9451d9d",
+      "output_sha256": "98c5c03ee7884f37fd94eca944e08aaca3dfe34903added14aab37b73471939b",
+      "patch": "server.py.patch.json",
+      "patch_sha256": "fa8d245620e15c60413097e79152af267d13de44db31b470661de90cff821ede"
+    }
+  ],
+  "addition": {
+    "path": "omlx/wisp_guard.py",
+    "source": "proof.py",
+    "sha256": "65a4096d7c67e7511b9db7c5fa6b4bc031d371e01011896501695a3d84ff2bb7"
+  }
+}

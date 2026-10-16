@@ -27,7 +27,7 @@ class SanitizedHTTPStatusError(httpx.HTTPStatusError):
     """Remote status failure with no provider-controlled request or response data."""
 
 
-from .inference_errors import ModelLoadError, ModelMemoryLimitError
+from .inference_errors import EngineGuardUnavailableError, ModelLoadError, ModelMemoryLimitError
 
 
 # Remote output is untrusted and must stay bounded independently of timeouts.
@@ -198,6 +198,13 @@ class OMLXClient:
             self._credential_transport.invalidate()
 
     def _check_response(self, response):
+        if self.managed and response.headers.get("x-wisp-guard-refusal") == "1":
+            # The authenticated local producer supplies a fixed marker. Never
+            # parse/retain its body or retry a refused model operation.
+            if response.status_code == 503:
+                raise EngineGuardUnavailableError() from None
+            if response.status_code == 507:
+                raise ModelMemoryLimitError() from None
         if not self.managed and not response.is_success:
             # Provider-controlled redirect locations and error bodies may echo
             # private data. Do not retain the real request either: it contains
@@ -509,7 +516,7 @@ class OMLXClient:
             # The managed engine refused admission. Do not echo its diagnostics
             # or convert a refusal into a successful residency/automatic retry.
             raise ModelMemoryLimitError() from None
-        r.raise_for_status()
+        self._check_response(r)
 
     async def ensure_only(self, model: str, *, settle_timeout: float = 60.0,
                           exclusive: bool = False, emit=None) -> None:
@@ -637,7 +644,7 @@ class OMLXClient:
             for k in self._keep_warm - loaded - {model}:
                 try:
                     await self.load(k)
-                except (httpx.HTTPError, ModelMemoryLimitError):
+                except (httpx.HTTPError, ModelMemoryLimitError, EngineGuardUnavailableError):
                     pass  # optional keep-warm reload cannot fail the requested model
 
     async def chat(

@@ -259,7 +259,11 @@ def notice_text(records: list[dict], reviewed: dict, omlx_version: str | None) -
         f"- Licence: {omlx['license']}",
         f"- Version: {omlx_version or 'unknown'}",
         f"- Licence text: `{LICENSES_DIR}/oMLX-LICENSE.txt`",
-        "- Wisp ships oMLX as released, with unused optional packages left out. No oMLX file is edited.", "",
+        "- Wisp removes unused optional packages and applies a pinned memory-guard evidence overlay. "
+        "Upstream source identity and the derived overlay hashes are recorded separately in ENGINE.json.",
+        "- Wisp modifications and reproducible patch source: "
+        "https://github.com/adjad/wisp/tree/main/build-support/engine_guard/ "
+        "(use the Wisp release's exact source commit). Modified engine Python files remain readable in the bundle.", "",
     ]
     copyleft = [r for r in records if r["class"] in (WEAK, STRONG)]
     if copyleft:

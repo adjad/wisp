@@ -21,6 +21,7 @@ All notable changes to Wisp are documented here.
 
 ### Fixed
 
+- The bundled engine reports verifiable memory-guard health and checks it before guarded model allocation, including startup and lazy/fallback loads. Missing or stale enforcement evidence produces a safe refusal without changing memory settings or automatically retrying. Package metadata separately binds Wisp's reproducible overlay and the original upstream engine.
 - Task-evidence responses recover from malformed structured output through the existing bounded fallback instead of exposing raw response data.
 - Recurring availability windows require shared supporting dates and covered observations. Computer inactivity alone cannot become a confident busy label.
 

@@ -19,6 +19,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "build-support"))
@@ -89,7 +90,24 @@ def stage(tmp: Path, app: Path, **kw):
     bundle.mkdir(parents=True, exist_ok=True)
     defaults = dict(lock=None, release=False, check_signature=False, minos_reader=reader)
     defaults.update(kw)
-    return bundle, engine.stage(bundle, app, **defaults)
+    # These fixtures deliberately contain '# server', not the pinned vendor.
+    # Exercise selection/signing structure independently of exact overlay bytes;
+    # test_engine_guard_overlay.py owns the real fail-closed overlay contract.
+    with patch.object(engine.guard_overlay, "apply", side_effect=fixture_overlay):
+        return bundle, engine.stage(bundle, app, **defaults)
+
+
+def fixture_overlay(root, digest):
+    write(root / engine.guard_overlay.ADDITION, "# synthetic overlay\n")
+    return {"synthetic_guard_overlay": True}
+
+
+def fixture_validate(bundle, expected):
+    def check_fixture(root, receipt):
+        assert receipt == {"synthetic_guard_overlay": True}
+        assert (root / engine.guard_overlay.ADDITION).read_text() == "# synthetic overlay\n"
+    with patch.object(engine.guard_overlay, "verify", side_effect=check_fixture):
+        return engine.validate_structure(bundle, expected)
 
 
 def names(bundle: Path) -> set[str]:
@@ -314,7 +332,7 @@ def test_structural_refusals() -> None:
             check("an admin UI inside omlx/admin (oMLX 0.7.0 layout) is accepted without omlx_web",
                   not (staged_070 / "Contents/Resources/engine/omlx_web").exists()
                   and (staged_070 / "Contents/Resources/engine/omlx/admin/templates/index.html").is_file())
-            engine.validate_structure(staged_070, None)
+            fixture_validate(staged_070, None)
             check("and the staged 0.7.0-layout engine validates", True)
         except engine.EngineBuildError as exc:
             check("an admin UI inside omlx/admin (oMLX 0.7.0 layout) is accepted without omlx_web", False, str(exc))
@@ -332,13 +350,13 @@ def test_validate_structure() -> None:
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         bundle, doc = stage(tmp, make_app(tmp))
-        check("a clean stage validates", engine.validate_structure(bundle, doc) == doc)
+        check("a clean stage validates", fixture_validate(bundle, doc) == doc)
         eng = bundle / engine.ENGINE_DIR
 
         def refuses(label, mutate, restore) -> None:
             mutate()
             try:
-                engine.validate_structure(bundle, doc)
+                fixture_validate(bundle, doc)
                 check(label, False)
             except engine.EngineBuildError:
                 check(label, True)
@@ -362,7 +380,7 @@ def test_validate_structure() -> None:
             json.dumps(dict(doc, omlx_version="other"))), lambda: (eng / "ENGINE.json").write_text(json.dumps(doc)))
         refuses("wrong signing identifier refused", lambda: (eng / "ENGINE.json").write_text(
             json.dumps(dict(doc, signing_identifier="python3"))), lambda: (eng / "ENGINE.json").write_text(json.dumps(doc)))
-        check("restored bundle validates again", bool(engine.validate_structure(bundle, doc)))
+        check("restored bundle validates again", bool(fixture_validate(bundle, doc)))
 
 
 def test_signing_hooks() -> None:

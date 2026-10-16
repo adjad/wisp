@@ -1,0 +1,62 @@
+{
+  "path": "omlx/engine_pool.py",
+  "input_sha256": "06e9186c4a5dc640c8ef0d83918ee9dadc7fdbb81782415dae361a6b2e7e5b92",
+  "output_sha256": "29e8176487713aab8ebe71d29bb91c5ab20aea5f50469e2f71226b8a2cedb079",
+  "edits": [
+    {
+      "old": "logger = logging.getLogger(__name__)",
+      "new": "# Modified by Wisp: pinned memory-guard evidence/admission overlay.\nfrom . import wisp_guard as _wisp_guard\n\nlogger = logging.getLogger(__name__)",
+      "count": 1
+    },
+    {
+      "old": "        ready = self._acquire_loaded_engine(\n",
+      "new": "        _wisp_guard.require_admission(self._process_memory_enforcer)\n        ready = self._acquire_loaded_engine(\n",
+      "count": 1
+    },
+    {
+      "old": "        async with self._lock:\n            entry = self._entries.get(model_id)\n            if not entry:",
+      "new": "        async with self._lock:\n            _wisp_guard.require_admission(self._process_memory_enforcer)\n            entry = self._entries.get(model_id)\n            if not entry:",
+      "count": 1
+    },
+    {
+      "old": "            # Now load the model\n            await self._load_engine(\n                model_id,\n                force_lm=force_lm,\n                runtime_settings=runtime_load_settings,\n            )",
+      "new": "            # Now load the model; retain the exact existing size/baseline policy.\n            await self._load_engine(\n                model_id,\n                force_lm=force_lm,\n                runtime_settings=runtime_load_settings,\n                _wisp_budget=(admission_size, evicted_any if ceiling > 0 else False),\n            )",
+      "count": 1
+    },
+    {
+      "old": "    async def _load_engine(\n        self,\n        model_id: str,\n        force_lm: bool = False,\n        runtime_settings: object | None = None,\n    ) -> None:",
+      "new": "    async def _load_engine(\n        self,\n        model_id: str,\n        force_lm: bool = False,\n        runtime_settings: object | None = None,\n        _wisp_budget: tuple[int, bool] | None = None,\n    ) -> None:",
+      "count": 1
+    },
+    {
+      "old": "        entry.is_loading = True\n        entry.loading_started_at = time.monotonic()",
+      "new": "        # Backstop for direct admin loads and all later lazy starts. The normal\n        # path passes its existing runtime/shard/eviction estimate; direct loads\n        # use the same pool estimators without changing any user settings.\n        _wisp_size = (self._entry_runtime_resident_size(\n            entry, runtime_settings, base_size=self._entry_resident_size(entry)\n        ) if _wisp_budget is None else _wisp_budget[0])\n        _wisp_committed = _wisp_budget is not None and _wisp_budget[1] is True\n\n        def _wisp_check_load(which=None, force_allocation=False):\n            if self._entries.get(model_id) is not entry:\n                raise _wisp_guard.GuardEvidenceUnavailable()\n            if which is not None:\n                if getattr(entry, \"_wisp_active_engine\", None) is not which:\n                    raise _wisp_guard.GuardEvidenceUnavailable()\n                if entry.engine is not which and not entry.is_loading:\n                    raise _wisp_guard.GuardEvidenceUnavailable()\n            required = 0 if which is not None and not force_allocation and _wisp_guard.loaded_state(which) is True else _wisp_size\n            if required and isinstance(which, VLMBatchedEngine):\n                required = max(required, self._entry_resident_size(entry))\n            current = max(mx.get_active_memory(), self._current_model_memory,\n                          0 if _wisp_committed else _settled_phys_footprint())\n            _wisp_guard.require_admission(self._process_memory_enforcer, required, current)\n\n        _wisp_check_load()\n        entry.is_loading = True\n        entry.loading_started_at = time.monotonic()",
+      "count": 1
+    },
+    {
+      "old": "\n                await engine.start()",
+      "new": "\n                entry._wisp_active_engine = engine\n                _wisp_guard.bind_start(engine, _wisp_check_load)\n                await engine.start()",
+      "count": 1
+    },
+    {
+      "old": "\n                        await engine.start()",
+      "new": "\n                        entry._wisp_active_engine = engine\n                        _wisp_guard.bind_start(engine, _wisp_check_load)\n                        await engine.start()",
+      "count": 3
+    },
+    {
+      "old": "            except Exception as start_error:\n                if _is_dflash_engine:",
+      "new": "            except Exception as start_error:\n                if isinstance(start_error, _wisp_guard.GuardEvidenceUnavailable):\n                    raise\n                if _is_dflash_engine:",
+      "count": 1
+    },
+    {
+      "old": "                    except Exception as fallback_error:\n                        raise RuntimeError(",
+      "new": "                    except Exception as fallback_error:\n                        if isinstance(fallback_error, _wisp_guard.GuardEvidenceUnavailable):\n                            raise\n                        raise RuntimeError(",
+      "count": 3
+    },
+    {
+      "old": "        except Exception as exc:\n            # A failed load",
+      "new": "        except Exception as exc:\n            if isinstance(exc, _wisp_guard.GuardEvidenceUnavailable):\n                raise\n            # A failed load",
+      "count": 1
+    }
+  ]
+}

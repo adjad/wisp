@@ -1,0 +1,57 @@
+{
+  "path": "omlx/server.py",
+  "input_sha256": "a79a0493b06e1f69326aab95f26b81b4653f9b6317f2e50d58efe483a9451d9d",
+  "output_sha256": "98c5c03ee7884f37fd94eca944e08aaca3dfe34903added14aab37b73471939b",
+  "edits": [
+    {
+      "old": "logger = logging.getLogger(__name__)",
+      "new": "# Modified by Wisp: pinned memory-guard evidence/admission overlay.\nfrom . import wisp_guard as _wisp_guard\n\nlogger = logging.getLogger(__name__)",
+      "count": 1
+    },
+    {
+      "old": "    # Start process memory enforcer if configured",
+      "new": "    _wisp_initial_ready = False\n    # Start process memory enforcer if configured",
+      "count": 1
+    },
+    {
+      "old": "        enforcer.start()",
+      "new": "        enforcer.start()\n        _wisp_initial_ready = await _wisp_guard.wait_initial(enforcer)",
+      "count": 1
+    },
+    {
+      "old": "                await _server_state.engine_pool.preload_pinned_models()",
+      "new": "                if _wisp_initial_ready:\n                    await _server_state.engine_pool.preload_pinned_models()",
+      "count": 1
+    },
+    {
+      "old": "@app.exception_handler(PrefillMemoryExceededError)",
+      "new": "@app.exception_handler(_wisp_guard.GuardEvidenceUnavailable)\nasync def _wisp_guard_refusal(request, exc):\n    capacity = isinstance(exc, _wisp_guard.GuardCapacityChanged)\n    code = \"engine_guard_capacity_changed\" if capacity else \"engine_guard_unavailable\"\n    return JSONResponse(status_code=507 if capacity else 503,\n                        headers={\"X-Wisp-Guard-Refusal\": \"1\"},\n                        content={\"error\": {\"type\": code, \"code\": code, \"message\": str(_wisp_guard.GuardCapacityChanged() if capacity else _wisp_guard.GuardEvidenceUnavailable())}})\n\n\n@app.exception_handler(PrefillMemoryExceededError)",
+      "count": 1
+    },
+    {
+      "old": "    metrics = get_server_metrics()\n    snapshot = metrics.get_snapshot()\n\n    pool = _server_state.engine_pool",
+      "new": "    metrics = get_server_metrics()\n    snapshot = metrics.get_snapshot()\n    wisp_guard_proof = _wisp_guard.snapshot(_server_state.process_memory_enforcer)\n\n    pool = _server_state.engine_pool",
+      "count": 1
+    },
+    {
+      "old": "        enforcer = _server_state.process_memory_enforcer\n        if enforcer is not None:\n            try:\n                model_memory_max = enforcer.get_final_ceiling()\n            except Exception as exc:  # noqa: BLE001\n                logger.warning(\"Status memory ceiling unavailable: %s\", exc)",
+      "new": "        model_memory_max = wisp_guard_proof[\"cap_bytes\"]",
+      "count": 1
+    },
+    {
+      "old": "        \"model_memory_max\": model_memory_max,",
+      "new": "        \"model_memory_max\": model_memory_max,\n        \"wisp_guard\": wisp_guard_proof,",
+      "count": 1
+    },
+    {
+      "old": "await engine.start()",
+      "new": "await _wisp_guard.start_bound(engine)",
+      "count": 3
+    },
+    {
+      "old": "    except EnginePoolError as e:\n        raise HTTPException(status_code=500, detail=str(e))",
+      "new": "    except _wisp_guard.GuardEvidenceUnavailable:\n        raise\n    except EnginePoolError as e:\n        raise HTTPException(status_code=500, detail=str(e))",
+      "count": 2
+    }
+  ]
+}
