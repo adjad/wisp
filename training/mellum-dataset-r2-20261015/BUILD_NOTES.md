@@ -18,6 +18,7 @@ Built 2026-10-15/16 on `main` at 40ffe997 (router PRs #239 + #241), with every s
   discarded.
 - **Package:** `mellum-r2-data.zip` (gitignored; sha256 in `upload-zip.json`).
 
-## Before training
-The R1 kit (`training/mellum-r1-train/`) is data-agnostic, but `vm-setup.sh` expects `mellum-r1-data.zip` and
-`mellum-r1-*` paths. Rename the zip on upload, or copy the kit to `mellum-r2-train/`, before the A6000 run.
+## Training
+Use `training/mellum-r2-train/` (the R1 kit with R2 names; `package` packs its `train.py`). Its tokenizer-only
+`preflight` passes on this data on the Mac: template sha matches, 0 rows over `--max-len 12288`, 0 decode
+mismatches. Upload `mellum-r2-data.zip` and compare its sha with `upload-zip.json`.

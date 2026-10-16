@@ -651,7 +651,7 @@ what an R2 menu family is about (Family.absent / Family.tempt).
 def cmd_package(args) -> None:
     """mellum-r2-data.zip for the A6000 VM: data, trainer and a per-file sha256 manifest."""
     import zipfile
-    trainer = ROOT / "training/mellum-r1-train/train.py"
+    trainer = ROOT / "training/mellum-r2-train/train.py"
     files = {n: HERE / n for n in ("train.jsonl", "dev.jsonl", "stats.json", "validation.json",
                                    "DATA_CARD.md")}
     files["train/train.py"] = trainer
