@@ -3174,13 +3174,18 @@ def _contextual_reply_subset(text: str, last_tools: str | None) -> RouteDecision
     # Not a question ("answer honestly, am I overbooked?", "say, what's the
     # weather?") and not a request to pass on data the turn has not read
     # ("tell him what my schedule looks like") — those keep their own routes.
-    if not last_tools or "?" in text or not re.search(
-            r"^\s*(?:(?:ok(?:ay)?|sure|yes|yeah|just)[,\s]+)?"
-            r"(?:reply|respond|write\s+back|answer\s+(?:yes|no|them|him|her|that|with)\b|"
-            r"tell\s+(?:them|him|her)|"
-            r"say(?!\s*,|\s+(?:it|that|this)\s+again\b|\s+what\b|\s+(?:it|that)\s*[?.!]*$))\b"
-            r"(?![^.!?]*\b(?:what|how|when|where|which|who)\b[^.!?]*\bmy\b)",
-            text, re.I):
+    # An explicit reply verb always continues the thread, whatever its body
+    # asks ("reply: can we do 5?"). The implicit forms (say / answer / tell)
+    # must not be a question or ask for data the turn has not read:
+    # "say, what's the weather?", "tell him what my schedule looks like" and
+    # "answer honestly, am I overbooked?" keep their own routes.
+    lead = r"^\s*(?:(?:ok(?:ay)?|sure|yes|yeah|just)[,\s]+)?"
+    explicit = re.search(lead + r"(?:reply|respond|write\s+back)\b", text, re.I)
+    implicit = "?" not in text and re.search(
+        lead + r"(?:answer\s+(?:yes|no|them|him|her|that|with)\b|tell\s+(?:them|him|her)|"
+        r"say(?!\s*,|\s+(?:it|that|this)\s+again\b|\s+what\b|\s+(?:it|that)\s*[?.!]*$))\b"
+        r"(?![^.!?]*\b(?:what|how|when|where|which|who)\b[^.!?]*\bmy\b)", text, re.I)
+    if not last_tools or not (explicit or implicit):
         return None
     domains = _domains_in(last_tools)
     if domains == ["messages"]:
