@@ -406,6 +406,10 @@ def test_runtime_gate() -> None:
         check("exact minimum is allowed", unsupported_reason(root, "26.2") is None)
         check("newer macOS is allowed", unsupported_reason(root, "27.0") is None)
         check("unknown macOS version is refused", unsupported_reason(root, "") is not None)
+        for missing in ({}, {"minimum_macos": ""}, {"minimum_macos": None}, {"minimum_macos": 26.2}):
+            (root / "ENGINE.json").write_text(json.dumps(missing))
+            check("an existing manifest needs a valid nonempty requirement",
+                  unsupported_reason(root, "27.0") is not None)
         (root / "ENGINE.json").write_text("{not json")
         check("unreadable ENGINE.json refuses", unsupported_reason(root, "27.0") is not None)
 

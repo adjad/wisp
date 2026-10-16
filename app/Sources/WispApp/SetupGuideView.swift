@@ -15,6 +15,11 @@ struct SetupStatus: Decodable {
         let minMacos: Int; let url: String; let adminUrl: String
         let bundled: Bool?
     }
+    struct BundledEngine: Decodable {
+        let available: Bool
+        let minimumMacos: String?
+        let unavailableReason: String?
+    }
     struct ModelEntry: Decodable, Identifiable {
         let id: String; let label: String; let sizeGb: Double?
         let fit: String; let tested: Bool; let note: String
@@ -44,6 +49,7 @@ struct SetupStatus: Decodable {
     let ready: Bool
     let hardware: Hardware
     let omlx: Omlx
+    let bundledEngine: BundledEngine?
     let models: Models
     let roles: [RoleRow]
     let engines: [Engine]
@@ -73,6 +79,7 @@ final class SetupGuideModel: ObservableObject {
     @Published var copied: String?
     @Published var testResult: String?
     @Published var testing = false
+    @Published private(set) var testPassed = false
     @Published var downloads: [DownloadTask] = []
     @Published var downloadError: String?
     @Published var statusIsCurrent = false
@@ -85,9 +92,15 @@ final class SetupGuideModel: ObservableObject {
 
     init(session: URLSession = .shared) { self.session = session }
 
+    var readinessLabel: String {
+        guard statusIsCurrent, status?.ready == true else { return "Needs attention" }
+        return testPassed ? "Test passed" : "Ready to test"
+    }
+
     private func invalidateTest() {
         testGeneration += 1
         testResult = nil
+        testPassed = false
         testing = false
     }
 
@@ -324,6 +337,7 @@ final class SetupGuideModel: ObservableObject {
         guard !testing, !monitoringStopped, !Task.isCancelled, statusIsCurrent, status?.ready == true else { return }
         testing = true
         testResult = nil
+        testPassed = false
         let generation = testGeneration
         defer { if generation == testGeneration { testing = false } }
         let started = Date()
@@ -341,9 +355,12 @@ final class SetupGuideModel: ObservableObject {
                 return
             }
             let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
-            testResult = text.isEmpty || text.lowercased().contains("<think") || text.lowercased().contains("</think")
-                                      ? "The model replied but gave no visible answer. It may be spending its whole budget thinking; try again or pick another model."
-                                      : "Works — replied in \(seconds)s."
+            if text.isEmpty || text.lowercased().contains("<think") || text.lowercased().contains("</think") {
+                testResult = "The model replied but gave no visible answer. It may be spending its whole budget thinking; try again or pick another model."
+            } else {
+                testResult = "Works — replied in \(seconds)s."
+                testPassed = true
+            }
         } catch {
             if generation == testGeneration, !Task.isCancelled { testResult = "That didn't work: \(error.localizedDescription)" }
         }
@@ -446,7 +463,7 @@ struct SetupGuideView: View {
             }
             Spacer()
             if let s = model.status {
-                pill(s.ready && model.statusIsCurrent ? "Ready" : "Needs attention",
+                pill(model.readinessLabel,
                      on: s.ready && model.statusIsCurrent)
             }
         }
@@ -473,6 +490,14 @@ struct SetupGuideView: View {
     private func engineSection(_ s: SetupStatus) -> some View {
         let check = s.checks.first { $0.id == "engine" }
         return card(step: "1", title: "Engine", state: check?.state ?? "todo") {
+            if let bundled = s.bundledEngine, !bundled.available,
+               let reason = bundled.unavailableReason {
+                Text(reason).font(.callout).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("You can use a compatible external engine. Macs that cannot run local models can use Wisp's separately configured remote-only mode.")
+                    .font(.caption).foregroundStyle(Theme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let check {
                 Text(check.detail).font(.callout).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)

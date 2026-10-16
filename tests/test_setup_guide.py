@@ -102,7 +102,7 @@ def test_mellum_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkey
     config.models_config.cache_clear()
     try:
         result = config.models_config()
-        for role in guide.TEXT_ROLES:
+        for role in ("router", "fast", "agent", "general", "coding", "reasoning"):
             assert result["roles"][role] == (value["roles"].get(role, MELLUM) if custom else MELLUM)
         assert result["roles"]["embedding"] == EMBED
         if custom:
@@ -154,8 +154,54 @@ def test_fresh_mac_needs_oMLX_first():
     s = _status(installed=(), running=False, is_installed=False)
     assert s["ready"] is False
     assert _check(s, "engine")["state"] == "todo" and _check(s, "engine")["action"] == "install_omlx"
-    assert "macOS 15" in _check(s, "engine")["detail"]
+    assert "compatible with this Mac" in _check(s, "engine")["detail"]
     assert s["omlx"]["min_macos"] == 15
+
+
+@pytest.mark.parametrize("macos,available", [("14.0", False), ("26.1", False),
+                                             ("26.2", True), ("27.0", True), ("", False)])
+def test_setup_preserves_packaged_requirement_after_external_fallback(tmp_path, monkeypatch, macos, available):
+    from service.engine import mode
+    (tmp_path / "py/bin").mkdir(parents=True)
+    (tmp_path / "py/bin/python3").write_text("synthetic interpreter placeholder")
+    (tmp_path / "ENGINE.json").write_text(json.dumps({"minimum_macos": "26.2"}))
+    monkeypatch.setattr(mode, "engine_code_root", lambda: tmp_path)
+    monkeypatch.setattr(mode.platform, "mac_ver", lambda: (macos, (), ""))
+    monkeypatch.setattr(guide, "main_engine_profile", lambda: guide.OMLX)
+
+    missing = _status(running=False, is_installed=False)
+    support = missing["bundled_engine"]
+    assert support["available"] is available
+    assert support["minimum_macos"] == "26.2"
+    assert (support["unavailable_reason"] is None) is available
+    assert not missing["ready"] and not missing["omlx"]["bundled"]
+    if not available:
+        assert "26.2" in support["unavailable_reason"]
+
+    # This bundled build's floor must not block an independently working engine.
+    working = _status(installed=[Q4], roles=_roles(Q4))
+    assert working["ready"] and not working["omlx"]["bundled"]
+    assert working["bundled_engine"] == support
+
+
+@pytest.mark.parametrize("document", [{}] + [{"minimum_macos": value} for value in
+    (None, "", False, 0, 26.2, "26.2.1.5", "invalid", {"secret": "opaque"})])
+def test_existing_manifest_cannot_omit_or_corrupt_its_requirement(tmp_path, document):
+    from service.engine import mode
+    (tmp_path / "ENGINE.json").write_text(json.dumps(document))
+    assert mode.unsupported_reason(tmp_path, "27.0") is not None
+    support = mode.bundled_compatibility(tmp_path, "27.0")
+    assert support["available"] is False and support["minimum_macos"] is None
+    assert support["unavailable_reason"] == "The bundled engine's macOS requirement is invalid"
+    assert "opaque" not in json.dumps(support)
+
+
+def test_source_checkout_remains_usable_without_packaged_engine_metadata(tmp_path):
+    from service.engine import mode
+    assert mode.unsupported_reason(tmp_path, "14.0") is None
+    assert mode.bundled_compatibility(tmp_path, "14.0") == {
+        "available": False, "minimum_macos": None,
+        "unavailable_reason": "The built-in engine is not included in this build."}
 
 
 def test_installed_but_stopped_engine_offers_start():

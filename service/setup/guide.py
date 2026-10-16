@@ -18,6 +18,8 @@ TEXT_ROLES = ("fast", "general", "coding", "reasoning")
 ROLE_LABELS = {"fast": "Fast & routing", "general": "General & agentic",
                "coding": "Coding", "reasoning": "Reasoning"}
 OMLX_MIN_MACOS = 15
+# Legacy major-only wire field. The packaged engine's authoritative fractional
+# requirement is reported separately in bundled_engine.minimum_macos.
 # Same wording as Settings' local-provider panel. Loopback proves the app is on this
 # Mac, not that it keeps prompts there, so this must never claim more than that.
 EXTERNAL_ENGINE_DISCLOSURE = (
@@ -120,7 +122,7 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                        "action": "start_engine"})
     else:
         checks.append({"id": "engine", "state": "todo", "title": "Install oMLX",
-                       "detail": f"Wisp runs its assistant on oMLX, which needs macOS {OMLX_MIN_MACOS} or newer.",
+                       "detail": "Install an oMLX build compatible with this Mac, then open it once.",
                        "action": "install_omlx", "url": OMLX.url})
 
     missing = [r for r in TEXT_ROLES
@@ -154,8 +156,10 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                              else "Optional. Without it, Smart Search falls back to keyword matching."})
 
     ready = all(c["state"] == "ok" for c in checks if c["id"] in ("engine", "model"))
+    from service.engine.mode import bundled_compatibility
     return {
         "ready": ready,
+        "bundled_engine": bundled_compatibility(),
         "hardware": {"chip": hardware.chip, "ram_gb": hardware.ram_gb, "tier": hardware.tier},
         "omlx": {"installed": built_in or omlx.installed, "running": omlx.running, "bundled": built_in,
                  "model_dir": omlx.model_dir,

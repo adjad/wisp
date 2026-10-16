@@ -135,14 +135,18 @@ struct SetupGuideChecks {
 
         configure("A")
         await model.refresh()
+        check(model.readinessLabel == "Ready to test" && !model.testPassed,
+              "Model discovery cannot certify a successful model test")
         await model.test()
         check(model.testResult?.hasPrefix("Works") == true, "A should pass its synthetic test")
+        check(model.testPassed && model.readinessLabel == "Test passed", "Only an actual complete test can certify success")
         await model.refresh()
         check(model.testResult?.hasPrefix("Works") == true, "An unchanged live configuration may retain evidence")
 
         configure("B")
         await model.apply("B")
         check(model.testResult == nil, "Applying B must discard A's successful test")
+        check(!model.testPassed && model.readinessLabel == "Ready to test", "Configuration changes clear the passed badge")
         check(model.status?.roles.first?.model == "B", "Apply should accept the new role bindings")
         await model.test()
         configure("C")
@@ -160,6 +164,31 @@ struct SetupGuideChecks {
         await model.refresh()
         check(!model.statusIsCurrent && model.testResult == nil, "A failed refresh cannot retain current readiness/evidence")
         check(model.refreshError != nil, "A failed refresh explains that current state is unknown")
+        check(!model.testPassed && model.readinessLabel == "Needs attention", "Unknown readiness cannot retain a passed badge")
+
+        configure("A")
+        await model.refresh()
+        let memoryRefusal = "The selected model could not load within the AI engine's current memory limit. Free some memory, then try again."
+        SetupHTTP.configure { request in
+            request.url!.path == "/chat" ? (503, ["detail": memoryRefusal], 0) : (200, setupSnapshot(), 0)
+        }
+        await model.test()
+        check(model.testResult == "That didn't work: \(memoryRefusal)", "Memory admission failure retains the safe actionable error")
+        check(!model.testing && !model.testPassed && model.readinessLabel == "Ready to test",
+              "A refused load is not a passed test and permits a later explicit retry")
+        check(SetupHTTP.count("/chat") == 1, "A memory refusal must not automatically replay the request")
+        configure("A")
+        await model.test()
+        check(model.testPassed, "A later explicit test may recover from a memory refusal")
+
+        var compatibility = setupSnapshot(bundled: false)
+        compatibility["bundled_engine"] = ["available": false, "minimum_macos": "26.2",
+            "unavailable_reason": "The bundled engine needs macOS 26.2 or newer (this Mac has 26.1)"]
+        SetupHTTP.configure { _ in (200, compatibility, 0) }
+        await model.refresh()
+        check(model.status?.bundledEngine?.minimumMacos == "26.2", "The fractional bundled requirement survives decoding")
+        check(model.status?.bundledEngine?.unavailableReason?.contains("26.1") == true,
+              "Setup retains the explanation after selecting an external engine")
 
         configure("A")
         await model.refresh(quiet: true)
