@@ -1209,16 +1209,9 @@ struct SettingsView: View {
                 if selectedPane == "models" {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Models").font(.title2.weight(.medium))
-                    EngineSettingsView()
                     VStack(alignment: .leading, spacing: 14) {
-                        Picker("Model settings", selection: $modelsPane) {
-                            Text("Assignments").tag("assignments")
-                            Text("Local").tag("local")
-                            Text("Cloud").tag("cloud")
-                        }
-                        .pickerStyle(.segmented)
-
                         if modelsPane == "assignments" {
+                        EngineSettingsView()
                         Text("Pick the expert for each kind of task")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -1277,7 +1270,23 @@ struct SettingsView: View {
                             }
                             if role != loader.roleOrder.last { Divider() }
                         }
+                        Divider()
+                        HStack {
+                            Text("Manage downloaded models and cloud keys")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Local models…") { modelsPane = "local" }
+                            Button("Cloud…") { modelsPane = "cloud" }
+                        }
 
+                        } else {
+                        Button {
+                            modelsPane = "assignments"
+                        } label: {
+                            Label("Models", systemImage: "chevron.left")
+                        }
+                        .buttonStyle(.link)
                         }
                         if modelsPane == "local" {
                         GroupBox {

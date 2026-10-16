@@ -182,68 +182,70 @@ struct EngineSettingsView: View {
     }
 
     var body: some View {
-        GroupBox("Engine") {
-            VStack(alignment: .leading, spacing: 12) {
-                if let engine = loader.engine {
-                    LabeledContent("Current mode", value: engine.mode.title)
-
-                    Picker("Preferred engine", selection: selectedMode) {
-                        Text("Built-in engine").tag(EngineMode.bundled)
+        VStack(alignment: .leading, spacing: 6) {
+            if let engine = loader.engine {
+                HStack {
+                    Label("Running on \(engine.mode.title)",
+                          systemImage: engine.running ? "checkmark.circle.fill" : "circle.dashed")
+                        .font(.callout)
+                        .foregroundStyle(engine.running ? Color.primary : Color.secondary)
+                    Spacer()
+                    Menu("Change engine") {
+                        Button("Built-in engine") { selectedMode.wrappedValue = .bundled }
                             .disabled(!engine.bundledAvailable)
-                        Text("My installed oMLX").tag(EngineMode.externalOmlx)
+                        Button("My installed oMLX") { selectedMode.wrappedValue = .externalOmlx }
+                        Divider()
+                        if engine.mode == .bundled {
+                            Button("Set up engine and models…") {
+                                NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+                            }
+                        } else if let url = engine.adminURL {
+                            Button("Open engine dashboard") { NSWorkspace.shared.open(url) }
+                        }
                     }
-                    .pickerStyle(.segmented)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                     .disabled(loader.isSaving)
-
-                    if !engine.bundledAvailable {
-                        Label(engine.unsupportedReason ?? "The built-in engine isn't available on this Mac.",
-                              systemImage: "info.circle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if engine.restartRequired {
-                        Label("Restart Wisp to apply", systemImage: "arrow.clockwise")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if engine.mode == .bundled && engine.externalEngineRunning {
-                        Label("Your own oMLX is also running; both use memory",
-                              systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if engine.mode == .bundled {
-                        Button("Set up engine and models…") {
-                            NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
-                        }
-                    } else if let url = engine.adminURL {
-                        Button("Open engine dashboard") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                } else if loader.isLoading {
-                    ProgressView("Loading engine settings…")
-                        .controlSize(.small)
-                } else {
-                    Text("Engine settings are unavailable.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
-                if let message = loader.statusMessage {
-                    Text(message)
+                if !engine.bundledAvailable {
+                    Label(engine.unsupportedReason ?? "The built-in engine isn't available on this Mac.",
+                          systemImage: "info.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                if engine.restartRequired {
+                    Label("Restart Wisp to apply", systemImage: "arrow.clockwise")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if engine.mode == .bundled && engine.externalEngineRunning {
+                    Label("Your own oMLX is also running; both use memory",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if loader.isLoading {
+                ProgressView("Loading engine settings…")
+                    .controlSize(.small)
+            } else {
+                Text("Engine settings are unavailable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let message = loader.statusMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .task { await loader.refresh() }
     }
 }
