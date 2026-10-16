@@ -1,7 +1,7 @@
 {
   "path": "omlx/engine_pool.py",
   "input_sha256": "06e9186c4a5dc640c8ef0d83918ee9dadc7fdbb81782415dae361a6b2e7e5b92",
-  "output_sha256": "36b8c3bc698d62bae4f283f3683a86d3f69eee4d49cac7ccc383f38bac8c615b",
+  "output_sha256": "e3771adf16e8c75289a34140f0ae47ba20a3fe8db2f7f6be302d282ac2ddc970",
   "edits": [
     {
       "old": "logger = logging.getLogger(__name__)",
@@ -15,7 +15,7 @@
     },
     {
       "old": "        async with self._lock:\n            entry = self._entries.get(model_id)\n            if not entry:",
-      "new": "        async with self._lock:\n            _wisp_guard.require_admission(self._process_memory_enforcer)\n            entry = self._entries.get(model_id)\n            if not entry:",
+      "new": "        async with self._lock:\n            _wisp_guard.require_admission(self._process_memory_enforcer)\n            if model_id in self._unloading_models:\n                raise _wisp_guard.GuardEvidenceUnavailable()\n            entry = self._entries.get(model_id)\n            if not entry:",
       "count": 1
     },
     {
@@ -30,7 +30,7 @@
     },
     {
       "old": "        entry.is_loading = True\n        entry.loading_started_at = time.monotonic()",
-      "new": "        # Backstop for direct admin loads and all later lazy starts. The normal\n        # path passes its existing runtime/shard/eviction estimate; direct loads\n        # use the same pool estimators without changing any user settings.\n        _wisp_size = (self._entry_runtime_resident_size(\n            entry, runtime_settings, base_size=self._entry_resident_size(entry)\n        ) if _wisp_budget is None else _wisp_budget[0])\n        _wisp_committed = _wisp_budget is not None and _wisp_budget[1] is True\n\n        def _wisp_check_load(which=None, force_allocation=False):\n            if self._entries.get(model_id) is not entry:\n                raise _wisp_guard.GuardEvidenceUnavailable()\n            if which is not None:\n                if getattr(entry, \"_wisp_active_engine\", None) is not which:\n                    raise _wisp_guard.GuardEvidenceUnavailable()\n                if entry.engine is not which and not entry.is_loading:\n                    raise _wisp_guard.GuardEvidenceUnavailable()\n            required = 0 if which is not None and not force_allocation and _wisp_guard.loaded_state(which) is True else _wisp_size\n            if required and isinstance(which, VLMBatchedEngine):\n                required = max(required, self._entry_resident_size(entry))\n            current = max(mx.get_active_memory(), self._current_model_memory,\n                          0 if _wisp_committed else _settled_phys_footprint())\n            _wisp_guard.require_admission(self._process_memory_enforcer, required, current)\n\n        _wisp_check_load()\n        entry.is_loading = True\n        entry.loading_started_at = time.monotonic()",
+      "new": "        # Backstop for direct admin loads and all later lazy starts. The normal\n        # path passes its existing runtime/shard/eviction estimate; direct loads\n        # use the same pool estimators without changing any user settings.\n        _wisp_size = (self._entry_runtime_resident_size(\n            entry, runtime_settings, base_size=self._entry_resident_size(entry)\n        ) if _wisp_budget is None else _wisp_budget[0])\n        _wisp_committed = _wisp_budget is not None and _wisp_budget[1] is True\n\n        def _wisp_check_load(which=None, force_allocation=False):\n            if model_id in self._unloading_models:\n                raise _wisp_guard.GuardEvidenceUnavailable()\n            if self._entries.get(model_id) is not entry:\n                raise _wisp_guard.GuardEvidenceUnavailable()\n            if which is not None:\n                _wisp_guard.require_usable(which)\n                if getattr(entry, \"_wisp_active_engine\", None) is not which:\n                    raise _wisp_guard.GuardEvidenceUnavailable()\n                if entry.engine is not which and not entry.is_loading:\n                    raise _wisp_guard.GuardEvidenceUnavailable()\n            required = 0 if which is not None and not force_allocation and _wisp_guard.loaded_state(which) is True else _wisp_size\n            if required and isinstance(which, VLMBatchedEngine):\n                required = max(required, self._entry_resident_size(entry))\n            current = max(mx.get_active_memory(), self._current_model_memory,\n                          0 if _wisp_committed else _settled_phys_footprint())\n            _wisp_guard.require_admission(self._process_memory_enforcer, required, current)\n\n        _wisp_check_load()\n        entry.is_loading = True\n        entry.loading_started_at = time.monotonic()",
       "count": 1
     },
     {
@@ -65,7 +65,57 @@
     },
     {
       "old": "            logger.info(\n                f\"Loaded model: {model_id} \"",
-      "new": "            # Propagation above can return normally while marking an unresolved\n            # scheduler unqualified. Refuse this SAME first request before any\n            # engine/lease escapes; do not wait for the next pool acquisition.\n            async def _wisp_cleanup_rejected_load():\n                nonlocal load_completed\n                load_completed = False\n                if self._entries.get(model_id) is not entry or entry.engine is not engine:\n                    return\n                # Preserve the existing stop/settlement/accounting policy.\n                await self._unload_engine(model_id)\n\n            await _wisp_guard.accept_loaded(engine, _wisp_check_load, _wisp_cleanup_rejected_load)\n\n            logger.info(\n                f\"Loaded model: {model_id} \"",
+      "new": "            # Propagation above can return normally while marking an unresolved\n            # scheduler unqualified. Refuse this SAME first request before any\n            # engine/lease escapes; do not wait for the next pool acquisition.\n            async def _wisp_cleanup_rejected_load():\n                nonlocal load_completed\n                load_completed = False\n                # The selected owner survives registry clear/re-discovery.\n                await self._unload_engine(model_id, _wisp_expected=(entry, engine))\n\n            await _wisp_guard.accept_loaded(engine, _wisp_check_load, _wisp_cleanup_rejected_load)\n\n            logger.info(\n                f\"Loaded model: {model_id} \"",
+      "count": 1
+    },
+    {
+      "old": "    async def _unload_engine(self, model_id: str) -> None:\n        if model_id in self._unloading_models:\n            raise ModelBusyError(model_id, \"unload while teardown is in progress\")\n        self._unloading_models.add(model_id)\n        task = asyncio.create_task(self._stop_and_unload_engine(model_id))\n        cancelled = False\n        try:\n            while not task.done():\n                try:\n                    await asyncio.shield(task)\n                except asyncio.CancelledError:\n                    cancelled = True\n            task.result()\n        finally:\n            self._unloading_models.discard(model_id)\n        if cancelled:\n            raise asyncio.CancelledError\n\n",
+      "new": "    async def _unload_engine(self, model_id: str, *, _wisp_expected=None) -> None:\n        await _wisp_guard.unload_bound(self, model_id, ModelBusyError, _wisp_expected)\n\n",
+      "count": 1
+    },
+    {
+      "old": "    async def _stop_and_unload_engine(self, model_id: str) -> None:",
+      "new": "    async def _stop_and_unload_engine(self, model_id: str, *, _wisp_expected=None) -> None:",
+      "count": 1
+    },
+    {
+      "old": "        entry = self._entries.get(model_id)\n        if not entry or entry.engine is None:\n            return\n\n        logger.info(f\"Unloading model: {model_id} (immediate abort)\")",
+      "new": "        # Capture the exact instance before any deferred task/stop wait. A\n        # runtime directory reload may have already cleared the registry.\n        if _wisp_expected is None:\n            entry = self._entries.get(model_id)\n            engine = entry.engine if entry is not None else None\n        else:\n            entry, engine = _wisp_expected\n        if engine is None:\n            return\n\n        logger.info(f\"Unloading model: {model_id} (immediate abort)\")",
+      "count": 1
+    },
+    {
+      "old": "            await entry.engine.stop()\n        except Exception as e:\n            if distributed:",
+      "new": "            await engine.stop()\n        except Exception as e:\n            if distributed:",
+      "count": 1
+    },
+    {
+      "old": "        reset = getattr(entry.engine, \"_reset_activity_tracking\", None)",
+      "new": "        reset = getattr(engine, \"_reset_activity_tracking\", None)",
+      "count": 1
+    },
+    {
+      "old": "        # Clear engine reference before settle barrier\n        entry.engine = None",
+      "new": "        # Never clear a different engine attached while stop yielded.\n        if entry.engine is not engine:\n            self._wake_process_memory_enforcer()\n            return\n        # Clear the captured entry only; a replacement registry entry is intact.\n        # The original settlement policy below still runs for its stopped owner.\n        entry.engine = None",
+      "count": 1
+    },
+    {
+      "old": "            self._current_model_memory = max(\n                0,\n                self._current_model_memory - resident_size,\n            )",
+      "new": "            # A directory reload resets the global counter with its registry.\n            # Unknown ownership conservatively retains the old charge.\n            if self._entries.get(model_id) is entry and entry.engine is None:\n                self._current_model_memory = max(\n                    0,\n                    self._current_model_memory - resident_size,\n                )",
+      "count": 1
+    },
+    {
+      "old": "        # Release memory tracking AFTER barrier\n        self._current_model_memory = max(0, self._current_model_memory - resident_size)",
+      "new": "        # Release only a charge still owned by this entry after the barrier.\n        # Registry reset/replacement must not subtract from the new owner's budget.\n        if self._entries.get(model_id) is entry and entry.engine is None:\n            self._current_model_memory = max(0, self._current_model_memory - resident_size)",
+      "count": 1
+    },
+    {
+      "old": "                existing.engine is not None or existing.is_loading\n",
+      "new": "                existing.engine is not None or existing.is_loading\n                or model_id in self._unloading_models\n",
+      "count": 1
+    },
+    {
+      "old": "            and not self._entries[mid].is_loading\n",
+      "new": "            and not self._entries[mid].is_loading\n            and mid not in self._unloading_models\n",
       "count": 1
     }
   ]

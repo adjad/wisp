@@ -317,7 +317,8 @@ def loaded_state(engine):
 
 def require_usable(engine):
     """A failed post-load handoff cannot become a reusable resident engine."""
-    if getattr(engine, "_wisp_guard_load_rejected", False):
+    if (getattr(engine, "_wisp_guard_load_rejected", False)
+            or getattr(engine, "_wisp_guard_unloading", False)):
         raise GuardEvidenceUnavailable()
 
 
@@ -337,6 +338,73 @@ async def accept_loaded(engine, check, cleanup):
         except Exception:
             pass
         raise
+
+
+async def unload_bound(pool, model_id, busy_error, expected=None):
+    """Retain the selected owner through deferred stop and cancellation.
+
+    Normal duplicate unloads retain the vendor's busy result. Refusal cleanup
+    joins a teardown of the same instance, even after a registry reset. A
+    different instance gets its own task, serialized through the existing
+    process-wide settlement policy rather than measuring two unloads at once.
+    """
+    if expected is None:
+        if model_id in pool._unloading_models:
+            raise busy_error(model_id, "unload while teardown is in progress")
+        entry = pool._entries.get(model_id)
+        engine = entry.engine if entry is not None else None
+    else:
+        entry, engine = expected
+    if engine is None:
+        return
+    state = getattr(pool, "_wisp_unload_state", None)
+    if state is None:
+        state = {"tasks": {}, "markers": {}, "lock": asyncio.Lock()}
+        pool._wisp_unload_state = state
+    key = id(engine)
+    record = state["tasks"].get(key)
+    created = record is None
+    if created:
+        # A bound direct/lazy/child start must never restart this instance,
+        # including after a failed stop. Explicit cleanup may retry stop().
+        engine._wisp_guard_unloading = True
+        marker = state["markers"].get(model_id)
+        if marker is None:
+            marker = {"count": 0, "owned": model_id not in pool._unloading_models}
+            state["markers"][model_id] = marker
+        marker["count"] += 1
+        pool._unloading_models.add(model_id)
+
+        async def teardown():
+            async with state["lock"]:
+                await pool._stop_and_unload_engine(model_id, _wisp_expected=(entry, engine))
+
+        task = asyncio.create_task(teardown())
+        record = {"entry": entry, "engine": engine, "model_id": model_id, "task": task}
+        state["tasks"][key] = record
+    else:
+        if record["engine"] is not engine or record["entry"] is not entry or record["model_id"] != model_id:
+            raise GuardEvidenceUnavailable()
+        task = record["task"]
+    cancelled = False
+    try:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        task.result()
+    finally:
+        if created and state["tasks"].get(key) is record:
+            del state["tasks"][key]
+            marker = state["markers"][model_id]
+            marker["count"] -= 1
+            if not marker["count"]:
+                del state["markers"][model_id]
+                if marker["owned"]:
+                    pool._unloading_models.discard(model_id)
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def bind_start(engine, check):

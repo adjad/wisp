@@ -8,6 +8,7 @@ import asyncio
 import importlib.util
 import json
 import hashlib
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -46,7 +47,7 @@ class AdmissionTests(unittest.TestCase):
         self.parent = DFlashEngine()
         self.entry = SimpleNamespace(engine=self.parent, is_loading=False, _wisp_active_engine=self.parent)
         self.pool = SimpleNamespace(_entries={"model": self.entry}, _current_model_memory=10,
-                                    _process_memory_enforcer=self.guard)
+                                    _process_memory_enforcer=self.guard, _unloading_models=set())
         patch_data = json.loads((ROOT / "build-support/engine_guard/engine_pool.py.patch.json").read_text())
         additions = [e["new"] for e in patch_data["edits"] if "def _wisp_check_load(" in e["new"]]
         self.assertEqual(len(additions), 1)
@@ -211,7 +212,8 @@ class AdmissionTests(unittest.TestCase):
         source += "\n    generated.append(engine)\n    return load_completed\n"
         self.generated, self.cleanup = [], []
 
-        async def unload(model_id):
+        async def unload(model_id, *, _wisp_expected):
+            self.assertEqual(_wisp_expected, (self.entry, self.parent))
             self.cleanup.append(model_id)
             if cleanup_error:
                 raise RuntimeError("private teardown diagnostic")
@@ -269,8 +271,33 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaises(self.proof.GuardEvidenceUnavailable):
             asyncio.run(self.first_request())
         self.assertEqual(self.generated, [])
-        self.assertEqual(self.cleanup, [])
+        self.assertEqual(self.cleanup, ["model"], "Cleanup still owns the original engine")
         self.assertIs(self.pool._entries["model"], replacement)
+
+    def test_unloading_model_refuses_cold_child_before_allocation(self):
+        child = self.child()
+        self.pool._unloading_models.add("model")
+        self.assert_refused_before_allocation(child)
+
+    def test_tearing_down_parent_cannot_restart_through_child(self):
+        child = self.child()
+        self.parent._wisp_guard_unloading = True
+        self.assert_refused_before_allocation(child)
+
+    def test_post_settlement_budget_guards_preserve_replacement_and_reset_counters(self):
+        data = json.loads((ROOT / "build-support/engine_guard/engine_pool.py.patch.json").read_text())
+        blocks = [e["new"] for e in data["edits"] if e["old"].startswith("        # Release memory tracking AFTER barrier")
+                  or e["old"].startswith("            self._current_model_memory = max(")]
+        self.assertEqual(len(blocks), 2, "Both local and distributed release paths must be fenced")
+        for block in blocks:
+            code = compile(ast.parse(textwrap.dedent(block)), "<Wisp-budget-release-only>", "exec")
+            for state in ("registry-reset", "same-entry-rebound", "owned-stopped"):
+                with self.subTest(state=state, block=blocks.index(block)):
+                    self.pool._current_model_memory = 100
+                    self.entry.engine = self.parent if state == "same-entry-rebound" else None
+                    self.pool._entries["model"] = SimpleNamespace(engine=object()) if state == "registry-reset" else self.entry
+                    exec(code, {"self": self.pool, "entry": self.entry, "model_id": "model", "resident_size": 50})
+                    self.assertEqual(self.pool._current_model_memory, 50 if state == "owned-stopped" else 100)
 
 
 if __name__ == "__main__":

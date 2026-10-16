@@ -836,5 +836,203 @@ class GuardProofTests(unittest.TestCase):
         asyncio.run(exercise())
 
 
+class BoundUnloadTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("unload_proof", PROOF_PATH)
+        self.proof = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.proof)
+        class BusyError(RuntimeError):
+            pass
+        self.busy = BusyError
+
+    def engine(self):
+        class BatchedEngine:
+            _loaded = True
+            def __init__(self):
+                self.stops = 0
+                self.starts = 0
+            async def stop(self):
+                self.stops += 1
+            async def start(self):
+                self.starts += 1
+        return BatchedEngine()
+
+    def pool(self, entry, teardown):
+        return SimpleNamespace(_entries={"model": entry}, _unloading_models=set(),
+                               _stop_and_unload_engine=teardown, _current_model_memory=50)
+
+    def test_runtime_registry_reset_between_scheduling_and_selection_stops_original(self):
+        async def exercise():
+            engine, replacement = self.engine(), self.engine()
+            entry = SimpleNamespace(engine=engine)
+            selected = []
+            async def teardown(model_id, *, _wisp_expected):
+                selected.append(_wisp_expected)
+                await _wisp_expected[1].stop()
+            pool = self.pool(entry, teardown)
+            original_create = asyncio.create_task
+            def reset_registry():
+                self.assertIn("model", pool._unloading_models)
+                pool._entries.clear()
+                pool._current_model_memory = 0
+                pool._entries["model"] = SimpleNamespace(engine=replacement)
+            def deferred(coro):
+                asyncio.get_running_loop().call_soon(reset_registry)
+                return original_create(coro)
+            with patch.object(self.proof.asyncio, "create_task", deferred):
+                await self.proof.unload_bound(pool, "model", self.busy, (entry, engine))
+            self.assertEqual(selected, [(entry, engine)])
+            self.assertEqual((engine.stops, replacement.stops), (1, 0))
+            self.assertIs(pool._entries["model"].engine, replacement)
+            self.assertEqual(pool._current_model_memory, 0)
+            self.assertEqual(pool._wisp_unload_state["tasks"], {})
+            self.assertEqual(pool._unloading_models, set())
+        asyncio.run(exercise())
+
+    def test_cancelled_cleanup_joiner_drains_same_owner_without_duplicate_stop(self):
+        async def exercise():
+            engine = self.engine()
+            entry = SimpleNamespace(engine=engine)
+            entered, release = asyncio.Event(), asyncio.Event()
+            async def teardown(model_id, *, _wisp_expected):
+                self.assertEqual(_wisp_expected, (entry, engine))
+                await engine.stop()
+                entered.set()
+                await release.wait()
+            pool = self.pool(entry, teardown)
+            owner = asyncio.create_task(self.proof.unload_bound(pool, "model", self.busy))
+            await entered.wait()
+            with self.assertRaises(self.busy):
+                await self.proof.unload_bound(pool, "model", self.busy)
+            joiner = asyncio.create_task(self.proof.unload_bound(pool, "model", self.busy, (entry, engine)))
+            await asyncio.sleep(0)
+            joiner.cancel()
+            await asyncio.sleep(0)
+            self.assertFalse(joiner.done())
+            self.assertIn("model", pool._unloading_models)
+            self.assertEqual(engine.stops, 1)
+            release.set()
+            await owner
+            with self.assertRaises(asyncio.CancelledError):
+                await joiner
+            self.assertEqual(engine.stops, 1)
+            self.assertEqual(pool._wisp_unload_state["tasks"], {})
+            self.assertEqual(pool._unloading_models, set())
+        asyncio.run(exercise())
+
+    def test_different_instances_serialize_settlement_and_hold_shared_marker(self):
+        async def exercise():
+            engines = [self.engine(), self.engine()]
+            entries = [SimpleNamespace(engine=e) for e in engines]
+            entered = [asyncio.Event(), asyncio.Event()]
+            release = [asyncio.Event(), asyncio.Event()]
+            active = []
+            async def teardown(model_id, *, _wisp_expected):
+                index = engines.index(_wisp_expected[1])
+                self.assertEqual(active, [], "Process-wide settlement cannot overlap")
+                active.append(index)
+                entered[index].set()
+                await engines[index].stop()
+                await release[index].wait()
+                active.remove(index)
+            pool = self.pool(entries[0], teardown)
+            first = asyncio.create_task(self.proof.unload_bound(pool, "model", self.busy, (entries[0], engines[0])))
+            await entered[0].wait()
+            pool._entries["model"] = entries[1]
+            second = asyncio.create_task(self.proof.unload_bound(pool, "model", self.busy, (entries[1], engines[1])))
+            await asyncio.sleep(0)
+            self.assertFalse(entered[1].is_set())
+            release[0].set()
+            await first
+            await entered[1].wait()
+            self.assertIn("model", pool._unloading_models, "First owner cannot clear the second owner's marker")
+            release[1].set()
+            await second
+            self.assertEqual([e.stops for e in engines], [1, 1])
+            self.assertEqual(pool._unloading_models, set())
+            self.assertEqual(pool._wisp_unload_state["tasks"], {})
+        asyncio.run(exercise())
+
+    def test_cancelled_owner_still_finishes_teardown_before_releasing_marker(self):
+        async def exercise():
+            engine = self.engine()
+            entry = SimpleNamespace(engine=engine)
+            entered, release = asyncio.Event(), asyncio.Event()
+            async def teardown(model_id, *, _wisp_expected):
+                entered.set()
+                await release.wait()
+                await engine.stop()
+            pool = self.pool(entry, teardown)
+            owner = asyncio.create_task(self.proof.unload_bound(pool, "model", self.busy))
+            await entered.wait()
+            owner.cancel()
+            await asyncio.sleep(0)
+            self.assertFalse(owner.done())
+            self.assertIn("model", pool._unloading_models)
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await owner
+            self.assertEqual(engine.stops, 1)
+            self.assertEqual(pool._unloading_models, set())
+        asyncio.run(exercise())
+
+    def test_failed_owner_is_removed_for_explicit_stop_retry_but_cannot_restart(self):
+        async def exercise():
+            engine = self.engine()
+            entry = SimpleNamespace(engine=engine)
+            async def teardown(model_id, *, _wisp_expected):
+                await engine.stop()
+                if engine.stops == 1:
+                    raise RuntimeError("synthetic stop failure")
+            pool = self.pool(entry, teardown)
+            with self.assertRaisesRegex(RuntimeError, "synthetic stop failure"):
+                await self.proof.unload_bound(pool, "model", self.busy)
+            self.assertEqual(pool._wisp_unload_state["tasks"], {})
+            self.assertEqual(pool._unloading_models, set())
+            with self.assertRaises(self.proof.GuardEvidenceUnavailable):
+                self.proof.require_usable(engine)
+            await self.proof.unload_bound(pool, "model", self.busy, (entry, engine))
+            self.assertEqual(engine.stops, 2)
+            with self.assertRaises(self.proof.GuardEvidenceUnavailable):
+                self.proof.require_usable(engine)
+        asyncio.run(exercise())
+
+    def test_explicit_cleanup_preserves_a_marker_it_did_not_create(self):
+        async def exercise():
+            engine = self.engine()
+            entry = SimpleNamespace(engine=engine)
+            async def teardown(model_id, *, _wisp_expected):
+                await engine.stop()
+            pool = self.pool(entry, teardown)
+            pool._unloading_models.add("model")
+            await self.proof.unload_bound(pool, "model", self.busy, (entry, engine))
+            self.assertEqual(engine.stops, 1)
+            self.assertEqual(pool._unloading_models, {"model"})
+        asyncio.run(exercise())
+
+    def test_same_instance_cannot_restart_while_teardown_waits_or_after_completion(self):
+        async def exercise():
+            engine = self.engine()
+            entry = SimpleNamespace(engine=engine)
+            self.proof.bind_start(engine, lambda candidate: None)
+            entered, release = asyncio.Event(), asyncio.Event()
+            async def teardown(model_id, *, _wisp_expected):
+                entered.set()
+                await release.wait()
+                await engine.stop()
+            pool = self.pool(entry, teardown)
+            owner = asyncio.create_task(self.proof.unload_bound(pool, "model", self.busy))
+            await entered.wait()
+            with self.assertRaises(self.proof.GuardEvidenceUnavailable):
+                await engine.start()
+            release.set()
+            await owner
+            self.proof.bind_start(engine, lambda candidate: None)
+            with self.assertRaises(self.proof.GuardEvidenceUnavailable):
+                await self.proof.start_bound(engine)
+            self.assertEqual(engine.starts, 0)
+        asyncio.run(exercise())
+
+
 if __name__ == "__main__":
     unittest.main()
