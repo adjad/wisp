@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var searchPanel: OverlayPanel?
     private lazy var searchModel = SearchModel(client: client)
     private lazy var researchModel = ResearchModel(client: client)
+    // One day plan for the notch's Today tab and the window's planner.
+    private lazy var todayModel = TodayModel()
     private lazy var researchLibrary = ResearchLibraryWindowController(client: client,
         onOpen: { [weak self] id in self?.openSavedResearch(id) },
         onNew: { [weak self] in self?.newResearch() })
@@ -233,7 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .chat(let sessionId):
             if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
         case .today(let focus):
-            TodayWindow.show(initialTab: focus.tab)
+            TodayWindow.show(model: todayModel, initialTab: focus.tab)
         case .research:
             researchLibrary.show()
         case .memory(.facts):
@@ -408,7 +410,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Re-dock if the X button previously dismissed the notch bar — the
         // menu-bar icon (or ⌥Space) is the way back in.
         notchDocked = true
-        if presentation.desired == .chat { collapse() } else { expand() }
+        if presentation.desired == .chat {
+            collapse()
+        } else {
+            // ⌥Space and the menu-bar icon always open Ask.
+            model.prepareTab(byHover: false)
+            expand()
+        }
     }
 
     /// Track menus so an open one holds auto-collapse. AppKit posts these for every
@@ -440,9 +448,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Drop a menu flag left set by an unbalanced begin, unless a menu really is open.
-    private func clearStaleMenuTracking(menuOnScreen: Bool = NSApp?.windows.contains {
-        $0.isVisible && $0.level == .popUpMenu
-    } ?? false) {
+    private func clearStaleMenuTracking(menuOnScreen: Bool? = nil) {
+        let menuOnScreen = menuOnScreen
+            ?? (NSApp?.windows.contains { $0.isVisible && $0.level == .popUpMenu } ?? false)
         guard !menuOnScreen else { return }
         menuTracking = false
         collapseHeldForMenu = false
@@ -638,6 +646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.hoverIntent.shouldOpen(inZone: self.pointerInHoverZone(),
                                            buttonsDown: NSEvent.pressedMouseButtons != 0,
                                            collapsed: self.canHoverOpen) {
+                self.model.prepareTab(byHover: true)
                 self.expand()
             }
         }
@@ -665,7 +674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func createPanelIfNeeded() {
         guard panel == nil else { return }
         panel = OverlayPanel {
-            OverlayView(model: self.model, researchModel: self.researchModel,
+            OverlayView(model: self.model, researchModel: self.researchModel, todayModel: self.todayModel,
                         onClose: { [weak self] in self?.collapse() },
                         onDismiss: { [weak self] in self?.dismissToMenuBar() })
         }
@@ -831,7 +840,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openSavedResearch(_ id: String) {
         openAssistant()
         model.showingResearch = true
-        model.researchMode = false
+        model.tab = .research
         researchModel.openJob(id)
     }
 
@@ -1045,7 +1054,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openResearch(prompt: String) {
         openAssistant()
         model.showingResearch = true
-        model.researchMode = false
+        model.tab = .research
         researchModel.createPlan(prompt: prompt)
     }
 }
@@ -1079,11 +1088,18 @@ extension AppDelegate {
         delegate.model.runDailySummary()
         delegate.finishPresentation(opening)
         for _ in 0..<100 {
-            if delegate.model.phase == .done { break }
+            if delegate.model.brief != nil { break }
             try? await Task.sleep(for: .milliseconds(20))
         }
-        precondition(delegate.model.phase == .done, "Summary response was discarded after dismissal/reopen")
-        precondition(delegate.model.turns.last?.text == "Synthetic daily summary")
+        precondition(delegate.model.brief?.text == "Synthetic daily summary",
+                     "Summary response was discarded after dismissal/reopen")
+        precondition(delegate.model.tab == .today && !delegate.model.briefComposing,
+                     "The brief lands on the Today tab")
+        precondition(delegate.model.turns.isEmpty, "The brief no longer goes into the chat transcript")
+        precondition(delegate.model.conversationSettled && !delegate.model.willQueuePrompt,
+                     "A composed brief frees the prompt queue")
+        delegate.model.newChat()
+        precondition(delegate.model.brief != nil, "New chat keeps Today's brief")
         delegate.model.reset()
         print("PASS: AppDelegate Daily Summary during dismissal completes")
     }
@@ -1104,10 +1120,14 @@ extension AppDelegate {
         typing.model.input = "half a thought"
         let editing = opened()
         editing.model.messageDraft = OverlayModel.MessageDraft(to: "fixture", text: "Hi", isEditing: true)
-        for delegate in [idle, pinned, typing, editing] { delegate.scheduleCollapse() }
+        let addingTask = opened()
+        addingTask.model.tab = .today
+        addingTask.model.todayTaskTitle = "Lab report draft"
+        for delegate in [idle, pinned, typing, editing, addingTask] { delegate.scheduleCollapse() }
         try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
         precondition(idle.presentation.desired == .bar, "Control: an idle panel must auto-collapse")
-        for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited")] {
+        for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited"),
+                                 (addingTask, "a Today task being typed")] {
             precondition(delegate.presentation.desired == .chat, "\(what) must hold the panel open")
         }
         pinned.collapse()
@@ -1124,7 +1144,36 @@ extension AppDelegate {
                      "A turn saved before its chat's history loaded appears once")
         precondition(OverlayModel.joining(history: Array(history.prefix(2)), before: local).map(\.text) == ["a", "b", "c", "d"],
                      "History goes before turns asked while it loaded")
-        print("PASS: AppDelegate collapse holds (pin, typing, draft), unpins on collapse and dismiss")
+        // The tab survives collapse; ⌥Space reopens on Ask, a prompt hover on the last tab.
+        precondition(addingTask.model.tab == .today, "The tab survives collapse")
+        addingTask.model.collapsed = true
+        addingTask.model.prepareTab(byHover: true)
+        precondition(addingTask.model.tab == .today, "A hover soon after closing reopens the last tab")
+        addingTask.model.prepareTab(byHover: true, at: Date().addingTimeInterval(NotchTabMemory.hoverWindow + 60))
+        precondition(addingTask.model.tab == .ask, "A hover long after closing opens Ask")
+        addingTask.model.tab = .research
+        addingTask.model.prepareTab(byHover: false)
+        precondition(addingTask.model.tab == .ask, "⌥Space opens Ask")
+        print("PASS: AppDelegate collapse holds (pin, typing, draft, Today task), unpins on collapse and dismiss; tabs reopen as designed")
+    }
+
+    static func checkResearchReleasesQueueOffTab() async {
+        let delegate = AppDelegate()
+        let model = delegate.model
+        var started: [String] = []
+        model.onStartResearch = { started.append($0) }
+        model.tab = .research
+        model.input = "battery chemistry"
+        model.submit()
+        precondition(started == ["battery chemistry"] && model.showingResearch, "A research prompt starts a plan")
+        precondition(model.willQueuePrompt, "An on-screen research plan holds the prompt queue")
+        model.tab = .ask
+        precondition(!model.willQueuePrompt, "Leaving the Research tab frees the queue for Ask")
+        precondition(model.showingResearch, "The research plan stays on its tab")
+        model.runDailySummary()
+        precondition(model.briefComposing, "A brief can be composed while research sits on its tab")
+        model.reset()
+        print("PASS: AppDelegate research releases the prompt queue when its tab is left")
     }
 
     static func checkMenuHoldsCollapse() async {

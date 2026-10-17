@@ -159,6 +159,7 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkSummaryDuringDismissal()
         await AppDelegate.checkPinnedPanelHoldsOpen()
         await AppDelegate.checkMenuHoldsCollapse()
+        await AppDelegate.checkResearchReleasesQueueOffTab()
         #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()
