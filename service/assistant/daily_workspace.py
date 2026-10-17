@@ -618,18 +618,11 @@ def collect_evidence(store, state, day, timezone, *, now):
     return result
 
 
-def _user_profile():
-    """The user's own profile, read here so `assess` stays pure over its inputs."""
-    try:
-        from service.memory import profile
-        loaded = profile.load()
-        return loaded if profile.has_content(loaded) else None
-    except Exception:
-        return None
-
-
-def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=()):
+def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), profile=None):
+    """``profile`` is the user's own profile (service/memory/profile.py), read by
+    the API layer: this module stays pure over the records it is handed and
+    imports nothing from memory."""
     state = store.today_snapshot(day, timezone)
     evidence = collect_evidence(store, state, day, timezone, now=now)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
-                  ignored_windows=ignored_windows, profile=_user_profile())
+                  ignored_windows=ignored_windows, profile=profile)
