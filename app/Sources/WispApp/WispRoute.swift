@@ -21,8 +21,18 @@ enum WispRoute: Equatable {
         var tab: Int { self == .attention ? 0 : 1 }
     }
 
-    enum MemoryFocus: Equatable {
-        case facts, learned
+    /// The Wisp window's Memory tabs: saved facts and corrections, the routines
+    /// Wisp has learned, and memories waiting for review.
+    enum MemoryFocus: Equatable, CaseIterable {
+        case facts, routines, review
+
+        var title: String {
+            switch self {
+            case .facts: return "Facts"
+            case .routines: return "Routines"
+            case .review: return "Review"
+            }
+        }
     }
 }
 

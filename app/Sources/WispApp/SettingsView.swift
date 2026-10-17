@@ -1202,7 +1202,7 @@ struct SettingsView: View {
                         NSApp.sendAction(NSSelectorFromString("openResearchLibrary"),
                                          to: nil, from: nil)
                     }
-                    Button("Open Memory") { MemoryWindow.shared.show() }
+                    Button("Open Memory") { WispRouter.shared.open(.memory(.facts)) }
                 }
                 Divider()
                 }
@@ -1686,7 +1686,7 @@ struct SettingsView: View {
                         }
 
                         HStack(spacing: 10) {
-                            Button("See what Wisp learned") { LearnedWindow.shared.show() }
+                            Button("See what Wisp learned") { WispRouter.shared.open(.memory(.routines)) }
                             Button("Forget what Wisp learned…", role: .destructive) {
                                 confirmForgetBehavior = true
                             }

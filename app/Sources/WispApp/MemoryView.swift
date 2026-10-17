@@ -119,32 +119,35 @@ final class MemoryModel: ObservableObject {
         } catch { self.error = error.localizedDescription; return nil }
     }
 
+    /// Memories waiting for review, or nil when the service can't be reached.
+    static func unreviewedCount() async -> Int? {
+        guard let data = try? await MemoryModel().request("/memory/status"),
+              let status = try? JSONDecoder().decode(MemoryStatus.self, from: data) else { return nil }
+        return status.unreviewed
+    }
+
     private struct FactsResponse: Decodable { let facts: [MemoryFact] }
     private struct FactResponse: Decodable { let fact: MemoryFact }
 }
 
-@MainActor
-final class MemoryWindow {
-    static let shared = MemoryWindow()
-    private var window: NSWindow?
+/// Which saved memories a MemoryView lists: Facts (saved, and the corrections
+/// that replaced older versions) or Review (proposed, and set aside for later).
+enum MemoryScope {
+    case facts, review
 
-    func show() {
-        if let window { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 650),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "Memory"
-        window.contentView = NSHostingView(rootView: MemoryView())
-        window.isReleasedWhenClosed = false
-        window.center()
-        self.window = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    /// The list's filters, as (title, `/memory/facts` status).
+    var filters: [(title: String, status: String)] {
+        switch self {
+        case .facts: return [("Saved", "active"), ("Corrections", "superseded")]
+        case .review: return [("Review", "proposed"), ("Later", "deferred")]
+        }
     }
 }
 
 struct MemoryView: View {
-    @StateObject private var model = MemoryModel()
-    @State private var filter = "active"
+    let scope: MemoryScope
+    @StateObject private var model: MemoryModel
+    @State private var filter: String
     @State private var query = ""
     @State private var selected: MemoryFact?
     @State private var correction = ""
@@ -154,10 +157,18 @@ struct MemoryView: View {
     @State private var pilotSize = 20
     @State private var forgetting: MemoryFact?
 
+    init(scope: MemoryScope) {
+        self.scope = scope
+        let first = scope.filters[0].status
+        let model = MemoryModel()
+        model.filter = first
+        _model = StateObject(wrappedValue: model)
+        _filter = State(initialValue: first)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Memory").font(.largeTitle.bold())
                 Spacer()
                 Button("Refresh") { Task { await model.refresh() } }
                 Toggle("Capture new statements", isOn: Binding(get: { model.status?.capture_enabled ?? false },
@@ -176,11 +187,8 @@ struct MemoryView: View {
                 }.font(.caption).foregroundStyle(.secondary)
             }
             Picker("View", selection: $filter) {
-                Text("Saved").tag("active")
-                Text("Review").tag("proposed")
-                Text("Later").tag("deferred")
-                Text("Corrections").tag("superseded")
-            }.pickerStyle(.segmented)
+                ForEach(scope.filters, id: \.status) { Text($0.title).tag($0.status) }
+            }.pickerStyle(.segmented).labelsHidden().fixedSize()
             TextField("Search memories", text: $query).textFieldStyle(.roundedBorder)
             if !model.error.isEmpty { Text(model.error).foregroundStyle(.red).textSelection(.enabled) }
             ScrollView {
@@ -189,6 +197,7 @@ struct MemoryView: View {
                     ForEach(model.facts) { fact in card(fact) }
                 }
             }
+            if scope == .review {
             DisclosureGroup("Review a small historical pilot") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Historical statements become review candidates, never automatic facts. Old chats may contain tests or outdated information. At most 2,000 user turns are queued per pilot.").font(.caption)
@@ -200,11 +209,11 @@ struct MemoryView: View {
                     Text("Capture must be enabled and the agent model already loaded for queued work to run.").font(.caption).foregroundStyle(.secondary)
                 }.padding(.top, 6)
             }
+            }
             Text(model.status?.retention_policy ?? "Explicit, confirmed and pinned memories remain when a conversation is deleted. Use Forget to remove a memory and its correction history.")
                 .font(.caption).foregroundStyle(.secondary)
         }
-        .padding(20)
-        .frame(minWidth: 650, minHeight: 500)
+        .padding(.bottom, 20)
         .task {
             while !Task.isCancelled {
                 await model.refresh()
@@ -336,7 +345,7 @@ struct MemoryReviewNotice: View {
     var body: some View {
         Group {
             if count > 0 {
-                Button("Review \(count) new memor\(count == 1 ? "y" : "ies")") { MemoryWindow.shared.show() }
+                Button("Review \(count) new memor\(count == 1 ? "y" : "ies")") { WispRouter.shared.open(.memory(.review)) }
                     .font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
             }
         }.task {
