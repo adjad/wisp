@@ -1285,10 +1285,7 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Research Library") {
-                        NSApp.sendAction(NSSelectorFromString("openResearchLibrary"),
-                                         to: nil, from: nil)
-                    }
+                    Button("Research") { WispRouter.shared.open(.research) }
                     Button("Open Memory") { WispRouter.shared.open(.memory(.facts)) }
                 }
                 Divider()

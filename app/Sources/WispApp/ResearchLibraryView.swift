@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 
+/// Saved research, in the Wisp window's Research section. New research starts
+/// in the notch's Research tab, and opening a job shows it there.
 struct ResearchLibraryView: View {
     @ObservedObject var model: ResearchLibraryModel
     var onOpen: (String) -> Void
@@ -10,15 +12,16 @@ struct ResearchLibraryView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Research Library").font(.system(size: 23, weight: .semibold))
+                    Text("Research").font(.system(size: 22, weight: .medium))
                     Text("Your 30 most recent jobs and every pinned job.")
-                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .font(.system(size: 12)).foregroundStyle(Color.secondary)
                 }
                 Spacer()
-                Button("New Research…", action: onNew).buttonStyle(.borderedProminent)
+                Button("New research", action: onNew).buttonStyle(.borderedProminent)
+                    .help("Start a research plan in the notch's Research tab")
             }
             HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(Theme.textMuted)
+                Image(systemName: "magnifyingglass").foregroundStyle(Color.secondary.opacity(0.8))
                 TextField("Search titles and questions", text: $model.query)
                     .textFieldStyle(.roundedBorder)
                 Button(action: model.refresh) {
@@ -31,9 +34,11 @@ struct ResearchLibraryView: View {
                         Button { model.filter = filter } label: {
                             Text(filter.rawValue).font(.system(size: 12, weight: .medium))
                                 .padding(.horizontal, 14).padding(.vertical, 7)
-                                .foregroundStyle(model.filter == filter ? Color.black : Theme.textSecondary)
+                                .foregroundStyle(model.filter == filter ? Color.primary : Color.secondary)
                                 .background(RoundedRectangle(cornerRadius: 7)
-                                    .fill(model.filter == filter ? Color.white : Theme.chipFill))
+                                    .fill(model.filter == filter ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05)))
+                                .overlay(RoundedRectangle(cornerRadius: 7)
+                                    .stroke(model.filter == filter ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.12), lineWidth: 1))
                         }.buttonStyle(.plain)
                             .accessibilityLabel("Show \(filter.rawValue.lowercased()) research")
                             .accessibilityAddTraits(model.filter == filter ? .isSelected : [])
@@ -41,7 +46,7 @@ struct ResearchLibraryView: View {
                 }
                 Spacer()
                 if model.loading { ProgressView().controlSize(.small) }
-                Text("\(model.visibleItems.count) jobs").font(.caption).foregroundStyle(Theme.textMuted)
+                Text("\(model.visibleItems.count) jobs").font(.caption).foregroundStyle(Color.secondary.opacity(0.8))
             }
             if !model.errorText.isEmpty {
                 HStack(alignment: .top) {
@@ -49,14 +54,14 @@ struct ResearchLibraryView: View {
                     Text(model.errorText).font(.callout)
                     Spacer()
                     Button("Retry", action: model.refresh).disabled(model.loading)
-                }.foregroundStyle(Theme.textSecondary)
+                }.foregroundStyle(Color.secondary)
             }
-            Divider().overlay(Theme.hairline)
+            Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
             if model.visibleItems.isEmpty {
                 VStack(spacing: 10) {
-                    Image(systemName: "books.vertical").font(.system(size: 30)).foregroundStyle(Theme.textMuted)
+                    Image(systemName: "books.vertical").font(.system(size: 30)).foregroundStyle(Color.secondary.opacity(0.8))
                     Text(emptyTitle).font(.headline)
-                    Text(emptyDetail).font(.callout).foregroundStyle(Theme.textSecondary)
+                    Text(emptyDetail).font(.callout).foregroundStyle(Color.secondary)
                         .multilineTextAlignment(.center).frame(maxWidth: 380)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -72,14 +77,13 @@ struct ResearchLibraryView: View {
                 }
             }
             Text("Opening saved research does not start a new search. Review a plan or choose Resume when you're ready.")
-                .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                .font(.system(size: 11)).foregroundStyle(Color.secondary.opacity(0.8))
         }
-        .padding(24)
-        .frame(minWidth: 620, minHeight: 480)
-        .foregroundStyle(Theme.textPrimary)
-        .background(Theme.surface)
-        .preferredColorScheme(.dark)
-        .tint(Theme.accent)
+        .padding(.horizontal, 24).padding(.vertical, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .foregroundStyle(Color.primary)
+        .tint(Color.accentColor)
+        .onAppear(perform: model.refresh)
     }
 
     private var emptyTitle: String {
@@ -103,55 +107,26 @@ struct ResearchLibraryView: View {
     private func row(_ item: ResearchLibraryItem) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: item.pinned ? "pin.fill" : "doc.text.magnifyingglass")
-                .foregroundStyle(Theme.textSecondary).frame(width: 20).padding(.top, 3)
+                .foregroundStyle(Color.secondary).frame(width: 20).padding(.top, 3)
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.title).font(.system(size: 14, weight: .semibold)).lineLimit(2)
                 if item.objective != item.title && !item.objective.isEmpty {
-                    Text(item.objective).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).lineLimit(2)
+                    Text(item.objective).font(.system(size: 12)).foregroundStyle(Color.secondary).lineLimit(2)
                 }
                 HStack(spacing: 8) {
                     Text(item.stateLabel).fontWeight(.medium)
                     Text("·")
                     Text(item.updatedAt, format: .dateTime.month(.abbreviated).day().year().hour().minute())
-                }.font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                }.font(.system(size: 11)).foregroundStyle(Color.secondary.opacity(0.8))
             }
             Spacer(minLength: 8)
             Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Theme.textMuted).padding(.top, 5)
+                .foregroundStyle(Color.secondary.opacity(0.8)).padding(.top, 5)
         }
         .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12)))
         .contentShape(Rectangle())
     }
 }
 
-@MainActor
-final class ResearchLibraryWindowController {
-    private var window: NSWindow?
-    private let model: ResearchLibraryModel
-    private let onOpen: (String) -> Void
-    private let onNew: () -> Void
-
-    init(client: ResearchClient, onOpen: @escaping (String) -> Void, onNew: @escaping () -> Void) {
-        model = ResearchLibraryModel(client: client)
-        self.onOpen = onOpen; self.onNew = onNew
-    }
-
-    func show() {
-        if window == nil {
-            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 620),
-                styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-            win.title = "Wisp Research Library"
-            win.contentView = NSHostingView(rootView: ResearchLibraryView(model: model,
-                onOpen: { [weak self] id in self?.window?.orderOut(nil); self?.onOpen(id) },
-                onNew: { [weak self] in self?.window?.orderOut(nil); self?.onNew() }))
-            win.minSize = NSSize(width: 660, height: 520)
-            win.isReleasedWhenClosed = false
-            win.center(); window = win
-        }
-        model.refresh()
-        NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
-    }
-}

@@ -6,6 +6,10 @@ import AppKit
 struct ChatLaunchers {
     var today: () -> Void = {}
     var research: () -> Void = {}
+    /// The Research section's actions: show a saved job, or start a new plan.
+    /// Both happen in the notch's Research tab.
+    var openResearchJob: (String) -> Void = { _ in }
+    var newResearch: () -> Void = {}
     var memory: () -> Void = {}
     var settings: () -> Void = {}
     var searchEverything: () -> Void = {}
@@ -31,8 +35,16 @@ struct ChatRootView: View {
             switch navigation.section {
             case .chats:
                 ChatMainColumn(store: store, sidebarVisible: $sidebarVisible)
+            case .today:
+                if let today = navigation.today {
+                    TodayHomeView(today: today, initialTab: navigation.todayTab, sidebarVisible: $sidebarVisible)
+                }
             case .memory:
                 MemoryHomeView(navigation: navigation, sidebarVisible: $sidebarVisible)
+            case .research:
+                if let library = navigation.researchLibrary {
+                    ResearchHomeView(library: library, launchers: launchers, sidebarVisible: $sidebarVisible)
+                }
             }
             if store.showInspector && navigation.section == .chats {
                 Rectangle().fill(ChatTheme.line).frame(width: 1)
@@ -111,8 +123,10 @@ struct ChatSidebar: View {
             .padding(.horizontal, 12).padding(.bottom, 10)
 
             VStack(spacing: 2) {
-                ChatNavRow(symbol: "sun.max", title: "Today", action: launchers.today)
-                ChatNavRow(symbol: "books.vertical", title: "Research", action: launchers.research)
+                ChatNavRow(symbol: "sun.max", title: "Today", selected: navigation.section == .today,
+                           action: launchers.today)
+                ChatNavRow(symbol: "books.vertical", title: "Research", selected: navigation.section == .research,
+                           action: launchers.research)
                 ChatNavRow(symbol: "brain", title: "Memory", selected: navigation.section == .memory,
                            action: launchers.memory)
                 ChatNavRow(symbol: "sparkle.magnifyingglass", title: "Search everything", hint: "⇧⌘F", action: launchers.searchEverything)

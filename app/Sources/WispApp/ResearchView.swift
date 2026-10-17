@@ -3,9 +3,8 @@ import AppKit
 
 struct ResearchView: View {
     @ObservedObject var model: ResearchModel
-    /// Inline mode is hosted inside Wisp's notch panel. The standalone window
-    /// remains usable by development builds, but the normal app flow never
-    /// opens it.
+    /// Compact mode is the notch's Research tab, where every research job is
+    /// shown. The full-size layout has no host in the app.
     var compact = false
     var onBack: (() -> Void)? = nil
 

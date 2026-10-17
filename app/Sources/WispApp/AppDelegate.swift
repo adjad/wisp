@@ -27,22 +27,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // test result, a running action and readiness are the same in both.
     private lazy var setupModel = SetupGuideModel()
     private var setupCloseObserver: NSObjectProtocol?
-    private lazy var researchLibrary = ResearchLibraryWindowController(client: client,
-        onOpen: { [weak self] id in self?.openSavedResearch(id) },
-        onNew: { [weak self] in self?.newResearch() })
     // The Wisp window: long conversations, saved chats, and the same approvals
     // as the notch, in a real window. It opens only when asked for; Wisp starts
     // in the notch. Its sidebar opens the other parts of the app through
     // WispRouter, like every other control (see open(_:)).
-    private lazy var wispWindow = WispWindowController(
-        backend: LiveChatBackend(client: client, access: settingsLoader),
-        launchers: ChatLaunchers(
-            today: { WispRouter.shared.open(.today(focus: .plan)) },
-            research: { WispRouter.shared.open(.research) },
-            memory: { WispRouter.shared.open(.memory(.facts)) },
-            settings: { WispRouter.shared.open(.settings) },
-            searchEverything: { [weak self] in self?.toggleSearch() }),
-        debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
+    private lazy var wispWindow: WispWindowController = {
+        let window = WispWindowController(
+            backend: LiveChatBackend(client: client, access: settingsLoader),
+            launchers: ChatLaunchers(
+                today: { WispRouter.shared.open(.today(focus: .plan)) },
+                research: { WispRouter.shared.open(.research) },
+                openResearchJob: { [weak self] id in self?.openSavedResearch(id) },
+                newResearch: { [weak self] in self?.startResearchInNotch() },
+                memory: { WispRouter.shared.open(.memory(.facts)) },
+                settings: { WispRouter.shared.open(.settings) },
+                searchEverything: { [weak self] in self?.toggleSearch() }),
+            debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
+        window.navigation.researchLibrary = ResearchLibraryModel(client: client)
+        window.navigation.today = todayModel
+        return window
+    }()
     private var searchKeyMonitor: Any?
     private var presentation = OverlayTransition()
     private var searchCaptureID: UUID?
@@ -253,9 +257,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .chat(let sessionId):
             if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
         case .today(let focus):
-            TodayWindow.show(model: todayModel, initialTab: focus.tab)
+            wispWindow.showToday(tab: focus.tab)
         case .research:
-            researchLibrary.show()
+            wispWindow.showResearch()
         case .memory(let focus):
             wispWindow.show(memory: focus)
         case .settings:
@@ -393,16 +397,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupInNotch), keyEquivalent: "")
         menu.addItem(withTitle: "Tell Wisp About You…", action: #selector(tellWispAboutYou), keyEquivalent: "")
         menu.addItem(.separator())
-        // Debug Mode: a checkable toggle (state synced in toggle() right before
-        // the menu is shown, since NSMenuItem state doesn't observe SwiftUI
-        // @Published state on its own) that turns on the inline per-reply debug
-        // line in the transcript (model, route reason, tok/s, timing, tool
-        // calls). Export works any time there's a conversation, regardless of
-        // whether Debug Mode is currently on — debug metadata is tracked for
-        // every turn unconditionally (see OverlayModel.applyDebugFields), so
-        // switching it on partway through a chat doesn't lose earlier turns.
-        let debugItem = menu.addItem(withTitle: "Debug Mode", action: #selector(toggleDebugMode), keyEquivalent: "")
-        debugModeItem = debugItem
+        // Debug Mode is in the notch's quick settings ("Show Details under
+        // replies"). Export works any time there's a conversation, whether or not
+        // it is on: debug metadata is tracked for every turn unconditionally (see
+        // OverlayModel.applyDebugFields).
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
         menu.addItem(withTitle: "Export Chat Debug Log…", action: #selector(exportDebugLog), keyEquivalent: "")
         menu.addItem(.separator())
@@ -414,14 +412,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var rightClickMenu: NSMenu?
-    private var debugModeItem: NSMenuItem?
 
     // The panel is always on screen; the hotkey and menu-bar click just flip
     // between the notch bar and the expanded assistant. No reset — the visible
     // transcript (and server-side session) survive collapse/expand.
     @objc private func toggle() {
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let menu = rightClickMenu {
-            debugModeItem?.state = model.debugMode ? .on : .off
             statusItem.menu = menu
             statusItem.button?.performClick(nil)
             statusItem.menu = nil
@@ -764,6 +760,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if sources.contains("browser_history") { self.browserHistoryReader?.sync() }
         }
         model.startAssistant()
+        Notifications.onOpenToday = { [weak self] in self?.openTodayInNotch() }
         startNativeSourceReaders()
 
         // Pointer enter/exit come from a real AppKit tracking area on the
@@ -834,29 +831,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.runDailySummary()
     }
 
-    /// Start the existing plan-first Research workflow directly from Wisp's
-    /// menu-bar menu. Research deliberately opens its own window because the
-    /// editable plan, source list, activity log, and cited report do not fit
-    /// inside the compact notch panel.
-    @objc private func newResearch() {
-        let alert = NSAlert()
-        alert.messageText = "New Wisp Research"
-        alert.informativeText = "Enter a question. Wisp will draft an editable plan before it searches the web."
-        alert.addButton(withTitle: "Create plan")
-        alert.addButton(withTitle: "Cancel")
-
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 440, height: 24))
-        field.placeholderString = "What would you like Wisp to research?"
-        alert.accessoryView = field
-
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let prompt = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else { return }
-        openResearch(prompt: prompt)
+    /// New research starts in the notch's Research tab, where the prompt drafts
+    /// an editable plan before Wisp searches the web.
+    private func startResearchInNotch() {
+        prepareNewResearch()
+        openAssistant()
     }
 
-    @objc private func openResearchLibrary() { open(.research) }
+    private func prepareNewResearch() {
+        model.showingQuickSettings = false
+        // Leaves a plan on screen the way Back does, releasing the prompt queue it held.
+        model.returnToChat()
+        model.tab = .research
+    }
+
     @objc private func openChat() { open(.chat(sessionId: nil)) }
 
     private func openSavedResearch(_ id: String) {
@@ -864,14 +852,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.showingResearch = true
         model.tab = .research
         researchModel.openJob(id)
-    }
-
-    @objc private func freeMemory() {
-        Task { await client.unloadAll() }
-    }
-
-    @objc private func toggleDebugMode() {
-        model.debugMode.toggle()
     }
 
     private func startNativeSourceReaders() {
@@ -1074,6 +1054,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openAssistant()
     }
 
+    /// Today in the notch: where a clicked notification lands.
+    private func openTodayInNotch() {
+        prepareTodayInNotch()
+        openAssistant()
+    }
+
+    private func prepareTodayInNotch() {
+        model.showingQuickSettings = false
+        model.tab = .today
+    }
+
     private func showSetupCard() {
         model.showingQuickSettings = false
         model.setupCard = .open
@@ -1266,7 +1257,17 @@ extension AppDelegate {
         model.runDailySummary()
         precondition(model.briefComposing, "A brief can be composed while research sits on its tab")
         model.reset()
-        print("PASS: AppDelegate research releases the prompt queue when its tab is left")
+        // New research from the window, while a plan is on screen in the notch.
+        let window = AppDelegate()
+        window.model.onStartResearch = { _ in }
+        window.model.tab = .research
+        window.model.input = "solid-state batteries"
+        window.model.submit()
+        precondition(window.model.willQueuePrompt, "A plan on screen holds the queue")
+        window.prepareNewResearch()
+        precondition(window.model.tab == .research && !window.model.showingResearch && !window.model.willQueuePrompt,
+                     "New research opens the Research prompt and frees the queue the old plan held")
+        print("PASS: AppDelegate research releases the prompt queue when its tab is left or New research opens")
     }
 
     static func checkQuickSettingsSurviveCollapse() async {
@@ -1325,7 +1326,12 @@ extension AppDelegate {
         model.prepareTab(byHover: true)
         precondition(model.tab == .today, "Setup set aside leaves hover's last tab alone")
         precondition(model.setupCard.afterReadiness(true) == .hidden, "Setup set aside leaves when Wisp is ready")
-        print("PASS: AppDelegate setup card opens on Ask, holds the panel until Done or Later")
+        // A clicked notification opens Today, even from quick settings on Ask.
+        model.tab = .ask
+        model.showingQuickSettings = true
+        delegate.prepareTodayInNotch()
+        precondition(model.tab == .today && !model.showingQuickSettings, "A clicked notification lands on Today")
+        print("PASS: AppDelegate setup card opens on Ask, holds the panel until Done or Later; notifications open Today")
     }
 
     static func checkInlineReportHoldsOpen() async {
