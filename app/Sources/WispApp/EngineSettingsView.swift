@@ -124,7 +124,11 @@ private final class EngineSettingsLoader: ObservableObject {
               mode != .bundled || engine.bundledAvailable else { return }
 
         isSaving = true
-        defer { isSaving = false }
+        defer {
+            isSaving = false
+            // Switching engines changes what setup tested, whatever the reply was.
+            NotificationCenter.default.post(name: .wispInferenceConfigurationChanged, object: nil)
+        }
         do {
             self.engine = try await request("POST", path: "engine/mode",
                                             body: ["mode": mode.rawValue])

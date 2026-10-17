@@ -283,25 +283,40 @@ final class WispClient {
                                    unavailableLabels: unavailable, disabledLabels: disabled)
     }
 
-    // GET/POST /assistant/summary_schedule -> the 8am(AM) / 8pm(PM) digest time.
-    func summarySchedule() async -> String {
-        let url = Self.baseURL.appendingPathComponent("assistant/summary_schedule")
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return "AM" }
-        return obj["period"] as? String ?? "AM"
+    /// The hours (0-23) of the morning and evening Daily Summary runs, as the
+    /// service confirms them. Nil when they can't be read.
+    struct BriefTimes: Equatable {
+        let morning: Int
+        let evening: Int
+
+        static func parse(_ obj: [String: Any]?) -> BriefTimes? {
+            guard let times = obj?["times"] as? [String: Any],
+                  let morning = times["morning"] as? Int, (0..<12).contains(morning),
+                  let evening = times["evening"] as? Int, (12..<24).contains(evening) else { return nil }
+            return BriefTimes(morning: morning, evening: evening)
+        }
     }
 
-    @discardableResult
-    func setSummarySchedule(_ period: String) async -> String {
+    // GET /assistant/summary_schedule -> {"times": {"morning": 8, "evening": 20}}.
+    func briefTimes() async -> BriefTimes? {
+        let url = Self.baseURL.appendingPathComponent("assistant/summary_schedule")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return BriefTimes.parse(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    // POST /assistant/summary_schedule {"times": {...}} -> the times the service saved.
+    func setBriefTimes(morning: Int? = nil, evening: Int? = nil) async -> BriefTimes? {
+        var times: [String: Int] = [:]
+        if let morning { times["morning"] = morning }
+        if let evening { times["evening"] = evening }
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/summary_schedule"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["period": period])
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return period }
-        return obj["period"] as? String ?? period
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["times": times])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return BriefTimes.parse(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
     // --- behavior engine (service/behavior) ---------------------------------
@@ -624,25 +639,34 @@ final class WispClient {
     }
 
     // GET /mode -> current safety mode flags.
-    func mode() async -> (readOnly: Bool, fullAccess: Bool) {
+    /// The service's Full access flag (GET /mode), or nil when it can't be read.
+    /// An unreadable flag is unknown, never "off": Wisp may still be acting
+    /// without asking.
+    func fullAccessState() async -> Bool? {
         let url = Self.baseURL.appendingPathComponent("mode")
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return (true, false) }
-        return (obj["read_only"] as? Bool ?? true, obj["full_access"] as? Bool ?? false)
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.fullAccessFlag(data)
     }
 
-    // POST /mode -> set full-access (no-confirmation) mode. Returns the new flags.
-    @discardableResult
-    func setFullAccess(_ on: Bool) async -> (readOnly: Bool, fullAccess: Bool) {
+    // POST /mode -> set full-access (no-confirmation) mode. Returns the flag the
+    // service confirmed, or nil when the reply was lost or unreadable (the write
+    // may still have happened).
+    func requestFullAccess(_ on: Bool) async -> Bool? {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("mode"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["full_access": on])
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return (true, false) }
-        return (obj["read_only"] as? Bool ?? true, obj["full_access"] as? Bool ?? false)
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.fullAccessFlag(data)
+    }
+
+    private static func fullAccessFlag(_ data: Data) -> Bool? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let flag = obj["full_access"] as? NSNumber,
+              CFGetTypeID(flag) == CFBooleanGetTypeID() else { return nil }
+        return flag.boolValue
     }
 
     // GET /idle_timeout -> minutes of inactivity before an idle model auto-unloads (0 = disabled).

@@ -51,6 +51,15 @@ struct NotchTabChecks {
         check(all == ["under way", "open, recent", "next", "later"], "finished blocks are left out: \(all)")
         check(NotchUpNext.upcoming([Block](), start: \.start, end: \.end, now: now).isEmpty, "no blocks, nothing next")
 
+        // The setup card: an open card waits for Done; one set aside leaves when Wisp is ready.
+        check(NotchSetupCard.open.afterReadiness(true) == .open, "an open setup card waits for Done once ready")
+        check(NotchSetupCard.later.afterReadiness(true) == .hidden, "a card set aside leaves once Wisp is ready")
+        check(NotchSetupCard.later.afterReadiness(false) == .later, "a card set aside stays while Wisp can't answer")
+        check(NotchSetupCard.hidden.afterReadiness(false) == .hidden, "losing readiness never reopens setup by itself")
+        check(NotchSetupCard.open.tabForOpening(.today) == .ask, "an open setup card opens the panel on Ask")
+        check(NotchSetupCard.later.tabForOpening(.today) == .today, "a card set aside keeps hover's last tab")
+        check(NotchSetupCard.hidden.tabForOpening(.research) == .research, "no card, no change to the tab")
+
         print("\(count) notch tab checks passed.")
     }
 }

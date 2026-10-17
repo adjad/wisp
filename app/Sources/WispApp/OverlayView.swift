@@ -6,6 +6,10 @@ struct OverlayView: View {
     @ObservedObject var researchModel: ResearchModel
     // Shared with the Wisp window's planner, so both show the same day.
     @ObservedObject var todayModel: TodayModel
+    // The app's one SettingsLoader, shared with the Settings window.
+    @ObservedObject var settings: SettingsLoader
+    // The app's one setup model, shared with the setup window.
+    @ObservedObject var setup: SetupGuideModel
     var onClose: () -> Void
     // X button: dismiss from the notch (frees the resident model) but Wisp keeps running
     // in the menu bar — NOT a full quit. Full quit is still available via the
@@ -43,15 +47,23 @@ struct OverlayView: View {
     private var expandedPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if model.showingQuickSettings {
+                QuickSettingsView(model: model, settings: settings).padding(.top, 12)
+            } else {
             switch model.tab {
             case .ask:
-                chatSwitcherRow.padding(.top, 8)
+                // First run: the open setup card replaces Ask until it is done or
+                // set aside, then shrinks to a line. One view in one place for both.
+                if model.setupCard != .open { chatSwitcherRow.padding(.top, 8) }
                 transientNotice
-                MemoryReviewNotice()
-                NudgeStack(model: model)
-                promptArea
-                content
-                statusRow.padding(.top, 10)
+                if model.setupCard != .hidden { NotchSetupView(model: model, setup: setup) }
+                if model.setupCard != .open {
+                    MemoryReviewNotice()
+                    NudgeStack(model: model)
+                    promptArea
+                    content
+                    statusRow.padding(.top, 10)
+                }
             case .today:
                 NotchTodayView(model: model, today: todayModel).padding(.top, 12)
             case .research:
@@ -71,6 +83,7 @@ struct OverlayView: View {
                     }
                     statusRow.padding(.top, 10)
                 }
+            }
             }
         }
         .background(shortcuts)
@@ -113,6 +126,14 @@ struct OverlayView: View {
                     .padding(.bottom, 5)
                     .opacity(breathe ? 0.3 : 1)
                     .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: breathe)
+            } else if model.setupCard == .later {
+                // Setup was set aside and Wisp still can't answer.
+                HStack(spacing: 6) {
+                    if !isNotch { orb.scaleEffect(0.7) }
+                    Text("!").font(.system(size: 10, weight: .heavy)).foregroundStyle(Color.orange)
+                }
+                .padding(.bottom, isNotch ? 3 : 8)
+                .accessibilityLabel("Wisp isn't set up yet")
             } else if !isNotch {
                 HStack(spacing: 8) {
                     orb.scaleEffect(0.7)
@@ -214,6 +235,8 @@ struct OverlayView: View {
             if model.tab == .ask && !model.turns.isEmpty {
                 ctrl("square.and.pencil", "New chat (⌘N)", { model.newChat() })
             }
+            ctrl("gearshape", model.showingQuickSettings ? "Close quick settings" : "Quick settings",
+                 active: model.showingQuickSettings, { model.showingQuickSettings.toggle() })
             ctrl(model.pinned ? "pin.fill" : "pin", model.pinned ? "Unpin (⌘P)" : "Keep open (⌘P)",
                  active: model.pinned, { model.pinned.toggle() })
             // The window opens on what this tab shows. For Ask it reads the saved
