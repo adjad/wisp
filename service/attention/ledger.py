@@ -140,10 +140,15 @@ class Ledger:
                 f"AND state IN ({marks}) ORDER BY decided_at", (since_ts, upcoming_from, *states)).fetchall()
         return [_row(r) for r in rows]
 
-    def recent(self, limit: int = 20) -> list[dict]:
+    def recent(self, limit: int = 20, states: tuple[str, ...] | None = None) -> list[dict]:
         with self._lock:
-            rows = self._db.execute(
-                "SELECT * FROM actions ORDER BY decided_at DESC LIMIT ?", (limit,)).fetchall()
+            if states:
+                rows = self._db.execute(
+                    f"SELECT * FROM actions WHERE state IN ({','.join('?' * len(states))}) "
+                    "ORDER BY decided_at DESC LIMIT ?", (*states, limit)).fetchall()
+            else:
+                rows = self._db.execute(
+                    "SELECT * FROM actions ORDER BY decided_at DESC LIMIT ?", (limit,)).fetchall()
         return [_row(r) for r in rows]
 
     def meta(self, key: str) -> str | None:

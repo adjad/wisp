@@ -92,7 +92,6 @@ final class OverlayModel: ObservableObject {
         var traceID: String? = nil
         var errorDetail: String? = nil
         var nodeResultID: String? = nil
-        var isDailySummary: Bool = false   // see runDailySummary/"daily_brief": replaced, never stacked
 
         // Debug metadata — populated on assistant turns only (see handle()'s
         // "done"/"error" cases). Everything a debug-mode export needs to
@@ -139,12 +138,34 @@ final class OverlayModel: ObservableObject {
     @Published var pending: Pending?
     @Published var messageDraft: MessageDraft?
     @Published var attachedImageName: String?
-    @Published var researchMode = false
+    // The panel's tab. App-scoped, so it survives collapse.
+    @Published var tab: NotchTab = .ask {
+        didSet {
+            guard tab != oldValue else { return }
+            // A research plan holds the prompt queue only while it is on screen.
+            // Leaving the tab lets a question asked in Ask, or a brief, run.
+            if oldValue == .research { releaseResearchDispatch() }
+            onResize()
+        }
+    }
+    private var tabMemory = NotchTabMemory()
+    // The next prompt opens an editable research plan. This is the Research tab.
+    var researchMode: Bool {
+        get { tab == .research }
+        set {
+            if newValue { tab = .research } else if tab == .research { tab = .ask }
+        }
+    }
     // Once a research question is submitted, its plan, progress, sources, and
-    // report replace the chat surface inside the main Wisp panel. Research is
-    // a mode of Wisp, not a separate destination window.
+    // report replace the prompt on the Research tab. Research is a mode of
+    // Wisp, not a separate destination window.
     @Published var showingResearch = false
-    @Published var collapsed = false { didSet { onCollapsedChanged() } }
+    @Published var collapsed = false {
+        didSet {
+            if collapsed && !oldValue { tabMemory.panelClosed(at: Date()) }
+            onCollapsedChanged()
+        }
+    }
     @Published var turns: [Turn] = []      // conversation history
     @Published var heartbeats = 0          // keepalive pings during long silent generation (e.g. reasoning)
     // Current-source reads, including a sync that outlives a tool/summary's
@@ -172,11 +193,34 @@ final class OverlayModel: ObservableObject {
     // Upcoming commitments themselves surface as system notifications (see
     // Notifications.swift / handleAssistantEvent's "reminder" case) rather
     // than a live in-panel list.
-    @Published var summaryPeriod = "AM"    // scheduled daily-brief time: AM(8am) / PM(8pm)
+    // The latest Daily Summary brief, shown on the Today tab: the scheduled one
+    // from the service, or one composed with Refresh. It belongs to Today, not
+    // to the chat, so New chat keeps it.
+    struct DailyBrief: Equatable {
+        let text: String
+        let receivedAt: Date
+        let traceID: String?
+        // The saved chat the service recorded this brief in, so a follow-up can
+        // continue from it. Empty for a scheduled brief, which is not recorded.
+        let sessionId: String
+    }
+    @Published private(set) var brief: DailyBrief?
+    @Published private(set) var briefComposing = false
+    // The Today tab's unsent inline task. Kept here so it survives collapse.
+    @Published var todayTaskTitle = ""
     // Behavior-engine nudges shown as cards at the top of the panel (newest
     // first, see NudgeViews.swift). Each also arrives as a notification.
     @Published var nudges: [BehaviorNudge] = []
     @Published var transientNotice: String?
+    // Keep the panel open: no auto-collapse when the pointer leaves or focus
+    // moves to another app. Cleared by any explicit collapse (see AppDelegate).
+    @Published var pinned = false
+    // Recent saved chats for the notch's chat switcher, newest first, without
+    // the one open here. Refreshed each time the panel opens.
+    @Published private(set) var recentChats: [ChatSummary] = []
+    // The saved title of a chat reopened from the switcher; nil for a chat
+    // started here, which is named after its first prompt.
+    @Published private(set) var reopenedChatTitle: String?
     private var assistantTask: Task<Void, Never>?
     private var transientNoticeTask: Task<Void, Never>?
     // The last scheduled brief this session notified about. The SSE stream is
@@ -195,16 +239,36 @@ final class OverlayModel: ObservableObject {
     // panel, which must not be mistaken for "the user switched apps".
     var pickingFile = false
 
-    // True while auto-collapse should hold off: mid-task, pending confirm,
-    // or the user has typed something they haven't sent. Checked once, right
-    // when the cursor leaves the panel — collapse is otherwise immediate, no
-    // idle timer.
-    var busy: Bool {
-        switch phase {
-        case .routing, .working, .streaming, .confirming: return true
-        default: return queuedPromptCount > 0 || !input.trimmingCharacters(in: .whitespaces).isEmpty
-        }
+    // True while auto-collapse must hold off: the panel is pinned, or there is
+    // an edit the person hasn't finished (typed input, a message draft being
+    // edited). A mid-task generation does not count; the notch bar's dot shows
+    // it is still working.
+    var holdsOpen: Bool {
+        pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
+            || (tab == .today && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
     }
+
+    /// Pick the tab for an opening panel: Ask, or for a hover soon after the
+    /// panel closed, the tab it closed on.
+    func prepareTab(byHover: Bool, at date: Date = Date()) {
+        tab = tabMemory.tabForOpening(current: tab, byHover: byHover, at: date)
+    }
+
+    /// False while a turn is in flight. The Wisp window and the chat switcher
+    /// read the saved history, which the service writes only at the end of a turn.
+    var conversationSettled: Bool {
+        ![Phase.routing, .working, .streaming, .confirming].contains(phase)
+    }
+
+    /// What the chat switcher calls the conversation open here.
+    var chatTitle: String {
+        if let reopenedChatTitle { return reopenedChatTitle }
+        if let first = turns.first(where: { $0.role == "user" }) { return ChatTitle.make(from: first.text, limit: 40) }
+        return "New chat"
+    }
+
+    /// Slash commands the Ask field's text could still become.
+    var commandSuggestions: [NotchCommand] { NotchCommand.suggestions(for: input) }
 
     // The compact welcome menu surfaces the main workflows directly below the
     // prompt. Research belongs here alongside Daily Summary — not only in the
@@ -290,6 +354,14 @@ final class OverlayModel: ObservableObject {
     func submit() {
         let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
+        if let command = NotchCommand.match(prompt) {
+            input = ""
+            run(command)
+            return
+        }
+        // Part of a command that could still be one of several ("/re"): keep the
+        // list showing rather than sending a fragment to the model.
+        if !NotchCommand.suggestions(for: prompt).isEmpty { return }
         let submission = QueuedPrompt(text: prompt, image: attachedImage,
                                       imageName: attachedImageName, researchMode: researchMode)
         input = ""
@@ -353,6 +425,107 @@ final class OverlayModel: ObservableObject {
         }
         sessionId = ""
         reset()
+        // The chat just left belongs in the switcher now.
+        refreshRecentChats()
+    }
+
+    /// Saved history followed by the turns asked here while it loaded. A load that
+    /// finished after one of those turns was saved already ends with it, so the
+    /// overlap is kept once.
+    static func joining(history: [Turn], before local: [Turn]) -> [Turn] {
+        var overlap = min(history.count, local.count)
+        while overlap > 0 {
+            let tail = history.suffix(overlap), head = local.prefix(overlap)
+            if zip(tail, head).allSatisfy({ $0.role == $1.role && $0.text == $1.text }) { break }
+            overlap -= 1
+        }
+        return Array(history.dropLast(overlap)) + local
+    }
+
+    func run(_ command: NotchCommand) {
+        switch command {
+        case .today: tab = .today
+        case .memory: WispRouter.shared.open(.memory(.facts))
+        case .research: tab = .research
+        case .settings: WispRouter.shared.open(.settings)
+        case .report: reportCurrentProblem()
+        case .window: openTabInWindow()
+        case .new: newChat()
+        }
+    }
+
+    /// ⤢, ⌘O and /window: open what this tab shows in the Wisp window.
+    func openTabInWindow() {
+        switch tab {
+        case .ask:
+            if conversationSettled { openInChat() }
+            else { showTransientNotice("Wisp is still answering. Open the window when it finishes.") }
+        case .today: WispRouter.shared.open(.today(focus: .plan))
+        case .research: WispRouter.shared.open(.research)
+        }
+    }
+
+    /// Continue from the brief in Ask, in the saved chat it was recorded in.
+    func askAboutBrief() {
+        guard let brief, !brief.sessionId.isEmpty, conversationSettled else { return }
+        newChat()
+        sessionId = brief.sessionId
+        reopenedChatTitle = "Daily summary"
+        turns = [Turn(role: "user", text: "Daily summary"), Turn(role: "assistant", text: brief.text)]
+        tab = .ask
+        onResize()
+    }
+
+    /// Ask Wisp about something Today says needs you: Ask opens with it quoted.
+    func askAbout(_ title: String, reference: String) {
+        let quoted = "About “\(title)”" + (reference.isEmpty ? "" : " (\(reference))") + ": "
+        input = quoted
+        tab = .ask
+    }
+
+    // Refreshes overlap (panel open, New chat, a finished turn); only the newest
+    // request's answer is used, so a slow older one cannot replace a newer list.
+    private var recentChatsGeneration = 0
+
+    func refreshRecentChats() {
+        recentChatsGeneration += 1
+        let generation = recentChatsGeneration
+        Task { [weak self] in
+            guard let self, let rows = await self.client.chatList(limit: 9),
+                  generation == self.recentChatsGeneration else { return }
+            let current = self.sessionId
+            self.recentChats = Array(rows.compactMap(ChatSummary.parse).filter { $0.id != current }.prefix(8))
+        }
+    }
+
+    /// Continue a saved chat here. Like New chat, an open confirmation card in the
+    /// conversation being left is denied, never left to time out.
+    func reopenChat(_ summary: ChatSummary) {
+        guard conversationSettled, summary.id != sessionId else { return }
+        let target = summary.id
+        newChat()
+        sessionId = target
+        reopenedChatTitle = summary.title
+        recentChats.removeAll { $0.id == target }
+        Task { [weak self] in
+            guard let self else { return }
+            let rows = await self.client.chatTurns(id: target)
+            // Another chat was opened meanwhile; this history is not for it.
+            guard self.sessionId == target else { return }
+            guard let rows else {
+                self.showTransientNotice("Couldn't load that chat. New messages still continue it.")
+                return
+            }
+            // The saved history keeps which tools an answer used, not their results.
+            // It goes before anything already asked here while it loaded, which
+            // continued the same session.
+            let history = ChatHistory.messages(from: rows).map { message in
+                Turn(role: message.role == .user ? "user" : "assistant", text: message.text,
+                     activity: message.tools.map { "\($0.name) — used" })
+            }
+            self.turns = Self.joining(history: history, before: self.turns)
+            self.onResize()
+        }
     }
 
     func pick(_ s: String) {
@@ -366,7 +539,8 @@ final class OverlayModel: ObservableObject {
         // just their schedule and had to separately ask "and my email" /
         // "what's on my messages" as follow-ups.
         if s == "Daily summary" {
-            runDailySummary()
+            tab = .today
+            if brief == nil { runDailySummary() }
             return
         }
         if s == "Research a topic" {
@@ -437,6 +611,7 @@ final class OverlayModel: ObservableObject {
         pending = nil
         dailySummaryID = UUID()
         dailySummaryRunning = false
+        briefComposing = false
         submissionState.reset()
         researchDispatchID = nil
         queuedPromptCount = 0
@@ -445,6 +620,7 @@ final class OverlayModel: ObservableObject {
         routeSource = ""; statusText = ""
         attachedImage = nil; attachedImageName = nil; messageDraft = nil; phase = .idle
         collapsed = false; turns = []
+        reopenedChatTitle = nil
     }
 
     /// Leave the inline Research surface without cancelling its persisted job.
@@ -453,10 +629,13 @@ final class OverlayModel: ObservableObject {
     func returnToChat() {
         showingResearch = false
         researchMode = false
-        if let dispatchID = researchDispatchID {
-            researchDispatchID = nil
-            completeSubmission(dispatchID)
-        }
+        releaseResearchDispatch()
+    }
+
+    private func releaseResearchDispatch() {
+        guard let dispatchID = researchDispatchID else { return }
+        researchDispatchID = nil
+        completeSubmission(dispatchID)
     }
 
     // Writes the full current conversation — every turn's text, model, route
@@ -820,7 +999,7 @@ final class OverlayModel: ObservableObject {
     private func completeSubmission(_ dispatchID: UInt64) {
         let next = submissionState.complete(dispatchID)
         queuedPromptCount = submissionState.queuedCount
-        if let next { start(next) }
+        if let next { start(next) } else { refreshRecentChats() }
     }
 
     // Folds this turn's tracked debug metadata into the Turn being finalized.
@@ -897,7 +1076,6 @@ final class OverlayModel: ObservableObject {
     private let assistantDelivery = AssistantDelivery()
 
     func startAssistant() {
-        refreshAssistant()
         // Nudge notification buttons (Useful / Not now / Wrong / Undo / Do it)
         // route back here on the main actor.
         Notifications.onNudgeResponse = { [weak self] nudgeID, action, info in
@@ -924,12 +1102,6 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    func refreshAssistant() {
-        Task { [weak self] in
-            self?.summaryPeriod = await self?.client.summarySchedule() ?? "AM"
-        }
-    }
-
     func showTransientNotice(_ message: String, duration: TimeInterval = 4) {
         transientNoticeTask?.cancel()
         transientNotice = message
@@ -940,41 +1112,40 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    // Daily Summary button: fetch the combined calendar+email brief and show it
-    // as an assistant turn (uses the fast model directly, not the agent loop).
+    // Refresh on the Today tab (and the menu bar's Daily Summary): compose the
+    // combined calendar, email and messages brief now and show it on Today.
+    // It waits its turn with prompts, so it never reads the sources while a
+    // reply is being written. A prompt sent meanwhile is queued behind it.
     func runDailySummary() {
-        guard let dispatch = submissionState.beginDailySummary() else { return }
+        tab = .today
+        guard !briefComposing else { return }
+        guard let dispatch = submissionState.beginDailySummary() else {
+            showTransientNotice("Wisp is answering. Refresh the brief when it finishes.")
+            return
+        }
         requestExpand()
-        // A summary is a snapshot, not a running log entry — an old one left
-        // sitting in the transcript (e.g. from the scheduled 8am/8pm push,
-        // never cleared because only the X button resets `turns`) reads as
-        // current when it's really from hours or a day earlier. Drop any
-        // prior daily-summary turns before adding this one, so there is only
-        // ever the latest.
-        turns.removeAll { $0.isDailySummary }
-        turns.append(Turn(role: "user", text: "Daily summary", isDailySummary: true))
-        answer = ""; reasoning = ""; activity = []
-        statusText = "Checking your data…"
+        briefComposing = true
         dailySummaryRunning = true
         let summaryID = UUID()
         dailySummaryID = summaryID
         startSyncProgress(sources: ["calendar", "reminders", "email", "messages"])
-        phase = .working
+        onResize()
         Task { [weak self] in
             guard let self else { return }
-            let result = await self.client.dailySummary(sessionId: self.sessionId)
-            let text = result.text ?? "Couldn't build a summary right now."
+            // No session: the service records the brief in a new saved chat, so
+            // Ask about this continues from it without joining the open chat.
+            let result = await self.client.dailySummary()
             guard self.dailySummaryID == summaryID,
                   self.submissionState.isCurrent(dispatch.id) else { return }
-            // Adopt the session the brief was recorded in, so a follow-up
-            // ("send this to Trishe") continues the conversation it is in.
-            if !result.sessionId.isEmpty { self.sessionId = result.sessionId }
             self.dailySummaryRunning = false
-            self.statusText = ""
+            self.briefComposing = false
             // Do not stop source polling here. A "still syncing" response is
             // a bounded wait, not completion of the background sync itself.
-            self.turns.append(Turn(role: "assistant", text: text, isDailySummary: true))
-            self.phase = .done
+            if let text = result.text {
+                self.brief = DailyBrief(text: text, receivedAt: Date(), traceID: nil, sessionId: result.sessionId)
+            } else {
+                self.showTransientNotice("Couldn't build a summary right now.")
+            }
             self.onResize()
             self.completeSubmission(dispatch.id)
         }
@@ -1033,11 +1204,6 @@ final class OverlayModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
-    }
-
-    func setSummaryPeriod(_ period: String) {
-        summaryPeriod = period
-        Task { [weak self] in _ = await self?.client.setSummarySchedule(period) }
     }
 
     // Set by the app delegate: create/remove real macOS Calendar events (the app
@@ -1114,7 +1280,7 @@ final class OverlayModel: ObservableObject {
         // Durable Calendar actions only execute through the claimed bridge.
         switch ev.type {
         case "hello", "heartbeat": return true
-        case "changed": refreshAssistant()
+        case "changed": break
         case "calendar_action_unknown":
             return await Notifications.deliver(id: ev.str("event_id") + ":unknown",
                 title: "Calendar outcome unknown", body: ev.str("error"))
@@ -1148,6 +1314,17 @@ final class OverlayModel: ObservableObject {
                                                subtitle: nudge.notificationSubtitle,
                                                category: nudge.notificationCategory,
                                                userInfo: nudge.notificationInfo)
+        case "attention_added":
+            // The attention runner added a reminder for a plan stated in a text that was on
+            // neither Calendar nor Reminders. Say what was added and quote the source; Undo
+            // lives in Today's "Caught for you" section.
+            let title = ev.str("title")
+            guard !title.isEmpty, !ev.str("source_id").isEmpty else { return false }
+            let quote = ev.str("quote")
+            let body = [ev.str("when_label"), quote.isEmpty ? "" : "“\(quote)”"]
+                .filter { !$0.isEmpty }.joined(separator: "\n")
+            return await Notifications.deliver(id: "attention:" + ev.str("source_id"),
+                                               title: "Added a reminder: \(title)", body: body)
         case "create_apple_reminder":
             return false
         case "update_apple_reminder":
@@ -1294,12 +1471,10 @@ final class OverlayModel: ObservableObject {
                 await post(title: "🗞️ \(part) brief",
                                    body: Self.notificationBody(from: briefText))
             }
-            // Same replace-not-stack rule as the manual button: this is the
-            // scheduler's once-daily push, and without this it can sit in the
-            // transcript across a sleep/wake or an unattended day and read as
-            // "today's" summary when it's actually from the prior firing.
-            turns.removeAll { $0.isDailySummary }
-            turns.append(Turn(role: "assistant", text: briefText, traceID: ev.payload["trace_id"] as? String, isDailySummary: true))
+            // The full write-up replaces the brief on the Today tab, which shows
+            // when it arrived, so an older one never reads as current.
+            brief = DailyBrief(text: briefText, receivedAt: Date(),
+                               traceID: ev.payload["trace_id"] as? String, sessionId: "")
         default:
             return false
         }

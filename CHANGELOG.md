@@ -4,7 +4,21 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Chat switcher in the notch.** The chip under the header names the conversation and lists recent saved chats, so you can continue one without opening the window.
+- **Slash commands in the notch.** Type `/today`, `/memory`, `/research`, `/settings`, `/report`, `/window` or `/new` alone in the Ask field. A path or any other text starting with "/" is still sent as a prompt.
+- **Details under each reply** show the model, route, timing and tool calls. Debug Mode now opens them by default instead of adding a separate line.
+- **Keep open (pin, ⌘P).** A pinned notch doesn't tuck away when the pointer leaves or you switch apps. Any explicit collapse unpins it. A message draft you're editing also keeps the notch open.
+- Notch shortcuts: ⌘N new chat, ⌘O open the current tab in the Wisp window, ⌘1 to ⌘3 switch tabs.
+- **Tabs in the notch: Ask, Today and Research.** The tab is kept when the notch tucks away. ⌥Space and the menu-bar icon always open Ask. Hovering opens the tab you last used if the notch closed in the last ten minutes, otherwise Ask.
+- **Today in the notch.** Your brief, what needs you (with Add as task and Ask Wisp), the next three blocks of your plan (with ±15 minute nudges), an inline Add to day, Replan and Running 15 min late. The Today tab shows a count of what needs you. The full planner, its task editor and the daily email open in the window with **Full planner** or ⌘O. Today loads while its tab is open, never at launch.
+- **Memory in the Wisp window.** Memory and What Wisp has learned are one Memory section with three tabs: **Facts** (saved memories and their corrections), **Routines** (what Wisp learned from your activity) and **Review** (new memories to confirm, edit or set aside). Open it from the window's sidebar, `/memory` in the notch, the notch's review notice, or Settings.
+
 ### Changed
+- The separate Memory and What Wisp has learned windows are gone; both open the Wisp window's Memory section on the matching tab. What each one stores, and how review, correction and Forget work, are unchanged.
+- The Daily Summary now composes itself **every morning and every evening** (8 AM and 8 PM by default), so a fresh summary is waiting without pressing the button. Before, it ran once a day at the time the AM/PM toggle chose. A run missed while the Mac slept or Wisp was closed arrives on the next launch or wake, until the next run is due. Only one run happens at a time. A run never starts while you are waiting on Wisp, and it steps aside if you ask something mid-run, then retries afterwards. Change the hours with `POST /assistant/summary_schedule` `{"times": {"morning": 7, "evening": 18}}` (morning 0–11, evening 12–23). The AM/PM toggle no longer chooses a time.
+- The Daily Summary brief now appears on the Today tab instead of in the chat. **Refresh** composes a new one, and **Ask about this** continues from it in Ask. A brief you compose is saved as its own chat, no longer added to the open one.
+- The notch header's Research, Today and Daily Summary chips and the AM/PM brief toggle, which no longer picks a time, are replaced by the tabs. Research is now a tab: its prompt starts a research plan.
 - Wisp now starts in the notch. Launching it no longer opens the Wisp window. The first launch after updating opens the notch once with a note about where Wisp lives. Open the window from the Dock icon, the menu bar's **Open Wisp Window**, or **Window ▸ Wisp Window** (⌘1).
 
 ## [1.4.0] - 2026-10-16

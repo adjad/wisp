@@ -188,8 +188,11 @@ def _save_overlay(update: dict) -> None:
 
 
 def get_daily_summary_hour() -> int:
-    """Hour (0-23) the scheduled daily brief fires. 8 = 8am (AM), 20 = 8pm (PM).
-    Persisted in the user overlay so it survives repackaging."""
+    """The legacy AM/PM choice: 8 = 8am (AM), 20 = 8pm (PM).
+
+    It no longer picks when the brief fires; both runs in
+    get_daily_summary_times() do. The scheduler still reads it on the day of an
+    upgrade, to tell which run an older version's once-a-day receipt covered."""
     return int(models_config().get("daily_summary_hour", 8))
 
 
@@ -197,6 +200,48 @@ def set_daily_summary_hour(hour: int) -> int:
     hour = 20 if int(hour) >= 12 else 8   # only two choices: 8am or 8pm
     _save_overlay({"daily_summary_hour": hour})
     return hour
+
+
+# The two Daily Summary runs. The defaults are the two times Wisp already
+# offered (8 AM and 8 PM), so the one a user picked before still arrives on time.
+DAILY_SUMMARY_DEFAULT_TIMES = {"morning": 8, "evening": 20}
+# Each run keeps to its half of the day, so the "morning" and "evening" labels
+# stay true and the morning run always comes first.
+_DAILY_SUMMARY_HOURS = {"morning": range(0, 12), "evening": range(12, 24)}
+
+
+def _daily_summary_hour(part: str, value: object) -> int:
+    if type(value) is not int or value not in _DAILY_SUMMARY_HOURS[part]:
+        first, last = _DAILY_SUMMARY_HOURS[part][0], _DAILY_SUMMARY_HOURS[part][-1]
+        raise ValueError(f"{part} hour must be a whole hour from {first} through {last}")
+    return value
+
+
+def get_daily_summary_times() -> dict[str, int]:
+    """Hour (0-23) of the morning and evening Daily Summary runs.
+
+    Persisted in the user overlay so it survives repackaging. A missing or
+    invalid entry falls back to its default rather than turning the run off."""
+    stored = models_config().get("daily_summary_times")
+    stored = stored if isinstance(stored, dict) else {}
+    times = {}
+    for part, default in DAILY_SUMMARY_DEFAULT_TIMES.items():
+        try:
+            times[part] = _daily_summary_hour(part, stored.get(part, default))
+        except ValueError:
+            times[part] = default
+    return times
+
+
+def set_daily_summary_times(*, morning: object = None, evening: object = None) -> dict[str, int]:
+    """Change either run's hour. Raises ValueError, and saves nothing, when
+    either value is out of range for its half of the day."""
+    update = {part: _daily_summary_hour(part, value)
+              for part, value in (("morning", morning), ("evening", evening))
+              if value is not None}
+    if update:
+        _save_overlay({"daily_summary_times": {**get_daily_summary_times(), **update}})
+    return get_daily_summary_times()
 
 
 def get_behavior_enabled() -> bool:

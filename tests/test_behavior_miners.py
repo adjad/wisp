@@ -245,6 +245,23 @@ def test_categories_from_titles():
     assert categorize("Zzz") == "other"
 
 
+def test_course_sessions_are_class_and_coursework_is_not():
+    """University calendars tag entries with a course code and rarely say "class";
+    work handed in on a due time must not become a class habit at 11:59pm."""
+    from service.behavior.categorize import categorize
+    for title in ("Attendance October 12 (Contains one question) [CSE-20-04]",
+                  "Office Hours with TA Xiao [STAT-5-02]", "Dublin Community Office Hours",
+                  "Chem lab", "Physics recitation", "Study group"):
+        assert categorize(title) == "class", title
+    for title in ("HW1 [STAT-5-02]", "Week 3 Reading: Branching [CSE-20-04]",
+                  "Quiz 1- Requires Respondus LockDown Browser [CSE-20-04]",
+                  "NYT Discussion Post # 3 [CLNI-1-09]", "Plenary #1 Assignment [CLNI-1-09]",
+                  "PA 1 [CSE-20-04]", "Worksheet 1 [STAT-5-02]",
+                  "[OPS-123] Fix login", "Community Meetings with your RA [MANDATORY for On-Campus Frosh]"):
+        assert categorize(title) != "class", title
+    assert categorize("Q3 planning [OPS-12]") == "meeting"        # a ticket id is not a course
+
+
 def test_contact_spread_over_the_week_is_not_a_rhythm():
     """Finding 4: when no weekday qualifies the miner used to emit weekdays=()
     (= every day) with a bogus 0-60 minute window: "most afternoons (12–1am)"."""

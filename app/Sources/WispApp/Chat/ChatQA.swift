@@ -106,7 +106,8 @@ enum ChatQADriver {
                               backing: .buffered, defer: false)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.contentView = NSHostingView(rootView: ChatRootView(store: store, launchers: ChatLaunchers()))
+        window.contentView = NSHostingView(rootView: ChatRootView(store: store, launchers: ChatLaunchers(),
+                                                                navigation: WispWindowNavigation()))
         window.makeKeyAndOrderFront(nil)
         app.activate(ignoringOtherApps: true)
         Task { @MainActor in
