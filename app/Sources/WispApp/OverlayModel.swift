@@ -177,6 +177,15 @@ final class OverlayModel: ObservableObject {
     // first, see NudgeViews.swift). Each also arrives as a notification.
     @Published var nudges: [BehaviorNudge] = []
     @Published var transientNotice: String?
+    // Keep the panel open: no auto-collapse when the pointer leaves or focus
+    // moves to another app. Cleared by any explicit collapse (see AppDelegate).
+    @Published var pinned = false
+    // Recent saved chats for the notch's chat switcher, newest first, without
+    // the one open here. Refreshed each time the panel opens.
+    @Published private(set) var recentChats: [ChatSummary] = []
+    // The saved title of a chat reopened from the switcher; nil for a chat
+    // started here, which is named after its first prompt.
+    @Published private(set) var reopenedChatTitle: String?
     private var assistantTask: Task<Void, Never>?
     private var transientNoticeTask: Task<Void, Never>?
     // The last scheduled brief this session notified about. The SSE stream is
@@ -195,16 +204,29 @@ final class OverlayModel: ObservableObject {
     // panel, which must not be mistaken for "the user switched apps".
     var pickingFile = false
 
-    // True while auto-collapse should hold off: mid-task, pending confirm,
-    // or the user has typed something they haven't sent. Checked once, right
-    // when the cursor leaves the panel — collapse is otherwise immediate, no
-    // idle timer.
-    var busy: Bool {
-        switch phase {
-        case .routing, .working, .streaming, .confirming: return true
-        default: return queuedPromptCount > 0 || !input.trimmingCharacters(in: .whitespaces).isEmpty
-        }
+    // True while auto-collapse must hold off: the panel is pinned, or there is
+    // an edit the person hasn't finished (typed input, a message draft being
+    // edited). A mid-task generation does not count; the notch bar's dot shows
+    // it is still working.
+    var holdsOpen: Bool {
+        pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
     }
+
+    /// False while a turn is in flight. The Wisp window and the chat switcher
+    /// read the saved history, which the service writes only at the end of a turn.
+    var conversationSettled: Bool {
+        ![Phase.routing, .working, .streaming, .confirming].contains(phase)
+    }
+
+    /// What the chat switcher calls the conversation open here.
+    var chatTitle: String {
+        if let reopenedChatTitle { return reopenedChatTitle }
+        if let first = turns.first(where: { $0.role == "user" }) { return ChatTitle.make(from: first.text, limit: 40) }
+        return "New chat"
+    }
+
+    /// Slash commands the Ask field's text could still become.
+    var commandSuggestions: [NotchCommand] { NotchCommand.suggestions(for: input) }
 
     // The compact welcome menu surfaces the main workflows directly below the
     // prompt. Research belongs here alongside Daily Summary — not only in the
@@ -290,6 +312,14 @@ final class OverlayModel: ObservableObject {
     func submit() {
         let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
+        if let command = NotchCommand.match(prompt) {
+            input = ""
+            run(command)
+            return
+        }
+        // Part of a command that could still be one of several ("/re"): keep the
+        // list showing rather than sending a fragment to the model.
+        if !NotchCommand.suggestions(for: prompt).isEmpty { return }
         let submission = QueuedPrompt(text: prompt, image: attachedImage,
                                       imageName: attachedImageName, researchMode: researchMode)
         input = ""
@@ -353,6 +383,55 @@ final class OverlayModel: ObservableObject {
         }
         sessionId = ""
         reset()
+    }
+
+    func run(_ command: NotchCommand) {
+        switch command {
+        case .today: WispRouter.shared.open(.today(focus: .plan))
+        case .memory: WispRouter.shared.open(.memory(.facts))
+        case .research: researchMode = true
+        case .settings: WispRouter.shared.open(.settings)
+        case .report: reportCurrentProblem()
+        case .window:
+            if conversationSettled { openInChat() }
+            else { showTransientNotice("Wisp is still answering. Open the window when it finishes.") }
+        case .new: newChat()
+        }
+    }
+
+    func refreshRecentChats() {
+        Task { [weak self] in
+            guard let self, let rows = await self.client.chatList(limit: 9) else { return }
+            let current = self.sessionId
+            self.recentChats = Array(rows.compactMap(ChatSummary.parse).filter { $0.id != current }.prefix(8))
+        }
+    }
+
+    /// Continue a saved chat here. Like New chat, an open confirmation card in the
+    /// conversation being left is denied, never left to time out.
+    func reopenChat(_ summary: ChatSummary) {
+        guard conversationSettled, summary.id != sessionId else { return }
+        let target = summary.id
+        newChat()
+        sessionId = target
+        reopenedChatTitle = summary.title
+        recentChats.removeAll { $0.id == target }
+        Task { [weak self] in
+            guard let self else { return }
+            let rows = await self.client.chatTurns(id: target)
+            // Something else happened meanwhile (another chat, or a new prompt).
+            guard self.sessionId == target, self.turns.isEmpty else { return }
+            guard let rows else {
+                self.showTransientNotice("Couldn't load that chat. New messages still continue it.")
+                return
+            }
+            // The saved history keeps which tools an answer used, not their results.
+            self.turns = ChatHistory.messages(from: rows).map { message in
+                Turn(role: message.role == .user ? "user" : "assistant", text: message.text,
+                     activity: message.tools.map { "\($0.name) — used" })
+            }
+            self.onResize()
+        }
     }
 
     func pick(_ s: String) {
@@ -445,6 +524,7 @@ final class OverlayModel: ObservableObject {
         routeSource = ""; statusText = ""
         attachedImage = nil; attachedImageName = nil; messageDraft = nil; phase = .idle
         collapsed = false; turns = []
+        reopenedChatTitle = nil
     }
 
     /// Leave the inline Research surface without cancelling its persisted job.

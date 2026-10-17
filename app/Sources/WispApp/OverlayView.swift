@@ -11,6 +11,9 @@ struct OverlayView: View {
     var onDismiss: () -> Void = {}
     @FocusState private var focused: Bool
     @State private var breathe = false
+    // Replies whose Details the person toggled away from the default (open in
+    // Debug Mode, closed otherwise).
+    @State private var detailsToggled: Set<UUID> = []
     // Live display layout: notch on MacBooks (physical or virtual), floating
     // capsule on monitors. Refreshes when displays change.
     @ObservedObject private var display = DisplayGeometry.shared
@@ -21,7 +24,10 @@ struct OverlayView: View {
         }
         .onAppear { breathe = true }
         .onChange(of: model.collapsed) { _, isCollapsed in
-            if !isCollapsed { focused = true }
+            if !isCollapsed {
+                focused = true
+                model.refreshRecentChats()
+            }
         }
     }
 
@@ -36,6 +42,7 @@ struct OverlayView: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     header
+                    chatSwitcherRow.padding(.top, 8)
                     if let notice = model.transientNotice {
                         Text(notice)
                             .font(.system(size: 11))
@@ -46,10 +53,14 @@ struct OverlayView: View {
                     MemoryReviewNotice()
                     NudgeStack(model: model)
                     inputRow.padding(.top, 10)
+                    if !model.commandSuggestions.isEmpty {
+                        commandList.padding(.top, 8)
+                    }
                     Divider().overlay(Theme.hairline).padding(.vertical, 10)
                     content
                     statusRow.padding(.top, 10)
                 }
+                .background(shortcuts)
             }
         }
         // Fused with the notch, the panel hangs flush from the physical top,
@@ -187,33 +198,115 @@ struct OverlayView: View {
     private var windowControls: some View {
         HStack(spacing: 6) {
             if !model.turns.isEmpty {
-                ctrl("square.and.pencil", "New chat", { model.newChat() })
+                ctrl("square.and.pencil", "New chat (⌘N)", { model.newChat() })
             }
-            ctrl("bubble.left.and.bubble.right", "Open in Wisp Chat", enabled: !generating, { model.openInChat() })
+            ctrl(model.pinned ? "pin.fill" : "pin", model.pinned ? "Unpin (⌘P)" : "Keep open (⌘P)",
+                 active: model.pinned, { model.pinned.toggle() })
+            // The window reads the saved history, which the service writes only at
+            // the end of a turn, so hand-off waits for the turn to finish.
+            ctrl("macwindow", "Open in the Wisp window (⌘O)", enabled: model.conversationSettled, { model.openInChat() })
             ctrl("chevron.up", "Collapse", { model.requestCollapse() })
             ctrl("xmark", "Close (stays in menu bar; frees memory)", onDismiss)
         }
     }
 
-    /// True while a turn is in flight. The Chat window reads the saved history,
-    /// which the service writes only at the end of a turn, so hand-off waits.
-    private var generating: Bool {
-        [OverlayModel.Phase.routing, .working, .streaming, .confirming].contains(model.phase)
+    /// Panel-wide shortcuts, as invisible buttons so they work wherever focus is.
+    /// ⌘P rather than the ⌘. in the design: ⌘. means Cancel on macOS.
+    private var shortcuts: some View {
+        ZStack {
+            Button("") { model.newChat() }.keyboardShortcut("n", modifiers: .command)
+            Button("") { model.run(.window) }.keyboardShortcut("o", modifiers: .command)
+            Button("") { model.pinned.toggle() }.keyboardShortcut("p", modifiers: .command)
+        }
+        .opacity(0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
-    private func ctrl(_ icon: String, _ help: String, enabled: Bool = true, _ action: @escaping () -> Void) -> some View {
+    private func ctrl(_ icon: String, _ help: String, enabled: Bool = true, active: Bool = false,
+                      _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(Theme.textSecondary)
+                .foregroundStyle(active ? Color.black : Theme.textSecondary)
                 .frame(width: 19, height: 19)
-                .background(Circle().fill(Theme.chipFill))
-                .overlay(Circle().stroke(Theme.chipStroke, lineWidth: 1))
+                .background(Circle().fill(active ? Color.white : Theme.chipFill))
+                .overlay(Circle().stroke(active ? Color.clear : Theme.chipStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.4)
         .help(help)
+        .accessibilityLabel(help)
+    }
+
+    // Which conversation is open here, and a way back into recent saved ones
+    // without opening the window.
+    private var chatSwitcherRow: some View {
+        HStack(spacing: 8) {
+            Menu {
+                if model.recentChats.isEmpty {
+                    Text("No other saved chats")
+                } else {
+                    ForEach(model.recentChats) { chat in
+                        Button(chat.title) { model.reopenChat(chat) }
+                    }
+                }
+                Divider()
+                Button("New chat") { model.newChat() }
+                Button("All chats in the Wisp window") { WispRouter.shared.open(.chat(sessionId: nil)) }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(model.chatTitle).lineLimit(1).truncationMode(.tail)
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                }
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Theme.textPrimary)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(Capsule().fill(Theme.chipFill))
+                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+            }
+            // A plain button style keeps the capsule label; the borderless menu
+            // style redraws its own and drops it.
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(!model.conversationSettled)
+            .help(model.conversationSettled ? "Switch to a recent chat" : "Available when Wisp finishes answering")
+            Spacer()
+            Text("Type / for commands").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+        }
+    }
+
+    // While the Ask field holds the start of a slash command: what it can become.
+    // Return runs a whole command; clicking runs any of them.
+    private var commandList: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(model.commandSuggestions, id: \.self) { command in
+                Button {
+                    model.input = ""
+                    model.run(command)
+                } label: {
+                    HStack(spacing: 10) {
+                        Text(command.title).font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(Theme.textPrimary)
+                            .frame(width: 84, alignment: .leading)
+                        Text(command.summary).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        Spacer()
+                        if NotchCommand.match(model.input) == command {
+                            Text("↩").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        }
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
     }
 
     private var orb: some View {
@@ -336,7 +429,6 @@ struct OverlayView: View {
                             .foregroundStyle(Theme.textMuted)
                     }
                 }
-                if model.debugMode { debugLine(for: turn) }
                 if turn.nodeResultID != nil {
                     // Remote titles and bodies are presentation only. Never parse
                     // links or create ScriptRunner controls from node content.
@@ -344,15 +436,30 @@ struct OverlayView: View {
                 } else {
                     MarkdownView(text: turn.text)
                 }
-                Button("Report a problem") { model.reportProblem(for: turn) }
-                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.textMuted)
+                let hasDetails = turn.model != nil || turn.routeRole != nil
+                let showDetails = hasDetails && (model.debugMode != detailsToggled.contains(turn.id))
+                HStack(spacing: 14) {
+                    if hasDetails {
+                        Button {
+                            if detailsToggled.contains(turn.id) { detailsToggled.remove(turn.id) }
+                            else { detailsToggled.insert(turn.id) }
+                        } label: {
+                            Label("Details", systemImage: showDetails ? "chevron.down" : "chevron.right")
+                        }
+                        .help("Model, route, timing and tool calls for this reply")
+                    }
+                    Button("Report a problem") { model.reportProblem(for: turn) }
+                }
+                .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.textMuted)
+                if showDetails { debugLine(for: turn) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     // Compact per-reply debug summary — model, route classification/source,
-    // timing, tok/s, tool-call count. Shown only in Debug Mode. Full detail
+    // timing, tok/s, tool-call count. Behind each reply's Details toggle, open
+    // by default in Debug Mode. Full detail
     // (raw tool args/results, reasoning text) lives in the exported log, not
     // here — this is a quick-glance strip, not the whole record.
     @ViewBuilder private func debugLine(for turn: OverlayModel.Turn) -> some View {

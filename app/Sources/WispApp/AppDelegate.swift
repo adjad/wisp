@@ -422,6 +422,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func collapse() {
         // A delayed focus/hover callback from chat must not cancel Search.
         guard presentation.desired == .chat else { return }
+        // Pinning only holds off automatic collapse; an explicit one unpins.
+        model.pinned = false
         requestPresentation(.bar)
     }
 
@@ -501,6 +503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // summary request can be created. Presentation callbacks only move views.
     private func dismissToMenuBar() {
         notchDocked = false
+        model.pinned = false
         let wasCollapsed = model.collapsed
         model.newChat()
         model.collapsed = wasCollapsed
@@ -516,9 +519,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingCollapse?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.model.collapsed else { return }
-            // Don't hide an unsent draft out from under the user; a mid-task
+            // Don't hide a pinned panel or an unfinished edit (typed input, a
+            // message draft being edited) out from under the user; a mid-task
             // generation is fine (the notch bar's dot shows it's still working).
-            if !self.model.input.trimmingCharacters(in: .whitespaces).isEmpty { return }
+            if self.model.holdsOpen { return }
             self.collapse()
         }
         pendingCollapse = work
@@ -1030,6 +1034,23 @@ extension AppDelegate {
         precondition(delegate.model.turns.last?.text == "Synthetic daily summary")
         delegate.model.reset()
         print("PASS: AppDelegate Daily Summary during dismissal completes")
+    }
+
+    static func checkPinnedPanelHoldsOpen() async {
+        let delegate = AppDelegate()
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.finishPresentation(opening)
+        delegate.model.pinned = true
+        delegate.scheduleCollapse()
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(!delegate.model.collapsed && delegate.presentation.desired == .chat,
+                     "A pinned panel must not auto-collapse")
+        delegate.collapse()
+        precondition(!delegate.model.pinned, "An explicit collapse must unpin")
+        precondition(delegate.presentation.desired == .bar, "An explicit collapse still collapses a pinned panel")
+        print("PASS: AppDelegate pinned panel holds open until explicitly collapsed")
     }
 
     static func checkDismissReopenInput() {
