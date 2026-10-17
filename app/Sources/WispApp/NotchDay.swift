@@ -361,16 +361,11 @@ struct DayTimeline: Equatable {
 
     // MARK: Brief
 
-    /// The Brief's one sentence, from the day itself.
-    static func lede(weekday: String, isToday: Bool, eventsLeft: Int, dueToday: [String], overdue: [String],
+    /// The Brief's one sentence, from the day itself. It opens with the same
+    /// verdict word as the CAL line ("A light Saturday." / "Light day: …"), so
+    /// the two never disagree.
+    static func lede(weekday: String, isToday: Bool, load: DayLoad.Verdict, dueToday: [String], overdue: [String],
                      next: (title: String, time: String)?) -> String {
-        let load: String
-        switch eventsLeft {
-        case 0: load = "A clear"
-        case 1...2: load = "A light"
-        case 3...4: load = "A steady"
-        default: load = "A full"
-        }
         var parts: [String] = []
         let due = dueToday.filter { !isJunk($0) }
         let late = overdue.filter { !isJunk($0) }
@@ -380,7 +375,7 @@ struct DayTimeline: Equatable {
         if !late.isEmpty {
             parts.append(late.count == 1 ? late[0] + " is still open" : "\(count(late.count)) overdue reminders are still open")
         }
-        let opening = load + " " + weekday + "."
+        let opening = load.article + " " + weekday + "."
         if parts.isEmpty {
             if let next { return opening + " Next up: \(next.title) at \(next.time)." }
             return opening + (isToday ? " Nothing needs you right now." : " Nothing needs you that day.")
@@ -399,14 +394,12 @@ struct DayTimeline: Equatable {
     }
 
     /// At most four lines, one per source, each only when it has something to say.
-    static func briefLines(allDay: [String], nextEvent: (title: String, time: String)?,
+    static func briefLines(calendar: DayLoad?,
                            mail: (ready: Bool, needing: [String])?, texts: [String],
                            soon: (title: String, when: String, source: String)?) -> [BriefLine] {
         var lines: [BriefLine] = []
-        if let title = allDay.first(where: { !isJunk($0) }) {
-            lines.append(BriefLine(tag: "CAL", text: title, trailing: "All day", source: .calendar))
-        } else if let nextEvent, !isJunk(nextEvent.title) {
-            lines.append(BriefLine(tag: "CAL", text: nextEvent.title, trailing: nextEvent.time, source: .calendar))
+        if let calendar {
+            lines.append(BriefLine(tag: "CAL", text: calendar.summary, trailing: calendar.next ?? "›", source: .calendar))
         }
         if let mail, mail.ready {
             let needing = mail.needing.filter { !isJunk($0) }
@@ -423,6 +416,180 @@ struct DayTimeline: Equatable {
                                        : soon.source == "messages" ? .messages : .reminders))
         }
         return Array(lines.prefix(4))
+    }
+}
+
+/// How busy the rest of a day's calendar is, in plain words: "Light day: just
+/// PA 2 (all day)", "Busy afternoon: 3 meetings, 1–5 PM", "Packed: back-to-back
+/// 10 AM–4 PM", "Free all day".
+///
+/// Calendar entries only, never learned away windows. The math follows the
+/// weekly report (service/behavior/weekly.py): busy time is the union of events
+/// clipped to 9 AM–6 PM, and two meetings are back to back when the next starts
+/// between 5 minutes before and 10 minutes after the last ends. An event with
+/// no end counts as an hour, and makes the times read "about".
+struct DayLoad: Equatable {
+    enum Verdict: String, Equatable {
+        case free, light, steady, busy, packed
+
+        /// The lede's opening: "A light Saturday."
+        var article: String {
+            switch self {
+            case .free: return "A clear"
+            case .light: return "A light"
+            case .steady: return "A steady"
+            case .busy: return "A busy"
+            case .packed: return "A packed"
+            }
+        }
+    }
+
+    struct Event: Equatable {
+        var title: String
+        var start: Double
+        var end: Double?
+    }
+
+    let verdict: Verdict
+    /// The CAL line.
+    let summary: String
+    /// The next event's time, for the line's trailing label.
+    let next: String?
+    /// Booked hours left in the 9–6 window.
+    let occupiedHours: Double
+    let meetings: Int
+    let backToBack: Int
+    /// Longest free stretch left in the 9–6 window, in hours.
+    let largestGapHours: Double
+    let uncertain: Bool
+
+    static let assumedLength: Double = 3600
+
+    /// - Parameters:
+    ///   - from: now on the current day, the day's start otherwise; earlier events are over.
+    ///   - dayStart: the day's midnight, for the 9–6 window.
+    static func assess(events: [Event], allDay: [String], from: Double, dayStart: Double, isToday: Bool,
+                       zone: TimeZone) -> DayLoad {
+        let windowStart = dayStart + 9 * 3600, windowEnd = dayStart + 18 * 3600
+        let left = events.filter { !DayTimeline.isJunk($0.title) && ($0.end ?? $0.start + assumedLength) > from }
+            .sorted { $0.start < $1.start }
+        let allDayTitles = allDay.filter { !DayTimeline.isJunk($0) }
+        let uncertain = left.contains { $0.end == nil }
+        func end(_ e: Event) -> Double { e.end.flatMap { $0 > e.start ? $0 : nil } ?? e.start + assumedLength }
+
+        let lo = max(from, windowStart)
+        let busy = union(left.compactMap { e -> (Double, Double)? in
+            let a = max(lo, e.start), b = min(windowEnd, end(e))
+            return b > a ? (a, b) : nil
+        })
+        let occupied = busy.reduce(0) { $0 + $1.1 - $1.0 } / 3600
+        var gap = 0.0, cursor = lo
+        for (a, b) in busy { gap = max(gap, a - cursor); cursor = max(cursor, b) }
+        if windowEnd > cursor { gap = max(gap, windowEnd - cursor) }
+        let largestGap = max(0, gap) / 3600
+
+        // Back-to-back chains: runs of meetings that follow each other. The
+        // longest one (the first, on a tie) is the "back-to-back" span.
+        var pairs = 0
+        var chains: [(start: Double, end: Double, length: Int)] = []
+        for event in left {
+            if let last = chains.last, (-300...600).contains(event.start - last.end) {
+                pairs += 1
+                chains[chains.count - 1] = (last.start, max(last.end, end(event)), last.length + 1)
+            } else {
+                chains.append((event.start, end(event), 1))
+            }
+        }
+        let longest = chains.reduce(nil as (start: Double, end: Double, length: Int)?) { best, chain in
+            chain.length > (best?.length ?? 0) ? chain : best
+        }
+        let bestLength = longest?.length ?? 0
+
+        let about = uncertain ? "about " : ""
+        let next = left.first { $0.start > from }.map { clock($0.start, zone: zone) }
+        let verdict: Verdict
+        let summary: String
+        let n = left.count
+        if n == 0 {
+            if let first = allDayTitles.first {
+                verdict = .light
+                summary = "Light day: just \(first) (all day)" + (allDayTitles.count > 1 ? " and \(allDayTitles.count - 1) more" : "")
+            } else {
+                verdict = .free
+                summary = "Free " + (isToday && from > windowStart ? "for the rest of today" : "all day")
+            }
+        } else if occupied >= 5 || (bestLength >= 3 && largestGap < 1) {
+            verdict = .packed
+            if let chain = longest, chain.length >= 3 {
+                summary = "Packed: back-to-back " + about + span(chain.start, chain.end, zone: zone)
+            } else {
+                summary = "Packed: \(n) meetings, " + about + hours(occupied) + " booked"
+            }
+        } else if occupied >= 3 || n >= 4 {
+            verdict = .busy
+            summary = "Busy \(part(left.map(\.start), left.map(end), dayStart: dayStart)): \(n) meetings, "
+                + about + span(left[0].start, left.map(end).max() ?? end(left[0]), zone: zone)
+        } else if occupied < 1.5 && n <= 2 {
+            verdict = .light
+            summary = n == 1
+                ? "Light day: just \(left[0].title) at " + clock(left[0].start, zone: zone) + (uncertain ? ", end time unknown" : "")
+                : "Light day: 2 meetings, " + about + span(left[0].start, end(left[1]), zone: zone)
+        } else {
+            verdict = .steady
+            summary = "Steady: \(n) meeting\(n == 1 ? "" : "s"), " + (largestGap >= 1
+                ? "longest free stretch " + about + hours(largestGap)
+                : about + hours(occupied) + " booked")
+        }
+        return DayLoad(verdict: verdict, summary: summary, next: next, occupiedHours: occupied, meetings: n,
+                       backToBack: pairs, largestGapHours: largestGap, uncertain: uncertain)
+    }
+
+    static func union(_ intervals: [(Double, Double)]) -> [(Double, Double)] {
+        var merged: [(Double, Double)] = []
+        for (a, b) in intervals.sorted(by: { $0.0 < $1.0 }) where b > a {
+            if let last = merged.last, a <= last.1 { merged[merged.count - 1].1 = max(b, last.1) }
+            else { merged.append((a, b)) }
+        }
+        return merged
+    }
+
+    /// "morning", "afternoon", "evening" when every remaining meeting falls in one, else "day".
+    static func part(_ starts: [Double], _ ends: [Double], dayStart: Double) -> String {
+        let noon = dayStart + 12 * 3600, five = dayStart + 17 * 3600
+        if ends.allSatisfy({ $0 <= noon }) { return "morning" }
+        if starts.allSatisfy({ $0 >= five }) { return "evening" }
+        if starts.allSatisfy({ $0 >= noon }) { return "afternoon" }
+        return "day"
+    }
+
+    static func hours(_ h: Double) -> String {
+        let rounded = (h * 2).rounded() / 2
+        return rounded == rounded.rounded() ? "\(Int(rounded)) h" : String(format: "%.1f h", rounded)
+    }
+
+    private static func parts(_ t: Double, zone: TimeZone) -> (hour: Int, minute: Int) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let c = calendar.dateComponents([.hour, .minute], from: Date(timeIntervalSince1970: t))
+        return (c.hour ?? 0, c.minute ?? 0)
+    }
+
+    private static func bare(_ t: Double, zone: TimeZone) -> (text: String, pm: Bool) {
+        let (h, m) = parts(t, zone: zone)
+        let shown = h % 12 == 0 ? 12 : h % 12
+        return (m == 0 ? "\(shown)" : String(format: "%d:%02d", shown, m), h >= 12)
+    }
+
+    /// "3 PM", "3:30 PM".
+    static func clock(_ t: Double, zone: TimeZone) -> String {
+        let b = bare(t, zone: zone)
+        return b.text + (b.pm ? " PM" : " AM")
+    }
+
+    /// "1–5 PM", "10 AM–4 PM".
+    static func span(_ a: Double, _ b: Double, zone: TimeZone) -> String {
+        let x = bare(a, zone: zone), y = bare(b, zone: zone)
+        return x.pm == y.pm ? x.text + "–" + y.text + (y.pm ? " PM" : " AM") : clock(a, zone: zone) + "–" + clock(b, zone: zone)
     }
 }
 

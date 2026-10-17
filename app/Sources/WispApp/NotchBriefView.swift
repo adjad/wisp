@@ -121,22 +121,22 @@ struct BriefContent {
         let reference = isToday ? now : dayStart
         let calendarBlocks = plan.displayBlocks.filter { $0.kind == "calendar" || $0.kind == "manual" }
             .sorted { $0.start < $1.start }
-        let eventsLeft = calendarBlocks.filter { ($0.end ?? $0.start + 1800) > reference }.count
-            + plan.all_day.filter { !DayTimeline.isJunk($0.title) }.count
+        // Calendar entries only; learned away windows never make a day busy.
+        let load = DayLoad.assess(events: calendarBlocks.map { DayLoad.Event(title: $0.title, start: $0.start, end: $0.end) },
+                                  allDay: plan.all_day.map(\.title), from: reference, dayStart: dayStart,
+                                  isToday: isToday, zone: today.timezone)
         let dueToday = needs.filter { ($0.due_ts ?? .infinity) >= reference && ($0.due_ts ?? .infinity) <= dayEnd }
             .sorted { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }.map(\.title)
         let overdue = isToday ? needs.filter { ($0.due_ts ?? .infinity) < now }.map(\.title) : []
         let next = calendarBlocks.first { $0.start > reference }.map { (title: $0.title, time: today.clock($0.start)) }
         let weekday = today.selectedDate.formatted(Date.FormatStyle(timeZone: today.timezone).weekday(.wide))
-        lede = DayTimeline.lede(weekday: weekday, isToday: isToday, eventsLeft: eventsLeft,
+        lede = DayTimeline.lede(weekday: weekday, isToday: isToday, load: load.verdict,
                                 dueToday: dueToday, overdue: overdue, next: next)
 
         let coverage = plan.workspace?.source_coverage.first { $0.source == "email" }
         let soon = needs.filter { ($0.due_ts ?? 0) > dayEnd }.min { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }
         lines = DayTimeline.briefLines(
-            allDay: plan.all_day.map(\.title),
-            nextEvent: calendarBlocks.first { ($0.end ?? $0.start + 1800) > reference }
-                .map { (title: $0.title, time: today.clock($0.start)) },
+            calendar: plan.sources["calendar"]?.ready == false && calendarBlocks.isEmpty && plan.all_day.isEmpty ? nil : load,
             mail: coverage.map { (ready: $0.ready, needing: needs.filter { $0.source == "email" }.map(\.title)) },
             texts: needs.filter { $0.source == "messages" }.map(\.title),
             soon: soon.map { (title: $0.title, when: NotchChrome.dayClock($0.due_ts ?? 0, zone: today.timezone),

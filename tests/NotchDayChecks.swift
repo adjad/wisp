@@ -137,30 +137,66 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(empty.items.isEmpty && empty.styles.isEmpty && empty.to == at(18), "an empty day still shows working hours")
 
     // The Brief's sentence.
-    check(DayTimeline.lede(weekday: "Saturday", isToday: true, eventsLeft: 1, dueToday: ["PA 2"],
+    check(DayTimeline.lede(weekday: "Saturday", isToday: true, load: .light, dueToday: ["PA 2"],
                            overdue: ["Get DoorDash order"], next: nil)
           == "A light Saturday. PA 2 is due today, and Get DoorDash order is still open.", "lede with due and overdue")
-    check(DayTimeline.lede(weekday: "Sunday", isToday: true, eventsLeft: 0, dueToday: [], overdue: [], next: nil)
+    check(DayTimeline.lede(weekday: "Sunday", isToday: true, load: .free, dueToday: [], overdue: [], next: nil)
           == "A clear Sunday. Nothing needs you right now.", "lede on a clear day")
-    check(DayTimeline.lede(weekday: "Monday", isToday: true, eventsLeft: 5, dueToday: ["nothing"], overdue: ["Pay rent", "Return book"],
+    check(DayTimeline.lede(weekday: "Monday", isToday: true, load: .packed, dueToday: ["nothing"], overdue: ["Pay rent", "Return book"],
                            next: (title: "Club", time: "3 PM"))
-          == "A full Monday. Two overdue reminders are still open.",
+          == "A packed Monday. Two overdue reminders are still open.",
           "lede drops junk and counts overdue")
-    check(DayTimeline.lede(weekday: "Tuesday", isToday: true, eventsLeft: 3, dueToday: [], overdue: [],
+    check(DayTimeline.lede(weekday: "Tuesday", isToday: true, load: .steady, dueToday: [], overdue: [],
                            next: (title: "Club", time: "3 PM"))
           == "A steady Tuesday. Next up: Club at 3 PM.", "lede with only the next event")
 
     // The Brief's lines: at most four, each only with something to say.
-    let lines = DayTimeline.briefLines(allDay: ["PA 2 [CSE-20-04]"], nextEvent: (title: "Club", time: "3 PM"),
-                                       mail: (ready: true, needing: []), texts: ["nothing", "Priya asked about dinner"],
+    let utc = TimeZone(identifier: "UTC")!
+    let light = DayLoad.assess(events: [], allDay: ["PA 2 [CSE-20-04]"], from: now, dayStart: dayStart, isToday: true, zone: utc)
+    let lines = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []),
+                                       texts: ["nothing", "Priya asked about dinner"],
                                        soon: (title: "UCSC startup club", when: "Wed 6 PM", source: "calendar"))
     check(lines.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"], "four lines in order")
-    check(lines[0].trailing == "All day" && lines[1].text == "Nothing needs a reply"
-          && lines[2].text == "Priya asked about dinner" && lines[3].source == .calendar, "line contents")
-    let sparse = DayTimeline.briefLines(allDay: [], nextEvent: nil, mail: (ready: false, needing: ["x"]), texts: [],
+    check(lines[0].text == "Light day: just PA 2 [CSE-20-04] (all day)" && lines[0].trailing == "›"
+          && lines[1].text == "Nothing needs a reply" && lines[2].text == "Priya asked about dinner"
+          && lines[3].source == .calendar, "line contents: \(lines.map(\.text))")
+    let sparse = DayTimeline.briefLines(calendar: nil, mail: (ready: false, needing: ["x"]), texts: [],
                                         soon: (title: "Essay", when: "Fri 5 PM", source: "reminders"))
     check(sparse.map(\.tag) == ["SOON"] && sparse[0].source == .reminders, "empty sources are hidden")
-    check(DayTimeline.briefLines(allDay: [], nextEvent: (title: "Club", time: "3 PM"),
-                                 mail: (ready: true, needing: ["Lab partner", "Advisor"]), texts: [], soon: nil)
-          .map(\.text) == ["Club", "2 emails need you"], "the next event and a mail count")
+    check(DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: ["Lab partner", "Advisor"]), texts: [], soon: nil)
+          .map(\.text) == ["2 emails need you"], "a mail count")
+
+    // How busy the calendar is: one verdict for the CAL line and the lede.
+    func event(_ title: String, _ start: Double, _ end: Double?) -> DayLoad.Event {
+        DayLoad.Event(title: title, start: at(start), end: end.map(at))
+    }
+    func load(_ events: [DayLoad.Event], allDay: [String] = [], from: Double = at(8), isToday: Bool = true) -> DayLoad {
+        DayLoad.assess(events: events, allDay: allDay, from: from, dayStart: dayStart, isToday: isToday, zone: utc)
+    }
+    let free = load([], isToday: false)
+    check(free.verdict == .free && free.summary == "Free all day", "free: \(free.summary)")
+    check(load([], from: at(14)).summary == "Free for the rest of today", "free for the rest of today")
+    check(light.verdict == .light, "an all-day entry alone is a light day")
+    let one = load([event("Club", 15, 16)])
+    check(one.verdict == .light && one.summary == "Light day: just Club at 3 PM" && one.next == "3 PM", "one meeting: \(one.summary)")
+    let afternoon = load([event("Lab", 13, 14), event("Office hours", 14.5, 15.5), event("Review", 16, 17)])
+    check(afternoon.verdict == .busy && afternoon.summary == "Busy afternoon: 3 meetings, 1–5 PM",
+          "busy afternoon: \(afternoon.summary) (\(afternoon.occupiedHours) h)")
+    let packed = load([event("Lab", 10, 11), event("Office hours", 11, 12), event("Review", 12.1, 13), event("Sync", 13, 14),
+                       event("Design", 14, 15), event("Retro", 15.05, 16)])
+    check(packed.verdict == .packed && packed.summary == "Packed: back-to-back 10 AM–4 PM" && packed.backToBack == 5,
+          "packed: \(packed.summary) pairs \(packed.backToBack)")
+    let guessed = load([event("Lab", 13, 14), event("Office hours", 14, nil), event("Review", 15, 17)])
+    check(guessed.uncertain && guessed.summary == "Busy afternoon: 3 meetings, about 1–5 PM", "unknown end reads about: \(guessed.summary)")
+    let steady = load([event("Lab", 9, 10), event("Office hours", 12, 13), event("Review", 16.5, 17)])
+    check(steady.verdict == .steady && steady.summary == "Steady: 3 meetings, longest free stretch 3.5 h"
+          && steady.largestGapHours == 3.5, "steady: \(steady.summary)")
+    let over = load([event("Standup", 9, 10), event("Club", 15, 16)], from: at(13))
+    check(over.meetings == 1 && over.verdict == .light, "finished meetings don't count")
+    let evening = load([event("Dinner", 19, 21), event("Show", 21, 23), event("Late", 23, 23.5), event("Call", 18, 19)])
+    check(evening.occupiedHours == 0 && evening.verdict == .busy && evening.summary.hasPrefix("Busy evening:"),
+          "evening meetings fall outside 9–6 but still count: \(evening.summary)")
+    check(DayLoad.union([(1, 3), (2, 5), (7, 8), (8, 9)]).map { [$0.0, $0.1] } == [[1, 5], [7, 9]], "union merges touching spans")
+    check(DayLoad.span(at(10), at(16), zone: utc) == "10 AM–4 PM" && DayLoad.span(at(13), at(17.5), zone: utc) == "1–5:30 PM",
+          "spans")
 }

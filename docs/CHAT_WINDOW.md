@@ -26,7 +26,9 @@ asked for. Both talk to the same service and the same saved chats.
   in texts, and Ignore hides it on this Mac; Plan time adds a reminder as a task
   the planner fits in; Not today is the planner's one-day ignore of a learned
   window. The logic (what lands where, the badge, the Brief's sentence, the
-  blurb, plain-language warnings, junk titles) is pure code in `NotchDay.swift`.
+  calendar's busyness verdict (`DayLoad`, the weekly report's 9–6 union and
+  back-to-back rule), the blurb, plain-language warnings, junk titles) is pure
+  code in `NotchDay.swift`.
 - **Ask** has a chat switcher (recent saved chats from `GET /chats`), New chat
   (⌘N), slash commands (`/today`, `/memory`, `/research`, `/settings`, `/report`,
   `/window`, `/new`), per-reply Details (route, model, timing, tool calls; open by
