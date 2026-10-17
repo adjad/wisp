@@ -98,8 +98,8 @@ struct QuickSettingsView: View {
         row("Daily brief", detail: detail) {
             if let times = settings.briefTimes {
                 HStack(spacing: 6) {
-                    hourMenu(times.morning, hours: 0..<12) { settings.setBriefTimes(morning: $0) }
-                    hourMenu(times.evening, hours: 12..<24) { settings.setBriefTimes(evening: $0) }
+                    hourMenu("Morning", times.morning, hours: 0..<12) { settings.setBriefTimes(morning: $0) }
+                    hourMenu("Evening", times.evening, hours: 12..<24) { settings.setBriefTimes(evening: $0) }
                 }
                 .disabled(settings.briefTimesPending)
             } else {
@@ -128,18 +128,26 @@ struct QuickSettingsView: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func hourMenu(_ hour: Int, hours: Range<Int>, set: @escaping (Int) -> Void) -> some View {
+    // Each chip names its run. Two bare "8 AM" / "8 PM" chips side by side read
+    // as the old AM/PM switch, when both briefs actually run.
+    private func hourMenu(_ run: String, _ hour: Int, hours: Range<Int>,
+                          set: @escaping (Int) -> Void) -> some View {
         Menu {
             ForEach(Array(hours), id: \.self) { value in
                 Button(Self.hourLabel(value)) { if value != hour { set(value) } }
             }
         } label: {
-            Text(Self.hourLabel(hour)).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
-                .padding(.horizontal, 9).padding(.vertical, 4)
-                .background(Capsule().fill(Theme.chipFill))
-                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+            HStack(spacing: 4) {
+                Text(run).foregroundStyle(Theme.textMuted)
+                Text(Self.hourLabel(hour)).foregroundStyle(Theme.textSecondary)
+            }
+            .font(.system(size: 11.5, weight: .medium))
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(Capsule().fill(Theme.chipFill))
+            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
         }
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+        .accessibilityLabel("\(run) brief at \(Self.hourLabel(hour))")
     }
 
     static func hourLabel(_ hour: Int) -> String {
