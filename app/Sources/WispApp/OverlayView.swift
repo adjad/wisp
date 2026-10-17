@@ -4,6 +4,8 @@ import AppKit
 struct OverlayView: View {
     @StateObject var model: OverlayModel
     @ObservedObject var researchModel: ResearchModel
+    // Shared with the Wisp window's planner, so both show the same day.
+    @ObservedObject var todayModel: TodayModel
     var onClose: () -> Void
     // X button: dismiss from the notch (frees the resident model) but Wisp keeps running
     // in the menu bar — NOT a full quit. Full quit is still available via the
@@ -25,9 +27,13 @@ struct OverlayView: View {
         .onAppear { breathe = true }
         .onChange(of: model.collapsed) { _, isCollapsed in
             if !isCollapsed {
-                focused = true
+                if model.tab != .today { focused = true }
                 model.refreshRecentChats()
             }
+        }
+        // Switching to Ask or Research (including Ask Wisp from Today) puts the cursor in the field.
+        .onChange(of: model.tab) { _, tab in
+            if tab != .today && !model.collapsed { focused = true }
         }
     }
 
@@ -35,34 +41,39 @@ struct OverlayView: View {
     private var isNotch: Bool { layout.style == .notch }
 
     private var expandedPanel: some View {
-        Group {
-            if model.showingResearch {
-                ResearchView(model: researchModel, compact: true,
-                             onBack: { model.returnToChat() })
-            } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    header
-                    chatSwitcherRow.padding(.top, 8)
-                    if let notice = model.transientNotice {
-                        Text(notice)
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.bad)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 8)
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            switch model.tab {
+            case .ask:
+                chatSwitcherRow.padding(.top, 8)
+                transientNotice
+                MemoryReviewNotice()
+                NudgeStack(model: model)
+                promptArea
+                content
+                statusRow.padding(.top, 10)
+            case .today:
+                NotchTodayView(model: model, today: todayModel).padding(.top, 12)
+            case .research:
+                if model.showingResearch {
+                    ResearchView(model: researchModel, compact: true,
+                                 onBack: { model.returnToChat() })
+                } else {
+                    transientNotice
+                    promptArea
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Wisp drafts an editable plan first, then reads the web and writes a cited report.")
+                            .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                        Spacer(minLength: 12)
+                        Button("Research library") { WispRouter.shared.open(.research) }
+                            .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.textSecondary)
+                            .fixedSize()
                     }
-                    MemoryReviewNotice()
-                    NudgeStack(model: model)
-                    inputRow.padding(.top, 10)
-                    if !model.commandSuggestions.isEmpty {
-                        commandList.padding(.top, 8)
-                    }
-                    Divider().overlay(Theme.hairline).padding(.vertical, 10)
-                    content
                     statusRow.padding(.top, 10)
                 }
-                .background(shortcuts)
             }
         }
+        .background(shortcuts)
         // Fused with the notch, the panel hangs flush from the physical top,
         // so its center is behind the camera housing — push the content
         // below it. A floating card just uses ordinary padding.
@@ -127,86 +138,96 @@ struct OverlayView: View {
         HStack(spacing: 10) {
             orb
             Text("Wisp").font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.textPrimary)
+            tabStrip.padding(.leading, 6)
             Spacer()
-            researchControl
-            dailySummaryControl
             windowControls
         }
     }
 
-    private var researchControl: some View {
-        Button(action: { model.researchMode.toggle() }) {
-            HStack(spacing: 4) {
-                Image(systemName: "binoculars.fill").font(.system(size: 11))
-                Text("Research").font(.system(size: 11, weight: .medium))
-            }
-            .foregroundStyle(model.researchMode ? .black : Theme.textSecondary)
-            .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(Capsule().fill(model.researchMode ? Color.white : Theme.chipFill))
-            .overlay(Capsule().stroke(model.researchMode ? Color.clear : Theme.chipStroke, lineWidth: 1))
+    @ViewBuilder private var transientNotice: some View {
+        if let notice = model.transientNotice {
+            Text(notice)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.bad)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 8)
         }
-        .buttonStyle(.plain)
-        .help(model.researchMode
-              ? "Research mode is on — the next prompt opens an editable research plan"
-              : "Create a multi-source, cited research report")
     }
 
-    // "Daily Summary" button + an AM/PM toggle for when the scheduled brief
-    // fires (8am vs 8pm). Tapping the button builds the combined calendar+email
-    // brief on demand and drops it into the transcript.
-    private var dailySummaryControl: some View {
-        HStack(spacing: 6) {
-            Button("Today", systemImage: "calendar.day.timeline.left") { WispRouter.shared.open(.today(focus: .plan)) }
-                .font(.system(size: 11, weight: .medium))
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.textSecondary)
-                .padding(.horizontal, 9).padding(.vertical, 4)
-                .background(Capsule().fill(Theme.chipFill))
-                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-                .help("Plan study and project time around your calendar")
-            Button(action: { model.runDailySummary(); WispRouter.shared.open(.today(focus: .attention)) }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "sun.max").font(.system(size: 11))
-                    Text("Daily Summary").font(.system(size: 11, weight: .medium))
-                }
-                .foregroundStyle(Theme.textSecondary)
-                .padding(.horizontal, 9).padding(.vertical, 4)
-                .background(Capsule().fill(Theme.chipFill))
-                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-            }
-            .buttonStyle(.plain).help("Compile your sources, see what needs attention and review your day plan")
-
-            // AM / PM segmented toggle for the scheduled brief time.
-            HStack(spacing: 0) {
-                ForEach(["AM", "PM"], id: \.self) { p in
-                    Button(action: { model.setSummaryPeriod(p) }) {
-                        Text(p).font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(model.summaryPeriod == p ? Color.black : Theme.textMuted)
-                            .frame(width: 22, height: 18)
-                            .background(model.summaryPeriod == p ? Theme.accent : Color.clear)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .background(Capsule().fill(Theme.chipFill))
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-            .help("When the daily brief is delivered: 8 AM or 8 PM")
+    // The Ask field (Research's prompt on that tab), its command list and the rule under it.
+    @ViewBuilder private var promptArea: some View {
+        inputRow.padding(.top, 10)
+        if !model.commandSuggestions.isEmpty {
+            commandList.padding(.top, 8)
         }
+        Divider().overlay(Theme.hairline).padding(.vertical, 10)
+    }
+
+    // What needs you on Today, once the day has loaded.
+    private var todayCount: Int { todayModel.plan?.workspace?.attention.count ?? 0 }
+
+    private var tabStrip: some View {
+        HStack(spacing: 2) {
+            ForEach(NotchTab.allCases, id: \.self) { tab in tabButton(tab) }
+        }
+        .padding(2)
+        .background(Capsule().fill(Theme.chipFill))
+        .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+        .fixedSize()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Wisp tabs")
+    }
+
+    private func tabButton(_ tab: NotchTab) -> some View {
+        let selected = model.tab == tab
+        let count = tab == .today ? todayCount : 0
+        let shortcut = tab.title + " (⌘" + String(tab.shortcutDigit) + ")"
+        return Button { model.tab = tab } label: {
+            HStack(spacing: 5) {
+                Text(tab.title).font(.system(size: 11.5, weight: .medium))
+                if count > 0 { countBadge(count, selected: selected) }
+            }
+            .foregroundStyle(selected ? Color.black : Theme.textSecondary)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(Capsule().fill(selected ? Color.white : Color.clear))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(shortcut)
+        .accessibilityLabel(count > 0 ? "Today, \(count) need you" : tab.title)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private func countBadge(_ count: Int, selected: Bool) -> some View {
+        Text(String(count))
+            .font(.system(size: 9.5, weight: .bold).monospacedDigit())
+            .foregroundStyle(selected ? Color.white : Color.black)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(Capsule().fill(selected ? Color.black : Color.white.opacity(0.85)))
     }
 
     private var windowControls: some View {
         HStack(spacing: 6) {
-            if !model.turns.isEmpty {
+            if model.tab == .ask && !model.turns.isEmpty {
                 ctrl("square.and.pencil", "New chat (⌘N)", { model.newChat() })
             }
             ctrl(model.pinned ? "pin.fill" : "pin", model.pinned ? "Unpin (⌘P)" : "Keep open (⌘P)",
                  active: model.pinned, { model.pinned.toggle() })
-            // The window reads the saved history, which the service writes only at
-            // the end of a turn, so hand-off waits for the turn to finish.
-            ctrl("macwindow", "Open in the Wisp window (⌘O)", enabled: model.conversationSettled, { model.openInChat() })
+            // The window opens on what this tab shows. For Ask it reads the saved
+            // history, which the service writes only at the end of a turn, so
+            // that hand-off waits for the turn to finish.
+            ctrl("macwindow", windowHelp, enabled: model.tab != .ask || model.conversationSettled,
+                 { model.openTabInWindow() })
             ctrl("chevron.up", "Collapse", { model.requestCollapse() })
             ctrl("xmark", "Close (stays in menu bar; frees memory)", onDismiss)
+        }
+    }
+
+    private var windowHelp: String {
+        switch model.tab {
+        case .ask: return "Open this chat in the Wisp window (⌘O)"
+        case .today: return "Open the full planner in the Wisp window (⌘O)"
+        case .research: return "Open the research library (⌘O)"
         }
     }
 
@@ -214,9 +235,12 @@ struct OverlayView: View {
     /// ⌘P rather than the ⌘. in the design: ⌘. means Cancel on macOS.
     private var shortcuts: some View {
         ZStack {
-            Button("") { model.newChat() }.keyboardShortcut("n", modifiers: .command)
+            Button("") { model.newChat(); model.tab = .ask }.keyboardShortcut("n", modifiers: .command)
             Button("") { model.run(.window) }.keyboardShortcut("o", modifiers: .command)
             Button("") { model.pinned.toggle() }.keyboardShortcut("p", modifiers: .command)
+            ForEach(NotchTab.allCases, id: \.self) { tab in
+                Button("") { model.tab = tab }.keyboardShortcut(KeyEquivalent(tab.shortcutDigit), modifiers: .command)
+            }
         }
         .opacity(0)
         .allowsHitTesting(false)
@@ -497,7 +521,8 @@ struct OverlayView: View {
 
     // The turn currently in flight: status, tool activity, reasoning, streaming text.
     @ViewBuilder private var liveTurn: some View {
-        if let progress = model.dailySyncProgress {
+        // A brief being composed shows its own progress on Today.
+        if let progress = model.dailySyncProgress, !model.briefComposing {
             SourceSyncTip(label: model.dailySyncLabel, progress: progress,
                           sources: model.sourceSyncStatuses)
         }
