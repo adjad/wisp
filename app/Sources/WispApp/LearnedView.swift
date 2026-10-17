@@ -477,7 +477,7 @@ final class LearnedModel: ObservableObject {
 
 /// The Routines tab of the Wisp window's Memory section (MemoryHomeView).
 struct LearnedView: View {
-    @StateObject private var model = LearnedModel()
+    @ObservedObject var model: LearnedModel
     @State private var showRejected = false
     @State private var emailScanFrom = Date()
     @State private var emailScanThrough = Date()

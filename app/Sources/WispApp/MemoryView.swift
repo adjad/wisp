@@ -139,7 +139,7 @@ enum MemoryScope {
     var filters: [(title: String, status: String)] {
         switch self {
         case .facts: return [("Saved", "active"), ("Corrections", "superseded")]
-        case .review: return [("Review", "proposed"), ("Later", "deferred")]
+        case .review: return [("Waiting", "proposed"), ("Later", "deferred")]
         }
     }
 }

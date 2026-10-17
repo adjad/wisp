@@ -85,4 +85,8 @@ final class WispWindowNavigation: ObservableObject {
     enum Section: Equatable { case chats, memory }
     @Published var section: Section = .chats
     @Published var memoryTab: WispRoute.MemoryFocus = .facts
+    /// The Routines tab's model lives as long as the window, as it did in the
+    /// old What Wisp has learned window: a source-consent write still in flight
+    /// when the person switches tabs reports its outcome when they come back.
+    lazy var learned = LearnedModel()
 }

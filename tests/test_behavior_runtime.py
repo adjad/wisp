@@ -1557,7 +1557,7 @@ def test_swift_learned_view_covers_every_pattern_kind_and_status():
     client = _swift("WispClient.swift")
     setter = client.split("func setBehaviorPatternStatus")[1].split("}")[0]
     assert "behaviorSafeID(patternID)" in setter
-    assert "case .routines: LearnedView()" in _swift("MemoryHomeView.swift")
+    assert "case .routines: LearnedView(model: navigation.learned)" in _swift("MemoryHomeView.swift")
     assert "WispRouter.shared.open(.memory(.routines))" in _swift("SettingsView.swift")
     from service.behavior.predict import _USAGE_PHRASES
     table = src.split("static let usagePhrases")[1].split("= [", 1)[1].split("]")[0]

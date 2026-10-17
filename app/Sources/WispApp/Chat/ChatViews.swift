@@ -52,7 +52,8 @@ struct ChatRootView: View {
     private var shortcuts: some View {
         ZStack {
             Button("") { store.newChat(); navigation.section = .chats }.keyboardShortcut("n", modifiers: .command)
-            Button("") { store.showInspector.toggle() }.keyboardShortcut("i", modifiers: .command)
+            Button("") { if navigation.section == .chats { store.showInspector.toggle() } }
+                .keyboardShortcut("i", modifiers: .command)
             Button("") { sidebarVisible.toggle() }.keyboardShortcut("b", modifiers: .command)
             Button("") { sidebarVisible = true; searchFocused = true }.keyboardShortcut("k", modifiers: .command)
         }

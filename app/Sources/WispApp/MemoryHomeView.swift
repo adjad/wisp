@@ -31,7 +31,7 @@ struct MemoryHomeView: View {
                 Group {
                     switch navigation.memoryTab {
                     case .facts: MemoryView(scope: .facts)
-                    case .routines: LearnedView()
+                    case .routines: LearnedView(model: navigation.learned)
                     case .review: MemoryView(scope: .review)
                     }
                 }
