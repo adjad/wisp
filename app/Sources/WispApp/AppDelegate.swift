@@ -754,6 +754,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if sources.contains("browser_history") { self.browserHistoryReader?.sync() }
         }
         model.startAssistant()
+        Notifications.onOpenToday = { [weak self] in self?.openTodayInNotch() }
         startNativeSourceReaders()
 
         // Pointer enter/exit come from a real AppKit tracking area on the
@@ -1047,6 +1048,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openAssistant()
     }
 
+    /// Today in the notch: where a clicked notification lands.
+    private func openTodayInNotch() {
+        prepareTodayInNotch()
+        openAssistant()
+    }
+
+    private func prepareTodayInNotch() {
+        model.showingQuickSettings = false
+        model.tab = .today
+    }
+
     private func showSetupCard() {
         model.showingQuickSettings = false
         model.setupCard = .open
@@ -1267,7 +1279,12 @@ extension AppDelegate {
         model.prepareTab(byHover: true)
         precondition(model.tab == .today, "Setup set aside leaves hover's last tab alone")
         precondition(model.setupCard.afterReadiness(true) == .hidden, "Setup set aside leaves when Wisp is ready")
-        print("PASS: AppDelegate setup card opens on Ask, holds the panel until Done or Later")
+        // A clicked notification opens Today, even from quick settings on Ask.
+        model.tab = .ask
+        model.showingQuickSettings = true
+        delegate.prepareTodayInNotch()
+        precondition(model.tab == .today && !model.showingQuickSettings, "A clicked notification lands on Today")
+        print("PASS: AppDelegate setup card opens on Ask, holds the panel until Done or Later; notifications open Today")
     }
 
     static func checkInlineReportHoldsOpen() async {

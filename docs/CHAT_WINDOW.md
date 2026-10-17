@@ -11,7 +11,9 @@ asked for. Both talk to the same service and the same saved chats.
 - **At rest** it is a black bar around the notch (a small capsule on a monitor).
   Hover or ⌥Space opens it. ⌥Space and the menu-bar icon always open Ask; hover
   opens the tab you last used if the panel closed in the last ten minutes. A dot
-  shows Wisp is working, and an orange "!" means setup was set aside.
+  shows Wisp is working, a count shows how many Today items need you, and an
+  orange "!" means setup was set aside. Clicking a Wisp notification (other than
+  a nudge's buttons) opens Today.
 - **Tabs** (⌘1 to ⌘3): **Ask**, the conversation; **Today**, the brief, what
   needs you, the next three blocks, inline Add to day, Replan and Running late;
   **Research**, whose prompt drafts an editable research plan, then shows the run
