@@ -580,12 +580,14 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
                        "last_success": stamp or None, "error": error,
                        "age_seconds": max(0, now - stamp) if stamp else None})
     observed = {}
+    # Once per account, not per row: see _compose_source.
+    provided = [(address, item) for address, item in _external_accounts.items()
+                if _provider_selected(address, item, part)]
     for row in native_rows:
         label, native_id = row["account"], row["account_id"]
         if not label or selected is not None and _account_group(label, native_id) not in selected:
             continue
-        if any(_provider_selected(address, item, part) and _covered_source(label, native_id, address, item)
-               for address, item in _external_accounts.items()):
+        if any(_covered_source(label, native_id, address, item) for address, item in provided):
             continue
         observed[native_id or label] = label
     native_stamp = _source_receipt({"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at))
@@ -616,10 +618,13 @@ def external_recent_complete(address: str) -> bool:
 
 
 def _range_history(start: float, end: float) -> list[dict]:
+    # external_recent_complete rescans an account's headers, so decide it once
+    # per account rather than once per history row.
+    complete = {_account_group(address, address) for address in _external_accounts
+                if external_recent_complete(address)}
     return [row for row in _parse_header_records(_history, snapshot="history")
-            if start <= row["ts"] < end and not any(external_recent_complete(address) and
-                _account_group(row["account"], row.get("account_id", "")) == _account_group(address, address)
-                for address in _external_accounts)]
+            if start <= row["ts"] < end and
+            _account_group(row["account"], row.get("account_id", "")) not in complete]
 
 
 def _history_warning(account: str | None = None) -> str:

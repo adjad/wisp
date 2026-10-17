@@ -318,6 +318,27 @@ class GmailSource(unittest.TestCase):
             E.configure_external_accounts(self.accounts)
         self.assertLessEqual(len(calls), 3 * len(self.accounts))
         self.assertIn("Provider copy", E._headers)
+        # The freshness disclosure on every email tool call has the same shape.
+        calls.clear()
+        with patch.object(E, "_provider_selected",
+                          lambda *args: calls.append(args) or real(*args)):
+            E.email_source_details()
+        self.assertLessEqual(len(calls), len(self.accounts))
+
+    def test_range_history_checks_each_account_once_not_per_row(self):
+        rows = []
+        for i in range(300):
+            fields = header(ME, f"Native {i}", stamp=time.time() - i).split("\x01")
+            fields[7], fields[-1] = f"<n{i}@example.test>", f"n{i}"
+            rows.append("\x01".join(fields))
+        E._history = "\n".join(rows)
+        self.assertEqual(len(E._parse_header_records(E._history, snapshot="history")), 300)
+        calls = []
+        real = E.external_recent_complete
+        with patch.object(E, "external_recent_complete",
+                          lambda address: calls.append(address) or real(address)):
+            E._range_history(0, time.time() + 1)
+        self.assertLessEqual(len(calls), len(self.accounts))
 
     def test_metadata_is_namespaced_by_account(self):
         self.accounts[SCHOOL] = {"client_id": "other", "refresh_token": "other"}
