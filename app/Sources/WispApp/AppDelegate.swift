@@ -47,6 +47,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let setupGuideShownKey = "wisp.setupGuide.shown"
     private static let notchTipShownKey = "wisp.notchTip.shown"
     private var pendingCollapse: DispatchWorkItem?
+    // A menu opened from the panel (the chat switcher) is open. See
+    // installMenuTrackingObservers.
+    private var menuTracking = false
+    // An auto-collapse came due while that menu was open and was held back.
+    private var collapseHeldForMenu = false
+    // Whether the pointer is over the expanded panel. Replaceable so the motion
+    // checks, which host no real panel, can exercise both answers.
+    private var pointerInPanel: () -> Bool = { false }
     private var hoverIntent = HoverIntent()
     private var hoverDwell: DispatchWorkItem?
     private var hoverMonitors: [Any] = []
@@ -169,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DisplayGeometry.shared.onChange = { [weak self] in self?.displaysChanged() }
         DisplayGeometry.shared.startObserving()
         installHoverMonitors()
+        installMenuTrackingObservers()
         setupObserver = NotificationCenter.default.addObserver(
             forName: .wispOpenSetupGuide, object: nil, queue: .main
         ) { [weak self] _ in
@@ -402,7 +411,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if presentation.desired == .chat { collapse() } else { expand() }
     }
 
+    /// Track menus so an open one holds auto-collapse. AppKit posts these for every
+    /// menu in the app, in begin/end pairs. In case a pair is ever unbalanced, any
+    /// presentation change or the pointer coming back into the panel also clears
+    /// the flag, but only when no menu is actually on screen, so it can never
+    /// disable auto-collapse for good and never lets the panel collapse under an
+    /// open menu. When the menu closes, a collapse it held back is re-armed if the
+    /// pointer is outside the panel.
+    private func installMenuTrackingObservers() {
+        pointerInPanel = { [weak self] in
+            self?.panel?.frame.contains(NSEvent.mouseLocation) ?? false
+        }
+        NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.menuTracking = true }
+        }
+        NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.menuDidEndTracking() }
+        }
+    }
+
+    private func menuDidEndTracking() {
+        menuTracking = false
+        guard collapseHeldForMenu else { return }
+        collapseHeldForMenu = false
+        if !model.collapsed, !pointerInPanel() { scheduleCollapse() }
+    }
+
+    /// Drop a menu flag left set by an unbalanced begin, unless a menu really is open.
+    private func clearStaleMenuTracking(menuOnScreen: Bool = NSApp?.windows.contains {
+        $0.isVisible && $0.level == .popUpMenu
+    } ?? false) {
+        guard !menuOnScreen else { return }
+        menuTracking = false
+        collapseHeldForMenu = false
+    }
+
     private func requestPresentation(_ surface: OverlayTransition.Surface) {
+        clearStaleMenuTracking()
+        // Pinning only holds off automatic collapse. Once the panel goes back to
+        // the bar or away by any route (collapse, Search closing, dismiss), it is unpinned.
+        if surface == .bar || surface == .hidden { model.pinned = false }
         cancelScheduledCollapse()
         cancelHoverDwell()
         if surface != .search {
@@ -516,9 +566,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingCollapse?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.model.collapsed else { return }
-            // Don't hide an unsent draft out from under the user; a mid-task
+            // Don't hide a pinned panel or an unfinished edit (typed input, a
+            // message draft being edited) out from under the user; a mid-task
             // generation is fine (the notch bar's dot shows it's still working).
-            if !self.model.input.trimmingCharacters(in: .whitespaces).isEmpty { return }
+            if self.model.holdsOpen { return }
+            // A menu opened from the panel (the chat switcher) runs outside it,
+            // so the pointer leaving the panel is not the person leaving. Hold
+            // the collapse until the menu closes (see installMenuTrackingObservers).
+            if self.menuTracking { self.collapseHeldForMenu = true; return }
             self.collapse()
         }
         pendingCollapse = work
@@ -529,6 +584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Reentry cancels auto-collapse even while opening. Only the hover
         // expansion itself must wait for a settled, docked bar.
         cancelScheduledCollapse()
+        clearStaleMenuTracking()
         guard notchDocked, presentation.active == nil,
               presentation.desired != .search else { return }
         // Entering the bar window only re-evaluates intent; the same dwell and
@@ -1030,6 +1086,82 @@ extension AppDelegate {
         precondition(delegate.model.turns.last?.text == "Synthetic daily summary")
         delegate.model.reset()
         print("PASS: AppDelegate Daily Summary during dismissal completes")
+    }
+
+    static func checkPinnedPanelHoldsOpen() async {
+        func opened() -> AppDelegate {
+            let delegate = AppDelegate()
+            delegate.presentation.request(.chat)
+            let opening = delegate.presentation.next()!
+            delegate.model.collapsed = false
+            delegate.finishPresentation(opening)
+            return delegate
+        }
+        let idle = opened()
+        let pinned = opened()
+        pinned.model.pinned = true
+        let typing = opened()
+        typing.model.input = "half a thought"
+        let editing = opened()
+        editing.model.messageDraft = OverlayModel.MessageDraft(to: "fixture", text: "Hi", isEditing: true)
+        for delegate in [idle, pinned, typing, editing] { delegate.scheduleCollapse() }
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(idle.presentation.desired == .bar, "Control: an idle panel must auto-collapse")
+        for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited")] {
+            precondition(delegate.presentation.desired == .chat, "\(what) must hold the panel open")
+        }
+        pinned.collapse()
+        precondition(!pinned.model.pinned, "An explicit collapse must unpin")
+        precondition(pinned.presentation.desired == .bar, "An explicit collapse still collapses a pinned panel")
+        let dismissed = opened()
+        dismissed.model.pinned = true
+        dismissed.dismissToMenuBar()
+        precondition(!dismissed.model.pinned, "Dismissing must unpin")
+        let history = [OverlayModel.Turn(role: "user", text: "a"), OverlayModel.Turn(role: "assistant", text: "b"),
+                       OverlayModel.Turn(role: "user", text: "c")]
+        let local = [OverlayModel.Turn(role: "user", text: "c"), OverlayModel.Turn(role: "assistant", text: "d")]
+        precondition(OverlayModel.joining(history: history, before: local).map(\.text) == ["a", "b", "c", "d"],
+                     "A turn saved before its chat's history loaded appears once")
+        precondition(OverlayModel.joining(history: Array(history.prefix(2)), before: local).map(\.text) == ["a", "b", "c", "d"],
+                     "History goes before turns asked while it loaded")
+        print("PASS: AppDelegate collapse holds (pin, typing, draft), unpins on collapse and dismiss")
+    }
+
+    static func checkMenuHoldsCollapse() async {
+        let delegate = AppDelegate()
+        delegate.installMenuTrackingObservers()
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.finishPresentation(opening)
+        let menu = NSMenu()
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+        delegate.scheduleCollapse()
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(delegate.presentation.desired == .chat, "An open menu must hold auto-collapse")
+        precondition(delegate.collapseHeldForMenu, "The held collapse must be remembered")
+        // The menu closes with the pointer outside the panel: the held collapse runs.
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu)
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(delegate.presentation.desired == .bar, "A collapse held by a menu must re-arm when it closes")
+        // Closing with the pointer over the panel does not re-arm it.
+        let inside = AppDelegate()
+        inside.installMenuTrackingObservers()
+        inside.pointerInPanel = { true }
+        inside.presentation.request(.chat)
+        let insideOpening = inside.presentation.next()!
+        inside.model.collapsed = false
+        inside.finishPresentation(insideOpening)
+        inside.collapseHeldForMenu = true
+        inside.menuDidEndTracking()
+        precondition(inside.pendingCollapse == nil, "Closing a menu over the panel must not re-arm a collapse")
+        // A flag left by an unbalanced begin is cleared, but never while a menu is on screen.
+        delegate.menuTracking = true
+        delegate.clearStaleMenuTracking(menuOnScreen: true)
+        precondition(delegate.menuTracking, "An open menu keeps holding auto-collapse")
+        delegate.clearStaleMenuTracking(menuOnScreen: false)
+        precondition(!delegate.menuTracking, "A stale menu flag is cleared once no menu is open")
+        print("PASS: AppDelegate open menu holds auto-collapse, re-arms on close, never sticks")
     }
 
     static func checkDismissReopenInput() {
