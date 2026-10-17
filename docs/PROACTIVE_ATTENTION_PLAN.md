@@ -1,6 +1,9 @@
 # Wisp Proactive Attention — Plan
 
-**Status:** Slice 0 built (this PR); Slices 1+ not started. Base: `origin/main` @ `21903b6`.
+**Status (2026-10-16):** Slices 0, 2 and the reminder core of 6 are built and run in Preview
+(`shadow`) by default; the app now announces an added reminder and lists every decision in
+Today ("Caught for you"), with the Live switch and Undo there. Slices 1 (Mail), 3 (model
+extraction), 4 (ranking/feedback) are not started.
 
 **Goal.** Wisp reads Messages and Mail (and later Canvas) in the background and catches the
 thing you haven't put on your calendar yet, before you'd have to ask. Few alerts, each one
@@ -391,17 +394,23 @@ curl -s -X PUT localhost:8765/assistant/attention/settings -H 'content-type: app
 
 Known and accepted: `capped` is final (a message capped today is not reconsidered tomorrow); a create that succeeded but crashed before the ledger recorded it ends as `unknown` and cannot be undone through the endpoint; contact names match on the last 10 digits; the endpoints, like the rest of the backend, have no authentication beyond loopback.
 
-**Not built.** The in-app alert and its Undo button: the backend publishes an
-`attention_added` event, which the app currently ignores (it falls to the `default:` case).
-Until the Swift side lands, the user is alerted by the reminder itself at its due time, and
-Undo is the endpoint above or deleting the reminder. Mail is not read on this path.
+**Surfaces (built 2026-10-16).** The app turns `attention_added` into a notification naming
+the reminder, its time and the quoted message (never the sender's raw handle). Today's
+"Needs my attention" tab and the notch's Today tab show **Caught for you**: the last week's
+decisions (`created`, `shadow` "would add", `capped`, `unknown`, `failed`, `undone`; an
+`already_on_file` row is not shown), each with its quote; **Undo** appears only on a row in
+`created`; and an **Add reminders automatically** switch moves between Preview (`shadow`)
+and Live through `PUT /assistant/attention/settings` (switching into Live re-baselines, so
+nothing older is acted on). Mail is not read on this path.
 Auditor review is required before merge (outbound action and persisted data).
 
 ### Slice 7 — Shadow run, then graduate (S + calendar time)
 
-- Run in shadow mode for ~2 weeks. Each day the user marks hits and misses from the shadow log.
-- Graduate a reason code to live notifications only when its precision clears the
-  threshold below. Everything else stays in Today/brief only.
+- Run in Preview (shadow) and let the user judge the rows in Caught for you. The user, not a
+  counter, decides when to switch to Live, from the switch in Today.
+- **Why not a fixed sample size:** the live rate is low. Offline replay found about 5 real
+  cases in 26.5 days, and the first 4.9 days of shadow on the user's Mac recorded none, so the
+  earlier bar of 30 shadow items per reason code would take about five months to reach.
 
 ## 5. Order and parallelism
 
@@ -424,9 +433,10 @@ Quad at 6PM") with no model in the loop. Ship that first, in shadow mode, and tr
   competing dates.
 - **Replay:** `scripts/replay_attention.py` precision/recall per reason code on the labeled
   snapshot (Slice 0). A slice that lowers an existing code's precision doesn't merge.
-- **Initial live-graduation thresholds (proposal, to be tuned with real data):** precision
-  ≥ 80% over ≥ 30 shadow items per reason code, and no alert in the "wrongly attributed
-  to the user" class.
+- **Graduation:** the user's call from Caught for you, after reviewing what Preview listed;
+  recommended once at least 5 Preview rows have appeared with none wrong and none
+  "wrongly attributed to the user". (Was precision ≥ 80% over ≥ 30 shadow items, which is
+  unreachable at the observed rate.)
 - **Safety:** isolated backend on port 8775 with a sandbox home, never the production port;
   no live replay against 8765. If `router.py` is touched, run the standing router checks.
   Python tests via the project's replay scripts (a bare `pytest tests/` runs zero tests).

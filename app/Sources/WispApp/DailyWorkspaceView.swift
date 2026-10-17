@@ -47,6 +47,7 @@ struct DailyAttentionView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                CaughtForYouSection()
                 if let workspace {
                     Text("What needs your attention").font(.title2.bold())
                     Text("Due work, commitments and source evidence worth reviewing.").foregroundStyle(.secondary)

@@ -11,6 +11,7 @@ swiftc ${swiftc_nested_sandbox_flags[@]+"${swiftc_nested_sandbox_flags[@]}"} -pa
     "$project_root/app/Sources/WispApp/DiagnosticReport.swift" \
     "$project_root/app/Sources/WispApp/TodayView.swift" \
     "$project_root/app/Sources/WispApp/DailyWorkspaceView.swift" \
+    "$project_root/app/Sources/WispApp/CaughtForYou.swift" \
     "$project_root/tests/TodayPlanChecks.swift" \
     -o "$today_scratch/today-checks"
 "$today_scratch/today-checks"

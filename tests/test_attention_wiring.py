@@ -929,3 +929,18 @@ def test_a_remembered_zone_must_match_the_clock_for_a_whole_year(isolated, monke
     asked = []
     monkeypatch.setattr(wiring, "matches_clock", lambda name, at=None, days=0: asked.append(days) or True)
     assert wiring.current_zone() == TZ and asked == [wiring.REMEMBERED_ZONE_DAYS] and asked[0] >= 365
+
+
+def test_the_app_announces_an_added_reminder_and_today_lists_decisions():
+    """The backend's attention_added event used to fall to the app's default case."""
+    from pathlib import Path
+    app = Path(__file__).resolve().parents[1] / "app/Sources/WispApp"
+    overlay = (app / "OverlayModel.swift").read_text()
+    case = overlay.split('case "attention_added":', 1)[1].split("case ", 1)[0]
+    assert 'Notifications.deliver(id: "attention:" + ev.str("source_id")' in case
+    assert 'ev.str("quote")' in case and 'ev.str("sender")' not in case   # no raw handle in a banner
+    caught = (app / "CaughtForYou.swift").read_text()
+    assert '"/assistant/attention/undo"' in caught and '"/assistant/attention/settings"' in caught
+    assert 'record.state == "created"' in caught                          # Undo only for its own reminder
+    assert "CaughtForYouSection()" in (app / "DailyWorkspaceView.swift").read_text()
+    assert "CaughtForYouSection(compact: true)" in (app / "NotchTodayView.swift").read_text()
