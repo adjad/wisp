@@ -30,7 +30,8 @@ the quick ask; both surfaces talk to the same service and the same saved chats.
 | Service adapter (`/chats`, `/sessions/{id}`, `/agent`, approvals) | `app/Sources/WispApp/Chat/LiveChatBackend.swift` |
 | Views | `app/Sources/WispApp/Chat/ChatViews.swift` |
 | Colors, orb, aurora | `app/Sources/WispApp/Chat/ChatTheme.swift` |
-| Window | `app/Sources/WispApp/Chat/ChatWindow.swift` |
+| Window (`WispWindowController`) | `app/Sources/WispApp/WispWindow.swift` |
+| Routes into the app (`WispRoute`, `WispRouter`) | `app/Sources/WispApp/WispRoute.swift` |
 | Visual QA harness (`WISP_CHAT_QA` only) | `app/Sources/WispApp/Chat/ChatQA.swift` |
 | Chat list endpoint | `service/memory/store.py` `list_chats`, `service/main.py` `GET /chats` |
 
@@ -52,7 +53,8 @@ notch's monochrome look, so the notch is unchanged.
   shown because the service does not report them per answer.
 - Today, Research, Memory, What Wisp learned and Settings are launchers into the existing
   windows, not embedded pages.
-- Wisp is a regular app: it has a Dock icon, and opening it (from the Dock, Finder or Spotlight) shows this window. Closing the window leaves Wisp running in the notch and menu bar; ⌘Q (or Quit from the Dock) stops it, running the same shutdown as the menu-bar Quit. Opening Wisp from the Dock again brings the window back.
+- Wisp is a regular app with a Dock icon, but it starts in the notch: launching it opens no window. The first launch after this change opens the notch once with a short note about where Wisp lives. The window opens from the Dock icon (or opening Wisp again from Finder or Spotlight while it runs), the menu bar's Open Wisp Window, Window ▸ Wisp Window (⌘1) and the notch hand-off. Closing the window leaves Wisp running in the notch and menu bar; ⌘Q (or Quit from the Dock) stops it, running the same shutdown as the menu-bar Quit.
+- Every control that opens part of the app (the sidebar shortcuts, the notch's Today and Daily Summary buttons, the menu items) names a `WispRoute` and goes through `WispRouter`, so a later change can move a feature into the notch or this window in one place.
 
 ## Testing
 
