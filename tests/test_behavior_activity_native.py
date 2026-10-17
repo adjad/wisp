@@ -113,11 +113,12 @@ def test_global_learning_settings_confirmation(tmp_path):
                         source.index("    @Published var behaviorForgetStatus")]
     methods = source[source.index("    func refreshBehavior() async"):
                      source.index("    /// Deletes everything Wisp learned")]
-    copy_start = source.index("    private var behaviorExplanation: String")
-    copy_end = min(source.index(marker, copy_start) for marker in
-                   ("    private var panes:", "    private var behaviorLearningLabel:")
-                   if marker in source[copy_start:])
+    # The copy lives on the app-scoped loader, so Settings and the notch's
+    # quick settings show exactly the same words.
+    copy_start = source.index("    var behaviorExplanation: String {")
+    copy_end = source.index("    func setIdleMinutes", copy_start)
     copy = source[copy_start:copy_end]
+    assert "private var behaviorExplanation: String { loader.behaviorExplanation }" in source
     client_source = (root / "app/Sources/WispApp/WispClient.swift").read_text()
     client_methods = client_source[client_source.index("    func setBehaviorEnabled("):
                                    client_source.index("    // DELETE /behavior/data")]
@@ -128,8 +129,9 @@ def test_global_learning_settings_confirmation(tmp_path):
         "import Foundation\nimport Combine\n"
         "@MainActor final class SettingsLoader: ObservableObject {\n"
         "private let client = WispClient()\n" + properties + methods + "\n}\n"
-        "@MainActor struct BehaviorPrivacyCopy {\nlet loader: SettingsLoader\n" + copy
-        + "\nvar text: String { behaviorExplanation }\n}\n"
+        "extension SettingsLoader {\n" + copy + "\n}\n"
+        "@MainActor struct BehaviorPrivacyCopy {\nlet loader: SettingsLoader\n"
+        "var text: String { loader.behaviorExplanation }\n}\n"
         + "extension WispClient {\n" + client_methods + "\n}\n"
     )
     env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "WISP_BEHAVIOR": "0"}

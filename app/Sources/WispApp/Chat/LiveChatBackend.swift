@@ -44,7 +44,13 @@ extension WispClient {
 @MainActor
 final class LiveChatBackend: ChatBackend {
     private let client: WispClient
-    init(client: WispClient) { self.client = client }
+    // The app's one Full access source. Without one (the QA harness) the
+    // service is asked directly.
+    private let access: SettingsLoader?
+    init(client: WispClient, access: SettingsLoader? = nil) {
+        self.client = client
+        self.access = access
+    }
 
     func listChats() async -> [ChatSummary]? {
         guard let rows = await client.chatList() else { return nil }
@@ -74,6 +80,14 @@ final class LiveChatBackend: ChatBackend {
         await client.sendMessageDraft(to: to, text: text)
     }
 
-    func fullAccess() async -> Bool? { await client.mode().fullAccess }
-    func setFullAccess(_ on: Bool) async -> Bool? { await client.setFullAccess(on).fullAccess }
+    func fullAccess() async -> Bool? {
+        guard let access else { return await client.fullAccessState() }
+        await access.refreshFullAccess()
+        return access.fullAccessPending ? nil : access.fullAccess
+    }
+
+    func setFullAccess(_ on: Bool) async -> Bool? {
+        guard let access else { return await client.requestFullAccess(on) }
+        return await access.requestFullAccess(on)
+    }
 }
