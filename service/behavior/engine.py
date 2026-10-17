@@ -680,6 +680,12 @@ class BehaviorEngine:
             return replace(n, body=text.strip()[:400])
         return n
 
+    def nudge_seq_space(self) -> dict:
+        """Which store nudge seqs come from, and the highest seq it ever handed
+        out. A cursor taken against another ``store_id``, or above ``max_seq``,
+        belongs to a store that was replaced."""
+        return {"store_id": self._store.store_id(), "max_seq": self._store.max_seq()}
+
     def nudges_since(self, cursor: int = 0, limit: int = 50) -> tuple[list[Nudge], int]:
         """Nudges with seq > cursor (oldest first) and the new cursor."""
         items = self._store.nudges_since(cursor, limit)

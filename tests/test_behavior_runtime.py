@@ -130,6 +130,9 @@ class FakeEngine:
             return grant
         return None
 
+    def nudge_seq_space(self):
+        return {"store_id": "fake-store", "max_seq": max((n.seq for n in self._nudges), default=0)}
+
     def nudges_since(self, cursor=0, limit=50):
         rows = [n for n in self._nudges if n.seq > cursor][:limit]
         return rows, (rows[-1].seq if rows else cursor)
@@ -1738,3 +1741,89 @@ def test_observation_retention_keeps_only_valid_overlapping_calendar_intervals(t
         assert {r.id for r in store.observations()} == {"end-at", "end-after", "end-now", "point-at", "recent-message"}
     finally:
         store.close()
+
+
+# --------------------------------------------------------------------------
+# Delivery cursor vs. a replaced behavior.db
+# --------------------------------------------------------------------------
+
+def _real_engine_runtime(home, monkeypatch):
+    """Real BehaviorEngine at ``home/behavior.db``; due for nudges, nothing else."""
+    from service.behavior import nudges as nudges_mod
+    from service.behavior.engine import BehaviorEngine
+    monkeypatch.setattr(nudges_mod, "build_candidates", lambda inputs: [])
+    rt = br.BehaviorRuntime(home, local_factory=lambda path: BehaviorEngine(path, clock=lambda: NOW, tz="UTC"),
+                            calendar_sync_fn=lambda: {"available": False}, clock=lambda: NOW)
+    rt._stamps["local"] = {"ingest": NOW, "mine": NOW, "nudge": 0}
+    rt._availability_attempt = NOW
+    rt._card = (NOW, "")
+    monkeypatch.setattr(rt, "_refresh_availability", lambda now: None)
+    return rt
+
+
+def _pending(rt, store, nid):
+    """Insert one engine nudge, then run the work pass that reads the cursor."""
+    rt.local_engine()._store.insert_nudge(gym_conflict_nudge(nid))
+    rt._stamps["local"]["nudge"] = 0
+    nudges, key = rt.work(store, NOW)
+    assert "engine" not in rt.errors
+    return [n.id for n in nudges]
+
+
+def _deliver_all(rt, ids):
+    """What tick does after a delivery: advance the cursor past each seq."""
+    for n in rt.local_engine().nudges_since(0, 500)[0]:
+        if n.id in ids:
+            rt.kv_set("cursor:local", str(max(n.seq, int(rt.kv_get("cursor:local", "0")))))
+
+
+def _move_aside_on_next_open(home):
+    import sqlite3
+    db = sqlite3.connect(str(home / br.ENGINE_DB))
+    with db:
+        db.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+    db.close()
+
+
+def test_cursor_rebases_when_behavior_db_is_moved_aside(tmp_path, store, monkeypatch):
+    home = tmp_path / "home"
+    rt = _real_engine_runtime(home, monkeypatch)
+    assert _pending(rt, store, "before-1") == ["before-1"]
+    _deliver_all(rt, ["before-1"])
+    assert rt.work(store, NOW)[0] == []          # intact store: nothing offered twice
+    rt.close()
+
+    _move_aside_on_next_open(home)
+    rt = _real_engine_runtime(home, monkeypatch)
+    try:
+        # The fresh store hands out seq 1 again: same value as the old cursor,
+        # so only the store identity can tell the two seq spaces apart.
+        assert _pending(rt, store, "after-1") == ["after-1"]
+        assert list(home.glob("behavior.db.schema-99-*.bak"))
+        _deliver_all(rt, ["after-1"])
+        assert _pending(rt, store, "after-2") == ["after-2"]
+    finally:
+        rt.close()
+
+
+def test_unbound_cursor_above_max_seq_rebases_but_within_range_is_adopted(tmp_path, store, monkeypatch):
+    # A cursor written before store ids existed: the live 2026-10-16 state
+    # (cursor 5 against a fresh store whose max_seq is 0).
+    stale = _real_engine_runtime(tmp_path / "stale", monkeypatch)
+    try:
+        stale.kv_set("cursor:local", "5")
+        assert _pending(stale, store, "fresh-1") == ["fresh-1"]
+        assert stale.kv_get("cursor:local") == "0"
+        assert stale.kv_get("cursor_store:local") == stale.local_engine().nudge_seq_space()["store_id"]
+    finally:
+        stale.close()
+
+    intact = _real_engine_runtime(tmp_path / "intact", monkeypatch)
+    try:
+        for nid in ("old-1", "old-2"):
+            intact.local_engine()._store.insert_nudge(gym_conflict_nudge(nid))
+        intact.kv_set("cursor:local", "2")
+        assert _pending(intact, store, "new-3") == ["new-3"]   # old-1/old-2 not redelivered
+        assert intact.kv_get("cursor:local") == "2"
+    finally:
+        intact.close()
