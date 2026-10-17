@@ -199,8 +199,9 @@ Attention rules (`nudges.select`):
 - **Quiet hours:** nothing is generated from 22:00 to 07:00.
 - **Dedupe:** ids are deterministic, so the same situation never fires twice.
   Expired nudges are never created.
-- **Mute:** two negative verdicts (`not_now`, `wrong` or `undo`) for the same
-  kind and pattern within 7 days mute it for 7 days.
+- **Mute:** one `wrong` mutes that kind and pattern for 7 days. Two negative verdicts
+  (`not_now`, `wrong` or `undo`) for the same kind and pattern within 7 days mute it
+  for 7 days from the second.
 - **Undo:** an `undo` also turns that kind and pattern's auto actions into
   offers.
 - **Horizon:** candidates are built for events through the end of tomorrow.
