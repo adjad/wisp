@@ -164,7 +164,10 @@ struct OverlayView: View {
     }
 
     // What needs you on Today, once the day has loaded.
-    private var todayCount: Int { todayModel.plan?.workspace?.attention.count ?? 0 }
+    private var todayCount: Int {
+        guard let plan = todayModel.plan, plan.day == todayModel.day else { return 0 }
+        return plan.workspace?.attention.count ?? 0
+    }
 
     private var tabStrip: some View {
         HStack(spacing: 2) {

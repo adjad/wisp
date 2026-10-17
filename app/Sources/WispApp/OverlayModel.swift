@@ -139,7 +139,15 @@ final class OverlayModel: ObservableObject {
     @Published var messageDraft: MessageDraft?
     @Published var attachedImageName: String?
     // The panel's tab. App-scoped, so it survives collapse.
-    @Published var tab: NotchTab = .ask { didSet { if tab != oldValue { onResize() } } }
+    @Published var tab: NotchTab = .ask {
+        didSet {
+            guard tab != oldValue else { return }
+            // A research plan holds the prompt queue only while it is on screen.
+            // Leaving the tab lets a question asked in Ask, or a brief, run.
+            if oldValue == .research { releaseResearchDispatch() }
+            onResize()
+        }
+    }
     private var tabMemory = NotchTabMemory()
     // The next prompt opens an editable research plan. This is the Research tab.
     var researchMode: Bool {
@@ -237,7 +245,7 @@ final class OverlayModel: ObservableObject {
     // it is still working.
     var holdsOpen: Bool {
         pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
-            || !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty
+            || (tab == .today && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 
     /// Pick the tab for an opening panel: Ask, or for a hover soon after the
@@ -621,10 +629,13 @@ final class OverlayModel: ObservableObject {
     func returnToChat() {
         showingResearch = false
         researchMode = false
-        if let dispatchID = researchDispatchID {
-            researchDispatchID = nil
-            completeSubmission(dispatchID)
-        }
+        releaseResearchDispatch()
+    }
+
+    private func releaseResearchDispatch() {
+        guard let dispatchID = researchDispatchID else { return }
+        researchDispatchID = nil
+        completeSubmission(dispatchID)
     }
 
     // Writes the full current conversation — every turn's text, model, route

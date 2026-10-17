@@ -55,8 +55,17 @@ struct NotchTodayView: View {
 
     private var heading: some View {
         HStack(spacing: 8) {
-            Text(Date.now, format: .dateTime.weekday(.wide).month(.abbreviated).day())
+            // The planner window can pick another day on the shared model; say
+            // which day this is, since adding a task goes to it.
+            Text(today.selectedDate, format: .dateTime.weekday(.wide).month(.abbreviated).day())
                 .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+            if !today.followsToday {
+                chipButton("Back to today", icon: "calendar", help: "Show today instead of the day picked in the planner") {
+                    today.returnToToday()
+                    Task { await today.refresh() }
+                }
+                .disabled(today.busy)
+            }
             Spacer()
             chipButton(model.briefComposing ? "Refreshing…" : "Refresh", icon: "arrow.clockwise",
                        help: "Compose a new brief and reload your day") {

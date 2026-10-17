@@ -1157,6 +1157,25 @@ extension AppDelegate {
         print("PASS: AppDelegate collapse holds (pin, typing, draft, Today task), unpins on collapse and dismiss; tabs reopen as designed")
     }
 
+    static func checkResearchReleasesQueueOffTab() async {
+        let delegate = AppDelegate()
+        let model = delegate.model
+        var started: [String] = []
+        model.onStartResearch = { started.append($0) }
+        model.tab = .research
+        model.input = "battery chemistry"
+        model.submit()
+        precondition(started == ["battery chemistry"] && model.showingResearch, "A research prompt starts a plan")
+        precondition(model.willQueuePrompt, "An on-screen research plan holds the prompt queue")
+        model.tab = .ask
+        precondition(!model.willQueuePrompt, "Leaving the Research tab frees the queue for Ask")
+        precondition(model.showingResearch, "The research plan stays on its tab")
+        model.runDailySummary()
+        precondition(model.briefComposing, "A brief can be composed while research sits on its tab")
+        model.reset()
+        print("PASS: AppDelegate research releases the prompt queue when its tab is left")
+    }
+
     static func checkMenuHoldsCollapse() async {
         let delegate = AppDelegate()
         delegate.installMenuTrackingObservers()
