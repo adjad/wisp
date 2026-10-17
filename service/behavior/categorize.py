@@ -52,6 +52,20 @@ _RULES: tuple[tuple[str, re.Pattern], ...] = (
     ("personal", _words(r"haircut", r"family", r"kids?", r"school", r"date\s+night")),
 )
 
+# Course sessions. University calendars (Canvas feeds especially) tag every entry with a
+# course code and section, "Attendance October 12 [CSE-20-04]", and name few of them
+# "class". The code needs a section part (SUBJ-NUM-SECTION) so a ticket id like
+# "[OPS-123]" is not read as a course.
+_COURSE_CODE = re.compile(r"(?<![\w])[A-Z]{2,5}-\d{1,3}[A-Z]?-\d{1,3}[A-Z]?(?![\w])")
+_SESSION = _words(r"office\s+hours?", r"recitation", r"tutorial", r"tutoring", r"lab",
+                  r"discussion\s+section", r"study\s+(?:group|session|hall)")
+# A course entry that is work to hand in, not a session to attend. Canvas gives these a
+# due time (often 11:59pm), so calling them "class" would mine a late-night class habit.
+_COURSEWORK = _words(r"hw\s*\d*", r"homework", r"assignments?", r"readings?", r"quiz(?:zes)?",
+                     r"exams?", r"midterms?", r"finals?", r"worksheets?", r"pa\s*\d+",
+                     r"zybooks?", r"posts?", r"due", r"projects?", r"essays?", r"papers?",
+                     r"submissions?", r"submit", r"practice", r"problem\s+sets?", r"psets?")
+
 
 def categorize(subject: str, attrs: Mapping[str, Any] | None = None) -> str:
     """Keyword category for a title; "other" when nothing matches.
@@ -61,6 +75,8 @@ def categorize(subject: str, attrs: Mapping[str, Any] | None = None) -> str:
     text = (subject or "").strip()
     if not text:
         return "other"
+    if _SESSION.search(text) or (_COURSE_CODE.search(text) and not _COURSEWORK.search(text)):
+        return "class"
     for category, rule in _RULES:
         if rule.search(text):
             if category == "call" and _attendee_count(attrs) >= 3:
