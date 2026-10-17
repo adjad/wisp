@@ -282,67 +282,98 @@ enum DiagnosticReport {
             throw failure("Report file was not private, so it was removed")
         }
     }
+}
 
-    @MainActor private static var windows: [NSWindowController] = []
+/// What a report is about, captured once when it opens and never changed after:
+/// a reply, Today's plan, or the last turn that never finished. A later reply,
+/// refresh or rebuilt view cannot change what this report previews or saves.
+struct ReportSnapshot {
+    /// Which report this is: one per reply (its trace id), "today", and so on.
+    let key: String
+    let metadata: [String: Any]
+    /// Scrubbed once: redaction of a large report is too slow to repeat per keystroke.
+    let scrubbedDetails: [String: Any]?
 
-    @MainActor static func present(metadata: [String: Any], details: [String: Any]? = nil) {
-        windows.removeAll { $0.window?.isVisible != true }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 580), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "Report a problem"
-        window.contentView = NSHostingView(rootView: DiagnosticReportView(metadata: metadata, details: details))
-        window.center()
-        let controller = NSWindowController(window: window)
-        windows.append(controller)
-        controller.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    init(key: String, metadata: [String: Any], details: [String: Any]?) {
+        self.key = key
+        self.metadata = metadata
+        self.scrubbedDetails = details.flatMap { DiagnosticReport.scrub($0) as? [String: Any] }
+    }
+
+    var hasDetails: Bool { scrubbedDetails != nil }
+
+    func payload(note: String, includeDetails: Bool) -> [String: Any] {
+        DiagnosticReport.payload(metadata: metadata, details: scrubbedDetails, note: note,
+                                 includeDetails: includeDetails && hasDetails, detailsAreScrubbed: true)
     }
 }
 
-private struct DiagnosticReportView: View {
-    let metadata: [String: Any]
-    let details: [String: Any]?
-    /// Scrubbed once: redaction of a large report is too slow to repeat per keystroke.
-    private let scrubbedDetails: [String: Any]?
-    @State private var note = ""
-    @State private var includeDetails = false
-    @State private var status = ""
-    init(metadata: [String: Any], details: [String: Any]?) {
-        self.metadata = metadata
-        self.details = details
-        self.scrubbedDetails = details.flatMap { DiagnosticReport.scrub($0) as? [String: Any] }
-    }
-    private var payload: [String: Any] {
-        DiagnosticReport.payload(metadata: metadata, details: scrubbedDetails, note: note, includeDetails: includeDetails, detailsAreScrubbed: true)
-    }
-    private var preview: String { (try? DiagnosticReport.encoded(payload)).flatMap { String(data: $0, encoding: .utf8) } ?? "Report is too large to save. Turn off detailed content or shorten your note." }
+/// The one report a surface has open, shown inline under what it is about.
+/// Opening a report on something else replaces it with a fresh snapshot, an
+/// empty note and details off, so neither carries over to another reply. The
+/// preview shows the exact bytes Save writes: both come from `encoded()`.
+@MainActor
+final class ReportDraft: ObservableObject {
+    @Published private(set) var snapshot: ReportSnapshot?
+    // Editing after a save makes "Saved" untrue for what is now previewed.
+    @Published var note = "" { didSet { if note != oldValue { status = "" } } }
+    @Published var includeDetails = false { didSet { if includeDetails != oldValue { status = "" } } }
+    @Published private(set) var status = ""
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("What did you expect Wisp to do? (optional)").font(.headline)
-            TextEditor(text: $note).frame(height: 65).border(Color.secondary.opacity(0.3))
-            if details != nil {
-                Toggle("Include conversation or planner details", isOn: $includeDetails)
-                Text("Detailed content can include private messages, titles, and model inputs. Automatic redaction of passwords, tokens and keys is best effort and cannot catch everything. Review the preview before sharing.").font(.caption).foregroundStyle(.secondary)
-            }
-            Text("Preview · saved locally, never uploaded").font(.headline)
-            ScrollView { Text(verbatim: preview).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                .padding(8).background(Color.secondary.opacity(0.06))
-            HStack {
-                Text(status).font(.caption)
-                Spacer()
-                Button("Save report…") {
-                    let panel = NSSavePanel()
-                    panel.allowedContentTypes = [.json]
-                    panel.nameFieldStringValue = "Wisp-problem-\(Int(Date().timeIntervalSince1970)).json"
-                    guard panel.runModal() == .OK, let url = panel.url else { return }
-                    do {
-                        let data = try DiagnosticReport.encoded(payload)
-                        // Private from the first byte, atomically replaced; failures are visible.
-                        try DiagnosticReport.save(data, to: url)
-                        status = "Saved \(url.lastPathComponent)"
-                    } catch { status = "Could not save report: \(error.localizedDescription)" }
-                }.keyboardShortcut(.defaultAction)
-            }
-        }.padding(20).frame(minWidth: 520, minHeight: 460)
+    var isOpen: Bool { snapshot != nil }
+
+    /// Opens a report on `key`. The same key again keeps the draft as it is.
+    func open(key: String, metadata: [String: Any], details: [String: Any]? = nil) {
+        guard snapshot?.key != key else { return }
+        snapshot = ReportSnapshot(key: key, metadata: metadata, details: details)
+        note = ""
+        includeDetails = false
+        status = ""
+    }
+
+    func close() {
+        snapshot = nil
+        note = ""
+        includeDetails = false
+        status = ""
+    }
+
+    func encoded() throws -> Data {
+        guard let snapshot else {
+            throw NSError(domain: "Diagnostics", code: 4, userInfo: [NSLocalizedDescriptionKey: "No report is open."])
+        }
+        return try DiagnosticReport.encoded(snapshot.payload(note: note, includeDetails: includeDetails))
+    }
+
+    var preview: String {
+        (try? encoded()).flatMap { String(data: $0, encoding: .utf8) }
+            ?? "Report is too large to save. Turn off detailed content or shorten your note."
+    }
+
+    /// Writes the previewed bytes to `url`: private from the first byte and
+    /// atomically replaced (`DiagnosticReport.save`). The outcome is shown.
+    @discardableResult
+    func write(to url: URL) -> Bool {
+        do {
+            try DiagnosticReport.save(try encoded(), to: url)
+            status = "Saved \(url.lastPathComponent)"
+            return true
+        } catch {
+            status = "Could not save report: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Asks where to save, then writes. The caller marks itself as showing a
+    /// file panel first, so the notch doesn't take the panel's focus as "the
+    /// person left" (OverlayModel.pickingFile).
+    func chooseLocationAndSave() {
+        guard isOpen else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "Wisp-problem-\(Int(Date().timeIntervalSince1970)).json"
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        write(to: url)
     }
 }

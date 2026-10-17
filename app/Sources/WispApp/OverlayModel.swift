@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 @MainActor
@@ -167,6 +168,15 @@ final class OverlayModel: ObservableObject {
     // First-run setup at the top of Ask. Its readiness lives on the app's one
     // SetupGuideModel, which the setup window shares.
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
+    // The one problem report open in the notch, unfolded under the reply it is
+    // about (or at the top of Ask when it isn't about a reply on screen).
+    let report = ReportDraft()
+    private var reportObserver: AnyCancellable?
+
+    init() {
+        // Rows that show the report read it through this model, so redraw with it.
+        reportObserver = report.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
     @Published var collapsed = false {
         didSet {
             if collapsed && !oldValue {
@@ -256,7 +266,30 @@ final class OverlayModel: ObservableObject {
     var holdsOpen: Bool {
         pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || (tab == .today && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
-            || setupCard == .open
+            || setupCard == .open || report.isOpen || (tab == .today && todayReport?.isOpen == true)
+    }
+
+    /// Today's report, owned by the shared TodayModel. While it is open on the
+    /// Today tab the panel stays open, like any other edit in progress.
+    weak var todayReport: ReportDraft?
+
+    /// Saves a report from the notch. The save panel takes focus from the
+    /// panel, which must not read as the person leaving.
+    func saveReport(_ draft: ReportDraft) {
+        pickingFile = true
+        defer { pickingFile = false }
+        draft.chooseLocationAndSave()
+    }
+
+    /// Which report a reply's "Report a problem" opens: its trace (or, for a
+    /// reply without one, its row), so a rebuilt row finds the same draft.
+    static func reportKey(for turn: Turn) -> String { "chat:" + (turn.traceID ?? turn.id.uuidString) }
+
+    /// The open report isn't about any reply on screen (the last dropped turn,
+    /// no reply yet, or a reply the chat no longer shows): show it at the top of Ask.
+    var reportIsUnattached: Bool {
+        guard let key = report.snapshot?.key, key.hasPrefix("chat:") else { return false }
+        return !turns.contains { Self.reportKey(for: $0) == key }
     }
 
     /// Pick the tab for an opening panel: Ask, or for a hover soon after the
@@ -630,6 +663,8 @@ final class OverlayModel: ObservableObject {
     }
 
     func reset() {
+        // A report belongs to the conversation being left.
+        report.close()
         streamTask?.cancel()
         streamTask = nil
         pending = nil
@@ -671,16 +706,21 @@ final class OverlayModel: ObservableObject {
     // URL (nil if there's nothing to export yet) so the caller can reveal it
     // in Finder.
     func reportCurrentProblem() {
+        tab = .ask
+        showingQuickSettings = false
         if var metadata = lastDroppedReport {
-            if let traceID = metadata["trace_id"] as? String, let journal = DiagnosticReport.journal(traceID: traceID) {
+            let traceID = metadata["trace_id"] as? String
+            if let journal = DiagnosticReport.journal(traceID: traceID) {
                 metadata["trace"] = journal
                 metadata["journal_available"] = true
             }
-            DiagnosticReport.present(metadata: metadata)
+            // Untraced drops get their own key, so a later one never reuses an older snapshot.
+            report.open(key: "chat:dropped:" + (traceID ?? UUID().uuidString), metadata: metadata)
         } else if let turn = turns.last(where: { $0.role == "assistant" }) {
             reportProblem(for: turn)
         } else {
-            DiagnosticReport.present(metadata: ["surface": "chat", "client_outcome": "no_completed_reply", "journal_available": false])
+            report.open(key: "chat:none",
+                        metadata: ["surface": "chat", "client_outcome": "no_completed_reply", "journal_available": false])
         }
     }
 
@@ -705,7 +745,7 @@ final class OverlayModel: ObservableObject {
             details["prompt"] = turns[index - 1].text
         }
         if let error = turn.errorDetail { details["error_detail"] = error }
-        DiagnosticReport.present(metadata: metadata, details: details)
+        report.open(key: Self.reportKey(for: turn), metadata: metadata, details: details)
     }
 
     func exportDebugLog() -> URL? {

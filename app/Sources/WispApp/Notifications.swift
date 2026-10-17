@@ -80,6 +80,9 @@ enum Notifications {
 
     /// Set by OverlayModel.startAssistant: (nudge_id, action identifier, userInfo).
     @MainActor static var onNudgeResponse: (@MainActor (String, String, [String: String]) -> Void)?
+    /// Clicking any other Wisp notification (a reminder, something Wisp added
+    /// for you, a notice about a scheduled message) opens Today in the notch.
+    @MainActor static var onOpenToday: (@MainActor () -> Void)?
 
     /// Registers the nudge categories and the delegate that routes their
     /// button presses. Call once at launch (OverlayModel.startAssistant).
@@ -104,8 +107,9 @@ enum Notifications {
 }
 
 /// UNUserNotificationCenter keeps its delegate weakly; `shared` retains it.
-/// Only nudge notifications are routed; every other notification keeps the
-/// system default (no banner while Wisp is frontmost, no action handling).
+/// Nudge notifications route their buttons; clicking any other notification
+/// opens Today in the notch. Only nudges show a banner while Wisp is frontmost.
+/// Whether the person is told what happened is unchanged.
 final class NudgeNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NudgeNotificationDelegate()
 
@@ -124,6 +128,9 @@ final class NudgeNotificationDelegate: NSObject, UNUserNotificationCenterDelegat
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let content = response.notification.request.content
         guard content.categoryIdentifier.hasPrefix(Notifications.nudgeCategory) else {
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+                Task { @MainActor in Notifications.onOpenToday?() }
+            }
             completionHandler()
             return
         }

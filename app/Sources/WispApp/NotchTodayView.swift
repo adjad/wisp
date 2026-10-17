@@ -40,6 +40,8 @@ struct NotchTodayView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 420)
+            ReportDraftCard(draft: today.report, title: "Report a problem with this plan",
+                            detailsLabel: "Include planner details", save: { model.saveReport(today.report) })
             footer
         }
         .environment(\.timeZone, today.timezone)
@@ -299,6 +301,10 @@ struct NotchTodayView: View {
                 .disabled(today.busy || !today.isShowingCurrentDay)
             }
             Spacer()
+            chipButton("Report", icon: "exclamationmark.bubble",
+                       help: "Save a local report about this plan to review and share") {
+                today.reportProblem()
+            }
             chipButton("Full planner", icon: "arrow.up.left.and.arrow.down.right",
                        help: "Tasks, pins, working hours and the daily email, in the Wisp window") {
                 WispRouter.shared.open(.today(focus: .plan))

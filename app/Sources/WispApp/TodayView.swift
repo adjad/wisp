@@ -99,6 +99,9 @@ struct TodayPlan: Decodable {
 
 @MainActor
 final class TodayModel: ObservableObject {
+    // The one problem report about Today, shared by the notch's Today tab and
+    // the window's planner. Each shows it inline.
+    let report = ReportDraft()
     @Published var plan: TodayPlan?
     @Published var error = ""
     @Published var busy = false
@@ -276,10 +279,16 @@ final class TodayModel: ObservableObject {
 
     func reportProblem() {
         let snapshot = diagnosticSnapshot()
-        DiagnosticReport.present(metadata: snapshot.metadata, details: snapshot.details)
+        let trace = snapshot.metadata["trace_id"] as? String ?? snapshot.metadata["refresh_trace_id"] as? String
+        report.open(key: "today:" + (trace ?? UUID().uuidString), metadata: snapshot.metadata, details: snapshot.details)
     }
 
-    func clearPlannerDetails() { reportDetails = nil }
+    /// Turning capture off drops captured planner details, including from an
+    /// open report that holds a copy of them.
+    func clearPlannerDetails() {
+        reportDetails = nil
+        if report.snapshot?.hasDetails == true { report.close() }
+    }
 
     @discardableResult
     func mutate(_ path: String, method: String, body: [String: Any]) async -> Bool {
@@ -447,6 +456,9 @@ struct TodayView: View {
                 Button("Refresh") { Task { await model.refresh() } }.disabled(model.busy)
                 Button("Report a problem") { model.reportProblem() }
             }
+            ReportDraftCard(draft: model.report, title: "Report a problem with this plan",
+                            detailsLabel: "Include planner details", look: .window,
+                            save: { model.report.chooseLocationAndSave() })
             Toggle("Capture planner details for a problem report", isOn: $model.capturePlannerDetails)
                 .font(.caption)
                 .help("Includes private task and calendar titles. Capture starts on the next refresh; reports ask again before including it.")
@@ -459,7 +471,7 @@ struct TodayView: View {
                 Picker("Daily summary view", selection: $selectedTab) {
                     Text("Needs my attention").tag(0)
                     Text("Day plan").tag(1)
-                }.pickerStyle(.segmented).frame(maxWidth: 460)
+                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 460)
                 Spacer()
                 Button("Email my day plan…", systemImage: "envelope") { showingEmailSettings = true }
             }
@@ -518,7 +530,8 @@ struct TodayView: View {
                                        description: Text("Wisp’s local service needs to be running."))
             }
         }
-        .padding(22).frame(minWidth: 720, minHeight: 620)
+        // Fits the Wisp window's main column beside its sidebar.
+        .padding(22).frame(minWidth: 540, minHeight: 520, alignment: .topLeading)
         .onAppear { onPresentation?(presentation) }
         .onChange(of: presentation) { _, next in
             rebaseDefaultDeadline()
@@ -770,6 +783,10 @@ private struct TodayTaskEditor: View {
     }
 }
 
+/// A standalone host for TodayView. The app shows the planner as the Wisp
+/// window's Today section (TodayHomeView); this host remains for the mounted
+/// window checks in tests/TodayPlanChecks.swift, and its notification tells a
+/// planner on screen to switch tabs and re-read the clock.
 @MainActor
 enum TodayWindow {
     static let didShowNotification = Notification.Name("WispTodayWindowDidShow")
