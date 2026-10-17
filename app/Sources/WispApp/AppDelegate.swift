@@ -47,7 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let setupGuideShownKey = "wisp.setupGuide.shown"
     private static let notchTipShownKey = "wisp.notchTip.shown"
     private var pendingCollapse: DispatchWorkItem?
+    // A menu opened from the panel (the chat switcher) is open. See
+    // installMenuTrackingObservers.
     private var menuTracking = false
+    // An auto-collapse came due while that menu was open and was held back.
+    private var collapseHeldForMenu = false
     private var hoverIntent = HoverIntent()
     private var hoverDwell: DispatchWorkItem?
     private var hoverMonitors: [Any] = []
@@ -170,12 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DisplayGeometry.shared.onChange = { [weak self] in self?.displaysChanged() }
         DisplayGeometry.shared.startObserving()
         installHoverMonitors()
-        for (name, tracking) in [(NSMenu.didBeginTrackingNotification, true),
-                                 (NSMenu.didEndTrackingNotification, false)] {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.menuTracking = tracking }
-            }
-        }
+        installMenuTrackingObservers()
         setupObserver = NotificationCenter.default.addObserver(
             forName: .wispOpenSetupGuide, object: nil, queue: .main
         ) { [weak self] _ in
@@ -409,7 +408,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if presentation.desired == .chat { collapse() } else { expand() }
     }
 
+    /// Track menus so an open one holds auto-collapse. AppKit posts these for every
+    /// menu in the app, in begin/end pairs. In case a pair is ever unbalanced, any
+    /// presentation change or the pointer coming back into the panel also clears
+    /// the flag, so it can never disable auto-collapse for good. When the menu
+    /// closes, a collapse it held back is re-armed if the pointer is outside the panel.
+    private func installMenuTrackingObservers() {
+        NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.menuTracking = true }
+        }
+        NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.menuDidEndTracking() }
+        }
+    }
+
+    private func menuDidEndTracking() {
+        menuTracking = false
+        guard collapseHeldForMenu else { return }
+        collapseHeldForMenu = false
+        if !model.collapsed, !(panel?.frame.contains(NSEvent.mouseLocation) ?? false) {
+            scheduleCollapse()
+        }
+    }
+
     private func requestPresentation(_ surface: OverlayTransition.Surface) {
+        menuTracking = false
+        collapseHeldForMenu = false
         // Pinning only holds off automatic collapse. Once the panel goes back to
         // the bar or away by any route (collapse, Search closing, dismiss), it is unpinned.
         if surface == .bar || surface == .hidden { model.pinned = false }
@@ -531,8 +557,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // generation is fine (the notch bar's dot shows it's still working).
             if self.model.holdsOpen { return }
             // A menu opened from the panel (the chat switcher) runs outside it,
-            // so the pointer leaving the panel is not the person leaving.
-            if self.menuTracking { return }
+            // so the pointer leaving the panel is not the person leaving. Hold
+            // the collapse until the menu closes (see installMenuTrackingObservers).
+            if self.menuTracking { self.collapseHeldForMenu = true; return }
             self.collapse()
         }
         pendingCollapse = work
@@ -543,6 +570,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Reentry cancels auto-collapse even while opening. Only the hover
         // expansion itself must wait for a settled, docked bar.
         cancelScheduledCollapse()
+        // A menu is never tracking while the panel itself gets pointer events.
+        menuTracking = false
+        collapseHeldForMenu = false
         guard notchDocked, presentation.active == nil,
               presentation.desired != .search else { return }
         // Entering the bar window only re-evaluates intent; the same dwell and
@@ -1083,6 +1113,33 @@ extension AppDelegate {
         precondition(OverlayModel.joining(history: Array(history.prefix(2)), before: local).map(\.text) == ["a", "b", "c", "d"],
                      "History goes before turns asked while it loaded")
         print("PASS: AppDelegate collapse holds (pin, typing, draft), unpins on collapse and dismiss")
+    }
+
+    static func checkMenuHoldsCollapse() async {
+        let delegate = AppDelegate()
+        delegate.installMenuTrackingObservers()
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.finishPresentation(opening)
+        let menu = NSMenu()
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+        delegate.scheduleCollapse()
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(delegate.presentation.desired == .chat, "An open menu must hold auto-collapse")
+        precondition(delegate.collapseHeldForMenu, "The held collapse must be remembered")
+        // The menu closes with the pointer outside the panel: the held collapse runs.
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu)
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(delegate.presentation.desired == .bar, "A collapse held by a menu must re-arm when it closes")
+        // An unbalanced begin never disables auto-collapse for good: the next
+        // presentation change clears it. (The pointer re-entering the panel does
+        // too; that path opens a real panel, which this harness cannot host.)
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+        precondition(delegate.menuTracking, "A begin without an end leaves the flag set")
+        delegate.requestPresentation(.bar)
+        precondition(!delegate.menuTracking, "A presentation change clears a stale menu flag")
+        print("PASS: AppDelegate open menu holds auto-collapse, re-arms on close, never sticks")
     }
 
     static func checkDismissReopenInput() {

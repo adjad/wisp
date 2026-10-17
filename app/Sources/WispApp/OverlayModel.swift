@@ -414,9 +414,16 @@ final class OverlayModel: ObservableObject {
         }
     }
 
+    // Refreshes overlap (panel open, New chat, a finished turn); only the newest
+    // request's answer is used, so a slow older one cannot replace a newer list.
+    private var recentChatsGeneration = 0
+
     func refreshRecentChats() {
+        recentChatsGeneration += 1
+        let generation = recentChatsGeneration
         Task { [weak self] in
-            guard let self, let rows = await self.client.chatList(limit: 9) else { return }
+            guard let self, let rows = await self.client.chatList(limit: 9),
+                  generation == self.recentChatsGeneration else { return }
             let current = self.sessionId
             self.recentChats = Array(rows.compactMap(ChatSummary.parse).filter { $0.id != current }.prefix(8))
         }
