@@ -1635,22 +1635,6 @@ def _mail_rollup(rows: list[dict]) -> str:
     return "; ".join(parts) + "." if parts else ""
 
 
-def _mail_scan_caveat(mail: dict) -> str:
-    """Short incomplete-scan note naming the affected accounts when known."""
-    names: list[str] = []
-    for name in [*mail["scan_cap_accounts"], *mail["scan_incomplete_accounts"]]:
-        name = _clean(name, 40)
-        if name and name not in names:
-            names.append(name)
-    where = f" for {', '.join(names[:3])}" if names else ""
-    if len(names) > 3:
-        where += f" +{len(names) - 3} more"
-    skipped = mail["scan_skipped"]
-    skip = (f" ({skipped} unreadable header{'s' if skipped != 1 else ''} skipped)"
-            if skipped else "")
-    return f"Mail scan incomplete{where}{skip}; other messages may be missing."
-
-
 def _email_section(now: float) -> str:
     """A compact Daily Mail view grounded only in synced header subjects."""
     from service.tools.email_tools import (
@@ -1660,15 +1644,13 @@ def _email_section(now: float) -> str:
         return "**📧 Inbox**\n- Mail is still syncing; ask again in a moment."
     if mail["state"] == "unavailable":
         return "**📧 Inbox**\n- Email couldn't be read in this launch."
-    incomplete = bool(mail["scan_cap_accounts"] or mail["scan_skipped"] or
-                      mail["scan_incomplete_accounts"])
-    caveat = "\n" + _mail_scan_caveat(mail) if incomplete else ""
+    # The Daily Summary is a glanceable read: scan-coverage and Mail-cache
+    # freshness caveats stay on the interactive email tools and the API, not here.
     if not mail["rows"]:
         text = "**📧 Inbox**\n- No messages in the available Mail snapshot."
         if mail["label"].startswith("recent fallback"):
             text = "**📧 Inbox**\n- No matching headers in the available Mail snapshot for the last 24 hours."
-        text += caveat
-        return text + ("\n\n" + mail["warning"] if mail["warning"] else "")
+        return text
     groups: dict[str, list[dict]] = {}
     for index, row in enumerate(mail["rows"]):
         address = str(row.get("sender_address", "") or "").casefold()
@@ -1731,9 +1713,7 @@ def _email_section(now: float) -> str:
     unread_label = (f"{unread} unread"
                     if all(row.get("unread") is not None for row in mail["rows"])
                     else f"{unread} marked unread")
-    sampled = incomplete or mail["label"].startswith("recent fallback")
-    quantity = f"{count} email{'s' if count != 1 else ''}" + (" shown" if sampled else "")
-    heading = f"**📧 Inbox — {quantity} · {unread_label}{' among them' if sampled else ''}**"
+    heading = f"**📧 Inbox — {count} email{'s' if count != 1 else ''} · {unread_label}**"
     sections = [heading]
     if mail["label"].startswith("recent fallback"):
         sections.append("No matching headers in the available snapshot for the last 24 hours.")
@@ -1758,10 +1738,7 @@ def _email_section(now: float) -> str:
         other_lines.append("- " + rollup)
     if other_lines:
         sections.append("**Other mail**\n" + "\n".join(other_lines))
-    text = "\n".join(sections) + caveat
-    if mail["warning"]:
-        text += "\n\n" + mail["warning"]
-    return text
+    return "\n".join(sections)
 
 
 # How many conversations the section names, and how many messages each one is
@@ -1899,10 +1876,10 @@ def _today_card(now: float) -> str:
     mail = _mail_split(now)
     if mail["state"] == "ready":
         people, automated = len(mail["people"]), len(mail["automated"])
-        if (mail["scan_cap_accounts"] or mail["scan_skipped"] or
-                mail["scan_incomplete_accounts"]):
-            lines.append("Mail: scan incomplete; messages may be missing.")
-        elif people or automated:
+        # A partial scan gets no counts (they could undercount) and no caveat.
+        complete = not (mail["scan_cap_accounts"] or mail["scan_skipped"] or
+                        mail["scan_incomplete_accounts"])
+        if complete and (people or automated):
             lines.append(f"Mail: {people} from people, {automated} automated.")
     return "\n".join(lines)
 
@@ -2004,23 +1981,9 @@ def _assemble_full(body: str, messages_section: str) -> str:
 async def _generate_brief(part_of_day: str) -> dict[str, str]:
     """Render the user-facing brief from grounded, already-synced sections."""
     now = time.time()
-    extra = ""
-    try:
-        from service.attention.detectors import local_timezone
-        from service.assistant.daily_workspace_api import current_workspace
-        from service.assistant.daily_workspace import render
-        zone = local_timezone()
-        if zone:
-            from zoneinfo import ZoneInfo
-            day = datetime.fromtimestamp(now, ZoneInfo(zone)).date().isoformat()
-            extra = "\n\n" + render(current_workspace(day, zone, now=now), compact=True)
-    except Exception:
-        # Optional richer planning never suppresses the established grounded
-        # brief, repeats native sync waits or invokes a language model.
-        pass
     return {"TODAY": _today_card(now),
             "MESSAGES": _messages_card(now),
-            "FULL": _render_brief(now, _messages_section(now)) + extra}
+            "FULL": _render_brief(now, _messages_section(now))}
 
 
 # One wait for the app's Calendar/Reminders/Mail/Messages reads, in one place.
@@ -2075,19 +2038,10 @@ async def _sections(part_of_day: str, snapshot: dict | None = None) -> dict[str,
     except Exception:  # noqa: BLE001 — other brief sources should still work
         traceback.print_exc()
     try:
-        from service.tools.email_tools import (
-            email_freshness_warning, with_email_freshness_note)
-        # Captured BEFORE composing: a Mail sync that lands mid-brief must not
-        # remove the caveat that applies to the snapshot the brief was built from.
-        warning = email_freshness_warning()
+        # No Mail-cache freshness note here: the Daily Summary stays a clean,
+        # glanceable read and the email tools carry that caveat on request.
         sections = await _generate_brief(part_of_day)
         if sections.get("FULL", "").strip():
-            # with_email_freshness_note is a no-op when the text already says it,
-            # so the rendered mail section keeps its own inline copy and only the
-            # notification card (which has no section to put it in) gains one.
-            for key in ("FULL", "TODAY"):
-                if sections.get(key, "").strip():
-                    sections[key] = with_email_freshness_note(sections[key], warning)
             sections["READY"] = "1"
             return sections
     except Exception:  # noqa: BLE001
