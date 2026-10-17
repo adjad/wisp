@@ -409,9 +409,14 @@ _WEATHER_FAILURES = (
     ("ambiguous california city", "needs_input",
      "More than one California city starts with {city}. Which one do you mean? "
      "Give its full name."),
+    ("ambiguous california location", "needs_input",
+     "I couldn't tell which California place {place} is. Give the full city "
+     "name followed by \", CA\"."),
+    # Only California names reach this one ("Riverside", "Santa"), and a
+    # prefix like "Santa" is not itself a city, so no "{city}, CA" example.
     ("no unambiguous location", "needs_input",
      "There's more than one {city}. Which one do you mean? Add the state or "
-     "country{example}."),
+     "country after a comma."),
     ("the location says", "needs_input", "Which day do you want the weather in {place} for?"),
     ("time constraint was included", "failed",
      "I can give current conditions or a whole-day forecast for today and the "
@@ -433,8 +438,8 @@ _WEATHER_FAILURES = (
 # ("e-mail use limit hit at api.check.io").
 _MODEL_DIRECTIVE = re.compile(
     r"(?:\s*;\s*|\s+—\s+)(?:ask|do not|don't|never|check|use)\b[^;]*", re.I)
-# "Santa, CA" / "Riverside California": the place already names its state or
-# country, so an example that appends ", CA" would read "Santa, CA, CA".
+# "Santa, CA" / "Riverside California": the question names the city alone,
+# not "Santa, CA" again.
 _PLACE_SUFFIX = re.compile(r"\s*,.*$|\s+(?:ca|calif\.?|california)$", re.I)
 _HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
 
@@ -448,16 +453,16 @@ def read_failure_reply(name: str, args: dict, raw) -> tuple[str, str] | None:
     if name == "get_weather":
         low = text.lower()
         city = _PLACE_SUFFIX.sub("", place) or place
-        example = "" if city != place else f', for example "{city}, CA"'
         for marker, status, template in _WEATHER_FAILURES:
             if marker in low:
                 return status, template.format(
-                    place=place, city=city, example=example,
+                    place=place, city=city,
                     period=str((args or {}).get("period") or "that range"))
-        # wttr.in answers an unknown place with a 4xx; retrying will not help.
-        # 429 and 5xx are the service itself, so "try again" stays honest.
+        # wttr.in answers an unknown place with 400 or 404; retrying will not
+        # help. Any other status (403, 408, 429, 451, 5xx) is about the
+        # service or the request, not the name, so "try again" stays honest.
         code = _HTTP_STATUS.search(text)
-        if code and 400 <= int(code[1]) < 500 and code[1] != "429":
+        if code and code[1] in {"400", "404"}:
             return "failed", (f"I couldn't find weather for {place}. Check the "
                               "spelling, or add the state or country.")
         return "failed", (f"I couldn't get the weather for {place} right now. "
