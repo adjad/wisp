@@ -1699,12 +1699,23 @@ class TestScheduledDelivery:
         monkeypatch.setattr(scheduler, "_last_brief", None)
         monkeypatch.setattr(scheduler, "_last_brief_loaded", False)
         monkeypatch.setattr(scheduler, "_brief_attempts", {})
+        monkeypatch.setattr(scheduler, "_brief_task", None)
         from service.assistant.store import AssistantStore
         store = AssistantStore(tmp_path / "assistant.db")
         monkeypatch.setattr(scheduler, "assistant_store", store)
         monkeypatch.setattr(B, "assistant_store", store)
         monkeypatch.setattr(hub, "_store", store)
+        # The app is connected: only it can read the sources a brief needs.
+        import asyncio
+        monkeypatch.setattr(hub, "_subs", {asyncio.Queue()})
         monkeypatch.setattr(B, "datetime", _clock_at(8, 5))
+
+    @staticmethod
+    async def _tick():
+        """One scheduler tick's brief work, awaited to completion."""
+        task = scheduler._start_daily_brief()
+        if task is not None:
+            await task
 
     @pytest.mark.asyncio
     async def test_a_holdback_publishes_nothing_and_keeps_the_day_open(self, monkeypatch):
@@ -1715,12 +1726,12 @@ class TestScheduledDelivery:
         assert delivered is False
         publish.assert_not_awaited()
 
-        # …and the day stays open, so the real brief can still go out.
+        # …and the run stays open, so the real brief can still go out.
         with patch.object(B, "run_scheduled_brief", AsyncMock(return_value=False)), \
-             patch("service.config.get_daily_summary_hour", lambda: 8), \
              patch.object(scheduler, "datetime", _clock_at(8, 5)):
-            await scheduler._maybe_daily_brief()
+            await self._tick()
         assert scheduler._brief_date() is None
+        assert scheduler._pending_slot(_clock_at(8, 5).now()) is not None
 
     @pytest.mark.asyncio
     async def test_a_delivered_brief_publishes_once_and_survives_a_restart(self, monkeypatch):
@@ -1728,43 +1739,43 @@ class TestScheduledDelivery:
                  "MESSAGES": "1 recent message in Trishe.", "READY": "1"}
         with patch.object(B, "_sections", AsyncMock(return_value=ready)), \
              patch.object(hub, "publish", wraps=hub.publish) as publish, \
-             patch("service.config.get_daily_summary_hour", lambda: 8), \
              patch.object(scheduler, "datetime", _clock_at(8, 5)):
-            await scheduler._maybe_daily_brief()
+            await self._tick()
             assert publish.await_count == 1
             event = publish.await_args.args[0]
             assert event["type"] == "daily_brief" and event["text"] == "Your day."
+            assert event["part_of_day"] == "morning"
 
             assert scheduler._brief_date() is None
-            assert scheduler.assistant_store.completion("daily_brief") is None
+            assert scheduler.assistant_store.completion("daily_brief:morning") is None
             row = scheduler.assistant_store.pending_events()[0]
             scheduler.assistant_store.acknowledge_event(row["id"], "daily_brief")
-            assert scheduler.assistant_store.completion("daily_brief") == "2026-09-08"
+            assert scheduler.assistant_store.completion("daily_brief:morning") == "2026-09-08"
+            # The evening run is a separate delivery, not covered by this one.
+            assert scheduler.assistant_store.completion("daily_brief:evening") is None
 
-            # A relaunch inside the window re-reads the date from disk instead of
-            # firing again. This is the run of false "ready" pings.
+            # A relaunch inside the window re-reads the receipt from disk instead
+            # of firing again. This is the run of false "ready" pings.
             monkeypatch.setattr(scheduler, "_last_brief", None)
             monkeypatch.setattr(scheduler, "_last_brief_loaded", False)
-            await scheduler._maybe_daily_brief()
+            await self._tick()
             assert publish.await_count == 1
 
     @pytest.mark.asyncio
     async def test_a_source_that_never_finishes_gives_the_day_up(self):
         with patch.object(B, "run_scheduled_brief", AsyncMock(return_value=False)) as run, \
-             patch("service.config.get_daily_summary_hour", lambda: 8), \
              patch.object(scheduler, "datetime", _clock_at(8, 5)):
             for _ in range(scheduler._MAX_BRIEF_ATTEMPTS + 5):
-                await scheduler._maybe_daily_brief()
+                await self._tick()
         assert run.await_count == scheduler._MAX_BRIEF_ATTEMPTS
         assert scheduler._brief_date() is None
-        assert scheduler.assistant_store.completion("daily_brief") is None
+        assert scheduler.assistant_store.completion("daily_brief:morning") is None
 
     @pytest.mark.asyncio
-    async def test_nothing_fires_outside_the_window(self):
+    async def test_nothing_fires_before_the_morning_run(self):
         with patch.object(B, "run_scheduled_brief", AsyncMock()) as run, \
-             patch("service.config.get_daily_summary_hour", lambda: 8), \
-             patch.object(scheduler, "datetime", _clock_at(15, 0)):
-            await scheduler._maybe_daily_brief()
+             patch.object(scheduler, "datetime", _clock_at(6, 0)):
+            await self._tick()
         run.assert_not_awaited()
 
 
