@@ -2133,7 +2133,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(("web_search", {"query": prompt}), decision.direct_calls or [], prompt)
             self.assertNotEqual(decision.tool_subset, ["web_search"], prompt)
         # A genuinely external subject still searches.
-        await self.assert_direct_ling_search("what is the president doing today")
+        await self.assert_direct_web_search("what is the president doing today")
 
 if __name__ == "__main__":
     unittest.main()
