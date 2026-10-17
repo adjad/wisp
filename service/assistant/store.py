@@ -1334,10 +1334,15 @@ class AssistantStore:
                     self._db.executemany("INSERT OR IGNORE INTO notify_log VALUES (?,?,?)",
                                          [(cid, stage, now) for stage in target["stages"]])
             elif target.get("type") == "brief":
+                # Each of the day's runs completes on its own key; a brief queued
+                # by an older once-a-day version (no "part") keeps the legacy key.
+                part = target.get("part")
                 self._db.execute(
-                    "INSERT INTO assistant_completion VALUES ('daily_brief',?,?) "
+                    "INSERT INTO assistant_completion VALUES (?,?,?) "
                     "ON CONFLICT(key) DO UPDATE SET value=MAX(value,excluded.value), "
-                    "completed_at=excluded.completed_at", (target["date"], now))
+                    "completed_at=excluded.completed_at",
+                    ("daily_brief:" + part if part in {"morning", "evening"} else "daily_brief",
+                     target["date"], now))
             elif target.get("type") == "scheduled_unknown":
                 changed = self._db.execute(
                     "UPDATE scheduled_sends SET notified_at=COALESCE(notified_at,?) "

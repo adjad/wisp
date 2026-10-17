@@ -14,8 +14,9 @@ All notable changes to Wisp are documented here.
 - **Today in the notch.** Your brief, what needs you (with Add as task and Ask Wisp), the next three blocks of your plan (with ±15 minute nudges), an inline Add to day, Replan and Running 15 min late. The Today tab shows a count of what needs you. The full planner, its task editor and the daily email open in the window with **Full planner** or ⌘O. Today loads while its tab is open, never at launch.
 
 ### Changed
+- The Daily Summary now composes itself **every morning and every evening** (8 AM and 8 PM by default), so a fresh summary is waiting without pressing the button. Before, it ran once a day at the time the AM/PM toggle chose. A run missed while the Mac slept or Wisp was closed arrives on the next launch or wake, until the next run is due. Only one run happens at a time. A run never starts while you are waiting on Wisp, and it steps aside if you ask something mid-run, then retries afterwards. Change the hours with `POST /assistant/summary_schedule` `{"times": {"morning": 7, "evening": 18}}` (morning 0–11, evening 12–23). The AM/PM toggle no longer chooses a time.
 - The Daily Summary brief now appears on the Today tab instead of in the chat. **Refresh** composes a new one, and **Ask about this** continues from it in Ask. A brief you compose is saved as its own chat, no longer added to the open one.
-- The notch header's Research, Today and Daily Summary chips and the AM/PM brief toggle are replaced by the tabs. Research is now a tab: its prompt starts a research plan.
+- The notch header's Research, Today and Daily Summary chips and the AM/PM brief toggle, which no longer picks a time, are replaced by the tabs. Research is now a tab: its prompt starts a research plan.
 - Wisp now starts in the notch. Launching it no longer opens the Wisp window. The first launch after updating opens the notch once with a note about where Wisp lives. Open the window from the Dock icon, the menu bar's **Open Wisp Window**, or **Window ▸ Wisp Window** (⌘1).
 
 ## [1.4.0] - 2026-10-16
