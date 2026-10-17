@@ -23,6 +23,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // the Wisp window's Full access pill: one source for confirmed and pending state.
     private lazy var settingsLoader = SettingsLoader()
     private var fullAccessObserver: AnyCancellable?
+    // One setup model for the notch's setup card and the setup window, so a
+    // test result, a running action and readiness are the same in both.
+    private lazy var setupModel = SetupGuideModel()
+    private var setupCloseObserver: NSObjectProtocol?
     private lazy var researchLibrary = ResearchLibraryWindowController(client: client,
         onOpen: { [weak self] id in self?.openSavedResearch(id) },
         onNew: { [weak self] in self?.newResearch() })
@@ -256,7 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .settings:
             openSettings()
         case .setup:
-            openSetupGuide()
+            openSetupInNotch()
         }
     }
 
@@ -382,7 +386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // progress UI instead of duplicating five shortcuts here.
         menu.addItem(withTitle: "Open Wisp Window", action: #selector(openChat), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupGuide), keyEquivalent: "")
+        menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupInNotch), keyEquivalent: "")
         menu.addItem(.separator())
         // Debug Mode: a checkable toggle (state synced in toggle() right before
         // the menu is shown, since NSMenuItem state doesn't observe SwiftUI
@@ -686,7 +690,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard panel == nil else { return }
         panel = OverlayPanel {
             OverlayView(model: self.model, researchModel: self.researchModel, todayModel: self.todayModel,
-                        settings: self.settingsLoader,
+                        settings: self.settingsLoader, setup: self.setupModel,
                         onClose: { [weak self] in self?.collapse() },
                         onDismiss: { [weak self] in self?.dismissToMenuBar() })
         }
@@ -1016,6 +1020,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if alert.runModal() == .alertFirstButtonReturn { terminateWithoutShutdown() }
     }
 
+    /// The full setup guide in its own window: every step, including Smart
+    /// Search, other local apps and model downloads. Settings opens it, and so
+    /// does the notch card's ⤢.
     @objc private func openSetupGuide() {
         // Already open: just bring it forward, so an in-flight action isn't discarded.
         if let open = setupWindow, open.isVisible {
@@ -1023,7 +1030,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             open.makeKeyAndOrderFront(nil)
             return
         }
-        // Otherwise a fresh view, so the checklist reflects the machine as it is now.
         let win = setupWindow ?? {
             let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 700),
                                styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -1031,18 +1037,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.isReleasedWhenClosed = false
             win.center()
             setupWindow = win
+            // This window object is the host, not its title: closing it is the
+            // window's last word on setup, however SwiftUI keeps its view.
+            setupCloseObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: win, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.setupModel.hide(from: "window") }
+            }
             return win
         }()
         win.contentView = NSHostingView(rootView: SetupGuideView(
+            model: setupModel,
             onDone: { [weak win] in win?.close() },
             openSettings: { [weak self, weak win] in win?.close(); self?.openSettings() }))
+        // Showing it starts the poll (the first host), which re-reads the machine.
+        setupModel.show(in: "window")
         UserDefaults.standard.set(true, forKey: Self.setupGuideShownKey)
         NSApp.activate(ignoringOtherApps: true)
         win.makeKeyAndOrderFront(nil)
     }
 
+    /// Setup in the notch: the panel opens on Ask with the setup card, which
+    /// keeps it open until the person finishes or chooses Later.
+    @objc private func openSetupInNotch() {
+        showSetupCard()
+        openAssistant()
+    }
+
+    private func showSetupCard() {
+        model.showingQuickSettings = false
+        model.setupCard = .open
+        model.tab = .ask
+    }
+
     /// On a Mac where Wisp can't answer yet (no engine, or no model), open the
-    /// guide once. It never reopens by itself afterwards; the menu-bar item and
+    /// notch on the setup card once. It never reopens by itself afterwards; Later
+    /// leaves a line on Ask until Wisp is ready, and the menu-bar item and
     /// Settings remain the way back in.
     private func offerSetupGuideOnFirstRun() {
         guard !UserDefaults.standard.bool(forKey: Self.setupGuideShownKey) else { return }
@@ -1056,8 +1086,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let (data, _) = try? await URLSession.shared.data(for: request),
                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let ready = object["ready"] as? Bool else { continue }
-                if !ready { self.openSetupGuide() }
-                else { UserDefaults.standard.set(true, forKey: Self.setupGuideShownKey) }
+                if !ready { self.openSetupInNotch() }
+                UserDefaults.standard.set(true, forKey: Self.setupGuideShownKey)
                 return
             }
         }
@@ -1216,6 +1246,35 @@ extension AppDelegate {
         model.tab = .today
         precondition(!model.showingQuickSettings, "Switching tabs closes quick settings")
         print("PASS: AppDelegate quick settings share one loader; a Full access change survives collapse; unconfirmed is never off")
+    }
+
+    static func checkSetupCardHoldsAsk() async {
+        let delegate = AppDelegate()
+        let model = delegate.model
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        model.collapsed = false
+        delegate.finishPresentation(opening)
+        model.tab = .today
+        model.showingQuickSettings = true
+        delegate.showSetupCard()
+        precondition(model.setupCard == .open && model.tab == .ask && !model.showingQuickSettings,
+                     "Setup opens the panel on Ask with the full card")
+        precondition(model.holdsOpen, "An open setup card holds the panel open")
+        delegate.scheduleCollapse()
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(delegate.presentation.desired == .chat, "Auto-collapse waits for setup to be finished or set aside")
+        model.collapsed = true
+        model.tab = .research
+        model.prepareTab(byHover: true)
+        precondition(model.tab == .ask, "While setup is open, hovering reopens Ask")
+        model.setupCard = .later
+        precondition(!model.holdsOpen, "Later lets the panel collapse again")
+        model.tab = .today
+        model.prepareTab(byHover: true)
+        precondition(model.tab == .today, "Setup set aside leaves hover's last tab alone")
+        precondition(model.setupCard.afterReadiness(true) == .hidden, "Setup set aside leaves when Wisp is ready")
+        print("PASS: AppDelegate setup card opens on Ask, holds the panel until Done or Later")
     }
 
     static func checkMenuHoldsCollapse() async {
