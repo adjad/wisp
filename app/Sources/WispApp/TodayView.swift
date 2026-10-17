@@ -783,11 +783,11 @@ private struct TodayTaskEditor: View {
     }
 }
 
-@MainActor
 /// A standalone host for TodayView. The app shows the planner as the Wisp
 /// window's Today section (TodayHomeView); this host remains for the mounted
 /// window checks in tests/TodayPlanChecks.swift, and its notification tells a
 /// planner on screen to switch tabs and re-read the clock.
+@MainActor
 enum TodayWindow {
     static let didShowNotification = Notification.Name("WispTodayWindowDidShow")
     private static var window: NSWindow?

@@ -143,7 +143,7 @@ struct OverlayView: View {
                         .background(Capsule().fill(.white))
                 }
                 .padding(.bottom, isNotch ? 3 : 8)
-                .accessibilityLabel("\(todayCount) on Today need you")
+                .accessibilityLabel(todayCount == 1 ? "1 thing on Today needs you" : "\(todayCount) things on Today need you")
             } else if model.setupCard == .later {
                 // Setup was set aside and Wisp still can't answer.
                 HStack(spacing: 6) {
