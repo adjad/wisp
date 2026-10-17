@@ -392,7 +392,11 @@ class BehaviorEngine:
 
         Only ``mine`` asks the phraser (``ask_phraser``); predict/nudges reuse
         its cached labels so they never wait on a model."""
-        obs = self._store.observations(**query)
+        # Rows stored as "other" are re-read by the current keyword rules first, so a
+        # rule added later (course codes, say) also covers history ingested before it.
+        obs = [replace(o, category=c) if needs_category(o.kind) and (o.category or "other") == "other"
+               and (c := categorize(o.subject, o.attrs)) != "other" else o
+               for o in self._store.observations(**query)]
         leftovers = [o.subject for o in obs if needs_category(o.kind) and (o.category or "other") == "other"]
         if not leftovers:
             return obs

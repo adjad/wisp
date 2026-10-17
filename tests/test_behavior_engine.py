@@ -48,6 +48,15 @@ def test_observe_is_idempotent_and_categorizes(eng):
     assert eng.status()["observations"] == {"event": 2}
 
 
+def test_rows_stored_as_other_pick_up_later_keyword_rules(eng):
+    """History ingested before a keyword rule existed is stored as "other"; reads
+    apply the current rules so the new rule covers it without a re-ingest."""
+    eng.observe([ev("a", T0 + H, "Office Hours with TA Xiao [STAT-5-02]")])
+    eng._store._conn.execute("UPDATE observations SET category='other' WHERE id='a'")
+    assert kinds(eng, "event")["a"].category == "other"
+    assert {o.id: o.category for o in eng._load(kinds=["event"])} == {"a": "class"}
+
+
 # --------------------------------------------------------------- snapshots
 
 def test_first_snapshot_has_nothing_to_diff(eng):
