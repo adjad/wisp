@@ -406,9 +406,12 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
 _WEATHER_FAILURES = (
     # (marker in the tool's error, status, reply template)
     ("no location given", "needs_input", "Which city do you want the weather for?"),
+    ("ambiguous california city", "needs_input",
+     "More than one California city starts with {city}. Which one do you mean? "
+     "Give its full name."),
     ("no unambiguous location", "needs_input",
-     "There's more than one {place}. Which one do you mean? Add the state or "
-     "country, for example \"{place}, CA\"."),
+     "There's more than one {city}. Which one do you mean? Add the state or "
+     "country{example}."),
     ("the location says", "needs_input", "Which day do you want the weather in {place} for?"),
     ("time constraint was included", "failed",
      "I can give current conditions or a whole-day forecast for today and the "
@@ -425,8 +428,15 @@ _WEATHER_FAILURES = (
      "The weather service returned a different place than {place}, so I didn't "
      "use its numbers. Try adding the state or country."),
 )
+# Only a clause separator starts a directive: "; ask the user ..." or
+# " — do not guess". A bare "-" or "." also occurs inside the detail itself
+# ("e-mail use limit hit at api.check.io").
 _MODEL_DIRECTIVE = re.compile(
-    r"\s*[;.—-]\s*(?:ask|do not|don't|never|check|use)\b[^;]*", re.I)
+    r"(?:\s*;\s*|\s+—\s+)(?:ask|do not|don't|never|check|use)\b[^;]*", re.I)
+# "Santa, CA" / "Riverside California": the place already names its state or
+# country, so an example that appends ", CA" would read "Santa, CA, CA".
+_PLACE_SUFFIX = re.compile(r"\s*,.*$|\s+(?:ca|calif\.?|california)$", re.I)
+_HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
 
 
 def read_failure_reply(name: str, args: dict, raw) -> tuple[str, str] | None:
@@ -437,10 +447,19 @@ def read_failure_reply(name: str, args: dict, raw) -> tuple[str, str] | None:
     place = str((args or {}).get("location") or "that place").strip() or "that place"
     if name == "get_weather":
         low = text.lower()
+        city = _PLACE_SUFFIX.sub("", place) or place
+        example = "" if city != place else f', for example "{city}, CA"'
         for marker, status, template in _WEATHER_FAILURES:
             if marker in low:
                 return status, template.format(
-                    place=place, period=str((args or {}).get("period") or "that range"))
+                    place=place, city=city, example=example,
+                    period=str((args or {}).get("period") or "that range"))
+        # wttr.in answers an unknown place with a 4xx; retrying will not help.
+        # 429 and 5xx are the service itself, so "try again" stays honest.
+        code = _HTTP_STATUS.search(text)
+        if code and 400 <= int(code[1]) < 500 and code[1] != "429":
+            return "failed", (f"I couldn't find weather for {place}. Check the "
+                              "spelling, or add the state or country.")
         return "failed", (f"I couldn't get the weather for {place} right now. "
                           "The weather service didn't return usable data; try "
                           "again in a moment.")
@@ -487,15 +506,18 @@ async def execute_read(compiled, emit, *, test_mode=False):
     replies = [read_failure_reply(r["name"], call["args"], r["result"])
                if r["status"] == "failed" else None
                for r, call in zip(results, calls)]
-    if failed and all(reply and reply[0] == "needs_input"
-                      for reply in replies if reply):
-        return TaskExecution("needs_input", "\n\n".join(
-            reply[1] if reply else r["result"] for r, reply in zip(results, replies)),
-            calls, results)
     response = "\n\n".join(reply[1] if reply else r["result"]
                             for r, reply in zip(results, replies))
     if has_display_only:
         response = DisplayOnlyToolResult("\n\n".join(displays), model_text=response,
                                          artifact_kind="news" if len(results) == 1 else "mixed")
-    return TaskExecution("planned" if test_mode else "failed" if failed else "completed",
+    # Only a question back to the user is needs_input: every unsuccessful read
+    # must have a plain reply that asks one. A denied read, or a tool's own
+    # needs_input status, has no reply and stays failed.
+    unsuccessful = [reply for r, reply in zip(results, replies)
+                    if r["status"] not in {"succeeded", "no_match", "planned"}]
+    asks = bool(unsuccessful) and all(reply and reply[0] == "needs_input"
+                                      for reply in unsuccessful)
+    return TaskExecution("planned" if test_mode else "needs_input" if asks
+                         else "failed" if failed else "completed",
                          response, calls, results)

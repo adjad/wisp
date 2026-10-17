@@ -487,7 +487,8 @@ def test_extract_location_drops_time_words(prompt):
 
 @pytest.mark.parametrize("location", [
     "Tokyo right now", "Tokyo now", "Tokyo currently", "Tokyo at the moment",
-    "Tokyo, right now", "Tokyo right now please", "right now in Tokyo", "now Tokyo",
+    "Tokyo, right now", "Tokyo right now please", "right now in Tokyo", "now, Tokyo",
+    "now in Tokyo", "now for Tokyo",
 ])
 def test_current_time_words_mean_current_conditions(location, monkeypatch):
     calls = fake_weather(monkeypatch, payload("Tokyo", "Tokyo", "Japan"))
@@ -619,3 +620,121 @@ def test_non_canonical_california_city_keeps_the_name_query_and_exact_match(monk
     calls = fake_weather(monkeypatch, located("Pleasanton", 37.66, -121.87))
     result = asyncio.run(web_tools.get_weather("Dublin, CA"))
     assert result.startswith("(error:") and unquote(urlparse(calls[0]).path) == "/Dublin,CA"
+
+
+# Release Auditor notes on #248 (PASS_WITH_NOTES), one regression each.
+
+def run_plan(planned):
+    from service.workflows.reads import execute_read
+    return asyncio.run(execute_read((planned, ""), _no_emit))
+
+
+def test_denied_read_is_failed_not_needs_input(monkeypatch):
+    from service.safety.policy import Tier
+    from service.workflows import reads
+    monkeypatch.setattr(reads, "decide", lambda *a, **k: SimpleNamespace(
+        tier=Tier.DENY, reason="blocked in this test"))
+    result = run_plan([("get_weather", {"location": "Tokyo"})])
+    assert result.status == "failed" and result.tool_results[0]["status"] == "denied"
+
+
+def test_tool_needs_input_without_a_plain_reply_is_failed(monkeypatch):
+    from service.workflows import reads
+    async def asks(tool, args):
+        return "Which calendar do you mean?"
+    monkeypatch.setattr(reads, "run_tool", asks)
+    monkeypatch.setattr(reads, "classify_tool_outcome",
+                        lambda name, raw: SimpleNamespace(status="needs_input"))
+    result = run_plan([("get_upcoming", {})])
+    assert result.status == "failed" and result.response == "Which calendar do you mean?"
+
+
+def test_needs_input_requires_every_unsuccessful_read_to_ask(monkeypatch):
+    from service.workflows import reads
+    real = reads.decide
+    def deny_stock(category, args, tool=None):
+        from service.safety.policy import Tier
+        if tool == "get_stock_price":
+            return SimpleNamespace(tier=Tier.DENY, reason="blocked in this test")
+        return real(category, args, tool=tool)
+    monkeypatch.setattr(reads, "decide", deny_stock)
+    fake_weather(monkeypatch, payload())
+    result = run_plan([("get_weather", {"location": "Riverside"}),
+                       ("get_stock_price", {"symbol": "AAPL"})])
+    assert result.status == "failed"
+
+
+@pytest.mark.parametrize("location", ["Santa, CA", "Santa CA", "Santa, California"])
+def test_ambiguous_city_with_a_state_never_repeats_the_suffix(location, monkeypatch):
+    from service.workflows.reads import read_failure_reply
+    calls = fake_weather(monkeypatch, payload())
+    raw = dispatch_weather(location=location)
+    assert raw.startswith("(error:") and not calls
+    status, reply = read_failure_reply("get_weather", {"location": location}, raw)
+    assert status == "needs_input" and "CA, CA" not in reply
+    assert reply.startswith("More than one California city starts with Santa.")
+
+
+def test_ambiguous_city_examples_use_the_bare_city_only():
+    from service.workflows.reads import read_failure_reply
+    raw = "(error: no unambiguous location — ambiguous city; ask the user for the city and state/country; do not guess one)"
+    _, bare = read_failure_reply("get_weather", {"location": "Riverside"}, raw)
+    assert bare.endswith('for example "Riverside, CA".')
+    _, suffixed = read_failure_reply("get_weather", {"location": "Springfield, US"}, raw)
+    assert suffixed.startswith("There's more than one Springfield.")
+    assert "for example" not in suffixed and "US, CA" not in suffixed
+
+
+@pytest.mark.parametrize("status,expected", [
+    (404, "Check the spelling, or add the state or country."),
+    (400, "Check the spelling, or add the state or country."),
+    (429, "try again in a moment"),
+    (503, "try again in a moment"),
+])
+def test_weather_http_errors_say_what_the_user_can_do(status, expected, monkeypatch):
+    fake_weather(monkeypatch, payload(), status=status)
+    result = run_plan([("get_weather", {"location": "Nowheresville"})])
+    assert result.status == "failed"
+    assert expected in result.response and "(error" not in result.response
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("(error: e-mail use limit hit at api.check.io)",
+     "I couldn't finish that: e-mail use limit hit at api.check.io."),
+    ("(error: rate-limited. use the cache)", "I couldn't finish that: rate-limited. use the cache."),
+    ("(error: feed offline — do not guess its contents)", "I couldn't finish that: feed offline."),
+    ("(error: feed offline; check back later; never retry)", "I couldn't finish that: feed offline."),
+])
+def test_generic_directive_strip_cuts_only_at_clause_separators(raw, expected):
+    from service.workflows.reads import read_failure_reply
+    assert read_failure_reply("get_stock_price", {}, raw) == ("failed", expected)
+
+
+@pytest.mark.parametrize("location", ["Now Zad", "now zad"])
+def test_leading_now_without_a_separator_is_part_of_the_place(location, monkeypatch):
+    calls = fake_weather(monkeypatch, payload("Now Zad", "Helmand", "Afghanistan"))
+    result = dispatch_weather(location=location)
+    assert result.startswith("Weather for Now Zad, Helmand, Afghanistan")
+    assert unquote(urlparse(calls[0]).path) == f"/{location}"
+    assert web_tools._split_weather_time("Now Zad now") == ("Now Zad", "")
+
+
+def test_mixed_needs_input_read_keeps_the_display_only_wrapper(monkeypatch):
+    from service.tools.registry import DisplayOnlyToolResult
+    from service.workflows import reads
+    real = reads.run_tool
+    async def run(tool, args):
+        if tool.name == "get_stock_price":
+            return DisplayOnlyToolResult("AAPL card", model_text="AAPL 200")
+        return await real(tool, args)
+    monkeypatch.setattr(reads, "run_tool", run)
+    monkeypatch.setattr(reads, "classify_tool_outcome", lambda name, raw: SimpleNamespace(
+        status="failed" if str(raw).startswith("(error") else "succeeded"))
+    fake_weather(monkeypatch, payload())
+    result = run_plan([("get_weather", {"location": "Riverside"}),
+                       ("get_stock_price", {"symbol": "AAPL"})])
+    assert result.status == "needs_input"
+    assert isinstance(result.response, DisplayOnlyToolResult)
+    assert result.response.artifact_kind == "mixed"
+    assert result.response.model_text.startswith("There's more than one Riverside")
+    assert result.response.model_text.endswith("AAPL 200")
