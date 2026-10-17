@@ -1,5 +1,7 @@
 """BehaviorEngine facade: ingest, snapshot lifecycle diffing, pattern status,
 phraser fallbacks, cursors. Synthetic observations on a temp SQLite file."""
+import json
+import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -422,15 +424,37 @@ def test_mine_prunes_old_observations_and_nudges(tmp_path):
     e.close()
 
 
-def test_newer_schema_db_is_moved_aside_not_crashed_on(tmp_path):
-    from service.behavior.store import SCHEMA_VERSION, Store
+def test_newer_schema_db_is_kept_and_learning_pauses(tmp_path):
+    """A file written by a newer Wisp is never moved aside: on 2026-10-16 a 1.3.2 backend met a
+    1.4.0 file, moved it aside, and everything learned (nudges, verdicts) was gone for good."""
+    from service.behavior.store import SCHEMA_VERSION, NewerSchemaError, Store
     s = Store(tmp_path / "v.db")
     s.meta_set("schema_version", SCHEMA_VERSION + 1)
     s.upsert_observations([ev("x", T0)])
     s.close()
+    tables = lambda: {r[0] for r in sqlite3.connect(tmp_path / "v.db").execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    before = tables()
+    with pytest.raises(NewerSchemaError, match="newer version of Wisp"):
+        Store(tmp_path / "v.db")
+    with pytest.raises(NewerSchemaError):
+        BehaviorEngine(tmp_path / "v.db", tz="America/Los_Angeles", clock=lambda: T0)
+    assert not list(tmp_path.glob("v.db.schema-*.bak")) and tables() == before
+    newer = sqlite3.connect(tmp_path / "v.db")
+    assert newer.execute("SELECT count(*) FROM observations").fetchone()[0] == 1   # data untouched
+    assert json.loads(newer.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]) == SCHEMA_VERSION + 1
+    newer.close()
+
+
+def test_unreadable_schema_version_is_still_moved_aside(tmp_path):
+    from service.behavior.store import SCHEMA_VERSION, Store
+    s = Store(tmp_path / "v.db")
+    s.meta_set("schema_version", "garbage")
+    s.upsert_observations([ev("x", T0)])
+    s.close()
     s2 = Store(tmp_path / "v.db")
     assert s2.meta_get("schema_version") == SCHEMA_VERSION and s2.count_by_kind() == {}
-    assert list(tmp_path.glob(f"v.db.schema-{SCHEMA_VERSION + 1}-*.bak"))
+    assert list(tmp_path.glob("v.db.schema-garbage-*.bak"))
     s2.close()
     s3 = Store(tmp_path / "v.db")                                      # reopening is a no-op
     assert s3.meta_get("schema_version") == SCHEMA_VERSION

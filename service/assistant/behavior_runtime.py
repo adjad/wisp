@@ -55,6 +55,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from types import MappingProxyType
+from service.behavior.store import NewerSchemaError
 from service.publication_authority import Authority, PublicationBusy, PublicationUnavailable, Witness, assert_drain_allowed, assert_mutation_allowed, mutating, publication, revocation
 
 log = logging.getLogger("wisp.behavior")
@@ -1189,6 +1190,12 @@ class BehaviorRuntime:
             if not self.live():
                 return [], key
             self._planning_store = store
+            try:
+                self.local_engine()
+            except NewerSchemaError as exc:
+                # A rollback to an older Wisp: the newer file is kept and nothing runs.
+                self.errors["engine"] = str(exc)[:300]
+                return [], key
             stamps = self._stamps.setdefault(key, {"ingest": 0.0, "mine": 0.0, "nudge": 0.0})
             nudge_inputs = self._prepare_nudge_inputs(store,now)
             changed = self._flush_decisions()
