@@ -280,7 +280,7 @@ final class TodayModel: ObservableObject {
     func reportProblem() {
         let snapshot = diagnosticSnapshot()
         let trace = snapshot.metadata["trace_id"] as? String ?? snapshot.metadata["refresh_trace_id"] as? String
-        report.open(key: "today:" + (trace ?? "untraced"), metadata: snapshot.metadata, details: snapshot.details)
+        report.open(key: "today:" + (trace ?? UUID().uuidString), metadata: snapshot.metadata, details: snapshot.details)
     }
 
     /// Turning capture off drops captured planner details, including from an

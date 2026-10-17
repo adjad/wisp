@@ -315,8 +315,9 @@ struct ReportSnapshot {
 @MainActor
 final class ReportDraft: ObservableObject {
     @Published private(set) var snapshot: ReportSnapshot?
-    @Published var note = ""
-    @Published var includeDetails = false
+    // Editing after a save makes "Saved" untrue for what is now previewed.
+    @Published var note = "" { didSet { if note != oldValue { status = "" } } }
+    @Published var includeDetails = false { didSet { if includeDetails != oldValue { status = "" } } }
     @Published private(set) var status = ""
 
     var isOpen: Bool { snapshot != nil }

@@ -54,6 +54,10 @@ struct DiagnosticReportChecks {
         check(draft.write(to: target), "a report saves")
         check(try Data(contentsOf: target) == Data(draft.preview.utf8), "the saved file is exactly the preview")
         check(draft.status == "Saved report.json", "saving says where")
+        draft.note = "a quicker reply."
+        check(draft.status.isEmpty, "editing after a save clears Saved, which no longer matches the preview")
+        draft.note = "a quicker reply"
+        check(draft.write(to: target), "saving again")
         var info = stat()
         check(lstat(target.path, &info) == 0 && info.st_mode & 0o777 == 0o600, "a saved report is private")
         // Reopening the same report keeps it; another reply starts over.

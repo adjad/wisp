@@ -1307,7 +1307,8 @@ extension AppDelegate {
         precondition(model.report.note.isEmpty && !model.report.includeDetails
                      && model.report.snapshot?.scrubbedDetails?["prompt"] as? String == "hi",
                      "A new report starts with no note, details off, and the reply's prompt in its snapshot")
-        model.report.close()
+        model.reset()
+        precondition(!model.report.isOpen, "A new chat closes the report on the conversation it leaves")
         precondition(!model.holdsOpen, "Closing the report lets the panel collapse")
         model.tab = .today
         delegate.todayModel.reportProblem()

@@ -269,8 +269,6 @@ final class OverlayModel: ObservableObject {
             || setupCard == .open || report.isOpen || (tab == .today && todayReport?.isOpen == true)
     }
 
-    /// Which report a reply's "Report a problem" opens: its trace, so a rebuilt
-    /// row or a reloaded chat finds the same draft.
     /// Today's report, owned by the shared TodayModel. While it is open on the
     /// Today tab the panel stays open, like any other edit in progress.
     weak var todayReport: ReportDraft?
@@ -283,6 +281,8 @@ final class OverlayModel: ObservableObject {
         draft.chooseLocationAndSave()
     }
 
+    /// Which report a reply's "Report a problem" opens: its trace (or, for a
+    /// reply without one, its row), so a rebuilt row finds the same draft.
     static func reportKey(for turn: Turn) -> String { "chat:" + (turn.traceID ?? turn.id.uuidString) }
 
     /// The open report isn't about any reply on screen (the last dropped turn,
@@ -663,6 +663,8 @@ final class OverlayModel: ObservableObject {
     }
 
     func reset() {
+        // A report belongs to the conversation being left.
+        report.close()
         streamTask?.cancel()
         streamTask = nil
         pending = nil
@@ -712,7 +714,8 @@ final class OverlayModel: ObservableObject {
                 metadata["trace"] = journal
                 metadata["journal_available"] = true
             }
-            report.open(key: "chat:dropped:" + (traceID ?? "untraced"), metadata: metadata)
+            // Untraced drops get their own key, so a later one never reuses an older snapshot.
+            report.open(key: "chat:dropped:" + (traceID ?? UUID().uuidString), metadata: metadata)
         } else if let turn = turns.last(where: { $0.role == "assistant" }) {
             reportProblem(for: turn)
         } else {
