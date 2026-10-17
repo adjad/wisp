@@ -27,22 +27,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // test result, a running action and readiness are the same in both.
     private lazy var setupModel = SetupGuideModel()
     private var setupCloseObserver: NSObjectProtocol?
-    private lazy var researchLibrary = ResearchLibraryWindowController(client: client,
-        onOpen: { [weak self] id in self?.openSavedResearch(id) },
-        onNew: { [weak self] in self?.newResearch() })
     // The Wisp window: long conversations, saved chats, and the same approvals
     // as the notch, in a real window. It opens only when asked for; Wisp starts
     // in the notch. Its sidebar opens the other parts of the app through
     // WispRouter, like every other control (see open(_:)).
-    private lazy var wispWindow = WispWindowController(
-        backend: LiveChatBackend(client: client, access: settingsLoader),
-        launchers: ChatLaunchers(
-            today: { WispRouter.shared.open(.today(focus: .plan)) },
-            research: { WispRouter.shared.open(.research) },
-            memory: { WispRouter.shared.open(.memory(.facts)) },
-            settings: { WispRouter.shared.open(.settings) },
-            searchEverything: { [weak self] in self?.toggleSearch() }),
-        debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
+    private lazy var wispWindow: WispWindowController = {
+        let window = WispWindowController(
+            backend: LiveChatBackend(client: client, access: settingsLoader),
+            launchers: ChatLaunchers(
+                today: { WispRouter.shared.open(.today(focus: .plan)) },
+                research: { WispRouter.shared.open(.research) },
+                openResearchJob: { [weak self] id in self?.openSavedResearch(id) },
+                newResearch: { [weak self] in self?.startResearchInNotch() },
+                memory: { WispRouter.shared.open(.memory(.facts)) },
+                settings: { WispRouter.shared.open(.settings) },
+                searchEverything: { [weak self] in self?.toggleSearch() }),
+            debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
+        window.navigation.researchLibrary = ResearchLibraryModel(client: client)
+        return window
+    }()
     private var searchKeyMonitor: Any?
     private var presentation = OverlayTransition()
     private var searchCaptureID: UUID?
@@ -254,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .today(let focus):
             TodayWindow.show(model: todayModel, initialTab: focus.tab)
         case .research:
-            researchLibrary.show()
+            wispWindow.showResearch()
         case .memory(let focus):
             wispWindow.show(memory: focus)
         case .settings:
@@ -388,16 +391,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupInNotch), keyEquivalent: "")
         menu.addItem(.separator())
-        // Debug Mode: a checkable toggle (state synced in toggle() right before
-        // the menu is shown, since NSMenuItem state doesn't observe SwiftUI
-        // @Published state on its own) that turns on the inline per-reply debug
-        // line in the transcript (model, route reason, tok/s, timing, tool
-        // calls). Export works any time there's a conversation, regardless of
-        // whether Debug Mode is currently on — debug metadata is tracked for
-        // every turn unconditionally (see OverlayModel.applyDebugFields), so
-        // switching it on partway through a chat doesn't lose earlier turns.
-        let debugItem = menu.addItem(withTitle: "Debug Mode", action: #selector(toggleDebugMode), keyEquivalent: "")
-        debugModeItem = debugItem
+        // Debug Mode is in the notch's quick settings ("Show Details under
+        // replies"). Export works any time there's a conversation, whether or not
+        // it is on: debug metadata is tracked for every turn unconditionally (see
+        // OverlayModel.applyDebugFields).
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
         menu.addItem(withTitle: "Export Chat Debug Log…", action: #selector(exportDebugLog), keyEquivalent: "")
         menu.addItem(.separator())
@@ -409,14 +406,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var rightClickMenu: NSMenu?
-    private var debugModeItem: NSMenuItem?
 
     // The panel is always on screen; the hotkey and menu-bar click just flip
     // between the notch bar and the expanded assistant. No reset — the visible
     // transcript (and server-side session) survive collapse/expand.
     @objc private func toggle() {
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let menu = rightClickMenu {
-            debugModeItem?.state = model.debugMode ? .on : .off
             statusItem.menu = menu
             statusItem.button?.performClick(nil)
             statusItem.menu = nil
@@ -829,29 +824,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.runDailySummary()
     }
 
-    /// Start the existing plan-first Research workflow directly from Wisp's
-    /// menu-bar menu. Research deliberately opens its own window because the
-    /// editable plan, source list, activity log, and cited report do not fit
-    /// inside the compact notch panel.
-    @objc private func newResearch() {
-        let alert = NSAlert()
-        alert.messageText = "New Wisp Research"
-        alert.informativeText = "Enter a question. Wisp will draft an editable plan before it searches the web."
-        alert.addButton(withTitle: "Create plan")
-        alert.addButton(withTitle: "Cancel")
-
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 440, height: 24))
-        field.placeholderString = "What would you like Wisp to research?"
-        alert.accessoryView = field
-
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let prompt = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else { return }
-        openResearch(prompt: prompt)
+    /// New research starts in the notch's Research tab, where the prompt drafts
+    /// an editable plan before Wisp searches the web.
+    private func startResearchInNotch() {
+        model.showingQuickSettings = false
+        model.showingResearch = false
+        model.tab = .research
+        openAssistant()
     }
 
-    @objc private func openResearchLibrary() { open(.research) }
     @objc private func openChat() { open(.chat(sessionId: nil)) }
 
     private func openSavedResearch(_ id: String) {
@@ -861,13 +842,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         researchModel.openJob(id)
     }
 
-    @objc private func freeMemory() {
-        Task { await client.unloadAll() }
-    }
-
-    @objc private func toggleDebugMode() {
-        model.debugMode.toggle()
-    }
 
     private func startNativeSourceReaders() {
         guard !nativeSourceReadersStarted else { return }

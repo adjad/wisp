@@ -45,6 +45,12 @@ final class WispWindowController {
         present()
     }
 
+    /// Open the window's Research section: saved research jobs.
+    func showResearch() {
+        navigation.section = .research
+        present()
+    }
+
     private func present() {
         if window == nil {
             let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 740),
@@ -79,14 +85,17 @@ final class WispWindowController {
     }
 }
 
-/// What the Wisp window's main column shows: chats, or the merged Memory.
+/// What the Wisp window's main column shows: chats, the merged Memory, or saved research.
 @MainActor
 final class WispWindowNavigation: ObservableObject {
-    enum Section: Equatable { case chats, memory }
+    enum Section: Equatable { case chats, memory, research }
     @Published var section: Section = .chats
     @Published var memoryTab: WispRoute.MemoryFocus = .facts
     /// The Routines tab's model lives as long as the window, as it did in the
     /// old What Wisp has learned window: a source-consent write still in flight
     /// when the person switches tabs reports its outcome when they come back.
     lazy var learned = LearnedModel()
+    /// Saved research for the Research section. AppDelegate supplies it, with
+    /// the service client; without one (the QA harness) the section is empty.
+    var researchLibrary: ResearchLibraryModel?
 }
