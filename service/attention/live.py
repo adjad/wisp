@@ -135,8 +135,8 @@ def who_label(sender: str) -> str:
     never lands in a reminder title or a notification."""
     sender = sender or ""
     if "@" in sender:
-        local, _, domain = sender.partition("@")
-        return f"Text from {local[:1]}…@{domain}" if local and domain else "Text"
+        domain = sender.partition("@")[2]
+        return f"Text from …@{domain}" if domain else "Text"
     digits = re.sub(r"\D", "", sender)
     if re.search(r"[A-Za-z]", sender) and not re.search(r"\d{4}", re.sub(r"[\s().+-]", "", sender)):
         return sender

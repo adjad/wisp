@@ -398,8 +398,8 @@ Known and accepted: `capped` is final (a message capped today is not reconsidere
 the reminder, its time and the quoted message. Delivery is best effort: the event is transient,
 so one published while the app is reconnecting, or during quiet hours (not published), shows no
 banner, and Caught for you is the record. A sender with no contact name is labelled by a masked
-handle (`Text from …4567`, `Text from s…@icloud.com`), so a raw phone number or email address never
-lands in a reminder title or a banner. Today's "Needs my attention" tab and the notch's Today tab
+handle (`Text from …4567`, `Text from …@icloud.com`), so the sender label never shows a raw phone
+number or email address. (The quote is the message's own words and can contain either.) Today's "Needs my attention" tab and the notch's Today tab
 show **Caught for you**: the last week's decisions (`created`, `shadow` "would add", `capped`,
 `unknown`, `failed`, `undone`; the API lists only these, so `already_on_file` rows cannot crowd
 them out), each with its quote. **Undo** appears only where `undoable` is true (a `created` row
