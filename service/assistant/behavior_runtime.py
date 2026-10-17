@@ -1864,9 +1864,9 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
                 conn.close()
 
     from service.behavior.source_index import database_mutation
-    from service.behavior.store import SCHEMA_VERSION, stored_schema_version
+    from service.behavior.store import written_by_newer_build
     # A file written by a newer Wisp is that build's to age out, under its own rules.
-    newer = (stored_schema_version(home / ENGINE_DB) or 0) > SCHEMA_VERSION
+    newer = written_by_newer_build(home / ENGINE_DB)
     with engine_database_mutation(home/ENGINE_DB),database_mutation(home/ENGINE_DB):
         if not newer:
             run(ENGINE_DB, [("observations", OBSERVATION_EXPIRY_SQL, now - OBSERVATION_RETENTION_S),

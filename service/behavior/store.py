@@ -31,20 +31,34 @@ log = logging.getLogger(__name__)
 _WARNED_NEWER: set[str] = set()
 
 
-def stored_schema_version(path: Path) -> int | None:
-    """The integer schema version recorded in a behavior db, read without writing anything;
-    None when absent or unreadable."""
+def written_by_newer_build(path: Path) -> bool:
+    """Whether a behavior db must be left to a newer Wisp, read without writing to it.
+
+    Fails closed: a file this build cannot read the version of right now (locked by the
+    newer process, say) counts as newer, so retention never applies old rules to it. Only a
+    missing file, a file with no meta table or version, or a version this build knows is
+    False. A read-only open of a WAL file can leave empty -wal/-shm files beside it."""
+    path = Path(path)
+    if not path.exists():
+        return False
     try:
-        conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
     except sqlite3.Error:
-        return None
+        return True
     try:
         row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-        return int(json.loads(row[0])) if row else None
-    except (sqlite3.Error, TypeError, ValueError):
-        return None
+    except sqlite3.OperationalError as exc:
+        return "no such table" not in str(exc)
+    except sqlite3.Error:
+        return True
     finally:
         conn.close()
+    if row is None:
+        return False
+    try:
+        return int(json.loads(row[0])) > SCHEMA_VERSION
+    except (TypeError, ValueError):
+        return False           # unreadable version: the store moves it aside; retention as before
 
 
 class NewerSchemaError(RuntimeError):
