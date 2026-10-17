@@ -475,26 +475,9 @@ final class LearnedModel: ObservableObject {
     }
 }
 
-final class LearnedWindow {
-    static let shared = LearnedWindow()
-    private var window: NSWindow?
-
-    func show() {
-        if let window { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 640),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "What Wisp has learned"
-        window.contentView = NSHostingView(rootView: LearnedView())
-        window.isReleasedWhenClosed = false
-        window.center()
-        self.window = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-}
-
+/// The Routines tab of the Wisp window's Memory section (MemoryHomeView).
 struct LearnedView: View {
-    @StateObject private var model = LearnedModel()
+    @ObservedObject var model: LearnedModel
     @State private var showRejected = false
     @State private var emailScanFrom = Date()
     @State private var emailScanThrough = Date()
@@ -503,18 +486,16 @@ struct LearnedView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header.padding(20)
+            header.padding(.bottom, 12)
             Divider()
             content
         }
-        .frame(minWidth: 560, minHeight: 460)
         .task { await model.refresh() }
     }
 
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("What Wisp has learned").font(.title2.bold())
                 if model.phase == .ready {
                     Text(model.sourceLine).foregroundStyle(.secondary)
                     if let mined = model.lastMined {
@@ -576,7 +557,7 @@ struct LearnedView: View {
                      + "To erase everything, use \"Forget what Wisp learned…\" in Settings.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            .padding(20)
+            .padding(.vertical, 20)
         }
     }
 

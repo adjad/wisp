@@ -14,6 +14,7 @@ final class WispWindowController {
 
     private var window: NSWindow?
     let store: ChatStore
+    let navigation = WispWindowNavigation()
     private let launchers: ChatLaunchers
 
     init(backend: ChatBackend, launchers: ChatLaunchers, debug: @escaping () -> Bool = { false }) {
@@ -23,6 +24,7 @@ final class WispWindowController {
 
     /// Open the window onto the chat list, or onto a new chat when there is none selected.
     func show() {
+        navigation.section = .chats
         present()
         if store.selected == nil { store.newChat() }
         Task { await store.refreshWhenReady() }
@@ -31,8 +33,16 @@ final class WispWindowController {
     /// Open the window onto an existing chat by its service session id: the
     /// notch's "Open in Wisp Chat" hand-off. An empty id opens a new chat.
     func show(sessionId: String) {
+        navigation.section = .chats
         present()
         Task { await store.open(sessionId: sessionId) }
+    }
+
+    /// Open the window's Memory section on one of its tabs.
+    func show(memory focus: WispRoute.MemoryFocus) {
+        navigation.memoryTab = focus
+        navigation.section = .memory
+        present()
     }
 
     private func present() {
@@ -44,7 +54,8 @@ final class WispWindowController {
             win.titleVisibility = .hidden
             win.titlebarAppearsTransparent = true
             win.isMovableByWindowBackground = false
-            win.contentView = NSHostingView(rootView: ChatRootView(store: store, launchers: launchers))
+            win.contentView = NSHostingView(rootView: ChatRootView(store: store, launchers: launchers,
+                                                                   navigation: navigation))
             win.center()
             win.minSize = NSSize(width: 820, height: 560)
             win.isReleasedWhenClosed = false
@@ -66,4 +77,16 @@ final class WispWindowController {
               let previous = defaults.string(forKey: "NSWindow Frame " + previousAutosaveName) else { return }
         defaults.set(previous, forKey: key)
     }
+}
+
+/// What the Wisp window's main column shows: chats, or the merged Memory.
+@MainActor
+final class WispWindowNavigation: ObservableObject {
+    enum Section: Equatable { case chats, memory }
+    @Published var section: Section = .chats
+    @Published var memoryTab: WispRoute.MemoryFocus = .facts
+    /// The Routines tab's model lives as long as the window, as it did in the
+    /// old What Wisp has learned window: a source-consent write still in flight
+    /// when the person switches tabs reports its outcome when they come back.
+    lazy var learned = LearnedModel()
 }

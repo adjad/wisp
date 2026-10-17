@@ -1543,7 +1543,7 @@ def test_swift_refired_nudge_resets_card_and_banner():
 
 
 def test_swift_learned_view_covers_every_pattern_kind_and_status():
-    """The "What Wisp has learned" window maps each engine pattern kind to a
+    """The Memory section's Routines tab (formerly "What Wisp has learned") maps each engine pattern kind to a
     section and only sends statuses the API accepts, through the safe-id guard."""
     import re
     from service.behavior.types import PATTERN_KINDS
@@ -1557,8 +1557,8 @@ def test_swift_learned_view_covers_every_pattern_kind_and_status():
     client = _swift("WispClient.swift")
     setter = client.split("func setBehaviorPatternStatus")[1].split("}")[0]
     assert "behaviorSafeID(patternID)" in setter
-    assert 'launchers.learned' in _swift("Chat/ChatViews.swift")
-    assert "LearnedWindow.shared.show()" in _swift("SettingsView.swift")
+    assert "case .routines: LearnedView(model: navigation.learned)" in _swift("MemoryHomeView.swift")
+    assert "WispRouter.shared.open(.memory(.routines))" in _swift("SettingsView.swift")
     from service.behavior.predict import _USAGE_PHRASES
     table = src.split("static let usagePhrases")[1].split("= [", 1)[1].split("]")[0]
     assert dict(re.findall(r'"(\w+)": "([^"]+)"', table)) == _USAGE_PHRASES
