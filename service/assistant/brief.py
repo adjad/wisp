@@ -40,6 +40,7 @@ import re
 import time
 import traceback
 from datetime import datetime, timedelta
+from typing import Callable
 
 from service.config import role_to_model, user_facing_summary_kwargs
 from service.inference.omlx_client import OMLXClient
@@ -2114,10 +2115,16 @@ def brief_without_model() -> str:
                 "your brief together. Try again once it's back up.")
 
 
-async def run_scheduled_brief(part_of_day: str) -> bool:
+async def run_scheduled_brief(part_of_day: str, day: str | None = None,
+                              abort: Callable[[], bool] | None = None) -> bool | None:
     """Scheduler entry: compose the brief and push it to the app as a
     'daily_brief' event carrying the full text plus two notification bodies —
     one for the schedule, one for messages.
+
+    There are two runs a day, "morning" and "evening", and each publishes under
+    its own key, so the evening run is never mistaken for the morning one
+    already delivered. `day` is the run's date (ISO); the scheduler passes the
+    date it decided on, so a run that crosses midnight stays that day's run.
 
     Returns True only when a REAL brief was queued for acknowledgement, and publishes nothing
     otherwise. Both halves of that matter. A brief that held back because the
@@ -2127,14 +2134,21 @@ async def run_scheduled_brief(part_of_day: str) -> bool:
     the real brief never followed. Because the backend is a child of Wisp.app and
     the fired-date used to live only in memory, every relaunch inside the
     schedule's window repeated that — which is where the run of false "ready"
-    pings came from (see scheduler._maybe_daily_brief for the persisted date).
+    pings came from (see scheduler._slot_delivered for the persisted receipts).
+
+    Returns None, also publishing nothing, when `abort()` is true once the brief
+    is composed: the user started a turn, and the brief's card and transcript
+    entry must not land in the middle of it. That is a deferral, not a failure.
     """
-    day = datetime.now().date().isoformat()
-    if assistant_store.event_by_key("daily_brief:" + day):
+    day = day or datetime.now().date().isoformat()
+    key = f"daily_brief:{day}:{part_of_day}"
+    if assistant_store.event_by_key(key):
         return True
     sections = await _sections(part_of_day)
     if not sections.get("READY") or not sections.get("FULL", "").strip():
         return False
+    if abort is not None and abort():
+        return None
     from service.assistant.hub import hub
     from service import diagnostics
     await hub.publish({
@@ -2144,5 +2158,5 @@ async def run_scheduled_brief(part_of_day: str) -> bool:
         "text": sections["FULL"],
         "today_summary": sections.get("TODAY", ""),
         "messages_summary": sections.get("MESSAGES", ""),
-    }, dedupe_key="daily_brief:" + day, target={"type": "brief", "date": day})
+    }, dedupe_key=key, target={"type": "brief", "date": day, "part": part_of_day})
     return True

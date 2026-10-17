@@ -157,6 +157,7 @@ PROFILE_TESTS = {
         "tests/test_discovery_jobs.py",
         "tests/test_broad_web_search.py",
         "tests/test_daily_summary_delivery.py",
+        "tests/test_daily_summary_schedule.py",
         "tests/test_error_translation.py",
         "tests/test_latency_prompt_contract.py",
         "tests/test_lazy_inference_readiness.py",

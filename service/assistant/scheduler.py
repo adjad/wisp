@@ -33,11 +33,12 @@ from service.assistant.hub import hub
 # syncing, so what fired was a hold-back message announced as a finished summary.
 _last_brief: date | None = None
 _last_brief_loaded = False
-# Ticks spent waiting for the launch sync before giving the day up. At TICK_S=30
+# Ticks spent waiting for the launch sync before giving a run up. At TICK_S=30
 # this is ~10 minutes, which covers a slow multi-account Mail read without
 # retrying a genuinely broken source every 30s until midnight.
 _MAX_BRIEF_ATTEMPTS = 20
-_brief_attempts: dict[date, int] = {}
+# Keyed by (day, "morning" | "evening"): each run has its own retries.
+_brief_attempts: dict[tuple[date, str], int] = {}
 
 TICK_S = 30.0
 
@@ -190,23 +191,23 @@ async def run() -> None:
             _start_behavior_tick()
         except Exception:  # noqa: BLE001 — never break the loop
             pass
-        # once-daily brief at the configured hour (8am or 8pm), or first tick
-        # after if Wisp wasn't running at that moment.
-        # The brief itself is now a deterministic render (no generation — see
-        # brief._generate_brief), but composing it still asks the Swift app for a
-        # current read of Calendar, Reminders, Mail and Messages, and those reads
-        # are what a user's own mail/message question is waiting on too. Skip this
-        # tick if the user is waiting; it's periodic, so the next tick picks the
-        # work up.
+        # The Daily Summary, twice a day: one morning run and one evening run
+        # (config.get_daily_summary_times), each caught up on the first tick
+        # after a launch or wake that missed it. The brief is a deterministic
+        # render (no generation — see brief._generate_brief), but composing it
+        # asks the Swift app for current Calendar, Reminders, Mail and Messages
+        # reads, and a user's own mail/message question waits on those too. So
+        # it runs as a single-flight background task that never starts while
+        # the user is waiting and stands down if they start a turn mid-run
+        # (_start_daily_brief).
         #
         # _fire_scheduled_sends below is deliberately NOT gated: it does no
         # model work, and a send the user scheduled for 6pm should go at 6pm
         # whether or not they happen to be typing.
-        if not idle.foreground_busy():
-            try:
-                await _maybe_daily_brief()
-            except Exception:  # noqa: BLE001
-                pass
+        try:
+            _start_daily_brief()
+        except Exception:  # noqa: BLE001 — never break the loop
+            pass
         try:
             await _fire_scheduled_sends()
         except Exception:  # noqa: BLE001
@@ -339,23 +340,104 @@ def _record_brief_date(day: date) -> None:
         pass
 
 
-async def _maybe_daily_brief() -> None:
+
+
+def _due_slot(now: datetime, times: dict[str, int]) -> str | None:
+    """The run that is due now: the latest one whose hour has passed today.
+
+    A run stays due until the next one starts (morning until the evening hour,
+    evening until midnight), so a launch or wake at any point in that span
+    catches it up. Only the latest run is ever due: waking at 9pm delivers the
+    evening summary, not the morning one it also slept through, and nothing
+    before the morning hour revives yesterday's evening run."""
+    if now.hour >= times["evening"]:
+        return "evening"
+    if now.hour >= times["morning"]:
+        return "morning"
+    return None
+
+
+def _slot_delivered(day: date, part: str) -> bool:
+    """Whether this run already went out: queued for the app, or acknowledged."""
+    iso = day.isoformat()
+    completed = assistant_store.completion("daily_brief:" + part)
+    if (completed is not None and completed >= iso) or assistant_store.event_by_key(
+            f"daily_brief:{iso}:{part}"):
+        return True
+    # On the day of an upgrade, an older version's once-a-day receipt covers the
+    # one run it was set to (8am or 8pm), and only that run.
     from service.config import get_daily_summary_hour
-    hour = get_daily_summary_hour()
-    now = datetime.now()
-    # Fire once per day, only within a 4-hour window after the configured hour,
-    # so opening Wisp at 3pm doesn't retroactively fire the 8am brief.
+    if part != ("morning" if get_daily_summary_hour() < 12 else "evening"):
+        return False
     completed = assistant_store.completion("daily_brief")
-    if (not (hour <= now.hour < hour + 4) or _brief_date() == now.date()
-            or (completed is not None and completed >= now.date().isoformat())
-            or assistant_store.event_by_key("daily_brief:" + now.date().isoformat())):
-        return
-    attempts = _brief_attempts.get(now.date(), 0) + 1
-    _brief_attempts[now.date()] = attempts
+    return (_brief_date() == day or (completed is not None and completed >= iso)
+            or bool(assistant_store.event_by_key("daily_brief:" + iso)))
+
+
+def _pending_slot(now: datetime) -> tuple[date, str] | None:
+    """The run to start now, if any: due, not yet delivered, retries left."""
+    from service.config import get_daily_summary_times
+    part = _due_slot(now, get_daily_summary_times())
+    if part is None or _slot_delivered(now.date(), part):
+        return None
+    if _brief_attempts.get((now.date(), part), 0) >= _MAX_BRIEF_ATTEMPTS:
+        return None
+    return now.date(), part
+
+
+_brief_task: asyncio.Task | None = None
+# How often a running brief checks whether the user started a turn. Short,
+# because the brief's longest step is a source wait of up to 20 seconds.
+_YIELD_POLL_S = 0.5
+
+
+def _start_daily_brief() -> asyncio.Task | None:
+    """Start the due Daily Summary run in the background, at most one at a time.
+
+    Never while the user is waiting on a turn, and never before the app is
+    connected: only the app can read Calendar, Reminders, Mail and Messages, so
+    a run without it could only hold back, and would spend a retry doing so."""
+    global _brief_task
+    if _brief_task is not None and not _brief_task.done():
+        return None
+    if idle.foreground_busy() or not hub.has_subscribers:
+        return None
+    slot = _pending_slot(datetime.now())
+    if slot is None:
+        return None
+    _brief_task = asyncio.get_running_loop().create_task(_run_daily_brief(*slot))
+    return _brief_task
+
+
+async def _run_daily_brief(day: date, part: str) -> None:
+    """One Daily Summary run. It stands down as soon as the user starts a turn.
+
+    Standing down is not a failed attempt: the run is still due, and the next
+    idle tick starts it again. Only a run that finished without a brief (the
+    sources were still syncing) uses up one of the slot's retries."""
+    from service import diagnostics
     from service.assistant.brief import run_scheduled_brief
-    # The legacy file is read for migration compatibility only. New completion
-    # lives in the event receipt transaction; exhausting retries is not delivery.
-    if attempts <= _MAX_BRIEF_ATTEMPTS:
-        from service import diagnostics
-        with diagnostics.span("daily_brief"):
-            await run_scheduled_brief("morning" if hour < 12 else "evening")
+    with diagnostics.span("daily_brief"):
+        run = asyncio.ensure_future(
+            run_scheduled_brief(part, day=day.isoformat(), abort=idle.foreground_busy))
+        yielded = False
+        try:
+            while not run.done():
+                if idle.foreground_busy():
+                    yielded = run.cancel()
+                    break
+                await asyncio.wait({run}, timeout=_YIELD_POLL_S)
+            try:
+                delivered = await run
+            except asyncio.CancelledError:
+                if yielded and run.cancelled():
+                    return
+                raise  # this task itself is being cancelled
+            except Exception:  # noqa: BLE001 — counted as a failed attempt below
+                delivered = False
+        finally:
+            if not run.done():
+                run.cancel()
+    if delivered is False:
+        key = (day, part)
+        _brief_attempts[key] = _brief_attempts.get(key, 0) + 1

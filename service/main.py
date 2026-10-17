@@ -2769,10 +2769,16 @@ async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[st
     from service.assistant.sync_status import ensure_daily_sources
     from datetime import datetime as _dt
     part = "morning" if _dt.now().hour < 12 else "evening"
-    # Never present restored caches as current before source readiness. Awaited
-    # ONCE, here, and handed to _sections — which used to repeat the same wait.
-    snapshot = await ensure_daily_sources(timeout_seconds=_SOURCE_WAIT_S)
-    sections = await _sections(part, snapshot=snapshot)
+    # The user is waiting on this, so a scheduled Daily Summary run (and other
+    # background work) stands aside instead of reading the same sources at once.
+    idle.begin_foreground()
+    try:
+        # Never present restored caches as current before source readiness. Awaited
+        # ONCE, here, and handed to _sections — which used to repeat the same wait.
+        snapshot = await ensure_daily_sources(timeout_seconds=_SOURCE_WAIT_S)
+        sections = await _sections(part, snapshot=snapshot)
+    finally:
+        idle.end_foreground()
     text = sections["FULL"]
     ok = bool(sections.get("READY"))
     sid = str((body or {}).get("session_id") or "")
@@ -2788,24 +2794,41 @@ async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[st
             **({} if ok else {"error": "sources syncing"})}
 
 
+def _summary_schedule() -> dict[str, Any]:
+    from service.config import get_daily_summary_hour, get_daily_summary_times
+    hour = get_daily_summary_hour()
+    # "hour"/"period" are the legacy AM/PM choice, kept so older clients still
+    # round-trip; the brief now runs at both "times" whatever they say.
+    return {"times": get_daily_summary_times(), "hour": hour,
+            "period": "AM" if hour < 12 else "PM"}
+
+
 @app.get("/assistant/summary_schedule")
 async def get_summary_schedule() -> dict[str, Any]:
-    from service.config import get_daily_summary_hour
-    hour = get_daily_summary_hour()
-    return {"hour": hour, "period": "AM" if hour < 12 else "PM"}
+    """When the Daily Summary is composed: {"times": {"morning": 8, "evening": 20}}."""
+    return _summary_schedule()
 
 
 @app.post("/assistant/summary_schedule")
 async def set_summary_schedule(body: dict[str, Any]) -> dict[str, Any]:
-    """Set the scheduled daily-brief time. Accepts {"period":"AM"|"PM"} or
-    {"hour": 8|20}."""
-    from service.config import set_daily_summary_hour
-    if "period" in body:
-        hour = 8 if str(body["period"]).upper() == "AM" else 20
+    """Set the Daily Summary run times: {"times": {"morning": 7, "evening": 18}}
+    (either hour alone is fine; morning 0-11, evening 12-23). The legacy
+    {"period": "AM"|"PM"} / {"hour": 8|20} body is still accepted."""
+    from service.config import set_daily_summary_hour, set_daily_summary_times
+    times = body.get("times")
+    if times is not None:
+        if not isinstance(times, dict) or not set(times) <= {"morning", "evening"}:
+            raise HTTPException(status_code=422,
+                                detail='times must be {"morning": <hour>, "evening": <hour>}')
+        try:
+            set_daily_summary_times(morning=times.get("morning"), evening=times.get("evening"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    elif "period" in body:
+        set_daily_summary_hour(8 if str(body["period"]).upper() == "AM" else 20)
     else:
-        hour = int(body.get("hour", 8))
-    hour = set_daily_summary_hour(hour)
-    return {"hour": hour, "period": "AM" if hour < 12 else "PM"}
+        set_daily_summary_hour(int(body.get("hour", 8)))
+    return _summary_schedule()
 
 
 @app.post("/assistant/sync/emails")
