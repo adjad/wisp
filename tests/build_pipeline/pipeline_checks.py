@@ -2004,6 +2004,10 @@ print('external venv readable; private home and writes denied')
         diagnostics = self.workflow_step(adhoc, "Upload ad-hoc publication diagnostics")
         self.assertIn("if: always()", diagnostics)
         self.assertIn(".wisp-build/run-*/*.json", diagnostics)
+        for evidence in ("SHA256SUMS", "provenance.json", "bundle-manifest.json",
+                         "dependencies.json", "simulation-qa.json"):
+            self.assertIn(f"dist/candidate/{evidence}\n", diagnostics)
+        self.assertNotIn("*.zip", diagnostics)
         self.assertEqual(workflow.count("environment: release"), 1)
         self.assertNotIn("environment:", adhoc)
 
