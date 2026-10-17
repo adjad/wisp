@@ -316,7 +316,8 @@ def extract_location(text: str, *, standalone: bool = False) -> str:
     if not match:
         return ""
     place = match.group("place").strip()
-    place = re.split(r"\s+(?:via|through|using|and|today|tomorrow)\b", place,
+    place = re.split(r"\s+(?:via|through|using|and|today|tomorrow|right\s+now|now|"
+                     r"currently|at\s+the\s+moment)\b", place,
                      maxsplit=1, flags=re.I)[0].strip()
     if is_temporal_location(place):
         return ""
