@@ -86,9 +86,11 @@ class FeedbackState:
 
 
 def feedback_state(rows: list[dict], now: float) -> FeedbackState:
-    """Rows: {kind, pattern_key, verdict, ts}. Two negative verdicts ('wrong',
-    'not_now', or 'undo') for one kind+pattern within 7 days mute it for 7 days
-    from the second; each 'useful' raises priority; an 'undo' turns that
+    """Rows: {kind, pattern_key, verdict, ts}. One 'wrong' mutes its kind+pattern for
+    7 days: the user said the nudge was untrue, and repeating it the next day (a
+    "Reply to Mom?" after they had called her) is the failure that gets an assistant
+    muted. Two negative verdicts ('wrong', 'not_now', or 'undo') within 7 days mute it
+    for 7 days from the second; each 'useful' raises priority; an 'undo' turns that
     kind+pattern's auto actions into offers."""
     st = FeedbackState()
     last_neg: dict[tuple[str, str], float] = {}
@@ -99,6 +101,8 @@ def feedback_state(rows: list[dict], now: float) -> FeedbackState:
         verdict = r.get("verdict")
         if verdict == "useful":
             st.useful[key] = st.useful.get(key, 0) + 1
+        if verdict == "wrong":
+            st.muted_until[key] = max(st.muted_until.get(key, 0.0), r["ts"] + MUTE_FOR_S)
         if verdict in NEGATIVE:
             prev = last_neg.get(key)
             if prev is not None and r["ts"] - prev <= MUTE_WINDOW_S:
