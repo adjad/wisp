@@ -273,8 +273,9 @@ proposal. A bare clock more than 12 hours out is now marked tentative (said at 1
 "at 10am" could be a guess). The full-corpus run then produced 5 alerts in 26.5 days; the one
 outside the labelled sample was reviewed by hand and is correct (a friend's "sure" accepting the
 user's "3:30?", 65 minutes ahead, not on the calendar). It was outside the sample because "sure"
-has no time word, so the cue prefilter never offers such replies: **the sampler should treat a
-short acceptance that follows the user's time proposal as a cue** before the next labelling round.
+has no time word, so the cue prefilter never offered such replies. **The sampler now treats a
+short acceptance that follows the user's own time proposal (same thread, within six hours, no
+decline) as a cue** (`corpus.accepts_user_time`), so the next labelling round scores them.
 
 Prefilter check: the control stratum had 1 missing in 59 (1.7%), about 24 more across the
 1,414 texts the cue prefilter never shows anyone. Those are the same no-time obligations.

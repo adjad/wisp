@@ -255,3 +255,23 @@ def test_skipped_and_unlabelled_items_do_not_count(snap):
     r = evaluate.evaluate(snap, sample, marks, evaluate.cue_baseline)
     assert r["skipped"] == 1 and r["unlabelled"] == 1
     assert r["labelled"] == 5
+
+
+def test_a_short_yes_to_the_users_own_time_proposal_is_offered_as_a_cue():
+    """The full-corpus run found a real plan ("3:30?" -> "sure") outside every labelled sample:
+    "sure" has no time word, so the cue prefilter never offered it."""
+    from pathlib import Path
+    from service.attention.corpus import Item, Snapshot, accepts_user_time
+    t = 1_790_000_000.0
+    def msg(guid, direction, text, ts, conv="Sam"):
+        return Item(f"msg:{guid}", "messages", ts, direction, "me" if direction == "outgoing" else conv, conv, text)
+    items = [msg("p", "outgoing", "coffee at 3:30?", t), msg("yes", "incoming", "sure", t + 600),
+             msg("late", "incoming", "sounds good", t + 7 * 3600),
+             msg("their", "incoming", "lunch at noon?", t, conv="Kim"), msg("echo", "incoming", "yes", t + 60, conv="Kim"),
+             msg("p2", "outgoing", "dinner at 7?", t, conv="Lee"), msg("no", "incoming", "sure but I can't tonight", t + 60, conv="Lee"),
+             msg("chat", "outgoing", "lol same", t, conv="Max"), msg("ok", "incoming", "ok", t + 60, conv="Max")]
+    snap = Snapshot(Path("."), {}, items, [])
+    got = {i.id for i in items if accepts_user_time(snap, i)}
+    assert got == {"msg:yes"}          # not stale, not their own proposal, not a decline, not chatter
+    s = corpus.sample(snap, seed=0, n_cue=10, n_control=10, n_mail=0)
+    assert {e["id"]: e["stratum"] for e in s}["msg:yes"] == "cue"
