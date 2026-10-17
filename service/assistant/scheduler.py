@@ -365,13 +365,17 @@ def _slot_delivered(day: date, part: str) -> bool:
             f"daily_brief:{iso}:{part}"):
         return True
     # On the day of an upgrade, an older version's once-a-day receipt covers the
-    # one run it was set to (8am or 8pm), and only that run.
+    # one run it made, and only that run. Its event says which run that was; the
+    # AM/PM setting is only a fallback, because the notch toggle still writes it
+    # and a tap after the upgrade would otherwise move the receipt to the other run.
+    legacy = assistant_store.event_by_key("daily_brief:" + iso)
+    if legacy is not None:
+        return legacy["payload"].get("part_of_day") == part
     from service.config import get_daily_summary_hour
     if part != ("morning" if get_daily_summary_hour() < 12 else "evening"):
         return False
     completed = assistant_store.completion("daily_brief")
-    return (_brief_date() == day or (completed is not None and completed >= iso)
-            or bool(assistant_store.event_by_key("daily_brief:" + iso)))
+    return _brief_date() == day or (completed is not None and completed >= iso)
 
 
 def _pending_slot(now: datetime) -> tuple[date, str] | None:
@@ -430,9 +434,11 @@ async def _run_daily_brief(day: date, part: str) -> None:
             try:
                 delivered = await run
             except asyncio.CancelledError:
-                if yielded and run.cancelled():
+                # A stand-down is a normal return, unless this task itself is
+                # also being cancelled (shutdown), which must propagate.
+                if yielded and run.cancelled() and not asyncio.current_task().cancelling():
                     return
-                raise  # this task itself is being cancelled
+                raise
             except Exception:  # noqa: BLE001 — counted as a failed attempt below
                 delivered = False
         finally:

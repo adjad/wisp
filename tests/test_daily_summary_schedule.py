@@ -270,13 +270,77 @@ class TestUpgradeDay:
         assert scheduler._slot_delivered(DAY, "morning")
         assert not scheduler._slot_delivered(DAY, "evening")
 
-    def test_a_legacy_pm_choice_covers_the_evening_run(self, _isolated):
-        config.set_daily_summary_hour(20)
-        _isolated.enqueue_event({"type": "daily_brief", "part_of_day": "evening", "text": "x"},
+    def test_toggling_am_pm_after_the_upgrade_does_not_move_the_receipt(self, _isolated):
+        # Found by the Release Auditor: the old 8am brief already went out, then
+        # the user taps PM on the notch toggle (it still writes the legacy hour).
+        _isolated.enqueue_event({"type": "daily_brief", "part_of_day": "morning", "text": "x"},
                                 dedupe_key="daily_brief:2026-10-16",
                                 target={"type": "brief", "date": "2026-10-16"})
+        config.set_daily_summary_hour(20)
+        assert scheduler._slot_delivered(DAY, "morning")
+        assert not scheduler._slot_delivered(DAY, "evening")
+
+    def test_the_old_date_file_covers_the_run_the_legacy_hour_names(self, _isolated, tmp_path):
+        (tmp_path / "brief_state.json").write_text('{"last_brief": "2026-10-16"}')
+        config.set_daily_summary_hour(20)
         assert scheduler._slot_delivered(DAY, "evening")
         assert not scheduler._slot_delivered(DAY, "morning")
+
+
+class TestRunEdges:
+    @pytest.mark.asyncio
+    async def test_a_run_that_crosses_midnight_stays_that_days_run(self, _isolated):
+        class AfterMidnight(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 10, 17, 0, 0, 5)
+        with patch.object(B, "_sections", AsyncMock(return_value=READY)), \
+             patch.object(B, "datetime", AfterMidnight):
+            await scheduler._run_daily_brief(DAY, "evening")
+        keys = [row["dedupe_key"] for row in _isolated.pending_events()]
+        assert keys == ["daily_brief:2026-10-16:evening"]
+
+    @pytest.mark.asyncio
+    async def test_an_exception_spends_a_retry(self, _isolated):
+        with patch.object(B, "_sections", AsyncMock(side_effect=RuntimeError("boom"))), \
+             patch.object(scheduler, "datetime", _clock_at(20)):
+            await _tick()
+        assert scheduler._brief_attempts == {(DAY, "evening"): 1}
+
+    @pytest.mark.asyncio
+    async def test_the_evening_run_has_its_own_retries(self, _isolated):
+        scheduler._brief_attempts[(DAY, "morning")] = scheduler._MAX_BRIEF_ATTEMPTS
+        assert scheduler._pending_slot(datetime(2026, 10, 16, 9)) is None
+        assert scheduler._pending_slot(datetime(2026, 10, 16, 20)) == (DAY, "evening")
+
+    @pytest.mark.asyncio
+    async def test_shutting_down_during_a_stand_down_still_cancels(self, _isolated, monkeypatch):
+        """Found by the Release Auditor: cancelling the run's own task while it
+        waits on a stood-down brief must propagate, not return normally."""
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def stubborn(part, snapshot=None):
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await release.wait()   # slow to finish standing down
+                raise
+            return READY
+
+        with patch.object(B, "_sections", side_effect=stubborn), \
+             patch.object(scheduler, "datetime", _clock_at(8)):
+            task = scheduler._start_daily_brief()
+            await started.wait()
+            idle.begin_foreground()
+            try:
+                await asyncio.sleep(0.05)   # the run has been told to stand down
+                task.cancel()               # …and now the service shuts down
+                release.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            finally:
+                idle.end_foreground()
 
 
 class TestConfiguration:
@@ -312,6 +376,9 @@ class TestConfiguration:
             with pytest.raises(HTTPException) as err:
                 await main.set_summary_schedule(bad)
             assert err.value.status_code == 422
+        with pytest.raises(HTTPException) as err:
+            await main.set_summary_schedule({"hour": "abc"})
+        assert err.value.status_code == 422
         # The legacy AM/PM body still round-trips and leaves the run times alone.
         legacy = await main.set_summary_schedule({"period": "PM"})
         assert legacy["period"] == "PM" and legacy["times"] == {"morning": 7, "evening": 19}

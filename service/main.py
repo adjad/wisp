@@ -2827,7 +2827,10 @@ async def set_summary_schedule(body: dict[str, Any]) -> dict[str, Any]:
     elif "period" in body:
         set_daily_summary_hour(8 if str(body["period"]).upper() == "AM" else 20)
     else:
-        set_daily_summary_hour(int(body.get("hour", 8)))
+        try:
+            set_daily_summary_hour(int(body.get("hour", 8)))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="hour must be a whole number") from exc
     return _summary_schedule()
 
 
