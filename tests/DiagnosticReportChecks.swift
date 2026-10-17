@@ -32,6 +32,52 @@ struct DiagnosticReportChecks {
         check(output.contains(String(expected.dropFirst().dropLast())), "damaged \(text.debugDescription): \(output)", line: line)
     }
 
+    /// The inline report: one draft at a time, an immutable snapshot taken at
+    /// open with details off, and a preview that is exactly the saved bytes.
+    @MainActor static func draftChecks(root: URL) throws {
+        let directory = root.appendingPathComponent("drafts")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var details: [String: Any] = ["prompt": "PRIVATE-PROMPT", "api_key": "sk-secret-secret"]
+        let draft = ReportDraft()
+        check(!draft.isOpen && (try? draft.encoded()) == nil, "nothing to encode before a report opens")
+        draft.open(key: "chat:a", metadata: ["surface": "chat", "trace_id": "a"], details: details)
+        check(draft.isOpen && draft.note.isEmpty && !draft.includeDetails, "a report opens with an empty note and details off")
+        check(!draft.preview.contains("PRIVATE-PROMPT"), "details stay out until the person includes them")
+        details["prompt"] = "CHANGED-AFTER-OPEN"
+        draft.note = "a quicker reply"
+        draft.includeDetails = true
+        check(draft.preview.contains("PRIVATE-PROMPT") && !draft.preview.contains("CHANGED-AFTER-OPEN"),
+              "the preview shows the snapshot taken at open")
+        check(!draft.preview.contains("sk-secret-secret"), "included details are scrubbed")
+        // The preview and the saved file are the same bytes.
+        let target = directory.appendingPathComponent("report.json")
+        check(draft.write(to: target), "a report saves")
+        check(try Data(contentsOf: target) == Data(draft.preview.utf8), "the saved file is exactly the preview")
+        check(draft.status == "Saved report.json", "saving says where")
+        var info = stat()
+        check(lstat(target.path, &info) == 0 && info.st_mode & 0o777 == 0o600, "a saved report is private")
+        // Reopening the same report keeps it; another reply starts over.
+        draft.open(key: "chat:a", metadata: ["surface": "chat"], details: nil)
+        check(draft.note == "a quicker reply" && draft.includeDetails && draft.status.hasPrefix("Saved"),
+              "opening the same report again keeps the draft")
+        draft.open(key: "chat:b", metadata: ["surface": "chat", "trace_id": "b"], details: ["prompt": "OTHER"])
+        check(draft.snapshot?.key == "chat:b" && draft.note.isEmpty && !draft.includeDetails && draft.status.isEmpty,
+              "a report on another reply starts over: no note, details off")
+        check(!draft.preview.contains("a quicker reply") && !draft.preview.contains("PRIVATE-PROMPT"),
+              "nothing from the previous report carries over")
+        // Without details to include, the switch can't include any.
+        draft.open(key: "today:x", metadata: ["surface": "today"], details: nil)
+        draft.includeDetails = true
+        let withoutDetails = try JSONSerialization.jsonObject(with: draft.encoded()) as! [String: Any]
+        check(withoutDetails["details_included"] as? Bool == false && withoutDetails["details"] == nil,
+              "a report with nothing to include says so")
+        // A failed save is visible and leaves the draft open.
+        check(!draft.write(to: directory.appendingPathComponent("missing/report.json")), "a save into a missing folder fails")
+        check(draft.isOpen && draft.status.hasPrefix("Could not save report"), "a failed save says so and keeps the draft")
+        draft.close()
+        check(!draft.isOpen && draft.note.isEmpty && draft.status.isEmpty, "closing discards the draft")
+    }
+
     static func main() throws {
         let privateText = "PRIVATE-PROMPT"
         let details: [String: Any] = ["prompt": privateText, "api_key": "sk-secret-secret", "nested": ["authorization": "Bearer xyz-secret"],
@@ -393,6 +439,8 @@ struct DiagnosticReportChecks {
         try FileManager.default.removeItem(at: directory)
         try FileManager.default.moveItem(at: moved, to: directory)
         check(DiagnosticReport.journal(traceID: keepers) != nil)
+
+        try MainActor.assumeIsolated { try draftChecks(root: root) }
 
         print("\(count) diagnostic checks passed")
     }

@@ -9,6 +9,8 @@ export WISP_HOME="$today_scratch/state"
 swiftc ${swiftc_nested_sandbox_flags[@]+"${swiftc_nested_sandbox_flags[@]}"} -parse-as-library -swift-version 5 \
     -module-cache-path "$today_scratch/module-cache" \
     "$project_root/app/Sources/WispApp/DiagnosticReport.swift" \
+    "$project_root/app/Sources/WispApp/ReportDraftView.swift" \
+    "$project_root/app/Sources/WispApp/Theme.swift" \
     "$project_root/app/Sources/WispApp/TodayView.swift" \
     "$project_root/app/Sources/WispApp/DailyWorkspaceView.swift" \
     "$project_root/app/Sources/WispApp/CaughtForYou.swift" \

@@ -478,7 +478,16 @@ struct TodayPlanChecks {
         diagnosticsModel.capturePlannerDetails = true
         await diagnosticsModel.refresh()
         check(debugRequested && diagnosticsModel.diagnosticSnapshot().details != nil)
+        // Report a problem opens inline, keyed to this plan's trace, with details off.
+        diagnosticsModel.reportProblem()
+        check(diagnosticsModel.report.snapshot?.key == "today:" + String(repeating: "a", count: 32)
+              && diagnosticsModel.report.snapshot?.hasDetails == true && !diagnosticsModel.report.includeDetails)
+        check(!diagnosticsModel.report.preview.contains("PRIVATE-TASK"), "Planner details stay out until included")
+        diagnosticsModel.report.includeDetails = true
+        check(diagnosticsModel.report.preview.contains("PRIVATE-TASK"), "Included planner details are previewed")
         diagnosticsModel.capturePlannerDetails = false
+        diagnosticsModel.clearPlannerDetails()
+        check(!diagnosticsModel.report.isOpen, "Turning capture off closes a report holding planner details")
         check(diagnosticsModel.diagnosticSnapshot().details == nil)
         let saved = await diagnosticsModel.mutate("/assistant/today/tasks", method: "POST", body: [:])
         check(!saved && diagnosticsModel.diagnosticSnapshot().metadata["client_outcome"] as? String == "mutation_failed")
