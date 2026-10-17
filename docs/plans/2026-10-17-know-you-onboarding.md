@@ -60,7 +60,7 @@ the same rule.
 
 `KnowYouView` replaces the tab content of the notch panel. Three questions, under a
 minute (user decision 2026-10-17: "a user would not spend the time" on more): what to
-call you, what you're working toward, how you like to be talked to. Struggles, people
+call you, what you're working toward (select all that apply from ten descriptive cards such as School, Work and career, Health and fitness, each storing a plain goal sentence, plus an optional line in your own words), how you like to be talked to. Struggles, people
 and boundaries are no longer asked up front; About you edits them and the check-ins
 below are where Wisp learns them. One question per screen, with a one-line "why I ask".
 Back, Skip and Continue on every screen; progress is saved after every step, so closing

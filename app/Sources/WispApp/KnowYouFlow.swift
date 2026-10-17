@@ -32,7 +32,7 @@ enum KnowYouStep: Int, CaseIterable, Equatable {
         case .welcome:
             return "Three quick questions, under a minute. Every one is optional. Everything stays on this Mac, and you can change or erase it any time in Memory → About you."
         case .name: return "I'll use it in your morning brief and when we talk."
-        case .goals: return "Up to five. Each morning's brief keeps one in view, taking turns, and once a week I'll ask with one tap whether you're on track."
+        case .goals: return "Pick everything that's true right now, up to five. Each morning's brief keeps one in view, taking turns, and once a week I'll ask with one tap whether you're on track."
         case .tone: return "Say the word and I'll match it, everywhere."
         case .done: return "Everything below is already in effect. Each evening I'll ask how the day went, one tap per task. It all lives on this Mac; change or erase it any time in Memory → About you."
         }
@@ -41,7 +41,7 @@ enum KnowYouStep: Int, CaseIterable, Equatable {
     var placeholder: String {
         switch self {
         case .name: return "Your first name, or a nickname"
-        case .goals: return "Add something you're working toward"
+        case .goals: return "Something more specific, in your words"
         default: return ""
         }
     }
@@ -105,9 +105,46 @@ struct KnowYouFlow: Equatable {
     }
 }
 
-/// The quick answers offered beside each free-text field. Tapping one adds the
-/// phrase; nothing is chosen for the user.
+/// One card in "What are you working toward?": a title, a line that says what
+/// it covers, and the goal Wisp stores when it is picked. The goal is a plain
+/// sentence because it is what the brief says back ("You're working toward:
+/// Doing well in school") and what the weekly pulse asks about.
+struct FocusArea: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let goal: String
+}
+
+/// The quick answers offered on each step. Tapping one adds the phrase;
+/// nothing is chosen for the user.
 enum KnowYouChips {
+    /// Select all that apply. Ten areas, broad enough that most lives fit in
+    /// five, specific enough that each one changes what Wisp pays attention to.
+    static let focusAreas: [FocusArea] = [
+        FocusArea(id: "school", title: "School", detail: "Classes, assignments, exams, grades.",
+                  goal: "Doing well in school"),
+        FocusArea(id: "career", title: "Work and career", detail: "Doing well in the job, or finding the next one.",
+                  goal: "Moving forward in my career"),
+        FocusArea(id: "building", title: "Building something", detail: "A startup, a product, a project of your own.",
+                  goal: "Building something of my own"),
+        FocusArea(id: "health", title: "Health and fitness", detail: "Sleep, exercise, eating, energy.",
+                  goal: "Taking care of my health"),
+        FocusArea(id: "people", title: "Relationships", detail: "Family, partner, friends. Showing up for them.",
+                  goal: "Showing up for the people I love"),
+        FocusArea(id: "money", title: "Money", detail: "Saving, earning more, getting out of debt.",
+                  goal: "Getting my finances in order"),
+        FocusArea(id: "learning", title: "Learning a skill", detail: "A language, an instrument, a craft, a certification.",
+                  goal: "Learning a new skill"),
+        FocusArea(id: "organized", title: "Staying organized", detail: "Fewer dropped balls, a calmer inbox, things done on time.",
+                  goal: "Staying on top of my life"),
+        FocusArea(id: "rest", title: "Rest and balance", detail: "Real time off, evenings and weekends that stay yours.",
+                  goal: "Protecting time for rest"),
+        FocusArea(id: "creative", title: "Creative work", detail: "Writing, music, art, making things.",
+                  goal: "Making creative work"),
+    ]
+    static let maxGoals = 5
+
     static let tones: [(value: String, label: String, detail: String)] = [
         ("gentle", "Gently", "Lead with what's going well. Never scold."),
         ("warm", "Warm and plain", "Friendly, direct, to the point."),
@@ -217,6 +254,26 @@ struct UserProfile: Equatable {
         case "notes": return notes.trimmingCharacters(in: .whitespacesAndNewlines)
         default: return ""
         }
+    }
+
+    /// Whether a focus card is picked: its goal sentence is among the goals.
+    func hasFocus(_ area: FocusArea) -> Bool {
+        goals.contains { $0.caseInsensitiveCompare(area.goal) == .orderedSame }
+    }
+
+    /// Tap a card: pick it, or unpick it. Picking past the limit does nothing,
+    /// so the card simply does not light up.
+    mutating func toggleFocus(_ area: FocusArea) {
+        if hasFocus(area) {
+            goals.removeAll { $0.caseInsensitiveCompare(area.goal) == .orderedSame }
+        } else if goals.count < KnowYouChips.maxGoals {
+            goals.append(area.goal)
+        }
+    }
+
+    /// Goals typed in the person's own words, not from a card.
+    var customGoals: [String] {
+        goals.filter { goal in !KnowYouChips.focusAreas.contains { $0.goal.caseInsensitiveCompare(goal) == .orderedSame } }
     }
 
     /// The first name from the Mac account's full name, offered (never saved)

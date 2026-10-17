@@ -61,6 +61,25 @@ struct KnowYouChecks {
         profile.struggles = ["Email"]
         check(KnowYouFlow.resume(for: profile).step == .name, "fields About you edits do not count as the opening questions")
 
+        // Focus cards: select all that apply, up to five, each a plain goal sentence.
+        let areas = KnowYouChips.focusAreas
+        check(areas.count == 10, "ten focus areas")
+        check(Set(areas.map(\.id)).count == areas.count && Set(areas.map(\.goal)).count == areas.count, "ids and goals are unique")
+        check(areas.allSatisfy { !$0.title.isEmpty && !$0.detail.isEmpty && $0.goal.count <= 200 }, "every card has a title, a detail and a storable goal")
+        check(areas.contains { $0.title == "School" && $0.detail.contains("exams") }, "School is one of the cards")
+        var picker = UserProfile()
+        picker.toggleFocus(areas[0])
+        check(picker.hasFocus(areas[0]) && picker.goals == [areas[0].goal], "picking a card stores its goal sentence")
+        picker.toggleFocus(areas[0])
+        check(picker.goals.isEmpty, "picking again unpicks")
+        for area in areas.prefix(5) { picker.toggleFocus(area) }
+        check(picker.goals.count == 5, "five cards can be picked")
+        picker.toggleFocus(areas[5])
+        check(picker.goals.count == 5 && !picker.hasFocus(areas[5]), "a sixth pick does nothing")
+        picker.goals.append("Finish the thesis by May")
+        check(picker.customGoals == ["Finish the thesis by May"], "typed goals are told apart from cards")
+        check(KnowYouStep.goals.why.hasPrefix("Pick everything"), "the goals question says to pick all that apply")
+
         // Patches: only the step's fields, trimmed.
         profile.name = "  Adi  "
         let namePatch = profile.patch(for: .name)

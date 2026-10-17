@@ -217,20 +217,65 @@ struct KnowYouView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
     }
 
+    // Select all that apply: a grid of cards, each with what it covers. A
+    // picked card turns white. Past five, unpicked cards simply do not light up.
     private var goalsField: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(model.profile.goals, id: \.self) { goal in
+        VStack(alignment: .leading, spacing: 10) {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                      alignment: .leading, spacing: 8) {
+                ForEach(KnowYouChips.focusAreas) { area in focusCard(area) }
+            }
+            HStack(spacing: 8) {
+                Text(pickedLine).font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                Spacer()
+            }
+            ForEach(model.profile.customGoals, id: \.self) { goal in
                 listRow(goal) { model.removeGoal(goal) }
             }
-            if model.profile.goals.count < 5 {
+            if model.profile.goals.count < KnowYouChips.maxGoals {
                 HStack(spacing: 8) {
                     field($model.goalDraft, placeholder: KnowYouStep.goals.placeholder, submit: model.addGoal)
-                        .focused($focused)
                     smallButton("Add", action: model.addGoal)
                         .disabled(model.goalDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }
+    }
+
+    private var pickedLine: String {
+        let count = model.profile.goals.count
+        if count == 0 { return "Tap everything that fits." }
+        if count >= KnowYouChips.maxGoals { return "Five picked. Unpick one to choose another." }
+        return "\(count) picked. Up to five."
+    }
+
+    private func focusCard(_ area: FocusArea) -> some View {
+        let on = model.profile.hasFocus(area)
+        let full = !on && model.profile.goals.count >= KnowYouChips.maxGoals
+        return Button { model.profile.toggleFocus(area) } label: {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(area.title).font(.system(size: 12.5, weight: .semibold))
+                    Text(area.detail).font(.system(size: 10.5)).opacity(0.75)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .opacity(on ? 1 : 0.5)
+            }
+            .foregroundStyle(on ? Color.black : Theme.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 10).fill(on ? Color.white : Theme.chipFill))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(on ? Color.clear : Theme.chipStroke, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+            .opacity(full ? 0.55 : 1)
+        }
+        .buttonStyle(.plain)
+        .help(full ? "Five picked already" : area.goal)
+        .accessibilityLabel("\(area.title). \(area.detail)")
+        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
     }
 
     private var toneField: some View {
