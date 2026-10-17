@@ -1,9 +1,14 @@
 import AppKit
+import Combine
 import SwiftUI
 
 extension Notification.Name {
     /// Posted by Settings (or anything else) to open the setup guide.
     static let wispOpenSetupGuide = Notification.Name("WispOpenSetupGuide")
+    /// Posted after Settings writes inference configuration (a provider, its
+    /// roles, the engine mode), whether or not the write succeeded. Setup's
+    /// "Test passed" belongs to the configuration it was earned on.
+    static let wispInferenceConfigurationChanged = Notification.Name("WispInferenceConfigurationChanged")
 }
 
 // MARK: - Wire types (GET /setup/status)
@@ -89,8 +94,53 @@ final class SetupGuideModel: ObservableObject {
     private var downloadGeneration = 0
     private var monitoringStopped = false
     private let session: URLSession
+    // Where setup is on screen right now: the notch card, the setup window.
+    // Polling runs while at least one shows it, and the last to leave stops it
+    // and drops the test evidence. Each host says when it shows and hides setup,
+    // so nothing depends on a window's title or on SwiftUI tearing a view down.
+    // Counted, so a view that appears before its predecessor disappears (SwiftUI
+    // doesn't order the two) never stops the poll it still needs.
+    @Published private(set) var hosts: [String: Int] = [:]
+    private var monitorTask: Task<Void, Never>?
+    private var configurationObserver: AnyCancellable?
 
-    init(session: URLSession = .shared) { self.session = session }
+    init(session: URLSession = .shared) {
+        self.session = session
+        configurationObserver = NotificationCenter.default
+            .publisher(for: .wispInferenceConfigurationChanged)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.configurationChanged() } }
+    }
+
+    var isShown: Bool { !hosts.isEmpty }
+
+    /// A host started showing setup. The first one starts the poll.
+    func show(in host: String) {
+        let wasShown = isShown
+        hosts[host, default: 0] += 1
+        guard !wasShown else { return }
+        monitorTask?.cancel()
+        monitorTask = Task { [weak self] in await self?.monitor() }
+    }
+
+    /// A host stopped showing setup. The last one stops the poll and clears the
+    /// test, exactly as closing the setup window always has.
+    func hide(from host: String) {
+        guard let count = hosts[host] else { return }
+        hosts[host] = count > 1 ? count - 1 : nil
+        guard !isShown else { return }
+        monitorTask?.cancel()
+        monitorTask = nil
+        stopMonitoring()
+    }
+
+    /// Something outside setup changed which models or engine Wisp uses. What is
+    /// on screen no longer describes it: drop the test and the current status,
+    /// fence any request in flight, and re-read if setup is showing.
+    func configurationChanged() {
+        beginMutation()
+        if isShown, busy == nil { Task { await refresh(quiet: true) } }
+    }
 
     var readinessLabel: String {
         guard statusIsCurrent, status?.ready == true else { return "Needs attention" }
@@ -223,6 +273,8 @@ final class SetupGuideModel: ObservableObject {
     /// Poll only while this guide is visible. The engine owns transfer/resume
     /// state, so closing and reopening setup does not cancel a download.
     func monitor() async {
+        // A host that showed and hid before this task ran must not undo its stop.
+        guard !Task.isCancelled else { return }
         monitoringStopped = false
         await refresh()
         while !Task.isCancelled && !monitoringStopped {
@@ -366,6 +418,23 @@ final class SetupGuideModel: ObservableObject {
         }
     }
 
+    /// Every local text role already uses this model.
+    func inUse(_ id: String) -> Bool {
+        let local = status?.roles.filter { $0.endpoint == "local" } ?? []
+        return !local.isEmpty && local.allSatisfy { $0.model == id }
+    }
+
+    /// The notch card's one button: point the text roles at the selected model
+    /// unless they already use it, then send the test message.
+    func useAndTest() async {
+        guard let id = selectedModel, busy == nil, !testing else { return }
+        if !inUse(id) {
+            await apply(id)
+            guard !messageIsError else { return }
+        }
+        await test()
+    }
+
     func copy(_ text: String, tag: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -384,15 +453,18 @@ final class SetupGuideModel: ObservableObject {
 
 // MARK: - View
 
+/// The full guide, shown in the setup window. It shares the app's one
+/// SetupGuideModel with the notch's setup card. Its host (AppDelegate) calls
+/// `show(in:)` and `hide(from:)` as the window opens and closes.
 struct SetupGuideView: View {
-    @StateObject private var model: SetupGuideModel
+    @ObservedObject private var model: SetupGuideModel
     var onDone: () -> Void
     var openSettings: () -> Void
     private let height: CGFloat
 
-    init(model: SetupGuideModel? = nil, height: CGFloat = 700,
+    init(model: SetupGuideModel, height: CGFloat = 700,
          onDone: @escaping () -> Void = {}, openSettings: @escaping () -> Void = {}) {
-        _model = StateObject(wrappedValue: model ?? SetupGuideModel())
+        self.model = model
         self.height = height
         self.onDone = onDone
         self.openSettings = openSettings
@@ -410,15 +482,6 @@ struct SetupGuideView: View {
         .background(Theme.surface)
         .foregroundStyle(Theme.textPrimary)
         .preferredColorScheme(.dark)
-        .task { await model.monitor() }
-        .onDisappear { model.stopMonitoring() }
-        // The setup NSWindow is reused after close and retains its hosting
-        // view. Stop explicitly even when SwiftUI keeps that view alive.
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
-            if let window = note.object as? NSWindow, window.title == "Wisp Setup" {
-                model.stopMonitoring()
-            }
-        }
     }
 
     /// The scrolling page. Internal so an offscreen renderer, which cannot draw a

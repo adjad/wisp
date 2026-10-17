@@ -145,6 +145,7 @@ final class OverlayModel: ObservableObject {
             // A research plan holds the prompt queue only while it is on screen.
             // Leaving the tab lets a question asked in Ask, or a brief, run.
             if oldValue == .research { releaseResearchDispatch() }
+            showingQuickSettings = false
             onResize()
         }
     }
@@ -160,9 +161,18 @@ final class OverlayModel: ObservableObject {
     // report replace the prompt on the Research tab. Research is a mode of
     // Wisp, not a separate destination window.
     @Published var showingResearch = false
+    // The gear's short list of settings, shown in place of the tab's content.
+    @Published var showingQuickSettings = false { didSet { if showingQuickSettings != oldValue { onResize() } } }
+    @Published private(set) var freeingMemory = false
+    // First-run setup at the top of Ask. Its readiness lives on the app's one
+    // SetupGuideModel, which the setup window shares.
+    @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
     @Published var collapsed = false {
         didSet {
-            if collapsed && !oldValue { tabMemory.panelClosed(at: Date()) }
+            if collapsed && !oldValue {
+                tabMemory.panelClosed(at: Date())
+                showingQuickSettings = false
+            }
             onCollapsedChanged()
         }
     }
@@ -239,19 +249,20 @@ final class OverlayModel: ObservableObject {
     // panel, which must not be mistaken for "the user switched apps".
     var pickingFile = false
 
-    // True while auto-collapse must hold off: the panel is pinned, or there is
+    // True while auto-collapse must hold off: the panel is pinned, there is
     // an edit the person hasn't finished (typed input, a message draft being
-    // edited). A mid-task generation does not count; the notch bar's dot shows
-    // it is still working.
+    // edited), or the setup card is open. A mid-task generation does not count;
+    // the notch bar's dot shows it is still working.
     var holdsOpen: Bool {
         pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || (tab == .today && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+            || setupCard == .open
     }
 
     /// Pick the tab for an opening panel: Ask, or for a hover soon after the
-    /// panel closed, the tab it closed on.
+    /// panel closed, the tab it closed on. An open setup card keeps it on Ask.
     func prepareTab(byHover: Bool, at date: Date = Date()) {
-        tab = tabMemory.tabForOpening(current: tab, byHover: byHover, at: date)
+        tab = setupCard.tabForOpening(tabMemory.tabForOpening(current: tab, byHover: byHover, at: date))
     }
 
     /// False while a turn is in flight. The Wisp window and the chat switcher
@@ -447,10 +458,23 @@ final class OverlayModel: ObservableObject {
         case .today: tab = .today
         case .memory: WispRouter.shared.open(.memory(.facts))
         case .research: tab = .research
-        case .settings: WispRouter.shared.open(.settings)
+        case .settings: showingQuickSettings = true
         case .report: reportCurrentProblem()
         case .window: openTabInWindow()
         case .new: newChat()
+        }
+    }
+
+    /// Quick settings' Free up memory: unload the models now. Wisp reloads them on
+    /// the next ask. Not while a reply is being written, which needs its model.
+    func freeUpMemory() {
+        guard conversationSettled, !briefComposing, !freeingMemory else { return }
+        freeingMemory = true
+        Task { [weak self] in
+            guard let self else { return }
+            await self.client.unloadAll()
+            self.freeingMemory = false
+            self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.")
         }
     }
 
