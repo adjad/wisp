@@ -505,6 +505,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/reminders-policy-contract": "native/reminders-policy-compile",
     "native/chat-logic-contract": "native/chat-logic-compile",
     "native/chat-store-contract": "native/chat-store-compile",
+    "native/notch-command-contract": "native/notch-command-compile",
 }
 
 
@@ -779,6 +780,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
+    notch_command = str(build_dir / "notch-command")
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
     reminders_policy = str(build_dir / "reminders-policy")
@@ -855,6 +857,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/prompt-queue-contract", [prompt_queue]),
+        (
+            "native/notch-command-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/NotchCommand.swift",
+                "tests/NotchCommandChecks.swift", "-o", notch_command,
+            ],
+        ),
+        ("native/notch-command-contract", [notch_command]),
         (
             "native/chat-logic-compile",
             [
