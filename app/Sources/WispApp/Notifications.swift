@@ -81,7 +81,7 @@ enum Notifications {
     /// Set by OverlayModel.startAssistant: (nudge_id, action identifier, userInfo).
     @MainActor static var onNudgeResponse: (@MainActor (String, String, [String: String]) -> Void)?
     /// Clicking any other Wisp notification (a reminder, something Wisp added
-    /// for you, an outcome to check) opens Today in the notch.
+    /// for you, a notice about a scheduled message) opens Today in the notch.
     @MainActor static var onOpenToday: (@MainActor () -> Void)?
 
     /// Registers the nudge categories and the delegate that routes their
