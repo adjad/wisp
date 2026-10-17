@@ -253,7 +253,7 @@ struct NotchDayView: View {
         .background(DayInk.fill(item.style))
         .overlay(DayInk.border(item.style))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("\(item.title), \(detail(item)), \(today.clock(item.start)) to \(today.clock(item.end))")
     }
 
@@ -294,9 +294,11 @@ struct NotchDayView: View {
         Menu {
             switch item.style {
             case .suggested:
-                Button("Keep 30 minutes later") { keep(item, laterBy: 30) }
-                Button("Keep 1 hour later") { keep(item, laterBy: 60) }
-                Button("Keep 2 hours later") { keep(item, laterBy: 120) }
+                // Only later times that still end today.
+                ForEach([(30, "Keep 30 minutes later"), (60, "Keep 1 hour later"), (120, "Keep 2 hours later")]
+                    .filter { item.end + Double($0.0 * 60) <= today.dayInterval.end.timeIntervalSince1970 }, id: \.0) { later in
+                    Button(later.1) { keep(item, laterBy: later.0) }
+                }
             case .task:
                 if let task = task(for: item) {
                     Button("15 minutes shorter") {
@@ -380,7 +382,7 @@ struct NotchDayView: View {
     private func ignore(_ item: DayItem) {
         guard let id = item.caughtID else { return }
         ignoredCaught.insert(id)
-        IgnoredCaught.save(ignoredCaught)
+        IgnoredCaught.add(id)
     }
 
     private func notToday(_ item: DayItem) {
@@ -539,7 +541,7 @@ struct DayRefreshLoop: ViewModifier {
 }
 
 /// Plans caught in texts that the person chose to ignore here. Kept on this Mac
-/// only, and only the newest 200.
+/// only, oldest first, and only the newest 200.
 enum IgnoredCaught {
     private static let key = "WispIgnoredCaughtPlans"
 
@@ -547,8 +549,10 @@ enum IgnoredCaught {
         Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
     }
 
-    static func save(_ ids: Set<String>) {
-        UserDefaults.standard.set(Array(ids.sorted().suffix(200)), forKey: key)
+    static func add(_ id: String) {
+        var ids = (UserDefaults.standard.stringArray(forKey: key) ?? []).filter { $0 != id }
+        ids.append(id)
+        UserDefaults.standard.set(Array(ids.suffix(200)), forKey: key)
     }
 }
 

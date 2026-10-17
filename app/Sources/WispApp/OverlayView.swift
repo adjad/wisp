@@ -206,7 +206,7 @@ struct OverlayView: View {
 
     // Due today or overdue, once the day has loaded. Undated items wait in the Brief.
     private var todayCount: Int {
-        guard let plan = todayModel.currentPlan else { return 0 }
+        guard todayModel.isShowingCurrentDay, let plan = todayModel.currentPlan else { return 0 }
         return DayTimeline.badgeCount(plan.dayNeeds, endOfDay: todayModel.dayInterval.end.timeIntervalSince1970)
     }
 

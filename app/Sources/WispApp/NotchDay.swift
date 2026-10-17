@@ -247,13 +247,14 @@ struct DayTimeline: Equatable {
     /// like "nothing" that a reminder or a parsed text sometimes holds.
     static func isJunk(_ title: String) -> Bool {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)).lowercased()
-        guard trimmed.contains(where: \.isLetter), trimmed.count >= 2 else { return true }
+        // One Latin letter is a stray keystroke; one CJK character can be a word.
+        guard trimmed.contains(where: \.isLetter), trimmed.count >= 2 || !trimmed.allSatisfy(\.isASCII) else { return true }
         return junkTitles.contains(trimmed)
     }
 
     static let junkTitles: Set<String> = [
-        "nothing", "none", "n/a", "na", "null", "nil", "no", "yes", "ok", "okay", "test", "testing",
-        "untitled", "new reminder", "reminder", "tbd", "todo", "to do", "asdf", "idk", "nothing really",
+        "nothing", "none", "n/a", "na", "null", "nil", "no", "yes", "ok", "okay",
+        "untitled", "new reminder", "tbd", "todo", "to do", "asdf", "idk", "nothing really",
         "nothing much", "not sure", "no plans",
     ]
 

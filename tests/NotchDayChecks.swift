@@ -109,7 +109,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     for junk in ["nothing", " Nothing. ", "N/A", "", "--", "ok", "None!", "x"] {
         check(DayTimeline.isJunk(junk), "junk: \"\(junk)\"")
     }
-    for real in ["PA 2", "Call mom", "Get DoorDash order", "Dinner with Priya?"] {
+    for real in ["PA 2", "Call mom", "Get DoorDash order", "Dinner with Priya?", "茶", "Test", "Reminder"] {
         check(!DayTimeline.isJunk(real), "not junk: \(real)")
     }
 
