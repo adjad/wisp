@@ -259,6 +259,30 @@ DECOY_FAMILIES = {"messages_contacts": ["notes", "mail"], "mail": ["messages_con
 STUB_P = 0.72   # tuned so ~70% of tool-using conversations open with a stub call (see DATA_CARD)
 
 
+MESSY_RESULT_LIMIT = 1200   # messy-result families only; everything else stays under 400
+# Verbatim from Wisp's repeated-read guard (service/agent/loop.py on main after #195).
+GUARD_TEXT = ("({name} already ran with these exact arguments this turn and its result was returned earlier. It was "
+              "NOT run again. Answer from that result, or call it with different arguments if you need different data.)")
+# Add-on family modules (one owner each). Each defines register(G) and registers families with G.family(...).
+EXTENSIONS = ("ext_chains", "ext_followups", "ext_chat", "ext_messy", "ext_guard")
+
+
+def load_extensions(names=EXTENSIONS):
+    import importlib
+    sys.path.insert(0, str(HERE))
+    me = sys.modules[__name__]
+    for name in names:
+        if not name:
+            continue
+        try:
+            mod = importlib.import_module(name)
+        except ModuleNotFoundError as e:
+            if e.name == name:
+                continue
+            raise
+        mod.register(me)
+
+
 def stub_schema(name):
     """Round-0 name-only stub: no description, no properties."""
     return {"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
@@ -296,6 +320,7 @@ class Conv:
         self.preload = []           # SP: real schemas preloaded at round 0 (do not consume a discovery attempt)
         self.sp_kind = None         # None (pure S) | "hit" | "decoy"
         self.sp_need = []
+        self.result_limit = 400     # tool-result length cap; messy-result families raise it (max MESSY_RESULT_LIMIT)
 
     # -- setup
     def hist(self, role, text):
@@ -327,7 +352,8 @@ class Conv:
         return msg
 
     def _tool_result(self, call_id, text):
-        assert len(text) < 400, (len(text), text)
+        assert self.result_limit <= MESSY_RESULT_LIMIT
+        assert len(text) < self.result_limit, (len(text), text)
         self.turn.append({"role": "tool", "tool_call_id": call_id, "content": text})
 
     # -- steps
@@ -425,6 +451,17 @@ class Conv:
         self.attempts += 1
         self._tool_result(msg["tool_calls"][0]["id"], "Schema selection rejected: Requested tools must belong to the "
                           "selected admitted families. No source was read or action performed.")
+        return self
+
+    def repeat_read(self, name, args):
+        """Context only (never a target): the assistant re-issues a read it already made with identical arguments and
+        Wisp's repeated-read guard (service/agent/loop.py, 1.3.2) refuses it. The next step is the target."""
+        assert (name, canon(args)) in self.seen, f"repeat_read of a call never made: {name}"
+        msg = self._assistant([(name, args)])
+        i, o, l, _ = self.steps[-1]
+        self.steps[-1] = (i, o, l, False)
+        self.gold.append({"name": name, "arguments": args, "guard_rejected": True})
+        self._tool_result(msg["tool_calls"][0]["id"], GUARD_TEXT.format(name=name))
         return self
 
     def call(self, name, args, result):
@@ -3735,11 +3772,11 @@ OVERLAP_LIMIT = 0.4  # stricter than the 0.5 required by the spec; rejection is 
 # ================================================================ allocation
 
 CATEGORIES = [  # (key, name, pct)
-    ("outbound", "outbound_sends_drafts", 22), ("compound", "compound_read_then_act", 18), ("stop", "stop_after_success_no_loop", 14),
-    ("reads", "single_tool_reads", 14), ("writes", "writes", 10), ("errors", "error_handling", 8), ("clarify", "clarify_ambiguity", 6),
-    ("chat", "chat_no_tool", 5), ("followup", "followups_history", 3)]
-N_TOTAL = 1000
-N_DEV = 100
+    ("outbound", "outbound_sends_drafts", 18), ("compound", "compound_read_then_act", 22), ("stop", "stop_after_success_no_loop", 10),
+    ("reads", "single_tool_reads", 11), ("writes", "writes", 8), ("errors", "error_handling", 7), ("clarify", "clarify_ambiguity", 5),
+    ("chat", "chat_no_tool", 8), ("followup", "followups_history", 7), ("guard", "repeated_read_guard", 4)]
+N_TOTAL = 1600
+N_DEV = 160
 
 
 def largest_remainder(weights, total):
@@ -3846,7 +3883,9 @@ def est_tokens(obj):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", default=str(HERE))
+    ap.add_argument("--ext", default=None, help="comma-separated add-on modules to load (default: all present)")
     args = ap.parse_args()
+    load_extensions(EXTENSIONS if args.ext is None else tuple(args.ext.split(",")))
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
     items = plan()
@@ -3886,7 +3925,9 @@ def main():
             cv.update({"id": base, "split": split, "category": cat_name[b["cat"]], "family_id": b["fid"]})
             convs[split].append(cv)
     for split in ("train", "dev"):
-        (out / f"{split}.jsonl").write_text("".join(jdump(x) + "\n" for x in rows[split]))
+        # V2 replay rows (v2_replay.py) go last, byte-for-byte, so V3 keeps V2's routing-contract skill.
+        replay = (HERE / f"v2_replay.{split}.jsonl").read_text()
+        (out / f"{split}.jsonl").write_text("".join(jdump(x) + "\n" for x in rows[split]) + replay)
         (out / f"{split}.provenance.jsonl").write_text("".join(jdump(x) + "\n" for x in prov[split]))
     (out / "conversations.jsonl").write_text("".join(jdump(x) + "\n" for s in ("train", "dev") for x in convs[s]))
     write_stats(out, rows, prov)

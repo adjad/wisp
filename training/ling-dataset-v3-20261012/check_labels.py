@@ -56,9 +56,13 @@ def main():
                 continue
             row = json.loads(line)
             r = preflight.intended(tok, row)
-            index[tuple(r["ids"])] = (split, row["id"], r)
+            # V2-replay rows (v2r-*, tools=[]) render with NO tools argument (identical to tools=[]); reported separately
+            index[tuple(r["ids"])] = (split + (":v2_replay" if preflight.is_v2r(row) else ":model_led"), row["id"], r)
     header_len = len(tok(preflight.HEADER, add_special_tokens=False)["input_ids"])
-    print("indexed", len(index), "source rows")
+    kinds = {}
+    for k_, _, _ in index.values():
+        kinds[k_] = kinds.get(k_, 0) + 1
+    print("indexed", len(index), "source rows", kinds)
 
     datasets_found = []
     for root in a.prepared:
