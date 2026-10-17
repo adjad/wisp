@@ -1245,14 +1245,18 @@ class BehaviorRuntime:
         bound = self.kv_get(f"cursor_store:{key}")
         if bound == store_id and cursor <= max_seq:
             return cursor
+        rows = [(f"cursor_store:{key}", store_id)]
         if (bound is not None and bound != store_id) or cursor > max_seq:
             log.warning("behavior store replaced (cursor %d, bound %s, store %s, max_seq %d); "
                         "rebasing delivery cursor to 0", cursor, bound, store_id, max_seq)
             cursor = 0
+            rows.append((f"cursor:{key}", "0"))
+        else:
+            # Adopting only binds: the cursor value is left as tick advanced it.
+            log.info("binding behavior delivery cursor %d to store %s", cursor, store_id)
         with self._db_lock, self._db:
             self._db.executemany(
-                "INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                ((f"cursor:{key}", str(cursor)), (f"cursor_store:{key}", store_id)))
+                "INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rows)
         return cursor
 
     # ---- delivery (event loop) ---------------------------------------------------
