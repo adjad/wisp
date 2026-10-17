@@ -34,6 +34,27 @@ struct NotchTabMemory: Equatable {
     }
 }
 
+/// The setup card at the top of Ask, shown when Wisp can't answer yet.
+enum NotchSetupCard: Equatable {
+    /// Not shown: setup is finished, or was never needed.
+    case hidden
+    /// The full card. It holds the panel open, and the panel opens on Ask.
+    case open
+    /// Set aside with Later: one line on Ask and a "!" on the collapsed bar,
+    /// until Wisp can answer.
+    case later
+
+    /// What the card becomes when the service reports readiness. A card set
+    /// aside goes away by itself; an open one waits for Done, so the person
+    /// sees the result first.
+    func afterReadiness(_ ready: Bool) -> NotchSetupCard {
+        ready && self == .later ? .hidden : self
+    }
+
+    /// The tab an opening panel shows: Ask while the full card is up.
+    func tabForOpening(_ remembered: NotchTab) -> NotchTab { self == .open ? .ask : remembered }
+}
+
 /// The Today tab's short "Up next" list.
 enum NotchUpNext {
     /// The first `limit` items still under way or ahead at `now`, in their

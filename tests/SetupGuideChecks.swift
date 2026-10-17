@@ -432,6 +432,79 @@ struct SetupGuideChecks {
         await oldEndpoint.test()
         check(oldEndpoint.testResult?.hasPrefix("Works") != true, "An older generic endpoint cannot certify setup")
 
+        // One model, two hosts: the notch's setup card and the setup window.
+        configure("A")
+        let shared = SetupGuideModel(session: session)
+        shared.show(in: "notch")
+        guard try await waitForSetupRequest({ shared.statusIsCurrent }) else {
+            throw NSError(domain: "SetupGuideChecks", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "The first host never started the poll"])
+        }
+        await shared.test()
+        check(shared.testPassed, "A test passed from one host is the shared model's result")
+        shared.show(in: "window")
+        shared.hide(from: "notch")
+        check(shared.isShown && shared.testPassed,
+              "Closing one host keeps the poll and the evidence while another still shows setup")
+        // SwiftUI may show a host's new view before the old one disappears.
+        shared.show(in: "notch")
+        shared.show(in: "notch")
+        shared.hide(from: "notch")
+        check(shared.hosts["notch"] == 1 && shared.testPassed, "A host's overlapping appear and disappear keep it shown")
+        shared.hide(from: "notch")
+        shared.hide(from: "window")
+        check(!shared.isShown && !shared.testPassed && shared.testResult == nil && !shared.testing,
+              "The last host to leave stops setup and drops its test evidence")
+        shared.hide(from: "window")
+        check(shared.hosts.isEmpty, "An extra hide is harmless")
+        let stoppedPolls = SetupHTTP.count("/setup/status")
+        await shared.refresh()
+        check(SetupHTTP.count("/setup/status") == stoppedPolls, "With no host, setup stops reading status")
+        shared.show(in: "window")
+        guard try await waitForSetupRequest({ SetupHTTP.count("/setup/status") > stoppedPolls && shared.statusIsCurrent }) else {
+            throw NSError(domain: "SetupGuideChecks", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "Showing setup again never re-read status"])
+        }
+        check(shared.readinessLabel == "Ready to test", "Reopening setup starts fresh: a new test is needed")
+
+        // The notch's one button: test the model in use, or use the selected one first.
+        let applies = SetupHTTP.count("/setup/apply")
+        await shared.useAndTest()
+        check(SetupHTTP.count("/setup/apply") == applies && shared.testPassed,
+              "Use & test on the model already in use only tests it")
+        configure("B")
+        shared.selectedModel = "B"
+        await shared.useAndTest()
+        check(SetupHTTP.count("/setup/apply") == 1 && shared.status?.roles.first?.model == "B" && shared.testPassed,
+              "Use & test on another model applies it, then tests that model")
+        SetupHTTP.configure { request in
+            request.url!.path == "/setup/apply" ? (400, ["detail": "Synthetic refusal"], 0) : (200, setupSnapshot("B"), 0)
+        }
+        shared.selectedModel = "C"
+        await shared.useAndTest()
+        check(!shared.testPassed && SetupHTTP.count("/chat") == 0 && shared.messageIsError,
+              "A refused apply never sends the test message")
+
+        // Settings changed the models or engine: the test belonged to the old setup.
+        configure("A")
+        shared.selectedModel = "A"
+        await shared.useAndTest()
+        check(shared.testPassed, "A applied and tested again")
+        let beforeChange = SetupHTTP.count("/setup/status")
+        NotificationCenter.default.post(name: .wispInferenceConfigurationChanged, object: nil)
+        let dropped = try await waitForSetupRequest({ !shared.testPassed })
+        check(dropped && shared.testResult == nil, "A Settings inference change drops setup's passed test")
+        let reread = try await waitForSetupRequest({
+            SetupHTTP.count("/setup/status") > beforeChange && shared.statusIsCurrent })
+        check(reread && shared.readinessLabel == "Ready to test",
+              "A shown setup re-reads status after the change, and still needs a fresh test")
+        shared.hide(from: "window")
+        let hiddenPolls = SetupHTTP.count("/setup/status")
+        NotificationCenter.default.post(name: .wispInferenceConfigurationChanged, object: nil)
+        _ = try await waitForSetupRequest({ !shared.statusIsCurrent })
+        check(!shared.statusIsCurrent && SetupHTTP.count("/setup/status") == hiddenPolls,
+              "A change while setup is hidden marks its status stale without reading it")
+
         if CommandLine.arguments.count == 2 {
             let data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
             let cases = try JSONSerialization.jsonObject(with: data) as! [[String: Any]]
