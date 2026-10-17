@@ -1781,7 +1781,8 @@ def _move_aside_on_next_open(home):
     import sqlite3
     db = sqlite3.connect(str(home / br.ENGINE_DB))
     with db:
-        db.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+        # An unreadable version is still moved aside (a newer one pauses learning instead).
+        db.execute("UPDATE meta SET value='\"garbage\"' WHERE key='schema_version'")
     db.close()
 
 
@@ -1799,7 +1800,7 @@ def test_cursor_rebases_when_behavior_db_is_moved_aside(tmp_path, store, monkeyp
         # The fresh store hands out seq 1 again: same value as the old cursor,
         # so only the store identity can tell the two seq spaces apart.
         assert _pending(rt, store, "after-1") == ["after-1"]
-        assert list(home.glob("behavior.db.schema-99-*.bak"))
+        assert list(home.glob("behavior.db.schema-garbage-*.bak"))
         _deliver_all(rt, ["after-1"])
         assert _pending(rt, store, "after-2") == ["after-2"]
     finally:
@@ -1827,3 +1828,24 @@ def test_unbound_cursor_above_max_seq_rebases_but_within_range_is_adopted(tmp_pa
         assert intact.kv_get("cursor:local") == "2"
     finally:
         intact.close()
+
+
+def test_a_newer_behavior_db_pauses_the_runtime_and_keeps_the_file(tmp_path, store, monkeypatch):
+    """Running an older Wisp against a newer file (a rollback) must not erase what was learned."""
+    import sqlite3
+    home = tmp_path / "home"
+    rt = _real_engine_runtime(home, monkeypatch)
+    assert _pending(rt, store, "before-1") == ["before-1"]
+    rt.close()
+    db = sqlite3.connect(str(home / br.ENGINE_DB))
+    with db:
+        db.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+    db.close()
+    rt = _real_engine_runtime(home, monkeypatch)
+    try:
+        assert rt.work(store, NOW)[0] == []
+        assert "newer version of Wisp" in rt.errors.get("engine", "")
+        assert "newer version of Wisp" in rt.status()["engine"]["error"]
+        assert not list(home.glob("behavior.db.schema-*.bak"))
+    finally:
+        rt.close()

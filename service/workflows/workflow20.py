@@ -106,7 +106,9 @@ def weather_read(text: str) -> PersonalRead | None:
         r"\s*(?:(?:please|can you|could you)\s+)?"
         r"(?:what(?:'s| is)\s+(?:the\s+)?weather|weather|(?:show|check|give)\s+(?:me\s+)?(?:the\s+)?weather)"
         r"\s+(?:in|for)\s+(?P<location>[A-Za-z][A-Za-z .,’'-]{0,100}?)"
-        r"(?:\s+(?P<period>today|tomorrow|tonight|(?:this|next)\s+(?:week|month)))?[.!?\s]*", text, re.I)
+        r"(?:\s+(?:right\s+now|now|currently|at\s+the\s+moment))?"
+        r"(?:\s+(?P<period>today|tomorrow|tonight|(?:this|next)\s+(?:week|month)))?"
+        r"(?:\s+(?:right\s+now|now|currently|at\s+the\s+moment))?[.!?\s]*", text, re.I)
     if not match or re.search(r"\b(?:and|then|also|without|web|internet|search|news|email|text|send|if|unless|not)\b", match["location"], re.I):
         return None
     args = {"location":match["location"].strip(" ."), "period":(match["period"] or "").casefold()}

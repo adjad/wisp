@@ -1384,3 +1384,36 @@ def test_scheduler_does_not_age_out_mid_erase(tmp_path, monkeypatch):
 def test_age_out_never_creates_a_database_that_is_not_there(tmp_path):
     assert br.age_out(tmp_path) == {"observations": 0, "nudges": 0, "delivered": 0}
     assert list(tmp_path.iterdir()) == []
+
+
+def test_age_out_leaves_a_newer_engine_db_byte_for_byte(tmp_path):
+    """A newer Wisp's file is that build's to age out under its own rules."""
+    from service.behavior.store import SCHEMA_VERSION
+    now = time.time()
+    _seed_engine_db(tmp_path, now)
+    conn = sqlite3.connect(str(tmp_path / "behavior.db"))
+    with conn:
+        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION + 1),))
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+    before = (tmp_path / "behavior.db").read_bytes()
+    assert br.age_out(tmp_path, now)["observations"] == 0
+    assert (tmp_path / "behavior.db").read_bytes() == before
+
+
+def test_retention_fails_closed_when_the_version_cannot_be_read(tmp_path, monkeypatch):
+    """A newer process holding a lock must not make retention apply old rules to its file."""
+    from service.behavior import store as store_mod
+    now = time.time()
+    _seed_engine_db(tmp_path, now)
+    real = sqlite3.connect
+
+    def locked(target, *a, **kw):
+        if "mode=ro" in str(target):
+            raise sqlite3.OperationalError("database is locked")
+        return real(target, *a, **kw)
+    monkeypatch.setattr(store_mod.sqlite3, "connect", locked)
+    assert store_mod.written_by_newer_build(tmp_path / "behavior.db") is True
+    monkeypatch.setattr(store_mod.sqlite3, "connect", real)
+    assert store_mod.written_by_newer_build(tmp_path / "behavior.db") is False
+    assert store_mod.written_by_newer_build(tmp_path / "missing.db") is False
