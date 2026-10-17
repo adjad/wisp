@@ -62,6 +62,9 @@ from scripts import eval_core  # noqa: E402
 from scripts.eval_ling_tasks import TASKS, Task  # noqa: E402
 from service.config.experiments import KNOWN  # noqa: E402
 
+# Not an experiment switch: model-led routing is its own launch flag.
+MODEL_LED_ARM = "model_led"
+
 OUT_DIR = Path.home() / ".moe" / "evals" / "arms"
 REAL_PORTS = {8765, 8000}
 BACKEND_PORT = 8775
@@ -193,7 +196,7 @@ class Arm:
         self.sandbox: subprocess.Popen | None = None
 
     def experiments(self) -> str:
-        return "" if self.name == "baseline" else self.name
+        return "" if self.name in ("baseline", MODEL_LED_ARM) else self.name
 
     def start(self) -> None:
         if self.home.exists():
@@ -215,6 +218,8 @@ class Arm:
             "PYTHONUNBUFFERED": "1",
         })
         env.pop("WISP_MODEL_LED_ROUTING", None)
+        if self.name == MODEL_LED_ARM:
+            env["WISP_MODEL_LED_ROUTING"] = "1"
         self.backend = subprocess.Popen(
             [self.python, "-m", "uvicorn", "service.main:app", "--port", str(self.port)],
             cwd=ROOT, env=env, stdout=(self.home / "backend.log").open("w"),
@@ -493,6 +498,9 @@ def main() -> None:
     ap.add_argument("--tasks", default="quick",
                     help="all | quick | compound | ids:a,b | cat:news,weather")
     ap.add_argument("--reps", type=int, default=1)
+    ap.add_argument("--prompts-file", default=None,
+                    help="JSON list of prompts to replay in plan mode (tool calls intercepted, nothing "
+                         "executes); replaces --tasks. Used by scripts/audit_rule_precision.py --emit-pins")
     ap.add_argument("--search", action="store_true",
                     help="also run the built-in Smart Search cases")
     ap.add_argument("--port", type=int, default=BACKEND_PORT)
@@ -517,10 +525,15 @@ def main() -> None:
         sys.exit("oMLX is not answering on :8000; start it before measuring")
 
     arm_names = [a.strip() for a in args.arms.split(",") if a.strip()]
-    bad = [a for a in arm_names if a != "baseline" and a not in KNOWN]
+    bad = [a for a in arm_names if a not in ("baseline", MODEL_LED_ARM) and a not in KNOWN]
     if bad:
         sys.exit(f"unknown arms {bad}; known experiments: {sorted(KNOWN)}")
-    tasks = select_tasks(args.tasks)
+    if args.prompts_file:
+        prompts = json.loads(Path(args.prompts_file).expanduser().read_text())
+        tasks = [Task(f"p{i:03d}", "audit", str(text), (), mode="plan")
+                 for i, text in enumerate(prompts, 1)]
+    else:
+        tasks = select_tasks(args.tasks)
     search = args.search
 
     run = time.strftime("%Y%m%d-%H%M%S")
