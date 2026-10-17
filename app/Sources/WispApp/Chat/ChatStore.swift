@@ -12,8 +12,9 @@ protocol ChatBackend: AnyObject {
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async
     func approve(sessionId: String, actionId: String, approved: Bool, scope: String, requestId: String) async
     func sendDraft(to: String, text: String) async -> (ok: Bool, result: String)
-    /// True when Wisp may act without asking; nil when the service is unreachable.
+    /// True when Wisp may act without asking; nil when it can't be confirmed.
     func fullAccess() async -> Bool?
+    /// The flag the service confirmed after the change; nil when it can't be confirmed.
     func setFullAccess(_ on: Bool) async -> Bool?
 }
 
@@ -62,6 +63,9 @@ final class ChatStore: ObservableObject {
     @Published var search = ""
     @Published private(set) var reachable = true
     @Published private(set) var fullAccess = false
+    // False while Full access can't be confirmed: the composer then says so
+    // rather than showing the last value, or "off", as if it were current.
+    @Published private(set) var fullAccessKnown = false
     @Published private(set) var loadingList = false
 
     let backend: ChatBackend
@@ -117,7 +121,7 @@ final class ChatStore: ObservableObject {
             return
         }
         reachable = true
-        if let a = await access { fullAccess = a }
+        applyFullAccess(await access)
         var byId = Dictionary(conversations.compactMap { c in c.sessionId.isEmpty ? nil : (c.sessionId, c) },
                               uniquingKeysWith: { first, _ in first })
         for row in rows where !deletedSessionIds.contains(row.id) {
@@ -372,6 +376,14 @@ final class ChatStore: ObservableObject {
     // MARK: - Access
 
     func setFullAccess(_ on: Bool) {
-        Task { if let result = await backend.setFullAccess(on) { fullAccess = result } }
+        Task { applyFullAccess(await backend.setFullAccess(on)) }
+    }
+
+    /// Show Full access as the service confirmed it; nil marks it unconfirmed.
+    /// The app also calls this when the flag changes elsewhere (quick settings,
+    /// Settings), since all of them share one source.
+    func applyFullAccess(_ value: Bool?) {
+        if let value { fullAccess = value }
+        fullAccessKnown = value != nil
     }
 }

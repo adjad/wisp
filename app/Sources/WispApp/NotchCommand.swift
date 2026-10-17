@@ -17,7 +17,7 @@ enum NotchCommand: String, CaseIterable, Equatable {
         case .memory: return "Open Memory"
         case .about: return "Tell Wisp about yourself"
         case .research: return "Research your next prompt"
-        case .settings: return "Open Settings"
+        case .settings: return "Quick settings"
         case .report: return "Report a problem with the last reply"
         case .window: return "Continue in the Wisp window"
         case .new: return "Start a new chat"

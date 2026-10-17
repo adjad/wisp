@@ -6,12 +6,20 @@ final class MotionFixtureProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let body = Data(#"{"text":"Synthetic daily summary","session_id":"fixture"}"#.utf8)
+        // Setting Full access answers after a short delay, so a change can be in
+        // flight while the notch collapses. Reading it gets a reply with no flag.
+        let settingMode = request.url?.path == "/mode" && request.httpMethod == "POST"
+        let body = Data((settingMode ? #"{"full_access":true,"read_only":false}"#
+                                     : #"{"text":"Synthetic daily summary","session_id":"fixture"}"#).utf8)
         let response = HTTPURLResponse(url: request.url!, statusCode: 200,
                                        httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: body)
-        client?.urlProtocolDidFinishLoading(self)
+        let finish = { [weak self] in
+            guard let self else { return }
+            self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            self.client?.urlProtocol(self, didLoad: body)
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+        if settingMode { DispatchQueue.global().asyncAfter(deadline: .now() + 0.3, execute: finish) } else { finish() }
     }
     override func stopLoading() {}
 }
@@ -160,6 +168,7 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkPinnedPanelHoldsOpen()
         await AppDelegate.checkMenuHoldsCollapse()
         await AppDelegate.checkResearchReleasesQueueOffTab()
+        await AppDelegate.checkQuickSettingsSurviveCollapse()
         #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()

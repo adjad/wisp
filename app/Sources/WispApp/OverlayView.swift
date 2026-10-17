@@ -6,6 +6,8 @@ struct OverlayView: View {
     @ObservedObject var researchModel: ResearchModel
     // Shared with the Wisp window's planner, so both show the same day.
     @ObservedObject var todayModel: TodayModel
+    // The app's one SettingsLoader, shared with the Settings window.
+    @ObservedObject var settings: SettingsLoader
     var onClose: () -> Void
     // X button: dismiss from the notch (frees the resident model) but Wisp keeps running
     // in the menu bar — NOT a full quit. Full quit is still available via the
@@ -46,6 +48,8 @@ struct OverlayView: View {
             if let knowYou = model.knowYou {
                 // Getting to know you takes the tab's place until Done or a tab.
                 KnowYouView(model: knowYou)
+            } else if model.showingQuickSettings {
+                QuickSettingsView(model: model, settings: settings).padding(.top, 12)
             } else {
             switch model.tab {
             case .ask:
@@ -219,6 +223,8 @@ struct OverlayView: View {
             if model.tab == .ask && !model.turns.isEmpty {
                 ctrl("square.and.pencil", "New chat (⌘N)", { model.newChat() })
             }
+            ctrl("gearshape", model.showingQuickSettings ? "Close quick settings" : "Quick settings",
+                 active: model.showingQuickSettings, { model.showingQuickSettings.toggle() })
             ctrl(model.pinned ? "pin.fill" : "pin", model.pinned ? "Unpin (⌘P)" : "Keep open (⌘P)",
                  active: model.pinned, { model.pinned.toggle() })
             // The window opens on what this tab shows. For Ask it reads the saved

@@ -334,6 +334,11 @@ struct ChatStoreChecks {
             store.setFullAccess(false)
             await settle()
             check(!store.fullAccess && !backend.fullAccessValue, "access mode is written")
+            check(store.fullAccessKnown, "a confirmed mode is known")
+            store.applyFullAccess(nil)
+            check(!store.fullAccessKnown && !store.fullAccess, "an unconfirmed mode is marked unknown, keeping the last value")
+            store.applyFullAccess(true)
+            check(store.fullAccessKnown && store.fullAccess, "a later confirmation restores it")
         }
     }
 }

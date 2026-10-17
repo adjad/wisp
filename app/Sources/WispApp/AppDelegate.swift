@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import Carbon.HIToolbox
 
@@ -18,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var researchModel = ResearchModel(client: client)
     // One day plan for the notch's Today tab and the window's planner.
     private lazy var todayModel = TodayModel()
+    // One settings loader for the notch's quick settings, the Settings window and
+    // the Wisp window's Full access pill: one source for confirmed and pending state.
+    private lazy var settingsLoader = SettingsLoader()
+    private var fullAccessObserver: AnyCancellable?
     private lazy var researchLibrary = ResearchLibraryWindowController(client: client,
         onOpen: { [weak self] id in self?.openSavedResearch(id) },
         onNew: { [weak self] in self?.newResearch() })
@@ -26,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // in the notch. Its sidebar opens the other parts of the app through
     // WispRouter, like every other control (see open(_:)).
     private lazy var wispWindow = WispWindowController(
-        backend: LiveChatBackend(client: client),
+        backend: LiveChatBackend(client: client, access: settingsLoader),
         launchers: ChatLaunchers(
             today: { WispRouter.shared.open(.today(focus: .plan)) },
             research: { WispRouter.shared.open(.research) },
@@ -150,6 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await self.backend.startIfNeeded()
         }
         WispRouter.shared.handler = { [weak self] route in self?.open(route) }
+        observeFullAccess()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = Self.menubarOrb()
@@ -224,6 +230,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       !(self.panel?.frame.contains(NSEvent.mouseLocation) ?? false) else { return }
                 self.scheduleCollapse()
             }
+        }
+    }
+
+    /// Full access has one source; the Wisp window's composer pill follows it
+    /// wherever it changes (quick settings, Settings, or the pill itself).
+    private func observeFullAccess() {
+        fullAccessObserver = settingsLoader.$fullAccess.dropFirst().sink { [weak self] value in
+            MainActor.assumeIsolated { self?.wispWindow.store.applyFullAccess(value) }
         }
     }
 
@@ -677,6 +691,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard panel == nil else { return }
         panel = OverlayPanel {
             OverlayView(model: self.model, researchModel: self.researchModel, todayModel: self.todayModel,
+                        settings: self.settingsLoader,
                         onClose: { [weak self] in self?.collapse() },
                         onDismiss: { [weak self] in self?.dismissToMenuBar() })
         }
@@ -969,7 +984,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
                                styleMask: [.titled, .closable], backing: .buffered, defer: false)
             win.title = "Wisp Settings"
-            win.contentView = NSHostingView(rootView: SettingsView())
+            win.contentView = NSHostingView(rootView: SettingsView(loader: settingsLoader))
             win.center()
             win.isReleasedWhenClosed = false
             settingsWindow = win
@@ -1215,6 +1230,36 @@ extension AppDelegate {
         precondition(model.briefComposing, "A brief can be composed while research sits on its tab")
         model.reset()
         print("PASS: AppDelegate research releases the prompt queue when its tab is left")
+    }
+
+    static func checkQuickSettingsSurviveCollapse() async {
+        let delegate = AppDelegate()
+        let model = delegate.model
+        let loader = delegate.settingsLoader
+        delegate.observeFullAccess()
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        model.collapsed = false
+        delegate.finishPresentation(opening)
+        model.run(.settings)
+        precondition(model.showingQuickSettings, "/settings opens quick settings")
+        await loader.refreshFullAccess()
+        precondition(loader.fullAccess == nil, "An unreadable Full access flag is unconfirmed, never off")
+        precondition(loader.fullAccessExplanation.contains("hasn't been confirmed"), "Unconfirmed Full access says so")
+        loader.setFullAccess(true)
+        precondition(loader.fullAccessPending && loader.fullAccess == nil, "A change waits for the service before it shows")
+        model.collapsed = true
+        precondition(!model.showingQuickSettings, "Collapsing closes quick settings")
+        model.collapsed = false
+        for _ in 0..<100 where loader.fullAccessPending { try? await Task.sleep(for: .milliseconds(20)) }
+        precondition(!loader.fullAccessPending && loader.fullAccess == true,
+                     "A change started before the notch collapsed is confirmed after it reopens")
+        let store = delegate.wispWindow.store
+        precondition(store.fullAccessKnown && store.fullAccess, "The Wisp window's pill follows the one Full access source")
+        model.showingQuickSettings = true
+        model.tab = .today
+        precondition(!model.showingQuickSettings, "Switching tabs closes quick settings")
+        print("PASS: AppDelegate quick settings share one loader; a Full access change survives collapse; unconfirmed is never off")
     }
 
     static func checkMenuHoldsCollapse() async {
