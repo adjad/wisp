@@ -30,6 +30,7 @@ struct NotchTodayView: View {
                     briefSection
                     if let plan {
                         needsYouSection(plan)
+                        CaughtForYouSection(compact: true)
                         upNextSection(plan)
                     } else if today.error.isEmpty {
                         ProcessingRow(label: "Loading your day…")

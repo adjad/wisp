@@ -1314,6 +1314,17 @@ final class OverlayModel: ObservableObject {
                                                subtitle: nudge.notificationSubtitle,
                                                category: nudge.notificationCategory,
                                                userInfo: nudge.notificationInfo)
+        case "attention_added":
+            // The attention runner added a reminder for a plan stated in a text that was on
+            // neither Calendar nor Reminders. Say what was added and quote the source; Undo
+            // lives in Today's "Caught for you" section.
+            let title = ev.str("title")
+            guard !title.isEmpty, !ev.str("source_id").isEmpty else { return false }
+            let quote = ev.str("quote")
+            let body = [ev.str("when_label"), quote.isEmpty ? "" : "“\(quote)”"]
+                .filter { !$0.isEmpty }.joined(separator: "\n")
+            return await Notifications.deliver(id: "attention:" + ev.str("source_id"),
+                                               title: "Added a reminder: \(title)", body: body)
         case "create_apple_reminder":
             return false
         case "update_apple_reminder":
