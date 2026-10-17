@@ -141,7 +141,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                            overdue: ["Get DoorDash order"], next: nil)
           == "A light Saturday. PA 2 is due today, and Get DoorDash order is still open.", "lede with due and overdue")
     check(DayTimeline.lede(weekday: "Sunday", isToday: true, load: .free, dueToday: [], overdue: [], next: nil)
-          == "A clear Sunday. Nothing needs you right now.", "lede on a clear day")
+          == "A free Sunday. Nothing needs you right now.", "lede on a clear day")
     check(DayTimeline.lede(weekday: "Monday", isToday: true, load: .packed, dueToday: ["nothing"], overdue: ["Pay rent", "Return book"],
                            next: (title: "Club", time: "3 PM"))
           == "A packed Monday. Two overdue reminders are still open.",
@@ -196,6 +196,23 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     let evening = load([event("Dinner", 19, 21), event("Show", 21, 23), event("Late", 23, 23.5), event("Call", 18, 19)])
     check(evening.occupiedHours == 0 && evening.verdict == .busy && evening.summary.hasPrefix("Busy evening:"),
           "evening meetings fall outside 9–6 but still count: \(evening.summary)")
+    let allDayLong = load([event("Conference", 9, 17)])
+    check(allDayLong.summary == "Packed: 1 meeting, 8 h booked", "one long event: \(allDayLong.summary)")
+    let late = load([event("Dinner", 19, 20), event("Show", 20.5, 22), event("Call", 22.5, 23)], from: at(18.5))
+    check(late.verdict == .steady && late.summary == "Steady: 3 meetings from 7 PM", "after 6 PM: \(late.summary)")
+    let backwards = load([event("Lab", 13, 12)])
+    check(backwards.uncertain && backwards.meetings == 1, "an end before the start counts as an hour and reads about")
+    let nested = load([event("Workshop", 13, 16), event("Talk", 13.5, 14)])
+    check(nested.summary.hasSuffix("1–4 PM"), "a nested meeting doesn't reverse the span: \(nested.summary)")
+    check(DayTimeline.lede(weekday: "Friday", isToday: true, load: nil, dueToday: [], overdue: [], next: nil)
+          == "It's Friday. Nothing needs you right now.", "no calendar, no verdict")
+    check(DayTimeline.lede(weekday: "Sunday", isToday: false, load: free.verdict, dueToday: [], overdue: [], next: nil)
+          .hasPrefix("A free Sunday.") && free.summary.hasPrefix("Free"), "the lede and the line share the word")
+    let la = TimeZone(identifier: "America/Los_Angeles")!
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = la
+    let springForward = cal.date(from: DateComponents(year: 2027, month: 3, day: 14))!.timeIntervalSince1970
+    check(DayLoad.at(9, springForward, la) - springForward == 8 * 3600, "9 AM on the spring-forward day is 8 hours after midnight")
     check(DayLoad.union([(1, 3), (2, 5), (7, 8), (8, 9)]).map { [$0.0, $0.1] } == [[1, 5], [7, 9]], "union merges touching spans")
     check(DayLoad.span(at(10), at(16), zone: utc) == "10 AM–4 PM" && DayLoad.span(at(13), at(17.5), zone: utc) == "1–5:30 PM",
           "spans")

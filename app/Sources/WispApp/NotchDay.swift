@@ -364,7 +364,7 @@ struct DayTimeline: Equatable {
     /// The Brief's one sentence, from the day itself. It opens with the same
     /// verdict word as the CAL line ("A light Saturday." / "Light day: …"), so
     /// the two never disagree.
-    static func lede(weekday: String, isToday: Bool, load: DayLoad.Verdict, dueToday: [String], overdue: [String],
+    static func lede(weekday: String, isToday: Bool, load: DayLoad.Verdict?, dueToday: [String], overdue: [String],
                      next: (title: String, time: String)?) -> String {
         var parts: [String] = []
         let due = dueToday.filter { !isJunk($0) }
@@ -375,7 +375,8 @@ struct DayTimeline: Equatable {
         if !late.isEmpty {
             parts.append(late.count == 1 ? late[0] + " is still open" : "\(count(late.count)) overdue reminders are still open")
         }
-        let opening = load.article + " " + weekday + "."
+        // Without a current calendar there's no verdict to give.
+        let opening = load.map { $0.article + " " + weekday + "." } ?? "It's \(weekday)."
         if parts.isEmpty {
             if let next { return opening + " Next up: \(next.title) at \(next.time)." }
             return opening + (isToday ? " Nothing needs you right now." : " Nothing needs you that day.")
@@ -435,7 +436,7 @@ struct DayLoad: Equatable {
         /// The lede's opening: "A light Saturday."
         var article: String {
             switch self {
-            case .free: return "A clear"
+            case .free: return "A free"
             case .light: return "A light"
             case .steady: return "A steady"
             case .busy: return "A busy"
@@ -470,12 +471,13 @@ struct DayLoad: Equatable {
     ///   - dayStart: the day's midnight, for the 9–6 window.
     static func assess(events: [Event], allDay: [String], from: Double, dayStart: Double, isToday: Bool,
                        zone: TimeZone) -> DayLoad {
-        let windowStart = dayStart + 9 * 3600, windowEnd = dayStart + 18 * 3600
-        let left = events.filter { !DayTimeline.isJunk($0.title) && ($0.end ?? $0.start + assumedLength) > from }
-            .sorted { $0.start < $1.start }
-        let allDayTitles = allDay.filter { !DayTimeline.isJunk($0) }
-        let uncertain = left.contains { $0.end == nil }
+        let windowStart = at(9, dayStart, zone), windowEnd = at(18, dayStart, zone)
+        // An event with no end, or an end before its start, counts as an hour and reads "about".
         func end(_ e: Event) -> Double { e.end.flatMap { $0 > e.start ? $0 : nil } ?? e.start + assumedLength }
+        func guessed(_ e: Event) -> Bool { e.end.map { $0 <= e.start } ?? true }
+        let left = events.filter { !DayTimeline.isJunk($0.title) && end($0) > from }.sorted { $0.start < $1.start }
+        let allDayTitles = allDay.filter { !DayTimeline.isJunk($0) }
+        let uncertain = left.contains(where: guessed)
 
         let lo = max(from, windowStart)
         let busy = union(left.compactMap { e -> (Double, Double)? in
@@ -510,6 +512,8 @@ struct DayLoad: Equatable {
         let verdict: Verdict
         let summary: String
         let n = left.count
+        let meetings = "\(n) meeting\(n == 1 ? "" : "s")"
+        let lastEnd = left.map(end).max() ?? 0
         if n == 0 {
             if let first = allDayTitles.first {
                 verdict = .light
@@ -523,22 +527,23 @@ struct DayLoad: Equatable {
             if let chain = longest, chain.length >= 3 {
                 summary = "Packed: back-to-back " + about + span(chain.start, chain.end, zone: zone)
             } else {
-                summary = "Packed: \(n) meetings, " + about + hours(occupied) + " booked"
+                summary = "Packed: \(meetings), " + about + hours(occupied) + " booked"
             }
         } else if occupied >= 3 || n >= 4 {
             verdict = .busy
-            summary = "Busy \(part(left.map(\.start), left.map(end), dayStart: dayStart)): \(n) meetings, "
-                + about + span(left[0].start, left.map(end).max() ?? end(left[0]), zone: zone)
+            summary = "Busy \(part(left.map(\.start), left.map(end), dayStart: dayStart, zone: zone)): \(meetings), "
+                + about + span(left[0].start, lastEnd, zone: zone)
         } else if occupied < 1.5 && n <= 2 {
             verdict = .light
             summary = n == 1
                 ? "Light day: just \(left[0].title) at " + clock(left[0].start, zone: zone) + (uncertain ? ", end time unknown" : "")
-                : "Light day: 2 meetings, " + about + span(left[0].start, end(left[1]), zone: zone)
+                : "Light day: 2 meetings, " + about + span(left[0].start, lastEnd, zone: zone)
         } else {
             verdict = .steady
-            summary = "Steady: \(n) meeting\(n == 1 ? "" : "s"), " + (largestGap >= 1
-                ? "longest free stretch " + about + hours(largestGap)
-                : about + hours(occupied) + " booked")
+            summary = "Steady: \(meetings)" + (lo >= windowEnd
+                ? " from " + clock(max(from, left[0].start), zone: zone)
+                : largestGap >= 1 ? ", longest free stretch " + about + hours(largestGap)
+                : ", " + about + hours(occupied) + " booked")
         }
         return DayLoad(verdict: verdict, summary: summary, next: next, occupiedHours: occupied, meetings: n,
                        backToBack: pairs, largestGapHours: largestGap, uncertain: uncertain)
@@ -554,12 +559,21 @@ struct DayLoad: Equatable {
     }
 
     /// "morning", "afternoon", "evening" when every remaining meeting falls in one, else "day".
-    static func part(_ starts: [Double], _ ends: [Double], dayStart: Double) -> String {
-        let noon = dayStart + 12 * 3600, five = dayStart + 17 * 3600
+    static func part(_ starts: [Double], _ ends: [Double], dayStart: Double, zone: TimeZone) -> String {
+        let noon = at(12, dayStart, zone), five = at(17, dayStart, zone)
         if ends.allSatisfy({ $0 <= noon }) { return "morning" }
         if starts.allSatisfy({ $0 >= five }) { return "evening" }
         if starts.allSatisfy({ $0 >= noon }) { return "afternoon" }
         return "day"
+    }
+
+    /// That hour of the day on the wall clock, so a daylight-saving day is right.
+    static func at(_ hour: Int, _ dayStart: Double, _ zone: TimeZone) -> Double {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let day = Date(timeIntervalSince1970: dayStart + 12 * 3600)
+        return calendar.date(bySettingHour: hour, minute: 0, second: 0, of: day)?.timeIntervalSince1970
+            ?? dayStart + Double(hour) * 3600
     }
 
     static func hours(_ h: Double) -> String {

@@ -130,13 +130,14 @@ struct BriefContent {
         let overdue = isToday ? needs.filter { ($0.due_ts ?? .infinity) < now }.map(\.title) : []
         let next = calendarBlocks.first { $0.start > reference }.map { (title: $0.title, time: today.clock($0.start)) }
         let weekday = today.selectedDate.formatted(Date.FormatStyle(timeZone: today.timezone).weekday(.wide))
-        lede = DayTimeline.lede(weekday: weekday, isToday: isToday, load: load.verdict,
+        let calendarKnown = !(plan.sources["calendar"]?.ready == false && calendarBlocks.isEmpty && plan.all_day.isEmpty)
+        lede = DayTimeline.lede(weekday: weekday, isToday: isToday, load: calendarKnown ? load.verdict : nil,
                                 dueToday: dueToday, overdue: overdue, next: next)
 
         let coverage = plan.workspace?.source_coverage.first { $0.source == "email" }
         let soon = needs.filter { ($0.due_ts ?? 0) > dayEnd }.min { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }
         lines = DayTimeline.briefLines(
-            calendar: plan.sources["calendar"]?.ready == false && calendarBlocks.isEmpty && plan.all_day.isEmpty ? nil : load,
+            calendar: calendarKnown ? load : nil,
             mail: coverage.map { (ready: $0.ready, needing: needs.filter { $0.source == "email" }.map(\.title)) },
             texts: needs.filter { $0.source == "messages" }.map(\.title),
             soon: soon.map { (title: $0.title, when: NotchChrome.dayClock($0.due_ts ?? 0, zone: today.timezone),
