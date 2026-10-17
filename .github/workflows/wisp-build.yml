@@ -361,6 +361,11 @@ jobs:
           path: |
             .wisp-build/run-*/*.log
             .wisp-build/run-*/*.json
+            dist/candidate/SHA256SUMS
+            dist/candidate/provenance.json
+            dist/candidate/bundle-manifest.json
+            dist/candidate/dependencies.json
+            dist/candidate/simulation-qa.json
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 14
