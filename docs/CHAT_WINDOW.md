@@ -155,7 +155,8 @@ scripts/test_diagnostic_report.sh        # redaction, journals, private saves, r
 ```
 
 `scripts/run_simulation_qa.py --only-native` runs these with the pure notch
-checks (`tests/NotchTabChecks.swift`, `tests/NotchCommandChecks.swift`).
+checks (`tests/NotchTabChecks.swift` with `tests/NotchDayChecks.swift`, and
+`tests/NotchCommandChecks.swift`).
 
 Render the real window against a scripted fixture, in light and dark, without
 starting Wisp or touching its port:
@@ -164,6 +165,15 @@ starting Wisp or touching its port:
 cd app
 swift build -Xswiftc -DWISP_CHAT_QA
 WISP_CHAT_QA_OUT=/some/dir .build/debug/WispApp
+```
+
+Render the notch's Brief and Day tabs from a fixture day the same way (it
+prints each tab's size, to check it fits the 640 pt panel):
+
+```bash
+cd app
+swift build -Xswiftc -DWISP_NOTCH_QA
+WISP_NOTCH_QA_OUT=/some/dir .build/debug/WispApp
 ```
 
 On a machine whose `swift` is the Command Line Tools toolchain, SwiftUI's `@State`
