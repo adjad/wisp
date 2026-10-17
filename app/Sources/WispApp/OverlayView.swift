@@ -47,7 +47,10 @@ struct OverlayView: View {
     private var expandedPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if model.showingQuickSettings {
+            if let knowYou = model.knowYou {
+                // Getting to know you takes the tab's place until Done or a tab.
+                KnowYouView(model: knowYou)
+            } else if model.showingQuickSettings {
                 QuickSettingsView(model: model, settings: settings).padding(.top, 12)
             } else {
             switch model.tab {
@@ -213,7 +216,7 @@ struct OverlayView: View {
         let selected = model.tab == tab
         let count = tab == .today ? todayCount : 0
         let shortcut = tab.title + " (⌘" + String(tab.shortcutDigit) + ")"
-        return Button { model.tab = tab } label: {
+        return Button { model.leaveKnowYou(); model.tab = tab } label: {
             HStack(spacing: 5) {
                 Text(tab.title).font(.system(size: 11.5, weight: .medium))
                 if count > 0 { countBadge(count, selected: selected) }

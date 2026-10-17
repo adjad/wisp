@@ -1839,10 +1839,58 @@ def _messages_section(now: float) -> str:
     return "\n".join(lines)
 
 
-def _render_brief(now: float, messages_section: str) -> str:
-    """Greeting + the three sections + the sign-off. The brief's only shape."""
+def _keeping_in_mind(now: float) -> str:
+    """The personal section (service/memory/profile.py): the user's own goals,
+    people and struggles, stated next to what today actually shows. Empty when
+    the user has told Wisp nothing, or the day gives nothing honest to say.
+    Deterministic like the rest of the brief, and best-effort: the brief must
+    never fail because of it."""
+    try:
+        from service.memory import profile as P
+        profile = P.load()
+        if not P.has_content(profile):
+            return ""
+        agenda = _agenda(now)
+        events, reminders = agenda["events"], agenda["reminders"]
+        first_hour = None
+        timed = [e for e in events if not e.get("all_day") and float(e["when_ts"]) >= now - 3600]
+        if timed:
+            first_hour = datetime.fromtimestamp(float(timed[0]["when_ts"])).hour
+        overdue = [item for item in reminders if float(item["when_ts"]) < now - 300]
+        mail = _mail_split(now)
+        mail_people = mail["people"] if mail["state"] == "ready" else []
+        from service.tools.imessage_tools import messages_sync_state
+        convos = _conversations(now) if messages_sync_state() == "ready" else []
+        return P.keeping_in_mind(
+            profile, now,
+            events_today=len(events), first_event_hour=first_hour,
+            overdue_reminders=len(overdue), mail_from_people=len(mail_people),
+            people_in_events=P.people_mentioned(profile, [str(e.get("title") or "") for e in events]),
+            people_in_mail=P.people_mentioned(profile, [str(r.get("sender") or "") for r in mail_people]),
+            people_in_messages=P.people_mentioned(
+                profile, [f"{c.get('label') or ''} {c.get('speaker') or ''}" for c in convos]))
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+        return ""
+
+
+def _greeting_line(now: float) -> str:
     when = datetime.fromtimestamp(now)
-    parts = [f"{_greeting(now)} — {when.strftime('%A, %B %-d')}. ☀️",
+    name = ""
+    try:
+        from service.memory.profile import greeting_name
+        name = greeting_name()
+    except Exception:  # noqa: BLE001
+        name = ""
+    who = f", {name}" if name else ""
+    return f"{_greeting(now)}{who} — {when.strftime('%A, %B %-d')}. ☀️"
+
+
+def _render_brief(now: float, messages_section: str) -> str:
+    """Greeting + the personal section + the three sections + the sign-off.
+    The brief's only shape."""
+    parts = [_greeting_line(now),
+             _keeping_in_mind(now),
              _schedule_section(now),
              _email_section(now),
              "**💬 Messages**\n" + (messages_section.strip() or "- Nothing new. ✅"),

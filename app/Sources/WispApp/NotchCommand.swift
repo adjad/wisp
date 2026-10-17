@@ -7,7 +7,7 @@ import Foundation
 ///
 /// Pure logic, checked by tests/NotchCommandChecks.swift without the app.
 enum NotchCommand: String, CaseIterable, Equatable {
-    case today, memory, research, settings, report, window, new
+    case today, memory, research, settings, report, window, new, about
 
     var title: String { "/" + rawValue }
 
@@ -15,6 +15,7 @@ enum NotchCommand: String, CaseIterable, Equatable {
         switch self {
         case .today: return "Open Today"
         case .memory: return "Open Memory"
+        case .about: return "Tell Wisp about yourself"
         case .research: return "Research your next prompt"
         case .settings: return "Quick settings"
         case .report: return "Report a problem with the last reply"
