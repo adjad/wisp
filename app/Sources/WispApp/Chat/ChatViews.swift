@@ -855,10 +855,11 @@ struct ChatComposer: View {
                     Button(action: pickImage) { Image(systemName: "paperclip") }
                         .buttonStyle(ChatIconButtonStyle()).help("Attach an image").accessibilityLabel("Attach an image")
                     Menu {
-                        Button { store.setFullAccess(false) } label: { Label("Ask before acting", systemImage: store.fullAccess ? "" : "checkmark") }
-                        Button { store.setFullAccess(true) } label: { Label("Full access", systemImage: store.fullAccess ? "checkmark" : "") }
+                        Button { store.setFullAccess(false) } label: { Label("Ask before acting", systemImage: store.fullAccessKnown && !store.fullAccess ? "checkmark" : "") }
+                        Button { store.setFullAccess(true) } label: { Label("Full access", systemImage: store.fullAccessKnown && store.fullAccess ? "checkmark" : "") }
                     } label: {
-                        ChatPill(text: store.fullAccess ? "Full access" : "Ask before acting")
+                        ChatPill(text: !store.fullAccessKnown ? "Access unconfirmed"
+                                 : store.fullAccess ? "Full access" : "Ask before acting")
                     }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                     .help("Whether Wisp asks before it acts. Sending and bulk deletes always ask.")

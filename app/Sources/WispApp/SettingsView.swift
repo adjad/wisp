@@ -208,7 +208,15 @@ final class SettingsLoader: ObservableObject {
     @Published var installed: [String] = []
     @Published var roles: [String: String] = [:]
     @Published var saving = false
-    @Published var fullAccess = false
+    // Full access as the service last confirmed it; nil until confirmed or
+    // when a read or write couldn't be confirmed. Never shown as "off" while nil.
+    // This is Wisp's one Full access source: Settings, quick settings and the
+    // Wisp window's composer all read and write it through this loader.
+    @Published private(set) var fullAccess: Bool?
+    @Published private(set) var fullAccessPending = false
+    // The Daily Summary's morning and evening hours, as the service confirmed them.
+    @Published private(set) var briefTimes: WispClient.BriefTimes?
+    @Published private(set) var briefTimesPending = false
     @Published var idleMinutes: Double = 5
     @Published var humanizerEnabled = false
     @Published var behaviorEnabled: Bool? = nil
@@ -333,7 +341,7 @@ final class SettingsLoader: ObservableObject {
             let m = await client.models()
             self.installed = m.installed
             self.roles = m.roles
-            self.fullAccess = await client.mode().fullAccess
+            await self.refreshFullAccess()
             self.idleMinutes = await client.idleTimeout()
             self.humanizerEnabled = await client.humanizerEnabled()
             await self.refreshBehavior()
@@ -1041,9 +1049,103 @@ final class SettingsLoader: ObservableObject {
         }
     }
 
+    /// The settings quick settings shows, without the models and providers.
+    func refreshQuick() async {
+        await refreshFullAccess()
+        await refreshBehavior()
+        await refreshBriefTimes()
+    }
+
+    func refreshFullAccess() async {
+        guard !fullAccessPending else { return }
+        let confirmed = await client.fullAccessState()
+        guard !fullAccessPending else { return }
+        fullAccess = confirmed
+    }
+
     func setFullAccess(_ on: Bool) {
-        fullAccess = on
-        Task { self.fullAccess = await client.setFullAccess(on).fullAccess }
+        guard !fullAccessPending else { return }
+        fullAccessPending = true
+        Task { await self.confirmFullAccess(on) }
+    }
+
+    /// Ask for Full access on or off and return what the service confirmed.
+    /// One change at a time: while one is pending, another is refused (nil).
+    func requestFullAccess(_ on: Bool) async -> Bool? {
+        guard !fullAccessPending else { return nil }
+        fullAccessPending = true
+        return await confirmFullAccess(on)
+    }
+
+    @discardableResult
+    private func confirmFullAccess(_ on: Bool) async -> Bool? {
+        var confirmed = await client.requestFullAccess(on)
+        // A lost reply may mean the write happened; only a fresh read can tell.
+        if confirmed == nil { confirmed = await client.fullAccessState() }
+        fullAccess = confirmed
+        fullAccessPending = false
+        return confirmed
+    }
+
+    var fullAccessExplanation: String {
+        if fullAccessPending { return "Updating Full access. Waiting for confirmation…" }
+        guard let on = fullAccess else {
+            return "Full access hasn't been confirmed. Wisp may still be acting without asking. Check status or turn it off."
+        }
+        return on ? "Actions run automatically with no confirmation."
+                  : "Risky actions pause for your confirmation."
+    }
+
+    func refreshBriefTimes() async {
+        guard !briefTimesPending else { return }
+        let confirmed = await client.briefTimes()
+        guard !briefTimesPending else { return }
+        briefTimes = confirmed
+    }
+
+    func setBriefTimes(morning: Int? = nil, evening: Int? = nil) {
+        guard !briefTimesPending else { return }
+        briefTimesPending = true
+        Task {
+            var confirmed = await client.setBriefTimes(morning: morning, evening: evening)
+            if confirmed == nil { confirmed = await client.briefTimes() }
+            self.briefTimes = confirmed
+            self.briefTimesPending = false
+        }
+    }
+
+    /// What "Learn my routines" does with data, which differs when a remote
+    /// inference server is configured (the learned summary is part of the prompt,
+    /// and wording / event labeling would send calendar titles to that server).
+    /// Settings and quick settings both show exactly this.
+    var behaviorExplanation: String {
+        if behaviorChanging {
+            return behaviorStatus ?? "Updating learning settings. Waiting for confirmation…"
+        }
+        guard let enabled = behaviorEnabled else {
+            return behaviorStatus
+                ?? "Learning status has not been confirmed. Wisp may still be learning. Check status or turn learning off."
+        }
+        let sources = "Learns from your calendar, reminders, message timing and how you use Wisp. "
+            + "Optional app, website, email and message interpretation has separate source controls in Memory › Routines. "
+            + "Nudges at most 4 a day. "
+        guard enabled else {
+            return "Off. Wisp is not learning your routines or sending nudges. What it already "
+                + "learned stays on this Mac and is still deleted automatically as it ages; "
+                + "use Forget to erase it now."
+        }
+        guard behaviorRemote else {
+            return sources + "What it learns stays on this Mac, and old data is deleted automatically."
+        }
+        if behaviorPhraser {
+            return sources + "Learned data is stored on this Mac, but you use a remote inference "
+                + "server: nudge wording and event categorization send calendar titles and nudge "
+                + "details to your configured server, and a short summary of your routines is part "
+                + "of the prompts it receives."
+        }
+        return sources + "Learned data is stored on this Mac, but you use a remote inference server: "
+            + "a short summary of your routines is part of the prompts it receives. Nudge wording "
+            + "and event categorization are off, so calendar titles are not sent for them."
     }
 
     func setIdleMinutes(_ minutes: Double) {
@@ -1074,37 +1176,16 @@ struct SettingsView: View {
         let symbol: String
     }
 
-    /// What "Learn my routines" does with data, which differs when a remote
-    /// inference server is configured (the learned summary is part of the prompt,
-    /// and wording / event labeling would send calendar titles to that server).
-    private var behaviorExplanation: String {
-        if loader.behaviorChanging {
-            return loader.behaviorStatus ?? "Updating learning settings. Waiting for confirmation…"
+    private var behaviorExplanation: String { loader.behaviorExplanation }
+
+    private var fullAccessLabel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Full access")
+                .font(.system(size: 14, weight: .medium))
+            Text(loader.fullAccessExplanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-        guard let enabled = loader.behaviorEnabled else {
-            return loader.behaviorStatus
-                ?? "Learning status has not been confirmed. Wisp may still be learning. Check status or turn learning off."
-        }
-        let sources = "Learns from your calendar, reminders, message timing and how you use Wisp. "
-            + "Optional app, website, email and message interpretation has separate source controls in Memory › Routines. "
-            + "Nudges at most 4 a day. "
-        guard enabled else {
-            return "Off. Wisp is not learning your routines or sending nudges. What it already "
-                + "learned stays on this Mac and is still deleted automatically as it ages; "
-                + "use Forget to erase it now."
-        }
-        guard loader.behaviorRemote else {
-            return sources + "What it learns stays on this Mac, and old data is deleted automatically."
-        }
-        if loader.behaviorPhraser {
-            return sources + "Learned data is stored on this Mac, but you use a remote inference "
-                + "server: nudge wording and event categorization send calendar titles and nudge "
-                + "details to your configured server, and a short summary of your routines is part "
-                + "of the prompts it receives."
-        }
-        return sources + "Learned data is stored on this Mac, but you use a remote inference server: "
-            + "a short summary of your routines is part of the prompts it receives. Nudge wording "
-            + "and event categorization are off, so calendar titles are not sent for them."
     }
 
     private var behaviorLearningLabel: some View {
@@ -1129,15 +1210,12 @@ struct SettingsView: View {
         #endif
     }
 
-    @StateObject private var loader = SettingsLoader()
-    #if WISP_SETTINGS_QA
+    // App-scoped (AppDelegate owns it), shared with the notch's quick settings,
+    // so both show the same confirmed and pending states.
+    @ObservedObject private var loader: SettingsLoader
     @MainActor init(loader: SettingsLoader) {
-        _loader = StateObject(wrappedValue: loader)
+        self.loader = loader
     }
-    @MainActor init() {
-        _loader = StateObject(wrappedValue: SettingsLoader())
-    }
-    #endif
     @ObservedObject private var sync = SyncProgress.shared
     // Keep the last-used settings pane so reopening Settings returns to the
     // user's context when the window opens again.
@@ -1595,21 +1673,26 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Privacy & Access").font(.title2.weight(.medium))
                     VStack(alignment: .leading, spacing: 14) {
-                        Toggle(isOn: Binding(
-                            get: { loader.fullAccess },
-                            set: { loader.setFullAccess($0) })) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Full access")
-                                    .font(.system(size: 14, weight: .medium))
-                                Text(loader.fullAccess
-                                     ? "Actions run automatically with no confirmation."
-                                     : "Risky actions pause for your confirmation.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                        if let fullAccess = loader.fullAccess {
+                            Toggle(isOn: Binding(
+                                get: { fullAccess },
+                                set: { loader.setFullAccess($0) })) {
+                                fullAccessLabel
+                            }
+                            .toggleStyle(.switch)
+                            .tint(Theme.accent)
+                            .disabled(loader.fullAccessPending)
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                fullAccessLabel
+                                HStack {
+                                    Button("Check status") { Task { await loader.refreshFullAccess() } }
+                                    Button("Turn Full access off") { loader.setFullAccess(false) }
+                                }
+                                .controlSize(.small)
+                                .disabled(loader.fullAccessPending)
                             }
                         }
-                        .toggleStyle(.switch)
-                        .tint(Theme.accent)
 
                         Divider()
 
