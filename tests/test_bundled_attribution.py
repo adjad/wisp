@@ -48,8 +48,19 @@ PASS = FAIL = 0
 KEY = "c" * 64
 
 STUB = textwrap.dedent('''
-    import json, sys
+    print("fake engine: importing", flush=True)
+    import json, socket, socketserver, sys
     from http.server import BaseHTTPRequestHandler, HTTPServer
+    print("fake engine: imports complete", flush=True)
+    def refuse_hostname_lookup(*args, **kwargs):
+        raise AssertionError("fake engine must not resolve hostnames")
+    socket.getfqdn = refuse_hostname_lookup
+    class LocalHTTPServer(HTTPServer):
+        def server_bind(self):
+            # The loopback-only fixture needs no hostname lookup.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name = "localhost"
+            self.server_port = self.server_address[1]
     args = sys.argv[1:]
     port = int(args[args.index("--port") + 1])
     base = args[args.index("--base-path") + 1]
@@ -59,7 +70,10 @@ STUB = textwrap.dedent('''
             ok = self.headers.get("Authorization") == "Bearer " + key
             self.send_response(200 if ok else 401); self.end_headers(); self.wfile.write(b"{}")
         def log_message(self, *a): pass
-    HTTPServer(("127.0.0.1", port), H).serve_forever()
+    print("fake engine: constructing HTTPServer", flush=True)
+    server = LocalHTTPServer(("127.0.0.1", port), H)
+    print("fake engine: listening", flush=True)
+    server.serve_forever()
 ''')
 
 IMPOSTOR = textwrap.dedent('''
@@ -84,6 +98,21 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     else:
         FAIL += 1
         print(f"  FAIL {name} {detail}")
+
+
+def startup_failure(manager: EngineManager) -> str:
+    """Capture the original fake child's status and bounded log before teardown."""
+    proc = manager._proc
+    status = ("no Popen handle" if proc is None else
+              f"pid={proc.pid}, returncode={proc.poll()} (None means running)")
+    try:
+        with manager.layout.log_path.open("rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - 4096))
+            tail = log.read(4096).decode("utf-8", errors="replace")
+    except OSError as exc:
+        tail = f"<could not read fake-child log: {exc}>"
+    return f"Fake engine startup failed: {status}\nengine.log tail (at most 4096 bytes):\n{tail}"
 
 
 def sockets_allowed() -> bool:
@@ -248,7 +277,10 @@ def test_accepts_the_engine_wisp_launched() -> None:
     env = Env()
     try:
         env.manager.start()
-        check("engine listening", wait_listening(env.port))
+        listening = wait_listening(env.port)
+        check("engine listening", listening)
+        if not listening:
+            raise AssertionError(startup_failure(env.manager))
         reply = env.request()
         check("request through the real transport succeeds", reply.status_code == 200, str(reply.status_code))
         check("bearer key was accepted by the engine", reply.status_code == 200)

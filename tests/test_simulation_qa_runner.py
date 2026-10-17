@@ -689,11 +689,32 @@ def test_pull_request_regressions_run_exactly_what_simulation_qa_does_not(
     assert "Regression gate: 0/0 test modules passed" in capfd.readouterr().out
 
 
-def test_real_manifest_leaves_no_module_to_either_gate_alone() -> None:
+def test_pull_request_supplement_keeps_socket_branches_and_uncovered_modules(
+        monkeypatch, tmp_path) -> None:
     from scripts import test_replay_failure_fixes as gate
-    # Simulation QA's full profile runs every discovered module, so pull-request
-    # python-regressions has nothing left to repeat; a drift fails both gates.
-    assert gate._outside_simulation_qa(gate._tests()) == []
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    names = ["tests/test_covered.py", "tests/test_bundled_engine.py",
+             "tests/test_uncovered.py", "tests/test_bundled_attribution.py"]
+    paths = [tmp_path / name for name in names]
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", set(names) - {"tests/test_uncovered.py"})
+
+    selected = gate._outside_simulation_qa(paths)
+    assert selected == paths[1:]  # Stable order, including already-listed socket modules.
+    assert len(selected) == len(set(selected))
+    # A socket module missing from the sandbox manifest is still selected once.
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", {"tests/test_covered.py"})
+    assert gate._outside_simulation_qa(paths) == selected
+
+
+def test_real_manifest_runs_unrestricted_engine_socket_branches_on_pull_requests() -> None:
+    from scripts import test_replay_failure_fixes as gate
+    discovered = gate._tests()
+    selected = {str(path.relative_to(gate.ROOT))
+                for path in gate._outside_simulation_qa(discovered)}
+    expected = {"tests/test_bundled_attribution.py", "tests/test_bundled_engine.py"}
+    assert gate.UNSANDBOXED_SOCKET_TESTS == expected
+    assert selected == expected
+    assert expected <= set(simqa.SAFE_FULL_TESTS)
 
 
 def test_parallel_start_hint_changes_only_scheduling(monkeypatch) -> None:
