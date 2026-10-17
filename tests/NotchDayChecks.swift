@@ -141,7 +141,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                            overdue: ["Get DoorDash order"], next: nil)
           == "A light Saturday. PA 2 is due today, and Get DoorDash order is still open.", "lede with due and overdue")
     check(DayTimeline.lede(weekday: "Sunday", isToday: true, load: .free, dueToday: [], overdue: [], next: nil)
-          == "A free Sunday. Nothing needs you right now.", "lede on a clear day")
+          == "A free Sunday. Nothing needs you right now.", "lede on a free day")
     check(DayTimeline.lede(weekday: "Monday", isToday: true, load: .packed, dueToday: ["nothing"], overdue: ["Pay rent", "Return book"],
                            next: (title: "Club", time: "3 PM"))
           == "A packed Monday. Two overdue reminders are still open.",
@@ -200,6 +200,8 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(allDayLong.summary == "Packed: 1 meeting, 8 h booked", "one long event: \(allDayLong.summary)")
     let late = load([event("Dinner", 19, 20), event("Show", 20.5, 22), event("Call", 22.5, 23)], from: at(18.5))
     check(late.verdict == .steady && late.summary == "Steady: 3 meetings from 7 PM", "after 6 PM: \(late.summary)")
+    let lateAfternoon = load([event("Dinner", 19, 20), event("Show", 20.5, 22), event("Call", 22.5, 23)], from: at(17.5))
+    check(lateAfternoon.summary == "Steady: 3 meetings from 7 PM", "between 5 and 6 PM: \(lateAfternoon.summary)")
     let backwards = load([event("Lab", 13, 12)])
     check(backwards.uncertain && backwards.meetings == 1, "an end before the start counts as an hour and reads about")
     let nested = load([event("Workshop", 13, 16), event("Talk", 13.5, 14)])

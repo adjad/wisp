@@ -540,7 +540,9 @@ struct DayLoad: Equatable {
                 : "Light day: 2 meetings, " + about + span(left[0].start, lastEnd, zone: zone)
         } else {
             verdict = .steady
-            summary = "Steady: \(meetings)" + (lo >= windowEnd
+            // Nothing booked in what's left of 9-6 (late in the day, or only
+            // evening meetings): say when they start rather than "0 h booked".
+            summary = "Steady: \(meetings)" + (lo >= windowEnd || occupied < 0.25
                 ? " from " + clock(max(from, left[0].start), zone: zone)
                 : largestGap >= 1 ? ", longest free stretch " + about + hours(largestGap)
                 : ", " + about + hours(occupied) + " booked")
