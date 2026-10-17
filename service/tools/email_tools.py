@@ -360,19 +360,22 @@ def _compose_source(native: str, part: str) -> str:
         return native
     raw = part == "raw"
     separator = _RAW_RS if raw else "\n"
+    # Decided once per account: _provider_selected scans the whole native
+    # snapshot, so asking it per record made this quadratic and froze the
+    # event loop for tens of seconds on a large Mail history.
+    selected = [(address, item) for address, item in _external_accounts.items()
+                if _provider_selected(address, item, part)]
     kept = []
     for record in native.split(separator):
         if not record.strip():
             continue
         label, native_id = _source_identity(record, raw=raw)
         # No successful provider snapshot for this part? Keep its native fallback.
-        if not any(_provider_selected(address, item, part) and
-                   _covered_source(label, native_id, address, item)
-                   for address, item in _external_accounts.items()):
+        if not any(_covered_source(label, native_id, address, item)
+                   for address, item in selected):
             kept.append(record)
-    for address, item in _external_accounts.items():
-        if _provider_selected(address, item, part):
-            kept.extend(r for r in (item.get(part) or "").split(separator) if r.strip())
+    for address, item in selected:
+        kept.extend(r for r in (item.get(part) or "").split(separator) if r.strip())
     if not raw:
         kept.sort(key=_row_ts, reverse=True)
     return separator.join(kept)

@@ -303,6 +303,22 @@ class GmailSource(unittest.TestCase):
         E.external_email_error(ME, "headers", "offline")
         self.assertIn("Native fallback", E._headers)
 
+    def test_recompose_decides_provider_once_per_account_not_per_record(self):
+        # A failed provider makes _provider_selected scan the whole native
+        # snapshot; asking per record froze the backend on a large Mail history.
+        self.accounts[SCHOOL] = {"client_id": "other", "refresh_token": "other"}
+        E.configure_external_accounts(self.accounts)
+        self.publish(headers=header(subject="Provider copy"))
+        E.cache_emails("\n".join(header(ME, f"Native {i}", stamp=time.time() - i) for i in range(400)))
+        E.external_email_error(ME, "headers", "offline")
+        calls = []
+        real = E._provider_selected
+        with patch.object(E, "_provider_selected",
+                          lambda *args: calls.append(args) or real(*args)):
+            E.configure_external_accounts(self.accounts)
+        self.assertLessEqual(len(calls), 3 * len(self.accounts))
+        self.assertIn("Provider copy", E._headers)
+
     def test_metadata_is_namespaced_by_account(self):
         self.accounts[SCHOOL] = {"client_id": "other", "refresh_token": "other"}
         E.configure_external_accounts(self.accounts)
