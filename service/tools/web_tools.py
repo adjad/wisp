@@ -1329,14 +1329,23 @@ _WEATHER_DAY = r"(?:today|tomorrow)"
 _WEATHER_TRAILING_TIME = re.compile(
     rf"(?:^|(?:\s*,)?\s+)(?:(?:for|on)\s+)?(?P<word>{_WEATHER_NOW}|{_WEATHER_DAY})(?:\s+please)?\s*[.!?]*$", re.I)
 _WEATHER_LEADING_TIME = re.compile(
-    rf"^(?:(?:for|on)\s+)?(?P<word>{_WEATHER_NOW}|{_WEATHER_DAY})\s*,?\s+(?:(?:in|for|at)\s+)?", re.I)
+    rf"^(?:(?:for|on)\s+)?(?P<word>{_WEATHER_NOW}|{_WEATHER_DAY})(?P<sep>\s*,?\s+(?:(?:in|for|at)\s+)?)", re.I)
+
+
+def _leading_weather_time(place: str):
+    match = _WEATHER_LEADING_TIME.match(place)
+    # A bare "now" needs a separator after it: "now, Tokyo" and "now in Tokyo"
+    # are time words, but "Now Zad" (Afghanistan) is a place name.
+    if match and match["word"].lower() == "now" and not match["sep"].strip():
+        return None
+    return match
 
 
 def _split_weather_time(place: str) -> tuple[str, str]:
     """Return (place, whole-date word) with current-time phrases removed."""
     day = ""
     while (match := _WEATHER_TRAILING_TIME.search(place)
-           or _WEATHER_LEADING_TIME.match(place)):
+           or _leading_weather_time(place)):
         word = " ".join(match["word"].lower().split())
         if re.fullmatch(_WEATHER_DAY, word):
             if day and day != word:
