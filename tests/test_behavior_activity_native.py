@@ -73,7 +73,7 @@ def test_signal_settings_async_order(tmp_path):
     wire.write_text(json.dumps({"cases": cases, "names": names}))
     source = (root / "app/Sources/WispApp/LearnedView.swift").read_text()
     # Exact model/value declarations; exclude every view/window and real client.
-    pure = source[source.index("struct LearnedPattern:"):source.index("final class LearnedWindow")]
+    pure = source[source.index("struct LearnedPattern:"):source.index("struct LearnedView: View")]
     assert "NSApplication" not in pure and "NSWindow" not in pure
     model = tmp_path / "LearnedModel.swift"
     model.write_text("import Foundation\nimport Combine\nimport CoreFoundation\n" + pure)

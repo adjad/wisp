@@ -36,7 +36,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             today: { WispRouter.shared.open(.today(focus: .plan)) },
             research: { WispRouter.shared.open(.research) },
             memory: { WispRouter.shared.open(.memory(.facts)) },
-            learned: { WispRouter.shared.open(.memory(.learned)) },
             settings: { WispRouter.shared.open(.settings) },
             searchEverything: { [weak self] in self?.toggleSearch() }),
         debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
@@ -233,9 +232,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Where every route lands. Today, Research, Memory, What Wisp learned,
-    /// Settings and Setup still open their own windows; later changes move them
-    /// into the notch or the Wisp window here, without touching their callers.
     /// Full access has one source; the Wisp window's composer pill follows it
     /// wherever it changes (quick settings, Settings, or the pill itself).
     private func observeFullAccess() {
@@ -244,6 +240,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Where every route lands. Memory is a section of the Wisp window. Today,
+    /// Research, Settings and Setup still open their own windows; later changes
+    /// move them into the notch or the Wisp window here, without touching their callers.
     private func open(_ route: WispRoute) {
         switch route {
         case .chat(let sessionId):
@@ -252,10 +251,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             TodayWindow.show(model: todayModel, initialTab: focus.tab)
         case .research:
             researchLibrary.show()
-        case .memory(.facts):
-            MemoryWindow.shared.show()
-        case .memory(.learned):
-            LearnedWindow.shared.show()
+        case .memory(let focus):
+            wispWindow.show(memory: focus)
         case .settings:
             openSettings()
         case .setup:

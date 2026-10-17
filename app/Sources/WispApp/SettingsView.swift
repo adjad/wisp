@@ -1127,7 +1127,7 @@ final class SettingsLoader: ObservableObject {
                 ?? "Learning status has not been confirmed. Wisp may still be learning. Check status or turn learning off."
         }
         let sources = "Learns from your calendar, reminders, message timing and how you use Wisp. "
-            + "Optional app, website, email and message interpretation has separate source controls in What Wisp has learned. "
+            + "Optional app, website, email and message interpretation has separate source controls in Memory › Routines. "
             + "Nudges at most 4 a day. "
         guard enabled else {
             return "Off. Wisp is not learning your routines or sending nudges. What it already "
@@ -1280,7 +1280,7 @@ struct SettingsView: View {
                         NSApp.sendAction(NSSelectorFromString("openResearchLibrary"),
                                          to: nil, from: nil)
                     }
-                    Button("Open Memory") { MemoryWindow.shared.show() }
+                    Button("Open Memory") { WispRouter.shared.open(.memory(.facts)) }
                 }
                 Divider()
                 }
@@ -1769,7 +1769,7 @@ struct SettingsView: View {
                         }
 
                         HStack(spacing: 10) {
-                            Button("See what Wisp learned") { LearnedWindow.shared.show() }
+                            Button("See what Wisp learned") { WispRouter.shared.open(.memory(.routines)) }
                             Button("Forget what Wisp learned…", role: .destructive) {
                                 confirmForgetBehavior = true
                             }
