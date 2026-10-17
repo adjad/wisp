@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let setupGuideShownKey = "wisp.setupGuide.shown"
     private static let notchTipShownKey = "wisp.notchTip.shown"
     private var pendingCollapse: DispatchWorkItem?
+    private var menuTracking = false
     private var hoverIntent = HoverIntent()
     private var hoverDwell: DispatchWorkItem?
     private var hoverMonitors: [Any] = []
@@ -169,6 +170,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DisplayGeometry.shared.onChange = { [weak self] in self?.displaysChanged() }
         DisplayGeometry.shared.startObserving()
         installHoverMonitors()
+        for (name, tracking) in [(NSMenu.didBeginTrackingNotification, true),
+                                 (NSMenu.didEndTrackingNotification, false)] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.menuTracking = tracking }
+            }
+        }
         setupObserver = NotificationCenter.default.addObserver(
             forName: .wispOpenSetupGuide, object: nil, queue: .main
         ) { [weak self] _ in
@@ -403,6 +410,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func requestPresentation(_ surface: OverlayTransition.Surface) {
+        // Pinning only holds off automatic collapse. Once the panel goes back to
+        // the bar or away by any route (collapse, Search closing, dismiss), it is unpinned.
+        if surface == .bar || surface == .hidden { model.pinned = false }
         cancelScheduledCollapse()
         cancelHoverDwell()
         if surface != .search {
@@ -422,8 +432,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func collapse() {
         // A delayed focus/hover callback from chat must not cancel Search.
         guard presentation.desired == .chat else { return }
-        // Pinning only holds off automatic collapse; an explicit one unpins.
-        model.pinned = false
         requestPresentation(.bar)
     }
 
@@ -503,7 +511,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // summary request can be created. Presentation callbacks only move views.
     private func dismissToMenuBar() {
         notchDocked = false
-        model.pinned = false
         let wasCollapsed = model.collapsed
         model.newChat()
         model.collapsed = wasCollapsed
@@ -523,6 +530,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // message draft being edited) out from under the user; a mid-task
             // generation is fine (the notch bar's dot shows it's still working).
             if self.model.holdsOpen { return }
+            // A menu opened from the panel (the chat switcher) runs outside it,
+            // so the pointer leaving the panel is not the person leaving.
+            if self.menuTracking { return }
             self.collapse()
         }
         pendingCollapse = work
@@ -1037,20 +1047,42 @@ extension AppDelegate {
     }
 
     static func checkPinnedPanelHoldsOpen() async {
-        let delegate = AppDelegate()
-        delegate.presentation.request(.chat)
-        let opening = delegate.presentation.next()!
-        delegate.model.collapsed = false
-        delegate.finishPresentation(opening)
-        delegate.model.pinned = true
-        delegate.scheduleCollapse()
+        func opened() -> AppDelegate {
+            let delegate = AppDelegate()
+            delegate.presentation.request(.chat)
+            let opening = delegate.presentation.next()!
+            delegate.model.collapsed = false
+            delegate.finishPresentation(opening)
+            return delegate
+        }
+        let idle = opened()
+        let pinned = opened()
+        pinned.model.pinned = true
+        let typing = opened()
+        typing.model.input = "half a thought"
+        let editing = opened()
+        editing.model.messageDraft = OverlayModel.MessageDraft(to: "fixture", text: "Hi", isEditing: true)
+        for delegate in [idle, pinned, typing, editing] { delegate.scheduleCollapse() }
         try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
-        precondition(!delegate.model.collapsed && delegate.presentation.desired == .chat,
-                     "A pinned panel must not auto-collapse")
-        delegate.collapse()
-        precondition(!delegate.model.pinned, "An explicit collapse must unpin")
-        precondition(delegate.presentation.desired == .bar, "An explicit collapse still collapses a pinned panel")
-        print("PASS: AppDelegate pinned panel holds open until explicitly collapsed")
+        precondition(idle.presentation.desired == .bar, "Control: an idle panel must auto-collapse")
+        for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited")] {
+            precondition(delegate.presentation.desired == .chat, "\(what) must hold the panel open")
+        }
+        pinned.collapse()
+        precondition(!pinned.model.pinned, "An explicit collapse must unpin")
+        precondition(pinned.presentation.desired == .bar, "An explicit collapse still collapses a pinned panel")
+        let dismissed = opened()
+        dismissed.model.pinned = true
+        dismissed.dismissToMenuBar()
+        precondition(!dismissed.model.pinned, "Dismissing must unpin")
+        let history = [OverlayModel.Turn(role: "user", text: "a"), OverlayModel.Turn(role: "assistant", text: "b"),
+                       OverlayModel.Turn(role: "user", text: "c")]
+        let local = [OverlayModel.Turn(role: "user", text: "c"), OverlayModel.Turn(role: "assistant", text: "d")]
+        precondition(OverlayModel.joining(history: history, before: local).map(\.text) == ["a", "b", "c", "d"],
+                     "A turn saved before its chat's history loaded appears once")
+        precondition(OverlayModel.joining(history: Array(history.prefix(2)), before: local).map(\.text) == ["a", "b", "c", "d"],
+                     "History goes before turns asked while it loaded")
+        print("PASS: AppDelegate collapse holds (pin, typing, draft), unpins on collapse and dismiss")
     }
 
     static func checkDismissReopenInput() {

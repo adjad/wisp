@@ -436,7 +436,7 @@ struct OverlayView: View {
                 } else {
                     MarkdownView(text: turn.text)
                 }
-                let hasDetails = turn.model != nil || turn.routeRole != nil
+                let hasDetails = !debugHeadline(for: turn).isEmpty || !(turn.routeReason ?? "").isEmpty
                 let showDetails = hasDetails && (model.debugMode != detailsToggled.contains(turn.id))
                 HStack(spacing: 14) {
                     if hasDetails {

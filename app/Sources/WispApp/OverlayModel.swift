@@ -383,6 +383,21 @@ final class OverlayModel: ObservableObject {
         }
         sessionId = ""
         reset()
+        // The chat just left belongs in the switcher now.
+        refreshRecentChats()
+    }
+
+    /// Saved history followed by the turns asked here while it loaded. A load that
+    /// finished after one of those turns was saved already ends with it, so the
+    /// overlap is kept once.
+    static func joining(history: [Turn], before local: [Turn]) -> [Turn] {
+        var overlap = min(history.count, local.count)
+        while overlap > 0 {
+            let tail = history.suffix(overlap), head = local.prefix(overlap)
+            if zip(tail, head).allSatisfy({ $0.role == $1.role && $0.text == $1.text }) { break }
+            overlap -= 1
+        }
+        return Array(history.dropLast(overlap)) + local
     }
 
     func run(_ command: NotchCommand) {
@@ -419,17 +434,20 @@ final class OverlayModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             let rows = await self.client.chatTurns(id: target)
-            // Something else happened meanwhile (another chat, or a new prompt).
-            guard self.sessionId == target, self.turns.isEmpty else { return }
+            // Another chat was opened meanwhile; this history is not for it.
+            guard self.sessionId == target else { return }
             guard let rows else {
                 self.showTransientNotice("Couldn't load that chat. New messages still continue it.")
                 return
             }
             // The saved history keeps which tools an answer used, not their results.
-            self.turns = ChatHistory.messages(from: rows).map { message in
+            // It goes before anything already asked here while it loaded, which
+            // continued the same session.
+            let history = ChatHistory.messages(from: rows).map { message in
                 Turn(role: message.role == .user ? "user" : "assistant", text: message.text,
                      activity: message.tools.map { "\($0.name) — used" })
             }
+            self.turns = Self.joining(history: history, before: self.turns)
             self.onResize()
         }
     }
@@ -900,7 +918,7 @@ final class OverlayModel: ObservableObject {
     private func completeSubmission(_ dispatchID: UInt64) {
         let next = submissionState.complete(dispatchID)
         queuedPromptCount = submissionState.queuedCount
-        if let next { start(next) }
+        if let next { start(next) } else { refreshRecentChats() }
     }
 
     // Folds this turn's tracked debug metadata into the Turn being finalized.

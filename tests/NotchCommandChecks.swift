@@ -43,6 +43,6 @@ struct NotchCommandChecks {
         check(NotchCommand.suggestions(for: "hello").isEmpty, "no list for a prompt")
         check(NotchCommand.suggestions(for: "/today now").isEmpty, "no list once words follow")
 
-        print("Notch command checks passed (\(count)).")
+        print("\(count) notch command checks passed.")
     }
 }
