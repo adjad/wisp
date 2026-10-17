@@ -31,13 +31,13 @@ struct OverlayView: View {
         .onAppear { breathe = true }
         .onChange(of: model.collapsed) { _, isCollapsed in
             if !isCollapsed {
-                if model.tab != .today { focused = true }
+                if !model.tab.showsDay { focused = true }
                 model.refreshRecentChats()
             }
         }
-        // Switching to Ask or Research (including Ask Wisp from Today) puts the cursor in the field.
+        // Switching to Ask or Research (including Ask Wisp from Brief or Day) puts the cursor in the field.
         .onChange(of: model.tab) { _, tab in
-            if tab != .today && !model.collapsed { focused = true }
+            if !tab.showsDay && !model.collapsed { focused = true }
         }
     }
 
@@ -71,8 +71,10 @@ struct OverlayView: View {
                     content
                     statusRow.padding(.top, 10)
                 }
-            case .today:
-                NotchTodayView(model: model, today: todayModel).padding(.top, 12)
+            case .brief:
+                NotchBriefView(model: model, today: todayModel).padding(.top, 12)
+            case .day:
+                NotchDayView(model: model, today: todayModel).padding(.top, 12)
             case .research:
                 if model.showingResearch {
                     ResearchView(model: researchModel, compact: true,
@@ -134,8 +136,8 @@ struct OverlayView: View {
                     .opacity(breathe ? 0.3 : 1)
                     .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: breathe)
             } else if model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
-                // What needs you today, from Today's last load (it loads only while its
-                // tab is open, so the bar never triggers a load).
+                // What's due today or overdue, from the day's last load (it loads only
+                // while Brief or Day is open, so the bar never triggers a load).
                 HStack(spacing: 6) {
                     if !isNotch { orb.scaleEffect(0.7) }
                     Text("\(todayCount)").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.black)
@@ -143,7 +145,7 @@ struct OverlayView: View {
                         .background(Capsule().fill(.white))
                 }
                 .padding(.bottom, isNotch ? 3 : 8)
-                .accessibilityLabel(todayCount == 1 ? "1 thing on Today needs you" : "\(todayCount) things on Today need you")
+                .accessibilityLabel(todayCount == 1 ? "1 thing is due today" : "\(todayCount) things are due today")
             } else if model.setupCard == .later {
                 // Setup was set aside and Wisp still can't answer.
                 HStack(spacing: 6) {
@@ -202,15 +204,15 @@ struct OverlayView: View {
         Divider().overlay(Theme.hairline).padding(.vertical, 10)
     }
 
-    // What needs you on Today, once the day has loaded.
+    // Due today or overdue, once the day has loaded. Undated items wait in the Brief.
     private var todayCount: Int {
-        guard let plan = todayModel.plan, plan.day == todayModel.day else { return 0 }
-        return plan.workspace?.attention.count ?? 0
+        guard let plan = todayModel.currentPlan else { return 0 }
+        return DayTimeline.badgeCount(plan.dayNeeds, endOfDay: todayModel.dayInterval.end.timeIntervalSince1970)
     }
 
     private var tabStrip: some View {
         HStack(spacing: 2) {
-            ForEach(NotchTab.allCases, id: \.self) { tab in tabButton(tab) }
+            ForEach(NotchTab.strip, id: \.self) { tab in tabButton(tab) }
         }
         .padding(2)
         .background(Capsule().fill(Theme.chipFill))
@@ -221,9 +223,9 @@ struct OverlayView: View {
     }
 
     private func tabButton(_ tab: NotchTab) -> some View {
-        let selected = model.tab == tab
-        let count = tab == .today ? todayCount : 0
-        let shortcut = tab.title + " (⌘" + String(tab.shortcutDigit) + ")"
+        let selected = model.tab.stripTab == tab
+        let count = tab == .day ? todayCount : 0
+        let shortcut = tab.title + (tab.shortcutDigit.map { " (⌘" + String($0) + ")" } ?? "")
         return Button { model.tab = tab } label: {
             HStack(spacing: 5) {
                 Text(tab.title).font(.system(size: 11.5, weight: .medium))
@@ -236,7 +238,7 @@ struct OverlayView: View {
         }
         .buttonStyle(.plain)
         .help(shortcut)
-        .accessibilityLabel(count > 0 ? "Today, \(count) need you" : tab.title)
+        .accessibilityLabel(count > 0 ? "Day, \(count) due today" : tab.title)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
@@ -270,7 +272,7 @@ struct OverlayView: View {
     private var windowHelp: String {
         switch model.tab {
         case .ask: return "Open this chat in the Wisp window (⌘O)"
-        case .today: return "Open the full planner in the Wisp window (⌘O)"
+        case .brief, .day: return "Open the full planner in the Wisp window (⌘O)"
         case .research: return "Open the research library (⌘O)"
         }
     }
@@ -282,8 +284,10 @@ struct OverlayView: View {
             Button("") { model.newChat(); model.tab = .ask }.keyboardShortcut("n", modifiers: .command)
             Button("") { model.run(.window) }.keyboardShortcut("o", modifiers: .command)
             Button("") { model.pinned.toggle() }.keyboardShortcut("p", modifiers: .command)
-            ForEach(NotchTab.allCases, id: \.self) { tab in
-                Button("") { model.tab = tab }.keyboardShortcut(KeyEquivalent(tab.shortcutDigit), modifiers: .command)
+            ForEach(NotchTab.strip, id: \.self) { tab in
+                if let digit = tab.shortcutDigit {
+                    Button("") { model.tab = tab }.keyboardShortcut(KeyEquivalent(digit), modifiers: .command)
+                }
             }
         }
         .opacity(0)
@@ -569,7 +573,7 @@ struct OverlayView: View {
 
     // The turn currently in flight: status, tool activity, reasoning, streaming text.
     @ViewBuilder private var liveTurn: some View {
-        // A brief being composed shows its own progress on Today.
+        // A brief being composed shows its own progress on Brief.
         if let progress = model.dailySyncProgress, !model.briefComposing {
             SourceSyncTip(label: model.dailySyncLabel, progress: progress,
                           sources: model.sourceSyncStatuses)

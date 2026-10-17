@@ -1,22 +1,36 @@
 import Foundation
 
-/// The notch panel's tabs. Ask is the conversation; Today is the brief and the
-/// day at a glance; Research turns the next prompt into a research plan.
+/// The notch panel's tabs. Ask is the conversation; Brief is what's going on,
+/// read only; Day is the rest of today, hour by hour. Research is not in the
+/// strip: it is a mode of Ask (`/research`, a job opened from the window, New
+/// research), reached through `.research` and left by choosing a tab.
 ///
 /// Pure logic, checked by tests/NotchTabChecks.swift without the app.
 enum NotchTab: Int, CaseIterable, Equatable {
-    case ask, today, research
+    case ask, brief, day, research
+
+    /// The tabs shown in the strip, in order, with ⌘1 to ⌘3.
+    static let strip: [NotchTab] = [.ask, .brief, .day]
 
     var title: String {
         switch self {
         case .ask: return "Ask"
-        case .today: return "Today"
+        case .brief: return "Brief"
+        case .day: return "Day"
         case .research: return "Research"
         }
     }
 
-    /// ⌘1 to ⌘3 while the panel has focus.
-    var shortcutDigit: Character { Character(String(rawValue + 1)) }
+    /// The strip tab drawn as selected. Research is a mode of Ask.
+    var stripTab: NotchTab { self == .research ? .ask : self }
+
+    /// ⌘1 to ⌘3 while the panel has focus; Research has none.
+    var shortcutDigit: Character? {
+        Self.strip.firstIndex(of: self).map { Character(String($0 + 1)) }
+    }
+
+    /// Brief and Day load and show the day, not a prompt field.
+    var showsDay: Bool { self == .brief || self == .day }
 }
 
 /// Which tab the panel opens on. ⌥Space and the menu-bar icon always open Ask.
@@ -53,15 +67,4 @@ enum NotchSetupCard: Equatable {
 
     /// The tab an opening panel shows: Ask while the full card is up.
     func tabForOpening(_ remembered: NotchTab) -> NotchTab { self == .open ? .ask : remembered }
-}
-
-/// The Today tab's short "Up next" list.
-enum NotchUpNext {
-    /// The first `limit` items still under way or ahead at `now`, in their
-    /// original order. An item with no end counts as under way until its start
-    /// plus `openEndedGrace`.
-    static func upcoming<Item>(_ items: [Item], start: (Item) -> Double, end: (Item) -> Double?,
-                               now: Double, limit: Int = 3, openEndedGrace: Double = 15 * 60) -> [Item] {
-        Array(items.filter { (end($0) ?? start($0) + openEndedGrace) > now }.prefix(limit))
-    }
 }
