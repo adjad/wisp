@@ -1172,6 +1172,8 @@ final class SettingsLoader: ObservableObject {
             _ = try? await URLSession.shared.data(for: req)
             self.saving = false
             await PendingConfigWrites.shared.end()
+            // A role now points at another model: setup's test no longer applies.
+            NotificationCenter.default.post(name: .wispInferenceConfigurationChanged, object: nil)
         }
     }
 }

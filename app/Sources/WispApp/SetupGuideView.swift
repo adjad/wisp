@@ -273,6 +273,8 @@ final class SetupGuideModel: ObservableObject {
     /// Poll only while this guide is visible. The engine owns transfer/resume
     /// state, so closing and reopening setup does not cancel a download.
     func monitor() async {
+        // A host that showed and hid before this task ran must not undo its stop.
+        guard !Task.isCancelled else { return }
         monitoringStopped = false
         await refresh()
         while !Task.isCancelled && !monitoringStopped {

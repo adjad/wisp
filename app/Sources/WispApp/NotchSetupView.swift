@@ -155,7 +155,8 @@ struct NotchSetupView: View {
             HStack(spacing: 8) {
                 chip(label, primary: !setup.testPassed) { Task { await setup.useAndTest() } }
                     .disabled(selected == nil || setup.busy != nil || setup.testing
-                              || !setup.statusIsCurrent || !s.omlx.running)
+                              || !setup.statusIsCurrent || !s.omlx.running
+                              || (selected.map { setup.inUse($0) } == true && !s.ready))
                 Text(setup.testResult ?? "Wisp checks tool calling and saves the real context window.")
                     .font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)

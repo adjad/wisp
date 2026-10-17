@@ -460,6 +460,12 @@ struct SetupGuideChecks {
         let stoppedPolls = SetupHTTP.count("/setup/status")
         await shared.refresh()
         check(SetupHTTP.count("/setup/status") == stoppedPolls, "With no host, setup stops reading status")
+        // Shown and hidden before the poll's task ever ran: setup stays stopped.
+        shared.show(in: "notch")
+        shared.hide(from: "notch")
+        await Task.yield()
+        await shared.refresh()
+        check(SetupHTTP.count("/setup/status") == stoppedPolls, "A host that shows and hides at once leaves setup stopped")
         shared.show(in: "window")
         guard try await waitForSetupRequest({ SetupHTTP.count("/setup/status") > stoppedPolls && shared.statusIsCurrent }) else {
             throw NSError(domain: "SetupGuideChecks", code: 4,
