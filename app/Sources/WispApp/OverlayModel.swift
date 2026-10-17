@@ -145,6 +145,7 @@ final class OverlayModel: ObservableObject {
             // A research plan holds the prompt queue only while it is on screen.
             // Leaving the tab lets a question asked in Ask, or a brief, run.
             if oldValue == .research { releaseResearchDispatch() }
+            showingQuickSettings = false
             onResize()
         }
     }
@@ -160,9 +161,15 @@ final class OverlayModel: ObservableObject {
     // report replace the prompt on the Research tab. Research is a mode of
     // Wisp, not a separate destination window.
     @Published var showingResearch = false
+    // The gear's short list of settings, shown in place of the tab's content.
+    @Published var showingQuickSettings = false { didSet { if showingQuickSettings != oldValue { onResize() } } }
+    @Published private(set) var freeingMemory = false
     @Published var collapsed = false {
         didSet {
-            if collapsed && !oldValue { tabMemory.panelClosed(at: Date()) }
+            if collapsed && !oldValue {
+                tabMemory.panelClosed(at: Date())
+                showingQuickSettings = false
+            }
             onCollapsedChanged()
         }
     }
@@ -447,10 +454,23 @@ final class OverlayModel: ObservableObject {
         case .today: tab = .today
         case .memory: WispRouter.shared.open(.memory(.facts))
         case .research: tab = .research
-        case .settings: WispRouter.shared.open(.settings)
+        case .settings: showingQuickSettings = true
         case .report: reportCurrentProblem()
         case .window: openTabInWindow()
         case .new: newChat()
+        }
+    }
+
+    /// Quick settings' Free up memory: unload the models now. Wisp reloads them on
+    /// the next ask. Not while a reply is being written, which needs its model.
+    func freeUpMemory() {
+        guard conversationSettled, !briefComposing, !freeingMemory else { return }
+        freeingMemory = true
+        Task { [weak self] in
+            guard let self else { return }
+            await self.client.unloadAll()
+            self.freeingMemory = false
+            self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.")
         }
     }
 
