@@ -145,7 +145,7 @@ struct OverlayView: View {
     // brief on demand and drops it into the transcript.
     private var dailySummaryControl: some View {
         HStack(spacing: 6) {
-            Button("Today", systemImage: "calendar.day.timeline.left") { TodayWindow.show() }
+            Button("Today", systemImage: "calendar.day.timeline.left") { WispRouter.shared.open(.today(focus: .plan)) }
                 .font(.system(size: 11, weight: .medium))
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.textSecondary)
@@ -153,7 +153,7 @@ struct OverlayView: View {
                 .background(Capsule().fill(Theme.chipFill))
                 .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                 .help("Plan study and project time around your calendar")
-            Button(action: { model.runDailySummary(); TodayWindow.show(initialTab: 0) }) {
+            Button(action: { model.runDailySummary(); WispRouter.shared.open(.today(focus: .attention)) }) {
                 HStack(spacing: 4) {
                     Image(systemName: "sun.max").font(.system(size: 11))
                     Text("Daily Summary").font(.system(size: 11, weight: .medium))

@@ -4,6 +4,9 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Changed
+- Wisp now starts in the notch. Launching it no longer opens the Wisp window. The first launch after updating opens the notch once with a note about where Wisp lives. Open the window from the Dock icon, the menu bar's **Open Wisp Window**, or **Window ▸ Wisp Window** (⌘1).
+
 ## [1.4.0] - 2026-10-16
 
 Wisp now **learns your routines** and uses them to **suggest how to spend your day**. It reads your Calendar, completed reminders, Mail, Messages and Notes, and optionally your Gmail and your app/idle activity. From these it infers tentative patterns ("you usually reply to email around 1pm") and tentative demands ("this looks like it needs prep time"). It proposes time for them in **Today**.

@@ -19,17 +19,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var researchLibrary = ResearchLibraryWindowController(client: client,
         onOpen: { [weak self] id in self?.openSavedResearch(id) },
         onNew: { [weak self] in self?.newResearch() })
-    // The Chat window: long conversations, saved chats, and the same approvals
-    // as the notch, in a real window. Today, Research, Memory, What Wisp learned,
-    // Search and Settings open the app's existing windows from its sidebar.
-    private lazy var chatWindow = ChatWindowController(
+    // The Wisp window: long conversations, saved chats, and the same approvals
+    // as the notch, in a real window. It opens only when asked for; Wisp starts
+    // in the notch. Its sidebar opens the other parts of the app through
+    // WispRouter, like every other control (see open(_:)).
+    private lazy var wispWindow = WispWindowController(
         backend: LiveChatBackend(client: client),
         launchers: ChatLaunchers(
-            today: { TodayWindow.show() },
-            research: { [weak self] in self?.researchLibrary.show() },
-            memory: { MemoryWindow.shared.show() },
-            learned: { LearnedWindow.shared.show() },
-            settings: { [weak self] in self?.openSettings() },
+            today: { WispRouter.shared.open(.today(focus: .plan)) },
+            research: { WispRouter.shared.open(.research) },
+            memory: { WispRouter.shared.open(.memory(.facts)) },
+            learned: { WispRouter.shared.open(.memory(.learned)) },
+            settings: { WispRouter.shared.open(.settings) },
             searchEverything: { [weak self] in self?.toggleSearch() }),
         debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
     private var searchKeyMonitor: Any?
@@ -44,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var setupWindow: NSWindow?
     private var setupObserver: NSObjectProtocol?
     private static let setupGuideShownKey = "wisp.setupGuide.shown"
+    private static let notchTipShownKey = "wisp.notchTip.shown"
     private var pendingCollapse: DispatchWorkItem?
     private var hoverIntent = HoverIntent()
     private var hoverDwell: DispatchWorkItem?
@@ -138,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // listing missed is still caught by BackendManager before it launches anything.
             await self.backend.startIfNeeded()
         }
+        WispRouter.shared.handler = { [weak self] route in self?.open(route) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = Self.menubarOrb()
@@ -175,15 +178,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
-        // Wisp is a regular app: opening it shows the Chat window.
-        chatWindow.show()
+        // Wisp starts in the notch. The Wisp window opens only when asked for:
+        // the Dock icon, the menu bar, or a hand-off from the notch.
+        showNotchTipOnce()
     }
 
     // Clicking the Dock icon, or opening Wisp again from Finder or Spotlight while it
-    // is running, brings the Chat window back. Closing the window does not quit Wisp.
+    // is running, opens the Wisp window. Closing the window does not quit Wisp.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        chatWindow.show()
+        open(.chat(sessionId: nil))
         return true
+    }
+
+    /// Opening the window at launch used to be how Wisp said "I'm running". Now
+    /// that it starts in the notch, open the notch once and say where Wisp lives,
+    /// so neither a first launch nor an upgrade looks like Wisp failed to open.
+    private func showNotchTipOnce() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.notchTipShownKey) else { return }
+        defaults.set(true, forKey: Self.notchTipShownKey)
+        let duration: TimeInterval = 10
+        // After the bar is on screen, so the drop-open reads as coming from the notch.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            self.openAssistant()
+            self.model.showTransientNotice(
+                "Wisp lives in the notch now. Press ⌥Space or hover here to ask. "
+                    + "Click Wisp in the Dock for the full window.",
+                duration: duration)
+            // Tuck back in once the tip is gone, unless the pointer is on the panel
+            // (scheduleCollapse also keeps an unsent draft open).
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+                guard let self, !self.model.collapsed,
+                      !(self.panel?.frame.contains(NSEvent.mouseLocation) ?? false) else { return }
+                self.scheduleCollapse()
+            }
+        }
+    }
+
+    /// Where every route lands. Today, Research, Memory, What Wisp learned,
+    /// Settings and Setup still open their own windows; later changes move them
+    /// into the notch or the Wisp window here, without touching their callers.
+    private func open(_ route: WispRoute) {
+        switch route {
+        case .chat(let sessionId):
+            if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
+        case .today(let focus):
+            TodayWindow.show(initialTab: focus.tab)
+        case .research:
+            researchLibrary.show()
+        case .memory(.facts):
+            MemoryWindow.shared.show()
+        case .memory(.learned):
+            LearnedWindow.shared.show()
+        case .settings:
+            openSettings()
+        case .setup:
+            openSetupGuide()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -295,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         window.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         window.addItem(.separator())
-        let chatItem = window.addItem(withTitle: "Wisp Chat", action: #selector(openChat), keyEquivalent: "1")
+        let chatItem = window.addItem(withTitle: "Wisp Window", action: #selector(openChat), keyEquivalent: "1")
         chatItem.target = self
         NSApp.windowsMenu = window
         NSApp.mainMenu = main
@@ -306,7 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Keep the menu-bar menu focused on app configuration and diagnostics.
         // Primary workflows live in Wisp's panel, where they have context and
         // progress UI instead of duplicating five shortcuts here.
-        menu.addItem(withTitle: "Open Wisp Chat", action: #selector(openChat), keyEquivalent: "")
+        menu.addItem(withTitle: "Open Wisp Window", action: #selector(openChat), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupGuide), keyEquivalent: "")
         menu.addItem(.separator())
@@ -602,7 +654,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 commitmentKind: commitmentKind)
         }
         model.onOpenChat = { [weak self] sessionId in
-            self?.chatWindow.show(sessionId: sessionId)
+            self?.open(.chat(sessionId: sessionId))
         }
         model.onStartResearch = { [weak self] prompt in
             self?.openResearch(prompt: prompt)
@@ -717,8 +769,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openResearch(prompt: prompt)
     }
 
-    @objc private func openResearchLibrary() { researchLibrary.show() }
-    @objc private func openChat() { chatWindow.show() }
+    @objc private func openResearchLibrary() { open(.research) }
+    @objc private func openChat() { open(.chat(sessionId: nil)) }
 
     private func openSavedResearch(_ id: String) {
         openAssistant()

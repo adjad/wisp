@@ -1,12 +1,17 @@
 import AppKit
 import SwiftUI
 
-/// Owns the single reusable Wisp Chat window: a real resizable window, not the
-/// notch panel, for conversations that are long or that need real room. It
-/// survives the notch closing, and its chats live in the service, so closing
-/// the window loses nothing.
+/// Owns the single reusable Wisp window: a real resizable window, not the notch
+/// panel, for the work that needs room. Wisp starts in the notch; this window
+/// opens only when asked for (the Dock, the menu bar, or a hand-off from the
+/// notch). It survives the notch closing, and its chats live in the service, so
+/// closing the window loses nothing.
 @MainActor
-final class ChatWindowController {
+final class WispWindowController {
+    private static let autosaveName = "WispWindow"
+    /// The autosave name this window had while it was the "Wisp Chat" window.
+    private static let previousAutosaveName = "WispChatWindow"
+
     private var window: NSWindow?
     let store: ChatStore
     private let launchers: ChatLaunchers
@@ -43,11 +48,22 @@ final class ChatWindowController {
             win.center()
             win.minSize = NSSize(width: 820, height: 560)
             win.isReleasedWhenClosed = false
-            win.setFrameAutosaveName("WispChatWindow")
+            Self.carryOverSavedFrame()
+            win.setFrameAutosaveName(Self.autosaveName)
             window = win
         }
         NSApp.activate(ignoringOtherApps: true)
         if window?.isMiniaturized == true { window?.deminiaturize(nil) }
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Keep the window where the person last left it across the rename: copy the
+    /// frame AppKit saved under the old name, once, if none is saved under the new one.
+    private static func carryOverSavedFrame() {
+        let defaults = UserDefaults.standard
+        let key = "NSWindow Frame " + autosaveName
+        guard defaults.object(forKey: key) == nil,
+              let previous = defaults.string(forKey: "NSWindow Frame " + previousAutosaveName) else { return }
+        defaults.set(previous, forKey: key)
     }
 }
