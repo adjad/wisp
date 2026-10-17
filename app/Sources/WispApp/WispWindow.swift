@@ -45,6 +45,16 @@ final class WispWindowController {
         present()
     }
 
+    /// Open the window's Today section, the full planner, on one of its tabs
+    /// (0 is Needs my attention, 1 is Day plan).
+    func showToday(tab: Int) {
+        navigation.todayTab = tab
+        navigation.section = .today
+        present()
+        // A planner already on screen switches tabs and re-reads the clock.
+        NotificationCenter.default.post(name: TodayWindow.didShowNotification, object: nil, userInfo: ["tab": tab])
+    }
+
     /// Open the window's Research section: saved research jobs.
     func showResearch() {
         // Already on Research: a job may have finished or been saved since.
@@ -87,10 +97,13 @@ final class WispWindowController {
     }
 }
 
-/// What the Wisp window's main column shows: chats, the merged Memory, or saved research.
+/// What the Wisp window's main column shows: chats, the full planner, the
+/// merged Memory, or saved research.
 @MainActor
 final class WispWindowNavigation: ObservableObject {
-    enum Section: Equatable { case chats, memory, research }
+    enum Section: Equatable { case chats, today, memory, research }
+    /// The planner's tab when the Today section opens.
+    var todayTab = 1
     @Published var section: Section = .chats
     @Published var memoryTab: WispRoute.MemoryFocus = .facts
     /// The Routines tab's model lives as long as the window, as it did in the
@@ -100,4 +113,7 @@ final class WispWindowNavigation: ObservableObject {
     /// Saved research for the Research section. AppDelegate supplies it, with
     /// the service client; without one (the QA harness) the section is empty.
     var researchLibrary: ResearchLibraryModel?
+    /// The app's one day plan, shared with the notch's Today tab. Without one
+    /// (the QA harness) the Today section is empty.
+    var today: TodayModel?
 }

@@ -51,6 +51,9 @@ asked for. Both talk to the same service and the same saved chats.
 - Composer: Return sends, Option-Return adds a line, paperclip attaches an image,
   and the pill shows Full access as the service confirmed it ("Access
   unconfirmed" when it can't be read).
+- **Today**: the full planner (Needs my attention, Day plan, the task editor,
+  pins, working hours, Email my day plan and its inline report), sharing one
+  `TodayModel` with the notch's Today tab.
 - **Memory**: Facts (saved memories and corrections), Routines (what Wisp learned
   from your activity) and Review (new memories to confirm).
 - **Research**: your 30 most recent research jobs and every pinned one. Opening
@@ -62,7 +65,6 @@ asked for. Both talk to the same service and the same saved chats.
   whatever the tab shows), and every route below. Closing it leaves Wisp running
   in the notch and menu bar; ⌘Q stops it.
 
-The full day planner (task editor, pins, working hours, the daily email),
 Settings and the full setup guide are still their own windows, opened only on
 request.
 
@@ -80,6 +82,7 @@ request.
 | Slash commands | `NotchCommand.swift` |
 | Window (`WispWindowController`, `WispWindowNavigation`) | `app/Sources/WispApp/WispWindow.swift` |
 | Window chats: types, store, service adapter, views, colors | `app/Sources/WispApp/Chat/` |
+| Window Today (the full planner) | `TodayHomeView.swift`, `TodayView.swift` |
 | Window Memory | `MemoryHomeView.swift`, `MemoryView.swift`, `LearnedView.swift` |
 | Window Research | `ResearchHomeView.swift`, `ResearchLibraryView.swift`, `ResearchLibraryModel.swift` |
 | Visual QA harness (`WISP_CHAT_QA` only) | `app/Sources/WispApp/Chat/ChatQA.swift` |
@@ -115,9 +118,11 @@ so the notch collapsing or a tab being rebuilt can't drop a change in flight:
   writes it privately and atomically. The save panel runs with
   `OverlayModel.pickingFile` set. Turning off planner-detail capture closes a
   Today report holding those details.
-- `WispWindowNavigation`: the window's section (chats, Memory, Research), the
-  Memory tab, the Routines model (it lives as long as the window, so a consent
-  write in flight reports its outcome) and the research library.
+- `WispWindowNavigation`: the window's section (chats, Today, Memory,
+  Research), the planner's and Memory's tabs, the Routines model (it lives as
+  long as the window, so a consent write in flight reports its outcome), the
+  research library and the shared `TodayModel`. `TodayWindow` remains only as a
+  standalone host for the mounted planner checks.
 
 `MarkdownView` reads its colors from `\.markdownPalette`; the default is the
 notch's monochrome look.
@@ -127,8 +132,8 @@ notch's monochrome look.
 - A reloaded chat shows which tools an answer used but not their results or
   timing; the service keeps only the tool names. Live answers show everything.
 - There is no per-message model picker: the router chooses the model.
-- The full planner, Settings and the setup guide are separate windows rather
-  than sections of the Wisp window.
+- Settings and the setup guide are separate windows rather than sections of
+  the Wisp window.
 
 ## Testing
 

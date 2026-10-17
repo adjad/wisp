@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 searchEverything: { [weak self] in self?.toggleSearch() }),
             debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
         window.navigation.researchLibrary = ResearchLibraryModel(client: client)
+        window.navigation.today = todayModel
         return window
     }()
     private var searchKeyMonitor: Any?
@@ -255,7 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .chat(let sessionId):
             if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
         case .today(let focus):
-            TodayWindow.show(model: todayModel, initialTab: focus.tab)
+            wispWindow.showToday(tab: focus.tab)
         case .research:
             wispWindow.showResearch()
         case .memory(let focus):

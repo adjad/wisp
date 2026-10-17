@@ -471,7 +471,7 @@ struct TodayView: View {
                 Picker("Daily summary view", selection: $selectedTab) {
                     Text("Needs my attention").tag(0)
                     Text("Day plan").tag(1)
-                }.pickerStyle(.segmented).frame(maxWidth: 460)
+                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 460)
                 Spacer()
                 Button("Email my day plan…", systemImage: "envelope") { showingEmailSettings = true }
             }
@@ -530,7 +530,8 @@ struct TodayView: View {
                                        description: Text("Wisp’s local service needs to be running."))
             }
         }
-        .padding(22).frame(minWidth: 720, minHeight: 620)
+        // Fits the Wisp window's main column beside its sidebar.
+        .padding(22).frame(minWidth: 540, minHeight: 520, alignment: .topLeading)
         .onAppear { onPresentation?(presentation) }
         .onChange(of: presentation) { _, next in
             rebaseDefaultDeadline()
@@ -783,6 +784,10 @@ private struct TodayTaskEditor: View {
 }
 
 @MainActor
+/// A standalone host for TodayView. The app shows the planner as the Wisp
+/// window's Today section (TodayHomeView); this host remains for the mounted
+/// window checks in tests/TodayPlanChecks.swift, and its notification tells a
+/// planner on screen to switch tabs and re-read the clock.
 enum TodayWindow {
     static let didShowNotification = Notification.Name("WispTodayWindowDidShow")
     private static var window: NSWindow?

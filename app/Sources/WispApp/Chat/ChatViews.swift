@@ -35,6 +35,10 @@ struct ChatRootView: View {
             switch navigation.section {
             case .chats:
                 ChatMainColumn(store: store, sidebarVisible: $sidebarVisible)
+            case .today:
+                if let today = navigation.today {
+                    TodayHomeView(today: today, initialTab: navigation.todayTab, sidebarVisible: $sidebarVisible)
+                }
             case .memory:
                 MemoryHomeView(navigation: navigation, sidebarVisible: $sidebarVisible)
             case .research:
@@ -119,7 +123,8 @@ struct ChatSidebar: View {
             .padding(.horizontal, 12).padding(.bottom, 10)
 
             VStack(spacing: 2) {
-                ChatNavRow(symbol: "sun.max", title: "Today", action: launchers.today)
+                ChatNavRow(symbol: "sun.max", title: "Today", selected: navigation.section == .today,
+                           action: launchers.today)
                 ChatNavRow(symbol: "books.vertical", title: "Research", selected: navigation.section == .research,
                            action: launchers.research)
                 ChatNavRow(symbol: "brain", title: "Memory", selected: navigation.section == .memory,
