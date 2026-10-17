@@ -28,6 +28,25 @@ SCHEMA_VERSION = 2
 log = logging.getLogger(__name__)
 
 
+_WARNED_NEWER: set[str] = set()
+
+
+def stored_schema_version(path: Path) -> int | None:
+    """The integer schema version recorded in a behavior db, read without writing anything;
+    None when absent or unreadable."""
+    try:
+        conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        return int(json.loads(row[0])) if row else None
+    except (sqlite3.Error, TypeError, ValueError):
+        return None
+    finally:
+        conn.close()
+
+
 class NewerSchemaError(RuntimeError):
     """The file was written by a newer Wisp. It is left exactly as it is and learning pauses:
     moving it aside (as an unreadable file is) would throw away everything learned the moment
@@ -107,15 +126,22 @@ class Store:
             # Read the version before creating anything: a newer file must not even get
             # this version's tables added to it.
             self._open(str(db_path), create=False)
-            found = self._schema_version()
+            try:
+                found = self._schema_version()
+            except BaseException:
+                self._conn.close()
+                raise
             if isinstance(found, int) and found > SCHEMA_VERSION:
                 self._conn.close()
-                log.warning("behavior db schema %d is newer than %d; learning paused, file kept",
-                            found, SCHEMA_VERSION)
+                if str(self.path) not in _WARNED_NEWER:     # every caller retries; say it once
+                    _WARNED_NEWER.add(str(self.path))
+                    log.warning("behavior db schema %d is newer than %d; learning paused, file kept",
+                                found, SCHEMA_VERSION)
                 raise NewerSchemaError(
                     f"behavior.db was written by a newer version of Wisp (schema {found}, this "
                     f"build reads {SCHEMA_VERSION}); learning is paused and nothing was changed. "
                     "Update Wisp to resume.")
+            self._pragmas()
             self._conn.executescript(_SCHEMA)
             if found is not None and found != SCHEMA_VERSION and not self._migrate(found):
                 # An unreadable version is moved aside, never half-read or overwritten:
@@ -136,15 +162,20 @@ class Store:
                 self.meta_set("store_id", uuid.uuid4().hex)
 
     def _open(self, db_path: str, *, create: bool = True) -> None:
+        """Connect. With ``create=False`` nothing is written (not even the WAL switch), so a
+        file this build must not touch can still be read for its version."""
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         self._conn.row_factory = sqlite3.Row
+        if create:
+            self._pragmas()
+            self._conn.executescript(_SCHEMA)
+
+    def _pragmas(self) -> None:
         try:
             self._conn.execute("PRAGMA journal_mode=WAL")
         except sqlite3.DatabaseError:
             pass  # e.g. :memory: or a filesystem without shared memory
         self._conn.execute("PRAGMA synchronous=NORMAL")
-        if create:
-            self._conn.executescript(_SCHEMA)
 
     def _schema_version(self) -> int | str | None:
         """Stored version as int; the raw value when it is not an int; None if absent."""

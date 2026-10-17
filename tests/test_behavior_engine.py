@@ -446,6 +446,20 @@ def test_newer_schema_db_is_kept_and_learning_pauses(tmp_path):
     newer.close()
 
 
+def test_a_newer_rollback_journal_file_is_not_switched_to_wal(tmp_path):
+    from service.behavior.store import SCHEMA_VERSION, NewerSchemaError, Store
+    conn = sqlite3.connect(tmp_path / "v.db")
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("INSERT INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION + 1),))
+    conn.commit()
+    conn.close()
+    before = (tmp_path / "v.db").read_bytes()
+    with pytest.raises(NewerSchemaError):
+        Store(tmp_path / "v.db")
+    assert (tmp_path / "v.db").read_bytes() == before
+    assert not (tmp_path / "v.db-wal").exists()
+
+
 def test_unreadable_schema_version_is_still_moved_aside(tmp_path):
     from service.behavior.store import SCHEMA_VERSION, Store
     s = Store(tmp_path / "v.db")

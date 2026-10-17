@@ -1384,3 +1384,18 @@ def test_scheduler_does_not_age_out_mid_erase(tmp_path, monkeypatch):
 def test_age_out_never_creates_a_database_that_is_not_there(tmp_path):
     assert br.age_out(tmp_path) == {"observations": 0, "nudges": 0, "delivered": 0}
     assert list(tmp_path.iterdir()) == []
+
+
+def test_age_out_leaves_a_newer_engine_db_byte_for_byte(tmp_path):
+    """A newer Wisp's file is that build's to age out under its own rules."""
+    from service.behavior.store import SCHEMA_VERSION
+    now = time.time()
+    _seed_engine_db(tmp_path, now)
+    conn = sqlite3.connect(str(tmp_path / "behavior.db"))
+    with conn:
+        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION + 1),))
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+    before = (tmp_path / "behavior.db").read_bytes()
+    assert br.age_out(tmp_path, now)["observations"] == 0
+    assert (tmp_path / "behavior.db").read_bytes() == before

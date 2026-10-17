@@ -1442,7 +1442,11 @@ class BehaviorRuntime:
                 del self._availability_cancel.event
         try:
             try:
-                backlog = await asyncio.to_thread(self._history_worker_state)
+                try:
+                    backlog = await asyncio.to_thread(self._history_worker_state)
+                except NewerSchemaError as exc:
+                    backlog = None                # paused: work() records why and does nothing
+                    self.errors["engine"] = str(exc)[:300]
                 if backlog is not None and self.live():
                     await self._history_driver.advance(pending=lambda account:backlog.get(account,0))
             except Exception:
@@ -1860,14 +1864,18 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
                 conn.close()
 
     from service.behavior.source_index import database_mutation
+    from service.behavior.store import SCHEMA_VERSION, stored_schema_version
+    # A file written by a newer Wisp is that build's to age out, under its own rules.
+    newer = (stored_schema_version(home / ENGINE_DB) or 0) > SCHEMA_VERSION
     with engine_database_mutation(home/ENGINE_DB),database_mutation(home/ENGINE_DB):
-        run(ENGINE_DB, [("observations", OBSERVATION_EXPIRY_SQL, now - OBSERVATION_RETENTION_S),
-                        ("observations", "DELETE FROM observations WHERE kind='device_activity' AND ts < ?", now-7*86400),
-                        ("observations", "DELETE FROM observations WHERE kind='activity_bin' AND ts < ?", now-56*86400),
-                        ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
+        if not newer:
+            run(ENGINE_DB, [("observations", OBSERVATION_EXPIRY_SQL, now - OBSERVATION_RETENTION_S),
+                            ("observations", "DELETE FROM observations WHERE kind='device_activity' AND ts < ?", now-7*86400),
+                            ("observations", "DELETE FROM observations WHERE kind='activity_bin' AND ts < ?", now-56*86400),
+                            ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
         run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
         path = home / ENGINE_DB
-        if path.exists():
+        if path.exists() and not newer:
             conn = None
             try:
                 conn = sqlite3.connect(path.resolve().as_uri()+"?mode=rw", uri=True, timeout=30)

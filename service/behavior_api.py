@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.routing import APIRoute
 
 from service.assistant import behavior_runtime
+from service.behavior.store import NewerSchemaError
 
 
 class _ErasedAwareRoute(APIRoute):
@@ -31,6 +32,9 @@ class _ErasedAwareRoute(APIRoute):
         async def handler(request):
             try:
                 return await original(request)
+            except NewerSchemaError as exc:
+                # An older Wisp met a newer file: learning is paused and the file is kept.
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             except (behavior_runtime.RuntimeStopped, sqlite3.ProgrammingError) as exc:
                 if isinstance(exc, sqlite3.ProgrammingError) and "closed" not in str(exc).lower():
                     raise

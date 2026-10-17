@@ -370,8 +370,9 @@ identity and Undo records remain. Schedule-sensitive nudge bodies stay determini
 
 **Older Wisp, newer file.** A `behavior.db` whose schema is newer than the running build
 (for example after rolling back an update) is left exactly as it is: learning pauses,
-`/behavior/status` reports why under `engine.error`, and the newer build picks the file up
-unchanged. Only a file with an unreadable version is moved aside to
+retention skips it (the newer build ages it out under its own rules), `/behavior/status`
+reports why under `engine.error`, other `/behavior/*` endpoints answer 409 with the same
+reason, and the newer build picks the file up unchanged. Only a file with an unreadable version is moved aside to
 `behavior.db.schema-<version>-<stamp>.bak` and re-learned. Builds before this rule (1.3.2 and
 earlier) moved a newer file aside too; nothing restores such a backup automatically.
 
