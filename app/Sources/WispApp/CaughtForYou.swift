@@ -13,6 +13,8 @@ struct AttentionRecord: Decodable, Identifiable, Equatable {
     let decided_at: Double
     let when: String?
     let quote: String?
+    /// The backend's view of whether Undo can work (identity recorded, title on file).
+    let undoable: Bool?
     var id: String { source_id }
 
     /// States worth showing. `already_on_file` means nothing needed doing.
@@ -49,6 +51,9 @@ final class AttentionModel: ObservableObject {
     @Published private(set) var busy = false
     var transport: (URLRequest) async throws -> (Data, URLResponse)
     private let now: () -> Date
+    /// Each refresh's ticket. A response to an older request (a poll that left before an
+    /// Undo or a switch) is dropped instead of overwriting the newer status.
+    private var generation = 0
 
     init(now: @escaping () -> Date = Date.init,
          transport: @escaping (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }) {
@@ -84,12 +89,19 @@ final class AttentionModel: ObservableObject {
         return data
     }
 
-    func refresh() async {
+    /// `keepError` is for the reload after an action, so a refusal ("that reminder was changed
+    /// after Wisp created it") stays on screen instead of being cleared by the reload.
+    func refresh(keepError: Bool = false) async {
+        generation += 1
+        let ticket = generation
         do {
-            status = try JSONDecoder().decode(AttentionStatus.self, from: try await send("/assistant/attention"))
-            error = ""
+            let next = try JSONDecoder().decode(AttentionStatus.self, from: try await send("/assistant/attention"))
+            guard ticket == generation else { return }
+            status = next
+            if !keepError { error = "" }
         } catch {
-            self.error = error.localizedDescription
+            guard ticket == generation, !Task.isCancelled else { return }
+            if !keepError || self.error.isEmpty { self.error = error.localizedDescription }
         }
     }
 
@@ -105,12 +117,12 @@ final class AttentionModel: ObservableObject {
         } catch {
             self.error = error.localizedDescription
         }
-        await refresh()
+        await refresh(keepError: true)
     }
 
     /// Removes exactly the reminder this record created (the backend refuses anything else).
     func undo(_ record: AttentionRecord) async {
-        guard !busy, record.state == "created" else { return }
+        guard !busy, record.state == "created", record.undoable == true else { return }
         busy = true
         defer { busy = false }
         do {
@@ -119,7 +131,7 @@ final class AttentionModel: ObservableObject {
         } catch {
             self.error = error.localizedDescription
         }
-        await refresh()
+        await refresh(keepError: true)
     }
 }
 
@@ -183,7 +195,7 @@ struct CaughtForYouSection: View {
                 }
             }
             Spacer(minLength: 8)
-            if item.state == "created" {
+            if item.state == "created" && item.undoable == true {
                 Button("Undo") { Task { await model.undo(item) } }
                     .disabled(model.busy)
                     .help("Removes the reminder Wisp added for this message, and nothing else.")

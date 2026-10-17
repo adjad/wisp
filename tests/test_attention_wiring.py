@@ -329,6 +329,21 @@ def test_status_reports_mode_counts_and_recent_actions(client):
     body = client.get("/assistant/attention").json()
     assert body["settings"]["mode"] == "shadow" and body["modes"] == ["off", "shadow", "live"]
     assert body["recent"][0]["source_id"] == "msg:a" and body["recent"][0]["when"] == "today at 6:00 PM"
+    assert body["recent"][0]["undoable"] is False          # no recorded identity: Undo would be refused
+
+
+def test_status_lists_only_shown_states_and_marks_what_can_be_undone(client):
+    led = wiring.get_ledger()
+    for i in range(25):                                    # a busy week of "already on file"
+        led.claim(f"msg:k{i}", title="K", due_ts=NOW, now=NOW - 100 + i)
+        led.finish(f"msg:k{i}", "already_on_file", {}, NOW - 100 + i)
+    led.claim("msg:own", title="Mom: Quad (6:00 PM)", due_ts=NOW, now=NOW - 200)
+    led.finish("msg:own", "created", {"result": {"created": {"source": "reminders", "source_id": "x"}}}, NOW - 200)
+    led.claim("msg:gone", title="Mom: Quad (6:00 PM)", due_ts=NOW, now=NOW - 300)
+    led.finish("msg:gone", "created", {"result": {"created": None}}, NOW - 300)
+    rows = {r["source_id"]: r for r in client.get("/assistant/attention").json()["recent"]}
+    assert set(rows) == {"msg:own", "msg:gone"}
+    assert rows["msg:own"]["undoable"] is True and rows["msg:gone"]["undoable"] is False
 
 
 def test_settings_can_be_changed_and_bad_values_are_refused(client, isolated):

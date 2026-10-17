@@ -395,13 +395,18 @@ curl -s -X PUT localhost:8765/assistant/attention/settings -H 'content-type: app
 Known and accepted: `capped` is final (a message capped today is not reconsidered tomorrow); a create that succeeded but crashed before the ledger recorded it ends as `unknown` and cannot be undone through the endpoint; contact names match on the last 10 digits; the endpoints, like the rest of the backend, have no authentication beyond loopback.
 
 **Surfaces (built 2026-10-16).** The app turns `attention_added` into a notification naming
-the reminder, its time and the quoted message (never the sender's raw handle). Today's
-"Needs my attention" tab and the notch's Today tab show **Caught for you**: the last week's
-decisions (`created`, `shadow` "would add", `capped`, `unknown`, `failed`, `undone`; an
-`already_on_file` row is not shown), each with its quote; **Undo** appears only on a row in
-`created`; and an **Add reminders automatically** switch moves between Preview (`shadow`)
-and Live through `PUT /assistant/attention/settings` (switching into Live re-baselines, so
-nothing older is acted on). Mail is not read on this path.
+the reminder, its time and the quoted message. Delivery is best effort: the event is transient,
+so one published while the app is reconnecting, or during quiet hours (not published), shows no
+banner, and Caught for you is the record. A sender with no contact name is labelled by a masked
+handle (`Text from …4567`, `Text from s…@icloud.com`), so a raw phone number or email address never
+lands in a reminder title or a banner. Today's "Needs my attention" tab and the notch's Today tab
+show **Caught for you**: the last week's decisions (`created`, `shadow` "would add", `capped`,
+`unknown`, `failed`, `undone`; the API lists only these, so `already_on_file` rows cannot crowd
+them out), each with its quote. **Undo** appears only where `undoable` is true (a `created` row
+whose identity was recorded and whose title is still on file); a refusal stays on screen. An
+**Add reminders automatically** switch moves between Preview (`shadow`) and Live through
+`PUT /assistant/attention/settings` (switching into Live re-baselines, so nothing older is acted
+on). Mail is not read on this path.
 Auditor review is required before merge (outbound action and persisted data).
 
 ### Slice 7 — Shadow run, then graduate (S + calendar time)

@@ -571,7 +571,8 @@ struct TodayPlanChecks {
         func status() throws -> Data {
             let row: (String, String, Double) -> [String: Any] = { id, state, at in
                 ["source_id": id, "state": state, "title": "Mom: Quad at 6PM", "due_ts": t + 3600,
-                 "event_ts": t + 5400, "decided_at": at, "when": "today 6:00 PM", "quote": "meet me in the Quad at 6PM"]
+                 "event_ts": t + 5400, "decided_at": at, "when": "today 6:00 PM", "quote": "meet me in the Quad at 6PM",
+                 "undoable": id == "made"]
             }
             return try JSONSerialization.data(withJSONObject: [
                 "settings": ["mode": mode, "daily_cap": 3, "quiet_start": 22, "quiet_end": 8,
@@ -604,6 +605,34 @@ struct TodayPlanChecks {
         check(put.url!.path == "/assistant/attention/settings" && model.live)
         await model.setLive(false)
         check(!model.live && mode == "shadow", "Turning it off returns to preview, never to a hidden mode")
+        // A refusal from Undo stays on screen after the reload that follows it.
+        var stale: CheckedContinuation<(Data, URLResponse), Error>?
+        var holdNextGet = false
+        let refusing = AttentionModel(now: { now }) { request in
+            if request.httpMethod == "POST" {
+                return (Data("{\"detail\":\"That reminder was changed after Wisp created it; nothing was removed.\"}".utf8),
+                        HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+            }
+            if holdNextGet {
+                holdNextGet = false
+                return try await withCheckedThrowingContinuation { stale = $0 }
+            }
+            return (try status(), response(request))
+        }
+        await refusing.refresh()
+        await refusing.undo(refusing.items[1])
+        check(refusing.error.hasPrefix("That reminder was changed"), "Undo's refusal must survive the reload")
+        // An older poll that resolves after a newer refresh must not overwrite it.
+        holdNextGet = true
+        let poll = Task { await refusing.refresh() }
+        while stale == nil { await Task.yield() }
+        mode = "live"
+        await refusing.refresh()
+        check(refusing.live)
+        mode = "shadow"
+        stale!.resume(returning: (try status(), response(URLRequest(url: URL(string: "http://127.0.0.1:1/assistant/attention")!))))
+        await poll.value
+        check(refusing.live, "A stale poll must not undo a newer status")
         let failing = AttentionModel(now: { now }) { request in
             (Data("{\"detail\":\"The reminder was not found.\"}".utf8),
              HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
