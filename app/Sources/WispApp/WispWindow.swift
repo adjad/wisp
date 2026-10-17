@@ -47,6 +47,8 @@ final class WispWindowController {
 
     /// Open the window's Research section: saved research jobs.
     func showResearch() {
+        // Already on Research: a job may have finished or been saved since.
+        if navigation.section == .research { navigation.researchLibrary?.refresh() }
         navigation.section = .research
         present()
     }

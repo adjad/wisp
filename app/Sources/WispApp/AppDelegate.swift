@@ -827,10 +827,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// New research starts in the notch's Research tab, where the prompt drafts
     /// an editable plan before Wisp searches the web.
     private func startResearchInNotch() {
-        model.showingQuickSettings = false
-        model.showingResearch = false
-        model.tab = .research
+        prepareNewResearch()
         openAssistant()
+    }
+
+    private func prepareNewResearch() {
+        model.showingQuickSettings = false
+        // Leaves a plan on screen the way Back does, releasing the prompt queue it held.
+        model.returnToChat()
+        model.tab = .research
     }
 
     @objc private func openChat() { open(.chat(sessionId: nil)) }
@@ -841,7 +846,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.tab = .research
         researchModel.openJob(id)
     }
-
 
     private func startNativeSourceReaders() {
         guard !nativeSourceReadersStarted else { return }
@@ -1194,7 +1198,17 @@ extension AppDelegate {
         model.runDailySummary()
         precondition(model.briefComposing, "A brief can be composed while research sits on its tab")
         model.reset()
-        print("PASS: AppDelegate research releases the prompt queue when its tab is left")
+        // New research from the window, while a plan is on screen in the notch.
+        let window = AppDelegate()
+        window.model.onStartResearch = { _ in }
+        window.model.tab = .research
+        window.model.input = "solid-state batteries"
+        window.model.submit()
+        precondition(window.model.willQueuePrompt, "A plan on screen holds the queue")
+        window.prepareNewResearch()
+        precondition(window.model.tab == .research && !window.model.showingResearch && !window.model.willQueuePrompt,
+                     "New research opens the Research prompt and frees the queue the old plan held")
+        print("PASS: AppDelegate research releases the prompt queue when its tab is left or New research opens")
     }
 
     static func checkQuickSettingsSurviveCollapse() async {
