@@ -453,6 +453,11 @@ def test_messages_without_a_guid_get_distinct_ids_from_the_feed_identity():
 def test_a_bare_number_is_masked_not_called_plain_text():
     assert live.who_label("+16505550123") == "Text from …0123"
     assert live.who_label("Mom") == "Mom" and live.who_label("") == "Text"
+    # A raw email or a number with words around it is a handle, not a name (independent review).
+    assert live.who_label("sam.rivera@icloud.com") == "Text from …@icloud.com"
+    assert live.who_label("a@b.co") == "Text from …@b.co"
+    assert live.who_label("+15551234567 ext 4") == "Text from …5674"
+    assert live.who_label("Dr. Lee (Office)") == "Dr. Lee (Office)"
 
 
 async def test_pausing_with_off_and_resuming_live_re_baselines(tmp_path):

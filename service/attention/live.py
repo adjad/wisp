@@ -130,11 +130,16 @@ class Plan:
 
 
 def who_label(sender: str) -> str:
-    """A name, or for a bare number a masked handle, so a reminder never looks like it came
-    from the user themselves when it came from an unknown number."""
-    if re.search(r"[A-Za-z]", sender or ""):
+    """A name, or a masked handle, so a reminder never looks like it came from the user
+    themselves when it came from an unknown sender, and a raw phone number or email address
+    never lands in a reminder title or a notification."""
+    sender = sender or ""
+    if "@" in sender:
+        domain = sender.partition("@")[2]
+        return f"Text from …@{domain}" if domain else "Text"
+    digits = re.sub(r"\D", "", sender)
+    if re.search(r"[A-Za-z]", sender) and not re.search(r"\d{4}", re.sub(r"[\s().+-]", "", sender)):
         return sender
-    digits = re.sub(r"\D", "", sender or "")
     return f"Text from …{digits[-4:]}" if len(digits) >= 4 else "Text"
 
 

@@ -233,7 +233,7 @@ class MainChecks(FullFixture):
             raise asyncio.CancelledError
         with patch('service.main.ensure_omlx', bomb), patch('service.main._omlx_cli', bomb), \
                 patch('service.inference.omlx_client.OMLXClient.ensure_only', ensure_bomb), \
-                patch.object(scheduler, '_maybe_daily_brief', AsyncMock()), \
+                patch.object(scheduler, '_start_daily_brief', Mock(return_value=None)), \
                 patch.object(scheduler, '_fire_scheduled_sends', AsyncMock()), \
                 patch.object(scheduler, '_start_behavior_tick', Mock(return_value=None)) as tick, \
                 patch.object(scheduler.asyncio, 'sleep', stop_after_one):

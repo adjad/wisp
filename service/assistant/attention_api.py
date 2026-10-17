@@ -12,6 +12,16 @@ from service.paths import MOE_DIR
 
 router = APIRouter(prefix="/assistant/attention", tags=["attention"])
 
+SHOWN_STATES = ("created", "shadow", "capped", "unknown", "failed", "undone")
+
+
+def _undoable(row: dict) -> bool:
+    """Whether Undo can work at all: a created row whose identity was recorded and whose title
+    is still on file (`runner.undo` matches both). The live check still happens on the request."""
+    created = (row["detail"].get("result") or {}).get("created")
+    return (row["state"] == "created" and row["title"] is not None and isinstance(created, dict)
+            and created.get("source") in ("reminders", "manual"))
+
 
 class SettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -41,10 +51,12 @@ def status():
         "settings": asdict(settings),
         "modes": list(MODES),
         "created_today": ledger.count_since(since),
+        # Only rows the app shows: an `already_on_file` or in-flight row would crowd them out.
         "recent": [{"source_id": r["source_id"], "state": r["state"], "title": r["title"],
                     "due_ts": r["due_ts"], "event_ts": r["event_ts"], "decided_at": r["decided_at"],
-                    "when": r["detail"].get("when"), "quote": r["detail"].get("quote")}
-                   for r in ledger.recent(20)],
+                    "when": r["detail"].get("when"), "quote": r["detail"].get("quote"),
+                    "undoable": _undoable(r)}
+                   for r in ledger.recent(20, SHOWN_STATES)],
     }
 
 

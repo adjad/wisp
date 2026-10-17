@@ -157,6 +157,7 @@ PROFILE_TESTS = {
         "tests/test_discovery_jobs.py",
         "tests/test_broad_web_search.py",
         "tests/test_daily_summary_delivery.py",
+        "tests/test_daily_summary_schedule.py",
         "tests/test_error_translation.py",
         "tests/test_latency_prompt_contract.py",
         "tests/test_lazy_inference_readiness.py",
@@ -504,6 +505,8 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/reminders-policy-contract": "native/reminders-policy-compile",
     "native/chat-logic-contract": "native/chat-logic-compile",
     "native/chat-store-contract": "native/chat-store-compile",
+    "native/notch-command-contract": "native/notch-command-compile",
+    "native/notch-tab-contract": "native/notch-tab-compile",
 }
 
 
@@ -778,6 +781,8 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
+    notch_command = str(build_dir / "notch-command")
+    notch_tab = str(build_dir / "notch-tab")
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
     reminders_policy = str(build_dir / "reminders-policy")
@@ -854,6 +859,26 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/prompt-queue-contract", [prompt_queue]),
+        (
+            "native/notch-command-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/NotchCommand.swift",
+                "tests/NotchCommandChecks.swift", "-o", notch_command,
+            ],
+        ),
+        ("native/notch-command-contract", [notch_command]),
+        (
+            "native/notch-tab-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/NotchTab.swift",
+                "tests/NotchTabChecks.swift", "-o", notch_tab,
+            ],
+        ),
+        ("native/notch-tab-contract", [notch_tab]),
         (
             "native/chat-logic-compile",
             [

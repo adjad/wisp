@@ -16,20 +16,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var searchPanel: OverlayPanel?
     private lazy var searchModel = SearchModel(client: client)
     private lazy var researchModel = ResearchModel(client: client)
+    // One day plan for the notch's Today tab and the window's planner.
+    private lazy var todayModel = TodayModel()
     private lazy var researchLibrary = ResearchLibraryWindowController(client: client,
         onOpen: { [weak self] id in self?.openSavedResearch(id) },
         onNew: { [weak self] in self?.newResearch() })
-    // The Chat window: long conversations, saved chats, and the same approvals
-    // as the notch, in a real window. Today, Research, Memory, What Wisp learned,
-    // Search and Settings open the app's existing windows from its sidebar.
-    private lazy var chatWindow = ChatWindowController(
+    // The Wisp window: long conversations, saved chats, and the same approvals
+    // as the notch, in a real window. It opens only when asked for; Wisp starts
+    // in the notch. Its sidebar opens the other parts of the app through
+    // WispRouter, like every other control (see open(_:)).
+    private lazy var wispWindow = WispWindowController(
         backend: LiveChatBackend(client: client),
         launchers: ChatLaunchers(
-            today: { TodayWindow.show() },
-            research: { [weak self] in self?.researchLibrary.show() },
-            memory: { MemoryWindow.shared.show() },
-            learned: { LearnedWindow.shared.show() },
-            settings: { [weak self] in self?.openSettings() },
+            today: { WispRouter.shared.open(.today(focus: .plan)) },
+            research: { WispRouter.shared.open(.research) },
+            memory: { WispRouter.shared.open(.memory(.facts)) },
+            settings: { WispRouter.shared.open(.settings) },
             searchEverything: { [weak self] in self?.toggleSearch() }),
         debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
     private var searchKeyMonitor: Any?
@@ -44,7 +46,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var setupWindow: NSWindow?
     private var setupObserver: NSObjectProtocol?
     private static let setupGuideShownKey = "wisp.setupGuide.shown"
+    private static let notchTipShownKey = "wisp.notchTip.shown"
     private var pendingCollapse: DispatchWorkItem?
+    // A menu opened from the panel (the chat switcher) is open. See
+    // installMenuTrackingObservers.
+    private var menuTracking = false
+    // An auto-collapse came due while that menu was open and was held back.
+    private var collapseHeldForMenu = false
+    // Whether the pointer is over the expanded panel. Replaceable so the motion
+    // checks, which host no real panel, can exercise both answers.
+    private var pointerInPanel: () -> Bool = { false }
     private var hoverIntent = HoverIntent()
     private var hoverDwell: DispatchWorkItem?
     private var hoverMonitors: [Any] = []
@@ -138,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // listing missed is still caught by BackendManager before it launches anything.
             await self.backend.startIfNeeded()
         }
+        WispRouter.shared.handler = { [weak self] route in self?.open(route) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = Self.menubarOrb()
@@ -166,6 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DisplayGeometry.shared.onChange = { [weak self] in self?.displaysChanged() }
         DisplayGeometry.shared.startObserving()
         installHoverMonitors()
+        installMenuTrackingObservers()
         setupObserver = NotificationCenter.default.addObserver(
             forName: .wispOpenSetupGuide, object: nil, queue: .main
         ) { [weak self] _ in
@@ -175,15 +188,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
-        // Wisp is a regular app: opening it shows the Chat window.
-        chatWindow.show()
+        // Wisp starts in the notch. The Wisp window opens only when asked for:
+        // the Dock icon, the menu bar, or a hand-off from the notch.
+        showNotchTipOnce()
     }
 
     // Clicking the Dock icon, or opening Wisp again from Finder or Spotlight while it
-    // is running, brings the Chat window back. Closing the window does not quit Wisp.
+    // is running, opens the Wisp window. Closing the window does not quit Wisp.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        chatWindow.show()
+        open(.chat(sessionId: nil))
         return true
+    }
+
+    /// Opening the window at launch used to be how Wisp said "I'm running". Now
+    /// that it starts in the notch, open the notch once and say where Wisp lives,
+    /// so neither a first launch nor an upgrade looks like Wisp failed to open.
+    private func showNotchTipOnce() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.notchTipShownKey) else { return }
+        defaults.set(true, forKey: Self.notchTipShownKey)
+        let duration: TimeInterval = 10
+        // After the bar is on screen, so the drop-open reads as coming from the notch.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            self.openAssistant()
+            self.model.showTransientNotice(
+                "Wisp lives in the notch now. Press ⌥Space or hover here to ask. "
+                    + "Click Wisp in the Dock for the full window.",
+                duration: duration)
+            // Tuck back in once the tip is gone, unless the pointer is on the panel
+            // (scheduleCollapse also keeps an unsent draft open).
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+                guard let self, !self.model.collapsed,
+                      !(self.panel?.frame.contains(NSEvent.mouseLocation) ?? false) else { return }
+                self.scheduleCollapse()
+            }
+        }
+    }
+
+    /// Where every route lands. Memory is a section of the Wisp window. Today,
+    /// Research, Settings and Setup still open their own windows; later changes
+    /// move them into the notch or the Wisp window here, without touching their callers.
+    private func open(_ route: WispRoute) {
+        switch route {
+        case .chat(let sessionId):
+            if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
+        case .today(let focus):
+            TodayWindow.show(model: todayModel, initialTab: focus.tab)
+        case .research:
+            researchLibrary.show()
+        case .memory(let focus):
+            wispWindow.show(memory: focus)
+        case .settings:
+            openSettings()
+        case .setup:
+            openSetupGuide()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -295,7 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         window.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         window.addItem(.separator())
-        let chatItem = window.addItem(withTitle: "Wisp Chat", action: #selector(openChat), keyEquivalent: "1")
+        let chatItem = window.addItem(withTitle: "Wisp Window", action: #selector(openChat), keyEquivalent: "1")
         chatItem.target = self
         NSApp.windowsMenu = window
         NSApp.mainMenu = main
@@ -306,7 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Keep the menu-bar menu focused on app configuration and diagnostics.
         // Primary workflows live in Wisp's panel, where they have context and
         // progress UI instead of duplicating five shortcuts here.
-        menu.addItem(withTitle: "Open Wisp Chat", action: #selector(openChat), keyEquivalent: "")
+        menu.addItem(withTitle: "Open Wisp Window", action: #selector(openChat), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupGuide), keyEquivalent: "")
         menu.addItem(.separator())
@@ -347,10 +407,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Re-dock if the X button previously dismissed the notch bar — the
         // menu-bar icon (or ⌥Space) is the way back in.
         notchDocked = true
-        if presentation.desired == .chat { collapse() } else { expand() }
+        if presentation.desired == .chat {
+            collapse()
+        } else {
+            // ⌥Space and the menu-bar icon always open Ask.
+            model.prepareTab(byHover: false)
+            expand()
+        }
+    }
+
+    /// Track menus so an open one holds auto-collapse. AppKit posts these for every
+    /// menu in the app, in begin/end pairs. In case a pair is ever unbalanced, any
+    /// presentation change or the pointer coming back into the panel also clears
+    /// the flag, but only when no menu is actually on screen, so it can never
+    /// disable auto-collapse for good and never lets the panel collapse under an
+    /// open menu. When the menu closes, a collapse it held back is re-armed if the
+    /// pointer is outside the panel.
+    private func installMenuTrackingObservers() {
+        pointerInPanel = { [weak self] in
+            self?.panel?.frame.contains(NSEvent.mouseLocation) ?? false
+        }
+        NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.menuTracking = true }
+        }
+        NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.menuDidEndTracking() }
+        }
+    }
+
+    private func menuDidEndTracking() {
+        menuTracking = false
+        guard collapseHeldForMenu else { return }
+        collapseHeldForMenu = false
+        if !model.collapsed, !pointerInPanel() { scheduleCollapse() }
+    }
+
+    /// Drop a menu flag left set by an unbalanced begin, unless a menu really is open.
+    private func clearStaleMenuTracking(menuOnScreen: Bool? = nil) {
+        let menuOnScreen = menuOnScreen
+            ?? (NSApp?.windows.contains { $0.isVisible && $0.level == .popUpMenu } ?? false)
+        guard !menuOnScreen else { return }
+        menuTracking = false
+        collapseHeldForMenu = false
     }
 
     private func requestPresentation(_ surface: OverlayTransition.Surface) {
+        clearStaleMenuTracking()
+        // Pinning only holds off automatic collapse. Once the panel goes back to
+        // the bar or away by any route (collapse, Search closing, dismiss), it is unpinned.
+        if surface == .bar || surface == .hidden { model.pinned = false }
         cancelScheduledCollapse()
         cancelHoverDwell()
         if surface != .search {
@@ -464,9 +571,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingCollapse?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.model.collapsed else { return }
-            // Don't hide an unsent draft out from under the user; a mid-task
+            // Don't hide a pinned panel or an unfinished edit (typed input, a
+            // message draft being edited) out from under the user; a mid-task
             // generation is fine (the notch bar's dot shows it's still working).
-            if !self.model.input.trimmingCharacters(in: .whitespaces).isEmpty { return }
+            if self.model.holdsOpen { return }
+            // A menu opened from the panel (the chat switcher) runs outside it,
+            // so the pointer leaving the panel is not the person leaving. Hold
+            // the collapse until the menu closes (see installMenuTrackingObservers).
+            if self.menuTracking { self.collapseHeldForMenu = true; return }
             self.collapse()
         }
         pendingCollapse = work
@@ -477,6 +589,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Reentry cancels auto-collapse even while opening. Only the hover
         // expansion itself must wait for a settled, docked bar.
         cancelScheduledCollapse()
+        clearStaleMenuTracking()
         guard notchDocked, presentation.active == nil,
               presentation.desired != .search else { return }
         // Entering the bar window only re-evaluates intent; the same dwell and
@@ -530,6 +643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.hoverIntent.shouldOpen(inZone: self.pointerInHoverZone(),
                                            buttonsDown: NSEvent.pressedMouseButtons != 0,
                                            collapsed: self.canHoverOpen) {
+                self.model.prepareTab(byHover: true)
                 self.expand()
             }
         }
@@ -557,7 +671,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func createPanelIfNeeded() {
         guard panel == nil else { return }
         panel = OverlayPanel {
-            OverlayView(model: self.model, researchModel: self.researchModel,
+            OverlayView(model: self.model, researchModel: self.researchModel, todayModel: self.todayModel,
                         onClose: { [weak self] in self?.collapse() },
                         onDismiss: { [weak self] in self?.dismissToMenuBar() })
         }
@@ -602,7 +716,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 commitmentKind: commitmentKind)
         }
         model.onOpenChat = { [weak self] sessionId in
-            self?.chatWindow.show(sessionId: sessionId)
+            self?.open(.chat(sessionId: sessionId))
         }
         model.onStartResearch = { [weak self] prompt in
             self?.openResearch(prompt: prompt)
@@ -717,13 +831,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openResearch(prompt: prompt)
     }
 
-    @objc private func openResearchLibrary() { researchLibrary.show() }
-    @objc private func openChat() { chatWindow.show() }
+    @objc private func openResearchLibrary() { open(.research) }
+    @objc private func openChat() { open(.chat(sessionId: nil)) }
 
     private func openSavedResearch(_ id: String) {
         openAssistant()
         model.showingResearch = true
-        model.researchMode = false
+        model.tab = .research
         researchModel.openJob(id)
     }
 
@@ -937,7 +1051,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openResearch(prompt: String) {
         openAssistant()
         model.showingResearch = true
-        model.researchMode = false
+        model.tab = .research
         researchModel.createPlan(prompt: prompt)
     }
 }
@@ -971,13 +1085,129 @@ extension AppDelegate {
         delegate.model.runDailySummary()
         delegate.finishPresentation(opening)
         for _ in 0..<100 {
-            if delegate.model.phase == .done { break }
+            if delegate.model.brief != nil { break }
             try? await Task.sleep(for: .milliseconds(20))
         }
-        precondition(delegate.model.phase == .done, "Summary response was discarded after dismissal/reopen")
-        precondition(delegate.model.turns.last?.text == "Synthetic daily summary")
+        precondition(delegate.model.brief?.text == "Synthetic daily summary",
+                     "Summary response was discarded after dismissal/reopen")
+        precondition(delegate.model.tab == .today && !delegate.model.briefComposing,
+                     "The brief lands on the Today tab")
+        precondition(delegate.model.turns.isEmpty, "The brief no longer goes into the chat transcript")
+        precondition(delegate.model.conversationSettled && !delegate.model.willQueuePrompt,
+                     "A composed brief frees the prompt queue")
+        delegate.model.newChat()
+        precondition(delegate.model.brief != nil, "New chat keeps Today's brief")
         delegate.model.reset()
         print("PASS: AppDelegate Daily Summary during dismissal completes")
+    }
+
+    static func checkPinnedPanelHoldsOpen() async {
+        func opened() -> AppDelegate {
+            let delegate = AppDelegate()
+            delegate.presentation.request(.chat)
+            let opening = delegate.presentation.next()!
+            delegate.model.collapsed = false
+            delegate.finishPresentation(opening)
+            return delegate
+        }
+        let idle = opened()
+        let pinned = opened()
+        pinned.model.pinned = true
+        let typing = opened()
+        typing.model.input = "half a thought"
+        let editing = opened()
+        editing.model.messageDraft = OverlayModel.MessageDraft(to: "fixture", text: "Hi", isEditing: true)
+        let addingTask = opened()
+        addingTask.model.tab = .today
+        addingTask.model.todayTaskTitle = "Lab report draft"
+        for delegate in [idle, pinned, typing, editing, addingTask] { delegate.scheduleCollapse() }
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(idle.presentation.desired == .bar, "Control: an idle panel must auto-collapse")
+        for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited"),
+                                 (addingTask, "a Today task being typed")] {
+            precondition(delegate.presentation.desired == .chat, "\(what) must hold the panel open")
+        }
+        pinned.collapse()
+        precondition(!pinned.model.pinned, "An explicit collapse must unpin")
+        precondition(pinned.presentation.desired == .bar, "An explicit collapse still collapses a pinned panel")
+        let dismissed = opened()
+        dismissed.model.pinned = true
+        dismissed.dismissToMenuBar()
+        precondition(!dismissed.model.pinned, "Dismissing must unpin")
+        let history = [OverlayModel.Turn(role: "user", text: "a"), OverlayModel.Turn(role: "assistant", text: "b"),
+                       OverlayModel.Turn(role: "user", text: "c")]
+        let local = [OverlayModel.Turn(role: "user", text: "c"), OverlayModel.Turn(role: "assistant", text: "d")]
+        precondition(OverlayModel.joining(history: history, before: local).map(\.text) == ["a", "b", "c", "d"],
+                     "A turn saved before its chat's history loaded appears once")
+        precondition(OverlayModel.joining(history: Array(history.prefix(2)), before: local).map(\.text) == ["a", "b", "c", "d"],
+                     "History goes before turns asked while it loaded")
+        // The tab survives collapse; ⌥Space reopens on Ask, a prompt hover on the last tab.
+        precondition(addingTask.model.tab == .today, "The tab survives collapse")
+        addingTask.model.collapsed = true
+        addingTask.model.prepareTab(byHover: true)
+        precondition(addingTask.model.tab == .today, "A hover soon after closing reopens the last tab")
+        addingTask.model.prepareTab(byHover: true, at: Date().addingTimeInterval(NotchTabMemory.hoverWindow + 60))
+        precondition(addingTask.model.tab == .ask, "A hover long after closing opens Ask")
+        addingTask.model.tab = .research
+        addingTask.model.prepareTab(byHover: false)
+        precondition(addingTask.model.tab == .ask, "⌥Space opens Ask")
+        print("PASS: AppDelegate collapse holds (pin, typing, draft, Today task), unpins on collapse and dismiss; tabs reopen as designed")
+    }
+
+    static func checkResearchReleasesQueueOffTab() async {
+        let delegate = AppDelegate()
+        let model = delegate.model
+        var started: [String] = []
+        model.onStartResearch = { started.append($0) }
+        model.tab = .research
+        model.input = "battery chemistry"
+        model.submit()
+        precondition(started == ["battery chemistry"] && model.showingResearch, "A research prompt starts a plan")
+        precondition(model.willQueuePrompt, "An on-screen research plan holds the prompt queue")
+        model.tab = .ask
+        precondition(!model.willQueuePrompt, "Leaving the Research tab frees the queue for Ask")
+        precondition(model.showingResearch, "The research plan stays on its tab")
+        model.runDailySummary()
+        precondition(model.briefComposing, "A brief can be composed while research sits on its tab")
+        model.reset()
+        print("PASS: AppDelegate research releases the prompt queue when its tab is left")
+    }
+
+    static func checkMenuHoldsCollapse() async {
+        let delegate = AppDelegate()
+        delegate.installMenuTrackingObservers()
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.finishPresentation(opening)
+        let menu = NSMenu()
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+        delegate.scheduleCollapse()
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(delegate.presentation.desired == .chat, "An open menu must hold auto-collapse")
+        precondition(delegate.collapseHeldForMenu, "The held collapse must be remembered")
+        // The menu closes with the pointer outside the panel: the held collapse runs.
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu)
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(delegate.presentation.desired == .bar, "A collapse held by a menu must re-arm when it closes")
+        // Closing with the pointer over the panel does not re-arm it.
+        let inside = AppDelegate()
+        inside.installMenuTrackingObservers()
+        inside.pointerInPanel = { true }
+        inside.presentation.request(.chat)
+        let insideOpening = inside.presentation.next()!
+        inside.model.collapsed = false
+        inside.finishPresentation(insideOpening)
+        inside.collapseHeldForMenu = true
+        inside.menuDidEndTracking()
+        precondition(inside.pendingCollapse == nil, "Closing a menu over the panel must not re-arm a collapse")
+        // A flag left by an unbalanced begin is cleared, but never while a menu is on screen.
+        delegate.menuTracking = true
+        delegate.clearStaleMenuTracking(menuOnScreen: true)
+        precondition(delegate.menuTracking, "An open menu keeps holding auto-collapse")
+        delegate.clearStaleMenuTracking(menuOnScreen: false)
+        precondition(!delegate.menuTracking, "A stale menu flag is cleared once no menu is open")
+        print("PASS: AppDelegate open menu holds auto-collapse, re-arms on close, never sticks")
     }
 
     static func checkDismissReopenInput() {

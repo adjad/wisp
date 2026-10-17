@@ -7,7 +7,6 @@ struct ChatLaunchers {
     var today: () -> Void = {}
     var research: () -> Void = {}
     var memory: () -> Void = {}
-    var learned: () -> Void = {}
     var settings: () -> Void = {}
     var searchEverything: () -> Void = {}
 }
@@ -17,19 +16,25 @@ struct ChatLaunchers {
 struct ChatRootView: View {
     @ObservedObject var store: ChatStore
     let launchers: ChatLaunchers
+    @ObservedObject var navigation: WispWindowNavigation
     @State private var sidebarVisible = true
     @FocusState private var searchFocused: Bool
 
     var body: some View {
         HStack(spacing: 0) {
             if sidebarVisible {
-                ChatSidebar(store: store, launchers: launchers, searchFocused: $searchFocused)
+                ChatSidebar(store: store, launchers: launchers, navigation: navigation, searchFocused: $searchFocused)
                     .frame(width: 268)
                     .transition(.move(edge: .leading).combined(with: .opacity))
                 Rectangle().fill(ChatTheme.line).frame(width: 1)
             }
-            ChatMainColumn(store: store, sidebarVisible: $sidebarVisible)
-            if store.showInspector {
+            switch navigation.section {
+            case .chats:
+                ChatMainColumn(store: store, sidebarVisible: $sidebarVisible)
+            case .memory:
+                MemoryHomeView(navigation: navigation, sidebarVisible: $sidebarVisible)
+            }
+            if store.showInspector && navigation.section == .chats {
                 Rectangle().fill(ChatTheme.line).frame(width: 1)
                 ChatInspector(store: store)
                     .frame(width: 300)
@@ -46,8 +51,9 @@ struct ChatRootView: View {
     /// Window-wide shortcuts, as invisible buttons so they work wherever focus is.
     private var shortcuts: some View {
         ZStack {
-            Button("") { store.newChat() }.keyboardShortcut("n", modifiers: .command)
-            Button("") { store.showInspector.toggle() }.keyboardShortcut("i", modifiers: .command)
+            Button("") { store.newChat(); navigation.section = .chats }.keyboardShortcut("n", modifiers: .command)
+            Button("") { if navigation.section == .chats { store.showInspector.toggle() } }
+                .keyboardShortcut("i", modifiers: .command)
             Button("") { sidebarVisible.toggle() }.keyboardShortcut("b", modifiers: .command)
             Button("") { sidebarVisible = true; searchFocused = true }.keyboardShortcut("k", modifiers: .command)
         }
@@ -62,6 +68,7 @@ struct ChatRootView: View {
 struct ChatSidebar: View {
     @ObservedObject var store: ChatStore
     let launchers: ChatLaunchers
+    @ObservedObject var navigation: WispWindowNavigation
     var searchFocused: FocusState<Bool>.Binding
 
     var body: some View {
@@ -72,7 +79,7 @@ struct ChatSidebar: View {
             }
             .padding(.top, 44).padding(.horizontal, 20).padding(.bottom, 14)
 
-            Button { store.newChat() } label: {
+            Button { store.newChat(); navigation.section = .chats } label: {
                 HStack(spacing: 9) {
                     Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
                     Text("New chat").font(.system(size: 13.5, weight: .medium))
@@ -106,8 +113,8 @@ struct ChatSidebar: View {
             VStack(spacing: 2) {
                 ChatNavRow(symbol: "sun.max", title: "Today", action: launchers.today)
                 ChatNavRow(symbol: "books.vertical", title: "Research", action: launchers.research)
-                ChatNavRow(symbol: "brain", title: "Memory", action: launchers.memory)
-                ChatNavRow(symbol: "repeat", title: "What Wisp learned", action: launchers.learned)
+                ChatNavRow(symbol: "brain", title: "Memory", selected: navigation.section == .memory,
+                           action: launchers.memory)
                 ChatNavRow(symbol: "sparkle.magnifyingglass", title: "Search everything", hint: "⇧⌘F", action: launchers.searchEverything)
             }
             .padding(.horizontal, 8)
@@ -125,8 +132,9 @@ struct ChatSidebar: View {
                             .foregroundStyle(ChatTheme.text3)
                             .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 4)
                         ForEach(section.items) { conversation in
-                            ChatHistoryRow(conversation: conversation, isSelected: store.selected === conversation,
-                                           select: { store.select(conversation) },
+                            ChatHistoryRow(conversation: conversation,
+                                           isSelected: navigation.section == .chats && store.selected === conversation,
+                                           select: { store.select(conversation); navigation.section = .chats },
                                            delete: { store.delete(conversation) })
                         }
                     }
@@ -145,6 +153,7 @@ private struct ChatNavRow: View {
     let symbol: String
     let title: String
     var hint: String? = nil
+    var selected = false
     let action: () -> Void
     @State private var hovering = false
 
@@ -156,13 +165,14 @@ private struct ChatNavRow: View {
                 Spacer()
                 if let hint { Text(hint).font(.system(size: 11, design: .monospaced)).foregroundStyle(ChatTheme.text3) }
             }
-            .foregroundStyle(ChatTheme.text2)
+            .foregroundStyle(selected ? ChatTheme.text : ChatTheme.text2)
             .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(hovering ? ChatTheme.glass2 : .clear))
+            .background(RoundedRectangle(cornerRadius: 8).fill(selected || hovering ? ChatTheme.glass2 : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
