@@ -11,18 +11,17 @@ struct KnowYouChecks {
             if !condition { fputs("FAIL: \(message)\n", stderr); exit(1) }
         }
 
-        // The steps, in order: a welcome, eight questions, a summary.
+        // The steps, in order: a welcome, three questions, a summary. Under a minute.
         check(KnowYouStep.allCases.first == .welcome && KnowYouStep.allCases.last == .done, "welcome first, summary last")
-        check(KnowYouStep.questions.count == 8, "eight questions")
-        check(KnowYouStep.questions == [.name, .about, .goals, .struggles, .people, .tone, .boundaries, .notes],
-              "question order")
+        check(KnowYouStep.questions == [.name, .goals, .tone], "three questions: name, goals, tone")
         for step in KnowYouStep.allCases {
             check(!step.title.isEmpty && !step.why.isEmpty, "\(step) has a title and a reason")
             check(step.isQuestion == !step.fields.isEmpty, "\(step) saves fields exactly when it is a question")
         }
         check(KnowYouStep.tone.fields == ["tone", "detail"], "the tone step saves tone and detail")
-        check(KnowYouStep.people.why.contains("never changes what I alert you about"),
-              "the people question says it is not an alert list")
+        check(KnowYouStep.welcome.why.contains("Three quick questions"), "the welcome promises three questions")
+        check(KnowYouStep.goals.why.contains("one tap"), "the goals question says the weekly pulse is one tap")
+        check(KnowYouStep.done.why.contains("Each evening"), "the summary says the evening check-in follows")
 
         // Moving through the flow.
         var flow = KnowYouFlow()
@@ -48,32 +47,29 @@ struct KnowYouChecks {
         flow.advance()
         check(flow.isDone, "advance on the summary stays")
         flow.back()
-        check(flow.step == .notes && flow.isLastQuestion, "back from the summary returns to the last question")
-        check(KnowYouFlow(step: .goals).progress == 2.0 / 8.0, "progress counts answered questions")
+        check(flow.step == .tone && flow.isLastQuestion, "back from the summary returns to the last question")
+        check(KnowYouFlow(step: .goals).progress == 1.0 / 3.0, "progress counts answered questions")
 
         // Resuming: pick up at the first unanswered question.
         var profile = UserProfile()
         check(KnowYouFlow.resume(for: profile).isWelcome, "an empty profile starts at the welcome")
         profile.name = "Adi"
-        check(KnowYouFlow.resume(for: profile).step == .about, "a named profile resumes at who you are")
-        profile.about = "A student"; profile.goals = ["Ship it"]; profile.struggles = ["Email"]
-        profile.people = [.init(name: "Mom", relation: "mother")]
-        profile.boundaries = "x"
-        check(KnowYouFlow.resume(for: profile).step == .notes, "tone counts as answered once anything else is")
-        profile.notes = "y"
-        check(KnowYouFlow.resume(for: profile).isDone, "a full profile resumes at the summary")
+        check(KnowYouFlow.resume(for: profile).step == .goals, "a named profile resumes at goals")
+        profile.goals = ["Ship it"]
+        check(KnowYouFlow.resume(for: profile).isDone, "tone counts as answered once a name or goal is; a full profile resumes at the summary")
+        profile = UserProfile()
+        profile.struggles = ["Email"]
+        check(KnowYouFlow.resume(for: profile).step == .name, "fields About you edits do not count as the opening questions")
 
         // Patches: only the step's fields, trimmed.
         profile.name = "  Adi  "
         let namePatch = profile.patch(for: .name)
         check(namePatch.count == 1 && namePatch["name"] as? String == "Adi", "the name step saves the trimmed name")
-        let peoplePatch = profile.patch(for: .people)
-        let rows = peoplePatch["people"] as? [[String: Any]]
-        check(rows?.count == 1 && rows?[0]["name"] as? String == "Mom" && rows?[0]["relation"] as? String == "mother",
-              "people serialise as name/relation/note rows")
+        profile.goals = ["Ship it", "Run far"]
+        check(profile.patch(for: .goals)["goals"] as? [String] == ["Ship it", "Run far"], "the goals step saves the list")
         check(profile.patch(for: .welcome).isEmpty && profile.patch(for: .done).isEmpty, "welcome and summary save nothing")
         check(Set(profile.fullPatch.keys) == ["name", "about", "goals", "struggles", "people", "tone", "detail", "boundaries", "notes"],
-              "About you saves every editable field")
+              "About you still saves every editable field")
         check(UserProfile.Person(name: "Mom", relation: "mother").label == "Mom · mother"
               && UserProfile.Person(name: "Sam").label == "Sam", "person labels")
 

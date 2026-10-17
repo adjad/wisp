@@ -435,6 +435,8 @@ from service.behavior_api import router as behavior_router
 app.include_router(behavior_router)
 from service.assistant.attention_api import router as attention_router
 app.include_router(attention_router)
+from service.assistant.checkin_api import router as checkin_router
+app.include_router(checkin_router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"

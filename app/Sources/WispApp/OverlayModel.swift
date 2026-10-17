@@ -243,6 +243,8 @@ final class OverlayModel: ObservableObject {
     // Getting to know you (KnowYouView.swift), replacing the tab content while
     // it runs. Nil when the flow is not on screen.
     @Published private(set) var knowYou: KnowYouModel?
+    // The service said tonight's check-in is due; Today's card refreshes on it.
+    @Published var checkInDue = false
     // Keep the panel open: no auto-collapse when the pointer leaves or focus
     // moves to another app. Cleared by any explicit collapse (see AppDelegate).
     @Published var pinned = false
@@ -573,6 +575,14 @@ final class OverlayModel: ObservableObject {
         sessionId = brief.sessionId
         reopenedChatTitle = "Daily summary"
         turns = [Turn(role: "user", text: "Daily summary"), Turn(role: "assistant", text: brief.text)]
+        tab = .ask
+        onResize()
+    }
+
+    /// Open Ask with a request already typed, for the person to finish and send
+    /// (the check-in's Move and Cancel). Nothing is sent here.
+    func askAbout(_ text: String) {
+        input = text
         tab = .ask
         onResize()
     }
@@ -1553,6 +1563,13 @@ final class OverlayModel: ObservableObject {
             }
             await post(title: title,
                                body: latest.isEmpty ? task : "\(task)\n\(latest)")
+        case "checkin":
+            // The evening check-in is due (service/assistant/scheduler._checkin_tick):
+            // one notification; the card itself loads on the Today tab.
+            let text = ev.str("text")
+            guard !text.isEmpty else { return false }
+            checkInDue = true
+            await post(title: "🌙 Evening check-in", body: text)
         case "daily_brief":
             // Scheduled 8am/8pm brief: content-ful notifications (calendar+email,
             // messages) plus the full write-up in the transcript for when the app

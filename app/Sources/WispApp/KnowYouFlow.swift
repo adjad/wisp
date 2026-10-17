@@ -1,7 +1,8 @@
 import Foundation
 
-/// "Getting to know you": the questions Wisp asks so it can work for a person
-/// rather than a user. The answers live in the service's profile
+/// "Getting to know you": the three questions Wisp asks up front so it can work
+/// for a person rather than a user. Everything else it learns from the daily
+/// check-ins, and About you in the Memory window edits every field. The answers live in the service's profile
 /// (service/memory/profile.py, GET/PATCH /profile) and feed every local system
 /// prompt, the morning brief's Keeping in mind section, and the order of Today's
 /// Needs you. This file is the flow's pure logic: the steps, their copy, the
@@ -9,7 +10,7 @@ import Foundation
 ///
 /// Checked by tests/KnowYouChecks.swift without the app.
 enum KnowYouStep: Int, CaseIterable, Equatable {
-    case welcome, name, about, goals, struggles, people, tone, boundaries, notes, done
+    case welcome, name, goals, tone, done
 
     var isQuestion: Bool { self != .welcome && self != .done }
     static var questions: [KnowYouStep] { allCases.filter(\.isQuestion) }
@@ -19,13 +20,8 @@ enum KnowYouStep: Int, CaseIterable, Equatable {
         switch self {
         case .welcome: return "Let me get to know you"
         case .name: return "What should I call you?"
-        case .about: return "Who are you right now, in your own words?"
         case .goals: return "What are you working toward?"
-        case .struggles: return "What tends to get in your way?"
-        case .people: return "Who matters most to you?"
         case .tone: return "How do you like to be talked to?"
-        case .boundaries: return "Anything I should be careful about?"
-        case .notes: return "Anything else you'd like me to know?"
         case .done: return "Here's how I'll use this"
         }
     }
@@ -34,28 +30,18 @@ enum KnowYouStep: Int, CaseIterable, Equatable {
     var why: String {
         switch self {
         case .welcome:
-            return "A few questions, one at a time, about what you're working toward and what gets in your way. Every one is optional. Everything stays on this Mac, and you can change or erase it any time in Memory."
+            return "Three quick questions, under a minute. Every one is optional. Everything stays on this Mac, and you can change or erase it any time in Memory → About you."
         case .name: return "I'll use it in your morning brief and when we talk."
-        case .about: return "The season you're in changes what a good day looks like. A sentence or two is plenty."
-        case .goals: return "Up to five. I'll keep one in view each morning, taking turns, and connect help to them when it fits."
-        case .struggles: return "I'll mention one only when a day shows the pattern, once, gently, with a small next step. Never as a reproach."
-        case .people: return "Their mail and texts rise to the top of Needs you, and I'll notice when they're on your day. This never changes what I alert you about."
+        case .goals: return "Up to five. Each morning's brief keeps one in view, taking turns, and once a week I'll ask with one tap whether you're on track."
         case .tone: return "Say the word and I'll match it, everywhere."
-        case .boundaries: return "Topics to leave alone, things never to do, how to handle a hard day. I'll respect it even when it would be convenient not to."
-        case .notes: return "Whatever would help me be useful to you."
-        case .done: return "Everything below is already in effect. It lives on this Mac only; change or erase it any time in Memory → About you."
+        case .done: return "Everything below is already in effect. Each evening I'll ask how the day went, one tap per task. It all lives on this Mac; change or erase it any time in Memory → About you."
         }
     }
 
     var placeholder: String {
         switch self {
         case .name: return "Your first name, or a nickname"
-        case .about: return "A student finishing a thesis. A founder with two kids. Between jobs and figuring it out…"
         case .goals: return "Add something you're working toward"
-        case .struggles: return "Add one in your own words"
-        case .people: return "Name"
-        case .boundaries: return "Please don't bring up… / Never… / On a bad day, just…"
-        case .notes: return "Anything at all"
         default: return ""
         }
     }
@@ -64,13 +50,8 @@ enum KnowYouStep: Int, CaseIterable, Equatable {
     var fields: [String] {
         switch self {
         case .name: return ["name"]
-        case .about: return ["about"]
         case .goals: return ["goals"]
-        case .struggles: return ["struggles"]
-        case .people: return ["people"]
         case .tone: return ["tone", "detail"]
-        case .boundaries: return ["boundaries"]
-        case .notes: return ["notes"]
         default: return []
         }
     }
@@ -127,11 +108,6 @@ struct KnowYouFlow: Equatable {
 /// The quick answers offered beside each free-text field. Tapping one adds the
 /// phrase; nothing is chosen for the user.
 enum KnowYouChips {
-    static let about = ["Student", "Working full time", "Building something of my own",
-                        "Looking after someone", "Between things", "A few of these at once"]
-    static let struggles = ["Overcommitting", "Putting things off", "Email piling up", "Losing focus",
-                            "Late nights", "Saying yes too often", "Forgetting follow-ups"]
-    static let relations = ["Mom", "Dad", "Partner", "Sibling", "Friend", "Manager", "Teammate", "Child"]
     static let tones: [(value: String, label: String, detail: String)] = [
         ("gentle", "Gently", "Lead with what's going well. Never scold."),
         ("warm", "Warm and plain", "Friendly, direct, to the point."),
@@ -201,17 +177,12 @@ struct UserProfile: Equatable {
     }
 
     /// Whether the user gave this step an answer. Tone always holds a default,
-    /// so it counts as answered once anything else has been.
+    /// so it counts as answered once the name or a goal has been.
     func answered(_ step: KnowYouStep) -> Bool {
         switch step {
         case .name: return !name.isEmpty
-        case .about: return !about.isEmpty
         case .goals: return !goals.isEmpty
-        case .struggles: return !struggles.isEmpty
-        case .people: return !people.isEmpty
-        case .tone: return hasContent
-        case .boundaries: return !boundaries.isEmpty
-        case .notes: return !notes.isEmpty
+        case .tone: return !name.isEmpty || !goals.isEmpty
         default: return true
         }
     }

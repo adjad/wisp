@@ -13,6 +13,8 @@ struct NotchTodayView: View {
     @ObservedObject var today: TodayModel
     @State private var minutes = 45
     @State private var showingFullBrief = false
+    // Evening check-in and weekly goal pulse (CheckInView.swift).
+    @StateObject private var checkIn = CheckInModel()
 
     private var plan: TodayPlan? {
         guard let plan = today.plan, plan.day == today.day,
@@ -27,6 +29,13 @@ struct NotchTodayView: View {
             if !today.error.isEmpty { noticeText(today.error) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if today.isShowingCurrentDay {
+                        CheckInSection(model: checkIn, day: today.day, timezone: today.timezone,
+                                       clock: today.clock,
+                                       onAsk: { model.askAbout($0) },
+                                       onChanged: { Task { await today.refresh(); model.onResize() } })
+                        GoalPulseSection(model: checkIn)
+                    }
                     briefSection
                     if let plan {
                         needsYouSection(plan)
@@ -50,9 +59,17 @@ struct NotchTodayView: View {
             while !Task.isCancelled {
                 today.reconcileClock()
                 await today.refresh()
+                if today.isShowingCurrentDay {
+                    await checkIn.load(day: today.day, timezone: today.timezone.identifier)
+                    model.checkInDue = false
+                }
                 model.onResize()
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }
             }
+        }
+        .onChange(of: model.checkInDue) { _, due in
+            guard due, today.isShowingCurrentDay else { return }
+            Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
         }
     }
 

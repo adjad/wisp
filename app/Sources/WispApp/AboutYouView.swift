@@ -99,15 +99,15 @@ struct AboutYouView: View {
                         textField($model.profile.name, placeholder: "Your first name, or a nickname").frame(maxWidth: 320)
                     }
                     section("Who you are, in your own words") {
-                        editor($model.profile.about, placeholder: KnowYouStep.about.placeholder)
+                        editor($model.profile.about, placeholder: "A student finishing a thesis. A founder with two kids. Between jobs and figuring it out…")
                     }
                     section("What you're working toward", detail: "Up to five. One is kept in view each morning, taking turns.") {
                         stringList($model.profile.goals, draft: $model.goalDraft,
                                    placeholder: KnowYouStep.goals.placeholder, add: model.addGoal)
                     }
-                    section("What tends to get in your way", detail: "Mentioned only when a day shows the pattern, once and gently.") {
+                    section("What tends to get in your way", detail: "Not asked up front; Wisp learns it from the evening check-ins. Mentioned only when a day shows the pattern, once and gently.") {
                         stringList($model.profile.struggles, draft: $model.struggleDraft,
-                                   placeholder: KnowYouStep.struggles.placeholder, add: model.addStruggle)
+                                   placeholder: "Add one in your own words", add: model.addStruggle)
                     }
                     section("People who matter to you", detail: "Their mail and texts rise to the top of Needs you. This never changes what Wisp alerts you about.") {
                         peopleList
@@ -124,10 +124,10 @@ struct AboutYouView: View {
                         .pickerStyle(.menu).fixedSize()
                     }
                     section("What Wisp should be careful about") {
-                        editor($model.profile.boundaries, placeholder: KnowYouStep.boundaries.placeholder)
+                        editor($model.profile.boundaries, placeholder: "Please don't bring up… / Never… / On a bad day, just…")
                     }
                     section("Anything else") {
-                        editor($model.profile.notes, placeholder: KnowYouStep.notes.placeholder)
+                        editor($model.profile.notes, placeholder: "Anything at all")
                     }
                     actions
                 } else {

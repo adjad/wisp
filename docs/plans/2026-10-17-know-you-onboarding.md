@@ -58,10 +58,13 @@ the same rule.
 
 ### The flow, in the notch
 
-`KnowYouView` replaces the tab content of the notch panel. One question per screen,
-with a one-line "why I ask", chips for the common answers and a free-text field. Back,
-Skip and Continue on every screen; progress is saved after every step, so closing the
-panel loses nothing. The footer always reads "Stays on this Mac · Change anytime in
+`KnowYouView` replaces the tab content of the notch panel. Three questions, under a
+minute (user decision 2026-10-17: "a user would not spend the time" on more): what to
+call you, what you're working toward, how you like to be talked to. Struggles, people
+and boundaries are no longer asked up front; About you edits them and the check-ins
+below are where Wisp learns them. One question per screen, with a one-line "why I ask".
+Back, Skip and Continue on every screen; progress is saved after every step, so closing
+the panel loses nothing. The footer always reads "Stays on this Mac · Change anytime in
 Memory". The last screen shows exactly what Wisp will now do with the answers
 (`GET /profile` → `preview`), so the user sees the information put to work before
 they leave the flow.
@@ -70,6 +73,36 @@ Entry points: offered once on first launch after setup is ready (and once more t
 days later if the user chose Later, then never again on its own), the `/about` slash
 command, the menu bar's "Tell Wisp About You…", and Memory → About you → "Revisit in
 the notch". About you also edits every field inline and erases the profile.
+
+### The daily loop: check-in, carry-forward, goal pulse
+
+`service/assistant/checkin.py`, `checkin_api.py`, `CheckInView.swift`. Goal-oriented
+and tap-only, the way a chief of staff actually works:
+
+- **Evening (from 17:00 local).** Today's card: "You planned 4 things today." Each
+  active task has Done / Tomorrow / Drop. Tomorrow moves the task (pin cleared, a
+  missed deadline cleared, `carried_from` set to the first planned day); Drop dismisses
+  it. Then tomorrow's events with Keep / Move / Cancel; Move and Cancel only prefill Ask,
+  so the existing draft-and-confirm path decides what is sent. The scheduler posts one
+  notification when the card becomes due and the app is listening; "Skip tonight" or
+  "Done for today" completes it. Decisions are recorded in `~/.moe/checkins.json`
+  (60 days), which also answers "how many evenings has this been moved".
+- **Morning.** `carry_forward` moves every still-active task from an earlier day onto
+  today (scheduler tick and the first Today load, idempotent). The brief's Keeping in
+  mind says "2 tasks carried over from before: …", and Needs you's reason reads
+  "Carried over from 2026-10-16."
+- **Weekly goal pulse.** One goal, one tap: On track / Behind / Done, due seven days
+  after the goals were written or last answered. Behind makes that goal the one the
+  brief leads with; Done retires it from the rotation. Stored in the profile as
+  `goal_status` and `goal_pulse_at`.
+
+```
+GET    /assistant/checkin?day&timezone     → card (runs today's carry-forward first)
+POST   /assistant/checkin/tasks/{id}       {decision: done|tomorrow|drop, day, timezone}
+POST   /assistant/checkin/complete         {day, timezone}
+POST   /assistant/checkin/carry_forward    {day, timezone}
+POST   /assistant/checkin/goal             {goal, status}
+```
 
 ### API
 
@@ -85,6 +118,8 @@ DELETE /profile            → erase
 
 - `tests/test_user_profile.py`: store round trip, bounds, prompt block, brief
   section, Today ranking, offer logic, API.
+- `tests/test_checkin.py`: due window, decisions, carry-forward idempotence, goal
+  pulse cadence and statuses, the brief's carried line, API.
 - `tests/KnowYouChecks.swift`: step order, skipping, progress and patch building,
   compiled with `app/Sources/WispApp/KnowYouFlow.swift` (registered in
   `scripts/run_simulation_qa.py`).

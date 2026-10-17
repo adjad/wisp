@@ -1,10 +1,10 @@
 import SwiftUI
 import AppKit
 
-/// "Getting to know you" in the notch: one question at a time, every one
-/// optional, saved as you go. The copy and order live in KnowYouFlow.swift; this
-/// file draws them on the notch's black surface in the panel's own idiom (chips,
-/// hairlines, the orb) so it feels like Wisp asking, not a form to fill.
+/// "Getting to know you" in the notch: three questions, every one optional,
+/// saved as you go, under a minute. The copy and order live in KnowYouFlow.swift;
+/// this file draws them on the notch's black surface in the panel's own idiom
+/// (chips, hairlines, the orb) so it feels like Wisp asking, not a form.
 ///
 /// Comfort is a design input here, not a tone: the reason for each question is
 /// shown with it and is exactly what Wisp will do with the answer; the footer
@@ -18,11 +18,7 @@ final class KnowYouModel: ObservableObject {
     @Published var loaded = false
     @Published var busy = false
     @Published var error = ""
-    // Drafts for the list questions.
     @Published var goalDraft = ""
-    @Published var struggleDraft = ""
-    @Published var personName = ""
-    @Published var personRelation = ""
 
     private let client: WispClient
     /// Called when the flow ends, with a short notice for the panel or nil.
@@ -69,13 +65,11 @@ final class KnowYouModel: ObservableObject {
     }
 
     func saveAndContinue() async {
-        commitDrafts()
+        if flow.step == .goals { addGoal() }
         busy = true
         defer { busy = false }
         let result = await client.patchProfile(profile.patch(for: flow.step))
         if let envelope = result.envelope {
-            // Keep the service's cleaned copy of what was just saved; drafts on
-            // later steps are still only here.
             apply(envelope, step: flow.step)
             error = ""
             flow.advance()
@@ -106,13 +100,8 @@ final class KnowYouModel: ObservableObject {
         let saved = envelope.profile
         switch step {
         case .name: profile.name = saved.name
-        case .about: profile.about = saved.about
         case .goals: profile.goals = saved.goals
-        case .struggles: profile.struggles = saved.struggles
-        case .people: profile.people = saved.people
         case .tone: profile.tone = saved.tone; profile.detail = saved.detail
-        case .boundaries: profile.boundaries = saved.boundaries
-        case .notes: profile.notes = saved.notes
         default: break
         }
         profile.completedAt = saved.completedAt
@@ -120,16 +109,7 @@ final class KnowYouModel: ObservableObject {
         preview = envelope.preview
     }
 
-    // MARK: Lists
-
-    private func commitDrafts() {
-        switch flow.step {
-        case .goals: addGoal()
-        case .struggles: addStruggle()
-        case .people: addPerson()
-        default: break
-        }
-    }
+    // MARK: Goals
 
     func addGoal() {
         let text = goalDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -142,56 +122,11 @@ final class KnowYouModel: ObservableObject {
 
     func removeGoal(_ goal: String) { profile.goals.removeAll { $0 == goal } }
 
-    func hasStruggle(_ text: String) -> Bool {
-        profile.struggles.contains { $0.caseInsensitiveCompare(text) == .orderedSame }
-    }
-
-    func toggleStruggle(_ text: String) {
-        if hasStruggle(text) {
-            profile.struggles.removeAll { $0.caseInsensitiveCompare(text) == .orderedSame }
-        } else if profile.struggles.count < 6 {
-            profile.struggles.append(text)
-        }
-    }
-
-    func addStruggle() {
-        let text = struggleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        if !hasStruggle(text) && profile.struggles.count < 6 { profile.struggles.append(text) }
-        struggleDraft = ""
-    }
-
-    func addPerson() {
-        let name = personName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        let relation = personRelation.trimmingCharacters(in: .whitespacesAndNewlines)
-        if profile.people.count < 8, !profile.people.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
-            profile.people.append(.init(name: name, relation: relation))
-        }
-        personName = ""
-        personRelation = ""
-    }
-
-    func removePerson(_ person: UserProfile.Person) { profile.people.removeAll { $0 == person } }
-
-    func appendAbout(_ phrase: String) {
-        let trimmed = about.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { profile.about = phrase }
-        else if !trimmed.localizedCaseInsensitiveContains(phrase) { profile.about = trimmed + ". " + phrase }
-    }
-
-    private var about: String { profile.about }
-
     var canContinue: Bool {
         switch flow.step {
         case .name: return !profile.name.trimmingCharacters(in: .whitespaces).isEmpty
-        case .about: return !profile.about.trimmingCharacters(in: .whitespaces).isEmpty
         case .goals: return !profile.goals.isEmpty || !goalDraft.trimmingCharacters(in: .whitespaces).isEmpty
-        case .struggles: return !profile.struggles.isEmpty || !struggleDraft.trimmingCharacters(in: .whitespaces).isEmpty
-        case .people: return !profile.people.isEmpty || !personName.trimmingCharacters(in: .whitespaces).isEmpty
         case .tone: return true
-        case .boundaries: return !profile.boundaries.trimmingCharacters(in: .whitespaces).isEmpty
-        case .notes: return !profile.notes.trimmingCharacters(in: .whitespaces).isEmpty
         default: return false
         }
     }
@@ -264,13 +199,8 @@ struct KnowYouView: View {
             switch step {
             case .welcome: EmptyView()
             case .name: nameField
-            case .about: aboutField
             case .goals: goalsField
-            case .struggles: strugglesField
-            case .people: peopleField
             case .tone: toneField
-            case .boundaries: longField($model.profile.boundaries, placeholder: step.placeholder)
-            case .notes: longField($model.profile.notes, placeholder: step.placeholder)
             case .done: summary
             }
         }
@@ -287,53 +217,17 @@ struct KnowYouView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
     }
 
-    private var aboutField: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            longField($model.profile.about, placeholder: KnowYouStep.about.placeholder)
-            chipRow(KnowYouChips.about, selected: { model.profile.about.localizedCaseInsensitiveContains($0) }) {
-                model.appendAbout($0)
-            }
-        }
-    }
-
     private var goalsField: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(model.profile.goals, id: \.self) { goal in
                 listRow(goal) { model.removeGoal(goal) }
             }
             if model.profile.goals.count < 5 {
-                addRow($model.goalDraft, placeholder: KnowYouStep.goals.placeholder, add: model.addGoal)
-            }
-        }
-    }
-
-    private var strugglesField: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            chipRow(KnowYouChips.struggles, selected: model.hasStruggle) { model.toggleStruggle($0) }
-            ForEach(model.profile.struggles.filter { !KnowYouChips.struggles.contains($0) }, id: \.self) { text in
-                listRow(text) { model.toggleStruggle(text) }
-            }
-            if model.profile.struggles.count < 6 {
-                addRow($model.struggleDraft, placeholder: KnowYouStep.struggles.placeholder, add: model.addStruggle)
-            }
-        }
-    }
-
-    private var peopleField: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(model.profile.people, id: \.name) { person in
-                listRow(person.label) { model.removePerson(person) }
-            }
-            if model.profile.people.count < 8 {
                 HStack(spacing: 8) {
-                    field($model.personName, placeholder: "Name", submit: model.addPerson)
-                        .frame(maxWidth: 170)
-                    field($model.personRelation, placeholder: "Who they are to you", submit: model.addPerson)
-                    smallButton("Add", action: model.addPerson)
-                        .disabled(model.personName.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                chipRow(KnowYouChips.relations, selected: { model.personRelation.caseInsensitiveCompare($0) == .orderedSame }) {
-                    model.personRelation = $0
+                    field($model.goalDraft, placeholder: KnowYouStep.goals.placeholder, submit: model.addGoal)
+                        .focused($focused)
+                    smallButton("Add", action: model.addGoal)
+                        .disabled(model.goalDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }
@@ -434,25 +328,6 @@ struct KnowYouView: View {
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
     }
 
-    private func longField(_ text: Binding<String>, placeholder: String) -> some View {
-        TextField(placeholder, text: text, axis: .vertical)
-            .textFieldStyle(.plain)
-            .lineLimit(2...5)
-            .font(.system(size: 14)).foregroundStyle(Theme.textPrimary)
-            .focused($focused)
-            .padding(.vertical, 9).padding(.horizontal, 12)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
-    }
-
-    private func addRow(_ text: Binding<String>, placeholder: String, add: @escaping () -> Void) -> some View {
-        HStack(spacing: 8) {
-            field(text, placeholder: placeholder, submit: add).focused($focused)
-            smallButton("Add", action: add)
-                .disabled(text.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
-        }
-    }
-
     private func listRow(_ text: String, remove: @escaping () -> Void) -> some View {
         HStack(spacing: 8) {
             Text(text).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(2)
@@ -465,25 +340,6 @@ struct KnowYouView: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
-    }
-
-    private func chipRow(_ options: [String], selected: @escaping (String) -> Bool,
-                         tap: @escaping (String) -> Void) -> some View {
-        FlowRow(spacing: 6) {
-            ForEach(options, id: \.self) { option in
-                let on = selected(option)
-                Button { tap(option) } label: {
-                    Text(option).font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(on ? Color.black : Theme.textSecondary)
-                        .padding(.horizontal, 10).padding(.vertical, 4)
-                        .background(Capsule().fill(on ? Color.white : Theme.chipFill))
-                        .overlay(Capsule().stroke(on ? Color.clear : Theme.chipStroke, lineWidth: 1))
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
-            }
-        }
     }
 
     private func primaryButton(_ title: String, action: @escaping () -> Void) -> some View {
@@ -524,33 +380,5 @@ struct KnowYouView: View {
             .opacity(breathe ? 1.0 : 0.85)
             .shadow(color: .white.opacity(0.12), radius: 5)
             .animation(.easeInOut(duration: 4).repeatForever(autoreverses: true), value: breathe)
-    }
-}
-
-/// Chips that wrap onto new lines inside the panel's fixed width.
-struct FlowRow: Layout {
-    var spacing: CGFloat = 6
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? 600
-        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > 0 && x + size.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
-        return CGSize(width: width, height: y + rowHeight)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > bounds.minX && x + size.width > bounds.maxX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
-            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
     }
 }

@@ -388,6 +388,9 @@ ADDITIONAL_FULL_TESTS = {
     # The user's profile (Getting to know you): JSON in a temp path, pure prompt/brief/
     # ranking helpers and an in-process TestClient; no model, listener or real ~/.moe.
     "tests/test_user_profile.py",
+    # Evening check-in, carry-forward and goal pulse: disposable AssistantStore and
+    # state files, in-process TestClient; no model, scheduler, hub or real ~/.moe.
+    "tests/test_checkin.py",
     "tests/test_day_plan_email.py",
     "tests/test_user_reported_regressions_20260902.py",
     "tests/test_user_reported_regressions_20260903.py",

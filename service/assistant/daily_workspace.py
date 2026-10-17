@@ -290,7 +290,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
 
     for task in state["tasks"]:
         if task.get("status") == "active" and task.get("day") == day:
-            items.append(_item("wisp", task["id"], task["title"], "On your day plan.",
+            carried = task.get("carried_from")
+            items.append(_item("wisp", task["id"], task["title"],
+                               f"Carried over from {carried}. On your day plan." if carried else "On your day plan.",
                                due=task.get("due_ts"), priority=task["priority"]))
     if profile:
         from service.memory.profile import prioritize

@@ -43,6 +43,7 @@ VERSION = 1
 
 TONES = ("gentle", "warm", "direct")
 DETAILS = ("short", "thorough")
+GOAL_STATUSES = ("on_track", "behind", "done")
 
 # Bounds. Generous enough for a real answer, small enough that the prompt block
 # stays a block and a pasted essay cannot crowd out the user's actual question.
@@ -65,7 +66,9 @@ def empty() -> dict:
     return {"version": VERSION, "name": "", "about": "", "goals": [], "struggles": [],
             "people": [], "tone": "warm", "detail": "short",
             "boundaries": "", "notes": "", "completed_at": None, "updated_at": None,
-            "dismissed_at": None, "dismiss_count": 0}
+            "dismissed_at": None, "dismiss_count": 0,
+            # Weekly goal pulse (service/assistant/checkin.py): one tap per goal.
+            "goal_status": {}, "goal_pulse_at": None}
 
 
 # ---------------------------------------------------------------------------
@@ -193,9 +196,16 @@ def _read() -> dict:
                     profile.update(validate({field: raw[field]}))
                 except ValueError:
                     pass
-    for stamp in ("completed_at", "updated_at", "dismissed_at"):
+    for stamp in ("completed_at", "updated_at", "dismissed_at", "goal_pulse_at"):
         value = raw.get(stamp)
         profile[stamp] = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    statuses = raw.get("goal_status")
+    if isinstance(statuses, dict):
+        profile["goal_status"] = {
+            str(goal): {"status": entry["status"], "at": float(entry.get("at") or 0)}
+            for goal, entry in statuses.items()
+            if isinstance(entry, dict) and entry.get("status") in GOAL_STATUSES
+            and str(goal) in profile["goals"]}
     count = raw.get("dismiss_count")
     profile["dismiss_count"] = int(count) if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else 0
     return profile
@@ -220,8 +230,27 @@ def update(patch: dict, *, now: float | None = None) -> dict:
     with _lock:
         profile = _read()
         profile.update(cleaned)
+        if "goals" in cleaned:
+            profile["goal_status"] = {g: v for g, v in profile.get("goal_status", {}).items()
+                                      if g in cleaned["goals"]}
         if cleaned:
             profile["updated_at"] = time.time() if now is None else now
+        _write(profile)
+        return profile
+
+
+def set_goal_status(goal: str, status: str, *, now: float | None = None) -> dict:
+    """The weekly pulse's one tap. `done` retires the goal from the brief's
+    rotation; `behind` makes it the goal the brief leads with."""
+    if status not in GOAL_STATUSES:
+        raise ValueError("status must be on_track, behind or done")
+    now = time.time() if now is None else now
+    with _lock:
+        profile = _read()
+        if goal not in profile.get("goals", []):
+            raise ValueError("that goal is not in the profile")
+        profile.setdefault("goal_status", {})[goal] = {"status": status, "at": now}
+        profile["goal_pulse_at"] = now
         _write(profile)
         return profile
 
@@ -384,10 +413,16 @@ def people_mentioned(profile: dict, texts: list[str]) -> list[str]:
 
 
 def goal_in_focus(profile: dict, now: float) -> str:
-    """One goal a day, rotating, so every goal gets its mornings."""
-    goals = profile.get("goals") or []
+    """One goal a day, rotating, so every goal gets its mornings. A goal the
+    user marked behind in the weekly pulse leads until they say otherwise; a
+    goal marked done leaves the rotation."""
+    statuses = profile.get("goal_status") or {}
+    goals = [g for g in profile.get("goals") or [] if (statuses.get(g) or {}).get("status") != "done"]
     if not goals:
         return ""
+    behind = [g for g in goals if (statuses.get(g) or {}).get("status") == "behind"]
+    if behind:
+        return behind[0]
     day = datetime.fromtimestamp(now).timetuple().tm_yday
     return goals[day % len(goals)]
 
@@ -416,19 +451,26 @@ def _oxford(names: list[str]) -> str:
 def keeping_in_mind(profile: dict, now: float, *, events_today: int = 0,
                     first_event_hour: int | None = None, overdue_reminders: int = 0,
                     mail_from_people: int = 0, people_in_events: list[str] = (),
-                    people_in_mail: list[str] = (), people_in_messages: list[str] = ()) -> str:
+                    people_in_mail: list[str] = (), people_in_messages: list[str] = (),
+                    carried_over: list[dict] = ()) -> str:
     """The brief's personal section, or "" when there is nothing honest to say.
 
     Deterministic by design: it states the user's own words back to them next
     to a fact about today. At most one goal line, one people line and two
     struggle lines, so it stays a glance, not a sermon.
     """
-    if not has_content(profile):
+    if not has_content(profile) and not carried_over:
         return ""
     lines: list[str] = []
     goal = goal_in_focus(profile, now)
     if goal:
-        lines.append(f"- You're working toward: {goal}")
+        behind = ((profile.get("goal_status") or {}).get(goal) or {}).get("status") == "behind"
+        lines.append(f"- You're working toward: {goal}" + (" (you said you're behind; this week leads with it)" if behind else ""))
+    if carried_over:
+        titles = [str(c.get("title") or "") for c in carried_over if c.get("title")]
+        shown = "; ".join(titles[:3]) + (f"; and {len(titles) - 3} more" if len(titles) > 3 else "")
+        plural = "s" if len(carried_over) != 1 else ""
+        lines.append(f"- {len(carried_over)} task{plural} carried over from before: {shown}. Already on today's plan.")
     people_lines = []
     if people_in_events:
         people_lines.append(f"time with {_oxford(list(people_in_events))} on your calendar")

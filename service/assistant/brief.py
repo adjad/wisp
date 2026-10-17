@@ -1848,7 +1848,15 @@ def _keeping_in_mind(now: float) -> str:
     try:
         from service.memory import profile as P
         profile = P.load()
-        if not P.has_content(profile):
+        carried: list[dict] = []
+        try:
+            from service.assistant import checkin
+            from service.attention.detectors import local_timezone
+            zone = local_timezone() or "UTC"
+            carried = checkin.carried_today(checkin.local_day(now, zone))
+        except Exception:  # noqa: BLE001 — the carry-forward note is optional
+            carried = []
+        if not P.has_content(profile) and not carried:
             return ""
         agenda = _agenda(now)
         events, reminders = agenda["events"], agenda["reminders"]
@@ -1868,7 +1876,8 @@ def _keeping_in_mind(now: float) -> str:
             people_in_events=P.people_mentioned(profile, [str(e.get("title") or "") for e in events]),
             people_in_mail=P.people_mentioned(profile, [str(r.get("sender") or "") for r in mail_people]),
             people_in_messages=P.people_mentioned(
-                profile, [f"{c.get('label') or ''} {c.get('speaker') or ''}" for c in convos]))
+                profile, [f"{c.get('label') or ''} {c.get('speaker') or ''}" for c in convos]),
+            carried_over=carried)
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         return ""
