@@ -314,6 +314,16 @@ def test_feedback_mutes_after_two_negatives_within_a_week():
     assert not N.feedback_state(spread, NOW + 8 * D).muted(("cancel_likely", "p1"), NOW + 8 * D)
 
 
+def test_one_wrong_mutes_for_a_week_but_one_not_now_does_not():
+    wrong = [{"kind": "contact_window", "pattern_key": "mom", "verdict": "wrong", "ts": NOW}]
+    fb = N.feedback_state(wrong, NOW + D)
+    assert fb.muted(("contact_window", "mom"), NOW + D)                # the next day stays quiet
+    assert not fb.muted(("contact_window", "dev"), NOW + D)
+    assert not N.feedback_state(wrong, NOW + 7 * D + 60).muted(("contact_window", "mom"), NOW + 7 * D + 60)
+    not_now = [dict(wrong[0], verdict="not_now")]
+    assert not N.feedback_state(not_now, NOW + D).muted(("contact_window", "mom"), NOW + D)
+
+
 def test_undo_turns_auto_actions_into_offers_and_useful_boosts():
     acts = (Action("add_hold", {"title": "x"}, auto=True),)
     fb = N.feedback_state([{"kind": "cancel_likely", "pattern_key": "p1", "verdict": "undo", "ts": NOW}], NOW)

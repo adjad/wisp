@@ -199,8 +199,9 @@ Attention rules (`nudges.select`):
 - **Quiet hours:** nothing is generated from 22:00 to 07:00.
 - **Dedupe:** ids are deterministic, so the same situation never fires twice.
   Expired nudges are never created.
-- **Mute:** two negative verdicts (`not_now`, `wrong` or `undo`) for the same
-  kind and pattern within 7 days mute it for 7 days.
+- **Mute:** one `wrong` mutes that kind and pattern for 7 days. Two negative verdicts
+  (`not_now`, `wrong` or `undo`) for the same kind and pattern within 7 days mute it
+  for 7 days from the second.
 - **Undo:** an `undo` also turns that kind and pattern's auto actions into
   offers.
 - **Horizon:** candidates are built for events through the end of tomorrow.
@@ -367,6 +368,15 @@ observations, pattern identities or verdicts. Old saved/confirmed patterns recei
 conservative evidence wording on read, including before re-mining. Old schedule
 nudges are decoded with neutral wording and no offered automatic actions; their
 identity and Undo records remain. Schedule-sensitive nudge bodies stay deterministic.
+
+**Older Wisp, newer file.** A `behavior.db` whose schema is newer than the running build
+(for example after rolling back an update) is left as it is (its contents are never
+written; a read-only version check can leave empty `-wal`/`-shm` files beside it): learning
+pauses, retention skips it (also when its version cannot be read right now) (the newer build ages it out under its own rules), `/behavior/status`
+reports why under `engine.error`, other `/behavior/*` endpoints answer 409 with the same
+reason, and the newer build picks the file up unchanged. Only a file with an unreadable version is moved aside to
+`behavior.db.schema-<version>-<stamp>.bak` and re-learned. Builds before this rule (1.3.2 and
+earlier) moved a newer file aside too; nothing restores such a backup automatically.
 
 `GET /behavior/weekly` returns seven **completed local dates**, ending at today's
 midnight, compared with the preceding four seven-day windows. It reports scheduled

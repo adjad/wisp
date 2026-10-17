@@ -442,3 +442,21 @@ def test_settings_rejects_non_boolean(client):
     for bad in ({}, {"enabled": "false"}, {"enabled": 0}, {"enabled": None}, {"enabled": [True]}):
         assert client.put("/behavior/settings", json=bad).status_code == 422, bad
     assert client.get("/behavior/settings").json()["setting"] is True
+
+
+def test_a_newer_behavior_db_answers_409_with_the_reason(monkeypatch, tmp_path, client):
+    """An older Wisp facing a newer file: endpoints say why instead of a bare 500."""
+    from service.behavior.store import NewerSchemaError
+    monkeypatch.setenv("WISP_BEHAVIOR", "1")
+
+    def refuse(path):
+        raise NewerSchemaError("behavior.db was written by a newer version of Wisp (schema 3, this "
+                               "build reads 2); learning is paused and nothing was changed. Update Wisp to resume.")
+    rt = br.BehaviorRuntime(tmp_path / "home", local_factory=refuse)
+    br.set_runtime(rt)
+    try:
+        got = client.get("/behavior/patterns")
+        assert got.status_code == 409 and "newer version of Wisp" in got.json()["detail"]
+        assert "newer version of Wisp" in client.get("/behavior/status").json()["engine"]["error"]
+    finally:
+        rt.close()

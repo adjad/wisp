@@ -1319,6 +1319,33 @@ def _weather_request_dates(period: str) -> set[str] | None:
     return {(first + timedelta(days=i)).isoformat() for i in range(days)}
 
 
+# "Los Angeles right now" reached the tool verbatim in 1.4.0 and was refused as
+# a time constraint. A "now" phrase means current conditions, which every
+# lookup already returns, so it is dropped; "today"/"tomorrow" are whole dates
+# the forecast covers, so they move into `period`. Every other temporal word
+# (dayparts, clocks, weekdays) still reaches _weather_location_has_time.
+_WEATHER_NOW = r"(?:right\s+now|just\s+now|now|currently|at\s+the\s+moment|at\s+present|presently)"
+_WEATHER_DAY = r"(?:today|tomorrow)"
+_WEATHER_TRAILING_TIME = re.compile(
+    rf"(?:^|(?:\s*,)?\s+)(?:(?:for|on)\s+)?(?P<word>{_WEATHER_NOW}|{_WEATHER_DAY})(?:\s+please)?\s*[.!?]*$", re.I)
+_WEATHER_LEADING_TIME = re.compile(
+    rf"^(?:(?:for|on)\s+)?(?P<word>{_WEATHER_NOW}|{_WEATHER_DAY})\s*,?\s+(?:(?:in|for|at)\s+)?", re.I)
+
+
+def _split_weather_time(place: str) -> tuple[str, str]:
+    """Return (place, whole-date word) with current-time phrases removed."""
+    day = ""
+    while (match := _WEATHER_TRAILING_TIME.search(place)
+           or _WEATHER_LEADING_TIME.match(place)):
+        word = " ".join(match["word"].lower().split())
+        if re.fullmatch(_WEATHER_DAY, word):
+            if day and day != word:
+                return place, ""  # "today ... tomorrow" — leave it for the refusal
+            day = word
+        place = (place[:match.start()] + place[match.end():]).strip(" ,")
+    return place, day
+
+
 def _weather_location_has_time(place: str) -> bool:
     """Do not send an unconsumed temporal constraint as part of a city name."""
     if re.fullmatch(r"\d{8}", place):
@@ -1414,6 +1441,13 @@ async def get_weather(location: str, period: str = "", include: list[str] | None
             x not in _WEATHER_EXTRAS for x in extras):
         return (f"(error: include must be a list drawn from {sorted(_WEATHER_EXTRAS)}.)")
     place = location.strip()
+    if place and not is_temporal_location(place):
+        place, day = _split_weather_time(place)
+        if day and not period:
+            period = day
+        elif day and (not isinstance(period, str) or period.strip().lower() != day):
+            return (f"(error: the location says {day!r} but the requested range is "
+                    f"{period!r}; ask the user which day they mean)")
     if not place or is_temporal_location(place):
         return ("(error: no location given — ask the user which city they want the "
                 "weather for; do not guess one)")
@@ -1429,7 +1463,7 @@ async def get_weather(location: str, period: str = "", include: list[str] | None
         requested = normalize_weather_location(place)
     except ValueError as exc:
         return f"(error: no unambiguous location — {exc}; do not guess one)"
-    r = await _yahoo_get(f"https://wttr.in/{quote(requested.query)}?format=j1")
+    r = await _yahoo_get(f"https://wttr.in/{quote(requested.provider_query)}?format=j1")
     if isinstance(r, str):
         problem = r.replace("Yahoo Finance", "the weather service")
         return problem if problem.startswith("(error") else f"(error: weather service lookup failed: {problem})"
@@ -1473,10 +1507,22 @@ async def get_weather(location: str, period: str = "", include: list[str] | None
             return f"(error: weather forecast does not cover {period!r}; available dates: {', '.join(sorted(available))}.)"
         forecast = [day for day in forecast if day["date"] in required]
 
-    resolved = ", ".join(x for x in (_first(area, "areaName"),
+    area_name = _first(area, "areaName")
+    if requested.california_city:
+        # A coordinate lookup may label a downtown point with a neighbourhood
+        # ("Wingfoot" for Los Angeles); name the verified city, keep the label.
+        area_name = requested.california_city
+    resolved = ", ".join(x for x in (area_name,
                                      _first(area, "region"),
                                      _first(area, "country")) if x)
-    out = [f"Weather for {resolved or place} (asked for: {place})",
+    asked = f"asked for: {place}"
+    label = _first(area, "areaName").strip()
+    if requested.california_city and label and label.casefold() != area_name.casefold():
+        asked = f"reporting area: {label}; " + asked
+    if requested.assumed_state:
+        asked += (f"; assumed {requested.california_city}, California — "
+                  "say so if you meant a different one")
+    out = [f"Weather for {resolved or place} ({asked})",
            f"  now: {current['temp_F']}°F ({current['temp_C']}°C), "
            f"{_first(cur, 'weatherDesc').strip()}, "
            f"feels like {current['FeelsLikeF']}°F, "

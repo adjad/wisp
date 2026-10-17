@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from service.attention.contacts import Contacts
-from service.attention.corpus import Item, Snapshot
+from service.attention.corpus import AFFIRM as _AFFIRM, DECLINE as _DECLINE, Item, Snapshot
 from service.attention.prediction import Prediction
 from service.attention.exclusions import screen
 from service.attention.matching import find_on_file
@@ -45,17 +45,10 @@ _OBLIGATION = re.compile(
     r"(?<!nothing )(?<!no )\b(?:due|deadline|submit|turn\s+in|hand\s+in|don'?t\s+forget|"
     r"remember\s+to|reminder|need\s+to|have\s+to|must|pick\s+up|appointment|exam|quiz|"
     r"midterm|final|interview|meeting|rsvp|sign\s+up|register|expires?|closes?)\b", re.I)
-# A short reply that accepts a plan the user proposed ("yea sure i'll meet u there").
-_AFFIRM = re.compile(
-    r"^\W*(?:yes|yea|yeah|yep|yup|sure|ok(?:ay)?|k|sounds\s+(?:good|great)|works(?:\s+for\s+me)?|"
-    r"perfect|bet|down|deal|i'?ll\s+be\s+there|see\s+you(?:\s+there)?|can\s+do|count\s+me\s+in|"
-    r"will\s+do)\b", re.I)
 PROPOSAL_WINDOW_S = 6 * 3600
 # The plan was taken back in words `resolve` does not treat as a cancellation.
 _WITHDRAW = re.compile(r"\b(?:nvm|never\s*mind|scratch\s+that|forget\s+(?:it|that)|call\s+it\s+off|"
                        r"off\s+the\s+table|skip\s+(?:it|that|lunch|dinner|the))\b", re.I)
-_DECLINE = re.compile(r"\b(?:can'?t|cannot|won'?t|no|nope|sorry|not\s+able|unable|rain\s*check|"
-                      r"pass|busy)\b", re.I)
 
 
 def _zone_candidates() -> list[str]:

@@ -57,6 +57,34 @@ def has_cue(text: str) -> bool:
     return bool(_CUE.search(text or ""))
 
 
+# A short reply that accepts a plan the user proposed ("yea sure i'll meet u there").
+AFFIRM = re.compile(
+    r"^\W*(?:yes|yea|yeah|yep|yup|sure|ok(?:ay)?|k|sounds\s+(?:good|great)|works(?:\s+for\s+me)?|"
+    r"perfect|bet|down|deal|i'?ll\s+be\s+there|see\s+you(?:\s+there)?|can\s+do|count\s+me\s+in|"
+    r"will\s+do)\b", re.I)
+DECLINE = re.compile(r"\b(?:can'?t|cannot|won'?t|no|nope|sorry|not\s+able|unable|rain\s*check|"
+                      r"pass|busy)\b", re.I)
+ACCEPTANCE_WINDOW_S = 6 * 3600
+
+
+def accepts_user_time(snapshot: "Snapshot", item: "Item") -> bool:
+    """A short incoming yes ("sure", "sounds good") to a message of the USER's with a time
+    cue, in the same thread within six hours. It names no time itself, so the cue
+    prefilter never offers it, yet the detector inherits the user's time for it: the
+    full-corpus run found a real plan ("3:30?" -> "sure") that no labelled sample held."""
+    if item.source != "messages" or item.direction != "incoming":
+        return False
+    text = item.text or ""
+    if len(text.split()) > 12 or not AFFIRM.search(text) or DECLINE.search(text):
+        return False
+    for prev in reversed(snapshot.thread_before(item, 8)):
+        if item.ts - prev.ts > ACCEPTANCE_WINDOW_S:
+            return False
+        if prev.direction == "outgoing" and has_cue(prev.text):
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class Item:
     id: str                 # "msg:<guid>" or "mail:<hash>"; stable across snapshots
@@ -323,7 +351,8 @@ def sample(snapshot: Snapshot, *, seed: int = 0, n_cue: int = 120, n_control: in
            per_conversation: int = 30, n_mail: int = 30) -> list[dict]:
     """Choose what the user will label: [{"id", "stratum"}], shuffled.
 
-    Strata: "cue" (incoming text matching the loose cue prefilter), "control"
+    Strata: "cue" (incoming text matching the loose cue prefilter, or a short yes to the
+    user's own time proposal: `accepts_user_time`), "control"
     (incoming text that does not; labelling a few measures what the prefilter
     misses), and "mail" (cue-matching subjects). Outgoing messages are context,
     never candidates. A per-conversation cap stops one busy group chat filling
@@ -349,10 +378,14 @@ def sample(snapshot: Snapshot, *, seed: int = 0, n_cue: int = 120, n_control: in
         return out
 
     texts = [i for i in snapshot.items if i.source == "messages" and i.direction == "incoming"]
+
+    def cue(i: Item) -> bool:
+        return has_cue(i.text) or accepts_user_time(snapshot, i)
+
     mails = [i for i in snapshot.items if i.source == "mail"]
     chosen = (
-        [(i, "cue") for i in pick([i for i in texts if has_cue(i.text)], n_cue, per_conversation)]
-        + [(i, "control") for i in pick([i for i in texts if not has_cue(i.text)], n_control, None)]
+        [(i, "cue") for i in pick([i for i in texts if cue(i)], n_cue, per_conversation)]
+        + [(i, "control") for i in pick([i for i in texts if not cue(i)], n_control, None)]
         + [(i, "mail") for i in pick([i for i in mails if has_cue(i.text)], n_mail, None)])
     rng.shuffle(chosen)
     return [{"id": i.id, "stratum": s} for i, s in chosen]

@@ -403,6 +403,53 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
     return None
 
 
+_WEATHER_FAILURES = (
+    # (marker in the tool's error, status, reply template)
+    ("no location given", "needs_input", "Which city do you want the weather for?"),
+    ("no unambiguous location", "needs_input",
+     "There's more than one {place}. Which one do you mean? Add the state or "
+     "country, for example \"{place}, CA\"."),
+    ("the location says", "needs_input", "Which day do you want the weather in {place} for?"),
+    ("time constraint was included", "failed",
+     "I can give current conditions or a whole-day forecast for today and the "
+     "next two days, but not a specific hour or part of the day. Try asking "
+     "for {place} today or tomorrow."),
+    ("unsupported weather range", "failed",
+     "I can give current conditions or a whole-day forecast for today and the "
+     "next two days, but not a specific hour or part of the day. Try asking "
+     "for {place} today or tomorrow."),
+    ("forecast does not cover", "failed",
+     "The forecast only covers today and the next two days, so I can't give "
+     "{place} for {period}."),
+    ("could not verify", "failed",
+     "The weather service returned a different place than {place}, so I didn't "
+     "use its numbers. Try adding the state or country."),
+)
+_MODEL_DIRECTIVE = re.compile(
+    r"\s*[;.—-]\s*(?:ask|do not|don't|never|check|use)\b[^;]*", re.I)
+
+
+def read_failure_reply(name: str, args: dict, raw) -> tuple[str, str] | None:
+    """(status, plain reply) for a failed read tool's "(error: ...)" text."""
+    text = str(raw or "").strip()
+    if not text.startswith("(error"):
+        return None
+    place = str((args or {}).get("location") or "that place").strip() or "that place"
+    if name == "get_weather":
+        low = text.lower()
+        for marker, status, template in _WEATHER_FAILURES:
+            if marker in low:
+                return status, template.format(
+                    place=place, period=str((args or {}).get("period") or "that range"))
+        return "failed", (f"I couldn't get the weather for {place} right now. "
+                          "The weather service didn't return usable data; try "
+                          "again in a moment.")
+    detail = re.sub(r"^\(error:?\s*|\)$", "", text).strip()
+    detail = _MODEL_DIRECTIVE.sub("", detail).strip(" .;—-")
+    return "failed", (f"I couldn't finish that: {detail}." if detail
+                      else "I couldn't finish that read.")
+
+
 async def execute_read(compiled, emit, *, test_mode=False):
     planned, response = compiled
     calls, results, displays = [], [], []
@@ -434,7 +481,19 @@ async def execute_read(compiled, emit, *, test_mode=False):
         results.append(item)
         await emit({"type": "tool_result", **item})
     failed = any(r["status"] not in {"succeeded", "no_match", "planned"} for r in results)
-    response = "\n\n".join(r["result"] for r in results)
+    # A tool's "(error: ...)" text is written for a model, not a person. This
+    # path has no model pass, so 1.4.0 showed it verbatim ("(error: no
+    # unambiguous location — ...; do not guess one)"). Say it plainly instead.
+    replies = [read_failure_reply(r["name"], call["args"], r["result"])
+               if r["status"] == "failed" else None
+               for r, call in zip(results, calls)]
+    if failed and all(reply and reply[0] == "needs_input"
+                      for reply in replies if reply):
+        return TaskExecution("needs_input", "\n\n".join(
+            reply[1] if reply else r["result"] for r, reply in zip(results, replies)),
+            calls, results)
+    response = "\n\n".join(reply[1] if reply else r["result"]
+                            for r, reply in zip(results, replies))
     if has_display_only:
         response = DisplayOnlyToolResult("\n\n".join(displays), model_text=response,
                                          artifact_kind="news" if len(results) == 1 else "mixed")
