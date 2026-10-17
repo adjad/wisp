@@ -604,6 +604,13 @@ final class SettingsLoader: ObservableObject {
     private func request(_ method: String, path: String,
                          body: [String: Any]? = nil,
                          timeout: TimeInterval = 40) async throws -> [String: Any] {
+        // A write to a provider or its roles, even one that failed or timed out,
+        // may have changed which model answers: setup's test no longer applies.
+        defer {
+            if method != "GET", path.hasPrefix("inference/"), !path.hasSuffix("/probe") {
+                NotificationCenter.default.post(name: .wispInferenceConfigurationChanged, object: nil)
+            }
+        }
         var request = URLRequest(url: WispClient.baseURL.appendingPathComponent(path))
         request.httpMethod = method
         request.timeoutInterval = timeout
@@ -1165,6 +1172,8 @@ final class SettingsLoader: ObservableObject {
             _ = try? await URLSession.shared.data(for: req)
             self.saving = false
             await PendingConfigWrites.shared.end()
+            // A role now points at another model: setup's test no longer applies.
+            NotificationCenter.default.post(name: .wispInferenceConfigurationChanged, object: nil)
         }
     }
 }

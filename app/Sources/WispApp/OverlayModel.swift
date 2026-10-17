@@ -172,6 +172,9 @@ final class OverlayModel: ObservableObject {
         }
     }
     @Published private(set) var freeingMemory = false
+    // First-run setup at the top of Ask. Its readiness lives on the app's one
+    // SetupGuideModel, which the setup window shares.
+    @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
     @Published var collapsed = false {
         didSet {
             if collapsed && !oldValue {
@@ -257,14 +260,15 @@ final class OverlayModel: ObservableObject {
     // panel, which must not be mistaken for "the user switched apps".
     var pickingFile = false
 
-    // True while auto-collapse must hold off: the panel is pinned, or there is
+    // True while auto-collapse must hold off: the panel is pinned, there is
     // an edit the person hasn't finished (typed input, a message draft being
-    // edited). A mid-task generation does not count; the notch bar's dot shows
-    // it is still working.
+    // edited), or the setup card is open. A mid-task generation does not count;
+    // the notch bar's dot shows it is still working.
     var holdsOpen: Bool {
         pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || (tab == .today && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || knowYou != nil
+            || setupCard == .open
     }
 
     /// Open Getting to know you in the panel (first launch, /about, the menu
@@ -299,9 +303,9 @@ final class OverlayModel: ObservableObject {
     }
 
     /// Pick the tab for an opening panel: Ask, or for a hover soon after the
-    /// panel closed, the tab it closed on.
+    /// panel closed, the tab it closed on. An open setup card keeps it on Ask.
     func prepareTab(byHover: Bool, at date: Date = Date()) {
-        tab = tabMemory.tabForOpening(current: tab, byHover: byHover, at: date)
+        tab = setupCard.tabForOpening(tabMemory.tabForOpening(current: tab, byHover: byHover, at: date))
     }
 
     /// False while a turn is in flight. The Wisp window and the chat switcher
