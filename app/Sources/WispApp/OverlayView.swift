@@ -133,6 +133,17 @@ struct OverlayView: View {
                     .padding(.bottom, 5)
                     .opacity(breathe ? 0.3 : 1)
                     .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: breathe)
+            } else if model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
+                // What needs you today, from Today's last load (it loads only while its
+                // tab is open, so the bar never triggers a load).
+                HStack(spacing: 6) {
+                    if !isNotch { orb.scaleEffect(0.7) }
+                    Text("\(todayCount)").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.black)
+                        .padding(.horizontal, 5).frame(minWidth: 14, minHeight: 13)
+                        .background(Capsule().fill(.white))
+                }
+                .padding(.bottom, isNotch ? 3 : 8)
+                .accessibilityLabel(todayCount == 1 ? "1 thing on Today needs you" : "\(todayCount) things on Today need you")
             } else if model.setupCard == .later {
                 // Setup was set aside and Wisp still can't answer.
                 HStack(spacing: 6) {
