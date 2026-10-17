@@ -17,6 +17,7 @@ import logging
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable
@@ -110,6 +111,12 @@ class Store:
                 found = None
             if found is None:
                 self.meta_set("schema_version", SCHEMA_VERSION)
+            if self.meta_get("store_id") is None:
+                # Names this file's nudge seq space. A fresh file (first run,
+                # move-aside, deletion) restarts seq at 1, so a consumer's
+                # cursor is only meaningful against the store_id it was
+                # advanced on.
+                self.meta_set("store_id", uuid.uuid4().hex)
 
     def _open(self, db_path: str) -> None:
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
@@ -423,6 +430,9 @@ class Store:
             # counter still knows the highest seq ever handed out.
             seq = self._conn.execute("SELECT seq FROM sqlite_sequence WHERE name='nudges'").fetchone()
         return max(int(row[0] or 0), int(seq[0] or 0) if seq else 0)
+
+    def store_id(self) -> str:
+        return str(self.meta_get("store_id"))
 
     def nudge_count(self) -> int:
         with self._lock:

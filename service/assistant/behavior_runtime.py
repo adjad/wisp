@@ -1214,8 +1214,7 @@ class BehaviorRuntime:
                         self._stage_queued_nudge(created,nudge_inputs,now)
                     stamps["nudge"] = now
                     self.last["nudge"] = now
-                    cursor = int(self.kv_get(f"cursor:{key}", "0") or 0)
-                    nudges, _ = self.call("nudges_since", cursor, 50)
+                    nudges, _ = self.call("nudges_since", self._delivery_cursor(key), 50)
                 self.errors.pop("engine", None)
             except Exception as exc:  # noqa: BLE001
                 self.errors["engine"] = f"{type(exc).__name__}: {exc}"[:200]
@@ -1227,6 +1226,38 @@ class BehaviorRuntime:
             if self._card is None or self.clock() - self._card[0] >= CARD_TTL_S:
                 self.refresh_card(now)
             return nudges, key
+
+    def _delivery_cursor(self, key: str) -> int:
+        """The delivery cursor, rebased to 0 when the engine's store was replaced.
+
+        The engine's nudge seq restarts at 1 in a fresh behavior.db (schema
+        move-aside, deletion), while ``cursor:<key>`` lives in behavior_runtime.db
+        and survives; left alone it would silently skip every new nudge up to
+        the old cursor. The cursor is bound to the store_id it was advanced on:
+        a different id means a different seq space. A cursor with no binding
+        yet (written before store ids existed) is adopted unless it exceeds the
+        store's max_seq, which an intact store can never do (seq never goes
+        backwards). Against the same intact store nothing is rebased, so
+        nothing already delivered is offered again."""
+        cursor = int(self.kv_get(f"cursor:{key}", "0") or 0)
+        space = self.call("nudge_seq_space")
+        store_id, max_seq = str(space["store_id"]), int(space["max_seq"])
+        bound = self.kv_get(f"cursor_store:{key}")
+        if bound == store_id and cursor <= max_seq:
+            return cursor
+        rows = [(f"cursor_store:{key}", store_id)]
+        if (bound is not None and bound != store_id) or cursor > max_seq:
+            log.warning("behavior store replaced (cursor %d, bound %s, store %s, max_seq %d); "
+                        "rebasing delivery cursor to 0", cursor, bound, store_id, max_seq)
+            cursor = 0
+            rows.append((f"cursor:{key}", "0"))
+        else:
+            # Adopting only binds: the cursor value is left as tick advanced it.
+            log.info("binding behavior delivery cursor %d to store %s", cursor, store_id)
+        with self._db_lock, self._db:
+            self._db.executemany(
+                "INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rows)
+        return cursor
 
     # ---- delivery (event loop) ---------------------------------------------------
     def policy_block(self, action) -> str | None:

@@ -27,6 +27,11 @@ FAILED = {"failed", "error", "systemError", "cancelled", "interrupted"}
 COMPLETED = {"completed"}
 USER_THREAD_SOURCES = {"user", "cli", "vscode", "appServer", "exec", "unknown", ""}
 STALL_AFTER_S = 15 * 60
+# A long-lived task finishes a turn every time it is resumed (a scheduled status run, a
+# conversation that keeps going), and each turn used to be its own "finished" alert: one
+# task produced 55 in three days. A task now announces completion at most once in this
+# window. Failures and stalls are never held back.
+COMPLETED_COOLDOWN_S = 6 * 3600
 
 
 class CodexMonitorUnavailable(RuntimeError):
@@ -237,13 +242,19 @@ class CodexMonitor:
             return {}, 0, False
 
     def _save_snapshot(self, tasks: list[CodexTask], *, now: float,
-                       previous: dict[str, dict[str, Any]]) -> None:
+                       previous: dict[str, dict[str, Any]],
+                       completed_alerted: dict[str, float] | None = None) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        completed_alerted = completed_alerted or {}
         task_rows = {}
         for task in tasks:
             row = asdict(task)
             row["stalled_alerted"] = bool(
                 task.running and now - task.updated_at >= STALL_AFTER_S)
+            alerted = completed_alerted.get(task.id, (previous.get(task.id) or {}).get(
+                "completed_alerted_at"))
+            if alerted is not None:
+                row["completed_alerted_at"] = alerted
             task_rows[task.id] = row
         if task_rows == previous:
             return
@@ -269,6 +280,7 @@ class CodexMonitor:
         tasks = self.tasks(include_subagents=False)
         previous, saved_at, has_baseline = self._load_snapshot()
         events: list[dict[str, Any]] = []
+        completed_alerted: dict[str, float] = {}
         if has_baseline:
             for task in tasks:
                 old = previous.get(task.id)
@@ -279,6 +291,8 @@ class CodexMonitor:
                     if ((task.status in COMPLETED or task.failed)
                             and task.updated_at >= saved_at):
                         kind = "failed" if task.failed else "completed"
+                        if kind == "completed":
+                            completed_alerted[task.id] = now
                         events.append({
                             "type": "codex_task_update", "kind": kind,
                             "thread_id": task.id, "title": task.title,
@@ -290,6 +304,12 @@ class CodexMonitor:
                 if (old_status in RUNNING
                         and (task.status in COMPLETED or task.failed)):
                     kind = "failed" if task.failed else "completed"
+                    if kind == "completed":
+                        last = old.get("completed_alerted_at")
+                        if isinstance(last, (int, float)) and 0 <= now - last < COMPLETED_COOLDOWN_S:
+                            kind = ""
+                        else:
+                            completed_alerted[task.id] = now
                 elif (task.running and now - task.updated_at >= STALL_AFTER_S
                       and not bool(old.get("stalled_alerted"))):
                     kind = "stalled"
@@ -299,7 +319,8 @@ class CodexMonitor:
                         "thread_id": task.id, "title": task.title,
                         "status": task.status, "latest_update": task.latest_update,
                     })
-        self._save_snapshot(tasks, now=now, previous=previous)
+        self._save_snapshot(tasks, now=now, previous=previous,
+                            completed_alerted=completed_alerted)
         return events
 
 

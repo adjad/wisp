@@ -489,6 +489,7 @@ struct TodayPlanChecks {
         diagnosticsModel.selectDate(instant("2026-09-25T08:00:00Z"))
         check(diagnosticsModel.diagnosticSnapshot().metadata["client_outcome"] as? String == "not_loaded")
         try await dailyWorkspaceChecks()
+        try await attentionChecks()
         if ProcessInfo.processInfo.environment["WISP_TODAY_WINDOW_CHECK"] == "1" {
             try await windowChecks()
         }
@@ -559,5 +560,84 @@ struct TodayPlanChecks {
         check(email.preview?.body == "Synthetic sources")
         await email.enable(today)
         check(email.error == "Review expired", "Successful settings refresh must preserve an enable error")
+    }
+
+    @MainActor
+    static func attentionChecks() async throws {
+        let now = instant("2026-10-16T19:00:00Z")
+        let t = now.timeIntervalSince1970
+        var mode = "shadow"
+        var requests: [URLRequest] = []
+        func status() throws -> Data {
+            let row: (String, String, Double) -> [String: Any] = { id, state, at in
+                ["source_id": id, "state": state, "title": "Mom: Quad at 6PM", "due_ts": t + 3600,
+                 "event_ts": t + 5400, "decided_at": at, "when": "today 6:00 PM", "quote": "meet me in the Quad at 6PM",
+                 "undoable": id == "made"]
+            }
+            return try JSONSerialization.data(withJSONObject: [
+                "settings": ["mode": mode, "daily_cap": 3, "quiet_start": 22, "quiet_end": 8,
+                             "lead_minutes": 30, "default_hour": 9],
+                "modes": ["off", "shadow", "live"], "created_today": 1,
+                "recent": [row("old", "created", t - 8 * 86400), row("known", "already_on_file", t - 60),
+                           row("made", "created", t - 120), row("preview", "shadow", t - 30)]])
+        }
+        let model = AttentionModel(now: { now }) { request in
+            requests.append(request)
+            if request.httpMethod == "PUT" {
+                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                mode = body["mode"] as! String
+            }
+            return (try status(), response(request))
+        }
+        await model.refresh()
+        check(model.error.isEmpty && !model.live)
+        check(model.items.map(\.id) == ["preview", "made"],
+              "Caught for you shows the last week's meaningful decisions, newest first, and hides already_on_file")
+        check(model.items.first?.label == "Would add · preview")
+        await model.undo(model.items.first!)
+        check(requests.count == 1, "Undo is only offered for a reminder Wisp created")
+        await model.undo(model.items[1])
+        let undo = requests[1]
+        check(undo.httpMethod == "POST" && undo.url!.path == "/assistant/attention/undo")
+        check((try JSONSerialization.jsonObject(with: undo.httpBody!) as! [String: Any])["source_id"] as? String == "made")
+        await model.setLive(true)
+        let put = requests.first { $0.httpMethod == "PUT" }!
+        check(put.url!.path == "/assistant/attention/settings" && model.live)
+        await model.setLive(false)
+        check(!model.live && mode == "shadow", "Turning it off returns to preview, never to a hidden mode")
+        // A refusal from Undo stays on screen after the reload that follows it.
+        var stale: CheckedContinuation<(Data, URLResponse), Error>?
+        var holdNextGet = false
+        let refusing = AttentionModel(now: { now }) { request in
+            if request.httpMethod == "POST" {
+                return (Data("{\"detail\":\"That reminder was changed after Wisp created it; nothing was removed.\"}".utf8),
+                        HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+            }
+            if holdNextGet {
+                holdNextGet = false
+                return try await withCheckedThrowingContinuation { stale = $0 }
+            }
+            return (try status(), response(request))
+        }
+        await refusing.refresh()
+        await refusing.undo(refusing.items[1])
+        check(refusing.error.hasPrefix("That reminder was changed"), "Undo's refusal must survive the reload")
+        // An older poll that resolves after a newer refresh must not overwrite it.
+        holdNextGet = true
+        let poll = Task { await refusing.refresh() }
+        while stale == nil { await Task.yield() }
+        mode = "live"
+        await refusing.refresh()
+        check(refusing.live)
+        mode = "shadow"
+        stale!.resume(returning: (try status(), response(URLRequest(url: URL(string: "http://127.0.0.1:1/assistant/attention")!))))
+        await poll.value
+        check(refusing.live, "A stale poll must not undo a newer status")
+        let failing = AttentionModel(now: { now }) { request in
+            (Data("{\"detail\":\"The reminder was not found.\"}".utf8),
+             HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+        }
+        await failing.refresh()
+        check(failing.error == "The reminder was not found." && failing.status == nil)
     }
 }
