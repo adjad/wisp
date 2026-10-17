@@ -385,6 +385,9 @@ ADDITIONAL_FULL_TESTS = {
     # Daily workspace: pure source fixtures, private disposable SQLite, fixed
     # verified-self identity, fake policy/outbox and ASGI transport; no effects.
     "tests/test_daily_workspace.py",
+    # The user's profile (Getting to know you): JSON in a temp path, pure prompt/brief/
+    # ranking helpers and an in-process TestClient; no model, listener or real ~/.moe.
+    "tests/test_user_profile.py",
     "tests/test_day_plan_email.py",
     "tests/test_user_reported_regressions_20260902.py",
     "tests/test_user_reported_regressions_20260903.py",
@@ -507,6 +510,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/chat-store-contract": "native/chat-store-compile",
     "native/notch-command-contract": "native/notch-command-compile",
     "native/notch-tab-contract": "native/notch-tab-compile",
+    "native/know-you-contract": "native/know-you-compile",
 }
 
 
@@ -783,6 +787,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     prompt_queue = str(build_dir / "prompt-queue")
     notch_command = str(build_dir / "notch-command")
     notch_tab = str(build_dir / "notch-tab")
+    know_you = str(build_dir / "know-you")
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
     reminders_policy = str(build_dir / "reminders-policy")
@@ -879,6 +884,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/notch-tab-contract", [notch_tab]),
+        (
+            "native/know-you-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/KnowYouFlow.swift",
+                "tests/KnowYouChecks.swift", "-o", know_you,
+            ],
+        ),
+        ("native/know-you-contract", [know_you]),
         (
             "native/chat-logic-compile",
             [

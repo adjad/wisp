@@ -212,6 +212,9 @@ final class OverlayModel: ObservableObject {
     // first, see NudgeViews.swift). Each also arrives as a notification.
     @Published var nudges: [BehaviorNudge] = []
     @Published var transientNotice: String?
+    // Getting to know you (KnowYouView.swift), replacing the tab content while
+    // it runs. Nil when the flow is not on screen.
+    @Published private(set) var knowYou: KnowYouModel?
     // Keep the panel open: no auto-collapse when the pointer leaves or focus
     // moves to another app. Cleared by any explicit collapse (see AppDelegate).
     @Published var pinned = false
@@ -246,6 +249,37 @@ final class OverlayModel: ObservableObject {
     var holdsOpen: Bool {
         pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || (tab == .today && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+            || knowYou != nil
+    }
+
+    /// Open Getting to know you in the panel (first launch, /about, the menu
+    /// bar, About you's Revisit). Picks up where the person left off.
+    func startKnowYou() {
+        if knowYou == nil {
+            let flow = KnowYouModel(client: client)
+            flow.onClose = { [weak self] notice in self?.endKnowYou(notice: notice) }
+            flow.onShowBrief = { [weak self] in
+                self?.endKnowYou(notice: nil)
+                self?.runDailySummary()
+            }
+            knowYou = flow
+        }
+        tab = .ask
+        requestExpand()
+        onResize()
+    }
+
+    private func endKnowYou(notice: String?) {
+        knowYou = nil
+        onResize()
+        if let notice { showTransientNotice(notice, duration: 6) }
+    }
+
+    /// The person moved on (a tab) before Done. The flow saves after every
+    /// step, so nothing is lost; the service counts it as Later.
+    func leaveKnowYou() {
+        guard let knowYou else { return }
+        Task { await knowYou.leave() }
     }
 
     /// Pick the tab for an opening panel: Ask, or for a hover soon after the
@@ -451,6 +485,7 @@ final class OverlayModel: ObservableObject {
         case .report: reportCurrentProblem()
         case .window: openTabInWindow()
         case .new: newChat()
+        case .about: startKnowYou()
         }
     }
 

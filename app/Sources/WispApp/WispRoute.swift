@@ -13,6 +13,8 @@ enum WispRoute: Equatable {
     case memory(MemoryFocus)
     case settings
     case setup
+    /// Getting to know you, in the notch (KnowYouView.swift).
+    case knowYou
 
     enum TodayFocus: Equatable {
         case attention, plan
@@ -22,14 +24,16 @@ enum WispRoute: Equatable {
     }
 
     /// The Wisp window's Memory tabs: saved facts and corrections, the routines
-    /// Wisp has learned, and memories waiting for review.
+    /// Wisp has learned, what the user told Wisp about themselves, and memories
+    /// waiting for review.
     enum MemoryFocus: Equatable, CaseIterable {
-        case facts, routines, review
+        case facts, routines, about, review
 
         var title: String {
             switch self {
             case .facts: return "Facts"
             case .routines: return "Routines"
+            case .about: return "About you"
             case .review: return "Review"
             }
         }
