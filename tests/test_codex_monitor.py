@@ -101,3 +101,53 @@ def test_poll_catches_task_that_starts_and_finishes_between_polls(tmp_path: Path
     events = monitor.poll_events(now=now + 20)
     assert [(event["kind"], event["thread_id"]) for event in events] == [("completed", "fast")]
     assert monitor.poll_events(now=now + 21) == []
+
+
+def _resume(state: Path, history: Path, thread: str, turn: str, start: int) -> None:
+    with sqlite3.connect(history) as db:
+        db.execute("INSERT INTO thread_turns VALUES (?, ?, 2, 'inProgress', ?, NULL)", (thread, turn, start))
+    with sqlite3.connect(state) as db:
+        db.execute("UPDATE threads SET updated_at=? WHERE id=?", (start, thread))
+
+
+def _finish(state: Path, history: Path, thread: str, turn: str, at: int, status: str = "completed") -> None:
+    with sqlite3.connect(history) as db:
+        db.execute("UPDATE thread_turns SET status=?, completed_at=? WHERE thread_id=? AND turn_id=?",
+                   (status, at, thread, turn))
+    with sqlite3.connect(state) as db:
+        db.execute("UPDATE threads SET updated_at=? WHERE id=?", (at, thread))
+
+
+def test_a_resumed_task_announces_completion_once_per_cooldown(tmp_path: Path):
+    """One long-lived task used to alert on every turn it finished (55 in three days)."""
+    from service.codex_monitor import COMPLETED_COOLDOWN_S
+    now = 2_000_000_000
+    state, history = _fixture(tmp_path, now)
+    monitor = CodexMonitor(tmp_path, tmp_path / "snapshot.json")
+    assert monitor.poll_events(now=now) == []
+    _finish(state, history, "running", "turn-r", now + 20)
+    assert [e["kind"] for e in monitor.poll_events(now=now + 20)] == ["completed"]
+    # Resumed and finished again an hour later: the completion is quiet.
+    _resume(state, history, "running", "turn-2", now + 3600)
+    assert monitor.poll_events(now=now + 3600) == []
+    _finish(state, history, "running", "turn-2", now + 3700)
+    assert monitor.poll_events(now=now + 3700) == []
+    # Past the cooldown it announces again.
+    later = now + 20 + COMPLETED_COOLDOWN_S + 60
+    _resume(state, history, "running", "turn-3", later - 30)
+    assert monitor.poll_events(now=later - 30) == []
+    _finish(state, history, "running", "turn-3", later)
+    assert [e["kind"] for e in monitor.poll_events(now=later)] == ["completed"]
+
+
+def test_cooldown_never_holds_back_a_failure(tmp_path: Path):
+    now = 2_000_000_000
+    state, history = _fixture(tmp_path, now)
+    monitor = CodexMonitor(tmp_path, tmp_path / "snapshot.json")
+    assert monitor.poll_events(now=now) == []
+    _finish(state, history, "running", "turn-r", now + 20)
+    assert [e["kind"] for e in monitor.poll_events(now=now + 20)] == ["completed"]
+    _resume(state, history, "running", "turn-2", now + 60)
+    assert monitor.poll_events(now=now + 60) == []
+    _finish(state, history, "running", "turn-2", now + 90, status="failed")
+    assert [e["kind"] for e in monitor.poll_events(now=now + 90)] == ["failed"]
