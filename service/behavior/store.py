@@ -26,6 +26,46 @@ from service.behavior.types import Nudge, Observation, Pattern
 
 SCHEMA_VERSION = 2
 log = logging.getLogger(__name__)
+
+
+_WARNED_NEWER: set[str] = set()
+
+
+def written_by_newer_build(path: Path) -> bool:
+    """Whether a behavior db must be left to a newer Wisp, read without writing to it.
+
+    Fails closed: a file this build cannot read the version of right now (locked by the
+    newer process, say) counts as newer, so retention never applies old rules to it. Only a
+    missing file, a file with no meta table or version, or a version this build knows is
+    False. A read-only open of a WAL file can leave empty -wal/-shm files beside it."""
+    path = Path(path)
+    if not path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return True
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    except sqlite3.OperationalError as exc:
+        return "no such table" not in str(exc)
+    except sqlite3.Error:
+        return True
+    finally:
+        conn.close()
+    if row is None:
+        return False
+    try:
+        return int(json.loads(row[0])) > SCHEMA_VERSION
+    except (TypeError, ValueError):
+        return False           # unreadable version: the store moves it aside; retention as before
+
+
+class NewerSchemaError(RuntimeError):
+    """The file was written by a newer Wisp. It is left exactly as it is and learning pauses:
+    moving it aside (as an unreadable file is) would throw away everything learned the moment
+    an older build ran, for example while rolling back an update, and the newer build would
+    never get it back."""
 # Retention (applied by prune(), which the engine runs during mine()). Mining
 # looks back ~16 weeks; overlapping Calendar occupancy remains report evidence.
 OBSERVATION_RETENTION_S = 180 * 86400
@@ -97,12 +137,29 @@ class Store:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         with self._lock:
-            self._open(str(db_path))
-            found = self._schema_version()
+            # Read the version before creating anything: a newer file must not even get
+            # this version's tables added to it.
+            self._open(str(db_path), create=False)
+            try:
+                found = self._schema_version()
+            except BaseException:
+                self._conn.close()
+                raise
+            if isinstance(found, int) and found > SCHEMA_VERSION:
+                self._conn.close()
+                if str(self.path) not in _WARNED_NEWER:     # every caller retries; say it once
+                    _WARNED_NEWER.add(str(self.path))
+                    log.warning("behavior db schema %d is newer than %d; learning paused, file kept",
+                                found, SCHEMA_VERSION)
+                raise NewerSchemaError(
+                    f"behavior.db was written by a newer version of Wisp (schema {found}, this "
+                    f"build reads {SCHEMA_VERSION}); learning is paused and nothing was changed. "
+                    "Update Wisp to resume.")
+            self._pragmas()
+            self._conn.executescript(_SCHEMA)
             if found is not None and found != SCHEMA_VERSION and not self._migrate(found):
-                # A db written by newer code (or with an unreadable version) is
-                # moved aside, never half-read or overwritten: the engine
-                # restarts empty and re-learns from the next ingest.
+                # An unreadable version is moved aside, never half-read or overwritten:
+                # the engine restarts empty and re-learns from the next ingest.
                 self._conn.close()
                 moved = self._move_aside(found)
                 log.warning("behavior db schema %r != %d; moved to %s and starting fresh",
@@ -118,15 +175,21 @@ class Store:
                 # advanced on.
                 self.meta_set("store_id", uuid.uuid4().hex)
 
-    def _open(self, db_path: str) -> None:
+    def _open(self, db_path: str, *, create: bool = True) -> None:
+        """Connect. With ``create=False`` nothing is written (not even the WAL switch), so a
+        file this build must not touch can still be read for its version."""
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         self._conn.row_factory = sqlite3.Row
+        if create:
+            self._pragmas()
+            self._conn.executescript(_SCHEMA)
+
+    def _pragmas(self) -> None:
         try:
             self._conn.execute("PRAGMA journal_mode=WAL")
         except sqlite3.DatabaseError:
             pass  # e.g. :memory: or a filesystem without shared memory
         self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.executescript(_SCHEMA)
 
     def _schema_version(self) -> int | str | None:
         """Stored version as int; the raw value when it is not an int; None if absent."""
@@ -134,6 +197,10 @@ class Store:
             found = self.meta_get("schema_version")
         except ValueError:
             return "unreadable"
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            return None                                   # a new file: no meta table yet
         if found is None:
             return None
         try:

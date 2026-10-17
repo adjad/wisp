@@ -99,6 +99,9 @@ struct TodayPlan: Decodable {
 
 @MainActor
 final class TodayModel: ObservableObject {
+    // The one problem report about Today, shared by the notch's Today tab and
+    // the window's planner. Each shows it inline.
+    let report = ReportDraft()
     @Published var plan: TodayPlan?
     @Published var error = ""
     @Published var busy = false
@@ -276,10 +279,16 @@ final class TodayModel: ObservableObject {
 
     func reportProblem() {
         let snapshot = diagnosticSnapshot()
-        DiagnosticReport.present(metadata: snapshot.metadata, details: snapshot.details)
+        let trace = snapshot.metadata["trace_id"] as? String ?? snapshot.metadata["refresh_trace_id"] as? String
+        report.open(key: "today:" + (trace ?? UUID().uuidString), metadata: snapshot.metadata, details: snapshot.details)
     }
 
-    func clearPlannerDetails() { reportDetails = nil }
+    /// Turning capture off drops captured planner details, including from an
+    /// open report that holds a copy of them.
+    func clearPlannerDetails() {
+        reportDetails = nil
+        if report.snapshot?.hasDetails == true { report.close() }
+    }
 
     @discardableResult
     func mutate(_ path: String, method: String, body: [String: Any]) async -> Bool {
@@ -447,6 +456,9 @@ struct TodayView: View {
                 Button("Refresh") { Task { await model.refresh() } }.disabled(model.busy)
                 Button("Report a problem") { model.reportProblem() }
             }
+            ReportDraftCard(draft: model.report, title: "Report a problem with this plan",
+                            detailsLabel: "Include planner details", look: .window,
+                            save: { model.report.chooseLocationAndSave() })
             Toggle("Capture planner details for a problem report", isOn: $model.capturePlannerDetails)
                 .font(.caption)
                 .help("Includes private task and calendar titles. Capture starts on the next refresh; reports ask again before including it.")

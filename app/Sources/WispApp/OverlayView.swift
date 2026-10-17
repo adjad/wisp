@@ -61,6 +61,13 @@ struct OverlayView: View {
                 transientNotice
                 if model.setupCard != .hidden { NotchSetupView(model: model, setup: setup) }
                 if model.setupCard != .open {
+                    if model.reportIsUnattached {
+                        ReportDraftCard(draft: model.report,
+                                        title: model.report.snapshot?.key == "chat:none"
+                                            ? "Report a problem" : "Report a problem with the last turn",
+                                        save: { model.saveReport(model.report) })
+                            .padding(.top, 8)
+                    }
                     MemoryReviewNotice()
                     NudgeStack(model: model)
                     promptArea
@@ -505,6 +512,10 @@ struct OverlayView: View {
                 }
                 .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.textMuted)
                 if showDetails { debugLine(for: turn) }
+                if model.report.snapshot?.key == OverlayModel.reportKey(for: turn) {
+                    ReportDraftCard(draft: model.report, save: { model.saveReport(model.report) })
+                        .padding(.top, 4)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

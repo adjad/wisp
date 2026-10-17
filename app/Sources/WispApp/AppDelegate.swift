@@ -693,6 +693,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func createPanelIfNeeded() {
         guard panel == nil else { return }
+        model.todayReport = todayModel.report
         panel = OverlayPanel {
             OverlayView(model: self.model, researchModel: self.researchModel, todayModel: self.todayModel,
                         settings: self.settingsLoader, setup: self.setupModel,
@@ -898,7 +899,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // timing, tok/s, tool calls, and any errors) to ~/Downloads as JSON + a
     // readable .txt companion, then reveals them in Finder. No-ops with a
     // brief alert if there's no conversation yet.
-    @objc private func reportProblem() { model.reportCurrentProblem() }
+    /// Opens the report inline in the notch, under the last reply.
+    @objc private func reportProblem() {
+        model.reportCurrentProblem()
+        openAssistant()
+    }
 
     @objc private func exportDebugLog() {
         guard let url = model.exportDebugLog() else {
@@ -1321,6 +1326,41 @@ extension AppDelegate {
         precondition(model.tab == .today, "Setup set aside leaves hover's last tab alone")
         precondition(model.setupCard.afterReadiness(true) == .hidden, "Setup set aside leaves when Wisp is ready")
         print("PASS: AppDelegate setup card opens on Ask, holds the panel until Done or Later")
+    }
+
+    static func checkInlineReportHoldsOpen() async {
+        let delegate = AppDelegate()
+        let model = delegate.model
+        model.todayReport = delegate.todayModel.report
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        model.collapsed = false
+        delegate.finishPresentation(opening)
+        model.tab = .today
+        model.reportCurrentProblem()
+        precondition(model.tab == .ask && model.report.snapshot?.key == "chat:none" && model.reportIsUnattached,
+                     "With no reply, Report a problem opens one report at the top of Ask")
+        precondition(model.holdsOpen, "An open report holds the panel open")
+        delegate.scheduleCollapse()
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(delegate.presentation.desired == .chat, "Auto-collapse waits while a report is open")
+        let reply = OverlayModel.Turn(role: "assistant", text: "Hello")
+        model.turns = [OverlayModel.Turn(role: "user", text: "hi"), reply]
+        model.report.note = "a quicker reply"
+        model.reportProblem(for: reply)
+        precondition(model.report.snapshot?.key == OverlayModel.reportKey(for: reply) && !model.reportIsUnattached,
+                     "A reply's report unfolds under that reply")
+        precondition(model.report.note.isEmpty && !model.report.includeDetails
+                     && model.report.snapshot?.scrubbedDetails?["prompt"] as? String == "hi",
+                     "A new report starts with no note, details off, and the reply's prompt in its snapshot")
+        model.reset()
+        precondition(!model.report.isOpen, "A new chat closes the report on the conversation it leaves")
+        precondition(!model.holdsOpen, "Closing the report lets the panel collapse")
+        model.tab = .today
+        delegate.todayModel.reportProblem()
+        precondition(model.holdsOpen, "Today's report holds the panel open on the Today tab")
+        delegate.todayModel.report.close()
+        print("PASS: AppDelegate inline reports: one at a time, under their reply, holding the panel while open")
     }
 
     static func checkMenuHoldsCollapse() async {

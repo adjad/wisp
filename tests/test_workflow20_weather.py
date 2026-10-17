@@ -9,8 +9,14 @@ import pytest
 
 from service.tools import web_tools
 from service.tools.ca_locations import (
-    CA_CITIES, normalize_weather_location, provider_area_matches,
+    CA_CENTERS, CA_CITIES, normalize_weather_location, provider_area_matches,
 )
+
+
+def provider_path(city):
+    """Canonical cities are fetched by center coordinates; others by name."""
+    center = CA_CENTERS.get(city)
+    return f"/{center[0]},{center[1]}" if center else f"/{city},CA"
 
 
 def area(city="San Francisco", region="California", country="United States"):
@@ -76,7 +82,7 @@ def test_finite_aliases_and_fixture_typos(query, city):
 
 @pytest.mark.parametrize("query", [
     "Santa, California", "Santa C, CA", "SC, CA", "San, CA", "CA", "California",
-    "LA", "SD", "SJ", "Santa Clara", "San Francisco", "San Jsoe",
+    "LA", "SD", "SJ", "Santa Clara", "Santa Cruz", "San Jose", "Riverside", "San Jsoe",
     "San Jose, CA, Canada", "San Francisco, California, Argentina", "Santa/Clara, CA",
     "San Francisco (CA)", "SF, CA!", "SF, C.A., Canada", "SF, Calif, Argentina",
     "CA,CA", "California,CA",
@@ -97,7 +103,7 @@ def test_weather_requires_and_returns_the_requested_california_city(city, monkey
     result = asyncio.run(web_tools.get_weather(f"{city}, California"))
     assert f"Weather for {city}, California, United States" in result
     assert "99°F" in result
-    assert unquote(urlparse(calls[0]).path) == f"/{city},CA"
+    assert unquote(urlparse(calls[0]).path) == provider_path(city)
     assert len(calls) == 1
 
 
@@ -110,7 +116,7 @@ def test_normalized_queries_verify_the_canonical_city(query, city, monkeypatch):
     calls = fake_weather(monkeypatch, payload(city))
     result = asyncio.run(web_tools.get_weather(query))
     assert f"Weather for {city}, California, United States" in result
-    assert unquote(urlparse(calls[0]).path) == f"/{city},CA"
+    assert unquote(urlparse(calls[0]).path) == provider_path(city)
 
 
 @pytest.mark.parametrize("city", CA_CITIES)
@@ -212,7 +218,7 @@ def test_unsupported_time_constraints_fail_before_http(period, monkeypatch):
     "London this evening", "Paris next weekend", "Tokyo morning",
     "Tokyo on 2026-10-12", "Tokyo at 6pm", "Tokyo 6p.m.", "Tokyo 18:00",
     "Tokyo next Friday", "Tokyo Friday", "Tokyo morning please", "Tokyo night",
-    "Tokyo midday", "Tokyo right now", "Tokyo overnight", "Tokyo weekend"])
+    "Tokyo midday", "Tokyo overnight", "Tokyo weekend"])
 def test_temporal_suffix_is_not_a_location(location, monkeypatch):
     calls = fake_weather(monkeypatch, payload("Tokyo", "Tokyo", "Japan"))
     result = dispatch_weather(location=location)
@@ -432,3 +438,184 @@ def test_compact_location_guard_preserves_city_and_date_arguments(location, city
     assert classify_tool_outcome("get_weather", result).status == "succeeded", result
     assert len(calls) == 1 and f"Weather for {city}" in result
     assert "forecast (2026-10-12)" in result
+
+
+# --- 1.4.0 smoke-test regressions ---------------------------------------------
+# "what's the weather in Los Angeles right now?" sent location="Los Angeles
+# right now" and showed "(error: weather time constraint ...)" as the reply;
+# "what's the weather in Los Angeles?" showed "(error: no unambiguous location
+# ...)". Both came from the direct read path, which has no model pass.
+
+def la_payload():
+    return payload("Los Angeles", "California", "United States of America")
+
+
+async def _no_emit(event):
+    pass
+
+
+def run_read(prompt):
+    from service.workflows.reads import compile_read, execute_read
+    plan = compile_read(prompt)
+    assert plan is not None, prompt
+    return plan, asyncio.run(execute_read(plan, _no_emit))
+
+
+@pytest.mark.parametrize("prompt", [
+    "what's the weather in Los Angeles right now?",
+    "what's the weather in Los Angeles?",
+    "what's the weather in Los Angeles now",
+    "weather in Los Angeles currently",
+])
+def test_smoke_prompts_read_los_angeles_current_conditions(prompt, monkeypatch):
+    calls = fake_weather(monkeypatch, la_payload())
+    plan, result = run_read(prompt)
+    assert plan[0] == [("get_weather", {"location": "Los Angeles", "period": ""})]
+    assert result.status == "completed"
+    assert "Weather for Los Angeles, California, United States of America" in result.response
+    assert "assumed Los Angeles, California" in result.response
+    assert "now: 99°F" in result.response and "(error" not in result.response
+    assert unquote(urlparse(calls[0]).path) == provider_path("Los Angeles")
+
+
+@pytest.mark.parametrize("prompt", [
+    "what's the weather in Los Angeles right now?", "weather in Paris tomorrow"])
+def test_extract_location_drops_time_words(prompt):
+    from service.workflows.compiler import extract_location
+    assert extract_location(prompt) in {"Los Angeles", "Paris"}
+
+
+@pytest.mark.parametrize("location", [
+    "Tokyo right now", "Tokyo now", "Tokyo currently", "Tokyo at the moment",
+    "Tokyo, right now", "Tokyo right now please", "right now in Tokyo", "now Tokyo",
+])
+def test_current_time_words_mean_current_conditions(location, monkeypatch):
+    calls = fake_weather(monkeypatch, payload("Tokyo", "Tokyo", "Japan"))
+    result = dispatch_weather(location=location)
+    assert result.startswith("Weather for Tokyo, Tokyo, Japan (asked for: Tokyo)")
+    assert "now: 99°F" in result
+    assert unquote(urlparse(calls[0]).path) == "/Tokyo"
+
+
+@pytest.mark.parametrize("word", ["today", "tomorrow"])
+def test_whole_date_word_in_location_becomes_the_period(word, monkeypatch):
+    fake_weather(monkeypatch, payload("Tokyo", "Tokyo", "Japan"))
+    moved = dispatch_weather(location=f"Tokyo {word}")
+    assert moved == dispatch_weather(location="Tokyo", period=word)
+    assert moved == dispatch_weather(location=f"Tokyo {word}", period=word)
+
+
+def test_conflicting_location_day_and_period_asks_before_http(monkeypatch):
+    calls = fake_weather(monkeypatch, payload("Tokyo", "Tokyo", "Japan"))
+    result = dispatch_weather(location="Tokyo tomorrow", period="today")
+    assert result.startswith("(error:") and "which day" in result and not calls
+
+
+@pytest.mark.parametrize("location", ["right now", "now", "today"])
+def test_time_words_alone_are_still_no_location(location, monkeypatch):
+    calls = fake_weather(monkeypatch, payload())
+    assert "ask the user" in dispatch_weather(location=location) and not calls
+
+
+@pytest.mark.parametrize("city", ["Los Angeles", "San Francisco", "San Diego",
+                                  "Sacramento", "Oakland", "Long Beach"])
+def test_dominant_bare_california_city_resolves_and_says_so(city, monkeypatch):
+    calls = fake_weather(monkeypatch, payload(city))
+    result = asyncio.run(web_tools.get_weather(city.lower()))
+    assert f"Weather for {city}, California, United States" in result
+    assert f"assumed {city}, California" in result
+    assert unquote(urlparse(calls[0]).path) == provider_path(city)
+
+
+def test_dominant_city_still_verifies_the_provider_area(monkeypatch):
+    fake_weather(monkeypatch, payload("Los Angeles", "Biobio", "Chile"))
+    result = asyncio.run(web_tools.get_weather("Los Angeles"))
+    assert result.startswith("(error:") and "99°F" not in result
+
+
+def test_explicit_state_does_not_claim_an_assumption(monkeypatch):
+    fake_weather(monkeypatch, payload("Los Angeles"))
+    assert "assumed" not in asyncio.run(web_tools.get_weather("Los Angeles, CA"))
+
+
+def test_ambiguous_city_reply_is_a_plain_question(monkeypatch):
+    fake_weather(monkeypatch, payload())
+    _, result = run_read("what's the weather in Riverside?")
+    assert result.status == "needs_input"
+    assert result.response.startswith("There's more than one Riverside")
+    assert "(error" not in result.response and "guess" not in result.response
+    assert result.tool_results[0]["result"].startswith("(error:")  # model-facing text kept
+
+
+@pytest.mark.parametrize("prompt,expected", [
+    ("weather in Tokyo tonight", "not a specific hour or part of the day"),
+    ("what's the weather in Los Angeles?", "couldn't get the weather for Los Angeles"),
+])
+def test_failed_weather_read_never_shows_the_raw_error(prompt, expected, monkeypatch):
+    fake_weather(monkeypatch, la_payload(), status=503)
+    _, result = run_read(prompt)
+    assert result.status == "failed"
+    assert expected in result.response and "(error" not in result.response
+
+
+@pytest.mark.parametrize("raw", [
+    "(error: no location given — ask the user which city they want the weather for; do not guess one)",
+    "(error: no unambiguous location — ambiguous city; ask the user for the city and state/country; do not guess one)",
+    "(error: weather time constraint was included in the location; ask for a city.)",
+    "(error: weather forecast does not cover 'next week': the provider supports at most three forecast days.)",
+    "(error: weather lookup could not verify 'Los Angeles,CA': no weather numbers are available)",
+    "(error: weather data for 'X' came back in an unexpected shape)",
+])
+def test_every_weather_error_has_a_plain_reply(raw):
+    from service.workflows.reads import read_failure_reply
+    status, reply = read_failure_reply("get_weather", {"location": "Los Angeles"}, raw)
+    assert status in {"failed", "needs_input"}
+    assert not reply.startswith("(") and "error" not in reply.lower()
+    assert "ask the user" not in reply and "guess" not in reply
+
+
+def test_generic_read_error_drops_model_directives():
+    from service.workflows.reads import read_failure_reply
+    assert read_failure_reply("get_stock_price", {}, "plain result") is None
+    status, reply = read_failure_reply(
+        "get_stock_price", {}, "(error: unknown symbol 'XYZ'; ask the user for a ticker)")
+    assert (status, reply) == ("failed", "I couldn't finish that: unknown symbol 'XYZ'.")
+
+
+def located(city, lat, lon, region="California", country="United States of America"):
+    data = payload(city, region, country)
+    data["nearest_area"][0].update(latitude=str(lat), longitude=str(lon))
+    return data
+
+
+def test_neighbourhood_label_near_the_center_is_the_requested_city(monkeypatch):
+    # Live wttr.in shape for "Los Angeles,CA" on 2026-10-16.
+    calls = fake_weather(monkeypatch, located("Wingfoot", 33.989, -118.252))
+    result = asyncio.run(web_tools.get_weather("Los Angeles, CA"))
+    assert result.startswith("Weather for Los Angeles, California, United States of America "
+                             "(reporting area: Wingfoot; asked for: Los Angeles, CA)")
+    assert "now: 99°F" in result
+    assert unquote(urlparse(calls[0]).path) == "/34.0522,-118.2437"
+
+
+@pytest.mark.parametrize("city,label,lat,lon,region,country", [
+    ("San Bernardino", "Broadwell", 34.874, -116.193, "California", "United States of America"),
+    ("Oakland", "Newport", 43.100, -80.233, "Ontario", "Canada"),
+    ("Oakland", "Newport", 37.8044, -122.2712, "Ontario", "Canada"),
+    ("Los Angeles", "Wingfoot", "nan", -118.252, "California", "United States of America"),
+    ("Los Angeles", "Wingfoot", None, None, "California", "United States of America"),
+])
+def test_far_or_foreign_provider_point_never_returns_numbers(city, label, lat, lon, region,
+                                                             country, monkeypatch):
+    data = located(label, lat, lon, region, country)
+    if lat is None:
+        del data["nearest_area"][0]["latitude"], data["nearest_area"][0]["longitude"]
+    fake_weather(monkeypatch, data)
+    result = asyncio.run(web_tools.get_weather(f"{city}, CA"))
+    assert result.startswith("(error:") and "99°F" not in result
+
+
+def test_non_canonical_california_city_keeps_the_name_query_and_exact_match(monkeypatch):
+    calls = fake_weather(monkeypatch, located("Pleasanton", 37.66, -121.87))
+    result = asyncio.run(web_tools.get_weather("Dublin, CA"))
+    assert result.startswith("(error:") and unquote(urlparse(calls[0]).path) == "/Dublin,CA"
