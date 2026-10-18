@@ -306,3 +306,127 @@ def test_undated_retry_state(store):
 def test_policy_constants_match_the_user_rule():
     assert stale_reminders.ASK_AFTER_S == 7 * DAY_S
     assert stale_reminders.ASK_UNTIL_S == 14 * DAY_S
+
+
+# --- hardening (audit notes on #279) ---------------------------------------------------
+
+# The same cases tests/RemindersPolicyChecks.swift pins for RemindersWriter.undatedTitle.
+# The app sends titles in this form, so the backend must leave every one unchanged, or the
+# title it hands back for a Delete would no longer match the reminder.
+SWIFT_UNDATED_TITLES = ["Buy milk", "(untitled)", "Idea", "a" * 500, "a" * 499,
+                        "é" * 250]
+
+
+def test_backend_keeps_the_apps_normalised_titles_unchanged():
+    rows = [_row(f"t{i}", title) for i, title in enumerate(SWIFT_UNDATED_TITLES)]
+    snap = parse_undated_snapshot(rows, len(rows))
+    assert [r[1] for r in snap.rows] == SWIFT_UNDATED_TITLES
+
+
+def test_padded_title_round_trips_into_the_delete_payload(store, monkeypatch):
+    """Before #279's follow-up the store kept "Call bank" while Reminders held " Call bank ",
+    so every Delete failed. The app now sends the normalised title and compares against it."""
+    _sync(store, [_row("p", "Call bank", ASK)])
+    request = AsyncMock(return_value={"ok": True, "status": "succeeded", "error": "",
+                                      "source_id": "p", "is_absent": True})
+    monkeypatch.setattr(outbox, "request", request)
+    assert TestClient(main.app).post("/assistant/stale_reminders/delete",
+                                     json={"source_id": "p"}).status_code == 200
+    assert request.await_args.args[1]["expected_title"] == "Call bank"
+
+
+def test_existing_database_without_creation_dates_migrates(tmp_path):
+    import sqlite3
+    path = tmp_path / "assistant.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE assistant_undated_reminders (source_id TEXT PRIMARY KEY, "
+                "title TEXT NOT NULL, context TEXT, synced_at REAL NOT NULL)")
+    old.execute("INSERT INTO assistant_undated_reminders VALUES ('o','Old row','Reminders',1)")
+    old.commit()
+    old.close()
+    upgraded = AssistantStore(path)
+    try:
+        cols = {r["name"] for r in upgraded._db.execute("PRAGMA table_info(assistant_undated_reminders)")}
+        assert "created_ts" in cols
+        assert upgraded.stale_reminder_target("o")["stale_state"] == "unknown"
+        assert [r["title"] for r in upgraded.undated_reminders()] == ["Old row"]
+        upgraded.keep_stale_reminder("o", "Old row")  # the decisions table exists
+    finally:
+        upgraded._db.close()
+    # An older build's insert names its columns and still works on the upgraded file.
+    again = sqlite3.connect(path)
+    again.execute("INSERT INTO assistant_undated_reminders(source_id,title,context,synced_at) "
+                  "VALUES ('n','New row',NULL,2)")
+    again.commit()
+    again.close()
+
+
+def _undated_delete_event(store, source_id, title, action_id):
+    payload = {"type": "delete_reminder", "action_id": action_id, "source_id": source_id,
+               "expected_title": title, "expected_due_ts": None}
+    row = store.enqueue_event(payload, dedupe_key="action:" + action_id,
+                              target={"type": "verified_reminder"}, expires_at=time.time() + 45)
+    claim = store.claim_calendar_action(row["id"], "delete_reminder", action_id, payload)
+    assert claim["execute"] is True
+    return row, claim
+
+
+def _absent(source_id):
+    return {"ok": True, "status": "succeeded", "error": "", "source_id": source_id, "is_absent": True}
+
+
+@pytest.mark.asyncio
+async def test_undated_delete_receipt_through_the_http_endpoint(store):
+    from httpx import ASGITransport, AsyncClient
+    _standard(store)
+    row, claim = _undated_delete_event(store, "a", "Ask about this", "reminder:http-a")
+    fut = asyncio.get_running_loop().create_future()
+    outbox._pending["reminder:http-a"] = fut
+    try:
+        async with AsyncClient(transport=ASGITransport(app=main.app),
+                               base_url="http://fixture.invalid") as client:
+            response = await client.post("/assistant/action_result", json={
+                "event_id": row["id"], "action_id": "reminder:http-a", "kind": "delete_reminder",
+                "claim_token": claim["claim_token"], "result": _absent("a")})
+        assert response.status_code == 200 and response.json()["recorded"] is True
+        assert fut.result() == _absent("a"), "a verified delete is delivered, not held for readback"
+    finally:
+        outbox._pending.pop("reminder:http-a", None)
+    assert store.stale_reminder_target("a") is None
+    view = store.undated_view()
+    assert (view["total"], view["stored"], view["stale_hidden"]) == (2, 2, 2)
+
+
+def test_delayed_older_receipt_does_not_count_twice(store):
+    _standard(store)
+    older, older_claim = _undated_delete_event(store, "a", "Ask about this", "reminder:older")
+    newer, newer_claim = _undated_delete_event(store, "a", "Ask about this", "reminder:older:1")
+    store.complete_calendar_action(newer["id"], "delete_reminder", newer_claim["claim_token"], _absent("a"))
+    before = store._db.execute("SELECT total,stored FROM assistant_undated_state").fetchone()
+    store.complete_calendar_action(older["id"], "delete_reminder", older_claim["claim_token"], _absent("a"))
+    after = store._db.execute("SELECT total,stored FROM assistant_undated_state").fetchone()
+    assert tuple(before) == tuple(after), "the late receipt resolves its action without a second decrement"
+    assert store.event(older["id"])["result"] is not None
+
+
+def test_a_read_from_before_the_delete_cannot_bring_it_back(store):
+    _standard(store)
+    started_before = float(next(_clock))
+    row, claim = _undated_delete_event(store, "a", "Ask about this", "reminder:resync")
+    store.complete_calendar_action(row["id"], "delete_reminder", claim["claim_token"], _absent("a"))
+    listing = [_row("f", "Fresh errand", FRESH), _row("a", "Ask about this", ASK),
+               _row("a2", "Older ask", OLDER_ASK), _row("s", "Ancient idea", STALE),
+               _row("u", "No creation date")]
+    stale_read = parse_undated_snapshot(listing, len(listing))
+    store.sync_source("reminders", [], diagnostics={"authorized": True,
+                                                     "snapshot_started_at": started_before},
+                      undated=stale_read)
+    assert store.stale_reminder_target("a") is None
+    assert [a["source_id"] for a in store.stale_reminder_asks(NOW)] == ["a2"], "only the deleted row is skipped"
+    raw = store._db.execute("SELECT total,stored FROM assistant_undated_state").fetchone()
+    assert tuple(raw) == (4, 4), "the skipped row is out of both counts"
+    # A read that began after the receipt is believed: a Recently Deleted restore keeps its ID.
+    store.sync_source("reminders", [], diagnostics={"authorized": True,
+                                                     "snapshot_started_at": time.time() + 1},
+                      undated=parse_undated_snapshot(listing, len(listing)))
+    assert store.stale_reminder_target("a") is not None

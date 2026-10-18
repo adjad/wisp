@@ -1911,11 +1911,23 @@ class AssistantStore:
         """Replace the undated rows and their state. Call only inside a write transaction."""
         from service.assistant.today import number
         started = number(snapshot_started_at, "snapshot_started_at") if snapshot_started_at is not None else None
+        # A native read that started before a verified delete still lists the reminder it
+        # deleted. Re-inserting it would bring the question back for an item that is gone,
+        # so rows whose verified delete was recorded after this read began are skipped. A
+        # later read (started after the receipt) is believed, including a Recently Deleted
+        # restore that brings the same identifier back.
+        deleted_after = set()
+        if started is not None:
+            deleted_after = {row["source_id"] for row in self._db.execute(
+                "SELECT source_id FROM assistant_reminder_terminals "
+                "WHERE status='dismissed' AND recorded_at>=?", (started,)).fetchall()}
+        rows = [row for row in snapshot.rows if row[0] not in deleted_after]
+        skipped = len(snapshot.rows) - len(rows)
         self._db.execute("DELETE FROM assistant_undated_reminders")
         self._db.executemany(
             "INSERT INTO assistant_undated_reminders(source_id,title,context,created_ts,synced_at) "
             "VALUES (?,?,?,?,?)",
-            [row + (now,) for row in snapshot.rows])
+            [row + (now,) for row in rows])
         if not snapshot.truncated:
             # A complete read is authoritative: a Keep for a reminder that no longer exists
             # (completed, given a date, or deleted elsewhere) has nothing left to protect.
@@ -1926,8 +1938,8 @@ class AssistantStore:
             "INSERT INTO assistant_undated_state(id,snapshot_started_at,status,total,stored,recorded_at) "
             "VALUES (1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET snapshot_started_at=excluded.snapshot_started_at, "
             "status=excluded.status, total=excluded.total, stored=excluded.stored, recorded_at=excluded.recorded_at",
-            (started, "truncated" if snapshot.truncated else "complete", snapshot.total,
-             len(snapshot.rows), now))
+            (started, "truncated" if snapshot.truncated else "complete", snapshot.total - skipped,
+             len(rows), now))
 
     def replace_undated_reminders(self, items: list[dict], *, total: int | None = None,
                                   snapshot_started_at: float | None = None) -> int:

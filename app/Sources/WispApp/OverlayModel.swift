@@ -1352,7 +1352,7 @@ final class OverlayModel: ObservableObject {
                                  _ durationMin: Int, _ location: String) -> [String: Any])?
     var onDeleteCalendarEvent: ((_ identifier: String, _ occurrenceTs: Double?) -> [String: Any])?
     var onVerifiedReminderAction: ((_ kind: String, _ actionID: String, _ sourceID: String,
-                                    _ expectedTitle: String, _ expectedDueTs: Double,
+                                    _ expectedTitle: String, _ expectedDueTs: Double?,
                                     _ title: String, _ dueTs: Double,
                                     _ commitmentKind: String) -> [String: Any])?
     var onReconcileReminderAction: ((_ kind: String, _ actionID: String, _ sourceID: String,
@@ -1378,8 +1378,12 @@ final class OverlayModel: ObservableObject {
             guard let action = onVerifiedReminderAction else {
                 return ["ok": false, "status": "failed", "error": "Reminders handler unavailable"]
             }
+            // JSON null means "no due date" (an undated delete); anything that is not a
+            // number becomes NaN, which the writer rejects, never a stand-in value.
+            let rawDue = ev.payload["expected_due_ts"]
+            let expectedDue: Double? = rawDue is NSNull ? nil : (rawDue as? Double ?? .nan)
             return action(ev.type, ev.str("action_id"), ev.str("source_id"),
-                          ev.str("expected_title"), ev.payload["expected_due_ts"] as? Double ?? 0,
+                          ev.str("expected_title"), expectedDue,
                           ev.str("title"), ev.payload["due_ts"] as? Double ?? 0,
                           ev.str("commitment_kind"))
         }
