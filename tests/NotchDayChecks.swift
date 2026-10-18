@@ -150,31 +150,47 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                            next: (title: "Club", time: "3 PM"))
           == "A steady Tuesday. Next up: Club at 3 PM.", "lede with only the next event")
 
-    // The Brief's lines: at most four, each only with something to say.
+    // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!
     let light = DayLoad.assess(events: [], allDay: ["PA 2 [CSE-20-04]"], from: now, dayStart: dayStart, isToday: true, zone: utc)
     let lines = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []),
-                                       texts: ["nothing", "Priya asked about dinner"],
-                                       soon: (title: "UCSC startup club", when: "Wed 6 PM", source: "calendar"))
-    check(lines.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"], "four lines in order")
-    check(lines[0].text == "Light day: just PA 2 [CSE-20-04] (all day)" && lines[0].trailing == "›"
+                                       texts: (ready: true, needing: ["nothing", "Priya asked about dinner"]),
+                                       soon: .item(title: "UCSC startup club", when: "Wed 6 PM", source: "calendar"))
+    check(lines.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"], "four rows in order")
+    check(lines[0].text == "Light day: just PA 2 [CSE-20-04] (all day)" && lines[0].trailing == ""
           && lines[1].text == "Nothing needs a reply" && lines[2].text == "Priya asked about dinner"
-          && lines[3].source == .calendar, "line contents: \(lines.map(\.text))")
-    let sparse = DayTimeline.briefLines(calendar: nil, mail: (ready: false, needing: ["x"]), texts: [],
-                                        soon: (title: "Essay", when: "Fri 5 PM", source: "reminders"))
-    check(sparse.map(\.tag) == ["MAIL", "SOON"] && sparse[0].muted && sparse[1].source == .reminders,
-          "unread mail shows a dim line; empty texts are hidden")
+          && lines[3].source == .calendar && lines[3].trailing == "Wed 6 PM", "row contents: \(lines.map(\.text))")
     check(!lines.contains(where: \.muted), "synced sources are never dim")
-    let unsynced = DayTimeline.briefLines(calendar: nil, calendarUnsynced: true, mail: (ready: false, needing: []),
-                                          texts: ["Priya asked about dinner"],
-                                          soon: (title: "Essay", when: "Fri 5 PM", source: "reminders"))
-    check(unsynced.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"] && unsynced[0].muted && unsynced[1].muted
-          && unsynced[0].text == "Calendar hasn't synced yet" && unsynced[0].source == .calendar
-          && unsynced[1].text == "Mail hasn't been checked yet", "unsynced calendar and mail keep the Brief's four rows")
-    check(DayTimeline.briefLines(calendar: nil, mail: nil, texts: [], soon: nil).isEmpty,
-          "no calendar line without a sync state, and no mail line without mail")
-    check(DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: ["Lab partner", "Advisor"]), texts: [], soon: nil)
-          .map(\.text) == ["2 emails need you"], "a mail count")
+    let quiet = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []), texts: (ready: true, needing: ["nothing"]),
+                                       soon: .nothing)
+    check(quiet.map(\.text).suffix(2) == ["No texts need you", "Nothing in the next week"] && !quiet.contains(where: \.muted),
+          "TEXTS and SOON stay with nothing to say")
+    let unsynced = DayTimeline.briefLines(calendar: nil, calendarUnsynced: true, mail: (ready: false, needing: ["x"]),
+                                          texts: (ready: false, needing: []), soon: .unknown)
+    check(unsynced.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"] && unsynced.allSatisfy(\.muted)
+          && unsynced.map(\.text) == ["Calendar hasn't synced yet", "Mail hasn't been checked yet",
+                                      "Messages haven't been checked yet", "The week ahead hasn't loaded yet"],
+          "unread sources keep the four rows, dim: \(unsynced.map(\.text))")
+    let unconnected = DayTimeline.briefLines(calendar: nil, mail: nil, texts: nil, soon: .nothing)
+    check(unconnected.map(\.text) == ["Nothing on your calendar", "Mail isn't connected", "Messages aren't connected",
+                                      "Nothing in the next week"], "sources without coverage say so")
+    check(DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: ["Lab partner", "Advisor"]),
+                                 texts: (ready: true, needing: ["Mom", "Priya"]), soon: .nothing)
+          .map(\.text)[1...2] == ["2 emails need you", "2 texts need you"], "mail and text counts")
+    check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .item(title: "nothing", when: "Fri", source: "reminders"))[3]
+          .text == "Nothing in the next week", "a placeholder is never what's coming")
+
+    // Bulk mail never counts as needing you.
+    let inbox = ["Tech Week starts today", "You're subscribed: The Download", "Can you review my draft?",
+                 "50% off everything", "Weekly digest: CSE 20", "Lab moved to Thursday", "nothing"]
+    check(DayTimeline.mailNeedingYou(inbox) == ["Can you review my draft?", "Lab moved to Thursday"],
+          "newsletters, promos and placeholders are left out: \(DayTimeline.mailNeedingYou(inbox))")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: inbox), texts: nil, soon: .nothing)[1].text
+          == "2 emails need you", "the MAIL count leaves bulk mail out")
+    check(!DayTimeline.isBulkMail("Re: project offer") && !DayTimeline.isBulkMail("Meeting with Priya")
+          && DayTimeline.isBulkMail("Last chance: 20% off"), "bulk mail is matched narrowly")
+
+    briefSummaryChecks(check, dayStart: dayStart, now: now)
 
     // How busy the calendar is: one verdict for the CAL line and the lede.
     func event(_ title: String, _ start: Double, _ end: Double?) -> DayLoad.Event {
