@@ -452,7 +452,7 @@ struct TodayView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading) {
-                    Text("Brief").font(.largeTitle.bold())
+                    Text("Today").font(.largeTitle.bold())
                     Text("What matters, and a realistic plan for it.").foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -816,7 +816,7 @@ enum TodayWindow {
         if window == nil {
             let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 800),
                                    styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            created.title = "Wisp · Brief"
+            created.title = "Wisp · Today"
             created.contentView = NSHostingView(rootView: TodayView(model: model ?? TodayModel(),
                                                                     onPresentation: onPresentation, initialTab: initialTab))
             created.isReleasedWhenClosed = false
