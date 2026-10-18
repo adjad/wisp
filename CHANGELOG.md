@@ -4,9 +4,9 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
-## [1.5.0] - 2026-10-18
+## [0.5.0] - 2026-10-18
 
-Wisp 1.5.0 is the first stable release. It works on a Mac with nothing installed: no oMLX, no earlier Wisp and no `~/.moe`. A short setup gets you an engine, a model and a first answer, and then three questions so Wisp knows who it's working for. Everyday asks reach the right tool, and the notch and window lose their rough edges.
+Wisp 0.5.0 is the first stable release. It works on a Mac with nothing installed: no oMLX, no earlier Wisp and no `~/.moe`. A short setup gets you an engine, a model and a first answer, and then three questions so Wisp knows who it's working for. Everyday asks reach the right tool, and the notch and window lose their rough edges.
 
 ### Added
 - **Getting to know you.** Once Wisp can answer, the notch asks three optional questions: what to call you, your goals and how you like replies. Each answer says what Wisp does with it, and everything stays on this Mac (`~/.moe/profile.json`). Your name and goals shape the brief's greeting and a "Keeping in mind" section, people you name rank higher in Day, and your tone shapes local replies. It is never sent to a cloud model. Reopen it with `/about`, **Tell Wisp About You…** in the menu bar, or Memory ▸ About you.
@@ -92,7 +92,7 @@ Also fixed:
 - The brief times in quick settings are labelled **Morning** and **Evening**. Two bare "8 AM" and "8 PM" chips looked like the old AM/PM switch, but both briefs run.
 - An older Daily Summary the app hadn't acknowledged (for example, because its notification failed) no longer comes back on reconnect and replaces a newer one on the Today tab. A newer brief now retires any older one that is still waiting.
 
-## [1.4.0] - 2026-10-16
+## [0.4.0] - 2026-10-16
 
 Wisp now **learns your routines** and uses them to **suggest how to spend your day**. It reads your Calendar, completed reminders, Mail, Messages and Notes, and optionally your Gmail and your app/idle activity. From these it infers tentative patterns ("you usually reply to email around 1pm") and tentative demands ("this looks like it needs prep time"). It proposes time for them in **Today**.
 
@@ -192,7 +192,7 @@ Rules that never change in this release:
 - Setting WAL mode can change four header bytes in a valid empty database before an unsupported schema is refused (existing behavior).
 - Some test totals are incomplete, and a few sandbox skips are disclosed in CI.
 
-## [1.3.3] - 2026-10-14
+## [0.3.3] - 2026-10-14
 
 ### Added
 
@@ -217,7 +217,7 @@ Rules that never change in this release:
 - Proactive attention reminders no longer fall back to UTC when the Mac's time zone can't be determined, which would have read every time in a message hours off and filed its reminder at the wrong time. With no zone they now pause, and when the zone is known again they start fresh instead of making reminders for the messages that arrived in between.
 - A daylight-saving change between two clock readings could make the known zone look unknown for one pass. The zone and the clock are now compared at the same instant.
 
-## [1.3.2] - 2026-10-14
+## [0.3.2] - 2026-10-14
 
 ### Added
 
@@ -247,7 +247,7 @@ Rules that never change in this release:
 - "What did you remember about me?" goes to memory recall like "What do you know about me?".
 - Typo-tolerant tool search returns the same matches on every launch; it used to vary with Python's hash seed.
 
-## [1.3.1] - 2026-10-12
+## [0.3.1] - 2026-10-12
 
 ### Added
 
@@ -280,7 +280,7 @@ An older install may still have an unused `~/.moe/aria-demo/` folder from the Ar
 - `http_request` no longer follows redirects. A 307 or 308 used to re-send the request body and custom headers to a host you never approved; a redirect is now reported as not followed.
 - "What do you know about me?" answers from what you asked Wisp to remember again, now that behavior learning is on by default. "What have you learned about me?" and questions about your habits still list learned routines.
 
-## [1.3.0] - 2026-10-11
+## [0.3.0] - 2026-10-11
 
 ### Added
 
@@ -298,7 +298,7 @@ An older install may still have an unused `~/.moe/aria-demo/` folder from the Ar
 - The Chat thread no longer pulls you back to the bottom while you scroll up to read.
 - Fixed `wisp-build all --allow-dirty` failing its own final check on a clean checkout.
 
-## [1.2.5] - 2026-10-11
+## [0.2.5] - 2026-10-11
 
 Merges the Wisp hackathon work (adjad/Wisp_Hackathon) into Wisp.
 
@@ -321,7 +321,7 @@ Merges the Wisp hackathon work (adjad/Wisp_Hackathon) into Wisp.
 
 - Fixed the sandboxed Today and Diagnostic Report contract gates under Xcode 27, where SwiftUI's `@State` is a compiler macro whose plugin server cannot start inside Simulation QA's sandbox. Those scripts now ask `swiftc` not to add a second, nested sandbox when it supports the flag; the outer sandbox is unchanged.
 
-## [1.2.0] - 2026-10-06
+## [0.2.0] - 2026-10-06
 
 ### Added
 
@@ -372,7 +372,7 @@ Merges the Wisp hackathon work (adjad/Wisp_Hackathon) into Wisp.
 - Fixed a freshly created Note not being found while an unrelated old record surfaced, and "what's my Amazon order" searching only conversation history.
 - Fixed long-overdue Wisp-only records reading as current reminders (they are left out of search and counted, never deleted).
 
-## [1.1.5] - 2026-09-30
+## [0.1.5] - 2026-09-30
 
 ### Added
 

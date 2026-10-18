@@ -1,4 +1,4 @@
-"""Release 1.5.0: the most common everyday prompts route to their one right tool.
+"""Release 0.5.0: the most common everyday prompts route to their one right tool.
 
 Each row is prompt -> (forced tool or None, tools that must be offered, tools
 that must NOT be offered). Routing only; nothing here executes a tool.
