@@ -444,6 +444,8 @@ from service.behavior_api import router as behavior_router
 app.include_router(behavior_router)
 from service.assistant.attention_api import router as attention_router
 app.include_router(attention_router)
+from service.assistant.stale_reminders_api import router as stale_reminders_router
+app.include_router(stale_reminders_router)
 from service.assistant.checkin_api import router as checkin_router
 app.include_router(checkin_router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)

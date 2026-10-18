@@ -92,6 +92,8 @@ struct DayItem: Identifiable, Equatable {
     var evidenceID: String? = nil
     /// "behavior_away" for a learned away window.
     var kind: String = ""
+    /// Over before now, on today: drawn dim, inside the lane's two hours back.
+    var past = false
 }
 
 struct DayTimeline: Equatable {
@@ -111,7 +113,8 @@ struct DayTimeline: Equatable {
 
     /// Lays the day out on one clock.
     /// - Parameters:
-    ///   - now: the current time; on today the lane starts at its hour.
+    ///   - now: the current time; on today the lane runs from two hours before
+    ///     its hour (never before midnight) to at least three hours after it.
     ///   - dayStart, dayEnd: the day's midnight bounds.
     ///   - workStart, workEnd: working hours, as timestamps on that day.
     ///   - isToday: whether the day shown is the current day.
@@ -119,7 +122,9 @@ struct DayTimeline: Equatable {
     static func build(blocks: [DayBlockInput], allDay: [String], needs: [DayNeedInput], caught: [DayCaughtInput],
                       now: Double, dayStart: Double, dayEnd: Double, workStart: Double, workEnd: Double,
                       isToday: Bool, clock: (Double) -> String, dayClock: (Double) -> String) -> DayTimeline {
-        let earliest = isToday ? floorHour(min(max(now, dayStart), dayEnd - hour), dayStart: dayStart) : dayStart
+        // On today, two hours back so what just happened stays in view, dim.
+        let earliest = isToday
+            ? max(dayStart, floorHour(min(max(now, dayStart), dayEnd - hour), dayStart: dayStart) - 2 * hour) : dayStart
         var items: [DayItem] = []
 
         for block in blocks {
@@ -177,7 +182,7 @@ struct DayTimeline: Equatable {
         }
 
         let latest = items.map(\.end).max() ?? earliest
-        var to = ceilHour(max(earliest + 4 * hour, isToday ? max(workEnd, now + hour) : workEnd, latest), dayStart: dayStart)
+        var to = ceilHour(max(earliest + 4 * hour, isToday ? max(workEnd, now + 3 * hour) : workEnd, latest), dayStart: dayStart)
         to = min(to, dayEnd)
         var from = earliest
         if !isToday {
@@ -189,6 +194,7 @@ struct DayTimeline: Equatable {
         for index in items.indices {
             items[index].start = max(items[index].start, from)
             items[index].end = min(max(items[index].end, items[index].start + 15 * 60), to)
+            items[index].past = isToday && items[index].end <= now
         }
         items = items.filter { $0.end > $0.start }
         return DayTimeline(from: from, to: to, items: arrange(items), allDay: allDay.filter { !isJunk($0) })
@@ -325,7 +331,8 @@ struct DayTimeline: Equatable {
     /// today and why the day is laid out the way it is.
     static func blurb(_ timeline: DayTimeline, needs: [DayNeedInput], isToday: Bool, endOfDay: Double,
                       clock: (Double) -> String) -> String {
-        let items = timeline.items
+        // What's already over doesn't shape the rest of the day.
+        let items = timeline.items.filter { !$0.past }
         let dueToday = needs.filter { n in
             n.source != "calendar" && !isJunk(n.title) && (n.due.map { $0 <= endOfDay } ?? false)
         }

@@ -145,8 +145,70 @@ final class RemindersWriter {
     /// The undated list as it travels: at most `maxUndatedReminders` entries plus the TRUE
     /// number of eligible reminders, so the backend can tell a complete list from one that
     /// was cut at the cap instead of presenting a prefix as everything.
+    /// Newest first, so when the cap cuts the list it drops the oldest reminders (the ones
+    /// the backend treats as stale anyway) rather than fresh ones. Entries without a
+    /// creation date sort last; the backend treats their age as unknown, never as stale.
     static func undatedPayload(_ eligible: [[String: Any]]) -> (items: [[String: Any]], total: Int) {
-        (Array(eligible.prefix(maxUndatedReminders)), eligible.count)
+        let ordered = eligible.enumerated().sorted { a, b in
+            let x = a.element["created_ts"] as? Double, y = b.element["created_ts"] as? Double
+            switch (x, y) {
+            case let (x?, y?) where x != y: return x > y
+            case (.some, .none): return true
+            case (.none, .some): return false
+            default: return a.offset < b.offset
+            }
+        }.map(\.element)
+        return (Array(ordered.prefix(maxUndatedReminders)), eligible.count)
+    }
+
+    /// The backend stores an undated title as Python's `title.strip()[:500] or "(untitled)"`
+    /// (store.parse_undated_snapshot). Sending the title already in that form, computed here,
+    /// makes the backend's step a no-op, so the title it later hands back for a Delete equals
+    /// `undatedTitle(item.title)` exactly. Whitespace is Python's `str.isspace` set and the cut
+    /// counts Unicode scalars, as Python counts code points; the second trim keeps the result
+    /// stable under Python's strip-then-cut.
+    static let maxUndatedTitleScalars = 500
+    private static let pythonWhitespace: Set<UInt32> = Set(
+        [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x85, 0xA0, 0x1680,
+         0x2028, 0x2029, 0x202F, 0x205F, 0x3000] + Array(0x2000...0x200A))
+
+    static func undatedTitle(_ raw: String?) -> String {
+        func trimmed(_ scalars: ArraySlice<Unicode.Scalar>) -> ArraySlice<Unicode.Scalar> {
+            var slice = scalars
+            while let first = slice.first, pythonWhitespace.contains(first.value) { slice = slice.dropFirst() }
+            while let last = slice.last, pythonWhitespace.contains(last.value) { slice = slice.dropLast() }
+            return slice
+        }
+        let once = trimmed(ArraySlice((raw ?? "").unicodeScalars)).prefix(maxUndatedTitleScalars)
+        let result = trimmed(once)
+        guard !result.isEmpty else { return "(untitled)" }
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: result)
+        return String(view)
+    }
+
+    /// What an exact update/complete/delete targets. A missing expected due time (JSON null)
+    /// means "a reminder with no due date", which only a delete may target; any other value
+    /// must be a real time. Nothing stands in for null, so a bad or missing number can never
+    /// turn a dated target into an undated one.
+    enum ExactTarget: Equatable { case dated(Double), undated }
+
+    static func exactTarget(kind: String, expectedDueTs: Double?) -> ExactTarget? {
+        guard ["update_reminder", "complete_reminder", "delete_reminder"].contains(kind) else { return nil }
+        guard let due = expectedDueTs else { return kind == "delete_reminder" ? .undated : nil }
+        // Same bound as the backend's verified_reminders._timestamp (before year 10000), so
+        // `Int(due / 60)` can never trap on a huge finite value.
+        return due.isFinite && due > 0 && due < 253402300800 ? .dated(due) : nil
+    }
+
+    /// One undated entry as it travels. `created_ts` is EventKit's creationDate when it
+    /// has one; the backend ages undated reminders from it to decide when to ask about them.
+    static func undatedEntry(id: String, title: String?, list: String, created: Date?) -> [String: Any] {
+        var entry: [String: Any] = ["source_id": id, "title": undatedTitle(title), "context": list]
+        if let created, created.timeIntervalSince1970.isFinite, created.timeIntervalSince1970 > 0 {
+            entry["created_ts"] = created.timeIntervalSince1970
+        }
+        return entry
     }
 
     /// No reminder lists at all, right after a snapshot that had rows, is more
@@ -203,7 +265,7 @@ final class RemindersWriter {
     /// Execute one exact, claimed native action and return only values read
     /// back from EventKit. A save without matching readback stays uncertain.
     func performVerified(kind: String, actionID: String, sourceID: String = "",
-                         expectedTitle: String = "", expectedDueTs: Double = 0,
+                         expectedTitle: String = "", expectedDueTs: Double? = nil,
                          title: String = "", dueTs: Double = 0,
                          commitmentKind: String = "reminder") -> [String: Any] {
         guard isAuthorized else { return failure("Reminders access is unavailable") }
@@ -238,14 +300,25 @@ final class RemindersWriter {
                     "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
         }
 
-        guard ["update_reminder", "complete_reminder", "delete_reminder"].contains(kind),
-              !sourceID.isEmpty, expectedDueTs.isFinite, expectedDueTs > 0,
-              !expectedTitle.isEmpty else { return failure("Invalid exact reminder target") }
+        // An undated target (expected due time null) is allowed only for delete_reminder and
+        // only while the reminder still has no due date and is still incomplete. Its title is
+        // compared in the normalised form the undated sync sent (undatedTitle).
+        guard let target = Self.exactTarget(kind: kind, expectedDueTs: expectedDueTs),
+              !sourceID.isEmpty, !expectedTitle.isEmpty
+        else { return failure("Invalid exact reminder target") }
         guard let item = store.calendarItem(withIdentifier: sourceID) as? EKReminder else {
             return failure("Exact reminder ID was not found; nothing changed")
         }
-        guard item.title == expectedTitle, dueMinute(item) == Int(expectedDueTs / 60) else {
-            return failure("Reminder changed since selection; nothing changed")
+        switch target {
+        case .undated:
+            guard Self.undatedTitle(item.title) == expectedTitle, item.dueDateComponents == nil,
+                  !item.isCompleted else {
+                return failure("Reminder changed since selection; nothing changed")
+            }
+        case .dated(let expectedDue):
+            guard item.title == expectedTitle, dueMinute(item) == Int(expectedDue / 60) else {
+                return failure("Reminder changed since selection; nothing changed")
+            }
         }
 
         if kind == "update_reminder" {
@@ -471,11 +544,8 @@ final class RemindersWriter {
                           completed: r.isCompleted,
                           hasDueDate: r.dueDateComponents != nil)
                 else { return nil }
-                return [
-                    "source_id": r.calendarItemIdentifier,
-                    "title": r.title ?? "(untitled)",
-                    "context": calendar.title,
-                ]
+                return Self.undatedEntry(id: r.calendarItemIdentifier, title: r.title,
+                                         list: calendar.title, created: r.creationDate)
             }
             let undatedPayload = Self.undatedPayload(undated)
             self.post(reminders: payload,
