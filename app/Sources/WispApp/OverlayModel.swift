@@ -165,6 +165,8 @@ final class OverlayModel: ObservableObject {
     // The gear's short list of settings, shown in place of the tab's content.
     @Published var showingQuickSettings = false { didSet { if showingQuickSettings != oldValue { onResize() } } }
     @Published private(set) var freeingMemory = false
+    /// Quick settings' Model memory row: what the engine has resident, nil when unknown.
+    @Published private(set) var modelMemory: ModelMemory?
     // First-run setup at the top of Ask. Its readiness lives on the app's one
     // SetupGuideModel, which the setup window shares.
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
@@ -500,7 +502,7 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    /// Quick settings' Free up memory: unload the models now. Wisp reloads them on
+    /// Quick settings' Model memory: unload the models now. Wisp reloads them on
     /// the next ask. Not while a reply is being written, which needs its model.
     func freeUpMemory() {
         guard conversationSettled, !briefComposing, !freeingMemory else { return }
@@ -508,9 +510,20 @@ final class OverlayModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             await self.client.unloadAll()
+            self.modelMemory = ModelMemory.parse(await self.client.modelMemoryReply())
             self.freeingMemory = false
             self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.")
         }
+    }
+
+    #if WISP_NOTCH_QA
+    func qaShow(modelMemory: ModelMemory?) { self.modelMemory = modelMemory }
+    #endif
+
+    func refreshModelMemory() async {
+        guard !freeingMemory else { return }
+        let read = ModelMemory.parse(await client.modelMemoryReply())
+        if !freeingMemory { modelMemory = read }
     }
 
     /// ⤢, ⌘O and /window: open what this tab shows in the Wisp window.
