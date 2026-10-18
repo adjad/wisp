@@ -79,6 +79,11 @@ struct NotchDayView: View {
                 do { try await Task.sleep(for: .seconds(60)) } catch { break }
             }
         }
+        // A change anywhere (a sync, an answer from another place) refreshes the
+        // stale-reminder questions now instead of at the next minute.
+        .onReceive(NotificationCenter.default.publisher(for: .wispAssistantChanged)) { _ in
+            Task { await staleReminders.refresh(); model.onResize() }
+        }
         .onChange(of: model.checkInDue) { _, due in
             guard due, today.isShowingCurrentDay else { return }
             Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
