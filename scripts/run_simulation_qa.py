@@ -311,6 +311,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_agent_disconnect.py",
     # A stand-in client in place of oMLX; the read-only /models/memory route only.
     "tests/test_models_memory.py",
+    # Source-text checks of the composed brief's headers; nothing is composed or sent.
+    "tests/test_brief_summary_contract.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
     "tests/test_backend_identity_and_sandbox_isolation.py",
     # Environment-variable echo only; no server, socket or process.
@@ -893,9 +895,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 "-module-cache-path", module_cache,
                 "app/Sources/WispApp/NotchTab.swift",
                 "app/Sources/WispApp/NotchDay.swift",
+                "app/Sources/WispApp/BriefSummary.swift",
                 "app/Sources/WispApp/QuickSettingsText.swift",
                 "tests/NotchTabChecks.swift", "tests/NotchDayChecks.swift",
-                "tests/QuickSettingsChecks.swift", "-o", notch_tab,
+                "tests/BriefSummaryChecks.swift", "tests/QuickSettingsChecks.swift", "-o", notch_tab,
             ],
         ),
         ("native/notch-tab-contract", [notch_tab]),

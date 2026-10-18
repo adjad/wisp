@@ -23,21 +23,24 @@ enum NotchQADriver {
         let now = midnight.addingTimeInterval(13 * 3600 + 7 * 60)
         let dayStart = midnight.timeIntervalSince1970
         let today = TodayModel(now: { now }, timeZoneProvider: { zone }, transport: { request in
-            (try fixturePlan(day: request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }?
-                .queryItems?.first { $0.name == "day" }?.value ?? "", dayStart: dayStart),
-             HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }
+            let body = components?.path == "/assistant/upcoming" ? try fixtureUpcoming(dayStart: dayStart)
+                : try fixturePlan(day: components?.queryItems?.first { $0.name == "day" }?.value ?? "", dayStart: dayStart)
+            return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         })
         let attention = AttentionModel(now: { now }, transport: { request in
             (try fixtureAttention(dayStart: dayStart),
              HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         })
         let model = OverlayModel()
+        model.qaShow(brief: fixtureBrief)
         let width = SurfaceLayout.maxExpandedWidth
-        for (name, tab) in [("brief", NotchTab.brief), ("day", NotchTab.day)] {
+        for (name, tab, open) in [("brief", NotchTab.brief, nil), ("brief-open", NotchTab.brief, "MAIL"),
+                                  ("day", NotchTab.day, nil)] as [(String, NotchTab, String?)] {
             let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 760),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let content = VStack(alignment: .leading, spacing: 0) {
-                if tab == .brief { NotchBriefView(model: model, today: today) }
+                if tab == .brief { NotchBriefView(model: model, today: today, open: open) }
                 else { NotchDayView(model: model, today: today, attention: attention) }
             }
             .padding(EdgeInsets(top: 18, leading: 22, bottom: 16, trailing: 22))
@@ -135,9 +138,13 @@ enum NotchQADriver {
                     need("priya", "messages", "Priya asked about dinner", due: nil),
                     need("club", "calendar", "UCSC startup club, E2-506", due: 24 * 4 + 18),
                     need("essay", "reminders", "Essay outline", due: 24 * 4 + 18),
+                    need("draft", "email", "Can you review my draft?", due: nil),
+                    need("techweek", "email", "Tech Week starts today", due: nil),
+                    need("subscribed", "email", "You're subscribed: The Download", due: nil),
                 ],
                 "attention_omitted": 0,
-                "source_coverage": [["source": "email", "ready": true, "detail": "5 unread", "inspected": 5, "omitted": 0]],
+                "source_coverage": [["source": "email", "ready": true, "detail": "5 unread", "inspected": 5, "omitted": 0],
+                                    ["source": "messages", "ready": true, "detail": "", "inspected": 3, "omitted": 0]],
                 "behavior_detail": "Tentative", "explanation": "",
                 "proposed_plan": ["blocks": blocks, "unscheduled": [],
                                   "warnings": ["Reminders are not current; some deadlines may be missing."]],
@@ -145,6 +152,38 @@ enum NotchQADriver {
         ]
         return try JSONSerialization.data(withJSONObject: payload)
     }
+
+    static func fixtureUpcoming(dayStart: Double) throws -> Data {
+        func at(_ h: Double) -> Double { dayStart + h * 3600 }
+        let rows: [[String: Any]] = [
+            ["id": "u1", "title": "Work on PA 2", "when_ts": at(14), "source": "calendar", "kind": "event"],
+            ["id": "u2", "title": "Essay outline", "when_ts": at(24 * 4 + 18), "source": "reminders", "kind": "reminder"],
+            ["id": "u3", "title": "UCSC startup club, E2-506", "when_ts": at(24 * 4 + 18), "source": "calendar", "kind": "event"],
+            ["id": "u4", "title": "CSE 20 midterm", "when_ts": at(24 * 6 + 10), "source": "calendar", "kind": "exam"],
+        ]
+        return try JSONSerialization.data(withJSONObject: ["commitments": rows])
+    }
+
+    static let fixtureBrief = """
+    Good afternoon — Saturday, October 17. ☀️
+
+    **🧭 Keeping in mind**
+    - PA 2 is due tonight, and you said finishing CSE 20 strong matters this quarter.
+
+    **📅 Today**
+    - All day – PA 2 [CSE-20-04]
+
+    **📧 Inbox — 12 emails · 5 unread**
+    **Worth a look**
+    - Advisor: Thesis meeting moved to Tuesday
+    - Tech Week: starts today
+
+    **💬 Messages**
+    **👤 Priya**
+    - Asked about dinner at 7; no reply yet.
+
+    Let me know if you'd like me to dig into any of these or draft a reply.
+    """
 
     static func fixtureAttention(dayStart: Double) throws -> Data {
         let payload: [String: Any] = [
