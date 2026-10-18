@@ -374,7 +374,8 @@ async def lifespan(app: FastAPI):
     try:
         from service import omlx_cache
         omlx_cache.ensure_cap()
-        omlx_cache.sweep_stale()
+        omlx_cache.maintain()
+        started_tasks.append(asyncio.create_task(omlx_cache.run()))
     except Exception:  # noqa: BLE001
         pass
 

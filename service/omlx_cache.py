@@ -10,12 +10,16 @@ prompts sit there until the cap forces them out. Two best-effort controls:
   smaller value the user chose is left alone.
 * `sweep_stale` deletes cache files not touched for `MAX_AGE_DAYS`. oMLX
   treats a vanished block file as a cache miss, so this is safe while it runs.
+* `trim_vision` keeps the image-feature cache under `VISION_CAP_BYTES`. oMLX
+  hardcodes that cache at 10GB with no setting, so Wisp trims it itself,
+  oldest-used first, at startup and every `INTERVAL_S` while running.
 
 The cache is recomputable state, so the worst outcome of either is one slow
 first turn.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -27,6 +31,8 @@ from service.config import _OMLX_STATE, OMLX_SETTINGS
 CAP_BYTES = 4 * 1024**3
 CAP_TEXT = "4GB"
 MAX_AGE_DAYS = 7
+VISION_CAP_BYTES = 1024**3
+INTERVAL_S = 6 * 3600
 # Unfinished writes are `.tmp`; oMLX keeps recent ones for another manager.
 _TMP_GRACE_S = 24 * 3600
 
@@ -92,3 +98,52 @@ def sweep_stale(root: Path | None = None, *, now: float | None = None,
             files += 1
             freed += st.st_size
     return files, freed
+
+
+def trim_vision(root: Path | None = None, *, max_bytes: int = VISION_CAP_BYTES) -> tuple[int, int]:
+    """Delete the least recently used vision-feature files until the directory
+    fits `max_bytes`. Returns (files, bytes) removed."""
+    if root is None:
+        try:
+            settings = json.loads(OMLX_SETTINGS.read_text())
+        except (OSError, ValueError):
+            settings = None
+        root = cache_dir(settings) / "vision_features"
+    entries = []
+    for dirpath, _dirs, names in os.walk(root):
+        for name in names:
+            p = Path(dirpath) / name
+            try:
+                st = p.lstat()
+            except OSError:
+                continue
+            if p.is_file() and not p.is_symlink():
+                entries.append((max(st.st_mtime, st.st_atime), st.st_size, p))
+    total = sum(size for _t, size, _p in entries)
+    files = freed = 0
+    for _t, size, p in sorted(entries, key=lambda e: e[0]):
+        if total <= max_bytes:
+            break
+        try:
+            p.unlink()
+        except OSError:
+            continue
+        total -= size
+        files += 1
+        freed += size
+    return files, freed
+
+
+def maintain() -> None:
+    sweep_stale()
+    trim_vision()
+
+
+async def run() -> None:
+    """Periodic maintenance for a long-lived backend; startup does its own."""
+    while True:
+        await asyncio.sleep(INTERVAL_S)
+        try:
+            await asyncio.to_thread(maintain)
+        except Exception:  # noqa: BLE001 — best-effort, never fatal
+            pass
