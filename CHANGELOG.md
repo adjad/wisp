@@ -4,7 +4,16 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-18
+
+Wisp 1.5.0 is the first stable release. It works on a Mac with nothing installed: no oMLX, no earlier Wisp and no `~/.moe`. A short setup gets you an engine, a model and a first answer, and then three questions so Wisp knows who it's working for. Everyday asks reach the right tool, and the notch and window lose their rough edges.
+
 ### Added
+- **Getting to know you.** Once Wisp can answer, the notch asks three optional questions: what to call you, your goals and how you like replies. Each answer says what Wisp does with it, and everything stays on this Mac (`~/.moe/profile.json`). Your name and goals shape the brief's greeting and a "Keeping in mind" section, people you name rank higher in Day, and your tone shapes local replies. It is never sent to a cloud model. Reopen it with `/about`, **Tell Wisp About You…** in the menu bar, or Memory ▸ About you.
+- **Evening check-in and weekly goal pulse** on the Day tab. Mark each task Done, Tomorrow or Drop, and each event for tomorrow Keep, Move or Cancel. Move and Cancel only prefill Ask; nothing changes in Calendar on its own. Once a week, mark each goal On track, Behind or Done. A goal that is behind leads the brief.
+- **First launch** steps in the README and on the release page for opening an app that isn't notarized.
+- When Wisp's service isn't running, Ask says so in red with **Retry** and **Report**, instead of a green "Running locally".
+- The menu-bar icon, the attach and send buttons, the quick-settings switches and the setup steps have VoiceOver labels.
 - **Chat switcher in the notch.** The chip under the header names the conversation and lists recent saved chats, so you can continue one without opening the window.
 - **Slash commands in the notch.** Type `/today`, `/memory`, `/research`, `/settings`, `/report`, `/window` or `/new` alone in the Ask field. A path or any other text starting with "/" is still sent as a prompt.
 - **Details under each reply** show the model, route, timing and tool calls. Debug Mode now opens them by default instead of adding a separate line.
@@ -33,6 +42,53 @@ All notable changes to Wisp are documented here.
 - Wisp now starts in the notch. Launching it no longer opens the Wisp window. The first launch after updating opens the notch once with a note about where Wisp lives. Open the window from the Dock icon, the menu bar's **Open Wisp Window**, or **Window ▸ Wisp Window** (⌘1).
 
 ### Fixed
+
+#### A fresh install
+- Wisp no longer stops at launch on a Mac where oMLX was never opened or isn't installed. A missing or unreadable `~/.omlx/settings.json` used to stop the service before setup could appear.
+- A Mac with no model is offered the best public model it can download: Ling 3.0 tiny 6-bit on 24 GB or more, 4-bit below that. It used to be told to add a private Mellum folder it had no way to get. If you already have Mellum installed, your choice is kept.
+- After a download, the new model is put to use automatically when no role points at an installed model. The built-in engine starts on its own the first time setup is open. **Start engine** stays for retries.
+- On macOS older than 26, setup no longer sends you to download an oMLX that can't run there. It says what's supported and points to Ollama, LM Studio, llama.cpp or a remote model.
+- First launch asks only for Notifications, Calendar and Reminders. Screen Recording and Accessibility are asked for when a feature first needs them, instead of six prompts at once on top of the setup card.
+- If the service takes a while to start on first launch, Wisp waits up to about three minutes instead of 30 seconds. If it still hasn't started, the notch says so instead of showing nothing.
+
+#### Getting to know you
+- A brand-new Mac is offered the questions as soon as setup finishes, not only on the next launch.
+- Leaving from the summary screen counts as finished, so it doesn't come back at every launch.
+- Return can't save twice or skip a step, and an empty name never erases a saved one.
+- Choosing another tab, a shortcut, a notification or closing the notch leaves the questions at once. Closing counts as Later.
+- An offer nobody asked for doesn't take the keyboard from the app you're typing in.
+- If the service is down, the questions show an error with Retry, and never say "Thank you" when nothing was saved.
+- The goals step scrolls, so its buttons are never cut off on a short screen.
+- A damaged `profile.json` is kept as `profile.json.bad-<time>` instead of being overwritten.
+
+#### Everyday asks
+These now go straight to the right tool:
+- Timers ("set a timer for 10 minutes"), alarms ("set an alarm for 7am", "wake me up at 7") and "remind me in 20 minutes to…".
+- The date and time ("what's the date today", "what time is it in Tokyo"). These used to search the web.
+- Weather asked many ways: "how's the weather in Boston", "weather tomorrow in Boston", "will it rain tomorrow", "should I bring an umbrella", "what should I wear today".
+- The brief ("what's my day look like", "give me my morning brief", "brief me").
+- Maths and conversions ("what's 15% of 240", "5 miles to km") and definitions ("define serendipity").
+- "add a meeting with Sam tomorrow at 3pm" adds the event, and "move my 2pm to 4pm" moves it. Both still ask before changing your calendar.
+- Mail: "summarize my unread mail" summarizes, and "who emailed me about the invoice" searches your mail.
+- Volume and music ("turn it down", "next song", "set volume to 30").
+
+Also fixed:
+- "Tell me a joke" and "translate hello to Spanish" are answered without tools. They used to be offered email and shell tools.
+- Personal "should I…" questions ("what should I be doing today") no longer search the web.
+- Weather errors say "check the spelling" only when the place wasn't found. Other errors say to try again in a moment, and ambiguous city names ask which one you mean without suggesting a place that may not exist.
+
+#### Notch and window
+- Deleting a research job takes a second click (**Delete?** then **Confirm**), so one stray click can't erase a report.
+- Times follow your 12- or 24-hour setting in quick settings, Day and the planner.
+- The Day tab's **Make time for…** field is ready to type into, and a failed load shows **Try again**.
+- Switching between Brief and Day no longer reloads the day each time.
+- Research in the notch uses the notch's own buttons and fields.
+- "Daily Summary" is now "brief" throughout, and the window planner is titled Today.
+- Brief-sync progress stops polling when the service is down instead of polling every second for the rest of the session.
+- Attaching a large photo no longer stalls the notch, and JPEGs are sent as `image/jpeg`.
+- Wisp limits oMLX's prompt cache to 4 GB, keeping any smaller limit you set, and deletes cache files unused for 7 days. Before, it could grow to half your free disk.
+
+#### Brief
 - The brief times in quick settings are labelled **Morning** and **Evening**. Two bare "8 AM" and "8 PM" chips looked like the old AM/PM switch, but both briefs run.
 - An older Daily Summary the app hadn't acknowledged (for example, because its notification failed) no longer comes back on reconnect and replaces a newer one on the Today tab. A newer brief now retires any older one that is still waiting.
 
