@@ -780,3 +780,18 @@ def test_missing_or_broken_omlx_settings_never_stops_the_service(tmp_path, monke
         assert config.omlx_base_url() == "http://127.0.0.1:8000"
     finally:
         config.models_config.cache_clear()
+
+
+def test_omlx_settings_written_after_launch_are_picked_up(tmp_path, monkeypatch):
+    # Wisp can start before oMLX.app is ever opened; once oMLX writes its
+    # settings (key, port), they must apply without restarting the backend.
+    import os
+    import service.config as config
+    settings = tmp_path / "settings.json"
+    monkeypatch.setattr(config, "OMLX_SETTINGS", settings)
+    assert config.omlx_settings() == {}
+    settings.write_text('{"auth": {"api_key": "first"}}')
+    assert config.omlx_settings() == {"auth": {"api_key": "first"}}
+    settings.write_text('{"auth": {"api_key": "second-key"}}')
+    os.utime(settings, ns=(1, 10**18))
+    assert config.omlx_settings()["auth"]["api_key"] == "second-key"

@@ -184,6 +184,10 @@ final class OverlayModel: ObservableObject {
     // Whether Wisp's own service answers (BackendManager's reachability watch).
     // False shows "Wisp service isn't running" with Retry instead of a green dot.
     @Published var serviceReachable = true { didSet { if serviceReachable != oldValue { onResize() } } }
+    // The service is coming up (a cold first launch, or after Retry): a neutral
+    // "Starting Wisp…" line, never the red down card.
+    @Published var serviceStarting = false { didSet { if serviceStarting != oldValue { onResize() } } }
+    var serviceDown: Bool { !serviceReachable && !serviceStarting }
     // Set by the app delegate: ask the backend manager to start the service again.
     var onRetryService: () -> Void = {}
     // The one problem report open in the notch, unfolded under the reply it is

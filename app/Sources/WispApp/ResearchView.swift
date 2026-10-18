@@ -98,11 +98,12 @@ struct ResearchView: View {
                     NotchChrome.small("Confirm", action: performDelete)
                         .disabled(model.actionInProgress)
                         .accessibilityLabel("Confirm delete research job")
-                    NotchChrome.small("Cancel") { confirmingDelete = false }
+                    NotchChrome.small("Keep") { confirmingDelete = false }
+                        .accessibilityLabel("Keep research job")
                 } else {
                     Button("Confirm", role: .destructive, action: performDelete)
                         .buttonStyle(.bordered).disabled(model.actionInProgress)
-                    Button("Cancel") { confirmingDelete = false }.buttonStyle(.bordered)
+                    Button("Keep") { confirmingDelete = false }.buttonStyle(.bordered)
                 }
             }
             .task(id: confirmingDelete) {

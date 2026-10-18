@@ -143,20 +143,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         backend.didLaunchBackend = { BrowserBridgeActivation.shared.backendLaunched(pid: $0) }
         let launchedAt = Date()
+        var outage = 0
         backend.onReachabilityChange = { [weak self] up in
             guard let self else { return }
-            if up { self.model.serviceReachable = true; return }
-            // The service takes a few seconds to come up at launch: only call it
-            // down once it has stayed down past a grace period.
-            let grace: UInt64 = Date().timeIntervalSince(launchedAt) < 60 ? 20_000_000_000 : 4_000_000_000
+            outage += 1
+            if up { self.model.serviceReachable = true; self.model.serviceStarting = false; return }
+            let this = outage
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: grace)
-                guard let self, self.backend.lastReachable == false else { return }
+                // Until the service has answered once, a cold first launch can take
+                // minutes (bundle verification, first import): that is "Starting
+                // Wisp…", not down. Nor is a service busy answering right now.
+                while let self, this == outage, self.backend.lastReachable == false,
+                      self.model.isProcessing
+                        || (!self.backend.everReachable && Date().timeIntervalSince(launchedAt) < 180) {
+                    self.model.serviceStarting = true
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+                guard let self, this == outage, self.backend.lastReachable == false else { return }
+                self.model.serviceStarting = false
                 self.model.serviceReachable = false
             }
         }
         model.onRetryService = { [weak self] in
-            Task { @MainActor in await self?.backend.startIfNeeded() }
+            guard let self else { return }
+            // Visible feedback even when a start is already under way.
+            self.model.serviceStarting = true
+            Task { @MainActor [weak self] in
+                await self?.backend.startIfNeeded()
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard let self, self.backend.lastReachable != true else { return }
+                self.model.serviceStarting = false
+                self.model.serviceReachable = false
+            }
         }
         backend.startReachabilityWatch()
         Task { await BrowserBridgeActivation.shared.begin() }
@@ -415,6 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupInNotch), keyEquivalent: "")
         menu.addItem(withTitle: "Tell Wisp About You…", action: #selector(tellWispAboutYou), keyEquivalent: "")
+        menu.addItem(withTitle: "Grant More Access…", action: #selector(grantMoreAccess), keyEquivalent: "")
         menu.addItem(.separator())
         // Debug Mode is in the notch's quick settings ("Reply details").
         // Export works any time there's a conversation, whether or not
@@ -446,6 +465,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // menu-bar icon (or ⌥Space) is the way back in.
         notchDocked = true
         if presentation.desired == .chat {
+            // An explicit close, like the chevron and Esc: an open Getting to
+            // know you counts as Later.
+            model.leaveKnowYou()
             collapse()
         } else {
             // ⌥Space and the menu-bar icon always open Ask.
@@ -1114,10 +1136,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // Never came up: say so in the notch instead of staying silent. The
             // guide is not marked shown, so the next launch tries again.
-            guard let self else { return }
+            // It isn't opened unasked: the reachability watch already shows it
+            // the next time the notch opens.
+            guard let self, self.backend.lastReachable != true else { return }
+            self.model.serviceStarting = false
             self.model.serviceReachable = false
-            self.openAssistant()
         }
+    }
+
+    /// The permissions first launch defers (Screen Recording, Accessibility,
+    /// Full Disk Access), asked for when the person chooses to.
+    @objc private func grantMoreAccess() {
+        Permissions.requestExtras(force: true)
     }
 
     /// Getting to know you, from the menu bar.
@@ -1151,20 +1181,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 guard let envelope = await WispClient().profile() else { continue }
                 guard envelope.status.offer else { return }
-                // Not over the setup card, a reply in progress, or a flow already up.
+                // Not over the setup card, a reply in progress, or a flow already
+                // up; and never over a panel the person is using (open, holding
+                // typed text) or dismissed to the menu bar.
                 if self.setupWindow?.isVisible == true || self.model.setupCard == .open
-                    || self.model.isProcessing || self.model.knowYou != nil {
+                    || self.model.isProcessing || self.model.knowYou != nil
+                    || !self.model.collapsed || self.model.holdsOpen || !self.notchDocked {
                     continue
                 }
                 // An offer nobody asked for must not take the keyboard from the
-                // app the person is typing in: note it, open, hand focus back.
-                let prior = NSWorkspace.shared.frontmostApplication
+                // app the person is typing in: it opens without becoming key.
+                self.createPanelIfNeeded()
+                self.panel?.revealsWithoutKey = true
                 self.openAssistant()
                 self.model.startKnowYou()
-                if let prior, prior.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-                    try? await Task.sleep(nanoseconds: 700_000_000)
-                    prior.activate(options: [])
-                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                self.panel?.revealsWithoutKey = false
                 return
             }
         }

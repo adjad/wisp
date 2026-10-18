@@ -25,7 +25,7 @@ enum Permissions {
     //   - Input Monitoring: nothing in Wisp needs it today (the hotkey uses
     //     Carbon), so it is asked only by `requestExtras`.
     //   - Full Disk Access cannot be prompted; `requestExtras` opens its pane.
-    // `bootstrap(force: true)` (a menu action, if wired) still asks for everything.
+    // The menu bar's Grant More Access… calls `requestExtras(force: true)`.
     static func bootstrap(force: Bool = false) {
         let key = "wisp.didRequestPermissions"
         if !force && UserDefaults.standard.bool(forKey: key) { return }

@@ -48,11 +48,16 @@ Wisp 0.5.0 is the first stable release. It works on a Mac with nothing installed
 
 #### A fresh install
 - The built-in engine answers its first question. Its memory guard refused every model it had just loaded ("The AI engine's memory guard could not be verified"), because a background check stayed pending for the whole load. A fresh install with no oMLX.app could finish setup and still never answer.
+- Switching models right after a reply (for example, a code question that loads the coding model) is no longer refused by the same memory guard while the new model loads.
 - Wisp no longer stops at launch on a Mac where oMLX was never opened or isn't installed. A missing or unreadable `~/.omlx/settings.json` used to stop the service before setup could appear.
 - A Mac with no model is offered the best public model it can download: Ling 3.0 tiny 6-bit on 24 GB or more, 4-bit below that. It used to be told to add a private Mellum folder it had no way to get. If you already have Mellum installed, your choice is kept.
 - After a download, the new model is put to use automatically when no role points at an installed model. The built-in engine starts on its own the first time setup is open. **Start engine** stays for retries.
 - On macOS older than 26, setup no longer sends you to download an oMLX that can't run there. It says what's supported and points to Ollama, LM Studio, llama.cpp or a remote model.
 - First launch asks only for Notifications, Calendar and Reminders. Screen Recording and Accessibility are asked for when a feature first needs them, instead of six prompts at once on top of the setup card.
+- **Grant More Access…** in the menu bar asks for Screen Recording and Accessibility and opens Full Disk Access (for Messages, Mail and Notes), which an app can't request itself.
+- A slow first launch shows "Starting Wisp…" instead of a red "Wisp's service isn't running", and a service busy answering is never called down. Retry shows that it's starting.
+- Opening oMLX.app after Wisp started (or changing its key or port) takes effect without restarting Wisp.
+- Setup no longer repoints a role you pointed at LM Studio or Ollama on purpose when it puts a new model to use.
 - If the service takes a while to start on first launch, Wisp waits up to about three minutes instead of 30 seconds. If it still hasn't started, the notch says so instead of showing nothing.
 
 #### Getting to know you
@@ -61,6 +66,8 @@ Wisp 0.5.0 is the first stable release. It works on a Mac with nothing installed
 - Return can't save twice or skip a step, and an empty name never erases a saved one.
 - Choosing another tab, a shortcut, a notification or closing the notch leaves the questions at once. Closing counts as Later.
 - An offer nobody asked for doesn't take the keyboard from the app you're typing in.
+- It never opens over a notch you're using, and closing with ⌥Space counts as Later, like the chevron and Esc.
+- If your answers can't be saved, **Show my brief** says so and stays, instead of quietly asking again later.
 - If the service is down, the questions show an error with Retry, and never say "Thank you" when nothing was saved.
 - The goals step scrolls, so its buttons are never cut off on a short screen.
 - A damaged `profile.json` is kept as `profile.json.bad-<time>` instead of being overwritten.
@@ -79,13 +86,21 @@ These now go straight to the right tool:
 Also fixed:
 - "Tell me a joke" and "translate hello to Spanish" are answered without tools. They used to be offered email and shell tools.
 - Personal "should I…" questions ("what should I be doing today") no longer search the web.
+- A second request after a comma is kept: "find emails from Ana, delete them" and "what time is it in Tokyo, call Sam" are no longer cut down to just the lookup. "Portland, OR" and "Paris, France" still read as places.
+- "What time is it in Paris right now" asks for Paris, not "Paris right now".
+- "What's my schedule in Spanish" reads your calendar and answers in Spanish, instead of answering with no calendar at all. "The weather in Spanish" isn't a city.
+- A timer is set only when you give a length or a time; "set a timer to remind me to email Bob" makes a reminder. "Remind me in 2 hours" asks what to remind you about.
+- "9/11", "24/7", "what does Sam mean" and "a joke about my meeting" are no longer treated as maths, a definition or a plain joke.
+- A skill's trigger matches whole words only: "my commute the day after" no longer offers the mute and volume controls.
 - Weather errors say "check the spelling" only when the place wasn't found. Other errors say to try again in a moment, and ambiguous city names ask which one you mean without suggesting a place that may not exist.
 
 #### Notch and window
 - Deleting a research job takes a second click (**Delete?** then **Confirm**), so one stray click can't erase a report.
-- Times follow your 12- or 24-hour setting in quick settings, Day and the planner.
+- Times follow your 12- or 24-hour setting in quick settings, Day and the planner. The Brief's times follow it too, and every 24-hour time reads the same way ("09:00").
 - The Day tab's **Make time for…** field is ready to type into, and a failed load shows **Try again**.
 - Switching between Brief and Day no longer reloads the day each time.
+- The evening check-in loads once, not twice, so a task you just decided can't briefly come back.
+- The research delete confirmation says **Keep**, not a second **Cancel** next to the one that stops research.
 - Research in the notch uses the notch's own buttons and fields.
 - "Daily Summary" is now "brief" throughout, and the window planner is titled Today.
 - Brief-sync progress stops polling when the service is down instead of polling every second for the rest of the session.

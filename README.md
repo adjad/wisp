@@ -181,8 +181,10 @@ open. Control-click `Wisp.app` and choose **Open**, or go to **System Settings �
 Wisp's built-in engine needs macOS 26.2 or newer, and oMLX 0.7+ needs macOS 26. On an
 older Mac the setup guide says so and points to Ollama, LM Studio, llama.cpp (Wisp tests
 that the model can call tools) or the remote-only mode. Wisp asks for notifications,
-Calendar and Reminders at first launch; Screen Recording, Accessibility and Full Disk
-Access are requested when a feature needs them.
+Calendar and Reminders at first launch. macOS asks for Screen Recording and Accessibility
+the first time a feature uses them. Full Disk Access (for Messages, Mail and Notes) can't
+be requested by an app: right-click the menu-bar icon → **Grant More Access…** asks for
+the rest and opens its Settings pane.
 
 ### The setup guide
 

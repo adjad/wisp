@@ -180,6 +180,17 @@ class PinnedEnforcerLoopTests(unittest.TestCase):
         self.assertLess(body.index("_wisp_guard.complete_iteration(self)"),
                         body.index("await self._check_ttl()"))
 
+    def test_ttl_sweep_never_waits_on_a_load_held_pool_lock(self):
+        # Waiting on the lock stalled the evidence through a slow load (a model
+        # swap right after a reply polls at 1s), so the post-load check refused
+        # the new model as stale. The sweep now yields to a held lock.
+        root = Path(__file__).resolve().parents[1] / "build-support" / "engine_guard"
+        patch = json.loads((root / "process_memory_enforcer.py.patch.json").read_text())
+        ttl = [e["new"] for e in patch["edits"] if "check_ttl_expirations(" in e["new"]]
+        self.assertEqual(len(ttl), 1)
+        body = ttl[0]
+        self.assertLess(body.index("lock.locked()"), body.index("check_ttl_expirations("))
+
 
 if __name__ == "__main__":
     unittest.main()

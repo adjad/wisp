@@ -7702,10 +7702,15 @@ def _force_relative_reminder(decision: RouteDecision, text: str) -> None:
         decision.expect_tool_first = True
 
 
+_SKILL_ADDED_UNSAFE_RE = re.compile(
+    r"send_|draft|delete|cancel_event|add_calendar_event|forward_email|reply", re.I)
+
+
 def _add_matched_skill_tools(decision: RouteDecision, text: str) -> None:
     """A skill whose trigger fires brings its tools into a scoped menu: skill
     triggers used to feed only the prompt, so 'turn it down' reached the model
-    with 13 retrieved tools and none of mac-controls'."""
+    with 13 retrieved tools and none of mac-controls'. A trigger never adds an
+    outbound, draft, delete or calendar-write tool the route did not offer."""
     if (not decision.tool_subset or decision.force_first_tool or not decision.needs_tools
             or decision.direct_calls or decision.required_tool_groups):
         return
@@ -7721,6 +7726,7 @@ def _add_matched_skill_tools(decision: RouteDecision, text: str) -> None:
             for tool in skill.tools:
                 tool_name = tool.get("name")
                 if (tool_name and is_tool_routable(tool_name)
+                        and not _SKILL_ADDED_UNSAFE_RE.search(tool_name)
                         and tool_name not in decision.forbidden_tools
                         and tool_name not in decision.tool_subset and tool_name not in extra):
                     extra.append(tool_name)

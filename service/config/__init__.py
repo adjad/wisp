@@ -32,20 +32,34 @@ MODELS_YAML = Path(__file__).parent / "models.yaml"
 # code defaults; this holds the user's changes, deep-merged on top at read time.
 USER_CONFIG = MOE_DIR / "config.yaml"
 
-@lru_cache
+_omlx_settings_seen: tuple = (None, {})
+
+
 def omlx_settings() -> dict:
     """oMLX's own settings.json — single source of truth for host/port/api_key.
 
     A fresh install has no such file: oMLX.app was never opened, or there is no
     engine at all yet. That reads as ``{}`` so the service still starts and setup
-    can say what is missing, instead of the backend dying at launch.
+    can say what is missing, instead of the backend dying at launch. The result
+    is reused only while the file is unchanged, so opening oMLX.app (or changing
+    its key or port) after Wisp started takes effect without a restart.
     """
+    global _omlx_settings_seen
+    try:
+        info = OMLX_SETTINGS.stat()
+    except OSError:
+        return {}
+    key = (str(OMLX_SETTINGS), info.st_mtime_ns, info.st_size)
+    if _omlx_settings_seen[0] == key:
+        return _omlx_settings_seen[1]
     try:
         with OMLX_SETTINGS.open() as f:
             data = json.load(f)
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    data = data if isinstance(data, dict) else {}
+    _omlx_settings_seen = (key, data)
+    return data
 
 
 def _settings_section(name: str) -> dict:

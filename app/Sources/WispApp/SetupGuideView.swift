@@ -206,6 +206,9 @@ final class SetupGuideModel: ObservableObject {
         let installed = Set(next.models.installed.map(\.id))
         let local = next.roles.filter { $0.endpoint == "local" }
         guard !local.isEmpty, !local.contains(where: { installed.contains($0.model) }) else { return }
+        // Applying sets every text role, so a role pointed at another app
+        // (LM Studio, Ollama) on purpose would be repointed: leave that to the person.
+        guard local.count == next.roles.count else { return }
         autoAppliedModels.insert(id)
         Task { await apply(id) }
     }

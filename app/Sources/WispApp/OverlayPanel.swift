@@ -223,7 +223,14 @@ final class OverlayPanel: NSPanel {
         if opening {
             guard let full = frame(compact: false) else { completion(); return }
             setFrame(full, display: true)
-            makeKeyAndOrderFront(nil)
+            if revealsWithoutKey {
+                // Nobody asked for this open: show it, but leave the keyboard
+                // with the app the person is typing in until they click here.
+                revealsWithoutKey = false
+                orderFrontRegardless()
+            } else {
+                makeKeyAndOrderFront(nil)
+            }
         }
         guard let mask = revealMask, let rects = maskRects() else { completion(); return }
         let startSize = visibleBounds?.size ?? (opening ? rects.bar.size : rects.full.size)
@@ -267,6 +274,9 @@ final class OverlayPanel: NSPanel {
         mask.add(group, forKey: "reveal")
         CATransaction.commit()
     }
+
+    /// The next open shows the panel without making it key (an unrequested offer).
+    var revealsWithoutKey = false
 
     func dropOpen(_ completion: (() -> Void)? = nil) {
         reveal(opening: true) { completion?() }

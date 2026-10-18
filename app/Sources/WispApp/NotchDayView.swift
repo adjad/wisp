@@ -73,12 +73,6 @@ struct NotchDayView: View {
         }
         .environment(\.timeZone, today.timezone)
         .modifier(DayRefreshLoop(model: model, today: today))
-        .task(id: today.day) {
-            guard today.isShowingCurrentDay else { return }
-            await checkIn.load(day: today.day, timezone: today.timezone.identifier)
-            model.checkInDue = false
-            model.onResize()
-        }
         .onChange(of: model.checkInDue) { _, due in
             guard due, today.isShowingCurrentDay else { return }
             Task {
@@ -87,7 +81,8 @@ struct NotchDayView: View {
                 model.onResize()
             }
         }
-        .task {
+        // One loader for the check-in: on open, every minute, and on a new day.
+        .task(id: today.day) {
             while !Task.isCancelled {
                 await attention.refresh()
                 if today.isShowingCurrentDay {
@@ -97,10 +92,6 @@ struct NotchDayView: View {
                 model.onResize()
                 do { try await Task.sleep(for: .seconds(60)) } catch { break }
             }
-        }
-        .onChange(of: model.checkInDue) { _, due in
-            guard due, today.isShowingCurrentDay else { return }
-            Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
         }
     }
 

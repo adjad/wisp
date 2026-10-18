@@ -32,7 +32,31 @@ class CommonClaim:
 
 
 _PREFIX = (r"(?:(?:hey|ok|okay|please|pls|can you|could you|would you|will you)[,\s]+)*")
-_COMPOUND = re.compile(r"[;\n]|\b(?:and|then|also|after that)\b", re.I)
+_COMPOUND_WORDS = re.compile(r"[;\n]|\b(?:and|then|also|after that)\b", re.I)
+_LEAD_FILLER = re.compile(r"^(?:(?:hey|hi|ok|okay|please|pls|so|well|um|uh|yes|yeah|no|wisp)\b[,\s]+)+", re.I)
+# A trailing ", France" / ", OR" / ", D.C." qualifies a place; anything else
+# after a comma ("..., delete them", "..., Ana asked") is a second clause.
+# A time word may follow it ("San Francisco, California today").
+_REGION_TAIL = re.compile(r"\s*(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}|[A-Z]{2}|[A-Z](?:\.[A-Z])+\.?)"
+                          r"(?:\s+(?i:today|tomorrow|tonight|right\s+now|now|currently|later(?:\s+today)?|"
+                          r"this\s+(?:week|weekend|morning|afternoon|evening)|next\s+week))?\s*")
+
+
+class _Compound:
+    """``search(t)`` is truthy when ``t`` joins a second clause: by a joining
+    word or ';', or by a comma that is not a number separator, a leading
+    filler ("hey, ...") or a trailing region qualifier ("Portland, OR")."""
+
+    @staticmethod
+    def search(t: str) -> bool:
+        if _COMPOUND_WORDS.search(t):
+            return True
+        body = _LEAD_FILLER.sub("", t)
+        parts = re.split(r"(?<!\d),|,(?!\d)", body)
+        return any(not _REGION_TAIL.fullmatch(part) for part in parts[1:])
+
+
+_COMPOUND = _Compound()
 
 
 def clean(text: str) -> str:
@@ -49,6 +73,11 @@ def clean(text: str) -> str:
 _TIMER = re.compile(
     rf"{_PREFIX}(?:set|start|create|make|begin|put on|run)\s+(?:me\s+)?(?:an?\s+|the\s+)?"
     r"(?:[\w-]+\s+){0,3}?timer(?:\s+(?:for|of|to|at)\s+[^,;]{1,60})?", re.I)
+_TIMER_LENGTH = re.compile(
+    r"\b(?:\d+(?:\.\d+)?\s*-?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|s|m|h)\b|"
+    r"(?:an?|one)\s+(?:hour|minute|second)\b|half\s+an?\s+hour|a\s+half[\s-]hour|"
+    r"(?:a\s+)?quarter\s+(?:of\s+)?an?\s+hour|"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)|\d{1,2}:\d{2}|noon|midnight)", re.I)
 _TIMER_BARE = re.compile(
     rf"{_PREFIX}(?:(?:an?\s+)?\d+(?:\.\d+)?[\s-]*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)\s+timer|"
     r"timer\s+(?:for\s+)?\d+(?:\.\d+)?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)|"
@@ -62,16 +91,18 @@ _NOT_ALARM = re.compile(r"\b(?:security|house|home|car|fire|smoke|burglar|door|g
 
 _REMIND_RELATIVE = re.compile(
     rf"{_PREFIX}remind\s+me\s+(?:in|after)\s+(?:an?|\d+(?:\.\d+)?|half an?)\s*"
-    r"(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)\b.*", re.I)
+    r"(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)\s+(?:to|that|about)\s+\S.*", re.I)
 
 
 def is_relative_reminder(text: str) -> bool:
     t = clean(text)
-    return bool(_REMIND_RELATIVE.fullmatch(t)) and not re.search(r"[;\n]|\bthen\b|\balso\b", t, re.I)
+    return (bool(_REMIND_RELATIVE.fullmatch(t)) and not re.search(r"[;\n]|\bthen\b|\balso\b", t, re.I)
+            and not (_COMPOUND.search(t) and not _COMPOUND_WORDS.search(t)))
 
 
 # ---------------------------------------------------------------- local clock
-_PLACE = r"(?P<place>[A-Za-z][A-Za-z .,'-]{1,40})"
+_PLACE = r"(?P<place>[A-Za-z][A-Za-z .,'-]{1,40}?)"
+_PLACE_NOW = r"(?:\s+(?:right\s+now|now|today|currently|at\s+the\s+moment))?"
 _CLOCK_LOCAL = [
     re.compile(r"(?:what|whats)(?:'s|\s+is|\s+are)?\s+(?:the\s+)?(?:current\s+|today'?s\s+)?(?:date|day|time)"
                r"(?:\s+(?:today|now|right\s+now|is\s+it))?", re.I),
@@ -83,13 +114,14 @@ _CLOCK_LOCAL = [
     re.compile(r"(?:tell me|give me)\s+(?:the\s+)?(?:current\s+)?(?:date|time)(?:\s+(?:today|now))?", re.I),
 ]
 _CLOCK_PLACE = [
-    re.compile(rf"what\s+time\s+is\s+it\s+(?:right\s+now\s+)?in\s+{_PLACE}", re.I),
-    re.compile(rf"(?:what|whats)(?:'s|\s+is)?\s+(?:the\s+)?(?:current\s+|local\s+)?time\s+in\s+{_PLACE}", re.I),
-    re.compile(rf"what\s+day\s+is\s+it\s+in\s+{_PLACE}", re.I),
-    re.compile(rf"current\s+time\s+in\s+{_PLACE}", re.I),
+    re.compile(rf"what\s+time\s+is\s+it\s+(?:right\s+now\s+)?in\s+{_PLACE}{_PLACE_NOW}", re.I),
+    re.compile(rf"(?:what|whats)(?:'s|\s+is)?\s+(?:the\s+)?(?:current\s+|local\s+)?time\s+in\s+{_PLACE}{_PLACE_NOW}", re.I),
+    re.compile(rf"what\s+day\s+is\s+it\s+in\s+{_PLACE}{_PLACE_NOW}", re.I),
+    re.compile(rf"current\s+time\s+in\s+{_PLACE}{_PLACE_NOW}", re.I),
 ]
 _BAD_PLACE = re.compile(r"\b(?:morning|afternoon|evening|night|hours?|minutes?|my|the|a|an|this|that|"
-                        r"calendar|meeting|schedule|mail|email)\b", re.I)
+                        r"calendar|meeting|schedule|mail|email|time\s*zone|timezone|zone|"
+                        r"now|today|currently|moment)\b|\b\w+'s\b", re.I)
 
 
 def _local_clock(t: str) -> CommonClaim | None:
@@ -144,6 +176,9 @@ def parse_weather(text: str) -> tuple[str, str | None] | None:
         city = (m.groupdict().get("city") or "").strip(" .,")
         if city and _W_NOCITY.match(city):
             city = ""
+        # "the weather in Spanish" names a language, not a place.
+        if city and re.fullmatch(_LANG, city, re.I):
+            return None
         if city and re.search(r"\b(?:my|the|this|that|these|those|it|work|office|tomorrow|today|tonight|weekend|"
                               r"morning|afternoon|evening|week|stocks?|shares?|market|prices?|sales|"
                               r"earnings|revenue|quarter|project|team|economy)\b", city, re.I):
@@ -230,11 +265,31 @@ _DEFINE = [
 ]
 _BAD_WORD = re.compile(r"\b(?:my|our|your|this|that|these|those|file|folder|code|function|error|"
                        r"calendar|email|mail|message|note|reminder)\b", re.I)
+# "the meaning of life" is a question, not a dictionary lookup.
+_NOT_A_TERM = re.compile(r"(?:life|it all|everything|existence|love|death|this|that|it)", re.I)
+# "what's 9/11", "what's 24/7": a date or a phrase, not a division.
+_SLASH_PAIR = re.compile(rf"{_PREFIX}{_LEAD}(?P<a>\d{{1,2}})\s*/\s*(?P<b>\d{{1,2}})", re.I)
+
+
+def _is_term(word: str) -> bool:
+    """A word to define: lowercase or an acronym. A capitalized word ("what
+    does Sam mean") is a name, and the ask is about something Sam said."""
+    if _BAD_WORD.search(word) or _NOT_A_TERM.fullmatch(word.strip()):
+        return False
+    return not any(w[:1].isupper() and not w.isupper() for w in word.split())
+
+
+def _slash_is_not_division(t: str) -> bool:
+    m = _SLASH_PAIR.fullmatch(t)
+    if not m:
+        return False
+    a, b = int(m["a"]), int(m["b"])
+    return (a, b) == (24, 7) or (a <= 31 and b <= 31)
 
 
 def _compute(t: str) -> CommonClaim | None:
     for rx in (_PERCENT, _ROOT, _POWER, _ARITH):
-        if rx.fullmatch(t):
+        if rx.fullmatch(t) and not (rx is _ARITH and _slash_is_not_division(t)):
             return CommonClaim(("calculate",), "arithmetic -> calculate", force="calculate")
     for rx in _CONVERT:
         if rx.fullmatch(t):
@@ -242,7 +297,7 @@ def _compute(t: str) -> CommonClaim | None:
                                force="convert_units")
     for rx in _DEFINE:
         m = rx.fullmatch(t)
-        if m and not _BAD_WORD.search(m["w"]):
+        if m and _is_term(m["w"]):
             return CommonClaim(("wikipedia_summary", "web_search"),
                                "word definition -> wikipedia_summary/web_search",
                                forbid=frozenset({"recall", "run_shell"}), private=False)
@@ -257,7 +312,9 @@ def _timer(t: str) -> CommonClaim | None:
         # Alarms stay on the reminder path: its clock grammar refuses a time it
         # can't read exactly ("half six", "25:00") and asks instead of guessing.
         return None
-    if _TIMER.fullmatch(t) or _TIMER_BARE.fullmatch(t):
+    # A timer is forced only when its length (or end time) is named: "set a
+    # timer to remind me to email Bob" is a reminder ask, not a countdown.
+    if _TIMER_BARE.fullmatch(t) or (_TIMER.fullmatch(t) and _TIMER_LENGTH.search(t)):
         return CommonClaim(("set_timer",), "countdown timer -> set_timer", force="set_timer",
                            forbid=frozenset({"add_reminder", "add_calendar_event"}))
     return None
@@ -283,11 +340,11 @@ def _volume(t: str) -> CommonClaim | None:
 # ---------------------------------------------------------------- email lookup
 _EMAIL_LOOKUP = [
     re.compile(r"who\s+(?:e-?mailed|emailed|wrote|sent)\s+me(?:\s+(?:an?\s+)?(?:e-?mail|message|mail))?\s+"
-               r"(?:about|regarding|re|on|concerning|with)\s+.{2,80}", re.I),
+               r"(?:about|regarding|re|on|concerning|with)\s+[^,;]{2,80}", re.I),
     re.compile(r"(?:did|has|have)\s+(?:anyone|anybody|\w+)\s+(?:e-?mail(?:ed)?|write|wrote|sent)\s+me\s+"
-               r"(?:about|regarding|re)\s+.{2,80}", re.I),
+               r"(?:about|regarding|re)\s+[^,;]{2,80}", re.I),
     re.compile(r"(?:find|search|look up|look for|show)\s+(?:me\s+)?(?:the\s+|that\s+|any\s+|my\s+)?"
-               r"e-?mails?\s+(?:from|about|regarding|re)\s+.{2,80}", re.I),
+               r"e-?mails?\s+(?:from|about|regarding|re)\s+[^,;]{2,80}", re.I),
 ]
 
 
@@ -308,8 +365,8 @@ _TIME_REF = (r"(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)|noon|midnight|tom
              r"later|earlier|(?:an?|one|\d+)\s+(?:hour|day|week)s?\s+(?:later|earlier|from now)|"
              r"(?:the\s+)?(?:morning|afternoon|evening))")
 _EVENT_NOUN = (r"(?:meeting|appointment|event|call|class|lunch|dinner|breakfast|standup|stand-up|interview|"
-               r"session|dentist|doctor|checkup|check-up|sync|1:1|one-on-one|review|workshop|lecture|"
-               r"practice|game|flight|reservation)")
+               r"session|dentist|doctor|checkup|check-up|sync|1:1|one-on-one|workshop|lecture|"
+               r"practice)")
 _MOVE_SUBJECT_TIME = rf"\d{{1,2}}(?::\d{{2}})?\s*(?:am|pm|a\.m\.|p\.m\.)(?:\s+{_EVENT_NOUN})?"
 _CAL_MOVE = re.compile(
     rf"{_PREFIX}{_MOVE_VERB}\s+(?:my\s+|the\s+|our\s+)?(?P<subject>.+?)\s+(?:to|until|till|for|from\s+.+?\s+to)\s+"
@@ -363,6 +420,13 @@ _TRANSLATE = [
     re.compile(rf"{_PREFIX}how\s+(?:do\s+(?:you|i)|would\s+you)\s+say\s+(?P<body>[\w'’,.! -]{{1,80}}?)\s+in\s+{_LANG}", re.I),
     re.compile(rf"{_PREFIX}what(?:'s|\s+is)\s+(?P<body>[\w'’,.! -]{{1,60}}?)\s+in\s+{_LANG}", re.I),
 ]
+# "what is my schedule in Spanish" asks for the user's data (in Spanish), not
+# for a phrase to translate: the "what's X in <language>" form must name a
+# phrase, never a possessive or a personal-data noun.
+_TRANSLATE_DATA = re.compile(r"\b(?:my|our|your|his|her|their|weather|forecast|temperature|schedule|"
+                             r"agenda|calendar|meetings?|events?|appointments?|reminders?|tasks?|news|"
+                             r"inbox|time|date|day|plans?|week|weekend|today|tomorrow|tonight)\b", re.I)
+_JOKE_PERSONAL = re.compile(r"\b(?:about|on)\b.*\b(?:my|our|mine|ours)\b", re.I)
 _TRANSLATE_REFERS = re.compile(r"\b(?:this|that|these|those|it|them|file|email|e-?mail|message|text|note|"
                                r"document|doc|pdf|page|selection|clipboard|screen|attachment|thread|chat)\b", re.I)
 
@@ -372,10 +436,12 @@ def is_no_tool_ask(text: str) -> bool:
     if _COMPOUND.search(t):
         return False
     if _JOKE.fullmatch(t):
-        return True
-    for rx in _TRANSLATE:
+        # "a joke about my meeting tomorrow" needs the meeting looked up.
+        return not _JOKE_PERSONAL.search(t)
+    for i, rx in enumerate(_TRANSLATE):
         m = rx.fullmatch(t)
-        if m and not _TRANSLATE_REFERS.search(m["body"]):
+        if (m and not _TRANSLATE_REFERS.search(m["body"])
+                and not (i == 2 and _TRANSLATE_DATA.search(m["body"]))):
             return True
     return False
 

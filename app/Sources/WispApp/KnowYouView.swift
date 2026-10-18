@@ -116,9 +116,16 @@ final class KnowYouModel: ObservableObject {
     func showBrief() async {
         guard !busy, !ended else { return }
         busy = true
-        _ = await client.completeProfile()
-        busy = false
+        defer { busy = false }
+        // Same as Done: if the answers weren't saved, say so and stay here,
+        // or the questionnaire would quietly come back later.
+        guard let envelope = await client.completeProfile() else {
+            error = "Couldn't save that just now. Your answers are still here; try again."
+            return
+        }
         ended = true
+        profile = envelope.profile
+        preview = envelope.preview
         onShowBrief()
     }
 

@@ -610,7 +610,7 @@ struct DayLoad: Equatable {
     static func clock(_ t: Double, zone: TimeZone, locale: Locale = WispClock.fixedLocale) -> String {
         if WispClock.uses24Hour(locale) {
             let (h, m) = parts(t, zone: zone)
-            return String(format: "%d:%02d", h, m)
+            return String(format: "%02d:%02d", h, m)
         }
         let b = bare(t, zone: zone)
         return b.text + (b.pm ? " PM" : " AM")
@@ -631,9 +631,13 @@ struct DayLoad: Equatable {
 enum WispClock {
     static let fixedLocale = Locale(identifier: "en_US")
 
+    /// Asks the locale's own hour pattern: "H"/"k" is a 24-hour clock. (Testing
+    /// for the "a" marker misreads locales whose day period is "B".)
     static func uses24Hour(_ locale: Locale) -> Bool {
         let format = DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: locale) ?? "h a"
-        return !format.contains("a")
+        let unquoted = format.split(separator: "'", omittingEmptySubsequences: false)
+            .enumerated().filter { $0.offset % 2 == 0 }.map(\.element).joined()
+        return unquoted.contains("H") || unquoted.contains("k")
     }
 
     /// An hour of the day as a whole-hour label: "3 PM" or "15:00".

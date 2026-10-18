@@ -68,7 +68,7 @@ struct OverlayView: View {
                                         save: { model.saveReport(model.report) })
                             .padding(.top, 8)
                     }
-                    if !model.serviceReachable { serviceDownCard }
+                    if model.serviceDown { serviceDownCard }
                     MemoryReviewNotice()
                     NudgeStack(model: model)
                     promptArea
@@ -437,7 +437,7 @@ struct OverlayView: View {
             Button(action: pickImage) {
                 Image(systemName: "paperclip").font(.system(size: 16)).foregroundStyle(Theme.textSecondary)
             }
-            .buttonStyle(.plain).help("Attach a file").accessibilityLabel("Attach an image")
+            .buttonStyle(.plain).help("Attach an image").accessibilityLabel("Attach an image")
             Button(action: { model.submit() }) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 22))
@@ -795,8 +795,10 @@ struct OverlayView: View {
     // bottom of Ask.
     private var statusRow: some View {
         HStack(spacing: 6) {
-            Circle().fill(model.serviceReachable ? statusColor : Theme.bad).frame(width: 5, height: 5)
-            if !model.serviceReachable {
+            Circle().fill(model.serviceDown ? Theme.bad : statusColor).frame(width: 5, height: 5)
+            if model.serviceStarting {
+                Text("Starting Wisp…").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+            } else if model.serviceDown {
                 Text("Wisp service isn't running").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
                 Button("Retry") { model.onRetryService() }
                     .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textPrimary)

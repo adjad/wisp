@@ -159,3 +159,175 @@ def test_local_clock_is_bound_to_this_macs_zone(prompt):
     d = asyncio.run(route(prompt))
     assert d.force_first_tool == "world_time", d
     assert d.tool_argument_bindings.get("world_time") == {"place": "", "compare_to": ""}, d
+
+
+# ---- review findings: a claim must never drop a clause or misread a lookalike
+CLAIMED = {"world_time", "calculate", "convert_units", "set_timer", "view_emails",
+           "mac_set_volume", "get_weather"}
+
+
+@pytest.mark.parametrize("prompt", [
+    "find emails from Ana, delete them", "show emails from boss, forward them to Bob",
+    "who emailed me about the invoice, forward it to Bob",
+    "did Ana email me about the lease, reply that I agree",
+    "find emails about the trip, archive them", "what time is it in Tokyo, call Sam",
+    "will it rain tomorrow in Seattle, remind me to bring an umbrella",
+    "what should I wear in Paris, Ana asked",
+])
+def test_comma_joined_second_clause_falls_through(prompt):
+    from service.router import common_claims
+    assert common_claims.claim(prompt) is None, prompt
+    assert common_claims.parse_weather(prompt) is None, prompt
+    assert not common_claims.is_no_tool_ask(prompt), prompt
+    d = asyncio.run(route(prompt))
+    assert d.force_first_tool not in CLAIMED, d
+    assert d.reason.split(" ·")[0] not in {
+        "email lookup -> view_emails(query)", "time in a named place -> world_time"}, d
+
+
+@pytest.mark.parametrize("prompt, place", [
+    ("what time is it in Paris, France", "Paris, France"),
+    ("what time is it in Paris right now", "Paris"),
+    ("what time is it in London today", "London"),
+    ("what time is it in Tokyo now", "Tokyo"),
+])
+def test_world_time_place_keeps_region_and_drops_now(prompt, place):
+    d = asyncio.run(route(prompt))
+    assert d.force_first_tool == "world_time", d
+    assert d.tool_argument_bindings["world_time"]["place"] == place, d
+
+
+def test_weather_region_qualifier_still_reads_weather():
+    from service.router import common_claims
+    assert common_claims.parse_weather("will it rain tomorrow in Portland, OR") == ("Portland, OR", "tomorrow")
+    d = asyncio.run(route("weather in Portland, OR"))
+    assert "get_weather" in _offered(d), d
+
+
+def test_someones_timezone_is_not_a_place():
+    d = asyncio.run(route("what time is it in Sam's timezone"))
+    assert d.force_first_tool != "world_time", d
+    assert "world_time" not in d.tool_argument_bindings, d
+
+
+@pytest.mark.parametrize("prompt", [
+    "what is my schedule in spanish", "what is my next meeting in French",
+    "what's the weather in Spanish",
+])
+def test_personal_reads_in_a_language_are_not_translations(prompt):
+    d = asyncio.run(route(prompt))
+    assert "joke/translation" not in d.reason, d
+    assert d.needs_tools or d.direct_calls or d.tool_subset, d
+
+
+@pytest.mark.parametrize("prompt", [
+    "what's hello in Spanish", "how do you say thank you in French",
+    "translate good morning to German", "tell me a joke about cats",
+])
+def test_translations_and_jokes_stay_no_tool(prompt):
+    d = asyncio.run(route(prompt))
+    assert not d.tool_subset and not d.force_first_tool, d
+    assert SEND <= set(d.forbidden_tools), d
+
+
+@pytest.mark.parametrize("prompt", [
+    "set a timer to remind me to email Bob", "set the timer to go off when Sam emails",
+    "start the timer for my standup meeting", "make a meeting timer for the board call",
+])
+def test_timer_without_a_length_is_not_forced(prompt):
+    d = asyncio.run(route(prompt))
+    assert d.force_first_tool != "set_timer", d
+
+
+@pytest.mark.parametrize("prompt", [
+    "set a timer for 10 minutes", "10 minute timer", "timer for 5 min",
+    "set a timer for an hour", "set a timer for half an hour", "set a timer for 90 seconds",
+    "set a timer for 30s", "start a 1 hr timer",
+])
+def test_timer_with_a_length_is_forced(prompt):
+    d = asyncio.run(route(prompt))
+    assert d.force_first_tool == "set_timer", d
+
+
+def test_skill_trigger_matches_whole_words_only():
+    d = asyncio.run(route("how long is my commute the day after tomorrow"))
+    assert not {n for n in _offered(d) if n.startswith("mac_")}, d
+    assert "matched skill tools offered" not in d.reason, d
+    from service.skills import trigger_matches
+    assert trigger_matches("mute the", "please mute the sound")
+    assert not trigger_matches("mute the", "my commute the day after")
+
+
+def test_skill_tools_never_add_outbound_or_calendar_writes(monkeypatch):
+    from service.router import router as router_mod
+
+    class _Skill:
+        error, enabled = "", True
+        tools = [{"name": n} for n in ("send_email", "draft_email", "delete_note", "cancel_event",
+                                       "add_calendar_event", "forward_email", "reply_to_email",
+                                       "mac_mute")]
+
+        def matches(self, text):
+            return True
+
+    monkeypatch.setattr(skills, "all_skills", lambda: {"evil": _Skill()})
+    d = router_mod._mk("general", reason="test")
+    d.needs_tools, d.tool_subset = True, ["get_weather"]
+    router_mod._add_matched_skill_tools(d, "anything")
+    assert d.tool_subset == ["get_weather", "mac_mute"], d.tool_subset
+
+
+@pytest.mark.parametrize("prompt", ["what's 9/11", "what's 24/7"])
+def test_dates_and_phrases_are_not_division(prompt):
+    d = asyncio.run(route(prompt))
+    assert d.force_first_tool != "calculate", d
+
+
+def test_real_division_still_calculates():
+    d = asyncio.run(route("what's 144/12"))
+    assert d.force_first_tool == "calculate", d
+
+
+@pytest.mark.parametrize("prompt", ["what does Sam mean", "what's the meaning of life"])
+def test_not_a_dictionary_definition(prompt):
+    d = asyncio.run(route(prompt))
+    assert "word definition" not in d.reason, d
+
+
+@pytest.mark.parametrize("prompt", ["what does LOL mean", "what's the meaning of serendipity"])
+def test_terms_and_acronyms_still_define(prompt):
+    d = asyncio.run(route(prompt))
+    assert "word definition" in d.reason, d
+
+
+def test_joke_about_my_data_is_not_a_no_tool_ask():
+    d = asyncio.run(route("tell me a joke about my meeting tomorrow"))
+    assert "joke/translation" not in d.reason, d
+
+
+def test_relative_reminder_without_a_body_is_not_forced():
+    from service.router import common_claims
+    assert not common_claims.is_relative_reminder("remind me in 2 hours")
+    d = asyncio.run(route("remind me in 2 hours"))
+    assert d.force_first_tool != "add_reminder", d
+    assert asyncio.run(route("remind me in 20 minutes to call mom")).force_first_tool == "add_reminder"
+
+
+@pytest.mark.parametrize("prompt", ["push the review to tomorrow", "delay my flight to tomorrow"])
+def test_ambiguous_nouns_are_not_calendar_moves(prompt):
+    from service.router import common_claims
+    assert not common_claims.is_calendar_move(prompt)
+
+
+def test_weather_in_a_language_is_not_a_city():
+    from service.router.common_claims import parse_weather
+    assert parse_weather("what's the weather in Spanish") is None
+    assert parse_weather("what's the weather in Paris") == ("Paris", "")
+
+
+def test_direct_weather_read_rejects_languages_and_second_clauses():
+    from service.workflows.workflow20 import weather_read
+    assert weather_read("what's the weather in Spanish") is None
+    assert weather_read("what's the weather in Seattle, remind me to bring an umbrella") is None
+    assert weather_read("what's the weather in Portland, OR").direct_calls[0][1]["location"] == "Portland, OR"
+    assert weather_read("weather in Paris tomorrow").direct_calls[0][1] == {"location": "Paris", "period": "tomorrow"}

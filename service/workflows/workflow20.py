@@ -120,6 +120,11 @@ def weather_read(text: str) -> PersonalRead | None:
                             {"get_weather":args}, (("get_weather",args),))
     if re.search(r"\b(?:and|then|also|without|web|internet|search|news|email|text|send|if|unless|not)\b", match["location"], re.I):
         return None
+    # A second clause after a comma ("…in Seattle, remind me…") or a language
+    # ("the weather in Spanish") is not a place: leave it to the router.
+    from service.router.common_claims import _COMPOUND, _LANG, clean
+    if _COMPOUND.search(clean(text)) or re.fullmatch(_LANG, match["location"].strip(" .,"), re.I):
+        return None
     args = {"location":match["location"].strip(" ."), "period":(match["period"] or "").casefold()}
     return PersonalRead(("weather",),("get_weather",),(frozenset({"get_weather"}),),
                         {"get_weather":args}, (("get_weather",args),))
