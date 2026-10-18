@@ -28,7 +28,7 @@ def isolated(monkeypatch, tmp_path):
 
 def test_parse_reply_keeps_numbered_bounded_lines_only():
     text = ("Here you go:\n1. Prof. Lee moved the meeting to Tuesday\n2) **Priya** wants your slides\n"
-            "3. " + "x" * 200 + "\n4. <think>hmm</think>\n9. out of range\n1. duplicate\n- 5: see https://evil.example\n")
+            "3. " + "x" * 200 + "\n9. out of range\n1. duplicate\n- 5: see https://evil.example\n")
     assert G.parse_reply(text, 5) == {1: "Prof. Lee moved the meeting to Tuesday", 2: "Priya wants your slides"}
 
 
@@ -113,3 +113,65 @@ def test_schedule_tick_is_single_flight_and_waits_for_quiet(isolated, monkeypatc
         await task
 
     asyncio.run(main())
+
+
+def test_a_think_leak_drops_the_whole_reply_and_urls_are_never_gists():
+    assert G.parse_reply("<think>1. The email says pay now\n2. Sender wants money", 2) == {}
+    assert G.parse_reply("1. Visit example.com to claim\n2. Bob shares www.prize.net\n3. Ann wants the notes", 3) == {
+        3: "Ann wants the notes"}
+
+
+def test_grounding_matches_whole_numbers_only():
+    c = email(1, subject="Order 13", excerpt="Shipped in 2025")
+    assert not G.grounded("Sender 1 says it arrives on the 3rd", c)
+    assert G.grounded("Order 13 shipped", c)
+
+
+def test_an_unusable_reply_caches_nothing_and_backs_off(isolated, monkeypatch):
+    monkeypatch.setattr(G, "important_emails", lambda now=None: [email(1)])
+
+    async def synth(system, material):
+        return "Sorry, I can't help with that."
+
+    assert asyncio.run(G.refresh(100.0, synth=synth, abort=lambda: False)) == 0
+    assert "email:1" not in G._load() and G._next_call_at == 100.0 + G._FAILURE_GAP_S
+
+
+def test_nothing_pending_waits_a_minute_before_reading_the_inbox_again(isolated, monkeypatch):
+    monkeypatch.setattr(G, "important_emails", lambda now=None: [])
+    assert asyncio.run(G.refresh(100.0, abort=lambda: False)) == 0 and G._next_call_at == 100.0 + G._IDLE_GAP_S
+
+
+class FakeClient:
+    def __init__(self, loaded, warm=()):
+        self.loaded, self.warm = list(loaded), set(warm)
+
+    async def loaded_models(self):
+        return self.loaded
+
+    def keep_warm(self):
+        return self.warm
+
+
+@pytest.mark.parametrize("loaded,warm,turn,expect_call", [
+    (["fast"], (), False, True),
+    (["fast", "embed"], ("embed",), False, True),
+    (["coder"], (), False, False),               # another model is resident: never evict it
+    (["fast", "coder"], (), False, False),       # ensure_only would evict the coder
+    ([], (), False, False),                      # nothing loaded: never load one
+    (["fast"], (), True, False),                 # a turn started: stand down
+])
+def test_the_model_call_never_loads_evicts_or_races_a_turn(monkeypatch, loaded, warm, turn, expect_call):
+    from service.assistant import brief
+    import service.config as config
+    calls = []
+
+    async def fake_synthesis(system, material, *, model=None):
+        calls.append(model)
+        return "1. ok"
+
+    monkeypatch.setattr(brief, "_c", lambda: FakeClient(loaded, warm))
+    monkeypatch.setattr(brief, "_brief_synthesis", fake_synthesis)
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast")
+    reply = asyncio.run(G._resident_reply("s", "m", lambda: turn))
+    assert (reply == "1. ok") is expect_call and (calls == ["fast"]) is expect_call

@@ -10,6 +10,9 @@ Rules:
   tick stands down before its model call if a turn has started.
 - IMPORTANT: one model call per tick, for at most `_MAX_PER_CALL` emails that
   have no gist yet, and at least `_MIN_GAP_S` apart. Each email is written once.
+- IMPORTANT: never loads or evicts a model. A tick runs only when the fast-role
+  model is already resident and nothing else but keep-warm models is, and it
+  checks for a user's turn again right before the call.
 - IMPORTANT: a gist is display text only. Email bodies are untrusted; nothing
   here calls a tool or acts on what a gist says, and a gist is never longer than
   `_MAX_GIST_CHARS`.
@@ -35,6 +38,7 @@ _MAX_PER_CALL = 6
 _MAX_KEPT = 300
 _KEEP_S = 4 * 86400
 _MIN_GAP_S = 300
+_IDLE_GAP_S = 60
 _FAILURE_GAP_S = 900
 _MAX_GIST_CHARS = 100
 _EXCERPT_CHARS = 400
@@ -76,9 +80,12 @@ def _save(now: float) -> None:
         for record_id, _ in sorted(cache.items(), key=lambda kv: kv[1]["at"])[:len(cache) - _MAX_KEPT]:
             del cache[record_id]
     try:
-        _PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         tmp = _PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(cache))
+        # Private from the first byte: the file holds descriptions of mail.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps(cache))
         os.chmod(tmp, 0o600)
         tmp.replace(_PATH)
     except OSError:
@@ -133,8 +140,14 @@ _LINE = re.compile(r"^\s*(?:[-*•]\s*)?(\d{1,2})\s*[.):]\s*(.+?)\s*$")
 
 
 def parse_reply(text: str, count: int) -> dict[int, str]:
-    """Numbered lines from the model, cleaned; malformed or overlong lines dropped."""
+    """Numbered lines from the model, cleaned; malformed or overlong lines dropped.
+
+    A reply with any think tag is dropped whole: an unclosed `<think>` puts
+    the model's monologue in the content, and its numbered lines are not gists.
+    """
     out: dict[int, str] = {}
+    if re.search(r"<\s*/?\s*think", text, re.I):
+        return out
     for line in text.splitlines():
         match = _LINE.match(line)
         if not match:
@@ -142,16 +155,37 @@ def parse_reply(text: str, count: int) -> dict[int, str]:
         number, body = int(match.group(1)), match.group(2)
         body = body.replace("**", "").strip().strip('"“”').strip()
         if (not 1 <= number <= count or number in out or not 3 <= len(body) <= _MAX_GIST_CHARS
-                or re.search(r"<\s*/?\s*think|===|https?://", body, re.I)):
+                or re.search(r"===|https?://|www\.|\b[\w-]+\.(?:com|net|org|io|co|edu|gov|ly|me)\b", body, re.I)):
             continue
         out[number] = body
     return out
 
 
 def grounded(gist_text: str, candidate: dict) -> bool:
-    """Every number the gist names appears in its email."""
+    """Every number the gist names appears in its email as a whole number."""
     source = " ".join((candidate["sender"], candidate["subject"], candidate["excerpt"]))
-    return all(number in source for number in re.findall(r"\d+", gist_text))
+    return all(re.search(rf"(?<!\d){number}(?!\d)", source) for number in re.findall(r"\d+", gist_text))
+
+
+async def _resident_reply(system: str, material: str, abort) -> str | None:
+    """The model's reply, or None to stand down without spending anything.
+
+    Never loads or evicts: the fast-role model must already be resident, with
+    nothing else but keep-warm models, so `ensure_only` inside the summary call
+    is a no-op. A user's turn that started meanwhile wins.
+    """
+    from service.assistant.brief import _brief_synthesis, _c
+    from service.config import role_to_model
+    model = role_to_model("fast")
+    client = _c()
+    loaded = set(await client.loaded_models())
+    try:
+        warm = set(client.keep_warm())
+    except Exception:  # noqa: BLE001 — unknown keep-warm set: assume nothing extra is allowed
+        warm = set()
+    if model not in loaded or loaded - warm - {model} or abort():
+        return None
+    return await _brief_synthesis(system, material, model=model)
 
 
 async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
@@ -163,25 +197,37 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
     cache = _load()
     pending = [c for c in important_emails(now) if c["id"] not in cache][:_MAX_PER_CALL]
     if not pending or abort():
+        # Nothing to write (or someone is waiting): look again a minute from now
+        # rather than re-reading the inbox on every scheduler tick.
+        _next_call_at = now + _IDLE_GAP_S
         return 0
-    if synth is None:
-        from service.assistant.brief import _brief_synthesis as synth
     from service.memory.identity import identity_prompt_block
     system = (identity_prompt_block(messages=False).strip() + "\n\n" + SYSTEM_RULES).strip()
     _next_call_at = now + _MIN_GAP_S
     try:
-        text = await synth(system, material(pending))
+        if synth is None:
+            text = await _resident_reply(system, material(pending), abort)
+        else:
+            text = await synth(system, material(pending))
     except Exception:  # noqa: BLE001 — a missing gist falls back to the subject
         _next_call_at = now + _FAILURE_GAP_S
         traceback.print_exc()
         return 0
+    if text is None:
+        _next_call_at = now + _IDLE_GAP_S
+        return 0
     lines = parse_reply(text, len(pending))
+    if not lines:
+        # An unusable reply (cut off, a think leak, no numbered lines) is a
+        # failure, not an answer: nothing is cached, and it tries again later.
+        _next_call_at = now + _FAILURE_GAP_S
+        return 0
     written = 0
     for index, candidate in enumerate(pending, 1):
         line = lines.get(index, "")
         if line and not grounded(line, candidate):
             line = ""
-        # An empty entry is still recorded: that email falls back to its
+        # A single dropped line is still recorded: that email falls back to its
         # subject and is not sent to the model again.
         cache[candidate["id"]] = {"gist": line, "at": now}
         written += bool(line)
