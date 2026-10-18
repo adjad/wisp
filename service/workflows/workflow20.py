@@ -109,7 +109,16 @@ def weather_read(text: str) -> PersonalRead | None:
         r"(?:\s+(?:right\s+now|now|currently|at\s+the\s+moment))?"
         r"(?:\s+(?P<period>today|tomorrow|tonight|(?:this|next)\s+(?:week|month)))?"
         r"(?:\s+(?:right\s+now|now|currently|at\s+the\s+moment))?[.!?\s]*", text, re.I)
-    if not match or re.search(r"\b(?:and|then|also|without|web|internet|search|news|email|text|send|if|unless|not)\b", match["location"], re.I):
+    if not match:
+        # "how's the weather like in X", "will it rain tomorrow in X", "what should I wear in X"
+        from service.router.common_claims import parse_weather
+        parsed = parse_weather(text)
+        if parsed is None or not parsed[0] or parsed[1] is None:
+            return None
+        args = {"location": parsed[0], "period": parsed[1]}
+        return PersonalRead(("weather",),("get_weather",),(frozenset({"get_weather"}),),
+                            {"get_weather":args}, (("get_weather",args),))
+    if re.search(r"\b(?:and|then|also|without|web|internet|search|news|email|text|send|if|unless|not)\b", match["location"], re.I):
         return None
     args = {"location":match["location"].strip(" ."), "period":(match["period"] or "").casefold()}
     return PersonalRead(("weather",),("get_weather",),(frozenset({"get_weather"}),),
@@ -158,7 +167,13 @@ def daily_read(text: str) -> PersonalRead | None:
         r"(?:\s*(?:,|and|or)\s*(?:my\s+)?(?:e-?mails?|mail|messages?|texts?|calendar|calender|reminders?|weather))*))?"
         r"[.!?\s]*", text, re.I)
     if not match:
-        return None
+        from service.router.common_claims import parse_brief
+        args = parse_brief(text)
+        if args is None:
+            return None
+        return PersonalRead(("calendar", "reminders", "email", "messages"), ("daily_brief",),
+                            (frozenset({"daily_brief"}),), {"daily_brief": args},
+                            (("daily_brief", args),))
     period=match['period'] or match['first']
     args = {"period": period.casefold()} if period else {}
     excluded = match["exclude"] or ""
@@ -279,6 +294,10 @@ def personal_read(text: str) -> PersonalRead | None:
     # their full request and reach model/identity resolution.
     direct = ()
     if unread and set(sources) <= {"email", "messages"} and (args := _complete_unread(text)):
-        direct = tuple(("view_emails" if name == "email" else "view_messages", dict(args)) for name in sources)
+        summarize = bool(re.match(r"\s*(?:(?:please|can you|could you)\s+)?summari[sz]e\b",
+                                  source, re.I))
+        direct = tuple((("summarize_emails" if summarize else "view_emails") if name == "email"
+                        else ("summarize_messages" if summarize else "view_messages"), dict(args))
+                       for name in sources)
         bindings.update({tool: dict(args) for tool, _ in direct})
     return PersonalRead(sources, tools, tuple(frozenset(_TOOLS[name]) for name in sources), bindings, direct)
