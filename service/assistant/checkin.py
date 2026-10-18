@@ -244,9 +244,11 @@ def _title_key(title: object) -> str:
 def reminder_index(store, now: float) -> dict[str, dict]:
     """Reminders by normalised title: the earliest time each one became due or
     was created, and whether the stale-reminder policy now excludes it
-    (service/assistant/stale_reminders.py). Only a fallback reader of the
-    store's undated rows; when the store grows a hidden-set helper, read that
-    here instead."""
+    (service/assistant/stale_reminders.py).
+
+    Exclusion comes from the store's ``hidden_reminder_titles`` when it has one
+    (undated and overdue dated reminders alike, normalised the same way as
+    here); until then, from the undated rows' own stale state."""
     index: dict[str, dict] = {}
 
     def note(title, origin, excluded):
@@ -264,6 +266,13 @@ def reminder_index(store, now: float) -> dict[str, dict]:
                 note(c.get("title"), c.get("when_ts"), False)
     except Exception:  # noqa: BLE001 — carry-forward must never fail on a read
         pass
+    hidden = getattr(store, "hidden_reminder_titles", None)
+    if callable(hidden):
+        try:
+            for title in hidden(now):
+                note(title, None, True)
+        except Exception:  # noqa: BLE001
+            pass
     rows = getattr(store, "_undated_rows", None)
     if callable(rows):
         try:

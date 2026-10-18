@@ -198,6 +198,20 @@ def test_carry_forward_skips_titles_the_stale_reminder_policy_excludes(store):
     assert [(a["title"], a["reason"]) for a in C.aged_out_today("2026-10-19")] == [("Clean the garage", "stale_reminder")]
 
 
+def test_carry_forward_honours_the_store_hidden_reminder_set(store):
+    """Once the store knows which reminders are hidden (undated or overdue
+    dated, #286), carry-forward asks it rather than re-deriving the rule."""
+    class Store(type(store)):
+        def hidden_reminder_titles(self, now=None):
+            return {"pay the parking ticket"}
+    store.__class__ = Store
+    task(store, "Pay the  Parking ticket", "2026-10-18")
+    task(store, "Water the plants", "2026-10-18")
+    moved = C.carry_forward(store, "2026-10-19", ZONE, now=at("2026-10-19", 8))
+    assert [t["title"] for t in moved] == ["Water the plants"]
+    assert [(a["title"], a["reason"]) for a in C.aged_out_today("2026-10-19")] == [("Pay the  Parking ticket", "stale_reminder")]
+
+
 def test_origin_ts_is_validated():
     from service.assistant.today import validate_task
     base = {"title": "x", "day": "2026-10-18", "timezone": ZONE, "kind": "task", "duration_minutes": 30,
