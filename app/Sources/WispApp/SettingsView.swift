@@ -318,7 +318,9 @@ final class SettingsLoader: ObservableObject {
     }
 
     var modelChoices: [String] {
-        Array(Set(installed + fallbackModels)).sorted()
+        // The bundled-default fallback is only for an unreachable backend; a Mac
+        // with its own models must not be offered a model it never installed.
+        installed.isEmpty ? fallbackModels : Array(Set(installed + roles.values.filter { !$0.isEmpty })).sorted()
     }
 
     func selectedModel(for role: String) -> String {
@@ -328,7 +330,7 @@ final class SettingsLoader: ObservableObject {
             // that would look "selected" without being true until touched.
             return selectedModel(for: "coding")
         }
-        return roles[role] ?? fallbackRoles[role] ?? modelChoices.first ?? ""
+        return roles[role] ?? (installed.isEmpty ? fallbackRoles[role] : nil) ?? modelChoices.first ?? ""
     }
 
     func savedModelLabel(for role: String) -> String {

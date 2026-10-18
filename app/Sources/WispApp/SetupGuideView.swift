@@ -36,6 +36,7 @@ struct SetupStatus: Decodable {
     struct Models: Decodable {
         let source: String; let installed: [ModelEntry]; let recommended: String
         let use: String?; let warning: String?
+        let recommendedLabel: String?
         let download: Download?; let embeddingDownload: Download?
     }
     struct RoleRow: Decodable, Identifiable {
@@ -90,6 +91,10 @@ final class SetupGuideModel: ObservableObject {
     @Published var statusIsCurrent = false
     @Published var refreshError: String?
     private var testGeneration = 0
+    // Automatic first-setup steps run at most once per app session each; the
+    // visible buttons stay for retries.
+    private var autoStartedEngine = false
+    private var autoAppliedModels = Set<String>()
     private var statusGeneration = 0
     private var downloadGeneration = 0
     private var monitoringStopped = false
@@ -180,6 +185,29 @@ final class SetupGuideModel: ObservableObject {
         if selectedModel == nil || !next.models.installed.contains(where: { $0.id == selectedModel }) {
             selectedModel = next.models.use ?? next.models.installed.first?.id
         }
+        autoAdvanceFirstSetup(next)
+    }
+
+    /// First setup should not stall on steps whose only choice is "yes".
+    private func autoAdvanceFirstSetup(_ next: SetupStatus) {
+        guard busy == nil, isShown, !monitoringStopped else { return }
+        // The built-in engine is ours: start it once if it is present but idle.
+        if next.omlx.bundled == true, !next.omlx.running, !autoStartedEngine,
+           next.checks.contains(where: { $0.id == "engine" && $0.action == "start_engine" }) {
+            autoStartedEngine = true
+            Task { await startEngine() }
+            return
+        }
+        // A model was just installed and nothing points at one: use it. Only when
+        // no local role already names an installed model, so a deliberate choice
+        // is never overwritten.
+        guard next.omlx.running, let id = selectedModel, !autoAppliedModels.contains(id),
+              next.checks.contains(where: { $0.id == "model" && $0.action == "apply_model" }) else { return }
+        let installed = Set(next.models.installed.map(\.id))
+        let local = next.roles.filter { $0.endpoint == "local" }
+        guard !local.isEmpty, !local.contains(where: { installed.contains($0.model) }) else { return }
+        autoAppliedModels.insert(id)
+        Task { await apply(id) }
     }
     // Connecting another local app
     @Published var connectModel: [String: String] = [:]
@@ -565,7 +593,10 @@ struct SetupGuideView: View {
                 Text(check.detail).font(.callout).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    if check.action == "install_omlx" {
+                    if check.action == "unsupported_macos" {
+                        Text("Connect another app under Other engines below, or use remote-only mode in Settings.")
+                            .font(.caption).foregroundStyle(Theme.textMuted)
+                    } else if check.action == "install_omlx" {
                         action("Get oMLX") { model.open(check.url) }
                         Text("Then open it once and choose Check again.")
                             .font(.caption).foregroundStyle(Theme.textMuted)
@@ -618,9 +649,8 @@ struct SetupGuideView: View {
                              ? "Recommended for this Mac" : "A better fit for this Mac", tag: "main",
                              omlx: s.omlx)
             }
-            if s.models.recommended == "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-               !s.models.installed.contains(where: { $0.id == s.models.recommended }) {
-                Text("This Mellum build uses an existing local model folder. There is no verified public download configured for it. Add the folder named \(s.models.recommended) to your engine's model directory, then choose Check again and Use this model.")
+            if check?.action == "add_local_model" {
+                Text("This recommended model has no public download. Add its folder (\(recommendedName(s))) to your engine's model directory, then choose Check again and Use this model.")
                     .font(.caption).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let folder = s.omlx.modelDir {
@@ -631,13 +661,15 @@ struct SetupGuideView: View {
         }
     }
 
+    private func recommendedName(_ s: SetupStatus) -> String {
+        s.models.recommendedLabel ?? s.models.recommended
+    }
+
     private func recommendationText(_ s: SetupStatus) -> some View {
-        let text: String
-        if s.models.recommended == "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e" {
-            text = "Mellum 2.1 Wisp R1 merged oQ4e is Wisp's default model. Its model validation is pending."
-        } else {
-            text = "Mellum 2.1 Wisp R1 merged oQ4e is the default, with a conservative 24 GB memory requirement. This Mac is offered smaller alternatives; your existing model choices are preserved."
-        }
+        let name = recommendedName(s)
+        let text = s.models.installed.contains(where: { $0.id == s.models.recommended })
+            ? "\(name) is the best fit for this Mac, and it is installed."
+            : "Recommended for this Mac (\(s.hardware.ramGb > 0 ? "\(s.hardware.ramGb) GB" : "memory unknown")): \(name). Wisp also works with the models you already have."
         return Text(text).font(.callout).foregroundStyle(Theme.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
