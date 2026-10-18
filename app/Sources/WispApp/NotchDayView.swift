@@ -23,7 +23,8 @@ struct NotchDayView: View {
     @State private var addingTask = false
     @FocusState private var taskFieldFocused: Bool
     @State private var ignoredCaught = IgnoredCaught.load()
-    // Evening check-in and weekly goal pulse (CheckInView.swift).
+    // Evening check-in and weekly goal pulse (CheckInView.swift): one tap per
+    // task at the end of the day, so tomorrow's plan starts honest.
     @StateObject private var checkIn = CheckInModel()
 
     /// One hour of the lane.
@@ -89,8 +90,17 @@ struct NotchDayView: View {
         .task {
             while !Task.isCancelled {
                 await attention.refresh()
+                if today.isShowingCurrentDay {
+                    await checkIn.load(day: today.day, timezone: today.timezone.identifier)
+                    model.checkInDue = false
+                }
+                model.onResize()
                 do { try await Task.sleep(for: .seconds(60)) } catch { break }
             }
+        }
+        .onChange(of: model.checkInDue) { _, due in
+            guard due, today.isShowingCurrentDay else { return }
+            Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
         }
     }
 
