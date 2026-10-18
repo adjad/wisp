@@ -1096,6 +1096,13 @@ final class SettingsLoader: ObservableObject {
         return confirmed
     }
 
+    #if WISP_NOTCH_QA
+    func qaShow(fullAccess: Bool?, briefTimes: WispClient.BriefTimes?) {
+        self.fullAccess = fullAccess
+        self.briefTimes = briefTimes
+    }
+    #endif
+
     var fullAccessExplanation: String {
         if fullAccessPending { return "Updating Full access. Waiting for confirmation…" }
         guard let on = fullAccess else {

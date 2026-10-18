@@ -1,166 +1,307 @@
 import SwiftUI
 
-/// The notch gear's short list: the settings people flip from week to week.
+/// The notch gear's short list: the settings people flip from week to week, in
+/// three groups (Permissions, Daily brief, Advanced) with one line each.
 /// Everything that needs a form, a key, OAuth or widens what Wisp reads (models,
 /// Google, cloud keys, privacy sources such as browser history and contacts,
-/// the source controls under Memory) stays in the full Settings window.
+/// the source controls under Memory › Routines) stays in the full Settings window.
 ///
 /// It binds to the app's one SettingsLoader, the same object the Settings window
 /// uses, so "waiting for confirmation" and "not confirmed" read the same in both
-/// places and a change in flight survives the notch collapsing.
+/// places and a change in flight survives the notch collapsing. The panel is
+/// non-activating, so nothing here opens a sheet, an alert or a popup menu.
 struct QuickSettingsView: View {
     @ObservedObject var model: OverlayModel
     @ObservedObject var settings: SettingsLoader
+    /// Off only in the render fixture, which never contacts the service.
+    var refreshes = true
+    /// The brief time whose inline hour list is open.
+    @State var picking: BriefSlot?
+
+    enum BriefSlot { case morning, evening }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Quick settings").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                Text("Settings").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 Spacer()
                 Button("Done") { model.showingQuickSettings = false }
-                    .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                    .buttonStyle(.plain).font(.system(size: 13)).foregroundStyle(Palette.sub)
                     .keyboardShortcut(.cancelAction)
+                    .help("Close settings and go back to \(model.tab.stripTab.title)")
             }
-            .padding(.bottom, 6)
             if let notice = model.transientNotice {
-                Text(notice).font(.system(size: 11)).foregroundStyle(Theme.bad)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 4)
+                Text(notice).font(.system(size: 11.5)).foregroundStyle(Theme.bad)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            fullAccessRow
-            divider
-            learningRow
-            divider
-            briefRow
-            divider
-            row("Show Details under replies", detail: "Open each reply's model, route, timing and tool calls by default.") {
-                Toggle("Show Details under replies", isOn: $model.debugMode).labelsHidden().toggleStyle(.switch).tint(Theme.accent)
+            group("Permissions") {
+                fullAccessRow
+                hairline
+                learningRow
             }
-            divider
-            row("Free up memory", detail: "Unload models now. Wisp reloads them on the next ask.") {
-                chip(model.freeingMemory ? "Unloading…" : "Unload") { model.freeUpMemory() }
-                    .disabled(model.freeingMemory || !model.conversationSettled || model.briefComposing)
-                    .help(model.conversationSettled ? "Unload models now" : "Available when Wisp finishes answering")
+            group("Daily brief") { briefRow }
+            group("Advanced") {
+                row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
+                    Text("Model, timing and tools under each reply")
+                } control: {
+                    Toggle("Reply details", isOn: $model.debugMode).toggleStyle(NotchSwitch())
+                }
+                hairline
+                memoryRow
             }
-            divider
             HStack {
-                Text("Models, Google, privacy sources and activity")
-                    .font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                Text("Models, Google, privacy, activity").font(.system(size: 13)).foregroundStyle(Palette.sub)
                 Spacer()
-                chip("All settings  ⌘,") { WispRouter.shared.open(.settings) }
+                pillButton("All settings  ⌘,", primary: true) { WispRouter.shared.open(.settings) }
             }
-            .padding(.top, 10)
+            .padding(.horizontal, 4)
         }
-        .task { await settings.refreshQuick() }
+        .task {
+            guard refreshes else { return }
+            await settings.refreshQuick()
+            await model.refreshModelMemory()
+        }
+        // A reply or a brief may have loaded a model while this is open.
+        .onChange(of: model.conversationSettled) { _, settled in
+            if settled, refreshes { Task { await model.refreshModelMemory() } }
+        }
+        .onChange(of: model.briefComposing) { _, composing in
+            if !composing, refreshes { Task { await model.refreshModelMemory() } }
+        }
+        .onChange(of: settings.briefTimesPending) { _, pending in if pending { picking = nil } }
     }
 
     // MARK: Rows
 
-    @ViewBuilder private var fullAccessRow: some View {
-        row("Full access", detail: settings.fullAccessExplanation) {
+    private var fullAccessRow: some View {
+        let line = QuickSettingsText.fullAccess(on: settings.fullAccess, pending: settings.fullAccessPending)
+        return row("Full access", help: settings.fullAccessExplanation) {
+            if let status = line.status {
+                Text(status).foregroundColor(settings.fullAccess == true ? Palette.amber : Palette.sub)
+                    + Text(" · " + line.rest)
+            } else {
+                Text(line.rest)
+            }
+        } control: {
             if let on = settings.fullAccess {
                 Toggle("Full access", isOn: Binding(get: { on }, set: { settings.setFullAccess($0) }))
-                    .labelsHidden().toggleStyle(.switch).tint(Theme.accent)
+                    .toggleStyle(NotchSwitch(amber: true))
                     .disabled(settings.fullAccessPending)
             } else {
                 HStack(spacing: 6) {
-                    chip("Check") { Task { await settings.refreshFullAccess() } }
-                    chip("Turn off") { settings.setFullAccess(false) }
+                    pillButton("Check") { Task { await settings.refreshFullAccess() } }
+                    pillButton("Turn off") { settings.setFullAccess(false) }
                 }
                 .disabled(settings.fullAccessPending)
             }
         }
     }
 
-    @ViewBuilder private var learningRow: some View {
-        row("Learn my routines", detail: settings.behaviorExplanation) {
+    private var learningRow: some View {
+        let line = QuickSettingsText.learning(enabled: settings.behaviorEnabled, changing: settings.behaviorChanging,
+                                              status: settings.behaviorStatus, remote: settings.behaviorRemote,
+                                              phraser: settings.behaviorPhraser)
+        // A failed change that left a known state says so in place of the usual line.
+        let failure = !settings.behaviorChanging && settings.behaviorEnabled != nil ? settings.behaviorStatus : nil
+        return row("Learn my routines", help: settings.behaviorExplanation) {
+            if let failure {
+                Text(failure)
+            } else if let local = line.local {
+                Text(line.text + " · ") + Text(local).foregroundColor(Theme.textPrimary)
+            } else {
+                Text(line.text)
+            }
+        } control: {
             if settings.behaviorEnabled != nil {
                 Toggle("Learn my routines", isOn: Binding(get: { settings.behaviorEnabled == true },
-                                         set: { settings.setBehaviorEnabled($0) }))
-                    .labelsHidden().toggleStyle(.switch).tint(Theme.accent)
+                                                          set: { settings.setBehaviorEnabled($0) }))
+                    .toggleStyle(NotchSwitch())
                     .disabled(settings.behaviorChanging)
             } else {
                 HStack(spacing: 6) {
-                    chip("Check") { Task { await settings.refreshBehavior() } }
-                    chip("Turn off") { settings.setBehaviorEnabled(false) }
+                    pillButton("Check") { Task { await settings.refreshBehavior() } }
+                    pillButton("Turn off") { settings.setBehaviorEnabled(false) }
                 }
                 .disabled(settings.behaviorChanging)
             }
         }
-        if !settings.behaviorChanging, settings.behaviorEnabled != nil, let status = settings.behaviorStatus {
-            Text(status).font(.system(size: 11)).foregroundStyle(Theme.textMuted).padding(.bottom, 6)
-        }
     }
 
     @ViewBuilder private var briefRow: some View {
-        let detail = settings.briefTimesPending ? "Saving brief times. Waiting for confirmation…"
-            : settings.briefTimes == nil ? "Brief times haven't been confirmed. Check again."
-            : "Wisp composes your brief each morning and evening."
-        row("Daily brief", detail: detail) {
+        row("Composed twice a day",
+            help: "Wisp composes your Daily Summary each morning and evening.") {
+            Text(QuickSettingsText.brief(pending: settings.briefTimesPending, confirmed: settings.briefTimes != nil))
+        } control: {
             if let times = settings.briefTimes {
-                HStack(spacing: 6) {
-                    hourMenu("Morning", times.morning, hours: 0..<12) { settings.setBriefTimes(morning: $0) }
-                    hourMenu("Evening", times.evening, hours: 12..<24) { settings.setBriefTimes(evening: $0) }
+                HStack(spacing: 4) {
+                    timePill(times.morning, slot: .morning)
+                    timePill(times.evening, slot: .evening)
                 }
                 .disabled(settings.briefTimesPending)
             } else {
-                chip("Check") { Task { await settings.refreshBriefTimes() } }
+                pillButton("Check") { Task { await settings.refreshBriefTimes() } }
                     .disabled(settings.briefTimesPending)
             }
         }
+        if let slot = picking, let times = settings.briefTimes {
+            hourList(slot, current: slot == .morning ? times.morning : times.evening)
+        }
+    }
+
+    private var memoryRow: some View {
+        let line = QuickSettingsText.memory(model.modelMemory, physicalBytes: ProcessInfo.processInfo.physicalMemory)
+        return row("Model memory", help: model.modelMemory?.models.map(\.id).joined(separator: ", ")
+                   ?? "Unload models now. Wisp reloads them on the next ask.") {
+            Text(line.text)
+        } control: {
+            HStack(spacing: 10) {
+                if let fraction = line.fraction {
+                    Capsule().fill(Palette.track).frame(width: 110, height: 5)
+                        .overlay(alignment: .leading) {
+                            Capsule().fill(Theme.textPrimary).frame(width: max(5, 110 * fraction), height: 5)
+                        }
+                        .accessibilityHidden(true)
+                }
+                pillButton(model.freeingMemory ? "Unloading…" : "Unload") { model.freeUpMemory() }
+                    .disabled(model.freeingMemory || !model.conversationSettled || model.briefComposing
+                              || model.modelMemory?.models.isEmpty == true)
+                    .help(model.conversationSettled ? "Unload models now" : "Available when Wisp finishes answering")
+            }
+        }
+    }
+
+    // MARK: Brief times
+
+    // Each pill names its run. Two pills led by "AM" and "PM" side by side read
+    // as the old AM/PM switch, when both briefs actually run.
+    private func timePill(_ hour: Int, slot: BriefSlot) -> some View {
+        let label = QuickSettingsText.pill(hour)
+        let open = picking == slot
+        return Button { picking = open ? nil : slot } label: {
+            HStack(spacing: 5) {
+                Text(slot == .morning ? "Morning" : "Evening").foregroundStyle(Palette.sub)
+                Text("\(label.time) \(label.period)").foregroundStyle(Theme.textPrimary).monospacedDigit()
+            }
+            .font(.system(size: 12.5))
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 8).fill(open ? Palette.chipOpen : Palette.chip))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(open ? Palette.sub : Palette.chipStroke, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(slot == .morning ? "Morning" : "Evening") brief, \(QuickSettingsText.hourLabel(hour))")
+        .accessibilityHint(open ? "Closes the time list" : "Shows the times to choose from")
+    }
+
+    private func hourList(_ slot: BriefSlot, current: Int) -> some View {
+        let hours = slot == .morning ? Array(0..<12) : Array(12..<24)
+        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 6), spacing: 4) {
+            ForEach(hours, id: \.self) { hour in
+                let chosen = hour == current
+                Button {
+                    picking = nil
+                    if chosen { return }
+                    if slot == .morning { settings.setBriefTimes(morning: hour) } else { settings.setBriefTimes(evening: hour) }
+                } label: {
+                    Text(QuickSettingsText.pill(hour).time).monospacedDigit()
+                        .font(.system(size: 12.5, weight: chosen ? .semibold : .regular))
+                        .foregroundStyle(chosen ? Color.black : Theme.textPrimary)
+                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: 7).fill(chosen ? Theme.textPrimary : Palette.chip))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(QuickSettingsText.hourLabel(hour))
+                .accessibilityAddTraits(chosen ? .isSelected : [])
+            }
+        }
+        .padding(.horizontal, 14).padding(.top, 2).padding(.bottom, 11)
+        .disabled(settings.briefTimesPending)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(slot == .morning ? "Morning brief times" : "Evening brief times")
     }
 
     // MARK: Pieces
 
-    private var divider: some View { Divider().overlay(Theme.hairline) }
+    private enum Palette {
+        static let card = Color(white: 0.043)
+        static let line = Color(red: 0.11, green: 0.114, blue: 0.13)
+        static let sub = Color(red: 0.557, green: 0.565, blue: 0.592)
+        static let label = Color(red: 0.365, green: 0.373, blue: 0.4)
+        static let chip = Color(red: 0.078, green: 0.082, blue: 0.094)
+        static let chipOpen = Color(white: 0.16)
+        static let chipStroke = Color(red: 0.165, green: 0.169, blue: 0.188)
+        static let track = Color(red: 0.122, green: 0.125, blue: 0.141)
+        /// Full access is the one risky switch, so it alone is warm.
+        static let amber = NotchSwitch.amber
+    }
 
-    private func row<Control: View>(_ title: String, detail: String,
-                                    @ViewBuilder control: () -> Control) -> some View {
-        HStack(alignment: .center, spacing: 14) {
+    /// A labelled card: rows separated by hairlines.
+    private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased()).font(.system(size: 11, weight: .semibold)).kerning(1)
+                .foregroundStyle(Palette.label).padding(.leading, 4)
+                .accessibilityAddTraits(.isHeader)
+            VStack(spacing: 0) { content() }
+                .background(RoundedRectangle(cornerRadius: 14).fill(Palette.card))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Palette.line, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private var hairline: some View { Rectangle().fill(Palette.line).frame(height: 1) }
+
+    private func row<Detail: View, Control: View>(_ title: String, help: String,
+                                                  @ViewBuilder detail: () -> Detail,
+                                                  @ViewBuilder control: () -> Control) -> some View {
+        HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                Text(detail).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(title).font(.system(size: 14.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                detail().font(.system(size: 12.5)).foregroundStyle(Palette.sub).lineLimit(1).truncationMode(.middle)
             }
+            .help(help)
             Spacer(minLength: 12)
             control()
         }
-        .padding(.vertical, 9)
+        .padding(.horizontal, 14).padding(.vertical, 11)
         .accessibilityElement(children: .contain)
     }
 
-    // Each chip names its run. Two bare "8 AM" / "8 PM" chips side by side read
-    // as the old AM/PM switch, when both briefs actually run.
-    private func hourMenu(_ run: String, _ hour: Int, hours: Range<Int>,
-                          set: @escaping (Int) -> Void) -> some View {
-        Menu {
-            ForEach(Array(hours), id: \.self) { value in
-                Button(Self.hourLabel(value)) { if value != hour { set(value) } }
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(run).foregroundStyle(Theme.textMuted)
-                Text(Self.hourLabel(hour)).foregroundStyle(Theme.textSecondary)
-            }
-            .font(.system(size: 11.5, weight: .medium))
-            .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(Capsule().fill(Theme.chipFill))
-            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+    private func pillButton(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 12.5)).foregroundStyle(primary ? Theme.textPrimary : Theme.textSecondary)
+                .padding(.horizontal, 12).padding(.vertical, 5)
+                .background(Capsule().fill(Palette.chip))
+                .overlay(Capsule().strokeBorder(Palette.chipStroke, lineWidth: 1))
+                .contentShape(Capsule())
         }
-        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-        .accessibilityLabel("\(run) brief at \(Self.hourLabel(hour))")
+        .buttonStyle(.plain)
+        .fixedSize()
     }
+}
 
-    static func hourLabel(_ hour: Int, locale: Locale = .autoupdatingCurrent) -> String {
-        WispClock.hour(hour, locale: locale)
-    }
+/// Quick settings' switch: a bright track with a dark knob when on, grey when off.
+/// The amber variant is for Full access.
+struct NotchSwitch: ToggleStyle {
+    static let amber = Color(red: 1, green: 0.702, blue: 0.42)
+    var amber = false
+    @Environment(\.isEnabled) private var isEnabled
 
-    private func chip(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .buttonStyle(.plain)
-            .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
-            .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(Capsule().fill(Theme.chipFill))
-            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-            .fixedSize()
+    func makeBody(configuration: Configuration) -> some View {
+        let on = configuration.isOn
+        return Button { configuration.isOn.toggle() } label: {
+            Capsule()
+                .fill(on ? (amber ? Self.amber : Color(white: 0.95)) : Color(red: 0.169, green: 0.173, blue: 0.192))
+                .frame(width: 38, height: 22)
+                .overlay(alignment: on ? .trailing : .leading) {
+                    Circle().fill(on ? Color.black : Color(red: 0.557, green: 0.565, blue: 0.592))
+                        .frame(width: 18, height: 18).padding(2)
+                }
+                .animation(.easeOut(duration: 0.15), value: on)
+                .opacity(isEnabled ? 1 : 0.45)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.switch) }
     }
 }

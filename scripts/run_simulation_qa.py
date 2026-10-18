@@ -297,6 +297,8 @@ ADDITIONAL_FULL_TESTS = {
     # copies of the interpreter started by the test itself (skips where that is denied); no oMLX,
     # port 8000, network or other process.
     "tests/test_runtime_proc_path.py",
+    # Temporary directories and synthetic cache files only; never touches ~/.omlx or oMLX.
+    "tests/test_omlx_cache.py",
     "tests/test_omlx_updates.py",
     "tests/test_primary_runtime_completion.py",
     "tests/test_credential_quarantine.py",
@@ -306,6 +308,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_approval_routing.py",
     # Stand-in model loop and executor; the real stream/runner cancellation wiring only.
     "tests/test_agent_disconnect.py",
+    # A stand-in client in place of oMLX; the read-only /models/memory route only.
+    "tests/test_models_memory.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
     "tests/test_backend_identity_and_sandbox_isolation.py",
     # Environment-variable echo only; no server, socket or process.
@@ -888,7 +892,9 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 "-module-cache-path", module_cache,
                 "app/Sources/WispApp/NotchTab.swift",
                 "app/Sources/WispApp/NotchDay.swift",
-                "tests/NotchTabChecks.swift", "tests/NotchDayChecks.swift", "-o", notch_tab,
+                "app/Sources/WispApp/QuickSettingsText.swift",
+                "tests/NotchTabChecks.swift", "tests/NotchDayChecks.swift",
+                "tests/QuickSettingsChecks.swift", "-o", notch_tab,
             ],
         ),
         ("native/notch-tab-contract", [notch_tab]),

@@ -28,12 +28,12 @@ struct NotchBriefView: View {
             if let plan {
                 let brief = BriefContent(plan: plan, today: today)
                 Text(brief.lede)
-                    .font(.system(size: 15)).foregroundStyle(Theme.textPrimary)
+                    .font(.system(size: 16.5)).foregroundStyle(Theme.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
                 if !brief.lines.isEmpty {
-                    VStack(alignment: .leading, spacing: 7) {
+                    VStack(alignment: .leading, spacing: 9) {
                         ForEach(brief.lines) { line in lineRow(line) }
                     }
                 }
@@ -59,7 +59,7 @@ struct NotchBriefView: View {
     private var heading: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(today.selectedDate, format: .dateTime.weekday(.wide).month(.abbreviated).day())
-                .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                .font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.textPrimary)
             if !today.followsToday {
                 NotchChrome.chip("Back to today", icon: "calendar", help: "Show today instead of the day picked in the planner") {
                     today.returnToToday()
@@ -70,7 +70,7 @@ struct NotchBriefView: View {
             Spacer()
             if let updated = updatedAt {
                 Text("Updated " + updated.formatted(date: .omitted, time: .shortened))
-                    .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
             }
             NotchChrome.iconButton(model.briefComposing ? "ellipsis" : "arrow.clockwise",
                                    help: "Compose a new brief and reload your day") {
@@ -94,9 +94,10 @@ struct NotchBriefView: View {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(line.tag).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                     .frame(width: 40, alignment: .leading)
-                Text(line.text).font(.system(size: 13.5)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                Text(line.text).font(.system(size: 15)).foregroundStyle(line.muted ? Theme.textMuted : Theme.textPrimary)
+                    .lineLimit(1)
                 Spacer(minLength: 8)
-                Text(line.trailing).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                Text(line.trailing).font(.system(size: 13)).foregroundStyle(Theme.textSecondary).lineLimit(1)
             }
             .contentShape(Rectangle())
         }
@@ -138,7 +139,7 @@ struct BriefContent {
         let coverage = plan.workspace?.source_coverage.first { $0.source == "email" }
         let soon = needs.filter { ($0.due_ts ?? 0) > dayEnd }.min { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }
         lines = DayTimeline.briefLines(
-            calendar: calendarKnown ? load : nil,
+            calendar: calendarKnown ? load : nil, calendarUnsynced: !calendarKnown,
             mail: coverage.map { (ready: $0.ready, needing: needs.filter { $0.source == "email" }.map(\.title)) },
             texts: needs.filter { $0.source == "messages" }.map(\.title),
             soon: soon.map { (title: $0.title, when: NotchChrome.dayClock($0.due_ts ?? 0, zone: today.timezone, locale: today.clockLocale),

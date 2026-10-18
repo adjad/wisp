@@ -162,7 +162,17 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           && lines[3].source == .calendar, "line contents: \(lines.map(\.text))")
     let sparse = DayTimeline.briefLines(calendar: nil, mail: (ready: false, needing: ["x"]), texts: [],
                                         soon: (title: "Essay", when: "Fri 5 PM", source: "reminders"))
-    check(sparse.map(\.tag) == ["SOON"] && sparse[0].source == .reminders, "empty sources are hidden")
+    check(sparse.map(\.tag) == ["MAIL", "SOON"] && sparse[0].muted && sparse[1].source == .reminders,
+          "unread mail shows a dim line; empty texts are hidden")
+    check(!lines.contains(where: \.muted), "synced sources are never dim")
+    let unsynced = DayTimeline.briefLines(calendar: nil, calendarUnsynced: true, mail: (ready: false, needing: []),
+                                          texts: ["Priya asked about dinner"],
+                                          soon: (title: "Essay", when: "Fri 5 PM", source: "reminders"))
+    check(unsynced.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"] && unsynced[0].muted && unsynced[1].muted
+          && unsynced[0].text == "Calendar hasn't synced yet" && unsynced[0].source == .calendar
+          && unsynced[1].text == "Mail hasn't been checked yet", "unsynced calendar and mail keep the Brief's four rows")
+    check(DayTimeline.briefLines(calendar: nil, mail: nil, texts: [], soon: nil).isEmpty,
+          "no calendar line without a sync state, and no mail line without mail")
     check(DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: ["Lab partner", "Advisor"]), texts: [], soon: nil)
           .map(\.text) == ["2 emails need you"], "a mail count")
 

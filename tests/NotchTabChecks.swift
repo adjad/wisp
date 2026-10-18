@@ -1,5 +1,6 @@
 // Contract for the notch's tabs (app/Sources/WispApp/NotchTab.swift) and the
-// Brief and Day logic (app/Sources/WispApp/NotchDay.swift).
+// Brief and Day logic (app/Sources/WispApp/NotchDay.swift), and quick settings'
+// lines (app/Sources/WispApp/QuickSettingsText.swift).
 // Pure logic: never launches Wisp or contacts its service.
 import Foundation
 
@@ -50,7 +51,8 @@ struct NotchTabChecks {
         check(NotchSetupCard.hidden.tabForOpening(.research) == .research, "no card, no change to the tab")
 
         dayChecks(check)
+        quickSettingsChecks(check)
 
-        print("\(count) notch tab and day checks passed.")
+        print("\(count) notch tab, day and quick settings checks passed.")
     }
 }

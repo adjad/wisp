@@ -176,6 +176,8 @@ final class OverlayModel: ObservableObject {
         }
     }
     @Published private(set) var freeingMemory = false
+    /// Quick settings' Model memory row: what the engine has resident, nil when unknown.
+    @Published private(set) var modelMemory: ModelMemory?
     // First-run setup at the top of Ask. Its readiness lives on the app's one
     // SetupGuideModel, which the setup window shares.
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
@@ -397,6 +399,7 @@ final class OverlayModel: ObservableObject {
     // Debug metadata for the turn currently in flight — folded into a Turn
     // record on "done"/"error" (see handle()). Reset in submit().
     private var lastDroppedReport: [String: Any]?
+    private var lastDroppedReportKey: String?
     private var turnTraceID: String?
     private var turnStartedAt: Date?
     private var turnFirstTokenAt: Date?
@@ -495,6 +498,7 @@ final class OverlayModel: ObservableObject {
         streamStart = nil; streamChars = 0; heartbeats = 0
         pendingDelta = ""; flushScheduled = false
         lastDroppedReport = nil
+        lastDroppedReportKey = nil
         turnTraceID = nil
         turnStartedAt = Date(); turnFirstTokenAt = nil
         turnModel = nil; turnRouteRole = nil; turnRouteReason = nil; turnNeededTools = nil
@@ -560,7 +564,7 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    /// Quick settings' Free up memory: unload the models now. Wisp reloads them on
+    /// Quick settings' Model memory: unload the models now. Wisp reloads them on
     /// the next ask. Not while a reply is being written, which needs its model.
     func freeUpMemory() {
         guard conversationSettled, !briefComposing, !freeingMemory else { return }
@@ -568,9 +572,20 @@ final class OverlayModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             await self.client.unloadAll()
+            self.modelMemory = ModelMemory.parse(await self.client.modelMemoryReply())
             self.freeingMemory = false
             self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.")
         }
+    }
+
+    #if WISP_NOTCH_QA
+    func qaShow(modelMemory: ModelMemory?) { self.modelMemory = modelMemory }
+    #endif
+
+    func refreshModelMemory() async {
+        guard !freeingMemory else { return }
+        let read = ModelMemory.parse(await client.modelMemoryReply())
+        if !freeingMemory { modelMemory = read }
     }
 
     /// ⤢, ⌘O and /window: open what this tab shows in the Wisp window.
@@ -784,8 +799,9 @@ final class OverlayModel: ObservableObject {
                 metadata["trace"] = journal
                 metadata["journal_available"] = true
             }
-            // Untraced drops get their own key, so a later one never reuses an older snapshot.
-            report.open(key: "chat:dropped:" + (traceID ?? UUID().uuidString), metadata: metadata)
+            // Each dropped turn has its own key (set when it dropped), so a later drop never
+            // reuses an older snapshot and reopening this one keeps its note.
+            report.open(key: lastDroppedReportKey ?? "chat:dropped:" + (traceID ?? UUID().uuidString), metadata: metadata)
         } else if let turn = turns.last(where: { $0.role == "assistant" }) {
             reportProblem(for: turn)
         } else {
@@ -1079,6 +1095,8 @@ final class OverlayModel: ObservableObject {
             if ev.bool("dropped") && gotNothing {
                 lastDroppedReport = ["surface": "chat", "client_outcome": "connection_dropped", "journal_available": false]
                 if let id = turnTraceID { lastDroppedReport?["trace_id"] = id }
+                // One key per dropped turn, so reopening its report keeps the note.
+                lastDroppedReportKey = "chat:dropped:" + (turnTraceID ?? UUID().uuidString)
                 if let retry = submissionState.dropForRetry(dispatchID) {
                     input = retry.text
                     attachedImage = retry.image
