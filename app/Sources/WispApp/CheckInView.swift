@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// The evening check-in and the weekly goal pulse on the notch's Today tab
+/// The evening check-in and the weekly goal pulse on the notch's Day tab
 /// (service/assistant/checkin.py). Nothing here needs typing: each planned task
 /// takes one tap (Done, Tomorrow, Drop), each of tomorrow's events one tap
 /// (Keep, Move, Cancel; Move and Cancel open Ask with the request so the usual

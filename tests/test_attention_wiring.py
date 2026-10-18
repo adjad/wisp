@@ -958,4 +958,6 @@ def test_the_app_announces_an_added_reminder_and_today_lists_decisions():
     assert '"/assistant/attention/undo"' in caught and '"/assistant/attention/settings"' in caught
     assert 'record.state == "created"' in caught                          # Undo only for its own reminder
     assert "CaughtForYouSection()" in (app / "DailyWorkspaceView.swift").read_text()
-    assert "CaughtForYouSection(compact: true)" in (app / "NotchTodayView.swift").read_text()
+    # The notch's Day tab draws caught plans on its timeline, with Undo for Wisp's own reminder.
+    day = (app / "NotchDayView.swift").read_text()
+    assert "AttentionModel()" in day and "attention.undo(record)" in day and 'record.state == "created"' in day

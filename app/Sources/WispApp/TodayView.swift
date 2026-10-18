@@ -39,6 +39,8 @@ struct TodayBlock: Decodable, Identifiable {
     let task_id: String?
     let warnings: [String]
     let pattern_id: String?
+    /// For a suggestion: the daily-workspace item it was made from.
+    let evidence_id: String?
 
     var evidenceLabel: String {
         switch kind {
@@ -102,7 +104,7 @@ struct TodayPlan: Decodable {
 
 @MainActor
 final class TodayModel: ObservableObject {
-    // The one problem report about Today, shared by the notch's Today tab and
+    // The one problem report about Today, shared by the notch's Day tab and
     // the window's planner. Each shows it inline.
     let report = ReportDraft()
     @Published var plan: TodayPlan?
@@ -137,6 +139,8 @@ final class TodayModel: ObservableObject {
     }
 
     var timezone: TimeZone { zoneProvider() }
+    /// The model's clock (the real one, or a fixture's).
+    var now: Date { nowProvider() }
     var followsToday: Bool { manualDay == nil }
     var day: String { currentKey.day }
     var pickerDay: String { Self.dayString(selectedDate, in: timezone) }
@@ -201,6 +205,14 @@ final class TodayModel: ObservableObject {
         formatter.timeZone = timezone
         formatter.dateFormat = "h:mm a"
         return formatter.string(from: Date(timeIntervalSince1970: timestamp))
+    }
+
+    /// The shown day's midnight-to-midnight bounds.
+    var dayInterval: DateInterval {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timezone
+        return calendar.dateInterval(of: .day, for: Self.pickerDate(for: day, in: timezone))
+            ?? DateInterval(start: calendar.startOfDay(for: Date()), duration: 86400)
     }
 
     static func workingHourLabel(_ hour: Int) -> String {
@@ -321,10 +333,11 @@ final class TodayModel: ObservableObject {
         return failure == nil
     }
 
-    func add(title: String, kind: String, minutes: Int, priority: Int, due: Date?) async -> Bool {
+    func add(title: String, kind: String, minutes: Int, priority: Int, due: Date?, pinned: Date? = nil) async -> Bool {
         var body: [String: Any] = ["title": title, "day": day, "timezone": timezone.identifier, "kind": kind,
                                    "duration_minutes": minutes, "priority": priority]
         if let due { body["due_ts"] = due.timeIntervalSince1970 }
+        if let pinned { body["pinned_start"] = pinned.timeIntervalSince1970 }
         return await mutate("/assistant/today/tasks", method: "POST", body: body)
     }
 

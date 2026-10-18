@@ -221,7 +221,7 @@ final class OverlayModel: ObservableObject {
     // Upcoming commitments themselves surface as system notifications (see
     // Notifications.swift / handleAssistantEvent's "reminder" case) rather
     // than a live in-panel list.
-    // The latest Daily Summary brief, shown on the Today tab: the scheduled one
+    // The latest Daily Summary brief, shown on the Brief tab: the scheduled one
     // from the service, or one composed with Refresh. It belongs to Today, not
     // to the chat, so New chat keeps it.
     struct DailyBrief: Equatable {
@@ -234,7 +234,7 @@ final class OverlayModel: ObservableObject {
     }
     @Published private(set) var brief: DailyBrief?
     @Published private(set) var briefComposing = false
-    // The Today tab's unsent inline task. Kept here so it survives collapse.
+    // The Day tab's unsent inline task. Kept here so it survives collapse.
     @Published var todayTaskTitle = ""
     // Behavior-engine nudges shown as cards at the top of the panel (newest
     // first, see NudgeViews.swift). Each also arrives as a notification.
@@ -278,13 +278,13 @@ final class OverlayModel: ObservableObject {
     // the notch bar's dot shows it is still working.
     var holdsOpen: Bool {
         pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
-            || (tab == .today && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+            || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || knowYou != nil
-            || setupCard == .open || report.isOpen || (tab == .today && todayReport?.isOpen == true)
+            || setupCard == .open || report.isOpen || (tab == .day && todayReport?.isOpen == true)
     }
 
     /// Today's report, owned by the shared TodayModel. While it is open on the
-    /// Today tab the panel stays open, like any other edit in progress.
+    /// Day tab the panel stays open, like any other edit in progress.
     weak var todayReport: ReportDraft?
 
     /// Saves a report from the notch. The save panel takes focus from the
@@ -533,7 +533,7 @@ final class OverlayModel: ObservableObject {
 
     func run(_ command: NotchCommand) {
         switch command {
-        case .today: tab = .today
+        case .today: tab = .day
         case .memory: WispRouter.shared.open(.memory(.facts))
         case .research: tab = .research
         case .settings: showingQuickSettings = true
@@ -563,7 +563,7 @@ final class OverlayModel: ObservableObject {
         case .ask:
             if conversationSettled { openInChat() }
             else { showTransientNotice("Wisp is still answering. Open the window when it finishes.") }
-        case .today: WispRouter.shared.open(.today(focus: .plan))
+        case .brief, .day: WispRouter.shared.open(.today(focus: .plan))
         case .research: WispRouter.shared.open(.research)
         }
     }
@@ -650,7 +650,7 @@ final class OverlayModel: ObservableObject {
         // just their schedule and had to separately ask "and my email" /
         // "what's on my messages" as follow-ups.
         if s == "Daily summary" {
-            tab = .today
+            tab = .brief
             if brief == nil { runDailySummary() }
             return
         }
@@ -1230,12 +1230,12 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    // Refresh on the Today tab (and the menu bar's Daily Summary): compose the
-    // combined calendar, email and messages brief now and show it on Today.
+    // Refresh on the Brief tab (and the menu bar's Daily Summary): compose the
+    // combined calendar, email and messages brief now and show it on Brief.
     // It waits its turn with prompts, so it never reads the sources while a
     // reply is being written. A prompt sent meanwhile is queued behind it.
     func runDailySummary() {
-        tab = .today
+        tab = .brief
         guard !briefComposing else { return }
         guard let dispatch = submissionState.beginDailySummary() else {
             showTransientNotice("Wisp is answering. Refresh the brief when it finishes.")
@@ -1565,7 +1565,7 @@ final class OverlayModel: ObservableObject {
                                body: latest.isEmpty ? task : "\(task)\n\(latest)")
         case "checkin":
             // The evening check-in is due (service/assistant/scheduler._checkin_tick):
-            // one notification; the card itself loads on the Today tab.
+            // one notification; the card itself loads on the Day tab.
             let text = ev.str("text")
             guard !text.isEmpty else { return false }
             checkInDue = true
@@ -1596,7 +1596,7 @@ final class OverlayModel: ObservableObject {
                 await post(title: "🗞️ \(part) brief",
                                    body: Self.notificationBody(from: briefText))
             }
-            // The full write-up replaces the brief on the Today tab, which shows
+            // The full write-up replaces the brief on the Brief tab, which shows
             // when it arrived, so an older one never reads as current.
             brief = DailyBrief(text: briefText, receivedAt: Date(),
                                traceID: ev.payload["trace_id"] as? String, sessionId: "")

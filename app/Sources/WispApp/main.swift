@@ -24,6 +24,13 @@ MainActor.assumeIsolated {
     }
     app.run()
 }
+#elseif WISP_NOTCH_QA
+
+// Renders the notch's Brief and Day tabs against a synthetic day and writes
+// screenshots. Installs no AppDelegate and never contacts the Wisp service.
+MainActor.assumeIsolated {
+    NotchQADriver.run()
+}
 #elseif WISP_CHAT_QA
 
 // Renders the Chat window against a scripted fixture and writes screenshots.
