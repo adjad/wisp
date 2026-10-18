@@ -392,40 +392,93 @@ struct DayTimeline: Equatable {
         let trailing: String
         let source: BriefSource
         /// A source Wisp can't read yet: shown dim, so the Brief keeps its shape
-        /// and says why a line has nothing in it.
+        /// and says why a row has nothing in it.
         var muted = false
         var id: String { tag }
     }
 
-    /// At most four lines, one per source. Texts and Soon show only when they have
-    /// something to say; a calendar or mail that hasn't synced shows a dim line instead.
+    /// What the SOON row knows about the coming week.
+    enum Soon: Equatable {
+        case item(title: String, when: String, source: String)
+        /// The week was read and holds nothing.
+        case nothing
+        /// The week hasn't been read (or couldn't be).
+        case unknown
+    }
+
+    static func briefSource(_ source: String) -> BriefSource {
+        switch source {
+        case "calendar", "manual": return .calendar
+        case "email", "mail": return .mail
+        case "messages": return .messages
+        default: return .reminders
+        }
+    }
+
+    /// Always four rows, CAL, MAIL, TEXTS and SOON, so the Brief keeps its shape.
+    /// A source Wisp can't read yet shows a dim row saying so instead of disappearing.
     static func briefLines(calendar: DayLoad?, calendarUnsynced: Bool = false,
-                           mail: (ready: Bool, needing: [String])?, texts: [String],
-                           soon: (title: String, when: String, source: String)?) -> [BriefLine] {
+                           mail: (ready: Bool, needing: [String])?,
+                           texts: (ready: Bool, needing: [String])?,
+                           soon: Soon) -> [BriefLine] {
         var lines: [BriefLine] = []
         if let calendar {
-            lines.append(BriefLine(tag: "CAL", text: calendar.summary, trailing: calendar.next ?? "›", source: .calendar))
-        } else if calendarUnsynced {
-            lines.append(BriefLine(tag: "CAL", text: "Calendar hasn't synced yet", trailing: "›", source: .calendar, muted: true))
+            lines.append(BriefLine(tag: "CAL", text: calendar.summary, trailing: calendar.next ?? "", source: .calendar))
+        } else {
+            lines.append(BriefLine(tag: "CAL", text: calendarUnsynced ? "Calendar hasn't synced yet" : "Nothing on your calendar",
+                                   trailing: "", source: .calendar, muted: calendarUnsynced))
         }
+        // No coverage entry means the workspace couldn't be read: unknown, not off.
         if let mail, mail.ready {
-            let needing = mail.needing.filter { !isJunk($0) }
+            let needing = mailNeedingYou(mail.needing)
+            let promos = mail.needing.filter { !isJunk($0) && isBulkMail($0) }.count
             let text = needing.isEmpty ? "Nothing needs a reply"
                 : needing.count == 1 ? needing[0] : "\(needing.count) emails need you"
-            lines.append(BriefLine(tag: "MAIL", text: text, trailing: "›", source: .mail))
-        } else if mail != nil {
-            lines.append(BriefLine(tag: "MAIL", text: "Mail hasn't been checked yet", trailing: "›", source: .mail, muted: true))
+            // Say when promos were left out, so a hidden email is never silent.
+            lines.append(BriefLine(tag: "MAIL", text: text, trailing: promos > 0 ? "+\(promos) promo\(promos == 1 ? "" : "s")" : "",
+                                   source: .mail))
+        } else {
+            lines.append(BriefLine(tag: "MAIL", text: "Mail hasn't been checked yet", trailing: "", source: .mail, muted: true))
         }
-        if let text = texts.first(where: { !isJunk($0) }) {
-            lines.append(BriefLine(tag: "TEXTS", text: text, trailing: "›", source: .messages))
+        if let texts, texts.ready {
+            let needing = texts.needing.filter { !isJunk($0) }
+            let text = needing.isEmpty ? "No texts need you"
+                : needing.count == 1 ? needing[0] : "\(needing.count) texts need you"
+            lines.append(BriefLine(tag: "TEXTS", text: text, trailing: "", source: .messages))
+        } else {
+            lines.append(BriefLine(tag: "TEXTS", text: "Messages haven't been checked yet", trailing: "", source: .messages, muted: true))
         }
-        if let soon, !isJunk(soon.title) {
-            lines.append(BriefLine(tag: "SOON", text: soon.title, trailing: soon.when,
-                                   source: soon.source == "calendar" ? .calendar : soon.source == "email" ? .mail
-                                       : soon.source == "messages" ? .messages : .reminders))
+        switch soon {
+        case let .item(title, when, source) where !isJunk(title):
+            lines.append(BriefLine(tag: "SOON", text: title, trailing: when, source: briefSource(source)))
+        case .item, .nothing:
+            lines.append(BriefLine(tag: "SOON", text: "Nothing in the next week", trailing: "", source: .reminders))
+        case .unknown:
+            lines.append(BriefLine(tag: "SOON", text: "The week ahead hasn't loaded yet", trailing: "", source: .reminders, muted: true))
         }
-        return Array(lines.prefix(4))
+        return lines
     }
+
+    /// Mail worth the MAIL row's count: no placeholders, newsletters or promos.
+    static func mailNeedingYou(_ subjects: [String]) -> [String] {
+        subjects.filter { !isJunk($0) && !isBulkMail($0) }
+    }
+
+    /// An unmistakable newsletter, promotion or subscription notice, by its
+    /// subject. Deliberately narrow: "Last chance to submit your form" or
+    /// "Webinar slides" from a person must still count, so only phrases a person
+    /// wouldn't write are here.
+    static func isBulkMail(_ subject: String) -> Bool {
+        let s = subject.lowercased()
+        return bulkMailPhrases.contains { s.contains($0) }
+            || s.range(of: #"\b\d{1,2}% off\b"#, options: .regularExpression) != nil
+    }
+
+    static let bulkMailPhrases = [
+        "you're subscribed", "you\u{2019}re subscribed", "you are subscribed", "subscription confirmed",
+        "thanks for subscribing", "thank you for subscribing", "unsubscribe", "newsletter",
+        "weekly digest", "daily digest", "flash sale", "free shipping", "promo code",
+    ]
 }
 
 /// How busy the rest of a day's calendar is, in plain words: "Light day: just
