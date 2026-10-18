@@ -15,7 +15,8 @@ asked for. Both talk to the same service and the same saved chats.
   orange "!" means setup was set aside. Clicking a Wisp notification (other than
   a nudge's buttons) opens Day.
 - **Tabs** (⌘1 to ⌘3): **Ask**, the conversation; **Brief**, one sentence about
-  the day and up to four source lines, read only; **Day**, the rest of today on
+  the day, a short version of today's Daily Summary, and four rows (CAL, MAIL,
+  TEXTS, SOON) that open their details in place, read only; **Day**, the rest of today on
   one hour-by-hour timeline (calendar, your tasks, suggestions, learned busy
   times, plans caught in texts, reminders due) under a two-line blurb.
   Research is a mode of Ask (`NotchTab.research`, not in the strip): `/research`,
@@ -89,7 +90,7 @@ request.
 | Routes into the app (`WispRoute`, `WispRouter`); every control opens one | `app/Sources/WispApp/WispRoute.swift` |
 | Where each route lands (`AppDelegate.open(_:)`) | `app/Sources/WispApp/AppDelegate.swift` |
 | Notch panel, tabs, Ask | `OverlayView.swift`, `OverlayModel.swift`, `NotchTab.swift` |
-| Brief and Day tabs | `NotchBriefView.swift`, `NotchDayView.swift`, logic in `NotchDay.swift` (share `TodayModel` with the planner window) |
+| Brief and Day tabs | `NotchBriefView.swift`, `NotchDayView.swift`, logic in `NotchDay.swift` and `BriefSummary.swift` (share `TodayModel` with the planner window) |
 | Quick settings | `QuickSettingsView.swift` (shares the app's one `SettingsLoader`), lines in `QuickSettingsText.swift` |
 | Setup card | `NotchSetupView.swift` (shares the app's one `SetupGuideModel` with `SetupGuideView`) |
 | Inline reports | `ReportDraftView.swift`, `DiagnosticReport.swift` (`ReportDraft`) |

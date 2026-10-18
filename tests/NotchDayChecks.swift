@@ -46,10 +46,33 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     let ids = timeline.items.map(\.id)
     func item(_ id: String) -> DayItem? { timeline.items.first { $0.id == id } }
 
-    // The lane: from the hour of now to the last thing, on whole hours.
-    check(timeline.from == at(13), "today's lane starts at the hour of now")
+    // The lane: two hours before the hour of now, to the last thing, on whole hours.
+    check(timeline.from == at(11), "today's lane starts two hours before the hour of now")
     check(timeline.to == at(20), "the lane runs to the last block's hour: \(clock(timeline.to))")
-    check(timeline.hours.count == 7 && timeline.hours.first == at(13), "hour marks from 1 to 7")
+    check(timeline.hours.count == 9 && timeline.hours.first == at(11), "hour marks from 11 to 7")
+    check(!timeline.items.contains(where: \.past), "nothing in this fixture ended in the last two hours")
+
+    // Two hours back, dim; at least three hours ahead; never past midnight either way.
+    func window(_ blocks: [DayBlockInput], now: Double, needs: [DayNeedInput] = []) -> DayTimeline {
+        DayTimeline.build(blocks: blocks, allDay: [], needs: needs, caught: [], now: now, dayStart: dayStart, dayEnd: dayEnd,
+                          workStart: at(9), workEnd: at(18), isToday: true, clock: clock, dayClock: dayClock)
+    }
+    let recent = window([DayBlockInput(id: "coffee", title: "Coffee", start: at(11.25), end: at(11.75), kind: "calendar"),
+                         DayBlockInput(id: "early", title: "Early call", start: at(10), end: at(10.9), kind: "calendar"),
+                         DayBlockInput(id: "lunch", title: "Lunch", start: at(12.5), end: at(13.5), kind: "calendar"),
+                         DayBlockInput(id: "late", title: "Late", start: at(15), end: at(16), kind: "calendar")], now: now)
+    check(recent.items.map(\.id) == ["block:coffee", "block:lunch", "block:late"], "the back window keeps what ended in it: \(recent.items.map(\.id))")
+    check(recent.items.map(\.past) == [true, false, false], "only what is over is dim; a block running now is not")
+    check(DayTimeline.blurb(window([DayBlockInput(id: "coffee", title: "Coffee", start: at(11.25), end: at(11.75), kind: "calendar")], now: now),
+                            needs: [], isToday: true, endOfDay: dayEnd, clock: clock) == "Nothing is planned for the rest of today.",
+          "the blurb ignores what is already over")
+    let dawn = window([], now: at(1.5))
+    check(dawn.from == dayStart && dawn.to == at(18), "before 2 AM the lane starts at midnight: \(clock(dawn.from))–\(clock(dawn.to))")
+    let dusk = window([], now: at(19.25))
+    check(dusk.from == at(17) && dusk.to == at(23), "three hours ahead past working hours: \(clock(dusk.from))–\(clock(dusk.to))")
+    let midnight = window([DayBlockInput(id: "show", title: "Show", start: at(21.5), end: at(22.5), kind: "calendar")], now: at(23.5))
+    check(midnight.from == at(21) && midnight.to == dayEnd && midnight.items.first?.past == true,
+          "near midnight: two hours back, ending at midnight: \(clock(midnight.from))–\(clock(midnight.to))")
     check(timeline.allDay == ["PA 2 [CSE-20-04]"], "the all-day strip drops junk titles")
 
     // What lands on it, and how it is drawn.
@@ -150,31 +173,54 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                            next: (title: "Club", time: "3 PM"))
           == "A steady Tuesday. Next up: Club at 3 PM.", "lede with only the next event")
 
-    // The Brief's lines: at most four, each only with something to say.
+    // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!
     let light = DayLoad.assess(events: [], allDay: ["PA 2 [CSE-20-04]"], from: now, dayStart: dayStart, isToday: true, zone: utc)
     let lines = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []),
-                                       texts: ["nothing", "Priya asked about dinner"],
-                                       soon: (title: "UCSC startup club", when: "Wed 6 PM", source: "calendar"))
-    check(lines.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"], "four lines in order")
-    check(lines[0].text == "Light day: just PA 2 [CSE-20-04] (all day)" && lines[0].trailing == "›"
+                                       texts: (ready: true, needing: ["nothing", "Priya asked about dinner"]),
+                                       soon: .item(title: "UCSC startup club", when: "Wed 6 PM", source: "calendar"))
+    check(lines.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"], "four rows in order")
+    check(lines[0].text == "Light day: just PA 2 [CSE-20-04] (all day)" && lines[0].trailing == ""
           && lines[1].text == "Nothing needs a reply" && lines[2].text == "Priya asked about dinner"
-          && lines[3].source == .calendar, "line contents: \(lines.map(\.text))")
-    let sparse = DayTimeline.briefLines(calendar: nil, mail: (ready: false, needing: ["x"]), texts: [],
-                                        soon: (title: "Essay", when: "Fri 5 PM", source: "reminders"))
-    check(sparse.map(\.tag) == ["MAIL", "SOON"] && sparse[0].muted && sparse[1].source == .reminders,
-          "unread mail shows a dim line; empty texts are hidden")
+          && lines[3].source == .calendar && lines[3].trailing == "Wed 6 PM", "row contents: \(lines.map(\.text))")
     check(!lines.contains(where: \.muted), "synced sources are never dim")
-    let unsynced = DayTimeline.briefLines(calendar: nil, calendarUnsynced: true, mail: (ready: false, needing: []),
-                                          texts: ["Priya asked about dinner"],
-                                          soon: (title: "Essay", when: "Fri 5 PM", source: "reminders"))
-    check(unsynced.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"] && unsynced[0].muted && unsynced[1].muted
-          && unsynced[0].text == "Calendar hasn't synced yet" && unsynced[0].source == .calendar
-          && unsynced[1].text == "Mail hasn't been checked yet", "unsynced calendar and mail keep the Brief's four rows")
-    check(DayTimeline.briefLines(calendar: nil, mail: nil, texts: [], soon: nil).isEmpty,
-          "no calendar line without a sync state, and no mail line without mail")
-    check(DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: ["Lab partner", "Advisor"]), texts: [], soon: nil)
-          .map(\.text) == ["2 emails need you"], "a mail count")
+    let quiet = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []), texts: (ready: true, needing: ["nothing"]),
+                                       soon: .nothing)
+    check(quiet.map(\.text).suffix(2) == ["No texts need you", "Nothing in the next week"] && !quiet.contains(where: \.muted),
+          "TEXTS and SOON stay with nothing to say")
+    let unsynced = DayTimeline.briefLines(calendar: nil, calendarUnsynced: true, mail: (ready: false, needing: ["x"]),
+                                          texts: (ready: false, needing: []), soon: .unknown)
+    check(unsynced.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"] && unsynced.allSatisfy(\.muted)
+          && unsynced.map(\.text) == ["Calendar hasn't synced yet", "Mail hasn't been checked yet",
+                                      "Messages haven't been checked yet", "The week ahead hasn't loaded yet"],
+          "unread sources keep the four rows, dim: \(unsynced.map(\.text))")
+    let unread = DayTimeline.briefLines(calendar: nil, mail: nil, texts: nil, soon: .nothing)
+    check(unread.map(\.text) == ["Nothing on your calendar", "Mail hasn't been checked yet", "Messages haven't been checked yet",
+                                 "Nothing in the next week"] && unread[1].muted && unread[2].muted,
+          "no coverage (the workspace couldn't be read) is unknown, never off")
+    check(DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: ["Lab partner", "Advisor"]),
+                                 texts: (ready: true, needing: ["Mom", "Priya"]), soon: .nothing)
+          .map(\.text)[1...2] == ["2 emails need you", "2 texts need you"], "mail and text counts")
+    check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .item(title: "nothing", when: "Fri", source: "reminders"))[3]
+          .text == "Nothing in the next week", "a placeholder is never what's coming")
+
+    // Unmistakable bulk mail never counts as needing you, and the row says it was left out.
+    let inbox = ["You're subscribed: The Download", "Can you review my draft?", "50% off everything",
+                 "Weekly digest: CSE 20", "Lab moved to Thursday", "nothing"]
+    check(DayTimeline.mailNeedingYou(inbox) == ["Can you review my draft?", "Lab moved to Thursday"],
+          "newsletters, promos and placeholders are left out: \(DayTimeline.mailNeedingYou(inbox))")
+    let promos = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: inbox), texts: nil, soon: .nothing)[1]
+    check(promos.text == "2 emails need you" && promos.trailing == "+3 promos", "the MAIL row counts real mail and names what it left out")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: ["Can you review my draft?"]), texts: nil,
+                                 soon: .nothing)[1].trailing == "", "no promos, no note")
+    for personal in ["Last chance to submit your thesis form", "Webinar slides for Thursday", "Tech Week starts today",
+                     "Don't miss the lab meeting", "Re: project offer", "Meeting with Priya", "This week in CSE 20"] {
+        check(!DayTimeline.isBulkMail(personal), "a subject a person could write still counts: \(personal)")
+    }
+    check(DayTimeline.isBulkMail("Last chance: 20% off") && DayTimeline.isBulkMail("Our October newsletter")
+          && DayTimeline.isBulkMail("Thanks for subscribing!"), "unmistakable bulk mail")
+
+    briefSummaryChecks(check, dayStart: dayStart, now: now)
 
     // How busy the calendar is: one verdict for the CAL line and the lede.
     func event(_ title: String, _ start: Double, _ end: Double?) -> DayLoad.Event {
