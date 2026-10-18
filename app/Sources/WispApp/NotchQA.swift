@@ -32,6 +32,14 @@ enum NotchQADriver {
             (try fixtureAttention(dayStart: dayStart),
              HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         })
+        let stale = StaleRemindersModel(baseURL: URL(string: "http://fixture.invalid")!) { request in
+            let rows: [[String: Any]] = [
+                ["source_id": "s1", "title": "Return library book", "context": "Errands", "age_days": 9, "actions": ["keep", "delete"]],
+                ["source_id": "s2", "title": "Look into summer internships", "context": "", "age_days": 12, "actions": ["keep", "delete"]],
+            ]
+            return (try JSONSerialization.data(withJSONObject: ["asks": rows]),
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
         let model = OverlayModel()
         model.qaShow(brief: fixtureBrief)
         let width = SurfaceLayout.maxExpandedWidth
@@ -41,7 +49,7 @@ enum NotchQADriver {
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let content = VStack(alignment: .leading, spacing: 0) {
                 if tab == .brief { NotchBriefView(model: model, today: today, open: open) }
-                else { NotchDayView(model: model, today: today, attention: attention) }
+                else { NotchDayView(model: model, today: today, attention: attention, staleReminders: stale) }
             }
             .padding(EdgeInsets(top: 18, leading: 22, bottom: 16, trailing: 22))
             .frame(width: width, alignment: .topLeading)
