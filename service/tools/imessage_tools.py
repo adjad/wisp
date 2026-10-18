@@ -1389,6 +1389,20 @@ def summary_message_rows(*, require_read_state: bool = False) -> list[tuple[floa
     return filter_summary_message_rows(sorted(selected, key=lambda row: row[0], reverse=True))
 
 
+def latest_outgoing_by_context() -> dict[str, float]:
+    """The newest message the user sent in each conversation, by context label.
+
+    Lets a summary say who is still waiting on the user: an important text
+    followed by the user's own reply in the same conversation is not waiting.
+    """
+    from service.tools import message_digest as digest
+    latest: dict[str, float] = {}
+    for ts, _identity, context, text, _unread in _parse_records():
+        if digest.split_sender(text)[0] == "Me" and ts > latest.get(context, float("-inf")):
+            latest[context] = ts
+    return latest
+
+
 _RECENT_SUMMARY_SECONDS = 3 * 86400
 
 

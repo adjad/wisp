@@ -13,6 +13,14 @@ struct DailyAttentionItem: Decodable, Identifiable {
     let needs_review: Bool
     let task_kind: String?
     let ownership: String?
+    /// Email and Messages only: who it's from, whether that looks like a
+    /// person, when it came, a model-written gist of an email, and whether
+    /// you've texted that conversation since.
+    let sender: String?
+    let person: Bool?
+    let received_ts: Double?
+    let gist: String?
+    let replied: Bool?
 }
 
 struct DailySourceCoverage: Decodable, Identifiable {
