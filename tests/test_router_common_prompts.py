@@ -361,3 +361,15 @@ def test_identity_block_addresses_the_user_by_the_name_they_chose(monkeypatch):
     assert "Name: Adi Jain" in block and "asked to be called Tri" in block
     monkeypatch.setattr(identity, "_preferred_name", lambda: "adi jain")
     assert "asked to be called" not in identity.identity_block(with_date=False)
+
+
+def test_preferred_name_stays_off_the_external_local_provider(monkeypatch):
+    # profile.json is kept from an external local app (Ollama, LM Studio); the
+    # chosen name comes from it, so the identity block leaves it out there.
+    from service.memory import identity
+    monkeypatch.setattr(identity, "user_name", lambda: "Adi Jain")
+    monkeypatch.setattr(identity, "user_emails", lambda: [])
+    monkeypatch.setattr(identity, "_preferred_name", lambda: "Tri")
+    assert "called Tri" in identity.identity_prompt_block(with_date=False, messages=False)
+    assert "called Tri" not in identity.identity_prompt_block(
+        with_date=False, messages=False, preferred_name=False)

@@ -1776,8 +1776,9 @@ async def run_agent(
             # "verbatim": the agent relays view_messages' raw record, which keeps
             # the `conversation | Sender: text` shape (see render_for_summary on
             # why the verbatim path is deliberately left un-annotated).
-            identity_hint = identity_prompt_block(with_date=False, shape="verbatim",
-                                                  messages=offers_messages)
+            identity_hint = identity_prompt_block(
+                with_date=False, shape="verbatim", messages=offers_messages,
+                preferred_name=getattr(client, "endpoint_name", "") != "local_provider")
         except Exception:  # noqa: BLE001
             identity_hint = ""
         # Who the user is in THEIR words — goals, struggles, people, how they

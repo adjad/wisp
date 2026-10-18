@@ -201,7 +201,9 @@ final class SetupGuideModel: ObservableObject {
         // A model was just installed and nothing points at one: use it. Only when
         // no local role already names an installed model, so a deliberate choice
         // is never overwritten.
-        guard next.omlx.running, let id = selectedModel, !autoAppliedModels.contains(id),
+        // Only the model setup itself recommends (ranked from the catalog), never
+        // whichever installed model happens to be first.
+        guard next.omlx.running, let id = next.models.use, id == selectedModel, !autoAppliedModels.contains(id),
               next.checks.contains(where: { $0.id == "model" && $0.action == "apply_model" }) else { return }
         let installed = Set(next.models.installed.map(\.id))
         let local = next.roles.filter { $0.endpoint == "local" }
