@@ -145,8 +145,30 @@ final class RemindersWriter {
     /// The undated list as it travels: at most `maxUndatedReminders` entries plus the TRUE
     /// number of eligible reminders, so the backend can tell a complete list from one that
     /// was cut at the cap instead of presenting a prefix as everything.
+    /// Newest first, so when the cap cuts the list it drops the oldest reminders (the ones
+    /// the backend treats as stale anyway) rather than fresh ones. Entries without a
+    /// creation date sort last; the backend treats their age as unknown, never as stale.
     static func undatedPayload(_ eligible: [[String: Any]]) -> (items: [[String: Any]], total: Int) {
-        (Array(eligible.prefix(maxUndatedReminders)), eligible.count)
+        let ordered = eligible.enumerated().sorted { a, b in
+            let x = a.element["created_ts"] as? Double, y = b.element["created_ts"] as? Double
+            switch (x, y) {
+            case let (x?, y?) where x != y: return x > y
+            case (.some, .none): return true
+            case (.none, .some): return false
+            default: return a.offset < b.offset
+            }
+        }.map(\.element)
+        return (Array(ordered.prefix(maxUndatedReminders)), eligible.count)
+    }
+
+    /// One undated entry as it travels. `created_ts` is EventKit's creationDate when it
+    /// has one; the backend ages undated reminders from it to decide when to ask about them.
+    static func undatedEntry(id: String, title: String?, list: String, created: Date?) -> [String: Any] {
+        var entry: [String: Any] = ["source_id": id, "title": title ?? "(untitled)", "context": list]
+        if let created, created.timeIntervalSince1970.isFinite, created.timeIntervalSince1970 > 0 {
+            entry["created_ts"] = created.timeIntervalSince1970
+        }
+        return entry
     }
 
     /// No reminder lists at all, right after a snapshot that had rows, is more
@@ -238,14 +260,23 @@ final class RemindersWriter {
                     "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
         }
 
+        // An undated delete (expectedDueTs == 0) is allowed only for delete_reminder and
+        // only while the reminder still has no due date and is still incomplete.
+        let undatedDelete = kind == "delete_reminder" && expectedDueTs == 0
         guard ["update_reminder", "complete_reminder", "delete_reminder"].contains(kind),
-              !sourceID.isEmpty, expectedDueTs.isFinite, expectedDueTs > 0,
+              !sourceID.isEmpty, expectedDueTs.isFinite, expectedDueTs > 0 || undatedDelete,
               !expectedTitle.isEmpty else { return failure("Invalid exact reminder target") }
         guard let item = store.calendarItem(withIdentifier: sourceID) as? EKReminder else {
             return failure("Exact reminder ID was not found; nothing changed")
         }
-        guard item.title == expectedTitle, dueMinute(item) == Int(expectedDueTs / 60) else {
-            return failure("Reminder changed since selection; nothing changed")
+        if undatedDelete {
+            guard item.title == expectedTitle, item.dueDateComponents == nil, !item.isCompleted else {
+                return failure("Reminder changed since selection; nothing changed")
+            }
+        } else {
+            guard item.title == expectedTitle, dueMinute(item) == Int(expectedDueTs / 60) else {
+                return failure("Reminder changed since selection; nothing changed")
+            }
         }
 
         if kind == "update_reminder" {
@@ -471,11 +502,8 @@ final class RemindersWriter {
                           completed: r.isCompleted,
                           hasDueDate: r.dueDateComponents != nil)
                 else { return nil }
-                return [
-                    "source_id": r.calendarItemIdentifier,
-                    "title": r.title ?? "(untitled)",
-                    "context": calendar.title,
-                ]
+                return Self.undatedEntry(id: r.calendarItemIdentifier, title: r.title,
+                                         list: calendar.title, created: r.creationDate)
             }
             let undatedPayload = Self.undatedPayload(undated)
             self.post(reminders: payload,

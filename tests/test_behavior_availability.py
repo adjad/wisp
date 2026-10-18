@@ -1125,6 +1125,7 @@ _PUBLIC_PLANNING_SOURCES = (
     'service/assistant/recovery.py',
     'service/assistant/reminders.py',
     'service/assistant/scheduler.py',
+    'service/assistant/stale_reminders.py',
     'service/assistant/store.py',
     'service/assistant/today.py',
     'service/behavior/__init__.py',
