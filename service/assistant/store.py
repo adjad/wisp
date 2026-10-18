@@ -1010,6 +1010,20 @@ class AssistantStore:
                         dict(start_minute=540, end_minute=1080, not_before=None),
                     revision=row["revision"] if row else 0)
 
+    def today_task(self, task_id: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT payload FROM today_tasks WHERE id=?", (task_id,)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def today_active_tasks_before(self, day: str) -> list[dict]:
+        """Active tasks still planned for a day before `day` (ISO dates sort as
+        text): what the morning carry-forward moves onto today."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT payload FROM today_tasks WHERE day < ? AND "
+                "json_extract(payload,'$.status')='active' ORDER BY day, id", (day,)).fetchall()
+        return [json.loads(r["payload"]) for r in rows]
+
     def today_save_task(self, values: dict, *, task_id: str | None = None, revision: int | None = None) -> dict:
         from service.assistant.today import RevisionConflict, validate_task
         with self._write_transaction():
@@ -1138,6 +1152,15 @@ class AssistantStore:
                     if (previous.get("identity") == target.get("identity")
                             and set(previous.get("stages", [])) < set(target.get("stages", []))):
                         self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (old["id"],))
+            if (target and target.get("type") == "brief" and self._db.execute(
+                    "SELECT 1 FROM assistant_events WHERE dedupe_key=?", (key,)).fetchone() is None):
+                # A newer Daily Summary replaces any older one the app hasn't
+                # acknowledged. Pending events replay oldest first, so an
+                # unacknowledged morning brief would otherwise arrive after the
+                # evening one and replace it on the Today tab.
+                self._db.execute(
+                    "UPDATE assistant_events SET state='superseded' "
+                    "WHERE kind='daily_brief' AND state='pending' AND dedupe_key!=?", (key,))
             self._db.execute(
                 "INSERT OR IGNORE INTO assistant_events "
                 "(id,kind,payload,dedupe_key,target,created_at,expires_at) VALUES (?,?,?,?,?,?,?)",

@@ -436,12 +436,16 @@ from service.config.quarantine import RecoveryMiddleware
 app.add_middleware(RecoveryMiddleware)
 from service.memory.api import router as memory_router
 app.include_router(memory_router)
+from service.memory.profile_api import router as profile_router
+app.include_router(profile_router)
 from service.assistant.today_api import router as today_router
 app.include_router(today_router)
 from service.behavior_api import router as behavior_router
 app.include_router(behavior_router)
 from service.assistant.attention_api import router as attention_router
 app.include_router(attention_router)
+from service.assistant.checkin_api import router as checkin_router
+app.include_router(checkin_router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
@@ -1089,6 +1093,30 @@ async def unload_all() -> dict[str, Any]:
     return {"unloaded": loaded}
 
 
+@app.get("/models/memory")
+async def models_memory() -> dict[str, Any]:
+    """What the local engine has resident, for Quick settings' Model memory row.
+
+    Read only. `bytes` is the engine's measured footprint and is null when it has
+    none, so the app never shows an estimate as memory in use. Anything other than a
+    managed local oMLX engine answers `available: false`.
+    """
+    if not getattr(client, "managed", False) or not getattr(client.provider, "omlx_health", False):
+        return {"available": False, "models": []}
+    try:
+        status = await client.status()
+    except Exception:
+        return {"available": False, "models": []}
+    resident = []
+    for row in status.get("models", []):
+        if not isinstance(row, dict) or row.get("loaded") is not True or not isinstance(row.get("id"), str):
+            continue
+        size = row.get("actual_size")
+        measured = isinstance(size, int) and not isinstance(size, bool) and size > 0
+        resident.append({"id": row["id"], "bytes": size if measured else None})
+    return {"available": True, "models": resident}
+
+
 @app.post("/unload_agent")
 async def unload_agent() -> dict[str, Any]:
     """Free just the heavy agent model (the agent model, ~12.7GB) — used when the notch
@@ -1189,6 +1217,16 @@ async def chat(body: dict[str, Any]):
     finally:
         if owned and not streaming_started:
             await owned.aclose()
+
+
+def _profile_block() -> str:
+    """The user's own description of themselves, for a LOCAL managed-model
+    prompt. Best-effort: a missing or unreadable profile never breaks a turn."""
+    try:
+        from service.memory.profile import profile_block
+        return profile_block()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _sse(event: dict) -> str:
@@ -2252,7 +2290,10 @@ async def agent(body: dict[str, Any]):
                     msgs = _local_provider_direct_messages(decision.role, prompt)
                 else:
                     from service.skills import always_skills_block, selected_skill_block
+                    # Who the user is, in their own words (service/memory/profile.py):
+                    # local managed model only, like the memory block beside it.
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
+                            + _profile_block()
                             + memory_block(query=prompt)
                             + ("" if literal_envelope else selected_skill_block(prompt, active_skill))
                             + (always_skills_block() if not literal_envelope and decision.role != "coding" else "")

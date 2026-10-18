@@ -13,6 +13,9 @@ struct TodayTask: Decodable, Identifiable {
     let pinned_start: Double?
     let status: String
     let revision: Int
+    /// The day this task was first planned for, when the evening check-in or
+    /// the morning carry-forward moved it here (service/assistant/checkin.py).
+    let carried_from: String?
     var editingTimeZone: TimeZone { TimeZone(identifier: timezone ?? "UTC") ?? TimeZone(secondsFromGMT: 0)! }
 
     @MainActor func initialDeadline(fallback: Date) -> Date {

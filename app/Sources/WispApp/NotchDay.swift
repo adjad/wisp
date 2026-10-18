@@ -391,22 +391,30 @@ struct DayTimeline: Equatable {
         let text: String
         let trailing: String
         let source: BriefSource
+        /// A source Wisp can't read yet: shown dim, so the Brief keeps its shape
+        /// and says why a line has nothing in it.
+        var muted = false
         var id: String { tag }
     }
 
-    /// At most four lines, one per source, each only when it has something to say.
-    static func briefLines(calendar: DayLoad?,
+    /// At most four lines, one per source. Texts and Soon show only when they have
+    /// something to say; a calendar or mail that hasn't synced shows a dim line instead.
+    static func briefLines(calendar: DayLoad?, calendarUnsynced: Bool = false,
                            mail: (ready: Bool, needing: [String])?, texts: [String],
                            soon: (title: String, when: String, source: String)?) -> [BriefLine] {
         var lines: [BriefLine] = []
         if let calendar {
             lines.append(BriefLine(tag: "CAL", text: calendar.summary, trailing: calendar.next ?? "›", source: .calendar))
+        } else if calendarUnsynced {
+            lines.append(BriefLine(tag: "CAL", text: "Calendar hasn't synced yet", trailing: "›", source: .calendar, muted: true))
         }
         if let mail, mail.ready {
             let needing = mail.needing.filter { !isJunk($0) }
             let text = needing.isEmpty ? "Nothing needs a reply"
                 : needing.count == 1 ? needing[0] : "\(needing.count) emails need you"
             lines.append(BriefLine(tag: "MAIL", text: text, trailing: "›", source: .mail))
+        } else if mail != nil {
+            lines.append(BriefLine(tag: "MAIL", text: "Mail hasn't been checked yet", trailing: "›", source: .mail, muted: true))
         }
         if let text = texts.first(where: { !isJunk($0) }) {
             lines.append(BriefLine(tag: "TEXTS", text: text, trailing: "›", source: .messages))

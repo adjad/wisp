@@ -60,9 +60,22 @@ def validate_preferences(day, timezone, start_minute=540, end_minute=1080, not_b
 
 
 def validate_task(value):
-    expected = {"id", "title", "day", "timezone", "kind", "duration_minutes", "priority", "due_ts", "pinned_start", "status", "revision"}
+    expected = {"id", "title", "day", "timezone", "kind", "duration_minutes", "priority", "due_ts", "pinned_start",
+                "status", "revision", "carried_from"}
     if set(value) - expected:
         raise ValueError("Unknown task field")
+    # The day this task was first planned for, when the evening check-in or the
+    # morning carry-forward moved it (service/assistant/checkin.py). Absent or
+    # None for a task still on its original day.
+    carried = value.get("carried_from")
+    if carried is not None:
+        if not isinstance(carried, str):
+            raise ValueError("carried_from must be an ISO date")
+        try:
+            if date.fromisoformat(carried).isoformat() != carried:
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ValueError("carried_from must be an ISO date") from None
     title = value.get("title")
     if not isinstance(title, str) or not title.strip() or len(title) > 500:
         raise ValueError("Title must contain 1–500 characters")
