@@ -100,6 +100,45 @@ def key(source, identity):
     return source + ":" + hashlib.sha256(str(identity).encode()).hexdigest()[:24]
 
 
+# Quoted or forwarded history below the current body is not current work.
+_QUOTED_HISTORY = re.compile(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>.*)$")
+# Who wrote it and when, carried from a communication record to its attention
+# item so the notch can name the sender and order by recency; `replied` marks a
+# conversation the user has texted since. An email's model-written gist is
+# attached by the Today endpoint (mail_gists.attach), so this module stays pure.
+_COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied")
+
+
+def important_email_rows(snapshot):
+    """(row, current_lines) for each snapshot email that counts as attention.
+
+    The one selection rule, shared by the day's evidence and the mail gists:
+    an attention or school category, or a current-body line that reads as a
+    request. Newest first, bounded to the 200 newest rows.
+    """
+    from service.tools.email_tools import digest_category
+    from service.tools.imessage_tools import important_message_reason
+    out = []
+    for row in sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]:
+        body = _QUOTED_HISTORY.split(row.get("body", ""))[0]
+        current_lines = [line for line in body.splitlines() if important_message_reason("Sender: " + line)]
+        if digest_category(row) not in {"attention", "school"} and not current_lines:
+            continue
+        out.append((row, current_lines))
+    return out
+
+
+def email_record_id(row):
+    return key("email", (row["account_id"], row["message_id"]))
+
+
+def _sender_fields(row):
+    from service.tools.email_tools import is_machine_sender
+    sender = clean(row.get("sender"), 80)
+    return dict(sender=sender, received_ts=row["ts"] if finite(row.get("ts")) else None,
+                person=bool(sender) and not is_machine_sender(f"{sender} {row.get('sender_address', '')}"))
+
+
 def _item(source, identity, title, reason, *, quote="", due=None, priority=2, reference=""):
     return dict(id=key(source, identity), source=source, title=clean(title),
                 reason=clean(reason, 500), quote=clean(quote, 500),
@@ -279,6 +318,12 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
                 item = _item(source, identity, title, record["review_reason"], quote=quote,
                              reference=record.get("reference", ""))
                 item["suggested_minutes"] = 15
+                for field in _COMMUNICATION_FIELDS:
+                    value = record.get(field)
+                    if isinstance(value, str):
+                        value = clean(value, 120)
+                    if value not in (None, "") and (not isinstance(value, float) or finite(value)):
+                        item[field] = value
             items.append(item)
 
     supported_behavior = valid_availability(behavior, timezone, now)
@@ -513,20 +558,17 @@ def collect_evidence(store, state, day, timezone, *, now):
         records = []
         header_count, header_eligible = 0, False
         if snapshot is not None:
-            for row in sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]:
-                # Ranking is a reason to inspect the source, never proof a reply
-                # or payment is owed. Bodies cannot control destinations/actions.
-                # A bounded current-body excerpt can reveal a request hidden
-                # behind an innocuous subject. Quoted/forwarded history is not
-                # promoted to current work; every result still says review.
-                body = re.split(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>.*)$", row.get("body", ""))[0]
-                current_lines = [line for line in body.splitlines() if important_message_reason("Sender: " + line)]
-                if digest_category(row) not in {"attention", "school"} and not current_lines:
-                    continue
+            # Ranking is a reason to inspect the source, never proof a reply
+            # or payment is owed. Bodies cannot control destinations/actions.
+            # A bounded current-body excerpt can reveal a request hidden
+            # behind an innocuous subject. Quoted/forwarded history is not
+            # promoted to current work; every result still says review.
+            for row, current_lines in important_email_rows(snapshot):
                 subject = redact_summary_codes(row["subject"])
-                records.append(dict(id=key("email", (row["account_id"], row["message_id"])),
+                records.append(dict(id=email_record_id(row),
                     title=subject, quote=redact_summary_codes(current_lines[0]) if current_lines else subject, reference="email:" + row["account_id"] + ":" + row["message_id"],
-                    review_reason="Review this source for requests or changes; ownership, reply status and deadlines are unverified."))
+                    review_reason="Review this source for requests or changes; ownership, reply status and deadlines are unverified.",
+                    **_sender_fields(row)))
         elif callable(getattr(mail, "email_source_details", None)):
             # The independently owned direct-mail integration exports this
             # per-account freshness contract. Older builds without it withhold
@@ -549,7 +591,8 @@ def collect_evidence(store, state, day, timezone, *, now):
                     identity = (row.get("account_id"), row.get("account"), row.get("message_id"), row["ts"], subject)
                     records.append(dict(id=key("email", identity), title=subject, quote=subject,
                         reference="email-header-cache:" + key("item", identity),
-                        review_reason="Header-only review suggestion; read the original email. Body, ownership, reply status and deadlines are unverified."))
+                        review_reason="Header-only review suggestion; read the original email. Body, ownership, reply status and deadlines are unverified.",
+                        **_sender_fields(row)))
         result["email"] = dict(ready=snapshot is not None or header_eligible, records=records,
             inspected=min(200, len(snapshot.rows)) if snapshot else min(200, header_count),
             omitted=max(0, len(snapshot.rows) - 200) if snapshot else max(0, header_count - 200),
@@ -560,9 +603,12 @@ def collect_evidence(store, state, day, timezone, *, now):
         result["email"] = dict(ready=False, records=[], detail="Email could not be assessed.")
     try:
         from service.tools.imessage_tools import (messages_sync_state, summary_message_rows,
-                                                 redact_summary_codes, structured_messages_snapshot)
+                                                 redact_summary_codes, structured_messages_snapshot,
+                                                 latest_outgoing_by_context)
+        from service.tools.message_digest import split_sender
         ready = messages_sync_state() == "ready"
         rows = summary_message_rows() if ready else []
+        outgoing = latest_outgoing_by_context() if ready else {}
         structured = structured_messages_snapshot() if ready else {"records": [], "coverage": {}}
         native = {}
         for row in structured["records"]:
@@ -579,9 +625,15 @@ def collect_evidence(store, state, day, timezone, *, now):
             if not finite(stamp) or not now - 3 * 86400 <= stamp <= now:
                 continue
             matches = native.get((round(stamp, 3), clean(text.partition(":")[2], 10000)), [])
+            speaker = split_sender(text)[0]
+            label = context[len("Group "):].strip().strip('"') if context.startswith("Group ") else context
             record = dict(id=key("messages", (stamp, context, text)), title=redact_summary_codes(text),
                 quote=redact_summary_codes(text), reference="messages-cache:" + key("message", (stamp, context, text)),
-                original_timestamp=stamp,
+                original_timestamp=stamp, received_ts=stamp,
+                # The person, never the message: "Priya in Family" in a group.
+                sender=clean(label if not context.startswith("Group ") or speaker == "Unknown sender"
+                             else f"{speaker} in {label}", 80),
+                person=True, replied=outgoing.get(context, float("-inf")) > stamp,
                 review_reason="Important conversation context; native item identity unavailable in this summary; review the original before choosing an action.")
             if len(matches) == 1:
                 source = matches[0]

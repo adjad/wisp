@@ -44,6 +44,7 @@ enum NotchQADriver {
         model.qaShow(brief: fixtureBrief)
         let width = SurfaceLayout.maxExpandedWidth
         for (name, tab, open) in [("brief", NotchTab.brief, nil), ("brief-open", NotchTab.brief, "MAIL"),
+                                  ("brief-texts", NotchTab.brief, "TEXTS"),
                                   ("day", NotchTab.day, nil)] as [(String, NotchTab, String?)] {
             let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 760),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
@@ -121,9 +122,10 @@ enum NotchQADriver {
             if let evidence { b["evidence_id"] = evidence }
             return b
         }
-        func need(_ id: String, _ source: String, _ title: String, due: Double?) -> [String: Any] {
+        func need(_ id: String, _ source: String, _ title: String, due: Double?, extra: [String: Any] = [:]) -> [String: Any] {
             ["id": id, "source": source, "title": title, "reason": "", "quote": "", "due_ts": due.map { at($0) } ?? NSNull(),
              "priority": 1, "reference": source + ":" + id, "suggested_minutes": 25, "needs_review": source != "reminders"]
+                .merging(extra) { $1 }
         }
         let blocks = [
             block("lunch", "Lunch with Sam", 11.5, 12.5, "calendar"),
@@ -144,12 +146,24 @@ enum NotchQADriver {
                     need("pa2", "reminders", "PA 2", due: 23.98),
                     need("doordash", "reminders", "Get DoorDash order", due: -20),
                     need("junk", "reminders", "nothing", due: 12),
-                    need("priya", "messages", "Priya asked about dinner", due: nil),
+                    need("priya", "messages", "Priya: are we still on for dinner at 7?", due: nil,
+                         extra: ["sender": "Priya", "received_ts": at(12.6)]),
+                    need("priya-2", "messages", "Priya: lmk!", due: nil, extra: ["sender": "Priya", "received_ts": at(12.9)]),
+                    need("mom", "messages", "Mom: call me when you can", due: nil, extra: ["sender": "Mom", "received_ts": at(9.2)]),
+                    need("sam", "messages", "Sam: thanks!", due: nil,
+                         extra: ["sender": "Sam", "received_ts": at(10), "replied": true]),
                     need("club", "calendar", "UCSC startup club, E2-506", due: 24 * 4 + 18),
                     need("essay", "reminders", "Essay outline", due: 24 * 4 + 18),
-                    need("draft", "email", "Can you review my draft?", due: nil),
-                    need("techweek", "email", "Tech Week starts today", due: nil),
-                    need("subscribed", "email", "You're subscribed: The Download", due: nil),
+                    need("draft", "email", "Can you review my draft?", due: nil,
+                         extra: ["sender": "Jordan Kim", "person": true, "received_ts": at(11),
+                                 "gist": "Jordan wants your feedback on their essay draft by Monday"]),
+                    need("thesis", "email", "Thesis meeting", due: nil,
+                         extra: ["sender": "Prof. Lee", "person": true, "received_ts": at(12.2),
+                                 "gist": "Prof. Lee moved your thesis meeting to Tuesday at 3"]),
+                    need("techweek", "email", "Tech Week starts today", due: nil,
+                         extra: ["sender": "UCSC Events", "person": false, "received_ts": at(8)]),
+                    need("subscribed", "email", "You're subscribed: The Download", due: nil,
+                         extra: ["sender": "MIT Technology Review", "person": false, "received_ts": at(7)]),
                 ],
                 "attention_omitted": 0,
                 "source_coverage": [["source": "email", "ready": true, "detail": "5 unread", "inspected": 5, "omitted": 0],
