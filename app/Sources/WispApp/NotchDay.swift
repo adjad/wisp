@@ -466,6 +466,28 @@ struct DayTimeline: Equatable {
         return lines
     }
 
+    /// The task Plan time makes from a need: "Review: …" for mail and texts.
+    static func plannedTitle(_ title: String, review: Bool) -> String {
+        review ? "Review: " + title : title
+    }
+
+    /// When a task made from a reminder first mattered: the reminder's due time
+    /// once it has passed. A reminder due two weeks ago makes a task two weeks
+    /// old on its first day, so the morning carry-forward leaves it behind
+    /// instead of carrying it as new. Nil for one not yet due or undated.
+    static func planOrigin(due: Double?, now: Double) -> Double? {
+        guard let due, due.isFinite, due > 0, due <= now else { return nil }
+        return due
+    }
+
+    /// Whether the day already has an active task for this need (its title, or
+    /// "Review: " and its title), so a second Plan time can't add a duplicate.
+    static func alreadyPlanned(_ title: String, tasks: [(title: String, active: Bool)]) -> Bool {
+        let key = { (s: String) in s.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased() }
+        let wanted: Set<String> = [key(title), key(plannedTitle(title, review: true))]
+        return tasks.contains { $0.active && wanted.contains(key($0.title)) }
+    }
+
     /// Mail worth the MAIL row's count: no placeholders, newsletters or promos.
     static func mailNeedingYou(_ subjects: [String]) -> [String] {
         subjects.filter { !isJunk($0) && !isBulkMail($0) }

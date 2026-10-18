@@ -160,6 +160,30 @@ def test_carry_forward_leaves_behind_a_task_from_a_two_week_old_reminder(store):
     assert len(C.aged_out_today("2026-10-19")) == 1
 
 
+def test_plan_time_task_keeps_the_reminder_due_time_as_its_origin(store, monkeypatch):
+    """The Day tab's Plan time on the overdue "Get doordash order" posts origin_ts =
+    the reminder's due time (NotchDayView.planTime, DayTimeline.planOrigin). Even
+    when no same-titled reminder is left to match (renamed, or planned as
+    "Review: …"), the task is sixteen days old on day one and is not carried."""
+    from service.assistant import today_api
+    monkeypatch.setattr(today_api, "assistant_store", store)
+    app = FastAPI()
+    app.include_router(today_api.router)
+    api = TestClient(app)
+    due = 1790990100.0                                           # 2026-10-02
+    body = {"title": "Get doordash order", "day": "2026-10-18", "timezone": ZONE, "kind": "task",
+            "duration_minutes": 25, "priority": 1}
+    made = api.post("/assistant/today/tasks", json=body | {"origin_ts": due})
+    assert made.status_code == 201 and made.json()["origin_ts"] == due
+    plain = api.post("/assistant/today/tasks", json=body | {"title": "Call the bank"})
+    assert plain.status_code == 201 and plain.json().get("origin_ts") is None
+    assert api.post("/assistant/today/tasks", json=body | {"origin_ts": -5.0}).status_code >= 400
+    assert api.post("/assistant/today/tasks", json=body | {"origin_ts": "yesterday"}).status_code == 422
+    moved = C.carry_forward(store, "2026-10-19", ZONE, now=at("2026-10-19", 8))
+    assert [t["title"] for t in moved] == ["Call the bank"]
+    assert [(a["title"], a["age_days"]) for a in C.aged_out_today("2026-10-19")] == [("Get doordash order", 16)]
+
+
 def test_carry_forward_stops_after_a_week_even_when_the_task_kept_moving(store):
     """"Work on Zybook" was planned on Sept 26 and carried every single morning
     until the user dropped it on Oct 17. The age counts from the first day it

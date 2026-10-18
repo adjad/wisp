@@ -20,6 +20,11 @@ class CreateTask(BaseModel):
     priority: StrictInt = Field(default=2, ge=1, le=3)
     due_ts: float | None = Field(default=None, strict=True, allow_inf_nan=False)
     pinned_start: float | None = Field(default=None, strict=True, allow_inf_nan=False)
+    # When the thing this task came from first mattered: a reminder's due time
+    # once it has passed. The morning carry-forward ages the task from here
+    # (checkin.task_origin), so a task made from a two-week-old reminder is not
+    # carried as if it were new. Range-checked by today.validate_task.
+    origin_ts: float | None = Field(default=None, strict=True, allow_inf_nan=False)
 
 
 class EditTask(BaseModel):
