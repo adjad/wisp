@@ -392,8 +392,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupInNotch), keyEquivalent: "")
         menu.addItem(.separator())
-        // Debug Mode is in the notch's quick settings ("Show Details under
-        // replies"). Export works any time there's a conversation, whether or not
+        // Debug Mode is in the notch's quick settings ("Reply details").
+        // Export works any time there's a conversation, whether or not
         // it is on: debug metadata is tracked for every turn unconditionally (see
         // OverlayModel.applyDebugFields).
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
