@@ -61,8 +61,12 @@ struct QuickSettingsView: View {
             await settings.refreshQuick()
             await model.refreshModelMemory()
         }
+        // A reply or a brief may have loaded a model while this is open.
         .onChange(of: model.conversationSettled) { _, settled in
             if settled, refreshes { Task { await model.refreshModelMemory() } }
+        }
+        .onChange(of: model.briefComposing) { _, composing in
+            if !composing, refreshes { Task { await model.refreshModelMemory() } }
         }
         .onChange(of: settings.briefTimesPending) { _, pending in if pending { picking = nil } }
     }
@@ -296,6 +300,6 @@ struct NotchSwitch: ToggleStyle {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label } }
+        .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.switch) }
     }
 }

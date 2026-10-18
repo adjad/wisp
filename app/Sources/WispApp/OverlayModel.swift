@@ -510,7 +510,7 @@ final class OverlayModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             await self.client.unloadAll()
-            self.modelMemory = await self.client.modelMemory()
+            self.modelMemory = ModelMemory.parse(await self.client.modelMemoryReply())
             self.freeingMemory = false
             self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.")
         }
@@ -522,7 +522,7 @@ final class OverlayModel: ObservableObject {
 
     func refreshModelMemory() async {
         guard !freeingMemory else { return }
-        let read = await client.modelMemory()
+        let read = ModelMemory.parse(await client.modelMemoryReply())
         if !freeingMemory { modelMemory = read }
     }
 
