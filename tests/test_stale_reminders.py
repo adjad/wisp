@@ -557,3 +557,69 @@ def test_task_evidence_drops_hidden_overdue_rows(store, monkeypatch):
                                           query="", include_overdue=True, include_undated=False)
     assert result["matching_dated"] == 1, "only the 3-day-overdue row is evidence"
     assert result["dated_window_cached"] == 1
+
+
+# --- audit B1/N1 on #286: removals reach hidden reminders; a kept one never vanishes ----
+
+def _typed_turn(store, prompt):
+    from datetime import datetime
+    from service.memory.store import SessionStore
+    from service.tasks.engine import prepare_task_turn
+    sessions = SessionStore(Path(tempfile.mkdtemp(prefix="wisp-stale-typed-")) / "sessions.db")
+    try:
+        return prepare_task_turn(sessions, sessions.create_session(), prompt,
+                                 assistant_store=store, now=datetime.fromtimestamp(NOW))
+    finally:
+        sessions._db.close()
+
+
+def test_typed_delete_of_overdue_reminders_reaches_hidden_ones(store):
+    _overdue(store)
+    turn = _typed_turn(store, "delete my overdue reminders")
+    assert turn is not None and turn.executable, getattr(turn, "event", None)
+    titles = {t["title"] for t in turn.plan.resolved_targets}
+    assert {"Get doordash order", "Go to club meeting", "Recently due"} <= titles
+    assert turn.plan.steps[0].tool == "clear_reminders"
+
+
+def test_typed_delete_and_reschedule_by_name_reach_a_hidden_reminder(store):
+    _overdue(store)
+    deleting = _typed_turn(store, "delete the doordash reminder")
+    assert deleting is not None and deleting.executable, getattr(deleting, "event", None)
+    assert [t["title"] for t in deleting.plan.resolved_targets] == ["Get doordash order"]
+    moving = _typed_turn(store, "move the doordash reminder to tomorrow at 9am")
+    assert moving is not None and moving.event != "target_not_found"
+
+
+def test_clear_reminders_and_its_preview_include_hidden_reminders(store):
+    _overdue(store)
+    preview = assistant_tools.reminders_matching("past_due", include_stale=True)
+    assert "Get doordash order" in {c["title"] for c in preview}
+    import inspect
+    from service.agent import loop
+    source = inspect.getsource(loop)
+    assert source.count("reminders_matching(_scope,") == 2
+    assert source.count("include_stale=True)") >= 2, "both confirmation previews read like the tool"
+    assert "include_stale=True" in inspect.getsource(assistant_tools.clear_reminders)
+
+
+def test_a_kept_reminder_is_not_hidden_by_a_same_titled_unanswered_one(store):
+    due = NOW - 16 * DAY_S
+    _sync(store, [], events=[_dated("kept", "Call mom", due), _dated("other", "Call mom", due)])
+    store.keep_stale_reminder("kept", "Call mom")
+    hidden = store.hidden_commitment_ids(NOW)
+    kept_row = store._db.execute("SELECT id FROM commitments WHERE source_id='kept'").fetchone()["id"]
+    assert kept_row not in hidden, "another Apple reminder is never a twin"
+    assert "Call mom" in {c["title"] for c in store.history(days=60)}
+
+
+def test_hidden_ids_take_one_twin_query(store):
+    _sync(store, [], events=[_dated(f"o{i}", f"Old {i}", NOW - (15 + i) * DAY_S) for i in range(50)])
+    statements = []
+    store._db.set_trace_callback(statements.append)
+    try:
+        hidden = store.hidden_commitment_ids(NOW)
+    finally:
+        store._db.set_trace_callback(None)
+    assert len(hidden) == 50
+    assert sum("source<>'reminders'" in s for s in statements) == 1

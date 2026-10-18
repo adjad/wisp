@@ -1929,8 +1929,9 @@ class AssistantStore:
             "VALUES (?,?,?,?,?)",
             [row + (now,) for row in rows])
         if not snapshot.truncated:
-            # A complete read is authoritative: a Keep for a reminder that no longer exists
-            # (completed, given a date, or deleted elsewhere) has nothing left to protect.
+            # A complete read is authoritative: a Keep for a reminder that is gone from both
+            # the undated list and the active dated rows (completed or deleted elsewhere) has
+            # nothing left to protect. A Keep follows its reminder through a reschedule.
             self._db.execute(
                 "DELETE FROM assistant_stale_reminder_decisions WHERE source_id NOT IN "
                 "(SELECT source_id FROM assistant_undated_reminders) AND source_id NOT IN "
@@ -2046,12 +2047,23 @@ class AssistantStore:
         state, plus any row describing the same item (a Wisp mirror of it collapses with it
         in every list, so leaving the twin would bring the reminder straight back)."""
         from service.assistant.stale_reminders import EXCLUDED_STATES
-        hidden: set[str] = set()
         with self._lock:
-            for row in self._overdue_rows(now):
-                if row["stale_state"] in EXCLUDED_STATES:
-                    hidden.add(row["id"])
-                    hidden.update(self.duplicate_ids(row["id"]))
+            rows = [r for r in self._overdue_rows(now) if r["stale_state"] in EXCLUDED_STATES]
+            hidden = {r["id"] for r in rows}
+            keys = {_dedupe_key(r) for r in rows} - {None}
+            if not keys:
+                return hidden
+            # One query for every twin, not one per hidden row. A twin is a non-native row
+            # (a Wisp mirror, a same-minute event) that collapses with a hidden reminder.
+            # Another Apple reminder is never a twin: it has its own question and its own
+            # Keep, and must not disappear because a same-titled one was left unanswered.
+            lo = min(k[1] for k in keys) * 60.0
+            hi = (max(k[1] for k in keys) + 1) * 60.0
+            for twin in self._db.execute(
+                    "SELECT id,title,when_ts FROM commitments WHERE status='active' "
+                    "AND source<>'reminders' AND when_ts>=? AND when_ts<?", (lo, hi)).fetchall():
+                if _dedupe_key(dict(twin)) in keys:
+                    hidden.add(twin["id"])
         return hidden
 
     def _hide_stale(self, items: list[dict], now: float | None) -> list[dict]:
@@ -2059,8 +2071,16 @@ class AssistantStore:
         hidden = self.hidden_commitment_ids(now)
         if not hidden:
             return items
-        return [c for c in items
-                if c["id"] not in hidden and not hidden.intersection(c.get("duplicate_ids") or ())]
+
+        def shown(c: dict) -> bool:
+            members = [(c["id"], c.get("source"))] + list(zip(
+                c.get("duplicate_ids") or (), c.get("duplicate_sources") or ()))
+            # A group stays while any Apple reminder in it is still shown (one the user
+            # kept, say), so it never vanishes because a same-titled one went unanswered.
+            if any(src == "reminders" and mid not in hidden for mid, src in members):
+                return True
+            return not any(mid in hidden for mid, _ in members)
+        return [c for c in items if shown(c)]
 
     def hidden_reminders(self, now: float | None = None) -> list[dict]:
         """Every Apple reminder the stale policy currently hides, undated and overdue alike:

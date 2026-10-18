@@ -1248,7 +1248,9 @@ async def clear_reminders(scope: str, query: str = "",
     if normalized not in _REMINDER_SCOPES:
         return ("(error: scope must be today, tomorrow, past_due, upcoming, "
                 "or all — no reminders were deleted.)")
-    items = reminders_matching(normalized, query)
+    # A removal reaches reminders the stale policy hides; the confirmation previews in
+    # agent/loop.py read with the same flag, so the card and the deletion agree.
+    items = reminders_matching(normalized, query, include_stale=True)
     label = normalized.replace("_", " ")
     if expected_ids is not None:
         expected = {str(value) for value in expected_ids if value}
