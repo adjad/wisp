@@ -214,6 +214,20 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .item(title: "nothing", when: "Fri", source: "reminders"))[3]
           .text == "Nothing in the next week", "a placeholder is never what's coming")
 
+    // Plan time on an overdue reminder (the "Get doordash order" case): the task
+    // keeps the reminder's due time as its origin, and a second tap adds nothing.
+    let doordashDue = now - 16 * 86400
+    check(DayTimeline.planOrigin(due: doordashDue, now: now) == doordashDue, "an overdue reminder's task starts at its due time")
+    check(DayTimeline.planOrigin(due: now + 3600, now: now) == nil && DayTimeline.planOrigin(due: nil, now: now) == nil,
+          "a reminder not yet due, or undated, gives no origin")
+    check(DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "get  DoorDash order", active: true)])
+          && DayTimeline.alreadyPlanned("Reply to Priya", tasks: [(title: "Review: Reply to Priya", active: true)])
+          && !DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "Get doordash order", active: false)])
+          && !DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "Call the bank", active: true)]),
+          "Plan time isn't offered twice for the same need")
+    check(DayTimeline.plannedTitle("Reply to Priya", review: true) == "Review: Reply to Priya"
+          && DayTimeline.plannedTitle("PA 2", review: false) == "PA 2", "planned titles")
+
     // Unmistakable bulk mail never counts as needing you, and the row says it was left out.
     let inbox = ["You're subscribed: The Download", "Can you review my draft?", "50% off everything",
                  "Weekly digest: CSE 20", "Lab moved to Thursday", "nothing"]
