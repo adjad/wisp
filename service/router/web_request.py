@@ -840,7 +840,8 @@ def _current(text: str, scopes: tuple[TimeScope, ...]) -> bool:
     remainder = re.sub(r"\b(?:what's|who's|what|who|where|when|how|did|does|do|has|have|is|are|was|were|any|give|show|tell|me|an?|the|latest|current|currently|new|recent|update|updates|brief|briefing|developments?|developing|breaking|happening|happened|going|on|in|with|regarding|situation|status|changed|things)\b", " ", remainder, flags=re.I)
     remainder = re.sub(r"\b(?:of|for|about|to|from|it|that|this|you|we|i|doing|due|scheduled|queued)\b", " ", remainder, flags=re.I)
     external_subject = bool(re.search(r"[a-z0-9]", remainder, re.I))
-    if _matches(r"\b(?:am\s+i|are\s+(?:we|you)|(?:do|did|have)\s+(?:i|we|you))\b", t):
+    # "what should I be doing today" asks about the user's own agenda, not the world.
+    if _matches(r"\b(?:am\s+i|are\s+(?:we|you)|(?:do|did|have|should|shall|ought|must|need)\s+(?:i|we|you)|(?:i|we)\s+(?:should|need\s+to|have\s+to|ought\s+to))\b", t):
         external_subject = False
     if re.fullmatch(r"\s*(?:volume|battery(?:\s+level)?|clipboard|wi-?fi|bluetooth|screen)\s*[?.!]*\s*", remainder, re.I):
         external_subject = False
