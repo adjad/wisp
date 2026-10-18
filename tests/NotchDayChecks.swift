@@ -46,10 +46,33 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     let ids = timeline.items.map(\.id)
     func item(_ id: String) -> DayItem? { timeline.items.first { $0.id == id } }
 
-    // The lane: from the hour of now to the last thing, on whole hours.
-    check(timeline.from == at(13), "today's lane starts at the hour of now")
+    // The lane: two hours before the hour of now, to the last thing, on whole hours.
+    check(timeline.from == at(11), "today's lane starts two hours before the hour of now")
     check(timeline.to == at(20), "the lane runs to the last block's hour: \(clock(timeline.to))")
-    check(timeline.hours.count == 7 && timeline.hours.first == at(13), "hour marks from 1 to 7")
+    check(timeline.hours.count == 9 && timeline.hours.first == at(11), "hour marks from 11 to 7")
+    check(!timeline.items.contains(where: \.past), "nothing in this fixture ended in the last two hours")
+
+    // Two hours back, dim; at least three hours ahead; never past midnight either way.
+    func window(_ blocks: [DayBlockInput], now: Double, needs: [DayNeedInput] = []) -> DayTimeline {
+        DayTimeline.build(blocks: blocks, allDay: [], needs: needs, caught: [], now: now, dayStart: dayStart, dayEnd: dayEnd,
+                          workStart: at(9), workEnd: at(18), isToday: true, clock: clock, dayClock: dayClock)
+    }
+    let recent = window([DayBlockInput(id: "coffee", title: "Coffee", start: at(11.25), end: at(11.75), kind: "calendar"),
+                         DayBlockInput(id: "early", title: "Early call", start: at(10), end: at(10.9), kind: "calendar"),
+                         DayBlockInput(id: "lunch", title: "Lunch", start: at(12.5), end: at(13.5), kind: "calendar"),
+                         DayBlockInput(id: "late", title: "Late", start: at(15), end: at(16), kind: "calendar")], now: now)
+    check(recent.items.map(\.id) == ["block:coffee", "block:lunch", "block:late"], "the back window keeps what ended in it: \(recent.items.map(\.id))")
+    check(recent.items.map(\.past) == [true, false, false], "only what is over is dim; a block running now is not")
+    check(DayTimeline.blurb(window([DayBlockInput(id: "coffee", title: "Coffee", start: at(11.25), end: at(11.75), kind: "calendar")], now: now),
+                            needs: [], isToday: true, endOfDay: dayEnd, clock: clock) == "Nothing is planned for the rest of today.",
+          "the blurb ignores what is already over")
+    let dawn = window([], now: at(1.5))
+    check(dawn.from == dayStart && dawn.to == at(18), "before 2 AM the lane starts at midnight: \(clock(dawn.from))–\(clock(dawn.to))")
+    let dusk = window([], now: at(19.25))
+    check(dusk.from == at(17) && dusk.to == at(23), "three hours ahead past working hours: \(clock(dusk.from))–\(clock(dusk.to))")
+    let midnight = window([DayBlockInput(id: "show", title: "Show", start: at(21.5), end: at(22.5), kind: "calendar")], now: at(23.5))
+    check(midnight.from == at(21) && midnight.to == dayEnd && midnight.items.first?.past == true,
+          "near midnight: two hours back, ending at midnight: \(clock(midnight.from))–\(clock(midnight.to))")
     check(timeline.allDay == ["PA 2 [CSE-20-04]"], "the all-day strip drops junk titles")
 
     // What lands on it, and how it is drawn.

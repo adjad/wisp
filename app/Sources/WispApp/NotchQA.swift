@@ -118,6 +118,7 @@ enum NotchQADriver {
              "priority": 1, "reference": source + ":" + id, "suggested_minutes": 25, "needs_review": source != "reminders"]
         }
         let blocks = [
+            block("lunch", "Lunch with Sam", 11.5, 12.5, "calendar"),
             block("pa2-a", "Work on PA 2", 13.75, 15.75, "suggestion", evidence: "pa2"),
             block("away", "Possible time away", 16, 17.5, "behavior_away", pattern: "sat-away"),
             block("pa2-b", "Finish PA 2 and submit", 17.5, 18.5, "suggestion", evidence: "pa2"),
