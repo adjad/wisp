@@ -1010,6 +1010,20 @@ class AssistantStore:
                         dict(start_minute=540, end_minute=1080, not_before=None),
                     revision=row["revision"] if row else 0)
 
+    def today_task(self, task_id: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT payload FROM today_tasks WHERE id=?", (task_id,)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def today_active_tasks_before(self, day: str) -> list[dict]:
+        """Active tasks still planned for a day before `day` (ISO dates sort as
+        text): what the morning carry-forward moves onto today."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT payload FROM today_tasks WHERE day < ? AND "
+                "json_extract(payload,'$.status')='active' ORDER BY day, id", (day,)).fetchall()
+        return [json.loads(r["payload"]) for r in rows]
+
     def today_save_task(self, values: dict, *, task_id: str | None = None, revision: int | None = None) -> dict:
         from service.assistant.today import RevisionConflict, validate_task
         with self._write_transaction():

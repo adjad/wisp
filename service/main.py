@@ -436,12 +436,16 @@ from service.config.quarantine import RecoveryMiddleware
 app.add_middleware(RecoveryMiddleware)
 from service.memory.api import router as memory_router
 app.include_router(memory_router)
+from service.memory.profile_api import router as profile_router
+app.include_router(profile_router)
 from service.assistant.today_api import router as today_router
 app.include_router(today_router)
 from service.behavior_api import router as behavior_router
 app.include_router(behavior_router)
 from service.assistant.attention_api import router as attention_router
 app.include_router(attention_router)
+from service.assistant.checkin_api import router as checkin_router
+app.include_router(checkin_router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
@@ -1213,6 +1217,16 @@ async def chat(body: dict[str, Any]):
     finally:
         if owned and not streaming_started:
             await owned.aclose()
+
+
+def _profile_block() -> str:
+    """The user's own description of themselves, for a LOCAL managed-model
+    prompt. Best-effort: a missing or unreadable profile never breaks a turn."""
+    try:
+        from service.memory.profile import profile_block
+        return profile_block()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _sse(event: dict) -> str:
@@ -2276,7 +2290,10 @@ async def agent(body: dict[str, Any]):
                     msgs = _local_provider_direct_messages(decision.role, prompt)
                 else:
                     from service.skills import always_skills_block, selected_skill_block
+                    # Who the user is, in their own words (service/memory/profile.py):
+                    # local managed model only, like the memory block beside it.
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
+                            + _profile_block()
                             + memory_block(query=prompt)
                             + ("" if literal_envelope else selected_skill_block(prompt, active_skill))
                             + (always_skills_block() if not literal_envelope and decision.role != "coding" else "")

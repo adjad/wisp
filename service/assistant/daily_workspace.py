@@ -208,11 +208,13 @@ def _remaining(start, end, occupied):
     return parts
 
 
-def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=()):
+def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=(), profile=None):
     """Return explainable attention items and a proposed itinerary, all transient.
 
     ``evidence`` contains source-labelled records and explicit readiness/coverage.
     ``behavior`` is an optional public availability result, never raw activity.
+    ``profile`` is the user's own profile (service/memory/profile.py) or None;
+    an item naming one of its people is raised to the top with the reason said.
     Its windows need current evidence, increasing bounds, >=0.65 recurrence strength,
     a named timezone, and a human-readable explanation. No percentage is shown:
     these scores are evidence strength, not calibrated forecast probabilities.
@@ -288,8 +290,13 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
 
     for task in state["tasks"]:
         if task.get("status") == "active" and task.get("day") == day:
-            items.append(_item("wisp", task["id"], task["title"], "On your day plan.",
+            carried = task.get("carried_from")
+            items.append(_item("wisp", task["id"], task["title"],
+                               f"Carried over from {carried}. On your day plan." if carried else "On your day plan.",
                                due=task.get("due_ts"), priority=task["priority"]))
+    if profile:
+        from service.memory.profile import prioritize
+        items = prioritize(items, profile)
     items.sort(key=lambda i: (i["priority"], i["due_ts"] if i["due_ts"] is not None else float("inf"),
                               SOURCES.index(i["source"]) if i["source"] in SOURCES else -1, i["id"]))
 
@@ -613,8 +620,11 @@ def collect_evidence(store, state, day, timezone, *, now):
     return result
 
 
-def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=()):
+def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), profile=None):
+    """``profile`` is the user's own profile (service/memory/profile.py), read by
+    the API layer: this module stays pure over the records it is handed and
+    imports nothing from memory."""
     state = store.today_snapshot(day, timezone)
     evidence = collect_evidence(store, state, day, timezone, now=now)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
-                  ignored_windows=ignored_windows)
+                  ignored_windows=ignored_windows, profile=profile)

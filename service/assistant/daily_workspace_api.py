@@ -166,7 +166,18 @@ def current_workspace(day, timezone, *, now=None, store=None):
         store = assistant_store
     now = time.time() if now is None else now
     return daily.workspace(store, day, timezone, now=now, behavior=availability(day, timezone, now),
-                           ignored_windows=email_store().ignored(day, timezone))
+                           ignored_windows=email_store().ignored(day, timezone), profile=user_profile())
+
+
+def user_profile():
+    """The user's own profile (service/memory/profile.py), or None when they have
+    told Wisp nothing. Read here, not in daily_workspace, which stays pure."""
+    try:
+        from service.memory import profile
+        loaded = profile.load()
+        return loaded if profile.has_content(loaded) else None
+    except Exception:
+        return None
 
 
 def availability(day, timezone, now):
