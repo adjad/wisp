@@ -265,15 +265,18 @@ struct NotchDayView: View {
                 }
             }
             Spacer(minLength: 2)
-            actions(item)
+            // What's over has nothing left to act on.
+            if !item.past { actions(item) }
         }
         .padding(.horizontal, 8).padding(.vertical, compact ? 1 : 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(DayInk.fill(item.style))
         .overlay(DayInk.border(item.style))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .opacity(item.past ? 0.45 : 1)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(item.title), \(detail(item)), \(today.clock(item.start)) to \(today.clock(item.end))")
+        .accessibilityLabel("\(item.title), \(detail(item)), \(today.clock(item.start)) to \(today.clock(item.end))"
+                            + (item.past ? ", already over" : ""))
     }
 
     /// A block's detail, with its planner warning in plain words when it has one.
