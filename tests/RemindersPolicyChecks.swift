@@ -53,6 +53,56 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         }
         precondition(RemindersWriter.undatedPayload(rows(500)).items.first?["source_id"] as? String == "id0",
                      "the cut keeps the first entries in order")
+        // Newest first when creation dates are known, so the cap drops the oldest
+        // (stale) reminders; undated-by-creation entries sort last, in input order.
+        let aged: [[String: Any]] = [["source_id": "old", "created_ts": 100.0],
+                                     ["source_id": "unknown"],
+                                     ["source_id": "new", "created_ts": 900.0],
+                                     ["source_id": "mid", "created_ts": 500.0]]
+        precondition(RemindersWriter.undatedPayload(aged).items.compactMap { $0["source_id"] as? String }
+                     == ["new", "mid", "old", "unknown"], "undated payload sorts newest first")
+        let entry = RemindersWriter.undatedEntry(id: "x", title: nil, list: "L",
+                                                 created: Date(timeIntervalSince1970: 1234))
+        precondition(entry["created_ts"] as? Double == 1234 && entry["title"] as? String == "(untitled)",
+                     "an undated entry carries its creation date")
+        precondition(RemindersWriter.undatedEntry(id: "x", title: "t", list: "L", created: nil)["created_ts"] == nil,
+                     "no creation date is sent as absent, never as zero")
+        // Undated titles travel already in the backend's stored form, so a Delete's
+        // expected title matches undatedTitle(item.title). The same cases are pinned
+        // in tests/test_stale_reminders.py (SWIFT_UNDATED_TITLES), which checks the backend leaves
+        // each expected value unchanged.
+        let longA = String(repeating: "a", count: 600)
+        let titleCases: [(String?, String)] = [
+            ("  Buy milk \n", "Buy milk"), ("", "(untitled)"), (nil, "(untitled)"),
+            ("\u{3000}\u{1C}Idea\u{2009}", "Idea"), (" \u{85}\u{A0} ", "(untitled)"),
+            (longA, String(repeating: "a", count: 500)),
+            (String(repeating: "a", count: 499) + " " + String(repeating: "b", count: 100),
+             String(repeating: "a", count: 499)),
+            (String(repeating: "e\u{301}", count: 300), String(repeating: "e\u{301}", count: 250)),
+        ]
+        for (raw, expected) in titleCases {
+            let got = RemindersWriter.undatedTitle(raw)
+            precondition(got == expected, "undatedTitle(\(String(describing: raw))) = \(got)")
+            precondition(RemindersWriter.undatedTitle(got) == got || got == "(untitled)",
+                         "undatedTitle is idempotent")
+        }
+        precondition(RemindersWriter.undatedEntry(id: "x", title: "  padded  ", list: "L",
+                                                  created: nil)["title"] as? String == "padded",
+                     "the undated entry carries the normalised title")
+        // An exact target: null means undated, and only a delete may use it; 0, NaN and
+        // negative times are invalid rather than stand-ins for null.
+        typealias T = RemindersWriter.ExactTarget
+        precondition(RemindersWriter.exactTarget(kind: "delete_reminder", expectedDueTs: nil) == T.undated)
+        precondition(RemindersWriter.exactTarget(kind: "delete_reminder", expectedDueTs: 2e9) == T.dated(2e9))
+        for kind in ["update_reminder", "complete_reminder"] {
+            precondition(RemindersWriter.exactTarget(kind: kind, expectedDueTs: nil) == nil,
+                         "\(kind) never targets an undated reminder")
+        }
+        for bad in [0.0, -1.0, Double.nan, Double.infinity, 1e300, 253402300800] {
+            precondition(RemindersWriter.exactTarget(kind: "delete_reminder", expectedDueTs: bad) == nil,
+                         "\(bad) is not a due time and not a stand-in for undated")
+        }
+        precondition(RemindersWriter.exactTarget(kind: "create_reminder", expectedDueTs: nil) == nil)
         let wire = try! JSONSerialization.data(withJSONObject: [
             "undated": RemindersWriter.undatedPayload(rows(2)).items,
             "undated_total": RemindersWriter.undatedPayload(rows(2)).total] as [String: Any])

@@ -45,7 +45,8 @@ class UndatedSnapshot:
 
     __slots__ = ("rows", "total", "truncated")
 
-    def __init__(self, rows: list[tuple[str, str, str | None]], total: int, truncated: bool):
+    def __init__(self, rows: list[tuple[str, str, str | None, float | None]], total: int,
+                 truncated: bool):
         self.rows = rows
         self.total = total
         self.truncated = truncated
@@ -57,7 +58,9 @@ def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
     Returns None for anything not wholly valid: a missing or non-list payload, any entry
     that is not an object with a non-blank string ``source_id``, a string ``title`` and a
     string-or-null ``context``, or a total that is not an integer (booleans are not) at
-    least as large as the list. None means "leave the stored list alone": it must read as
+    least as large as the list. An optional ``created_ts`` (EventKit creationDate) is kept
+    when it is a usable time and dropped otherwise: a missing or bad creation date makes the
+    reminder's age unknown, which never makes it stale, so it is no reason to reject a read. None means "leave the stored list alone": it must read as
     stale afterwards, never as a fresh answer. A blank title is kept as "(untitled)".
     More than UNDATED_MAX entries are cut to the first UNDATED_MAX and reported truncated.
     """
@@ -65,7 +68,8 @@ def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
         return None
     if total < len(raw) or total > UNDATED_TOTAL_MAX:
         return None
-    rows: dict[str, tuple[str, str, str | None]] = {}
+    from service.assistant.stale_reminders import valid_created_ts
+    rows: dict[str, tuple[str, str, str | None, float | None]] = {}
     for entry in raw:
         if not isinstance(entry, dict):
             return None
@@ -77,7 +81,8 @@ def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
         # colliding on the table's UNIQUE source_id.
         sid = source_id.strip()[:UNDATED_ID_MAX]
         rows[sid] = (sid, title.strip()[:UNDATED_TITLE_MAX] or "(untitled)",
-                     (context or None) and context[:UNDATED_CONTEXT_MAX])
+                     (context or None) and context[:UNDATED_CONTEXT_MAX],
+                     valid_created_ts(entry.get("created_ts")))
     kept = list(rows.values())[:UNDATED_MAX]
     # Truncated means items were left out: the app declared more than it sent, or this side
     # had to cut the list at the cap. Merging a duplicate id is not truncation.
@@ -382,6 +387,17 @@ class AssistantStore:
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_undated_reminders (
                     source_id TEXT PRIMARY KEY, title TEXT NOT NULL, context TEXT,
                     synced_at REAL NOT NULL
+                )""")
+                # EventKit creationDate, used only to age undated reminders (stale_reminders.py).
+                undated_cols = {r["name"] for r in
+                                self._db.execute("PRAGMA table_info(assistant_undated_reminders)")}
+                if "created_ts" not in undated_cols:
+                    self._db.execute("ALTER TABLE assistant_undated_reminders ADD COLUMN created_ts REAL")
+                # The user's answer to "keep or delete this old undated reminder?". Only
+                # "keep" is stored: a verified Delete removes the reminder itself.
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_stale_reminder_decisions (
+                    source_id TEXT PRIMARY KEY, decision TEXT NOT NULL CHECK (decision IN ('keep')),
+                    title TEXT NOT NULL, decided_at REAL NOT NULL
                 )""")
                 # One row describing the undated list as a whole: which native snapshot it
                 # came from and whether it is complete. Written in the same transaction as
@@ -1259,6 +1275,18 @@ class AssistantStore:
 
     def reminder_terminal_retry_state(self, kind: str, payload: dict) -> str:
         """Classify the current occurrence, ignoring historical completed rows."""
+        if kind == "delete_reminder" and payload.get("expected_due_ts") is None:
+            # An undated reminder lives only in the undated list, never in commitments.
+            with self._lock:
+                terminal = self._db.execute(
+                    "SELECT status FROM assistant_reminder_terminals WHERE source_id=?",
+                    (payload["source_id"],)).fetchone()
+                row = self._db.execute(
+                    "SELECT title FROM assistant_undated_reminders WHERE source_id=?",
+                    (payload["source_id"],)).fetchone()
+            if row is not None:
+                return "expected" if row["title"] == payload["expected_title"] else "other"
+            return "desired" if terminal and terminal["status"] == "dismissed" else "other"
         with self._lock:
             rows = self._db.execute(
                 "SELECT title,when_ts,status FROM commitments WHERE source='reminders' "
@@ -1554,6 +1582,16 @@ class AssistantStore:
                     self._db.execute(
                         "DELETE FROM assistant_reminder_writes WHERE source_id=?",
                         (payload["source_id"],))
+                    if kind == "delete_reminder" and payload["expected_due_ts"] is None:
+                        removed = self._db.execute(
+                            "DELETE FROM assistant_undated_reminders WHERE source_id=?",
+                            (payload["source_id"],)).rowcount
+                        self._db.execute("DELETE FROM assistant_stale_reminder_decisions WHERE source_id=?",
+                                         (payload["source_id"],))
+                        if removed:
+                            self._db.execute(
+                                "UPDATE assistant_undated_state SET stored=MAX(stored-1,0),"
+                                "total=MAX(total-1,0) WHERE id=1")
                 if reminder_receipt_at is not None:
                     source_id = (result["source_id"] if kind == "create_reminder"
                                  else payload["source_id"])
@@ -1873,16 +1911,35 @@ class AssistantStore:
         """Replace the undated rows and their state. Call only inside a write transaction."""
         from service.assistant.today import number
         started = number(snapshot_started_at, "snapshot_started_at") if snapshot_started_at is not None else None
+        # A native read that started before a verified delete still lists the reminder it
+        # deleted. Re-inserting it would bring the question back for an item that is gone,
+        # so rows whose verified delete was recorded after this read began are skipped. A
+        # later read (started after the receipt) is believed, including a Recently Deleted
+        # restore that brings the same identifier back.
+        deleted_after = set()
+        if started is not None:
+            deleted_after = {row["source_id"] for row in self._db.execute(
+                "SELECT source_id FROM assistant_reminder_terminals "
+                "WHERE status='dismissed' AND recorded_at>=?", (started,)).fetchall()}
+        rows = [row for row in snapshot.rows if row[0] not in deleted_after]
+        skipped = len(snapshot.rows) - len(rows)
         self._db.execute("DELETE FROM assistant_undated_reminders")
         self._db.executemany(
-            "INSERT INTO assistant_undated_reminders(source_id,title,context,synced_at) VALUES (?,?,?,?)",
-            [row + (now,) for row in snapshot.rows])
+            "INSERT INTO assistant_undated_reminders(source_id,title,context,created_ts,synced_at) "
+            "VALUES (?,?,?,?,?)",
+            [row + (now,) for row in rows])
+        if not snapshot.truncated:
+            # A complete read is authoritative: a Keep for a reminder that no longer exists
+            # (completed, given a date, or deleted elsewhere) has nothing left to protect.
+            self._db.execute(
+                "DELETE FROM assistant_stale_reminder_decisions WHERE source_id NOT IN "
+                "(SELECT source_id FROM assistant_undated_reminders)")
         self._db.execute(
             "INSERT INTO assistant_undated_state(id,snapshot_started_at,status,total,stored,recorded_at) "
             "VALUES (1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET snapshot_started_at=excluded.snapshot_started_at, "
             "status=excluded.status, total=excluded.total, stored=excluded.stored, recorded_at=excluded.recorded_at",
-            (started, "truncated" if snapshot.truncated else "complete", snapshot.total,
-             len(snapshot.rows), now))
+            (started, "truncated" if snapshot.truncated else "complete", snapshot.total - skipped,
+             len(rows), now))
 
     def replace_undated_reminders(self, items: list[dict], *, total: int | None = None,
                                   snapshot_started_at: float | None = None) -> int:
@@ -1897,13 +1954,55 @@ class AssistantStore:
             self._write_undated(snapshot, snapshot_started_at, time.time())
         return len(snapshot.rows)
 
+    def _undated_rows(self, now: float | None = None) -> list[dict]:
+        """Every stored undated reminder with its stale-policy state, by title then id."""
+        from service.assistant.stale_reminders import classify
+        now = time.time() if now is None else now
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT u.source_id,u.title,u.context,u.created_ts,d.decision "
+                "FROM assistant_undated_reminders u LEFT JOIN assistant_stale_reminder_decisions d "
+                "ON d.source_id=u.source_id ORDER BY u.title COLLATE NOCASE, u.source_id").fetchall()
+        return [{**dict(r), "stale_state": classify(r["created_ts"], r["decision"], now)} for r in rows]
+
     def undated_reminders(self, query: str = "") -> list[dict]:
-        """Incomplete Apple reminders with no due date, by title then id."""
-        rows = self._db.execute(
-            "SELECT source_id,title,context FROM assistant_undated_reminders "
-            "ORDER BY title COLLATE NOCASE, source_id").fetchall()
+        """Incomplete Apple reminders with no due date, by title then id.
+
+        Reminders the stale policy excludes (about a week old or more, not kept by the user)
+        are left out here, which is how every reader (Day plans, tools, task evidence, model
+        context) stops using them. ``undated_view`` reports how many were hidden.
+        """
+        from service.assistant.stale_reminders import EXCLUDED_STATES
         needle = (query or "").strip().lower()
-        return [dict(r) for r in rows if not needle or needle in r["title"].lower()]
+        return [{"source_id": r["source_id"], "title": r["title"], "context": r["context"]}
+                for r in self._undated_rows()
+                if r["stale_state"] not in EXCLUDED_STATES
+                and (not needle or needle in r["title"].lower())]
+
+    def stale_reminder_asks(self, now: float | None = None) -> list[dict]:
+        """Undated reminders in the ask window, oldest first, but only from a current list:
+        a stale list could offer to delete something that already changed."""
+        if self.undated_view()["freshness"] != "current":
+            return []
+        now = time.time() if now is None else now
+        rows = [r for r in self._undated_rows(now) if r["stale_state"] == "ask"]
+        rows.sort(key=lambda r: (r["created_ts"], r["source_id"]))
+        return [{"kind": "stale_reminder", "source_id": r["source_id"], "title": r["title"],
+                 "context": r["context"], "created_ts": r["created_ts"],
+                 "age_days": int((now - r["created_ts"]) // 86400),
+                 "actions": ["keep", "delete"]} for r in rows]
+
+    def stale_reminder_target(self, source_id: str, now: float | None = None) -> dict | None:
+        """The stored row for a Keep/Delete answer, with its policy state, or None."""
+        return next((r for r in self._undated_rows(now) if r["source_id"] == source_id), None)
+
+    def keep_stale_reminder(self, source_id: str, title: str) -> None:
+        with self._write_transaction():
+            self._db.execute(
+                "INSERT INTO assistant_stale_reminder_decisions(source_id,decision,title,decided_at) "
+                "VALUES (?,'keep',?,?) ON CONFLICT(source_id) DO UPDATE SET "
+                "decision=excluded.decision,title=excluded.title,decided_at=excluded.decided_at",
+                (source_id, title, time.time()))
 
     def undated_listing(self, query: str = "") -> tuple[dict, list[dict]]:
         """The view and the matching rows from ONE locked read, so they always describe the
@@ -1968,8 +2067,13 @@ class AssistantStore:
                 latest = payload.get("snapshot_started_at")
         current = (state["snapshot_started_at"] is not None and latest is not None
                    and state["snapshot_started_at"] == latest)
+        # Excluded stale reminders are not part of what any reader can see, so they come
+        # out of both counts; ``stale_hidden`` says how many, for an honest caveat.
+        from service.assistant.stale_reminders import EXCLUDED_STATES
+        hidden = sum(r["stale_state"] in EXCLUDED_STATES for r in self._undated_rows())
         return {"freshness": "current" if current else "stale", "status": state["status"],
-                "total": state["total"], "stored": state["stored"]}
+                "total": max(0, state["total"] - hidden), "stored": max(0, state["stored"] - hidden),
+                "stale_hidden": hidden}
 
     def add_manual(self, title: str, when_ts: float, kind: str = "reminder",
                    context: str | None = None, *, source: str = MANUAL_SOURCE) -> dict:
