@@ -47,6 +47,7 @@ Wisp 0.5.0 is the first stable release. It works on a Mac with nothing installed
 ### Fixed
 
 #### A fresh install
+- The built-in engine answers its first question. Its memory guard refused every model it had just loaded ("The AI engine's memory guard could not be verified"), because a background check stayed pending for the whole load. A fresh install with no oMLX.app could finish setup and still never answer.
 - Wisp no longer stops at launch on a Mac where oMLX was never opened or isn't installed. A missing or unreadable `~/.omlx/settings.json` used to stop the service before setup could appear.
 - A Mac with no model is offered the best public model it can download: Ling 3.0 tiny 6-bit on 24 GB or more, 4-bit below that. It used to be told to add a private Mellum folder it had no way to get. If you already have Mellum installed, your choice is kept.
 - After a download, the new model is put to use automatically when no role points at an installed model. The built-in engine starts on its own the first time setup is open. **Start engine** stays for retries.
@@ -67,9 +68,9 @@ Wisp 0.5.0 is the first stable release. It works on a Mac with nothing installed
 #### Everyday asks
 These now go straight to the right tool:
 - Timers ("set a timer for 10 minutes") and "remind me in 20 minutes to…".
-- The date and time ("what's the date today", "what time is it in Tokyo"). These used to search the web.
+- The date and time ("what's the date today", "what time is it in Tokyo"). These used to search the web. "What's the date today" answers for this Mac's time zone.
 - Weather asked many ways: "how's the weather in Boston", "weather tomorrow in Boston", "will it rain tomorrow", "should I bring an umbrella", "what should I wear today".
-- The brief ("what's my day look like", "give me my morning brief", "brief me").
+- The brief ("what's my day look like", "give me my morning brief", "brief me"). Wisp answers in plain words. Before, "give me my daily brief" showed the raw notes Wisp gathers for itself, such as "no cached absence is verified".
 - Maths and conversions ("what's 15% of 240", "5 miles to km") and definitions ("define serendipity").
 - "add a meeting with Sam tomorrow at 3pm" adds the event, and "move my 2pm to 4pm" moves it. Both still ask before changing your calendar.
 - Mail: "summarize my unread mail" summarizes, and "who emailed me about the invoice" searches your mail.
