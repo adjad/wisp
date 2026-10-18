@@ -388,7 +388,10 @@ def _scope_bounds(scope: str, now: datetime) -> tuple[float | None, float | None
 def _reminder_candidates(assistant_store, *, scope: str = "all",
                          now: datetime) -> list[dict]:
     start, end = _scope_bounds(scope, now)
-    rows = assistant_store.active_between(start, end)
+    # Only operations (delete, update, complete) ground here. A reminder the stale
+    # policy hides must still be removable or reschedulable by name or scope, or
+    # "delete my overdue reminders" would answer "none found" while they remain.
+    rows = assistant_store.active_between(start, end, include_stale=True)
     return [row for row in rows
             if row.get("source") in _REMINDER_SOURCES
             or bool(_REMINDER_SOURCES & set(row.get("duplicate_sources") or []))]
