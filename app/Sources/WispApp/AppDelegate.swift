@@ -142,6 +142,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .map { ["WISP_BROWSER_BRIDGE_CONTROL": $0] } ?? [:]
         }
         backend.didLaunchBackend = { BrowserBridgeActivation.shared.backendLaunched(pid: $0) }
+        let launchedAt = Date()
+        backend.onReachabilityChange = { [weak self] up in
+            guard let self else { return }
+            if up { self.model.serviceReachable = true; return }
+            // The service takes a few seconds to come up at launch: only call it
+            // down once it has stayed down past a grace period.
+            let grace: UInt64 = Date().timeIntervalSince(launchedAt) < 60 ? 20_000_000_000 : 4_000_000_000
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: grace)
+                guard let self, self.backend.lastReachable == false else { return }
+                self.model.serviceReachable = false
+            }
+        }
+        model.onRetryService = { [weak self] in
+            Task { @MainActor in await self?.backend.startIfNeeded() }
+        }
+        backend.startReachabilityWatch()
         Task { await BrowserBridgeActivation.shared.begin() }
         // The backend starts only after the port has been judged. The judgment is retried for
         // a few seconds when a holder is there, because after a quick quit and relaunch the
@@ -167,6 +184,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = Self.menubarOrb()
+            button.setAccessibilityLabel("Wisp")
+            button.toolTip = "Wisp"
             button.action = #selector(toggle)
             button.target = self
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -574,6 +593,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Reset at the explicit dismiss action, before any subsequent input or
     // summary request can be created. Presentation callbacks only move views.
     private func dismissToMenuBar() {
+        // Closing the notch outright while Getting to know you is open is Later.
+        model.leaveKnowYou()
         notchDocked = false
         let wasCollapsed = model.collapsed
         model.newChat()
@@ -701,7 +722,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.panel?.resizeToFit() }
         }
         model.requestExpand = { [weak self] in self?.expand() }
-        model.requestCollapse = { [weak self] in self?.collapse() }
+        model.requestCollapse = { [weak self] in
+            // An explicit close (chevron, Esc) while Getting to know you is
+            // open counts as Later. Auto-collapse never reaches here: the open
+            // flow holds the panel open.
+            self?.model.leaveKnowYou()
+            self?.collapse()
+        }
 
         // Assistant layer: request the privacy/security permissions Wisp uses
         // (once; re-runnable from the menu) and start the commitment clock +
@@ -822,13 +849,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchDocked = true
         createPanelIfNeeded()
         if model.collapsed || panel?.isVisible != true { expand() }
-    }
-
-    /// The menu-bar counterpart to the in-panel Daily Summary control. Open
-    /// the panel first so the streaming brief has somewhere visible to land.
-    @objc private func runDailySummary() {
-        openAssistant()
-        model.runDailySummary()
     }
 
     /// New research starts in the notch's Research tab, where the prompt drafts
@@ -1080,8 +1100,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor [weak self] in
             var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
             request.timeoutInterval = 10
-            // The backend starts alongside the app; wait for it, but only so long.
-            for _ in 0..<20 {
+            // The backend starts alongside the app; a cold first launch can take
+            // minutes (bundle verification, first import), so wait up to ~3 min.
+            for _ in 0..<120 {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let self else { return }
                 guard let (data, _) = try? await URLSession.shared.data(for: request),
@@ -1091,6 +1112,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 UserDefaults.standard.set(true, forKey: Self.setupGuideShownKey)
                 return
             }
+            // Never came up: say so in the notch instead of staying silent. The
+            // guide is not marked shown, so the next launch tries again.
+            guard let self else { return }
+            self.model.serviceReachable = false
+            self.openAssistant()
         }
     }
 
@@ -1107,8 +1133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// quiet panel, so the first launch is not two things at once.
     private func offerKnowYouWhenReady() {
         Task { @MainActor [weak self] in
+            // A brand-new Mac is not ready at launch (setup guide first), so keep
+            // checking, slowly, until inference works: ~10 minutes at most.
             var setupReady = false
-            for _ in 0..<40 {
+            for _ in 0..<200 {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard let self else { return }
                 if !setupReady {
@@ -1118,7 +1146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                           let ready = object["ready"] as? Bool else { continue }
                     // The setup guide owns a first launch until inference works.
-                    guard ready else { return }
+                    guard ready else { continue }
                     setupReady = true
                 }
                 guard let envelope = await WispClient().profile() else { continue }
@@ -1128,8 +1156,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     || self.model.isProcessing || self.model.knowYou != nil {
                     continue
                 }
+                // An offer nobody asked for must not take the keyboard from the
+                // app the person is typing in: note it, open, hand focus back.
+                let prior = NSWorkspace.shared.frontmostApplication
                 self.openAssistant()
                 self.model.startKnowYou()
+                if let prior, prior.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    prior.activate(options: [])
+                }
                 return
             }
         }

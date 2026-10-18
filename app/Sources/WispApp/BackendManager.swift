@@ -58,6 +58,30 @@ final class BackendManager {
     /// backend answers on the backend port. AppDelegate shows the conflict alert.
     var onPortConflict: () -> Void = {}
 
+    /// Called on the main actor whenever the service flips between answering and
+    /// not. The first call after `startReachabilityWatch` reports the first probe.
+    var onReachabilityChange: (Bool) -> Void = { _ in }
+    private var reachabilityWatch: Task<Void, Never>?
+    private(set) var lastReachable: Bool?
+
+    /// Probe the service while the app runs (every 5 s up, 2 s down) so the
+    /// notch can say plainly that it isn't running. Independent of the launch
+    /// monitor, which only starts once a launch is attempted.
+    func startReachabilityWatch() {
+        guard reachabilityWatch == nil else { return }
+        reachabilityWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let up = await self.isHealthy()
+                if self.lastReachable != up {
+                    self.lastReachable = up
+                    self.onReachabilityChange(up)
+                }
+                try? await Task.sleep(nanoseconds: up ? 5_000_000_000 : 2_000_000_000)
+            }
+        }
+    }
+
     private func enforceCredentialState() -> Bool {
         let allowed = credentialState.observe(try? BackendCredentials.generation())
         if !allowed, let process, process.isRunning { process.terminate() }
