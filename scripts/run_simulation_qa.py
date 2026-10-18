@@ -392,6 +392,8 @@ ADDITIONAL_FULL_TESTS = {
     # Evening check-in, carry-forward and goal pulse: disposable AssistantStore and
     # state files, in-process TestClient; no model, scheduler, hub or real ~/.moe.
     "tests/test_checkin.py",
+    # oMLX prompt-cache budget: settings.json and cache files in tmp_path only.
+    "tests/test_omlx_cache.py",
     "tests/test_day_plan_email.py",
     "tests/test_user_reported_regressions_20260902.py",
     "tests/test_user_reported_regressions_20260903.py",
