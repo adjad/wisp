@@ -31,6 +31,10 @@ All notable changes to Wisp are documented here.
 - The notch header's Research, Today and Daily Summary chips and the AM/PM brief toggle, which no longer picks a time, are replaced by the tabs. Research is now a tab: its prompt starts a research plan.
 - Wisp now starts in the notch. Launching it no longer opens the Wisp window. The first launch after updating opens the notch once with a note about where Wisp lives. Open the window from the Dock icon, the menu bar's **Open Wisp Window**, or **Window ▸ Wisp Window** (⌘1).
 
+### Fixed
+- The brief times in quick settings are labelled **Morning** and **Evening**. Two bare "8 AM" and "8 PM" chips looked like the old AM/PM switch, but both briefs run.
+- An older Daily Summary the app hadn't acknowledged (for example, because its notification failed) no longer comes back on reconnect and replaces a newer one on the Today tab. A newer brief now retires any older one that is still waiting.
+
 ## [1.4.0] - 2026-10-16
 
 Wisp now **learns your routines** and uses them to **suggest how to spend your day**. It reads your Calendar, completed reminders, Mail, Messages and Notes, and optionally your Gmail and your app/idle activity. From these it infers tentative patterns ("you usually reply to email around 1pm") and tentative demands ("this looks like it needs prep time"). It proposes time for them in **Today**.

@@ -1138,6 +1138,15 @@ class AssistantStore:
                     if (previous.get("identity") == target.get("identity")
                             and set(previous.get("stages", [])) < set(target.get("stages", []))):
                         self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (old["id"],))
+            if (target and target.get("type") == "brief" and self._db.execute(
+                    "SELECT 1 FROM assistant_events WHERE dedupe_key=?", (key,)).fetchone() is None):
+                # A newer Daily Summary replaces any older one the app hasn't
+                # acknowledged. Pending events replay oldest first, so an
+                # unacknowledged morning brief would otherwise arrive after the
+                # evening one and replace it on the Today tab.
+                self._db.execute(
+                    "UPDATE assistant_events SET state='superseded' "
+                    "WHERE kind='daily_brief' AND state='pending' AND dedupe_key!=?", (key,))
             self._db.execute(
                 "INSERT OR IGNORE INTO assistant_events "
                 "(id,kind,payload,dedupe_key,target,created_at,expires_at) VALUES (?,?,?,?,?,?,?)",
