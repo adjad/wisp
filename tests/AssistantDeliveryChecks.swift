@@ -332,6 +332,18 @@ struct AssistantDeliveryChecks {
             precondition(!corrupt && preserved == data)
             scenarios += 1
         }
+        // A delete of an undated reminder carries expected_due_ts: null. Only delete may;
+        // complete/update still require a real due time, and 0 is never a stand-in for null.
+        do {
+            let undated: [String: Any] = ["type": "delete_reminder", "action_id": "reminder:u1",
+                "source_id": "ek-u", "expected_title": "Old idea", "expected_due_ts": NSNull()]
+            precondition(AssistantDelivery.calendarPayload(undated, kind: "delete_reminder")?["expected_due_ts"] is NSNull)
+            var complete = undated; complete["type"] = "complete_reminder"
+            precondition(AssistantDelivery.calendarPayload(complete, kind: "complete_reminder") == nil)
+            var zero = undated; zero["expected_due_ts"] = 0.0
+            precondition(AssistantDelivery.calendarPayload(zero, kind: "delete_reminder") == nil)
+            scenarios += 1
+        }
         print("AssistantDelivery: \(scenarios) offline audit/receipt/transport scenarios passed")
     }
 }

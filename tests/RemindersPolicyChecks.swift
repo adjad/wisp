@@ -53,6 +53,20 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         }
         precondition(RemindersWriter.undatedPayload(rows(500)).items.first?["source_id"] as? String == "id0",
                      "the cut keeps the first entries in order")
+        // Newest first when creation dates are known, so the cap drops the oldest
+        // (stale) reminders; undated-by-creation entries sort last, in input order.
+        let aged: [[String: Any]] = [["source_id": "old", "created_ts": 100.0],
+                                     ["source_id": "unknown"],
+                                     ["source_id": "new", "created_ts": 900.0],
+                                     ["source_id": "mid", "created_ts": 500.0]]
+        precondition(RemindersWriter.undatedPayload(aged).items.compactMap { $0["source_id"] as? String }
+                     == ["new", "mid", "old", "unknown"], "undated payload sorts newest first")
+        let entry = RemindersWriter.undatedEntry(id: "x", title: nil, list: "L",
+                                                 created: Date(timeIntervalSince1970: 1234))
+        precondition(entry["created_ts"] as? Double == 1234 && entry["title"] as? String == "(untitled)",
+                     "an undated entry carries its creation date")
+        precondition(RemindersWriter.undatedEntry(id: "x", title: "t", list: "L", created: nil)["created_ts"] == nil,
+                     "no creation date is sent as absent, never as zero")
         let wire = try! JSONSerialization.data(withJSONObject: [
             "undated": RemindersWriter.undatedPayload(rows(2)).items,
             "undated_total": RemindersWriter.undatedPayload(rows(2)).total] as [String: Any])
