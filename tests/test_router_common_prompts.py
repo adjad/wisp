@@ -147,3 +147,12 @@ def test_skip_inside_a_sentence_is_not_a_music_command(prompt):
     d = asyncio.run(route(prompt))
     assert d.force_first_tool not in {"mac_media", "mac_set_volume"}, d
     assert "matched skill tools offered" not in d.reason, d
+
+
+@pytest.mark.parametrize("prompt", ["what's the date today", "what time is it", "what day is it"])
+def test_local_clock_is_bound_to_this_macs_zone(prompt):
+    # Live fresh-install run: the model passed place="UTC" and answered Sunday
+    # at 7 PM on a Saturday in California.
+    d = asyncio.run(route(prompt))
+    assert d.force_first_tool == "world_time", d
+    assert d.tool_argument_bindings.get("world_time") == {"place": "", "compare_to": ""}, d

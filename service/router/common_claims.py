@@ -94,7 +94,10 @@ _BAD_PLACE = re.compile(r"\b(?:morning|afternoon|evening|night|hours?|minutes?|m
 
 def _local_clock(t: str) -> CommonClaim | None:
     if any(rx.fullmatch(t) for rx in _CLOCK_LOCAL):
-        return CommonClaim(("world_time",), "local date/time -> world_time", force="world_time")
+        # Bound to the Mac's own zone: left to the model, a placeless call was
+        # filled in as "UTC" and answered tomorrow's date in the evening.
+        return CommonClaim(("world_time",), "local date/time -> world_time", force="world_time",
+                           bindings={"world_time": {"place": "", "compare_to": ""}})
     for rx in _CLOCK_PLACE:
         m = rx.fullmatch(t)
         if m and not _BAD_PLACE.search(m["place"]):
