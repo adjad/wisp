@@ -178,13 +178,14 @@ struct TodayPlanChecks {
         try evidenceLabelChecks()
         let zone = TimeZone(identifier: "America/Los_Angeles")!
         let model = TodayModel(timezone: zone)
+        model.clockLocale = WispClock.fixedLocale
         check(model.clock(instant("2026-09-24T07:00:00Z").timeIntervalSince1970) == "12:00 AM")
         check(model.clock(instant("2026-09-24T19:05:00Z").timeIntervalSince1970) == "12:05 PM")
         check(model.clock(instant("2026-09-24T22:05:00Z").timeIntervalSince1970) == "3:05 PM")
-        check(TodayModel.workingHourLabel(0) == "12:00 AM")
-        check(TodayModel.workingHourLabel(12) == "12:00 PM")
-        check(TodayModel.workingHourLabel(18) == "6:00 PM")
-        check(TodayModel.workingHourLabel(24) == "12:00 AM (next day)")
+        check(TodayModel.workingHourLabel(0, locale: WispClock.fixedLocale) == "12:00 AM")
+        check(TodayModel.workingHourLabel(12, locale: WispClock.fixedLocale) == "12:00 PM")
+        check(TodayModel.workingHourLabel(18, locale: WispClock.fixedLocale) == "6:00 PM")
+        check(TodayModel.workingHourLabel(24, locale: WispClock.fixedLocale) == "12:00 AM (next day)")
         check(TodayModel.defaultDeadline(for: "2026-03-08", in: zone) == instant("2026-03-09T07:00:00Z"),
               "Spring-forward deadline must use the next civil midnight after a 23-hour day")
         check(TodayModel.defaultDeadline(for: "2026-11-01", in: zone) == instant("2026-11-02T08:00:00Z"),
