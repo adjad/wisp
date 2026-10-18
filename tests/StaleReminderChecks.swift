@@ -6,6 +6,9 @@ import Foundation
 
 @MainActor
 func staleReminderChecks(_ check: (Bool, String) -> Void) {
+    // The hub's "changed" event reaches the Day tab under this name (OverlayModel posts it).
+    check(Notification.Name.wispAssistantChanged.rawValue == "WispAssistantChanged", "the change notification's name")
+
     // The reply.
     let reply: [String: Any] = ["asks": [
         ["kind": "stale_reminder", "source_id": "r1", "title": "Return library book", "context": "Errands",

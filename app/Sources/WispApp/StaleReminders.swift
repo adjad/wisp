@@ -1,6 +1,12 @@
 import Foundation
 import Combine
 
+extension Notification.Name {
+    /// The service's hub said something changed (a sync landed, a reminder was
+    /// kept or deleted). OverlayModel posts it from the assistant event stream.
+    static let wispAssistantChanged = Notification.Name("WispAssistantChanged")
+}
+
 /// One "keep or delete this old undated reminder?" question from the service
 /// (`GET /assistant/stale_reminders`, service/assistant/stale_reminders.py).
 /// An undated reminder about a week old is asked about once; the service stops

@@ -1424,7 +1424,7 @@ final class OverlayModel: ObservableObject {
         // Durable Calendar actions only execute through the claimed bridge.
         switch ev.type {
         case "hello", "heartbeat": return true
-        case "changed": break
+        case "changed": NotificationCenter.default.post(name: .wispAssistantChanged, object: nil)
         case "calendar_action_unknown":
             return await Notifications.deliver(id: ev.str("event_id") + ":unknown",
                 title: "Calendar outcome unknown", body: ev.str("error"))
