@@ -17,12 +17,17 @@ struct StaleReminderAsk: Equatable, Identifiable {
     let title: String
     /// The Reminders list it is in, when known.
     let context: String
+    /// Days since it was added (an undated reminder), or days overdue.
     let ageDays: Int?
+    /// The service's "reason": a dated reminder a week or more past due.
+    var overdue = false
     var id: String { sourceID }
 
-    /// "Added 9 days ago · Groceries"
+    /// "Added 9 days ago · Groceries", or "8 days overdue · Groceries".
     var detail: String {
-        let age = ageDays.map { "Added \($0) day\($0 == 1 ? "" : "s") ago" } ?? "No date"
+        let plural: (Int) -> String = { $0 == 1 ? "" : "s" }
+        let age = ageDays.map { overdue ? "\($0) day\(plural($0)) overdue" : "Added \($0) day\(plural($0)) ago" }
+            ?? (overdue ? "Overdue" : "No date")
         return context.isEmpty ? age : age + " · " + context
     }
 
@@ -34,7 +39,8 @@ struct StaleReminderAsk: Equatable, Identifiable {
                   let title = row["title"] as? String, !title.isEmpty,
                   (row["actions"] as? [String]).map({ Set($0).isSuperset(of: ["keep", "delete"]) }) ?? true else { return nil }
             return StaleReminderAsk(sourceID: id, title: title, context: row["context"] as? String ?? "",
-                                    ageDays: (row["age_days"] as? NSNumber)?.intValue)
+                                    ageDays: (row["age_days"] as? NSNumber)?.intValue,
+                                    overdue: row["reason"] as? String == "overdue")
         }
     }
 
