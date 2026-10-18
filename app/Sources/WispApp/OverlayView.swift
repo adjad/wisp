@@ -466,6 +466,12 @@ struct OverlayView: View {
                     withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
                 .onChange(of: model.answer) { proxy.scrollTo("bottom", anchor: .bottom) }
+                // A report opened from the menu bar or /report unfolds under an
+                // earlier reply; bring it into view.
+                .onChange(of: model.report.snapshot?.key) { _, key in
+                    guard key != nil, !model.reportIsUnattached else { return }
+                    DispatchQueue.main.async { withAnimation { proxy.scrollTo("report", anchor: .bottom) } }
+                }
             }
         }
     }
@@ -527,6 +533,7 @@ struct OverlayView: View {
                 if model.report.snapshot?.key == OverlayModel.reportKey(for: turn) {
                     ReportDraftCard(draft: model.report, save: { model.saveReport(model.report) })
                         .padding(.top, 4)
+                        .id("report")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
