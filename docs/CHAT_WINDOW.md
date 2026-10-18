@@ -1,6 +1,6 @@
 # Wisp's notch and window
 
-Wisp lives in the notch. Asking, Today, Research, quick settings, first-run
+Wisp lives in the notch. Asking, the Brief, your Day, research, quick settings, first-run
 setup and problem reports all happen in the black panel under the notch, and
 Wisp starts there: launching it opens no window. One Wisp window holds the work
 that needs room (long chats, Memory and saved research), and it opens only when
@@ -11,28 +11,42 @@ asked for. Both talk to the same service and the same saved chats.
 - **At rest** it is a black bar around the notch (a small capsule on a monitor).
   Hover or ⌥Space opens it. ⌥Space and the menu-bar icon always open Ask; hover
   opens the tab you last used if the panel closed in the last ten minutes. A dot
-  shows Wisp is working, a count shows how many Today items need you, and an
+  shows Wisp is working, a count shows what is due today or overdue, and an
   orange "!" means setup was set aside. Clicking a Wisp notification (other than
-  a nudge's buttons) opens Today.
-- **Tabs** (⌘1 to ⌘3): **Ask**, the conversation; **Today**, the brief, what
-  needs you, the next three blocks, inline Add to day, Replan and Running late;
-  **Research**, whose prompt drafts an editable research plan, then shows the run
-  and its report.
+  a nudge's buttons) opens Day.
+- **Tabs** (⌘1 to ⌘3): **Ask**, the conversation; **Brief**, one sentence about
+  the day and up to four source lines, read only; **Day**, the rest of today on
+  one hour-by-hour timeline (calendar, your tasks, suggestions, learned busy
+  times, plans caught in texts, reminders due) under a two-line blurb.
+  Research is a mode of Ask (`NotchTab.research`, not in the strip): `/research`,
+  a job opened from the window or New research turn the prompt into an editable
+  research plan, then show the run and its report. Choosing a tab leaves it.
+- **Day's actions** never write to Calendar or Reminders. Keep (or a later time
+  from ⋯) pins a suggestion as a Wisp task; Add does the same for a plan caught
+  in texts, and Ignore hides it on this Mac; Plan time adds a reminder as a task
+  the planner fits in; Not today is the planner's one-day ignore of a learned
+  window. The logic (what lands where, the badge, the Brief's sentence, the
+  calendar's busyness verdict (`DayLoad`, the weekly report's 9–6 union and
+  back-to-back rule), the blurb, plain-language warnings, junk titles) is pure
+  code in `NotchDay.swift`.
 - **Ask** has a chat switcher (recent saved chats from `GET /chats`), New chat
   (⌘N), slash commands (`/today`, `/memory`, `/research`, `/settings`, `/report`,
   `/window`, `/new`), per-reply Details (route, model, timing, tool calls; open by
   default in Debug Mode) and the same confirmation card and message draft as the
   window.
 - **Keep open** (pin, ⌘P). Any edit in progress also holds the panel open: typed
-  input, a message draft, a Today task, an open setup card or an open report.
-- **Quick settings** (the gear or `/settings`): Full access, Learn my routines,
-  the brief times, Show Details (Debug Mode) and Free up memory. Everything that
-  needs a form, a key, OAuth or widens what Wisp reads stays in Settings (⌘,).
+  input, a message draft, a Day task, an open setup card or an open report.
+- **Quick settings** (the gear or `/settings`), in three cards: Permissions (Full
+  access, Learn my routines), Daily brief (the AM and PM times, each opening an
+  inline hour list) and Advanced (Reply details, which is Debug Mode, and Model
+  memory). Model memory shows what the engine measured from `GET /models/memory`,
+  and no number or bar when it measured nothing. Everything that needs a form, a
+  key, OAuth or widens what Wisp reads stays in Settings (⌘,).
 - **First-run setup**: on a Mac that can't answer yet, the first launch opens Ask
   on a setup card (engine, model, Use & test). Later shrinks it to a line until
   Wisp is ready. Smart Search, other local apps and downloads continue in the
   setup window.
-- **Report a problem** unfolds under the reply (or under Today's plan), with a
+- **Report a problem** unfolds under the reply (or under the Day tab), with a
   preview of exactly what is saved. Nothing is uploaded.
 - The panel is a borderless, non-activating `NSPanel` at status-bar level, so
   notch views never use sheets or alerts: confirmations and editors are inline.
@@ -53,12 +67,12 @@ asked for. Both talk to the same service and the same saved chats.
   unconfirmed" when it can't be read).
 - **Today**: the full planner (Needs my attention, Day plan, the task editor,
   pins, working hours, Email my day plan and its inline report), sharing one
-  `TodayModel` with the notch's Today tab.
+  `TodayModel` with the notch's Brief and Day tabs.
 - **Memory**: Facts (saved memories and corrections), Routines (what Wisp learned
   from your activity) and Review (new memories to confirm).
 - **Research**: your 30 most recent research jobs and every pinned one. Opening
-  a job shows it in the notch's Research tab without starting a new search; New
-  research opens that tab's prompt.
+  a job shows it in the notch without starting a new search; New research opens
+  the notch's research prompt.
 - Appearance: follows the Mac. Dark is the aurora; light is a pale daylight blue.
 - It opens from the Dock icon (or opening Wisp again while it runs), the menu
   bar's Open Wisp Window, Window ▸ Wisp Window (⌘1), the notch's ⤢ or ⌘O (on
@@ -75,8 +89,8 @@ request.
 | Routes into the app (`WispRoute`, `WispRouter`); every control opens one | `app/Sources/WispApp/WispRoute.swift` |
 | Where each route lands (`AppDelegate.open(_:)`) | `app/Sources/WispApp/AppDelegate.swift` |
 | Notch panel, tabs, Ask | `OverlayView.swift`, `OverlayModel.swift`, `NotchTab.swift` |
-| Today tab | `NotchTodayView.swift` (shares `TodayModel` with the planner window) |
-| Quick settings | `QuickSettingsView.swift` (shares the app's one `SettingsLoader`) |
+| Brief and Day tabs | `NotchBriefView.swift`, `NotchDayView.swift`, logic in `NotchDay.swift` (share `TodayModel` with the planner window) |
+| Quick settings | `QuickSettingsView.swift` (shares the app's one `SettingsLoader`), lines in `QuickSettingsText.swift` |
 | Setup card | `NotchSetupView.swift` (shares the app's one `SetupGuideModel` with `SetupGuideView`) |
 | Inline reports | `ReportDraftView.swift`, `DiagnosticReport.swift` (`ReportDraft`) |
 | Slash commands | `NotchCommand.swift` |
@@ -96,8 +110,8 @@ passing its `session_id` to `/agent`. Closing the window loses nothing.
 Shared state lives in app-scoped objects owned by `AppDelegate`, never in a view,
 so the notch collapsing or a tab being rebuilt can't drop a change in flight:
 
-- `TodayModel`: the notch's Today tab and the planner window show the same day.
-  It loads while its tab is on screen, never at launch or on hover.
+- `TodayModel`: the notch's Brief and Day tabs and the planner window show the
+  same day. It loads while Brief or Day is on screen, never at launch or on hover.
 - `SettingsLoader`: quick settings, the Settings window and the window's Full
   access pill share one source. Full access is a `Bool?`: nil is "unconfirmed",
   never "off". A change shows only once the service confirms it, and a lost reply
@@ -146,7 +160,8 @@ scripts/test_diagnostic_report.sh        # redaction, journals, private saves, r
 ```
 
 `scripts/run_simulation_qa.py --only-native` runs these with the pure notch
-checks (`tests/NotchTabChecks.swift`, `tests/NotchCommandChecks.swift`).
+checks (`tests/NotchTabChecks.swift` with `tests/NotchDayChecks.swift`, and
+`tests/NotchCommandChecks.swift`).
 
 Render the real window against a scripted fixture, in light and dark, without
 starting Wisp or touching its port:
@@ -155,6 +170,15 @@ starting Wisp or touching its port:
 cd app
 swift build -Xswiftc -DWISP_CHAT_QA
 WISP_CHAT_QA_OUT=/some/dir .build/debug/WispApp
+```
+
+Render the notch's Brief and Day tabs from a fixture day the same way (it
+prints each tab's size, to check it fits the 640 pt panel):
+
+```bash
+cd app
+swift build -Xswiftc -DWISP_NOTCH_QA
+WISP_NOTCH_QA_OUT=/some/dir .build/debug/WispApp
 ```
 
 On a machine whose `swift` is the Command Line Tools toolchain, SwiftUI's `@State`

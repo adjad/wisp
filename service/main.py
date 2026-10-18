@@ -369,6 +369,15 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         pass
 
+    # oMLX's prompt cache has no age expiry and a half-the-disk default cap;
+    # bound it (the cap applies at the next engine start) and drop stale files.
+    try:
+        from service import omlx_cache
+        omlx_cache.ensure_cap()
+        omlx_cache.sweep_stale()
+    except Exception:  # noqa: BLE001
+        pass
+
     if profile is None:
         started_tasks.append(asyncio.create_task(_warm_summarizer()))
         if cloud_super_model_enabled():
@@ -1078,6 +1087,30 @@ async def unload_all() -> dict[str, Any]:
     for m in loaded:
         await client.unload(m)
     return {"unloaded": loaded}
+
+
+@app.get("/models/memory")
+async def models_memory() -> dict[str, Any]:
+    """What the local engine has resident, for Quick settings' Model memory row.
+
+    Read only. `bytes` is the engine's measured footprint and is null when it has
+    none, so the app never shows an estimate as memory in use. Anything other than a
+    managed local oMLX engine answers `available: false`.
+    """
+    if not getattr(client, "managed", False) or not getattr(client.provider, "omlx_health", False):
+        return {"available": False, "models": []}
+    try:
+        status = await client.status()
+    except Exception:
+        return {"available": False, "models": []}
+    resident = []
+    for row in status.get("models", []):
+        if not isinstance(row, dict) or row.get("loaded") is not True or not isinstance(row.get("id"), str):
+            continue
+        size = row.get("actual_size")
+        measured = isinstance(size, int) and not isinstance(size, bool) and size > 0
+        resident.append({"id": row["id"], "bytes": size if measured else None})
+    return {"available": True, "models": resident}
 
 
 @app.post("/unload_agent")

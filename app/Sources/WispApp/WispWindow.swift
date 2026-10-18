@@ -113,7 +113,7 @@ final class WispWindowNavigation: ObservableObject {
     /// Saved research for the Research section. AppDelegate supplies it, with
     /// the service client; without one (the QA harness) the section is empty.
     var researchLibrary: ResearchLibraryModel?
-    /// The app's one day plan, shared with the notch's Today tab. Without one
+    /// The app's one day plan, shared with the notch's Brief and Day tabs. Without one
     /// (the QA harness) the Today section is empty.
     var today: TodayModel?
 }
