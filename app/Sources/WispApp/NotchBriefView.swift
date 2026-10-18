@@ -76,8 +76,10 @@ struct NotchBriefView: View {
 
     /// Today's composed Daily Summary, when one arrived today and the Brief shows today.
     private var composedToday: ComposedBrief? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = today.timezone
         guard let brief = model.brief, today.isShowingCurrentDay,
-              Calendar.current.isDateInToday(brief.receivedAt) else { return nil }
+              calendar.isDate(brief.receivedAt, inSameDayAs: today.now) else { return nil }
         return ComposedBrief.parse(brief.text)
     }
 
@@ -109,10 +111,20 @@ struct NotchBriefView: View {
         lines.contains { $0.leading.contains("–") } ? 118 : 64
     }
 
+    /// Opening grows the panel first so the details fade into room; closing
+    /// shrinks it once they have gone, so it never jumps under them.
     private func toggle(_ tag: String) {
         let next = open == tag ? nil : tag
-        if reduceMotion { open = next } else { withAnimation(.easeOut(duration: 0.18)) { open = next } }
-        DispatchQueue.main.async { model.onResize() }
+        let growing = next != nil
+        if reduceMotion {
+            open = next
+            DispatchQueue.main.async { model.onResize() }
+            return
+        }
+        if growing { DispatchQueue.main.async { model.onResize() } }
+        withAnimation(.easeOut(duration: 0.18)) { open = next } completion: {
+            if !growing { model.onResize() }
+        }
     }
 
     private func detailView(_ detail: BriefDetail) -> some View {
@@ -247,10 +259,12 @@ struct BriefContent {
             item.allDay ? Date(timeIntervalSince1970: item.when).formatted(Date.FormatStyle(timeZone: zone).weekday(.abbreviated))
                 : NotchChrome.dayClock(item.when, zone: zone)
         }
+        // "Nothing in the next week" only once calendar and reminders are read.
+        let weekRead = calendarKnown && coverage("reminders")?.ready == true
         let soon: DayTimeline.Soon
         if let upcoming {
-            soon = upcoming.first.map { .item(title: $0.title, when: when($0), source: $0.isReminder ? "reminders" : "calendar") }
-                ?? .nothing
+            soon = upcoming.first.map { .item(title: $0.title, when: when($0), source: $0.isReminder ? "reminders" : $0.source) }
+                ?? (weekRead ? .nothing : .unknown)
         } else if let need = needs.filter({ ($0.due_ts ?? 0) > dayEnd }).min(by: { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }) {
             // Before the week has been read, a dated need after today still counts.
             soon = .item(title: need.title, when: NotchChrome.dayClock(need.due_ts ?? 0, zone: zone), source: need.source)
@@ -272,7 +286,7 @@ struct BriefContent {
                                      ready: coverage("email")?.ready == true),
             "TEXTS": BriefDetail.texts(needing: textNeeds, summary: composed?.lines(.messages) ?? [],
                                        ready: coverage("messages")?.ready == true),
-            "SOON": BriefDetail.soon(upcoming, when: when),
+            "SOON": BriefDetail.soon(upcoming.flatMap { $0.isEmpty && !weekRead ? nil : $0 }, when: when),
         ]
 
         summary = composed?.cutDown ?? []

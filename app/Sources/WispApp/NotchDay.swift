@@ -428,27 +428,25 @@ struct DayTimeline: Equatable {
             lines.append(BriefLine(tag: "CAL", text: calendarUnsynced ? "Calendar hasn't synced yet" : "Nothing on your calendar",
                                    trailing: "", source: .calendar, muted: calendarUnsynced))
         }
-        switch mail {
-        case let mail? where mail.ready:
+        // No coverage entry means the workspace couldn't be read: unknown, not off.
+        if let mail, mail.ready {
             let needing = mailNeedingYou(mail.needing)
+            let promos = mail.needing.filter { !isJunk($0) && isBulkMail($0) }.count
             let text = needing.isEmpty ? "Nothing needs a reply"
                 : needing.count == 1 ? needing[0] : "\(needing.count) emails need you"
-            lines.append(BriefLine(tag: "MAIL", text: text, trailing: "", source: .mail))
-        case .some:
+            // Say when promos were left out, so a hidden email is never silent.
+            lines.append(BriefLine(tag: "MAIL", text: text, trailing: promos > 0 ? "+\(promos) promo\(promos == 1 ? "" : "s")" : "",
+                                   source: .mail))
+        } else {
             lines.append(BriefLine(tag: "MAIL", text: "Mail hasn't been checked yet", trailing: "", source: .mail, muted: true))
-        case nil:
-            lines.append(BriefLine(tag: "MAIL", text: "Mail isn't connected", trailing: "", source: .mail, muted: true))
         }
-        switch texts {
-        case let texts? where texts.ready:
+        if let texts, texts.ready {
             let needing = texts.needing.filter { !isJunk($0) }
             let text = needing.isEmpty ? "No texts need you"
                 : needing.count == 1 ? needing[0] : "\(needing.count) texts need you"
             lines.append(BriefLine(tag: "TEXTS", text: text, trailing: "", source: .messages))
-        case .some:
+        } else {
             lines.append(BriefLine(tag: "TEXTS", text: "Messages haven't been checked yet", trailing: "", source: .messages, muted: true))
-        case nil:
-            lines.append(BriefLine(tag: "TEXTS", text: "Messages aren't connected", trailing: "", source: .messages, muted: true))
         }
         switch soon {
         case let .item(title, when, source) where !isJunk(title):
@@ -466,8 +464,10 @@ struct DayTimeline: Equatable {
         subjects.filter { !isJunk($0) && !isBulkMail($0) }
     }
 
-    /// An obvious newsletter, promotion or subscription notice, by its subject.
-    /// Deliberately narrow: a subject that might be a person's request stays.
+    /// An unmistakable newsletter, promotion or subscription notice, by its
+    /// subject. Deliberately narrow: "Last chance to submit your form" or
+    /// "Webinar slides" from a person must still count, so only phrases a person
+    /// wouldn't write are here.
     static func isBulkMail(_ subject: String) -> Bool {
         let s = subject.lowercased()
         return bulkMailPhrases.contains { s.contains($0) }
@@ -476,10 +476,8 @@ struct DayTimeline: Equatable {
 
     static let bulkMailPhrases = [
         "you're subscribed", "you\u{2019}re subscribed", "you are subscribed", "subscription confirmed",
-        "thanks for subscribing", "thank you for subscribing", "welcome to the newsletter", "newsletter",
-        "unsubscribe", "weekly digest", "daily digest", "your weekly", "this week in ", "webinar",
-        "starts today", "last chance", "limited time", "don't miss", "don\u{2019}t miss", "flash sale",
-        "free shipping", "new arrivals", "early access", "exclusive offer", "special offer", "promo code",
+        "thanks for subscribing", "thank you for subscribing", "unsubscribe", "newsletter",
+        "weekly digest", "daily digest", "flash sale", "free shipping", "promo code",
     ]
 }
 

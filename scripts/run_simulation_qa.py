@@ -310,6 +310,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_agent_disconnect.py",
     # A stand-in client in place of oMLX; the read-only /models/memory route only.
     "tests/test_models_memory.py",
+    # Source-text checks of the composed brief's headers; nothing is composed or sent.
+    "tests/test_brief_summary_contract.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
     "tests/test_backend_identity_and_sandbox_isolation.py",
     # Environment-variable echo only; no server, socket or process.

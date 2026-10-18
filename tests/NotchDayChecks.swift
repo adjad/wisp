@@ -171,24 +171,31 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           && unsynced.map(\.text) == ["Calendar hasn't synced yet", "Mail hasn't been checked yet",
                                       "Messages haven't been checked yet", "The week ahead hasn't loaded yet"],
           "unread sources keep the four rows, dim: \(unsynced.map(\.text))")
-    let unconnected = DayTimeline.briefLines(calendar: nil, mail: nil, texts: nil, soon: .nothing)
-    check(unconnected.map(\.text) == ["Nothing on your calendar", "Mail isn't connected", "Messages aren't connected",
-                                      "Nothing in the next week"], "sources without coverage say so")
+    let unread = DayTimeline.briefLines(calendar: nil, mail: nil, texts: nil, soon: .nothing)
+    check(unread.map(\.text) == ["Nothing on your calendar", "Mail hasn't been checked yet", "Messages haven't been checked yet",
+                                 "Nothing in the next week"] && unread[1].muted && unread[2].muted,
+          "no coverage (the workspace couldn't be read) is unknown, never off")
     check(DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: ["Lab partner", "Advisor"]),
                                  texts: (ready: true, needing: ["Mom", "Priya"]), soon: .nothing)
           .map(\.text)[1...2] == ["2 emails need you", "2 texts need you"], "mail and text counts")
     check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .item(title: "nothing", when: "Fri", source: "reminders"))[3]
           .text == "Nothing in the next week", "a placeholder is never what's coming")
 
-    // Bulk mail never counts as needing you.
-    let inbox = ["Tech Week starts today", "You're subscribed: The Download", "Can you review my draft?",
-                 "50% off everything", "Weekly digest: CSE 20", "Lab moved to Thursday", "nothing"]
+    // Unmistakable bulk mail never counts as needing you, and the row says it was left out.
+    let inbox = ["You're subscribed: The Download", "Can you review my draft?", "50% off everything",
+                 "Weekly digest: CSE 20", "Lab moved to Thursday", "nothing"]
     check(DayTimeline.mailNeedingYou(inbox) == ["Can you review my draft?", "Lab moved to Thursday"],
           "newsletters, promos and placeholders are left out: \(DayTimeline.mailNeedingYou(inbox))")
-    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: inbox), texts: nil, soon: .nothing)[1].text
-          == "2 emails need you", "the MAIL count leaves bulk mail out")
-    check(!DayTimeline.isBulkMail("Re: project offer") && !DayTimeline.isBulkMail("Meeting with Priya")
-          && DayTimeline.isBulkMail("Last chance: 20% off"), "bulk mail is matched narrowly")
+    let promos = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: inbox), texts: nil, soon: .nothing)[1]
+    check(promos.text == "2 emails need you" && promos.trailing == "+3 promos", "the MAIL row counts real mail and names what it left out")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: ["Can you review my draft?"]), texts: nil,
+                                 soon: .nothing)[1].trailing == "", "no promos, no note")
+    for personal in ["Last chance to submit your thesis form", "Webinar slides for Thursday", "Tech Week starts today",
+                     "Don't miss the lab meeting", "Re: project offer", "Meeting with Priya", "This week in CSE 20"] {
+        check(!DayTimeline.isBulkMail(personal), "a subject a person could write still counts: \(personal)")
+    }
+    check(DayTimeline.isBulkMail("Last chance: 20% off") && DayTimeline.isBulkMail("Our October newsletter")
+          && DayTimeline.isBulkMail("Thanks for subscribing!"), "unmistakable bulk mail")
 
     briefSummaryChecks(check, dayStart: dayStart, now: now)
 

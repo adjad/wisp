@@ -11,7 +11,7 @@ import Foundation
 /// "**💬 Messages**"), then a closing offer. A header that isn't one of those
 /// ("**Worth a look**", a conversation's name) belongs to the section above it.
 struct ComposedBrief: Equatable {
-    enum Kind: Equatable { case keeping, calendar, reminders, mail, messages, other }
+    enum Kind: Equatable { case keeping, calendar, reminders, mail, messages }
 
     struct Section: Equatable {
         let kind: Kind
@@ -26,11 +26,12 @@ struct ComposedBrief: Equatable {
         sections.filter { $0.kind == kind }.flatMap(\.lines)
     }
 
-    /// The short summary under the Brief's lede: what Wisp is keeping in mind,
-    /// and any section the brief adds later that isn't calendar, mail or messages.
-    /// Calendar shows as a clean event list instead, from the day's plan.
+    /// The short summary under the Brief's lede: what Wisp is keeping in mind.
+    /// Calendar shows as a clean event list instead, from the day's plan, and an
+    /// unknown header stays inside the section above it, so mail and messages
+    /// content can never reach the summary.
     var cutDown: [String] {
-        Array(sections.filter { $0.kind == .keeping || $0.kind == .other }.flatMap(\.lines).prefix(4))
+        Array(lines(.keeping).prefix(4))
     }
 
     static func parse(_ text: String) -> ComposedBrief {
@@ -180,7 +181,8 @@ struct BriefDetail: Equatable {
             Line(id: "summary-\($0.offset)", leading: "", text: $0.element)
         }
         if bulk > 0 {
-            lines.append(Line(id: "bulk", leading: "", text: "\(bulk) newsletter\(bulk == 1 ? "" : "s") and promo\(bulk == 1 ? "" : "s") left out",
+            lines.append(Line(id: "bulk", leading: "",
+                              text: bulk == 1 ? "1 newsletter or promo left out" : "\(bulk) newsletters and promos left out",
                               muted: true))
         }
         if lines.isEmpty { lines = [Line(id: "empty", leading: "", text: "Nothing needs a reply", muted: true)] }
@@ -209,7 +211,7 @@ struct BriefDetail: Equatable {
         }
         let lines = items.isEmpty ? [Line(id: "empty", leading: "", text: "Nothing in the next week", muted: true)]
             : items.map { Line(id: $0.id, leading: when($0), text: $0.title) }
-        let source: DayTimeline.BriefSource = items.first.map { $0.isReminder ? .reminders : .calendar } ?? .reminders
+        let source = items.first.map { DayTimeline.briefSource($0.isReminder ? "reminders" : $0.source) } ?? .reminders
         return BriefDetail(lines: lines, source: source)
     }
 }
