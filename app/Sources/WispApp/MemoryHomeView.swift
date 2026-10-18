@@ -32,6 +32,7 @@ struct MemoryHomeView: View {
                     switch navigation.memoryTab {
                     case .facts: MemoryView(scope: .facts)
                     case .routines: LearnedView(model: navigation.learned)
+                    case .about: AboutYouView()
                     case .review: MemoryView(scope: .review)
                     }
                 }
