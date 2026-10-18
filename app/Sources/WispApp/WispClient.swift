@@ -305,6 +305,15 @@ final class WispClient {
         return BriefTimes.parse(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    // GET /models/memory -> {"available": true, "models": [{"id": "...", "bytes": 4200000000}]}.
+    func modelMemory() async -> ModelMemory? {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("models/memory"))
+        req.timeoutInterval = 5
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return ModelMemory.parse(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
     // POST /assistant/summary_schedule {"times": {...}} -> the times the service saved.
     func setBriefTimes(morning: Int? = nil, evening: Int? = nil) async -> BriefTimes? {
         var times: [String: Int] = [:]

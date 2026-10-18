@@ -36,9 +36,12 @@ asked for. Both talk to the same service and the same saved chats.
   window.
 - **Keep open** (pin, ⌘P). Any edit in progress also holds the panel open: typed
   input, a message draft, a Day task, an open setup card or an open report.
-- **Quick settings** (the gear or `/settings`): Full access, Learn my routines,
-  the brief times, Show Details (Debug Mode) and Free up memory. Everything that
-  needs a form, a key, OAuth or widens what Wisp reads stays in Settings (⌘,).
+- **Quick settings** (the gear or `/settings`), in three cards: Permissions (Full
+  access, Learn my routines), Daily brief (the AM and PM times, each opening an
+  inline hour list) and Advanced (Reply details, which is Debug Mode, and Model
+  memory). Model memory shows what the engine measured from `GET /models/memory`,
+  and no number or bar when it measured nothing. Everything that needs a form, a
+  key, OAuth or widens what Wisp reads stays in Settings (⌘,).
 - **First-run setup**: on a Mac that can't answer yet, the first launch opens Ask
   on a setup card (engine, model, Use & test). Later shrinks it to a line until
   Wisp is ready. Smart Search, other local apps and downloads continue in the
@@ -87,7 +90,7 @@ request.
 | Where each route lands (`AppDelegate.open(_:)`) | `app/Sources/WispApp/AppDelegate.swift` |
 | Notch panel, tabs, Ask | `OverlayView.swift`, `OverlayModel.swift`, `NotchTab.swift` |
 | Brief and Day tabs | `NotchBriefView.swift`, `NotchDayView.swift`, logic in `NotchDay.swift` (share `TodayModel` with the planner window) |
-| Quick settings | `QuickSettingsView.swift` (shares the app's one `SettingsLoader`) |
+| Quick settings | `QuickSettingsView.swift` (shares the app's one `SettingsLoader`), lines in `QuickSettingsText.swift` |
 | Setup card | `NotchSetupView.swift` (shares the app's one `SetupGuideModel` with `SetupGuideView`) |
 | Inline reports | `ReportDraftView.swift`, `DiagnosticReport.swift` (`ReportDraft`) |
 | Slash commands | `NotchCommand.swift` |
