@@ -297,12 +297,22 @@ def _sender_phrase(raw: str) -> str | None:
     return candidate
 
 
+# daily_brief returns evidence for the model: coverage caveats ("no cached
+# absence is verified") and instructions ("ask for a city, never guess one").
+# Shown verbatim from this path it read as diagnostics in a clean-install run,
+# so it always goes through the router's direct call, which the model narrates.
+_NARRATED_READS = frozenset({"daily_brief"})
+
+
 def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                  last_stock_response: str = ""):
     if deliberate(prompt) is not None:
         return None
     from service.workflows.workflow20 import mentioned_sources, personal_read
     read = personal_read(prompt)
+    if read is not None and any(name in _NARRATED_READS for name, _ in read.direct_calls):
+        # The router runs the same direct call and the model answers from it.
+        return None
     if read is not None and read.direct_calls:
         return list(read.direct_calls), ""
     if read is not None:
@@ -324,8 +334,6 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
     if re.search(r"\b(?:create|set|add|remove|delete|cancel|update|remind)\b", text, re.I):
         return None
     period = _date_range(text)
-    if re.fullmatch(r"(?:my\s+)?daily\s+(?:summary|brief|digest)", text, re.I):
-        return [("daily_brief", {})], ""
     if re.fullmatch(r"(?:show|put|keep)?\s*(?:it|this|that)?\s*(?:here\s+)?on\s+wisp", text, re.I):
         if any(name in last_tools for name in ("summarize_emails", "summarize_messages", "daily_brief")):
             return [], "The summary above is already displayed here in Wisp; nothing was sent elsewhere."

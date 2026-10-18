@@ -172,7 +172,8 @@ def daily_read(text: str) -> PersonalRead | None:
         if args is None:
             return None
         return PersonalRead(("calendar", "reminders", "email", "messages"), ("daily_brief",),
-                            (frozenset({"daily_brief"}),), {"daily_brief": args})
+                            (frozenset({"daily_brief"}),), {"daily_brief": args},
+                            (("daily_brief", args),))
     period=match['period'] or match['first']
     args = {"period": period.casefold()} if period else {}
     excluded = match["exclude"] or ""
@@ -184,11 +185,8 @@ def daily_read(text: str) -> PersonalRead | None:
     if re.search(r"\bweather\b", excluded, re.I):
         args["include_weather"] = False
     sources = tuple(source for source, flag in flags.items() if args.get(flag) is not False)
-    # No direct call: daily_brief's text is evidence for the model, full of
-    # coverage caveats ("no cached absence is verified"). Shown verbatim it
-    # read as diagnostics, so the model must call it and then answer.
     return PersonalRead(sources, ("daily_brief",), (frozenset({"daily_brief"}),),
-                        {"daily_brief": args})
+                        {"daily_brief": args}, (("daily_brief", args),))
 
 
 def conversation_read(text: str) -> PersonalRead | None:

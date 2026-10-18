@@ -134,6 +134,9 @@ def test_brief_is_a_direct_read():
     for prompt in ("what's my day look like", "give me my morning brief", "brief me"):
         read = personal_read(prompt)
         assert read is not None and read.direct_calls[0][0] == "daily_brief", prompt
+        # The verbatim read path must never return the brief's evidence text.
+        from service.workflows.reads import compile_read
+        assert compile_read(prompt) is None, prompt
 
 
 def test_summarize_unread_mail_uses_the_summarizer():
