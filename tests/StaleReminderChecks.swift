@@ -26,13 +26,17 @@ func staleReminderChecks(_ check: (Bool, String) -> Void) {
     check(StaleReminderAsk.failure(status: 409, detail: nil, deleting: true).contains("couldn't confirm"), "an unknown delete is never 'try again'")
     check(StaleReminderAsk.failure(status: 502, detail: nil, deleting: true) == "Reminders didn't delete it.", "a failed delete")
     check(StaleReminderAsk.failure(status: 404, detail: nil, deleting: false) == "That reminder is no longer in the list.", "gone")
-    check(StaleReminderAsk.failure(status: 422, detail: "field required", deleting: true) == "Couldn't delete it. Nothing was changed.",
+    check(StaleReminderAsk.failure(status: 422, detail: "field required", deleting: true).contains("couldn't confirm"),
           "validation errors don't leak")
+    check(StaleReminderAsk.failure(status: 500, detail: "Internal Server Error", deleting: true).contains("couldn't confirm")
+          && !StaleReminderAsk.failure(status: 500, detail: nil, deleting: true).contains("Nothing was changed"),
+          "an unexpected delete failure is unknown, never 'nothing was changed'")
 
     // The model, against a fake service.
     var requests: [String] = []
     var deleteStatus = 409
     var deleteThrows = false
+    var holdDelete = false
     var listed: [[String: Any]] = (reply["asks"] as? [[String: Any]]) ?? []
     let model = StaleRemindersModel(baseURL: URL(string: "http://fixture.invalid")!) { request in
         let path = request.url?.path ?? ""
@@ -48,14 +52,20 @@ func staleReminderChecks(_ check: (Bool, String) -> Void) {
             listed.removeAll { $0["source_id"] as? String == id }
             return try reply(200, ["ok": true])
         default:
+            while holdDelete { try await Task.sleep(nanoseconds: 5_000_000) }
             if deleteThrows { throw URLError(.timedOut) }
-            return try reply(deleteStatus, ["detail": deleteStatus == 409 ? "Reminders outcome unknown." : "Reminders failed."])
+            if deleteStatus == 200 { listed.removeAll { $0["source_id"] as? String == id } }
+            return try reply(deleteStatus, deleteStatus == 200 ? ["ok": true]
+                             : ["detail": deleteStatus == 409 ? "Reminders outcome unknown." : deleteStatus == 404 ? "Gone." : "Reminders failed."])
         }
     }
+    // Bounded: a task that never finishes fails the gate instead of hanging it.
     func run(_ work: @escaping @MainActor () async -> Void) {
         var done = false
         Task { @MainActor in await work(); done = true }
-        while !done { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        let deadline = Date().addingTimeInterval(5)
+        while !done, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        precondition(done, "Timed out waiting for the stale-reminder model")
     }
     run { await model.refresh() }
     check(model.asks.map(\.sourceID) == ["r1", "r2"] && requests == ["GET /assistant/stale_reminders"], "refresh reads the questions only")
@@ -80,6 +90,31 @@ func staleReminderChecks(_ check: (Bool, String) -> Void) {
     check(requests.filter { $0.hasPrefix("POST") } == ["POST /assistant/stale_reminders/delete", "POST /assistant/stale_reminders/delete",
                                                          "POST /assistant/stale_reminders/keep"],
           "only the clicked answers were sent: \(requests)")
+
+    // A delete that succeeds removes the row; a second answer waits for the first.
+    listed = [["source_id": "r4", "title": "Old errand", "age_days": 8, "actions": ["keep", "delete"]],
+              ["source_id": "r5", "title": "Gone already", "age_days": 8, "actions": ["keep", "delete"]]]
+    run { await model.refresh() }
+    let errand = model.asks[0], gone = model.asks[1]
+    deleteStatus = 200
+    deleteThrows = false
+    holdDelete = true
+    var started = false
+    Task { @MainActor in started = true; await model.delete(errand) }
+    let wait = Date().addingTimeInterval(5)
+    while model.answering == nil, Date() < wait { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    check(started && model.answering == "r4", "a delete in flight marks its row")
+    let sent = requests.count
+    run { await model.keep(gone) }
+    check(requests.count == sent, "a second answer while one is pending sends nothing")
+    holdDelete = false
+    let settle = Date().addingTimeInterval(5)
+    while model.answering != nil, Date() < settle { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    check(model.answering == nil && model.asks.map(\.sourceID) == ["r5"] && model.failures["r4"] == nil,
+          "a confirmed delete removes the row: \(model.asks.map(\.sourceID))")
+    deleteStatus = 404
+    run { await model.delete(gone) }
+    check(model.failures["r5"] == "Gone." && model.deleteBlocked.contains("r5"), "a 404 says so and offers no second Delete")
 
     // A refresh that fails keeps what was shown.
     let quiet = StaleRemindersModel(baseURL: URL(string: "http://fixture.invalid")!) { _ in throw URLError(.cannotConnectToHost) }

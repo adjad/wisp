@@ -33,16 +33,19 @@ struct StaleReminderAsk: Equatable, Identifiable {
     }
 
     /// What a failed Keep or Delete says, in plain words. The service's own
-    /// detail wins when it gave one; a 409 on Delete means the outcome is unknown
-    /// or the list isn't current, so it never reads as "try again".
+    /// detail wins for the answers its API defines (404, 409, 502). Anything else
+    /// on a Delete (a 500 can follow a delete that happened) is unknown, so it
+    /// never reads as "nothing was changed" or "try again".
     static func failure(status: Int, detail: String?, deleting: Bool) -> String {
-        if let detail, !detail.isEmpty, status != 422 { return detail }
+        if let detail, !detail.isEmpty, [404, 409, 502].contains(status) { return detail }
         switch status {
         case 404: return "That reminder is no longer in the list."
         case 409 where deleting: return "Wisp couldn't confirm whether it was deleted. Check Reminders before trying again."
         case 409: return "That reminder can't be answered right now."
         case 502: return "Reminders didn't delete it."
-        default: return deleting ? "Couldn't delete it. Nothing was changed." : "Couldn't keep it. Try again."
+        default:
+            return deleting ? "Wisp couldn't confirm whether it was deleted. Check Reminders before trying again."
+                : "Couldn't keep it. Try again."
         }
     }
 }

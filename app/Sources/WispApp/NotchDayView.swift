@@ -116,10 +116,12 @@ struct NotchDayView: View {
                     NotchChrome.small("Keep") { Task { await staleReminders.keep(ask); model.onResize() } }
                         .disabled(busy)
                         .help("Keep this reminder; Wisp won't ask about it again")
+                        .accessibilityLabel("Keep \(ask.title)")
                     if !staleReminders.deleteBlocked.contains(ask.sourceID) {
                         NotchChrome.small("Delete") { Task { await staleReminders.delete(ask); model.onResize() } }
                             .disabled(busy)
                             .help("Delete this reminder from Reminders")
+                            .accessibilityLabel("Delete \(ask.title) from Reminders")
                     }
                 }
             }
