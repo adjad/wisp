@@ -150,6 +150,7 @@ PROFILE_TESTS = {
         "tests/test_manual_reminders_survive_sync.py",
         "tests/test_stale_wisp_only_reminders.py",
         "tests/test_undated_reminders.py",
+        "tests/test_stale_reminders.py",
         "tests/test_notes_lookup_strict.py",
         "tests/test_assistant_recovery.py",
         "tests/test_discovery_store.py",
@@ -308,6 +309,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_approval_routing.py",
     # Stand-in model loop and executor; the real stream/runner cancellation wiring only.
     "tests/test_agent_disconnect.py",
+    # A stand-in client in place of oMLX; the read-only /models/memory route only.
+    "tests/test_models_memory.py",
+    # Source-text checks of the composed brief's headers; nothing is composed or sent.
+    "tests/test_brief_summary_contract.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
     "tests/test_backend_identity_and_sandbox_isolation.py",
     # Environment-variable echo only; no server, socket or process.
@@ -388,6 +393,12 @@ ADDITIONAL_FULL_TESTS = {
     # Daily workspace: pure source fixtures, private disposable SQLite, fixed
     # verified-self identity, fake policy/outbox and ASGI transport; no effects.
     "tests/test_daily_workspace.py",
+    # The user's profile (Getting to know you): JSON in a temp path, pure prompt/brief/
+    # ranking helpers and an in-process TestClient; no model, listener or real ~/.moe.
+    "tests/test_user_profile.py",
+    # Evening check-in, carry-forward and goal pulse: disposable AssistantStore and
+    # state files, in-process TestClient; no model, scheduler, hub or real ~/.moe.
+    "tests/test_checkin.py",
     "tests/test_day_plan_email.py",
     "tests/test_user_reported_regressions_20260902.py",
     "tests/test_user_reported_regressions_20260903.py",
@@ -510,6 +521,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/chat-store-contract": "native/chat-store-compile",
     "native/notch-command-contract": "native/notch-command-compile",
     "native/notch-tab-contract": "native/notch-tab-compile",
+    "native/know-you-contract": "native/know-you-compile",
 }
 
 
@@ -786,6 +798,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     prompt_queue = str(build_dir / "prompt-queue")
     notch_command = str(build_dir / "notch-command")
     notch_tab = str(build_dir / "notch-tab")
+    know_you = str(build_dir / "know-you")
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
     reminders_policy = str(build_dir / "reminders-policy")
@@ -879,10 +892,25 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 "-module-cache-path", module_cache,
                 "app/Sources/WispApp/NotchTab.swift",
                 "app/Sources/WispApp/NotchDay.swift",
-                "tests/NotchTabChecks.swift", "tests/NotchDayChecks.swift", "-o", notch_tab,
+                "app/Sources/WispApp/BriefSummary.swift",
+                "app/Sources/WispApp/QuickSettingsText.swift",
+                "app/Sources/WispApp/StaleReminders.swift",
+                "tests/NotchTabChecks.swift", "tests/NotchDayChecks.swift",
+                "tests/BriefSummaryChecks.swift", "tests/QuickSettingsChecks.swift",
+                "tests/StaleReminderChecks.swift", "-o", notch_tab,
             ],
         ),
         ("native/notch-tab-contract", [notch_tab]),
+        (
+            "native/know-you-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/KnowYouFlow.swift",
+                "tests/KnowYouChecks.swift", "-o", know_you,
+            ],
+        ),
+        ("native/know-you-contract", [know_you]),
         (
             "native/chat-logic-compile",
             [

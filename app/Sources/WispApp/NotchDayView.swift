@@ -22,6 +22,11 @@ struct NotchDayView: View {
     @State private var minutes = 45
     @State private var addingTask = false
     @State private var ignoredCaught = IgnoredCaught.load()
+    // Evening check-in and weekly goal pulse (CheckInView.swift): one tap per
+    // task at the end of the day, so tomorrow's plan starts honest.
+    @StateObject private var checkIn = CheckInModel()
+    // Old undated reminders to keep or delete (StaleReminders.swift).
+    @StateObject private var staleReminders: StaleRemindersModel
 
     /// One hour of the lane.
     private let hourHeight: CGFloat = 44
@@ -30,10 +35,11 @@ struct NotchDayView: View {
 
     @MainActor
     init(model: OverlayModel, today: TodayModel,
-         attention: AttentionModel? = nil) {
+         attention: AttentionModel? = nil, staleReminders: StaleRemindersModel? = nil) {
         self.model = model
         self.today = today
         _attention = StateObject(wrappedValue: attention ?? AttentionModel())
+        _staleReminders = StateObject(wrappedValue: staleReminders ?? StaleRemindersModel(baseURL: WispClient.baseURL))
     }
 
     private var plan: TodayPlan? { today.currentPlan }
@@ -43,6 +49,13 @@ struct NotchDayView: View {
             if let notice = model.transientNotice { NotchChrome.notice(notice) }
             if !today.error.isEmpty { NotchChrome.notice(today.error) }
             if !today.followsToday { otherDayRow }
+            if today.isShowingCurrentDay {
+                CheckInSection(model: checkIn, day: today.day, timezone: today.timezone,
+                               clock: today.clock,
+                               onAsk: { model.askAbout($0) },
+                               onChanged: { Task { await today.refresh(); model.onResize() } })
+                GoalPulseSection(model: checkIn)
+            }
             if let plan {
                 dayContent(plan)
             } else if today.error.isEmpty {
@@ -57,9 +70,68 @@ struct NotchDayView: View {
         .task {
             while !Task.isCancelled {
                 await attention.refresh()
+                await staleReminders.refresh()
+                if today.isShowingCurrentDay {
+                    await checkIn.load(day: today.day, timezone: today.timezone.identifier)
+                    model.checkInDue = false
+                }
+                model.onResize()
                 do { try await Task.sleep(for: .seconds(60)) } catch { break }
             }
         }
+        .onChange(of: model.checkInDue) { _, due in
+            guard due, today.isShowingCurrentDay else { return }
+            Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
+        }
+    }
+
+    /// Old undated reminders: keep or delete, one quiet row each. Delete runs only
+    /// on its own click and goes through Reminders' verified delete.
+    private var staleSection: some View {
+        let shown = Array(staleReminders.asks.prefix(3))
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Old reminders with no date").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(shown) { ask in staleRow(ask) }
+            if staleReminders.asks.count > shown.count {
+                Text("+\(staleReminders.asks.count - shown.count) more").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+            }
+        }
+        .padding(.top, 2)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func staleRow(_ ask: StaleReminderAsk) -> some View {
+        let busy = staleReminders.answering != nil
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(ask.title).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    Text(ask.detail).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if staleReminders.answering == ask.sourceID {
+                    ProgressView().controlSize(.small)
+                } else {
+                    NotchChrome.small("Keep") { Task { await staleReminders.keep(ask); model.onResize() } }
+                        .disabled(busy)
+                        .help("Keep this reminder; Wisp won't ask about it again")
+                        .accessibilityLabel("Keep \(ask.title)")
+                    if !staleReminders.deleteBlocked.contains(ask.sourceID) {
+                        NotchChrome.small("Delete") { Task { await staleReminders.delete(ask); model.onResize() } }
+                            .disabled(busy)
+                            .help("Delete this reminder from Reminders")
+                            .accessibilityLabel("Delete \(ask.title) from Reminders")
+                    }
+                }
+            }
+            if let failure = staleReminders.failures[ask.sourceID] {
+                Text(failure).font(.system(size: 11)).foregroundStyle(Theme.bad)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(ask.title), \(ask.detail)")
     }
 
     @ViewBuilder private func dayContent(_ plan: TodayPlan) -> some View {
@@ -78,6 +150,7 @@ struct NotchDayView: View {
         }
         lane(timeline)
         if !timeline.styles.isEmpty { legend(timeline.styles) }
+        if today.isShowingCurrentDay && !staleReminders.asks.isEmpty { staleSection }
         if let first = plan.displayUnscheduled.first(where: { !DayTimeline.isJunk($0.title) }) {
             Text("Still to fit: \(first.title), \(DayTimeline.plainReason(first.reason)).")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
@@ -246,15 +319,18 @@ struct NotchDayView: View {
                 }
             }
             Spacer(minLength: 2)
-            actions(item)
+            // What's over has nothing left to act on.
+            if !item.past { actions(item) }
         }
         .padding(.horizontal, 8).padding(.vertical, compact ? 1 : 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(DayInk.fill(item.style))
         .overlay(DayInk.border(item.style))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .opacity(item.past ? 0.45 : 1)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(item.title), \(detail(item)), \(today.clock(item.start)) to \(today.clock(item.end))")
+        .accessibilityLabel("\(item.title), \(detail(item)), \(today.clock(item.start)) to \(today.clock(item.end))"
+                            + (item.past ? ", already over" : ""))
     }
 
     /// A block's detail, with its planner warning in plain words when it has one.

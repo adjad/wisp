@@ -47,7 +47,10 @@ struct OverlayView: View {
     private var expandedPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if model.showingQuickSettings {
+            if let knowYou = model.knowYou {
+                // Getting to know you takes the tab's place until Done or a tab.
+                KnowYouView(model: knowYou)
+            } else if model.showingQuickSettings {
                 QuickSettingsView(model: model, settings: settings).padding(.top, 12)
             } else {
             switch model.tab {
@@ -226,7 +229,7 @@ struct OverlayView: View {
         let selected = model.tab.stripTab == tab
         let count = tab == .day ? todayCount : 0
         let shortcut = tab.title + (tab.shortcutDigit.map { " (⌘" + String($0) + ")" } ?? "")
-        return Button { model.tab = tab } label: {
+        return Button { model.leaveKnowYou(); model.tab = tab } label: {
             HStack(spacing: 5) {
                 Text(tab.title).font(.system(size: 11.5, weight: .medium))
                 if count > 0 { countBadge(count, selected: selected) }
@@ -466,6 +469,12 @@ struct OverlayView: View {
                     withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
                 .onChange(of: model.answer) { proxy.scrollTo("bottom", anchor: .bottom) }
+                // A report opened from the menu bar or /report unfolds under an
+                // earlier reply; bring it into view.
+                .onChange(of: model.report.snapshot?.key) { _, key in
+                    guard key != nil, !model.reportIsUnattached else { return }
+                    DispatchQueue.main.async { withAnimation { proxy.scrollTo("report", anchor: .bottom) } }
+                }
             }
         }
     }
@@ -527,6 +536,7 @@ struct OverlayView: View {
                 if model.report.snapshot?.key == OverlayModel.reportKey(for: turn) {
                     ReportDraftCard(draft: model.report, save: { model.saveReport(model.report) })
                         .padding(.top, 4)
+                        .id("report")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

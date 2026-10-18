@@ -4,6 +4,9 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Changed
+- **Versions renumbered down by 1.0.** Wisp is not yet a finished product, so every release is now 0.x (1.4.0 became 0.4.0, 1.3.3 became 0.3.3, and so on). Release tags and GitHub releases were renamed to match, and the old v0.1.0 is now v0.0.0-initial. The next release is 0.5.0.
+
 ### Added
 - **Chat switcher in the notch.** The chip under the header names the conversation and lists recent saved chats, so you can continue one without opening the window.
 - **Slash commands in the notch.** Type `/today`, `/memory`, `/research`, `/settings`, `/report`, `/window` or `/new` alone in the Ask field. A path or any other text starting with "/" is still sent as a prompt.
@@ -11,13 +14,14 @@ All notable changes to Wisp are documented here.
 - **Keep open (pin, ⌘P).** A pinned notch doesn't tuck away when the pointer leaves or you switch apps. Any explicit collapse unpins it. A message draft you're editing also keeps the notch open.
 - Notch shortcuts: ⌘N new chat, ⌘O open the current tab in the Wisp window, ⌘1 to ⌘3 switch tabs.
 - **Tabs in the notch: Ask, Brief and Day.** The tab is kept when the notch tucks away. ⌥Space and the menu-bar icon always open Ask. Hovering opens the tab you last used if the notch closed in the last ten minutes, otherwise Ask.
-- **Quick settings in the notch.** The gear (or `/settings`) shows the switches you flip most: Full access, Learn my routines, the morning and evening brief times, Details under replies (Debug Mode), and Free up memory. Everything else, including models, Google, cloud keys and the privacy source toggles, stays in Settings (**All settings**, ⌘,). Quick settings and Settings share one source, so a change waiting for confirmation looks the same in both and survives the notch tucking away.
-- **Brief in the notch.** One plain sentence about your day, then at most four lines (calendar, mail, texts, what's coming soon), each opening its app. The calendar line says how busy the rest of the day is ("Light day: just PA 2 (all day)", "Busy afternoon: 3 meetings, 1–5 PM", "Packed: back-to-back 10 AM–4 PM", "Free all day"), from your calendar and fixed Wisp events only (never learned away times), with "about" when an event has no end time. The sentence opens with the same word ("A light Saturday."), or with just the day when the calendar hasn't synced. **Ask about this** continues from it, and **See my day →** opens Day. Brief only reads; doing things happens in Ask and Day. Refresh composes the scheduled brief now.
-- **Day in the notch: the rest of today, hour by hour.** A two-line note on what's up and why the day is laid out that way, an all-day strip, and a timeline from now to the end of the day with a "now" line. Your calendar (solid), your own tasks, Wisp's suggestions (dashed, **Keep** or a later time from ⋯), learned "usually busy/away" times (hatched, **Not today**), plans caught in your texts (amber, **Add** or **Ignore**) and reminders due today (at their due time, red once overdue, **Plan time**) share one clock. A legend lists only what's shown. Below it: **Make time for…**, **Replan**, **Full week ↗** (the planner in the window), and ⋯ for Running 15 minutes late (only once your tasks have times) and Report a problem. Nothing reaches Calendar or Reminders from here: Keep, Add and Plan time put tasks on Wisp's plan, and Not today sets a learned window aside for that day only. The planner's warnings read in plain words, and placeholder reminders such as "nothing" are left out. Brief and Day load while they are open, never at launch.
+- **Quick settings in the notch.** The gear (or `/settings`) shows the switches you flip most in three cards with one line each: **Permissions** (Full access, with an amber switch and "On" while it's on, and Learn my routines), **Daily brief** (the Morning and Evening times; each opens an inline hour list) and **Advanced** (**Reply details**, which is Debug Mode, and **Model memory**). Model memory names the loaded model and the memory the engine measured for it, with a bar against this Mac's memory and **Unload**; it shows no number when the engine measured none, and "Not loaded" when nothing is. Done goes back to the tab you were on. Everything else, including models, Google, cloud keys and the privacy source toggles, stays in Settings (**All settings**, ⌘,). Quick settings and Settings share one source, so a change waiting for confirmation looks the same in both and survives the notch tucking away.
+- **Brief in the notch.** One plain sentence about your day, then a short version of today's Daily Summary: what Wisp is keeping in mind and the rest of today's events (time · title, all-day first), without the mail and messages write-ups. Without a summary from today yet, it's just the sentence. Below that are always four rows, **CAL**, **MAIL**, **TEXTS** and **SOON**. The calendar row says how busy the rest of the day is ("Light day: just PA 2 (all day)", "Busy afternoon: 3 meetings, 1–5 PM", "Packed: back-to-back 10 AM–4 PM", "Free all day"), from your calendar and fixed Wisp events only (never learned away times), with "about" when an event has no end time. MAIL counts the mail that needs you without unmistakable newsletters and promos ("You're subscribed…", "50% off…"), and says how many it left out ("+3 promos"). TEXTS says "No texts need you" when nothing does. SOON is the nearest calendar event or reminder in the next week, or "Nothing in the next week". A source Wisp can't read yet (a calendar that hasn't synced, mail or messages not checked yet, a week ahead not loaded) shows a dim row saying so instead of disappearing, and SOON says "Nothing in the next week" only once calendar and reminders are read. Click a row to open its details in place: today's events with times, the mail that needs you plus the summary's mail notes (and how many promos were left out), the summary's messages notes plus texts that need you, or the next five upcoming items, each ending with **Open Calendar/Mail/Messages/Reminders**. One row opens at a time. The sentence opens with the same word as the calendar row ("A light Saturday."), or with just the day when the calendar hasn't synced. **Ask about this** continues from it, and **See my day →** opens Day. Brief only reads; doing things happens in Ask and Day. Refresh composes the scheduled brief now.
+- **Day in the notch: the rest of today, hour by hour.** A two-line note on what's up and why the day is laid out that way, an all-day strip, and a timeline with a "now" line. On today it starts two hours before the current hour (never before midnight), with what already happened there drawn dim, and runs at least three hours ahead, to the end of working hours or your last item. Your calendar (solid), your own tasks, Wisp's suggestions (dashed, **Keep** or a later time from ⋯), learned "usually busy/away" times (hatched, **Not today**), plans caught in your texts (amber, **Add** or **Ignore**) and reminders due today (at their due time, red once overdue, **Plan time**) share one clock. A legend lists only what's shown. Below it: **Make time for…**, **Replan**, **Full week ↗** (the planner in the window), and ⋯ for Running 15 minutes late (only once your tasks have times) and Report a problem. Nothing reaches Calendar or Reminders from here: Keep, Add and Plan time put tasks on Wisp's plan, and Not today sets a learned window aside for that day only. The planner's warnings read in plain words, and placeholder reminders such as "nothing" are left out. Brief and Day load while they are open, never at launch.
+- **Old undated reminders: keep or delete, in Day.** A reminder with no due date that is about a week old is asked about once, under Day's timeline: **Keep** (Wisp won't ask again) or **Delete** (removed from Reminders through the same verified delete as every other reminder change, only when you click it). Nothing else in Wisp deletes a reminder. If Reminders hasn't synced, or Wisp can't confirm the delete, the row says so plainly and offers no second Delete, so a retry can't act on something that already changed. The questions refresh every minute while Day is open and right after you answer.
 - **First-run setup in the notch.** When Wisp can't answer yet, the first launch opens the notch on a setup card with the two required steps, an engine and a model, plus a test (**Use & test**). It keeps the notch open until you choose **Done** or **Later**. Later leaves a one-line reminder on Ask and an orange "!" on the collapsed bar. Both go away the next time Ask shows that Wisp is ready. Smart Search, other local apps and model downloads continue in the setup window (⤢). **Set Up Inference…** in the menu bar opens the card, and Settings still opens the full guide.
 - **The collapsed notch shows what's due.** The bar and the Day tab count what is due today or overdue (from the day's last load; the bar never loads anything itself). Undated items stay in the Brief. An orange "!" for setup set aside takes its place.
 - Clicking a Wisp notification other than a nudge (a reminder, something Wisp added for you, a notice about a scheduled message) now opens Day in the notch. Before, it only brought Wisp forward. Nudge buttons work as before.
-- **Report a problem, inline.** Report a problem now unfolds under the reply it is about, in the notch, instead of opening a new window on every click. Today's report unfolds in the notch's Day tab (⋯ ▸ Report a problem) and in the planner window. Each place keeps one report open at a time. A report on another reply starts over, with an empty note and details off, so neither carries over. The preview shows exactly the bytes **Save report…** writes, and **Larger** shows more of it. An open report keeps the notch open (Today's, while the notch shows Day). New chat closes a report on the conversation it leaves. **Report a Problem…** in the menu bar and `/report` open it under the last reply. Reports are still saved only where you choose, privately, and never uploaded.
+- **Report a problem, inline.** Report a problem now unfolds under the reply it is about, in the notch, instead of opening a new window on every click. Today's report unfolds in the notch's Day tab (⋯ ▸ Report a problem) and in the planner window. Each place keeps one report open at a time. A report on another reply starts over, with an empty note and details off, so neither carries over. The preview shows exactly the bytes **Save report…** writes, and **Larger** shows more of it. An open report keeps the notch open (Today's, while the notch shows Day). New chat closes a report on the conversation it leaves. **Report a Problem…** in the menu bar and `/report` open it under the last reply. Reports are still saved only where you choose, privately, and never uploaded. A report opened from the menu bar or `/report` scrolls into view under its reply, and reopening the report on a dropped reply keeps its note.
 - **The full planner is in the Wisp window.** Today's planner (Needs my attention, Day plan, the task editor, pins, working hours and Email my day plan) is now the window's Today section instead of a separate Daily Summary window. **Full week ↗** and ⌘O in the notch's Brief and Day tabs and the sidebar's Today open it. It shares one day with the notch's Brief and Day tabs.
 - **Research in the Wisp window.** Saved research jobs are now the window's Research section (the window's sidebar, **Research library** on the notch's research prompt, or Settings) instead of their own window. Opening a job shows it in the notch, and **New research** opens the notch's research prompt instead of a separate dialog.
 - **Memory in the Wisp window.** Memory and What Wisp has learned are one Memory section with three tabs: **Facts** (saved memories and their corrections), **Routines** (what Wisp learned from your activity) and **Review** (new memories to confirm, edit or set aside). Open it from the window's sidebar, `/memory` in the notch, the notch's review notice, or Settings.
@@ -25,14 +29,18 @@ All notable changes to Wisp are documented here.
 ### Changed
 - Full access now shows only what Wisp's service confirmed. If it can't be read or a change can't be confirmed, Settings, quick settings and the Wisp window say it is unconfirmed instead of showing "off", and offer Check status and Turn off. Before, an unreachable service read as "off" even if Full access was still on. The Wisp window's Full access pill follows changes made anywhere.
 - The setup card and the setup window share one setup state, so a running action, readiness and the test result are the same in both. "Test passed" now clears when Settings changes a role's model, a model provider or the engine mode, not only when setup notices the change. It also clears when the last place showing setup closes, as closing the setup window always did.
-- The menu bar's Debug Mode item is gone; Debug Mode is **Show Details under replies** in the notch's quick settings. The unused Research window and the New Research dialog are removed.
+- The menu bar's Debug Mode item is gone; Debug Mode is **Reply details** in the notch's quick settings. The unused Research window and the New Research dialog are removed.
 - The separate Memory and What Wisp has learned windows are gone; both open the Wisp window's Memory section on the matching tab. What each one stores, and how review, correction and Forget work, are unchanged.
 - The Daily Summary now composes itself **every morning and every evening** (8 AM and 8 PM by default), so a fresh summary is waiting without pressing the button. Before, it ran once a day at the time the AM/PM toggle chose. A run missed while the Mac slept or Wisp was closed arrives on the next launch or wake, until the next run is due. Only one run happens at a time. A run never starts while you are waiting on Wisp, and it steps aside if you ask something mid-run, then retries afterwards. Change the hours with `POST /assistant/summary_schedule` `{"times": {"morning": 7, "evening": 18}}` (morning 0–11, evening 12–23). The AM/PM toggle no longer chooses a time.
 - The Daily Summary brief now appears on the Brief tab instead of in the chat. **Refresh** composes a new one, and **Ask about this** continues from it in Ask. A brief you compose is saved as its own chat, no longer added to the open one.
 - The notch header's Research, Today and Daily Summary chips and the AM/PM brief toggle, which no longer picks a time, are replaced by the tabs. Research is a mode of Ask rather than a tab: `/research`, a job opened from the window, or New research turns the prompt into a research plan, and choosing a tab leaves it.
 - Wisp now starts in the notch. Launching it no longer opens the Wisp window. The first launch after updating opens the notch once with a note about where Wisp lives. Open the window from the Dock icon, the menu bar's **Open Wisp Window**, or **Window ▸ Wisp Window** (⌘1).
 
-## [1.4.0] - 2026-10-16
+### Fixed
+- The brief times in quick settings name their run, **Morning 8:00 AM** and **Evening 8:00 PM**. Two pills led by "AM" and "PM" looked like the old AM/PM switch, but both briefs run.
+- An older Daily Summary the app hadn't acknowledged (for example, because its notification failed) no longer comes back on reconnect and replaces a newer one on the Today tab. A newer brief now retires any older one that is still waiting.
+
+## [0.4.0] - 2026-10-16
 
 Wisp now **learns your routines** and uses them to **suggest how to spend your day**. It reads your Calendar, completed reminders, Mail, Messages and Notes, and optionally your Gmail and your app/idle activity. From these it infers tentative patterns ("you usually reply to email around 1pm") and tentative demands ("this looks like it needs prep time"). It proposes time for them in **Today**.
 
@@ -132,7 +140,7 @@ Rules that never change in this release:
 - Setting WAL mode can change four header bytes in a valid empty database before an unsupported schema is refused (existing behavior).
 - Some test totals are incomplete, and a few sandbox skips are disclosed in CI.
 
-## [1.3.3] - 2026-10-14
+## [0.3.3] - 2026-10-14
 
 ### Added
 
@@ -157,7 +165,7 @@ Rules that never change in this release:
 - Proactive attention reminders no longer fall back to UTC when the Mac's time zone can't be determined, which would have read every time in a message hours off and filed its reminder at the wrong time. With no zone they now pause, and when the zone is known again they start fresh instead of making reminders for the messages that arrived in between.
 - A daylight-saving change between two clock readings could make the known zone look unknown for one pass. The zone and the clock are now compared at the same instant.
 
-## [1.3.2] - 2026-10-14
+## [0.3.2] - 2026-10-14
 
 ### Added
 
@@ -187,7 +195,7 @@ Rules that never change in this release:
 - "What did you remember about me?" goes to memory recall like "What do you know about me?".
 - Typo-tolerant tool search returns the same matches on every launch; it used to vary with Python's hash seed.
 
-## [1.3.1] - 2026-10-12
+## [0.3.1] - 2026-10-12
 
 ### Added
 
@@ -220,7 +228,7 @@ An older install may still have an unused `~/.moe/aria-demo/` folder from the Ar
 - `http_request` no longer follows redirects. A 307 or 308 used to re-send the request body and custom headers to a host you never approved; a redirect is now reported as not followed.
 - "What do you know about me?" answers from what you asked Wisp to remember again, now that behavior learning is on by default. "What have you learned about me?" and questions about your habits still list learned routines.
 
-## [1.3.0] - 2026-10-11
+## [0.3.0] - 2026-10-11
 
 ### Added
 
@@ -238,7 +246,7 @@ An older install may still have an unused `~/.moe/aria-demo/` folder from the Ar
 - The Chat thread no longer pulls you back to the bottom while you scroll up to read.
 - Fixed `wisp-build all --allow-dirty` failing its own final check on a clean checkout.
 
-## [1.2.5] - 2026-10-11
+## [0.2.5] - 2026-10-11
 
 Merges the Wisp hackathon work (adjad/Wisp_Hackathon) into Wisp.
 
@@ -261,7 +269,7 @@ Merges the Wisp hackathon work (adjad/Wisp_Hackathon) into Wisp.
 
 - Fixed the sandboxed Today and Diagnostic Report contract gates under Xcode 27, where SwiftUI's `@State` is a compiler macro whose plugin server cannot start inside Simulation QA's sandbox. Those scripts now ask `swiftc` not to add a second, nested sandbox when it supports the flag; the outer sandbox is unchanged.
 
-## [1.2.0] - 2026-10-06
+## [0.2.0] - 2026-10-06
 
 ### Added
 
@@ -312,7 +320,7 @@ Merges the Wisp hackathon work (adjad/Wisp_Hackathon) into Wisp.
 - Fixed a freshly created Note not being found while an unrelated old record surfaced, and "what's my Amazon order" searching only conversation history.
 - Fixed long-overdue Wisp-only records reading as current reminders (they are left out of search and counted, never deleted).
 
-## [1.1.5] - 2026-09-30
+## [0.1.5] - 2026-09-30
 
 ### Added
 

@@ -31,7 +31,10 @@ def validate_payload(kind: str, payload: dict) -> dict:
             or _ACTION_ID.fullmatch(payload["action_id"]) is None
             or ("source_id" in keys and not _text(payload.get("source_id")))
             or ("expected_title" in keys and not _text(payload.get("expected_title")))
-            or ("expected_due_ts" in keys and not _timestamp(payload.get("expected_due_ts")))
+            or ("expected_due_ts" in keys and not _timestamp(payload.get("expected_due_ts"))
+                # Only a delete may target a reminder with no due date, and it says so
+                # with an explicit null; the native writer then requires it still be undated.
+                and not (kind == "delete_reminder" and payload.get("expected_due_ts") is None))
             or ("title" in keys and not _text(payload.get("title")))
             or ("due_ts" in keys and not _timestamp(payload.get("due_ts")))):
         raise ValueError("invalid exact reminder payload")

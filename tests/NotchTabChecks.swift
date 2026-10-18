@@ -1,11 +1,13 @@
 // Contract for the notch's tabs (app/Sources/WispApp/NotchTab.swift) and the
-// Brief and Day logic (app/Sources/WispApp/NotchDay.swift).
+// Brief and Day logic (app/Sources/WispApp/NotchDay.swift), and quick settings'
+// lines (app/Sources/WispApp/QuickSettingsText.swift), and the stale-reminder
+// questions (app/Sources/WispApp/StaleReminders.swift).
 // Pure logic: never launches Wisp or contacts its service.
 import Foundation
 
 @main
 struct NotchTabChecks {
-    static func main() {
+    @MainActor static func main() {
         var count = 0
         func check(_ condition: Bool, _ message: String) {
             count += 1
@@ -50,7 +52,9 @@ struct NotchTabChecks {
         check(NotchSetupCard.hidden.tabForOpening(.research) == .research, "no card, no change to the tab")
 
         dayChecks(check)
+        quickSettingsChecks(check)
+        staleReminderChecks(check)
 
-        print("\(count) notch tab and day checks passed.")
+        print("\(count) notch tab, day, quick settings and stale reminder checks passed.")
     }
 }

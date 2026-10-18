@@ -234,7 +234,44 @@ async def run() -> None:
             schedule_tick()
         except Exception:  # optional daily self-plan delivery never delays the loop
             pass
+        # The chief-of-staff loop (service/assistant/checkin.py): carry
+        # unfinished tasks onto today each morning, and in the evening ask how
+        # the day went, once, when the app is listening. No model, no sends.
+        try:
+            await _checkin_tick()
+        except Exception:  # noqa: BLE001 — never break the scheduler loop
+            pass
         await asyncio.sleep(TICK_S)
+
+
+async def _checkin_tick(now: float | None = None) -> None:
+    from service.assistant import checkin
+    from service.attention.detectors import local_timezone
+    now = time.time() if now is None else now
+    zone = local_timezone() or "UTC"
+    day = checkin.local_day(now, zone)
+    checkin.carry_forward(assistant_store, day, zone, now=now)
+    if not checkin.is_due(now, zone) or not hub.has_subscribers or idle.foreground_busy():
+        return
+    record = checkin.day_record(day)
+    if record.get("completed_at") is not None or record.get("notified_at") is not None:
+        return
+    card = checkin.build(assistant_store, day, zone, now=now)
+    if not card["tasks"] and not card["tomorrow"]["events"]:
+        checkin.mark_notified(day, now=now)   # nothing to ask about tonight
+        return
+    planned, done = card["planned"], card["done"]
+    if planned:
+        text = (f"You planned {planned} thing{'s' if planned != 1 else ''} today"
+                + (f" and finished {done}" if done else "") + ". How did the rest go?")
+    else:
+        text = f"Tomorrow has {len(card['tomorrow']['events'])} event{'s' if len(card['tomorrow']['events']) != 1 else ''}. Anything to move?"
+    from service import diagnostics
+    await hub.publish({"trace_id": diagnostics.current_id(), "type": "checkin", "day": day,
+                       "text": text, "planned": planned, "done": done,
+                       "open_tasks": len(card["tasks"]), "events_tomorrow": len(card["tomorrow"]["events"])},
+                      dedupe_key=f"checkin:{day}", target={"type": "checkin", "date": day})
+    checkin.mark_notified(day, now=now)
 
 
 async def _fire_scheduled_sends() -> None:
