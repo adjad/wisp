@@ -32,8 +32,8 @@ struct QuickSettingsView: View {
             divider
             briefRow
             divider
-            row("Show Details under replies", detail: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
-                Toggle("", isOn: $model.debugMode).labelsHidden().toggleStyle(.switch).tint(Theme.accent)
+            row("Show Details under replies", detail: "Open each reply's model, route, timing and tool calls by default.") {
+                Toggle("Show Details under replies", isOn: $model.debugMode).labelsHidden().toggleStyle(.switch).tint(Theme.accent)
             }
             divider
             row("Free up memory", detail: "Unload models now. Wisp reloads them on the next ask.") {
@@ -58,7 +58,7 @@ struct QuickSettingsView: View {
     @ViewBuilder private var fullAccessRow: some View {
         row("Full access", detail: settings.fullAccessExplanation) {
             if let on = settings.fullAccess {
-                Toggle("", isOn: Binding(get: { on }, set: { settings.setFullAccess($0) }))
+                Toggle("Full access", isOn: Binding(get: { on }, set: { settings.setFullAccess($0) }))
                     .labelsHidden().toggleStyle(.switch).tint(Theme.accent)
                     .disabled(settings.fullAccessPending)
             } else {
@@ -74,7 +74,7 @@ struct QuickSettingsView: View {
     @ViewBuilder private var learningRow: some View {
         row("Learn my routines", detail: settings.behaviorExplanation) {
             if settings.behaviorEnabled != nil {
-                Toggle("", isOn: Binding(get: { settings.behaviorEnabled == true },
+                Toggle("Learn my routines", isOn: Binding(get: { settings.behaviorEnabled == true },
                                          set: { settings.setBehaviorEnabled($0) }))
                     .labelsHidden().toggleStyle(.switch).tint(Theme.accent)
                     .disabled(settings.behaviorChanging)
@@ -94,7 +94,7 @@ struct QuickSettingsView: View {
     @ViewBuilder private var briefRow: some View {
         let detail = settings.briefTimesPending ? "Saving brief times. Waiting for confirmation…"
             : settings.briefTimes == nil ? "Brief times haven't been confirmed. Check again."
-            : "Wisp composes your Daily Summary each morning and evening."
+            : "Wisp composes your brief each morning and evening."
         row("Daily brief", detail: detail) {
             if let times = settings.briefTimes {
                 HStack(spacing: 6) {
@@ -150,9 +150,8 @@ struct QuickSettingsView: View {
         .accessibilityLabel("\(run) brief at \(Self.hourLabel(hour))")
     }
 
-    static func hourLabel(_ hour: Int) -> String {
-        let display = hour % 12 == 0 ? 12 : hour % 12
-        return "\(display) \(hour < 12 ? "AM" : "PM")"
+    static func hourLabel(_ hour: Int, locale: Locale = .autoupdatingCurrent) -> String {
+        WispClock.hour(hour, locale: locale)
     }
 
     private func chip(_ title: String, action: @escaping () -> Void) -> some View {

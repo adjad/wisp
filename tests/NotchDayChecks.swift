@@ -218,4 +218,11 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayLoad.union([(1, 3), (2, 5), (7, 8), (8, 9)]).map { [$0.0, $0.1] } == [[1, 5], [7, 9]], "union merges touching spans")
     check(DayLoad.span(at(10), at(16), zone: utc) == "10 AM–4 PM" && DayLoad.span(at(13), at(17.5), zone: utc) == "1–5:30 PM",
           "spans")
+    let gb = Locale(identifier: "en_GB")
+    check(DayLoad.span(at(13), at(17.5), zone: utc, locale: gb) == "13:00–17:30" && DayLoad.clock(at(9), zone: utc, locale: gb) == "9:00",
+          "a 24-hour locale drops AM/PM")
+    check(WispClock.hour(15, locale: gb) == "15:00" && WispClock.hour(15, locale: WispClock.fixedLocale) == "3 PM"
+          && WispClock.hour(0, locale: WispClock.fixedLocale) == "12 AM", "hour labels follow the locale")
+    check(WispClock.time(at(15.5), zone: utc, locale: gb) == "15:30" && WispClock.time(at(15.5), zone: utc, locale: WispClock.fixedLocale) == "3:30 PM",
+          "clock times follow the locale")
 }

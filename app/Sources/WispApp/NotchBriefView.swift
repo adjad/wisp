@@ -23,7 +23,7 @@ struct NotchBriefView: View {
                 if let progress = model.dailySyncProgress {
                     SourceSyncTip(label: model.dailySyncLabel, progress: progress, sources: model.sourceSyncStatuses)
                 }
-                ProcessingRow(label: "Building your daily summary…")
+                ProcessingRow(label: "Building your brief…")
             }
             if let plan {
                 let brief = BriefContent(plan: plan, today: today)
@@ -102,7 +102,8 @@ struct NotchBriefView: View {
         }
         .buttonStyle(.plain)
         .help("Open \(NotchChrome.appName(line.source))")
-        .accessibilityLabel("\(line.text), \(line.trailing == "›" ? "" : line.trailing). Opens \(NotchChrome.appName(line.source))")
+        .accessibilityLabel((line.trailing == "›" || line.trailing.isEmpty ? line.text : "\(line.text), \(line.trailing)")
+            + ". Opens \(NotchChrome.appName(line.source))")
     }
 }
 
@@ -124,7 +125,7 @@ struct BriefContent {
         // Calendar entries only; learned away windows never make a day busy.
         let load = DayLoad.assess(events: calendarBlocks.map { DayLoad.Event(title: $0.title, start: $0.start, end: $0.end) },
                                   allDay: plan.all_day.map(\.title), from: reference, dayStart: dayStart,
-                                  isToday: isToday, zone: today.timezone)
+                                  isToday: isToday, zone: today.timezone, locale: today.clockLocale)
         let dueToday = needs.filter { ($0.due_ts ?? .infinity) >= reference && ($0.due_ts ?? .infinity) <= dayEnd }
             .sorted { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }.map(\.title)
         let overdue = isToday ? needs.filter { ($0.due_ts ?? .infinity) < now }.map(\.title) : []
@@ -140,7 +141,7 @@ struct BriefContent {
             calendar: calendarKnown ? load : nil,
             mail: coverage.map { (ready: $0.ready, needing: needs.filter { $0.source == "email" }.map(\.title)) },
             texts: needs.filter { $0.source == "messages" }.map(\.title),
-            soon: soon.map { (title: $0.title, when: NotchChrome.dayClock($0.due_ts ?? 0, zone: today.timezone),
+            soon: soon.map { (title: $0.title, when: NotchChrome.dayClock($0.due_ts ?? 0, zone: today.timezone, locale: today.clockLocale),
                               source: $0.source) })
     }
 }
