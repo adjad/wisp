@@ -364,6 +364,11 @@ reviewers on that environment before enabling it. Only a manual dispatch with
 builds and tags perform local ad-hoc signing only; they do not use Developer ID
 credentials, notarize, or publish a release.
 
+Because the public ZIP is ad-hoc signed and not notarized, `create_public_draft` in
+`build-support/release.py` puts a two-line "First launch" note (Control-click, Open /
+Open Anyway; `xattr -dr com.apple.quarantine`) directly under the first-line download
+link. The same guidance is in the README's "First launch" section.
+
 Release preflight requires a clean candidate matching HEAD, passing full QA and
 strict compiler evidence, the exact tag on main, no existing GitHub release, and
 all credentials before external steps. The hook uses an ephemeral keychain,

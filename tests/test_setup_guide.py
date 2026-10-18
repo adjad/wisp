@@ -26,6 +26,11 @@ MELLUM = "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
 EMBED = "Qwen3-Embedding-0.6B-4bit-DWQ"
 
 
+@pytest.fixture(autouse=True)
+def _modern_host(monkeypatch):
+    monkeypatch.setattr(guide, "host_macos_major", lambda: 26)
+
+
 def _roles(model, endpoint="local"):
     return {r: {"model": model, "endpoint": endpoint} for r in guide.TEXT_ROLES}
 
@@ -165,7 +170,26 @@ def test_fresh_mac_needs_oMLX_first():
     assert s["ready"] is False
     assert _check(s, "engine")["state"] == "todo" and _check(s, "engine")["action"] == "install_omlx"
     assert "compatible with this Mac" in _check(s, "engine")["detail"]
-    assert s["omlx"]["min_macos"] == 15
+    assert s["omlx"]["min_macos"] == 26
+
+
+def test_old_macos_is_not_sent_to_download_omlx(monkeypatch):
+    monkeypatch.setattr(guide, "host_macos_major", lambda: 15)
+    s = _status(installed=(), running=False, is_installed=False)
+    check = _check(s, "engine")
+    assert check["action"] == "unsupported_macos" and "url" not in check
+    assert "Ollama" in check["detail"] and "remote-only" in check["detail"]
+    # An oMLX the user already has keeps working whatever the host says.
+    assert _check(_status(running=False, is_installed=True), "engine")["action"] == "start_engine"
+    # An unreadable version never blocks the normal install path.
+    monkeypatch.setattr(guide, "host_macos_major", lambda: None)
+    assert _check(_status(installed=(), running=False, is_installed=False), "engine")["action"] == "install_omlx"
+
+
+def test_fresh_mac_recommendation_is_public_and_labelled():
+    s = _status(installed=(), running=True, roles=_roles(MELLUM))
+    assert _check(s, "model")["action"] == "download_model"
+    assert "Mellum" not in s["models"]["recommended_label"]
 
 
 @pytest.mark.parametrize("macos,available", [("14.0", False), ("26.1", False),

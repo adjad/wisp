@@ -157,8 +157,7 @@ export instead of the headline. Debug Mode captures tool-internal model calls
 
 1. Download the latest macOS ZIP from [GitHub Releases](https://github.com/adjad/wisp/releases).
 2. Extract it and move `Wisp.app` to `/Applications`.
-3. Open Wisp. Because the public build is ad-hoc signed rather than notarized, macOS
-   may require **System Settings → Privacy & Security → Open Anyway** on first launch.
+3. Open Wisp (see **First launch** below).
 4. Let Wisp's **setup guide** walk you through the engine and model choices. Compatible
    Macs can use the included private oMLX engine. If oMLX is already installed, Wisp
    preserves that choice; older systems need an engine build compatible with their OS
@@ -171,6 +170,19 @@ export instead of the headline. Debug Mode captures tool-internal model calls
 The release contains `Wisp.app`, its backend, Python runtimes, and a private copy of
 oMLX. Model weights are separate. The bundled engine has its own settings and model
 directory and does not change an installed oMLX app's settings.
+
+### First launch
+
+The public build is ad-hoc signed, not notarized, so macOS Gatekeeper blocks the first
+open. Control-click `Wisp.app` and choose **Open**, or go to **System Settings → Privacy
+& Security → Open Anyway**. If macOS still refuses, clear the quarantine flag once:
+`xattr -dr com.apple.quarantine /Applications/Wisp.app`.
+
+Wisp's built-in engine needs macOS 26.2 or newer, and oMLX 0.7+ needs macOS 26. On an
+older Mac the setup guide says so and points to Ollama, LM Studio, llama.cpp (Wisp tests
+that the model can call tools) or the remote-only mode. Wisp asks for notifications,
+Calendar and Reminders at first launch; Screen Recording, Accessibility and Full Disk
+Access are requested when a feature needs them.
 
 ### The setup guide
 
