@@ -69,7 +69,7 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
                      "no creation date is sent as absent, never as zero")
         // Undated titles travel already in the backend's stored form, so a Delete's
         // expected title matches undatedTitle(item.title). The same cases are pinned
-        // in tests/test_stale_reminder_hardening.py, which checks the backend leaves
+        // in tests/test_stale_reminders.py (SWIFT_UNDATED_TITLES), which checks the backend leaves
         // each expected value unchanged.
         let longA = String(repeating: "a", count: 600)
         let titleCases: [(String?, String)] = [
@@ -98,7 +98,7 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
             precondition(RemindersWriter.exactTarget(kind: kind, expectedDueTs: nil) == nil,
                          "\(kind) never targets an undated reminder")
         }
-        for bad in [0.0, -1.0, Double.nan, Double.infinity] {
+        for bad in [0.0, -1.0, Double.nan, Double.infinity, 1e300, 253402300800] {
             precondition(RemindersWriter.exactTarget(kind: "delete_reminder", expectedDueTs: bad) == nil,
                          "\(bad) is not a due time and not a stand-in for undated")
         }

@@ -196,7 +196,9 @@ final class RemindersWriter {
     static func exactTarget(kind: String, expectedDueTs: Double?) -> ExactTarget? {
         guard ["update_reminder", "complete_reminder", "delete_reminder"].contains(kind) else { return nil }
         guard let due = expectedDueTs else { return kind == "delete_reminder" ? .undated : nil }
-        return due.isFinite && due > 0 ? .dated(due) : nil
+        // Same bound as the backend's verified_reminders._timestamp (before year 10000), so
+        // `Int(due / 60)` can never trap on a huge finite value.
+        return due.isFinite && due > 0 && due < 253402300800 ? .dated(due) : nil
     }
 
     /// One undated entry as it travels. `created_ts` is EventKit's creationDate when it
