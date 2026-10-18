@@ -50,6 +50,7 @@ enum NotchQADriver {
             window.makeKeyAndOrderFront(nil)
             windows[name] = window
         }
+        quickSettings(width: width, model: model)
         app.activate(ignoringOtherApps: true)
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -69,6 +70,35 @@ enum NotchQADriver {
     }
 
     private static var windows: [String: NSWindow] = [:]
+
+    /// Quick settings in its two tallest states: every switch known, and Full access
+    /// unconfirmed with the morning time list open. Also measured with the notch header.
+    static func quickSettings(width: CGFloat, model: OverlayModel) {
+        model.qaShow(modelMemory: ModelMemory(models: [.init(id: "Mellum2.1-8B-oQ4e", bytes: 7_301_444_403)]))
+        for (name, unconfirmed) in [("settings", false), ("settings-unconfirmed", true)] {
+            let loader = SettingsLoader()
+            loader.qaShow(fullAccess: unconfirmed ? nil : true,
+                          briefTimes: WispClient.BriefTimes(morning: 8, evening: 20))
+            loader.behaviorEnabled = true
+            let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 760),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            let content = VStack(alignment: .leading, spacing: 0) {
+                // The notch header (orb, tabs, buttons) is about 44 pt tall.
+                Color.clear.frame(height: 44)
+                QuickSettingsView(model: model, settings: loader, refreshes: false,
+                                  picking: unconfirmed ? .morning : nil).padding(.top, 12)
+            }
+            .padding(EdgeInsets(top: 18, leading: 22, bottom: 16, trailing: 22))
+            .frame(width: width, alignment: .topLeading)
+            .background(Theme.surface)
+            .environment(\.colorScheme, .dark)
+            let host = NSHostingView(rootView: content)
+            window.contentView = host
+            window.setContentSize(host.fittingSize)
+            window.makeKeyAndOrderFront(nil)
+            windows[name] = window
+        }
+    }
 
     static func fixturePlan(day: String, dayStart: Double) throws -> Data {
         func at(_ h: Double) -> Double { dayStart + h * 3600 }
