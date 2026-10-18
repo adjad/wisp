@@ -22,6 +22,8 @@ struct NotchDayView: View {
     @State private var minutes = 45
     @State private var addingTask = false
     @State private var ignoredCaught = IgnoredCaught.load()
+    // Evening check-in and weekly goal pulse (CheckInView.swift).
+    @StateObject private var checkIn = CheckInModel()
 
     /// One hour of the lane.
     private let hourHeight: CGFloat = 44
@@ -43,6 +45,13 @@ struct NotchDayView: View {
             if let notice = model.transientNotice { NotchChrome.notice(notice) }
             if !today.error.isEmpty { NotchChrome.notice(today.error) }
             if !today.followsToday { otherDayRow }
+            if today.isShowingCurrentDay {
+                CheckInSection(model: checkIn, day: today.day, timezone: today.timezone,
+                               clock: today.clock,
+                               onAsk: { model.askAbout($0) },
+                               onChanged: { Task { await today.refresh(); model.onResize() } })
+                GoalPulseSection(model: checkIn)
+            }
             if let plan {
                 dayContent(plan)
             } else if today.error.isEmpty {
@@ -54,6 +63,20 @@ struct NotchDayView: View {
         }
         .environment(\.timeZone, today.timezone)
         .modifier(DayRefreshLoop(model: model, today: today))
+        .task(id: today.day) {
+            guard today.isShowingCurrentDay else { return }
+            await checkIn.load(day: today.day, timezone: today.timezone.identifier)
+            model.checkInDue = false
+            model.onResize()
+        }
+        .onChange(of: model.checkInDue) { _, due in
+            guard due, today.isShowingCurrentDay else { return }
+            Task {
+                await checkIn.load(day: today.day, timezone: today.timezone.identifier)
+                model.checkInDue = false
+                model.onResize()
+            }
+        }
         .task {
             while !Task.isCancelled {
                 await attention.refresh()

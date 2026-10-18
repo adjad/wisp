@@ -199,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { self?.openSetupGuide() }
         }
         offerSetupGuideOnFirstRun()
+        offerKnowYouWhenReady()
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
@@ -265,6 +266,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openSettings()
         case .setup:
             openSetupInNotch()
+        case .knowYou:
+            openAssistant()
+            model.startKnowYou()
         }
     }
 
@@ -391,6 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Open Wisp Window", action: #selector(openChat), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupInNotch), keyEquivalent: "")
+        menu.addItem(withTitle: "Tell Wisp About You…", action: #selector(tellWispAboutYou), keyEquivalent: "")
         menu.addItem(.separator())
         // Debug Mode is in the notch's quick settings ("Show Details under
         // replies"). Export works any time there's a conversation, whether or not
@@ -1084,6 +1089,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       let ready = object["ready"] as? Bool else { continue }
                 if !ready { self.openSetupInNotch() }
                 UserDefaults.standard.set(true, forKey: Self.setupGuideShownKey)
+                return
+            }
+        }
+    }
+
+    /// Getting to know you, from the menu bar.
+    @objc private func tellWispAboutYou() {
+        openAssistant()
+        model.startKnowYou()
+    }
+
+    /// Once inference is set up, open Getting to know you in the notch if the
+    /// service says it is due: never finished, and no Later in the last few
+    /// days (it offers at most twice on its own; the menu bar, /about and
+    /// Memory → About you remain the way in). Waits for the service and for a
+    /// quiet panel, so the first launch is not two things at once.
+    private func offerKnowYouWhenReady() {
+        Task { @MainActor [weak self] in
+            var setupReady = false
+            for _ in 0..<40 {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard let self else { return }
+                if !setupReady {
+                    var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
+                    request.timeoutInterval = 10
+                    guard let (data, _) = try? await URLSession.shared.data(for: request),
+                          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let ready = object["ready"] as? Bool else { continue }
+                    // The setup guide owns a first launch until inference works.
+                    guard ready else { return }
+                    setupReady = true
+                }
+                guard let envelope = await WispClient().profile() else { continue }
+                guard envelope.status.offer else { return }
+                // Not over the setup card, a reply in progress, or a flow already up.
+                if self.setupWindow?.isVisible == true || self.model.setupCard == .open
+                    || self.model.isProcessing || self.model.knowYou != nil {
+                    continue
+                }
+                self.openAssistant()
+                self.model.startKnowYou()
                 return
             }
         }

@@ -1776,6 +1776,17 @@ async def run_agent(
                                                   messages=offers_messages)
         except Exception:  # noqa: BLE001
             identity_hint = ""
+        # Who the user is in THEIR words — goals, struggles, people, how they
+        # like to be spoken to (service/memory/profile.py). Rides with the
+        # identity block, so it is also absent from cloud synthesis above, and
+        # it stays off the external loopback provider for the same reason the
+        # memory block does: that process has no peer identity to disclose to.
+        if getattr(client, "endpoint_name", "") != "local_provider":
+            try:
+                from service.memory.profile import profile_block
+                identity_hint += profile_block()
+            except Exception:  # noqa: BLE001
+                pass
 
     if model_led_discovery and identity_hint:
         # Conservatively includes static attribution guidance: the combined

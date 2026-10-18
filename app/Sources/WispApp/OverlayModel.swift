@@ -163,7 +163,15 @@ final class OverlayModel: ObservableObject {
     // Wisp, not a separate destination window.
     @Published var showingResearch = false
     // The gear's short list of settings, shown in place of the tab's content.
-    @Published var showingQuickSettings = false { didSet { if showingQuickSettings != oldValue { onResize() } } }
+    @Published var showingQuickSettings = false {
+        didSet {
+            guard showingQuickSettings != oldValue else { return }
+            // The gear during Getting to know you: step out of the flow (its
+            // answers so far are saved) rather than open settings behind it.
+            if showingQuickSettings { leaveKnowYou() }
+            onResize()
+        }
+    }
     @Published private(set) var freeingMemory = false
     // First-run setup at the top of Ask. Its readiness lives on the app's one
     // SetupGuideModel, which the setup window shares.
@@ -232,6 +240,11 @@ final class OverlayModel: ObservableObject {
     // first, see NudgeViews.swift). Each also arrives as a notification.
     @Published var nudges: [BehaviorNudge] = []
     @Published var transientNotice: String?
+    // Getting to know you (KnowYouView.swift), replacing the tab content while
+    // it runs. Nil when the flow is not on screen.
+    @Published private(set) var knowYou: KnowYouModel?
+    // The service said tonight's check-in is due; Today's card refreshes on it.
+    @Published var checkInDue = false
     // Keep the panel open: no auto-collapse when the pointer leaves or focus
     // moves to another app. Cleared by any explicit collapse (see AppDelegate).
     @Published var pinned = false
@@ -266,6 +279,7 @@ final class OverlayModel: ObservableObject {
     var holdsOpen: Bool {
         pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+            || knowYou != nil
             || setupCard == .open || report.isOpen || (tab == .day && todayReport?.isOpen == true)
     }
 
@@ -290,6 +304,37 @@ final class OverlayModel: ObservableObject {
     var reportIsUnattached: Bool {
         guard let key = report.snapshot?.key, key.hasPrefix("chat:") else { return false }
         return !turns.contains { Self.reportKey(for: $0) == key }
+    }
+
+    /// Open Getting to know you in the panel (first launch, /about, the menu
+    /// bar, About you's Revisit). Picks up where the person left off.
+    func startKnowYou() {
+        if knowYou == nil {
+            let flow = KnowYouModel(client: client)
+            flow.onClose = { [weak self] notice in self?.endKnowYou(notice: notice) }
+            flow.onShowBrief = { [weak self] in
+                self?.endKnowYou(notice: nil)
+                self?.runDailySummary()
+            }
+            knowYou = flow
+        }
+        showingQuickSettings = false
+        tab = .ask
+        requestExpand()
+        onResize()
+    }
+
+    private func endKnowYou(notice: String?) {
+        knowYou = nil
+        onResize()
+        if let notice { showTransientNotice(notice, duration: 6) }
+    }
+
+    /// The person moved on (a tab) before Done. The flow saves after every
+    /// step, so nothing is lost; the service counts it as Later.
+    func leaveKnowYou() {
+        guard let knowYou else { return }
+        Task { await knowYou.leave() }
     }
 
     /// Pick the tab for an opening panel: Ask, or for a hover soon after the
@@ -495,6 +540,7 @@ final class OverlayModel: ObservableObject {
         case .report: reportCurrentProblem()
         case .window: openTabInWindow()
         case .new: newChat()
+        case .about: startKnowYou()
         }
     }
 
@@ -529,6 +575,14 @@ final class OverlayModel: ObservableObject {
         sessionId = brief.sessionId
         reopenedChatTitle = "Daily summary"
         turns = [Turn(role: "user", text: "Daily summary"), Turn(role: "assistant", text: brief.text)]
+        tab = .ask
+        onResize()
+    }
+
+    /// Open Ask with a request already typed, for the person to finish and send
+    /// (the check-in's Move and Cancel). Nothing is sent here.
+    func askAbout(_ text: String) {
+        input = text
         tab = .ask
         onResize()
     }
@@ -1509,6 +1563,13 @@ final class OverlayModel: ObservableObject {
             }
             await post(title: title,
                                body: latest.isEmpty ? task : "\(task)\n\(latest)")
+        case "checkin":
+            // The evening check-in is due (service/assistant/scheduler._checkin_tick):
+            // one notification; the card itself loads on the Day tab.
+            let text = ev.str("text")
+            guard !text.isEmpty else { return false }
+            checkInDue = true
+            await post(title: "🌙 Evening check-in", body: text)
         case "daily_brief":
             // Scheduled 8am/8pm brief: content-ful notifications (calendar+email,
             // messages) plus the full write-up in the transcript for when the app
