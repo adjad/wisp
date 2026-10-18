@@ -136,6 +136,7 @@ struct KnowYouView: View {
     @ObservedObject var model: KnowYouModel
     @FocusState private var focused: Bool
     @State private var breathe = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -159,28 +160,46 @@ struct KnowYouView: View {
 
     // MARK: Progress
 
+    // The row keeps one geometry across steps: the label is sized by its
+    // widest string (hidden underneath), so the track never changes width when
+    // "Getting to know you" becomes "1 of 3"; the fill is a full-width capsule
+    // scaled from the left, so nothing is recomputed from a GeometryReader
+    // mid-animation; and the row opts out of the panel's step animation, so
+    // only the fill moves, and only when progress changes.
     private var progressRow: some View {
         HStack(spacing: 8) {
-            Text(model.flow.isWelcome ? "Getting to know you"
-                 : model.flow.isDone ? "All set"
-                 : "\(model.flow.questionNumber ?? 0) of \(KnowYouFlow.questionCount)")
-                .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Theme.chipFill)
-                    Capsule().fill(Color.white.opacity(0.85))
-                        .frame(width: max(0, geo.size.width * model.flow.progress))
-                        .animation(.easeInOut(duration: 0.25), value: model.flow.progress)
-                }
+            Text(progressLabelWidest).hidden()
+                .overlay(alignment: .leading) { Text(progressLabel).lineLimit(1) }
+                .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                .foregroundStyle(Theme.textSecondary).textCase(.uppercase)
+                .fixedSize()
+                .accessibilityHidden(true)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.chipFill)
+                Capsule().fill(Color.white.opacity(0.85))
+                    .scaleEffect(x: max(0.001, model.flow.progress), y: 1, anchor: .leading)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: model.flow.progress)
             }
             .frame(height: 3)
-            .accessibilityLabel("Progress")
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(progressLabel + ". Progress")
             .accessibilityValue("\(Int(model.flow.progress * 100)) percent")
             Label("Stays on this Mac", systemImage: "lock.fill")
                 .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
                 .fixedSize()
         }
+        .transaction { $0.animation = nil }
     }
+
+    private var progressLabel: String {
+        model.flow.isWelcome ? "Getting to know you"
+            : model.flow.isDone ? "All set"
+            : "\(model.flow.questionNumber ?? 0) of \(KnowYouFlow.questionCount)"
+    }
+
+    /// The longest label the row can show, so the row is sized for it from the start.
+    private var progressLabelWidest: String { "Getting to know you" }
 
     // MARK: Question
 
