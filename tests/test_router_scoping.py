@@ -235,14 +235,16 @@ def test_device_apps_and_web_are_scoped() -> None:
 def test_ambiguous_gets_core_not_everything() -> None:
     print("\nthe ambiguous fallback gets the core set, not the registry")
     registered = {s["function"]["name"] for s in tool_schemas(None)}
-    for prompt in ("tell me a joke", "what?", "can you help me with something",
+    # "tell me a joke" used to be the example here; it is now answered with no
+    # tools at all (router _no_tool_claim), which is stricter than the core set.
+    for prompt in ("what?", "can you help me with something",
                    "anything from earlier today?"):
         s = subset(prompt)
         check(f"{prompt!r} is scoped", bool(s), "-> UNSCOPED")
         check(f"{prompt!r} is much smaller than the registry",
               len(s) < len(registered) / 2, f"{len(s)} of {len(registered)}")
     # run_shell is the deliberate escape hatch; destructive tools are not here.
-    core = subset("tell me a joke")
+    core = subset("what?")
     check("run_shell is offered as the escape hatch", "run_shell" in core)
     for banned in ("send_email", "send_message", "create_tool"):
         check(f"{banned} is NOT in the core set", banned not in core)
@@ -412,7 +414,7 @@ def test_multi_round_flags_the_sequential_routes() -> None:
     d = dec("what did I have last week and what's next")
     check("a calendar+past-tense question is multi_round", d.multi_round,
           f"subset={d.tool_subset}")
-    d = dec("tell me a joke")
+    d = dec("what?")
     check("the ambiguous core fallback is multi_round (heterogeneous tools)",
           d.multi_round, f"subset={d.tool_subset}")
 
@@ -437,7 +439,7 @@ def test_narration_after_names_each_multi_round_route_requirement() -> None:
           f"-> {sorted(d.narration_after)}")
     # The one multi_round route with no knowable required set must stay
     # conservative: empty means "never narrate", i.e. exactly today's behavior.
-    d = dec("tell me a joke")
+    d = dec("what?")
     check("the heterogeneous core fallback names NO required set (stays conservative)",
           not d.narration_after, f"-> {sorted(d.narration_after)}")
 

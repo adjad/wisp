@@ -63,7 +63,7 @@ Wisp 1.5.0 is the first stable release. It works on a Mac with nothing installed
 
 #### Everyday asks
 These now go straight to the right tool:
-- Timers ("set a timer for 10 minutes"), alarms ("set an alarm for 7am", "wake me up at 7") and "remind me in 20 minutes to…".
+- Timers ("set a timer for 10 minutes") and "remind me in 20 minutes to…".
 - The date and time ("what's the date today", "what time is it in Tokyo"). These used to search the web.
 - Weather asked many ways: "how's the weather in Boston", "weather tomorrow in Boston", "will it rain tomorrow", "should I bring an umbrella", "what should I wear today".
 - The brief ("what's my day look like", "give me my morning brief", "brief me").
