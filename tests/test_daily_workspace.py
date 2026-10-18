@@ -317,15 +317,13 @@ def test_body_request_can_surface_old_received_mail_without_fabricating_a_due_da
 def test_communication_items_carry_who_and_when_never_more(cached_sources, monkeypatch):
     """The notch Brief names who an email or text is from; a text's words stay in title/quote only."""
     from types import SimpleNamespace
-    from service.assistant import mail_gists
-    from service.assistant.daily_workspace import collect_evidence, email_record_id
+    from service.assistant.daily_workspace import collect_evidence
     store, _, email, messages, _ = cached_sources
     person = dict(ts=NOW - 3600, account_id="a", message_id="m1", subject="Thesis meeting", sender="Prof. Lee",
                   sender_address="lee@school.edu", body="Could we move the thesis meeting to Tuesday?", unread=True)
     robot = dict(ts=NOW - 60, account_id="a", message_id="m2", subject="Your order shipped", sender="Shop",
                  sender_address="no-reply@shop.example", body="Please confirm your address.", unread=True)
     monkeypatch.setattr(email, "raw_email_snapshot", lambda: SimpleNamespace(rows=[person, robot]))
-    monkeypatch.setattr(mail_gists, "_cache", {email_record_id(person): {"gist": "Prof. Lee wants to meet Tuesday", "at": NOW}})
     monkeypatch.setattr(messages, "messages_sync_state", lambda: "ready")
     monkeypatch.setattr(messages, "summary_message_rows", lambda: [
         (NOW - 600, "Priya", "Priya: Can you send the notes?"),
@@ -335,8 +333,7 @@ def test_communication_items_carry_who_and_when_never_more(cached_sources, monke
     evidence = collect_evidence(store, state(), DAY, ZONE, now=NOW)
     items = {i["title"]: i for i in run(e={"email": evidence["email"], "messages": evidence["messages"]})["attention"]}
     lee = items["Thesis meeting"]
-    assert (lee["sender"], lee["person"], lee["received_ts"], lee["gist"]) == ("Prof. Lee", True, NOW - 3600,
-                                                                               "Prof. Lee wants to meet Tuesday")
+    assert (lee["sender"], lee["person"], lee["received_ts"]) == ("Prof. Lee", True, NOW - 3600) and "gist" not in lee
     shop = items["Your order shipped"]
     assert shop["sender"] == "Shop" and shop["person"] is False and "gist" not in shop
     priya, mom, sam = (items["Priya: Can you send the notes?"], items["Mom: Can someone pick up milk?"],

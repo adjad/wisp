@@ -98,6 +98,21 @@ def gist(record_id: str) -> str:
     return entry["gist"] if entry else ""
 
 
+def attach(workspace: dict) -> None:
+    """Put each email attention item's gist on it, when one was written.
+
+    Called by the Today endpoint after the workspace is assessed, so
+    daily_workspace stays free of this module's cache. An item's id is
+    daily_workspace.key("email", <record id>), the record id the cache uses.
+    """
+    from service.assistant.daily_workspace import key
+    cache = _load()
+    by_item = {key("email", record_id): entry["gist"] for record_id, entry in cache.items() if entry["gist"]}
+    for item in workspace.get("attention") or []:
+        if item.get("source") == "email" and by_item.get(item.get("id")):
+            item["gist"] = by_item[item["id"]]
+
+
 def important_emails(now: float | None = None) -> list[dict]:
     """The emails worth a gist, people first, then newest.
 

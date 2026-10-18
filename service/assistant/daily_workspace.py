@@ -103,11 +103,10 @@ def key(source, identity):
 # Quoted or forwarded history below the current body is not current work.
 _QUOTED_HISTORY = re.compile(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>.*)$")
 # Who wrote it and when, carried from a communication record to its attention
-# item so the notch can name the sender and order by recency. `gist` is a
-# one-line, model-written description (service/assistant/mail_gists.py), only
-# when one was already written; `replied` marks a conversation the user has
-# texted since.
-_COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "gist", "replied")
+# item so the notch can name the sender and order by recency; `replied` marks a
+# conversation the user has texted since. An email's model-written gist is
+# attached by the Today endpoint (mail_gists.attach), so this module stays pure.
+_COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied")
 
 
 def important_email_rows(snapshot):
@@ -552,7 +551,6 @@ def collect_evidence(store, state, day, timezone, *, now):
         records = []
         header_count, header_eligible = 0, False
         if snapshot is not None:
-            from service.assistant import mail_gists
             # Ranking is a reason to inspect the source, never proof a reply
             # or payment is owed. Bodies cannot control destinations/actions.
             # A bounded current-body excerpt can reveal a request hidden
@@ -560,11 +558,10 @@ def collect_evidence(store, state, day, timezone, *, now):
             # promoted to current work; every result still says review.
             for row, current_lines in important_email_rows(snapshot):
                 subject = redact_summary_codes(row["subject"])
-                record_id = email_record_id(row)
-                records.append(dict(id=record_id,
+                records.append(dict(id=email_record_id(row),
                     title=subject, quote=redact_summary_codes(current_lines[0]) if current_lines else subject, reference="email:" + row["account_id"] + ":" + row["message_id"],
                     review_reason="Review this source for requests or changes; ownership, reply status and deadlines are unverified.",
-                    gist=mail_gists.gist(record_id), **_sender_fields(row)))
+                    **_sender_fields(row)))
         elif callable(getattr(mail, "email_source_details", None)):
             # The independently owned direct-mail integration exports this
             # per-account freshness contract. Older builds without it withhold

@@ -175,3 +175,27 @@ def test_the_model_call_never_loads_evicts_or_races_a_turn(monkeypatch, loaded, 
     monkeypatch.setattr(config, "role_to_model", lambda role: "fast")
     reply = asyncio.run(G._resident_reply("s", "m", lambda: turn))
     assert (reply == "1. ok") is expect_call and (calls == ["fast"]) is expect_call
+
+
+def test_attach_puts_written_gists_on_email_items_only(isolated):
+    from service.assistant.daily_workspace import key
+    G._load().update({"rec-1": {"gist": "Ann wants the notes", "at": 1.0}, "rec-2": {"gist": "", "at": 1.0}})
+    workspace = {"attention": [
+        {"id": key("email", "rec-1"), "source": "email", "title": "Notes"},
+        {"id": key("email", "rec-2"), "source": "email", "title": "Hello"},
+        {"id": key("messages", "rec-1"), "source": "messages", "title": "Ann: notes?"},
+    ]}
+    G.attach(workspace)
+    assert [item.get("gist") for item in workspace["attention"]] == ["Ann wants the notes", None, None]
+
+
+def test_day_planning_never_imports_the_gist_writer():
+    """daily_workspace runs inside the sandboxed planning proof, which allows only
+    its approved imports (tests/test_behavior_availability.py)."""
+    import ast
+    import inspect
+    from service.assistant import daily_workspace
+    tree = ast.parse(inspect.getsource(daily_workspace))
+    names = {alias.name for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+             for alias in node.names} | {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    assert "mail_gists" not in names and "service.assistant.mail_gists" not in names
