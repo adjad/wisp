@@ -156,6 +156,7 @@ PROFILE_TESTS = {
         "tests/test_discovery_approvals.py",
         "tests/test_discovery_jobs.py",
         "tests/test_broad_web_search.py",
+        "tests/test_daily_summary_clean.py",
         "tests/test_daily_summary_delivery.py",
         "tests/test_daily_summary_schedule.py",
         "tests/test_error_translation.py",
@@ -296,6 +297,8 @@ ADDITIONAL_FULL_TESTS = {
     # copies of the interpreter started by the test itself (skips where that is denied); no oMLX,
     # port 8000, network or other process.
     "tests/test_runtime_proc_path.py",
+    # Temporary directories and synthetic cache files only; never touches ~/.omlx or oMLX.
+    "tests/test_omlx_cache.py",
     "tests/test_omlx_updates.py",
     "tests/test_primary_runtime_completion.py",
     "tests/test_credential_quarantine.py",
