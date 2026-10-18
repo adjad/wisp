@@ -371,16 +371,17 @@ async def lifespan(app: FastAPI):
 
     # oMLX's prompt cache has no age expiry and a half-the-disk default cap;
     # bound it (the cap applies at the next engine start) and drop stale files.
+    from service import omlx_cache
     try:
-        from service import omlx_cache
         omlx_cache.ensure_cap()
         omlx_cache.maintain()
-        started_tasks.append(asyncio.create_task(omlx_cache.run()))
     except Exception:  # noqa: BLE001
         pass
 
     if profile is None:
         started_tasks.append(asyncio.create_task(_warm_summarizer()))
+        # Periodic trim only where a local oMLX exists to fill the cache.
+        started_tasks.append(asyncio.create_task(omlx_cache.run()))
         if cloud_super_model_enabled():
             start_laya_warmup()
         started_tasks.append(asyncio.create_task(idle_unloader.run(client)))
