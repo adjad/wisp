@@ -62,13 +62,17 @@ def test_hardware_rounds_real_memory_and_survives_failure():
 
 # --- recommendations --------------------------------------------------------
 
-def test_mellum_local_default_is_discovered_without_a_fabricated_download():
+def test_fresh_mac_is_offered_a_public_model_not_the_private_mellum_build():
+    # A new user with nothing installed cannot fetch the private Mellum build, so
+    # setup offers the best public download instead of a folder they don't have.
     missing = _status(ram=32, installed=[], roles=_roles(MELLUM))
-    assert missing["models"]["recommended"] == MELLUM
-    assert missing["models"]["download"] is None
-    assert _check(missing, "model")["action"] == "add_local_model"
-    assert "folder" in _check(missing, "model")["detail"].lower()
+    assert missing["models"]["recommended"] == Q6
+    assert missing["models"]["download"]["model"] == Q6
+    assert _check(missing, "model")["action"] == "download_model"
     assert not missing["ready"]
+
+
+def test_mellum_local_default_is_discovered_without_a_fabricated_download():
     found = _status(ram=32, installed=[Q6, MELLUM, EMBED], roles=_roles(MELLUM))
     assert found["models"]["use"] == MELLUM
     entry = next(m for m in found["models"]["installed"] if m["id"] == MELLUM)
@@ -113,9 +117,15 @@ def test_mellum_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkey
     finally:
         config.models_config.cache_clear()
 
-@pytest.mark.parametrize("ram,first", [(64, MELLUM), (24, MELLUM), (16, Q5), (12, Q4), (8, Q4), (0, Q4)])
+@pytest.mark.parametrize("ram,first", [(64, Q6), (24, Q6), (16, Q4), (12, Q4), (8, Q4), (0, Q4)])
 def test_first_choice_follows_memory(ram, first):
+    # Fresh Macs: the first choice is the best build they can actually download.
     assert catalog.recommend(ram, [])["first_choice"] == first
+
+
+@pytest.mark.parametrize("ram,first", [(64, MELLUM), (24, MELLUM), (16, Q5), (12, Q4)])
+def test_first_choice_keeps_the_full_order_once_a_catalog_model_is_installed(ram, first):
+    assert catalog.recommend(ram, [Q4])["first_choice"] == first
 
 
 def test_16gb_is_offered_a_download_it_can_actually_get():
@@ -727,3 +737,22 @@ def test_actual_completion_route_to_native_setup_certificate(tmp_path):
     assert checked.returncode == 0, checked.stderr[-7000:]
     assert "setup model-state checks passed; all HTTP intercepted" in checked.stdout
     print(checked.stdout.strip())
+
+
+@pytest.mark.parametrize("content", [None, "", "{not json", "[]", '{"server": "x", "auth": null}'])
+def test_missing_or_broken_omlx_settings_never_stops_the_service(tmp_path, monkeypatch, content):
+    # A fresh Mac has no ~/.omlx/settings.json (oMLX never opened, or not installed).
+    # The backend builds its inference client at startup, so this must not raise.
+    import service.config as config
+    settings = tmp_path / "settings.json"
+    if content is not None:
+        settings.write_text(content)
+    monkeypatch.setattr(config, "OMLX_SETTINGS", settings)
+    monkeypatch.setattr(config, "is_bundled", lambda: False)
+    monkeypatch.setattr(config, "_credential", lambda name: "")
+    monkeypatch.setitem(config.models_config()["omlx"], "base_url", None)
+    try:
+        assert config.omlx_api_key() == ""
+        assert config.omlx_base_url() == "http://127.0.0.1:8000"
+    finally:
+        config.models_config.cache_clear()

@@ -34,9 +34,23 @@ USER_CONFIG = MOE_DIR / "config.yaml"
 
 @lru_cache
 def omlx_settings() -> dict:
-    """oMLX's own settings.json — single source of truth for host/port/api_key."""
-    with OMLX_SETTINGS.open() as f:
-        return json.load(f)
+    """oMLX's own settings.json — single source of truth for host/port/api_key.
+
+    A fresh install has no such file: oMLX.app was never opened, or there is no
+    engine at all yet. That reads as ``{}`` so the service still starts and setup
+    can say what is missing, instead of the backend dying at launch.
+    """
+    try:
+        with OMLX_SETTINGS.open() as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _settings_section(name: str) -> dict:
+    section = omlx_settings().get(name)
+    return section if isinstance(section, dict) else {}
 
 
 @lru_cache
@@ -278,16 +292,16 @@ def omlx_base_url() -> str:
     cfg = models_config()["omlx"].get("base_url")
     if cfg:
         return cfg.rstrip("/")
-    s = omlx_settings()["server"]
-    return f"http://{s['host']}:{s['port']}"
+    s = _settings_section("server")
+    return f"http://{s.get('host') or '127.0.0.1'}:{s.get('port') or 8000}"
 
 
 def omlx_api_key() -> str:
     if is_bundled():
         # The engine's own key lives in its settings.json; a key the native launcher
         # holds for a user's oMLX.app must never be sent to the bundled engine.
-        return omlx_settings()["auth"]["api_key"]
-    return _credential("WISP_LOCAL_OMLX_KEY") or omlx_settings()["auth"]["api_key"]
+        return str(_settings_section("auth").get("api_key") or "")
+    return _credential("WISP_LOCAL_OMLX_KEY") or str(_settings_section("auth").get("api_key") or "")
 
 
 # Whether the agent loop's NARRATION step still generates a think block, and

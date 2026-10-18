@@ -50,18 +50,33 @@ EMBEDDING_MODEL = CatalogModel(
 TESTED_NOTE = "Tool selection measured 10/10 on Wisp's test."
 
 
-def ranked_for(ram_gb: int) -> tuple[CatalogModel, ...]:
-    """Best-first order for this much memory."""
+def ranked_for(ram_gb: int, installed: list[str] | None = None) -> tuple[CatalogModel, ...]:
+    """Best-first order for this much memory.
+
+    With `installed` and no catalog model on this Mac yet (a fresh install), a
+    model with no public download is left out: a new user must be offered
+    something they can actually get, never a private build they cannot fetch.
+    Once any catalog model is installed the full order applies, so an existing
+    choice is never turned into an offer to download a different family.
+    """
     if ram_gb >= 24:
-        return (MELLUM_R1_Q4, LING_Q6, LING_Q5, LING_Q4)
-    if ram_gb >= 16:
-        return (LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
-    return (LING_Q4, LING_Q5, LING_Q6, MELLUM_R1_Q4)
+        order = (MELLUM_R1_Q4, LING_Q6, LING_Q5, LING_Q4)
+    elif ram_gb >= 16:
+        order = (LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
+    else:
+        order = (LING_Q4, LING_Q5, LING_Q6, MELLUM_R1_Q4)
+    if installed is None:
+        return order
+    have = set(installed)
+    if any(m.id in have for m in order):
+        return order
+    obtainable = tuple(m for m in order if m.repo)
+    return obtainable or order
 
 
-def fit(model: CatalogModel, ram_gb: int) -> str:
+def fit(model: CatalogModel, ram_gb: int, installed: list[str] | None = None) -> str:
     """`recommended` (first choice), `good`, or `heavy` (bigger than advised)."""
-    ranked = ranked_for(ram_gb)
+    ranked = ranked_for(ram_gb, installed)
     known_ram = ram_gb if ram_gb > 0 else 8      # unreadable memory: assume the smallest tier
     if model.min_ram_gb > known_ram:
         return "heavy"
@@ -75,14 +90,15 @@ def recommend(ram_gb: int, installed: list[str]) -> dict:
     `get` is the best-ranked model that ranks above `use`, is not installed, and
     has a public download; None when nothing better can be fetched.
     """
-    ranked = ranked_for(ram_gb)
+    ranked = ranked_for(ram_gb, installed)
     have = set(installed)
     use = next((m for m in ranked if m.id in have), None)
     better = ranked if use is None else ranked[:ranked.index(use)]
     get = next((m for m in better if m.repo and m.id not in have), None)
     # A local preferred model must not silently turn into an offer to download
-    # a different family. Existing installed choices remain usable.
-    if ranked[0] == MELLUM_R1_Q4:
+    # a different family. Existing installed choices remain usable. (On a fresh
+    # Mac it was dropped from `ranked`, so the best public build is offered.)
+    if ranked[0].repo is None:
         get = None
     warning = None
     if ram_gb == 0:

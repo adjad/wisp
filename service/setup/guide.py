@@ -65,11 +65,12 @@ class OmlxState:
     admin_url: str = "http://127.0.0.1:8000/admin"
 
 
-def _entry(model_id: str, hardware: Hardware, tool_capable: list[str]) -> dict:
+def _entry(model_id: str, hardware: Hardware, tool_capable: list[str],
+           installed: list[str] | None = None) -> dict:
     known = catalog.by_id(model_id)
     if known:
         return {"id": model_id, "label": f"{known.label} · {known.quant}",
-                "size_gb": known.size_gb, "fit": catalog.fit(known, hardware.ram_gb),
+                "size_gb": known.size_gb, "fit": catalog.fit(known, hardware.ram_gb, installed),
                 "tested": known.tested, "note": known.note}
     return {"id": model_id, "label": model_id, "size_gb": None, "fit": "unknown",
             "tested": model_id in tool_capable,
@@ -95,13 +96,13 @@ def download_info(model_id: str | None, model_dir: str | None) -> dict | None:
 def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                  models_source: str, roles: dict[str, dict], externals: list[EngineState],
                  tool_capable: list[str]) -> dict:
-    ranked = [m.id for m in catalog.ranked_for(hardware.ram_gb)]
+    ranked = [m.id for m in catalog.ranked_for(hardware.ram_gb, installed)]
     rec = catalog.recommend(hardware.ram_gb, installed)
     chat_models = [m for m in installed if m != catalog.EMBEDDING_MODEL.id
                    and "embedding" not in m.lower() and "rerank" not in m.lower()]
     # Catalog models first in recommended order, then everything else.
     ordered = sorted(chat_models, key=lambda m: (ranked.index(m) if m in ranked else len(ranked), m))
-    entries = [_entry(m, hardware, tool_capable) for m in ordered]
+    entries = [_entry(m, hardware, tool_capable, installed) for m in ordered]
     engine = main_engine_profile()
     built_in = engine is BUNDLED
 
