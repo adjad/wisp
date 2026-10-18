@@ -146,6 +146,9 @@ final class OverlayModel: ObservableObject {
             // A research plan holds the prompt queue only while it is on screen.
             // Leaving the tab lets a question asked in Ask, or a brief, run.
             if oldValue == .research { releaseResearchDispatch() }
+            // Any way off Ask (⌘1-3, a deep link, a notification) ends the
+            // questionnaire; its answers so far are already saved.
+            if tab != .ask { leaveKnowYou() }
             showingQuickSettings = false
             onResize()
         }
@@ -176,6 +179,11 @@ final class OverlayModel: ObservableObject {
     // First-run setup at the top of Ask. Its readiness lives on the app's one
     // SetupGuideModel, which the setup window shares.
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
+    // Whether Wisp's own service answers (BackendManager's reachability watch).
+    // False shows "Wisp service isn't running" with Retry instead of a green dot.
+    @Published var serviceReachable = true { didSet { if serviceReachable != oldValue { onResize() } } }
+    // Set by the app delegate: ask the backend manager to start the service again.
+    var onRetryService: () -> Void = {}
     // The one problem report open in the notch, unfolded under the reply it is
     // about (or at the top of Ask when it isn't about a reply on screen).
     let report = ReportDraft()
@@ -311,10 +319,14 @@ final class OverlayModel: ObservableObject {
     func startKnowYou() {
         if knowYou == nil {
             let flow = KnowYouModel(client: client)
-            flow.onClose = { [weak self] notice in self?.endKnowYou(notice: notice) }
-            flow.onShowBrief = { [weak self] in
-                self?.endKnowYou(notice: nil)
-                self?.runDailySummary()
+            flow.onClose = { [weak self, weak flow] notice in
+                guard let self, let flow, self.knowYou === flow else { return }
+                self.endKnowYou(notice: notice)
+            }
+            flow.onShowBrief = { [weak self, weak flow] in
+                guard let self, let flow, self.knowYou === flow else { return }
+                self.endKnowYou(notice: nil)
+                self.runDailySummary()
             }
             knowYou = flow
         }
@@ -333,8 +345,12 @@ final class OverlayModel: ObservableObject {
     /// The person moved on (a tab) before Done. The flow saves after every
     /// step, so nothing is lost; the service counts it as Later.
     func leaveKnowYou() {
-        guard let knowYou else { return }
-        Task { await knowYou.leave() }
+        guard let flow = knowYou else { return }
+        // Drop it now so a second gesture finds nothing to leave; tell the
+        // service in the background.
+        knowYou = nil
+        onResize()
+        Task { await flow.leave() }
     }
 
     /// Pick the tab for an opening panel: Ask, or for a hover soon after the
@@ -1257,6 +1273,8 @@ final class OverlayModel: ObservableObject {
                   self.submissionState.isCurrent(dispatch.id) else { return }
             self.dailySummaryRunning = false
             self.briefComposing = false
+            // A failed compose must not leave the 1 Hz sync poll running.
+            if result.text == nil { self.stopSyncProgress() }
             // Do not stop source polling here. A "still syncing" response is
             // a bounded wait, not completion of the background sync itself.
             if let text = result.text {
@@ -1291,10 +1309,20 @@ final class OverlayModel: ObservableObject {
         dailySyncProgress = 0
         dailySyncLabel = "Checking synced data…"
         sourceSyncTask = Task { [weak self] in
+            // Bounded: ~60 s overall, or 5 unanswered polls in a row. A downed
+            // service must not be polled at 1 Hz for the rest of the session.
+            let deadline = Date().addingTimeInterval(60)
+            var misses = 0
             while !Task.isCancelled {
                 guard let self else { return }
                 let status = await self.client.assistantSyncStatus(sources: wanted)
                 guard !Task.isCancelled, self.sourceSyncID == syncID else { return }
+                if status == nil { misses += 1 } else { misses = 0 }
+                if misses >= 5 || Date() > deadline {
+                    self.stopSyncProgress()
+                    self.onResize()
+                    return
+                }
                 if let status {
                     self.sourceSyncStatuses = status.sources
                     self.dailySyncProgress = status.progress

@@ -92,6 +92,33 @@ def test_corrupt_file_reads_as_empty_and_partial_bounds_keep_valid_fields():
     assert loaded["name"] == "Adi" and loaded["about"] == ""
 
 
+def test_unparseable_file_is_kept_aside_not_overwritten():
+    P.PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    P.PROFILE_PATH.write_text("{not json")
+    assert P.load() == P.empty()
+    assert not P.PROFILE_PATH.exists()
+    kept = list(P.PROFILE_PATH.parent.glob("profile.json.bad-*"))
+    assert len(kept) == 1 and kept[0].read_text() == "{not json"
+    P.PROFILE_PATH.write_text("[1, 2]")
+    assert P.load() == P.empty()
+    assert len(list(P.PROFILE_PATH.parent.glob("profile.json.bad-*"))) == 2
+
+
+def test_single_line_fields_collapse_whitespace_and_newlines():
+    out = P.validate({"name": "Adi\n  Jain\t", "goals": ["Ship\nthe   app"],
+                      "struggles": ["focus\r\nafter lunch"], "notes": "line one\nline two"})
+    assert out["name"] == "Adi Jain"
+    assert out["goals"] == ["Ship the app"]
+    assert out["struggles"] == ["focus after lunch"]
+    assert out["notes"] == "line one\nline two", "multi-line fields keep their breaks"
+
+
+def test_no_offer_when_about_you_already_has_content():
+    P.update({"name": "Adi"})
+    status = P.status(P.load())
+    assert status["has_content"] is True and status["offer"] is False
+
+
 def test_clear_removes_the_file():
     P.update(SAMPLE)
     assert P.PROFILE_PATH.exists()
