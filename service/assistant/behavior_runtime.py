@@ -964,6 +964,10 @@ class BehaviorRuntime:
                 "SELECT id, source, source_id, title, context, when_ts, status, updated_at FROM commitments "
                 "WHERE kind='reminder' AND source IN ('reminders','manual') AND when_ts >= ? AND when_ts < ?",
                 (now - HISTORY_S, now + AHEAD_S)).fetchall()]
+            # A reminder the stale policy hides (a week or more overdue, not kept) is not
+            # learned from either: it is neither mentioned nor used.
+            hidden = store.hidden_commitment_ids(now)
+        rows = [r for r in rows if r["id"] not in hidden]
         kinds = {"active": "reminder", "done": "reminder_done", "dismissed": "reminder_dismissed"}
         obs = []
         for r in rows:

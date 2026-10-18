@@ -2401,7 +2401,7 @@ async def run_agent(
             if _name == "clear_reminders":
                 from service.tools.assistant_tools import reminders_matching
                 _scope = str(_args.get("scope", "all"))
-                _items = reminders_matching(_scope, _args.get("query", ""))
+                _items = reminders_matching(_scope, _args.get("query", ""), include_stale=True)
                 _rows = [
                     f"{datetime.fromtimestamp(c['when_ts']):%a %b %-d, %Y}"
                     f"  {c['title']}" for c in _items]
@@ -3818,7 +3818,7 @@ async def run_agent(
                     elif name == "clear_reminders":
                         from service.tools.assistant_tools import reminders_matching
                         _scope = str(args.get("scope", "all"))
-                        _items = reminders_matching(_scope, args.get("query", ""))
+                        _items = reminders_matching(_scope, args.get("query", ""), include_stale=True)
                         _rows = [
                             f"{datetime.fromtimestamp(c['when_ts']):%a %b %-d, %Y}"
                             f"  {c['title']}" for c in _items]

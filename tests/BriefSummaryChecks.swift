@@ -73,19 +73,47 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
     check(cal.lines.map(\.leading) == ["All day", "15–16", "18"] && cal.source == .calendar, "calendar details: all-day first")
     check(BriefDetail.calendar(allDay: [], events: [], unsynced: true, clock: { _ in "" }).lines.first?.muted == true,
           "unsynced calendar details are dim")
-    let mail = BriefDetail.mail(needing: ["Can you review my draft?", "Tech Week starts today", "50% off everything"],
-                                summary: ["Worth a look", "Advisor: Thesis meeting moved", "Tech Week: starts today"], ready: true)
-    check(mail.lines.map(\.text) == ["Can you review my draft?", "Tech Week starts today", "Worth a look",
-                                     "Advisor: Thesis meeting moved", "Tech Week: starts today",
-                                     "1 newsletter or promo left out"] && mail.source == .mail,
-          "mail details: real mail, the summary's mail, and how much bulk was left out: \(mail.lines.map(\.text))")
-    check(BriefDetail.mail(needing: [], summary: [], ready: false).lines.map(\.text) == ["Mail hasn't been checked yet"],
+    let inbox = [BriefNeed(title: "Can you review my draft?", sender: "Jordan", person: true, received: now - 2 * hour),
+                 BriefNeed(title: "Thesis meeting", sender: "Prof. Lee", gist: "Prof. Lee moved your thesis meeting to Tuesday",
+                           person: true, received: now - hour),
+                 BriefNeed(title: "Tech Week starts today", sender: "UCSC Events", received: now),
+                 BriefNeed(title: "50% off everything", sender: "Shop", received: now),
+                 BriefNeed(title: "nothing", sender: "x")]
+    let mail = BriefDetail.mail(needing: inbox, ready: true)
+    check(mail.lines.map(\.text) == ["Prof. Lee moved your thesis meeting to Tuesday", "Jordan: Can you review my draft?",
+                                     "UCSC Events: Tech Week starts today", "1 newsletter or promo left out"] && mail.source == .mail,
+          "mail details: people first, a gist when written, else sender and subject, then the bulk left out: \(mail.lines.map(\.text))")
+    check(BriefMail.describe(BriefNeed(title: "Re: lunch")) == "Re: lunch", "no sender: the subject alone")
+    check(BriefMail.describe(BriefNeed(title: "x", sender: "Ann", gist: "  ")) == "Ann: x", "a blank gist falls back")
+    check(BriefDetail.mail(needing: [], ready: false).lines.map(\.text) == ["Mail hasn't been checked yet"],
           "unread mail details")
-    let texts = BriefDetail.texts(needing: ["Priya asked about dinner", "nothing"], summary: ["👤 Priya", "Asked about dinner at 7."],
-                                  ready: true)
-    check(texts.lines.map(\.text) == ["👤 Priya", "Asked about dinner at 7.", "Priya asked about dinner"] && texts.source == .messages,
-          "texts details: the summary's messages, then texts needing you")
-    check(BriefDetail.texts(needing: [], summary: [], ready: true).lines.map(\.text) == ["No texts need you"], "no texts")
+    check(BriefDetail.mail(needing: [BriefNeed(title: "50% off")], ready: true).lines.map(\.text) == ["1 newsletter or promo left out"],
+          "only bulk: says so")
+
+    let texts = [BriefNeed(title: "Priya: are we still on for dinner?", sender: "Priya", received: now - hour),
+                 BriefNeed(title: "Priya: lmk!", sender: "Priya", received: now - 600),
+                 BriefNeed(title: "Mom: call me", sender: "Mom", received: now - 3 * hour),
+                 BriefNeed(title: "Sam: thanks!", sender: "Sam", received: now - 60, replied: true),
+                 BriefNeed(title: "Ravi: see you there", received: now - 5 * hour),
+                 BriefNeed(title: "nothing", sender: "Bot")]
+    let waiting = BriefTexts.waiting(texts)
+    check(waiting == [BriefTexts.Person(name: "Priya", count: 2, latest: now - 600),
+                      BriefTexts.Person(name: "Mom", count: 1, latest: now - 3 * hour),
+                      BriefTexts.Person(name: "Ravi", count: 1, latest: now - 5 * hour)],
+          "one entry per person waiting, newest first; answered and placeholder texts left out: \(waiting)")
+    let detail = BriefDetail.texts(needing: texts, ready: true, when: { _ in "1 PM" })
+    check(detail.lines.map(\.text) == ["Priya · 2 texts", "Mom · 1 text", "Ravi · 1 text"] && detail.lines[0].leading == "1 PM"
+          && detail.source == .messages, "texts details: who, how many, when: \(detail.lines.map(\.text))")
+    check(!detail.lines.contains { $0.text.contains("dinner") || $0.text.contains("call me") }, "a text's words are never shown")
+    check(BriefTexts.row([]) == "No texts need you" && BriefTexts.row(Array(waiting.prefix(1))) == "Priya is waiting on you"
+          && BriefTexts.row(waiting) == "Priya, Mom and Ravi are waiting on you"
+          && BriefTexts.row(waiting + [BriefTexts.Person(name: "Ann", count: 1, latest: nil)]) == "Priya, Mom and 2 others are waiting on you",
+          "TEXTS row wording")
+    check(BriefDetail.texts(needing: [texts[3]], ready: true, when: { _ in "" }).lines.map(\.text) == ["No texts need you"],
+          "everyone answered: no texts need you")
+    check(BriefDetail.texts(needing: [], ready: false, when: { _ in "" }).lines.first?.muted == true, "unread messages details are dim")
+    check(BriefTexts.name(BriefNeed(title: "Me: on my way")) == "Me" && BriefTexts.waiting([BriefNeed(title: "Me: on my way")]).isEmpty,
+          "your own text never waits on you")
     let week = BriefDetail.soon(soon, when: { $0.allDay ? "Sun" : "later" })
     check(week.lines.map(\.text) == ["Essay outline", "Holiday", "UCSC startup club"] && week.source == .reminders,
           "SOON details open the first item's app")

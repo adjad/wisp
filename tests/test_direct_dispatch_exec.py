@@ -316,7 +316,7 @@ def test_direct_bulk_reminder_card_has_exact_preview() -> None:
     print("\na router-direct reminder clear previews the exact scoped items")
     from service.tools import assistant_tools
     real = assistant_tools.reminders_matching
-    assistant_tools.reminders_matching = lambda scope, query="": [{
+    assistant_tools.reminders_matching = lambda scope, query="", **_kwargs: [{
         "when_ts": 1787619600.0, "title": "Finish canvas assignment"}]
     try:
         approver = Approver(answer=False)

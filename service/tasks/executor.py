@@ -14,7 +14,8 @@ def _verified_reminder_readback(assistant_store, args: dict) -> bool:
     try:
         target = datetime.fromisoformat(str(args["when_iso"])).timestamp()
         wanted = " ".join(str(args["title"]).split()).casefold()
-        rows = assistant_store.active_between(target - 60, target + 60)
+        # Verifying a create, not using a reminder: a hidden row still proves it landed.
+        rows = assistant_store.active_between(target - 60, target + 60, include_stale=True)
     except (KeyError, TypeError, ValueError):
         return False
     # A verified native create is persisted as the source='reminders' row its
