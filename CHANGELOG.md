@@ -68,6 +68,7 @@ Wisp 0.5.0 is the first stable release. It works on a Mac with nothing installed
 - An offer nobody asked for doesn't take the keyboard from the app you're typing in.
 - It never opens over a notch you're using, and closing with ⌥Space counts as Later, like the chevron and Esc.
 - If your answers can't be saved, **Show my brief** says so and stays, instead of quietly asking again later.
+- Wisp calls you by the name you gave it, even when it differs from your Mac account name, and "what's my name?" or "what are my goals?" are answered from what you told it instead of searching your calendar.
 - If the service is down, the questions show an error with Retry, and never say "Thank you" when nothing was saved.
 - The goals step scrolls, so its buttons are never cut off on a short screen.
 - A damaged `profile.json` is kept as `profile.json.bad-<time>` instead of being overwritten.
@@ -77,7 +78,7 @@ These now go straight to the right tool:
 - Timers ("set a timer for 10 minutes") and "remind me in 20 minutes to…".
 - The date and time ("what's the date today", "what time is it in Tokyo"). These used to search the web. "What's the date today" answers for this Mac's time zone.
 - Weather asked many ways: "how's the weather in Boston", "weather tomorrow in Boston", "will it rain tomorrow", "should I bring an umbrella", "what should I wear today".
-- The brief ("what's my day look like", "give me my morning brief", "brief me"). Wisp answers in plain words. Before, "give me my daily brief" showed the raw notes Wisp gathers for itself, such as "no cached absence is verified".
+- The brief ("what's my day look like", "give me my morning brief", "brief me"). Wisp answers in plain words. Before, "give me my daily brief" showed the raw notes Wisp gathers for itself, such as "no cached absence is verified". That also no longer happens before Calendar has finished its first sync.
 - Maths and conversions ("what's 15% of 240", "5 miles to km") and definitions ("define serendipity").
 - "add a meeting with Sam tomorrow at 3pm" adds the event, and "move my 2pm to 4pm" moves it. Both still ask before changing your calendar.
 - Mail: "summarize my unread mail" summarizes, and "who emailed me about the invoice" searches your mail.

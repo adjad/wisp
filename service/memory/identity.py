@@ -57,6 +57,15 @@ def user_emails() -> list[str]:
         return []
 
 
+def _preferred_name() -> str:
+    """What the user asked to be called (Getting to know you), or ''."""
+    try:
+        from service.memory.profile import load
+        return str(load().get("name") or "").strip()
+    except Exception:  # noqa: BLE001 - a missing or unreadable profile never breaks a prompt
+        return ""
+
+
 def identity_block(*, with_date: bool = True) -> str:
     """Ground-truth identity facts. Empty string if nothing is known.
 
@@ -73,6 +82,12 @@ def identity_block(*, with_date: bool = True) -> str:
     if name:
         lines.append(f"- Name: {name}. Use exactly this spelling; do not expand, "
                      "translate, or invent variants of it.")
+    called = _preferred_name()
+    if called and called.casefold() != (name or "").casefold():
+        # Their own answer to "what should I call you" decides how they are
+        # addressed; the account name above still identifies whose data it is.
+        lines.append(f"- They asked to be called {called}: address them as {called}, "
+                     f"and answer {called} when they ask their name.")
     if emails:
         # Verified failure 2026-08-19: a memory fact wrongly attributed one of
         # these addresses to the user's MOM, and stayed wrong for weeks because

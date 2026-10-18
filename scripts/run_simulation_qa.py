@@ -206,6 +206,7 @@ PROFILE_TESTS = {
         "tests/test_terse_tool_schemas.py",
         "tests/test_search_reliability.py",
         "tests/test_short_circuit.py",
+        "tests/test_brief_never_verbatim.py",
     },
 }
 

@@ -431,10 +431,31 @@ _TRANSLATE_REFERS = re.compile(r"\b(?:this|that|these|those|it|them|file|email|e
                                r"document|doc|pdf|page|selection|clipboard|screen|attachment|thread|chat)\b", re.I)
 
 
+# Who the user is, as they told Wisp: answered from the prompt's identity and
+# Getting to know you blocks. Offered tools, the model went looking in the
+# calendar and said it couldn't see them.
+_SELF_NAME = re.compile(rf"{_PREFIX}(?:what(?:'s|\s+is)\s+my\s+name|who\s+am\s+i|"
+                        r"what\s+(?:should|do|will)\s+you\s+call\s+me|do\s+you\s+know\s+my\s+name)", re.I)
+_SELF_GOALS = re.compile(rf"{_PREFIX}(?:what\s+(?:are|were)\s+my\s+goals|tell\s+me\s+"
+                         r"(?:my\s+goals|what\s+my\s+goals\s+are)|what\s+goals\s+did\s+i\s+(?:give|tell)\s+you)", re.I)
+
+
+def _profile_goals() -> bool:
+    try:
+        from service.memory.profile import load
+        return bool(load().get("goals"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def is_no_tool_ask(text: str) -> bool:
     t = clean(text)
     if _COMPOUND.search(t):
         return False
+    if _SELF_NAME.fullmatch(t):
+        return True
+    if _SELF_GOALS.fullmatch(t):
+        return _profile_goals()
     if _JOKE.fullmatch(t):
         # "a joke about my meeting tomorrow" needs the meeting looked up.
         return not _JOKE_PERSONAL.search(t)

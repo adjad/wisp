@@ -7761,7 +7761,7 @@ def _no_tool_claim(text: str, *, last_user: str | None, recent_users: list[str] 
     elif (decision := _creative_writing_decision(text)) is None:
         if not _common_claims_no_tool(text):
             return None
-        decision = _mk("general", reason="joke/translation request -> answer without tools")
+        decision = _mk("general", reason="no-tool ask (joke, translation, own name or goals) -> answer without tools")
         decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell",
                                               "send_email", "send_message", "draft_email", "draft_message"})
     request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),

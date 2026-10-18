@@ -1236,6 +1236,10 @@ def _meeting_redacted_return(function):
     return wrapped
 
 
+# Reads whose result is model-facing evidence, never a user-facing answer.
+_NARRATED_EVIDENCE_READS = frozenset({"daily_brief"})
+
+
 @_meeting_redacted_return
 async def run_agent(
     client: OMLXClient,
@@ -2128,6 +2132,12 @@ async def run_agent(
         executed = bool(_exec_state["ran"]) and not planned and not denied
         _exec_state["ran"] = False
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
+        if outcome.status == "no_match" and name in _NARRATED_EVIDENCE_READS:
+            # A brief with one empty or unverified section still carries the
+            # others, and its text is evidence written for the model: it is
+            # always narrated, never shown as a terminal "no match" answer.
+            from dataclasses import replace
+            outcome = replace(outcome, status="succeeded")
         if model_led_discovery and str(result).startswith((
                 "(error: Action was attempted but", "(error: Action did not return a verified")):
             from dataclasses import replace

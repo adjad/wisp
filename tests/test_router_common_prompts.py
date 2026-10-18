@@ -216,7 +216,7 @@ def test_someones_timezone_is_not_a_place():
 ])
 def test_personal_reads_in_a_language_are_not_translations(prompt):
     d = asyncio.run(route(prompt))
-    assert "joke/translation" not in d.reason, d
+    assert "answer without tools" not in d.reason, d
     assert d.needs_tools or d.direct_calls or d.tool_subset, d
 
 
@@ -302,7 +302,7 @@ def test_terms_and_acronyms_still_define(prompt):
 
 def test_joke_about_my_data_is_not_a_no_tool_ask():
     d = asyncio.run(route("tell me a joke about my meeting tomorrow"))
-    assert "joke/translation" not in d.reason, d
+    assert "answer without tools" not in d.reason, d
 
 
 def test_relative_reminder_without_a_body_is_not_forced():
@@ -331,3 +331,33 @@ def test_direct_weather_read_rejects_languages_and_second_clauses():
     assert weather_read("what's the weather in Seattle, remind me to bring an umbrella") is None
     assert weather_read("what's the weather in Portland, OR").direct_calls[0][1]["location"] == "Portland, OR"
     assert weather_read("weather in Paris tomorrow").direct_calls[0][1] == {"location": "Paris", "period": "tomorrow"}
+
+
+def test_own_name_and_goals_are_answered_from_what_the_user_said(tmp_path, monkeypatch):
+    # Offered 18 retrieved tools, the model looked in the calendar for the
+    # goals the user had just given in Getting to know you, and said it could
+    # not see them (clean install, build 2016).
+    import json
+    from service.memory import profile
+    from service.router.common_claims import is_no_tool_ask
+    path = tmp_path / "profile.json"
+    monkeypatch.setattr(profile, "PROFILE_PATH", path, raising=False)
+    monkeypatch.setattr(profile, "load", lambda: json.loads(path.read_text()) if path.exists() else profile.empty())
+    for ask in ("what's my name?", "who am I", "what should you call me", "do you know my name"):
+        assert is_no_tool_ask(ask), ask
+    assert not is_no_tool_ask("what is my name and email Bob")
+    assert not is_no_tool_ask("what are my goals?")  # nothing told yet: let the router look
+    path.write_text(json.dumps({**profile.empty(), "goals": ["Finish my thesis"]}))
+    assert is_no_tool_ask("what are my goals?")
+    assert is_no_tool_ask("tell me my goals")
+
+
+def test_identity_block_addresses_the_user_by_the_name_they_chose(monkeypatch):
+    from service.memory import identity
+    monkeypatch.setattr(identity, "user_name", lambda: "Adi Jain")
+    monkeypatch.setattr(identity, "user_emails", lambda: [])
+    monkeypatch.setattr(identity, "_preferred_name", lambda: "Tri")
+    block = identity.identity_block(with_date=False)
+    assert "Name: Adi Jain" in block and "asked to be called Tri" in block
+    monkeypatch.setattr(identity, "_preferred_name", lambda: "adi jain")
+    assert "asked to be called" not in identity.identity_block(with_date=False)
