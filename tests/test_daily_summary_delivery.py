@@ -169,24 +169,24 @@ class TestReadability:
             for i in range(25)))
         monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
         section = B._email_section(now)
-        assert "20 emails shown · 20 unread among them" in section
+        assert "20 emails · 20 unread**" in section
         assert "No matching headers in the available snapshot for the last 24 hours" in section
         assert "Older note" in section
         assert "Scanned" not in section
 
-    def test_daily_scan_cap_discloses_unknown_coverage(self, sources, monkeypatch):
+    def test_daily_scan_cap_keeps_section_clean(self, sources, monkeypatch):
         now = sources
         monkeypatch.setattr(E, "_headers", "\n".join(
             "\x01".join(["H2", str(now - i), "U", "Personal", "a1",
                          "Nina", "nina@example.test", str(i), f"Note {i}"])
             for i in range(200)))
         section = B._email_section(now)
-        assert "200 emails shown · 200 unread among them" in section
-        assert "Mail scan incomplete for Personal; other messages may be missing." in section
+        assert "200 emails · 200 unread**" in section
+        assert "Mail scan incomplete" not in section and "may be missing" not in section
         assert "200-message-per-account" not in section
         assert "Scanned" not in section
 
-    def test_daily_partial_account_scan_discloses_unknown_coverage(self, sources, monkeypatch):
+    def test_daily_partial_account_scan_keeps_section_clean(self, sources, monkeypatch):
         now = sources
         monkeypatch.setattr(E, "_headers", "\n".join([
             "\x01".join(["H2", str(now - 10), "U", "School", "b", "Nina",
@@ -194,8 +194,8 @@ class TestReadability:
             "\x01".join(["C3", "Personal", "", "failed"]),
         ]))
         section = B._email_section(now)
-        assert "1 email shown · 1 unread among them" in section
-        assert "Mail scan incomplete for Personal; other messages may be missing." in section
+        assert "1 email · 1 unread**" in section
+        assert "Mail scan incomplete" not in section and "may be missing" not in section
         assert "Recent header scan did not complete for Personal" not in section
 
     def test_daily_mail_ranking_is_bounded_for_adversarial_long_subjects(self, sources, monkeypatch):
@@ -354,7 +354,7 @@ class TestReadability:
         assert B._mail_bucket({"subject": "Payment due Friday", "sender": "Acme",
                                "sender_address": "no-reply@acme.example.test"}) == "worth"
 
-    def test_today_card_discloses_partial_mail_without_complete_counts(self, sources, monkeypatch):
+    def test_today_card_omits_partial_mail_counts(self, sources, monkeypatch):
         now = sources
         row = "\x01".join(["H2", str(now - 10), "U", "School", "b", "Nina",
                           "nina@example.test", "school", "School update"])
@@ -365,14 +365,13 @@ class TestReadability:
         ):
             monkeypatch.setattr(E, "_headers", "\n".join([row, marker]))
             card = B._today_card(now)
-            assert "Mail: scan incomplete; messages may be missing." in card
-            assert "Mail: 1 from people, 0 automated." not in card
+            assert "Mail:" not in card and "may be missing" not in card
         monkeypatch.setattr(E, "_headers", "\x01".join(["C3", "Personal", "", "failed"]))
-        assert "Mail: scan incomplete" in B._today_card(now)
+        assert "Mail:" not in B._today_card(now)
         monkeypatch.setattr(E, "_headers", row)
         assert "Mail: 1 from people, 0 automated." in B._today_card(now)
 
-    def test_daily_empty_window_keeps_raw_cap_warning(self, sources, monkeypatch):
+    def test_daily_empty_window_keeps_cap_detail_in_model_block_only(self, sources, monkeypatch):
         now = sources
         rows = ["\x01".join(["H2", str(now + 3600 + i), "U", "Gmail", "a1",
                            "Nina", "nina@example.test", str(i if i < 199 else 0),
@@ -382,7 +381,7 @@ class TestReadability:
         assert len(E.header_rows()) == 199
         section = B._email_section(now)
         block = B._email_block(now)
-        assert "Mail scan incomplete for Gmail; other messages may be missing." in section
+        assert "Mail scan incomplete" not in section
         assert "Scanned" not in section
         assert "Scanned 0 matching cached headers" in block
         assert "total truncation is unknown" in block
@@ -400,7 +399,7 @@ class TestReadability:
         marker = "\x01".join(["C2", "Gmail", "a1", "200", "1", "1"])
         monkeypatch.setattr(E, "_headers", "\n".join(rows + [marker]))
         section, block = B._email_section(now), B._email_block(now)
-        assert "Mail scan incomplete for Gmail (1 unreadable header skipped); other messages may be missing." in section
+        assert "Mail scan incomplete" not in section
         assert "skipped 1 malformed headers" not in section
         assert "total truncation is unknown" in block
         assert "skipped 1 malformed headers" in block
@@ -412,13 +411,13 @@ class TestReadability:
         marker = "\x01".join(["C2", "Gmail", "a1", "2", "1", "0"])
         monkeypatch.setattr(E, "_headers", "\n".join([today, marker]))
         section = B._email_section(now)
-        assert "Mail scan incomplete (1 unreadable header skipped); other messages may be missing." in section
+        assert "Mail scan incomplete" not in section
         assert "skipped 1 malformed header with unknown dates" not in section
         future = today.replace(str(now - 100), str(now + 3600))
         monkeypatch.setattr(E, "_headers", "\n".join([future, marker]))
         empty = B._email_section(now)
         assert "No matching headers" in empty
-        assert "Mail scan incomplete (1 unreadable header skipped); other messages may be missing." in empty
+        assert "Mail scan incomplete" not in empty
 
     def test_daily_mail_groups_export_like_headers_without_body_claims(self, sources, monkeypatch):
         now = sources

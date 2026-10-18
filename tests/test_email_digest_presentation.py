@@ -954,8 +954,8 @@ def test_daily_actual_render_and_interactive_readiness_ignore_proven_poisoned_hi
     assert "Needs your attention" not in baseline["block"]  # actual flat layout
     assert baseline["block"].count("**LinkedIn <notifications@linkedin.example>**") == 1
     assert "Your password was changed" in baseline["block"]
-    assert "Mail scan incomplete for Offline" in baseline["email"]
-    assert "local cache" in baseline["sections"]["FULL"]
+    assert "Mail scan incomplete" not in baseline["email"]
+    assert "local cache" not in baseline["sections"]["FULL"]
     assert baseline["sections"]["READY"] == "1"
     assert "HISTORY ONLY" not in baseline["sections"]["FULL"]
     E.set_email_availability(True, read_source="mail_app")

@@ -112,7 +112,7 @@ class SourceSyncContract(unittest.IsolatedAsyncioTestCase):
         self.publish.assert_awaited_once()
         self.assertEqual(E.email_freshness_warning(), "")
 
-    async def test_daily_and_notification_text_keep_input_freshness_warning(self):
+    async def test_daily_and_notification_text_omit_mail_cache_warning(self):
         self.ready_core()
         await self.post_mail()
         snapshot = S.summary_snapshot()
@@ -124,16 +124,18 @@ class SourceSyncContract(unittest.IsolatedAsyncioTestCase):
         with patch.object(S, "ensure_daily_sources", AsyncMock(return_value=snapshot)), \
              patch.object(brief, "_generate_brief", side_effect=generate):
             sections = await brief._sections("morning")
-        self.assertTrue(sections["FULL"].startswith(warning))
-        self.assertTrue(sections["TODAY"].startswith(warning))
-        self.assertNotIn(warning, sections["MESSAGES"])
+        # The Daily Summary stays clean; email tools carry the caveat on request.
+        self.assertTrue(warning)
+        self.assertEqual(sections["FULL"], "Your day.")
+        self.assertEqual(sections["TODAY"], "Your schedule.")
 
-    async def test_model_free_brief_has_freshness_warning(self):
+    async def test_model_free_brief_omits_mail_cache_warning(self):
         self.ready_core()
         await self.post_mail()
         with patch.object(A.assistant_store, "upcoming", return_value=[]):
             text = brief.brief_without_model()
-        self.assertIn(E.email_freshness_warning(), text)
+        self.assertTrue(E.email_freshness_warning())
+        self.assertNotIn("local cache", text)
         self.assertNotIn("still syncing", text)
 
     async def test_day_range_and_recent_summaries_disclose_local_snapshot(self):
