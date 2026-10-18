@@ -141,8 +141,9 @@ def parse_weather(text: str) -> tuple[str, str | None] | None:
         city = (m.groupdict().get("city") or "").strip(" .,")
         if city and _W_NOCITY.match(city):
             city = ""
-        if city and re.search(r"\b(?:my|the|this|that|it|work|office|tomorrow|today|tonight|weekend|"
-                              r"morning|afternoon|evening|week)\b", city, re.I):
+        if city and re.search(r"\b(?:my|the|this|that|these|those|it|work|office|tomorrow|today|tonight|weekend|"
+                              r"morning|afternoon|evening|week|stocks?|shares?|market|prices?|sales|"
+                              r"earnings|revenue|quarter|project|team|economy)\b", city, re.I):
             return None
         periods = [p.casefold() for p in (m["p1"], m["p2"]) if p]
         if len(periods) > 1:
@@ -250,9 +251,9 @@ def _timer(t: str) -> CommonClaim | None:
     if _NOT_ALARM.search(t):
         return None
     if _ALARM.fullmatch(t):
-        return CommonClaim(("set_timer",), "alarm -> set_timer(kind=alarm)", force="set_timer",
-                           bindings={"set_timer": {"kind": "alarm"}},
-                           forbid=frozenset({"add_reminder", "add_calendar_event"}))
+        # Alarms stay on the reminder path: its clock grammar refuses a time it
+        # can't read exactly ("half six", "25:00") and asks instead of guessing.
+        return None
     if _TIMER.fullmatch(t) or _TIMER_BARE.fullmatch(t):
         return CommonClaim(("set_timer",), "countdown timer -> set_timer", force="set_timer",
                            forbid=frozenset({"add_reminder", "add_calendar_event"}))

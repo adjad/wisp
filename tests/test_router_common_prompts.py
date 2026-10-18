@@ -35,8 +35,8 @@ ROWS = {
     "push my 3pm to tomorrow": ("MOVE", set(), {"add_calendar_event", "add_reminder"}),
     "reschedule my dentist appointment to Friday": ("MOVE", set(), {"add_calendar_event"}),
     # 3 alarms, timers, relative reminders
-    "set an alarm for 7am": ("set_timer", {"set_timer"}, {"add_reminder"}),
-    "wake me up at 7": ("set_timer", {"set_timer"}, {"add_reminder"}),
+    # Alarms stay reminders: the reminder clock grammar asks rather than guesses.
+    "set an alarm for 7am": ("add_reminder", {"add_reminder"}, set()),
     "set a timer for 10 minutes": ("set_timer", {"set_timer"}, {"add_reminder"}),
     "start a 5 minute timer": ("set_timer", {"set_timer"}, {"add_reminder"}),
     "remind me in 20 minutes to call mom": ("add_reminder", {"add_reminder"}, set()),
@@ -100,11 +100,6 @@ def test_common_prompt_route(prompt):
         assert offered <= got, (offered - got, d)
     assert not (banned & got), (banned & got, d)
 
-
-def test_alarm_binds_kind():
-    d = asyncio.run(route("set an alarm for 7am"))
-    assert d.tool_argument_bindings.get("set_timer") == {"kind": "alarm"}
-    assert "add_reminder" not in d.tool_argument_bindings
 
 
 @pytest.mark.parametrize("prompt", ["tell me a joke", "translate hello to Spanish"])

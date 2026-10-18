@@ -10594,7 +10594,7 @@
    "last_tools": null,
    "expect": "either",
    "need": [],
-   "force": [],
+   "force": ["calculate"],
    "forbid": [
     "clear_memory",
     "clear_past_reminders",
