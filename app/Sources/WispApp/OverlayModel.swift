@@ -586,6 +586,10 @@ final class OverlayModel: ObservableObject {
     func qaShow(modelMemory: ModelMemory?) { self.modelMemory = modelMemory }
     #endif
 
+    #if WISP_NOTCH_QA
+    func qaShow(brief text: String) { brief = DailyBrief(text: text, receivedAt: Date(), traceID: nil, sessionId: "") }
+    #endif
+
     func refreshModelMemory() async {
         guard !freeingMemory else { return }
         let read = ModelMemory.parse(await client.modelMemoryReply())

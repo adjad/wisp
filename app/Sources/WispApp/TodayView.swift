@@ -108,6 +108,10 @@ final class TodayModel: ObservableObject {
     // the window's planner. Each shows it inline.
     let report = ReportDraft()
     @Published var plan: TodayPlan?
+    /// `/assistant/upcoming`'s reply (the next week's calendar events and
+    /// reminders) for the notch Brief's SOON row, read with UpcomingItem.parseList.
+    /// Nil until it has been read once.
+    @Published private(set) var upcomingReply: [String: Any]?
     @Published var error = ""
     @Published var busy = false
     /// When the plan last loaded, so Brief and Day can skip a refresh right after one.
@@ -289,6 +293,14 @@ final class TodayModel: ObservableObject {
             // A failed refresh must not leave stale slots looking actionable.
             plan = nil
         }
+    }
+
+    /// A failed read keeps the last reply, so SOON never empties on a hiccup.
+    func refreshUpcoming() async {
+        guard let data = try? await request("/assistant/upcoming?days=7"),
+              let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              reply["commitments"] is [[String: Any]] else { return }
+        upcomingReply = reply
     }
 
     func diagnosticSnapshot() -> (metadata: [String: Any], details: [String: Any]?) {
