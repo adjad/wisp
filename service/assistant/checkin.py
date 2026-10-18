@@ -261,7 +261,9 @@ def reminder_index(store, now: float) -> dict[str, dict]:
         entry["excluded"] = entry["excluded"] or bool(excluded)
 
     try:
-        for c in store.active_between(None, now):          # dated, already due
+        # Aging a task against its reminder, not showing the reminder: a reminder the
+        # stale policy hides still supplies its due time, so its age reads true.
+        for c in store.active_between(None, now, include_stale=True):  # dated, already due
             if c.get("source") in ("reminders", "manual") and c.get("kind") == "reminder":
                 note(c.get("title"), c.get("when_ts"), False)
     except Exception:  # noqa: BLE001 — carry-forward must never fail on a read
