@@ -1,6 +1,6 @@
 ---
 name: mac-controls
-description: Mac volume, mute, screen lock and music playback (Apple Music or Spotify) through fixed, validated commands. Use for "turn it down", "mute", "lock my screen", "pause the music", "next song", "skip".
+description: Mac volume, mute, screen lock and music playback (Apple Music or Spotify) through fixed, validated commands. Use for "turn it down", "mute", "lock my screen", "pause the music", "next song".
 metadata:
   wisp:
     triggers:
@@ -25,7 +25,6 @@ metadata:
       - play music
       - resume music
       - next song
-      - skip
       - skip song
       - skip this song
       - previous song

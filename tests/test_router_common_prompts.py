@@ -145,3 +145,10 @@ def test_summarize_unread_mail_uses_the_summarizer():
     read = personal_read("summarize my unread mail")
     assert read.direct_calls[0][0] == "summarize_emails"
     assert personal_read("show my unread mail").direct_calls[0][0] == "view_emails"
+
+
+@pytest.mark.parametrize("prompt", ["should I skip class today", "I skipped lunch", "skip the 3pm meeting"])
+def test_skip_inside_a_sentence_is_not_a_music_command(prompt):
+    d = asyncio.run(route(prompt))
+    assert d.force_first_tool not in {"mac_media", "mac_set_volume"}, d
+    assert "matched skill tools offered" not in d.reason, d
