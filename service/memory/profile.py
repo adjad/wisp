@@ -334,8 +334,10 @@ def status(profile: dict, *, now: float | None = None) -> dict:
     dismissed_at = profile.get("dismissed_at")
     count = profile.get("dismiss_count", 0)
     # Someone who already filled in About you has told Wisp who they are; the
-    # questionnaire would only ask it again.
-    offer = (not completed and not has_content(profile) and count < MAX_AUTO_OFFERS
+    # questionnaire would only ask it again. A name alone (step one, then the
+    # person left) still leaves the rest worth offering.
+    beyond_name = set(filled_fields(profile)) - {"name"}
+    offer = (not completed and not beyond_name and count < MAX_AUTO_OFFERS
              and (dismissed_at is None or now - dismissed_at >= REOFFER_AFTER_S))
     updated = profile.get("updated_at")
     days = int((now - updated) // 86400) if updated is not None else None

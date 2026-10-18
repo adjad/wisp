@@ -114,9 +114,16 @@ def test_single_line_fields_collapse_whitespace_and_newlines():
 
 
 def test_no_offer_when_about_you_already_has_content():
-    P.update({"name": "Adi"})
+    P.update({"name": "Adi", "goals": ["Ship the thesis"]})
     status = P.status(P.load())
     assert status["has_content"] is True and status["offer"] is False
+
+
+def test_a_name_alone_still_offers_the_rest():
+    # Step one answered, then the person left: goals and tone are still worth asking.
+    P.update({"name": "Adi"})
+    status = P.status(P.load())
+    assert status["has_content"] is True and status["offer"] is True
 
 
 def test_clear_removes_the_file():

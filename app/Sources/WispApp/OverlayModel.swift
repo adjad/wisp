@@ -1309,9 +1309,10 @@ final class OverlayModel: ObservableObject {
         dailySyncProgress = 0
         dailySyncLabel = "Checking synced data…"
         sourceSyncTask = Task { [weak self] in
-            // Bounded: ~60 s overall, or 5 unanswered polls in a row. A downed
-            // service must not be polled at 1 Hz for the rest of the session.
-            let deadline = Date().addingTimeInterval(60)
+            // Bounded: 10 minutes overall (a local brief can take minutes), or
+            // 5 unanswered polls in a row. A downed service must not be polled
+            // at 1 Hz for the rest of the session.
+            let deadline = Date().addingTimeInterval(600)
             var misses = 0
             while !Task.isCancelled {
                 guard let self else { return }
