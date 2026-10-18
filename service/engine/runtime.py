@@ -23,12 +23,19 @@ def reap_orphan() -> bool:
     return _reap(EngineLayout(engine_code_root(), engine_data_dir()))
 
 
-def stop_if_running() -> bool:
-    """Stop the bundled engine; never touches a user's oMLX. True if one was stopped."""
-    if _manager is None or not _manager.running():
+def stop_if_running(*, final: bool = False) -> bool:
+    """Stop the bundled engine; never touches a user's oMLX. True if one was stopped.
+
+    `final` (Wisp is quitting) also keeps it stopped: a model call still in flight
+    cannot launch it again in a backend about to exit."""
+    if _manager is None:
         return False
-    _manager.stop()
-    return True
+    was_running = _manager.running()
+    if final:
+        _manager.close()
+    elif was_running:
+        _manager.stop()
+    return was_running
 
 
 __all__ = ["is_bundled", "manager", "reap_orphan", "stop_if_running"]

@@ -428,7 +428,7 @@ async def lifespan(app: FastAPI):
         await client.aclose()
         if is_bundled():
             from service.engine.runtime import stop_if_running
-            await asyncio.to_thread(stop_if_running)
+            await asyncio.to_thread(stop_if_running, final=True)
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
@@ -567,7 +567,7 @@ async def shutdown_omlx() -> dict[str, Any]:
         return {"stopped": False}
     if is_bundled():
         from service.engine.runtime import stop_if_running
-        return {"stopped": await asyncio.to_thread(stop_if_running)}
+        return {"stopped": await asyncio.to_thread(stop_if_running, final=True)}
     try:
         subprocess.Popen([OMLX_CLI, "stop"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

@@ -50,6 +50,7 @@ Wisp 0.5.0 is the first stable release. It works on a Mac with nothing installed
 #### A fresh install
 - The built-in engine answers its first question. Its memory guard refused every model it had just loaded ("The AI engine's memory guard could not be verified"), because a background check stayed pending for the whole load. A fresh install with no oMLX.app could finish setup and still never answer.
 - Switching models right after a reply (for example, a code question that loads the coding model) is no longer refused by the same memory guard while the new model loads.
+- Quitting Wisp always stops the built-in engine. A reply or background task still running at quit could start it again, leaving it holding the model's memory after Wisp closed.
 - Wisp no longer stops at launch on a Mac where oMLX was never opened or isn't installed. A missing or unreadable `~/.omlx/settings.json` used to stop the service before setup could appear.
 - A Mac with no model is offered the best public model it can download: Ling 3.0 tiny 6-bit on 24 GB or more, 4-bit below that. It used to be told to add a private Mellum folder it had no way to get. If you already have Mellum installed, your choice is kept.
 - After a download, the new model is put to use automatically when no role points at an installed model. The built-in engine starts on its own the first time setup is open. **Start engine** stays for retries.
