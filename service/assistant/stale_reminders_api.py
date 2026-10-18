@@ -1,9 +1,13 @@
-"""The "keep or delete this old undated reminder?" question and its two answers.
+"""The "keep or delete this old reminder?" question and its two answers.
+
+Covers undated reminders (aged from creation) and dated ones a week or more overdue
+(aged from their due time); each ask carries ``reason`` "undated" or "overdue".
 
 GET lists the open questions (see stale_reminders.py for the policy). Keep records a
 permanent exemption. Delete removes the reminder from Reminders.app through the same
 verified native path every other reminder write uses: the app checks the title and that
-the reminder still has no due date, removes it, and reads back that it is gone. It runs
+the reminder still has no due date (an overdue one: still has the due time it was asked
+about), removes it, and reads back that it is gone. It runs
 only on the user's explicit click; nothing in Wisp deletes a reminder on its own.
 """
 from __future__ import annotations
@@ -34,7 +38,7 @@ def _target(source_id: str) -> dict:
     store = _store()
     row = store.stale_reminder_target(source_id)
     if row is None:
-        raise HTTPException(404, "That reminder is not in the current undated list.")
+        raise HTTPException(404, "That reminder is no longer in the current Reminders list.")
     if row["stale_state"] not in stale_reminders.EXCLUDED_STATES:
         raise HTTPException(409, "That reminder is not old enough to ask about.")
     return row
@@ -49,7 +53,8 @@ async def _changed() -> None:
 def asks():
     store = _store()
     view = store.undated_view()
-    return {"asks": store.stale_reminder_asks(), "hidden": view.get("stale_hidden", 0),
+    overdue_hidden = sum(r["reason"] == "overdue" for r in store.hidden_reminders())
+    return {"asks": store.stale_reminder_asks(), "hidden": view.get("stale_hidden", 0) + overdue_hidden,
             "freshness": view["freshness"], "policy": stale_reminders.policy()}
 
 
@@ -58,7 +63,7 @@ async def keep(body: Answer):
     row = _target(body.source_id)
     _store().keep_stale_reminder(row["source_id"], row["title"])
     await _changed()
-    return {"ok": True, "source_id": row["source_id"], "decision": "keep"}
+    return {"ok": True, "source_id": row["source_id"], "decision": "keep", "reason": row["reason"]}
 
 
 @router.post("/delete")
@@ -68,8 +73,12 @@ async def delete(body: Answer):
         raise HTTPException(409, "Reminders hasn't synced recently; nothing was deleted.")
     row = _target(body.source_id)
     from service.assistant.outbox import request as app_request
+    # Undated: an explicit null due time. Overdue: the exact due time it was asked about,
+    # so a reminder rescheduled since is refused natively instead of deleted.
+    expected_due = None if row["reason"] == "undated" else row["when_ts"]
     result = await app_request("delete_reminder", {
-        "source_id": row["source_id"], "expected_title": row["title"], "expected_due_ts": None})
+        "source_id": row["source_id"], "expected_title": row["title"],
+        "expected_due_ts": expected_due})
     if result.get("ok") is not True:
         # "unknown" means the app may have deleted it without confirming; say so rather
         # than offering a retry that could act on a different reminder.
@@ -77,4 +86,4 @@ async def delete(body: Answer):
         raise HTTPException(status, str(result.get("error") or "Reminders did not confirm the delete."))
     await _changed()
     return {"ok": True, "source_id": row["source_id"], "decision": "deleted",
-            "at": time.time()}
+            "reason": row["reason"], "at": time.time()}

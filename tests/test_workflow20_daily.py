@@ -38,7 +38,7 @@ class Store:
         value = self.receipts.get(source)
         return SimpleNamespace(fetchone=lambda: {"payload": json.dumps(value)} if value is not None else None)
 
-    def active_between(self, start=None, end=None):
+    def active_between(self, start=None, end=None, *, include_stale=False):
         return deepcopy(self.rows)
 
     def undated_listing(self, query):

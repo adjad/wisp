@@ -481,6 +481,13 @@ def collect_evidence(store, state, day, timezone, *, now):
             manual_count = db.execute("SELECT COUNT(*) FROM commitments WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<?", (now - 14 * 86400, hi)).fetchone()[0]
             manual = [dict(row) for row in db.execute("SELECT id,title,when_ts FROM commitments WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<? ORDER BY when_ts DESC,id LIMIT 100", (now - 14 * 86400, hi))]
             view, undated = store.undated_listing()
+            # Overdue reminders the stale policy hides (a week or more past due, not
+            # kept) leave the plan and its counts, along with any Wisp twin of them.
+            hidden = store.hidden_commitment_ids(now)
+            count -= sum(r["id"] in hidden for r in rows)
+            manual_count -= sum(r["id"] in hidden for r in manual)
+            rows = [r for r in rows if r["id"] not in hidden]
+            manual = [r for r in manual if r["id"] not in hidden]
         current = _native_receipt_current(receipt, now)
         selected = [dict(id=r["id"], title=r["title"], due_ts=r["when_ts"],
                          reference=r["source"] + ":" + str(r.get("source_id") or r["id"]))

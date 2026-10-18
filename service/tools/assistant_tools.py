@@ -703,7 +703,9 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
         return ("(error: pass when_iso, or day='today'/'tomorrow'; "
                 "the reminder was not changed.)")
 
-    candidates = reminders_matching("all", title)
+    # Rescheduling a hidden overdue reminder by name is allowed (it un-hides it by moving
+    # its due time); a list or search never shows it.
+    candidates = reminders_matching("all", title, include_stale=True)
     if expected_id:
         candidates = [c for c in candidates
                       if str(c.get("id") or "") == expected_id
@@ -900,7 +902,9 @@ async def cancel_event(title: str) -> str:
     # commitment over a stale one with the same name.
     matches = [c for c in assistant_store.upcoming(days=60) if q in c["title"].lower()]
     if not matches:
-        matches = [c for c in assistant_store.history(days=365)
+        # A reminder the stale policy hides is still cancellable by name: hiding an item
+        # must never stop the user removing it.
+        matches = [c for c in assistant_store.history(days=365, include_stale=True)
                    if q in c["title"].lower()]
     if not matches:
         return f"Nothing upcoming or past matches “{title}”."
@@ -974,7 +978,9 @@ def past_due_matching(query: str = "", days: int = 365) -> list[dict]:
     actually clear, so both read through here rather than each doing their own
     filtering.
     """
-    items = assistant_store.history(days=max(1, min(int(days or 365), 3650)))
+    # Includes reminders the stale policy hides: "clear my old reminders" is exactly how
+    # they should leave, and the confirmation card reads through this same helper.
+    items = assistant_store.history(days=max(1, min(int(days or 365), 3650)), include_stale=True)
     q = (query or "").lower().strip()
     if q:
         items = [c for c in items if q in c["title"].lower()]
@@ -1030,7 +1036,7 @@ _REMINDER_SCOPES = frozenset({"today", "tomorrow", "past_due", "upcoming", "all"
 
 
 def reminders_matching(scope: str = "all", query: str = "",
-                       *, now: float | None = None) -> list[dict]:
+                       *, now: float | None = None, include_stale: bool = False) -> list[dict]:
     """Active Wisp/Reminders.app items in a deterministic time scope.
 
     Calendar events are excluded. A Wisp reminder can carry a task-like kind,
@@ -1055,7 +1061,7 @@ def reminders_matching(scope: str = "all", query: str = "",
     else:
         start = end = None
 
-    items = assistant_store.active_between(start, end)
+    items = assistant_store.active_between(start, end, include_stale=include_stale)
     items = [c for c in items
              if c.get("source") in _REMINDER_SOURCES
              or bool(_REMINDER_SOURCES & set(c.get("duplicate_sources") or []))]

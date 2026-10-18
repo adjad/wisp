@@ -241,6 +241,9 @@ def cached_sources(monkeypatch):
         def transaction(self, write=False):
             assert write is False
             yield db
+        def hidden_commitment_ids(self, now=None):
+            return set()
+
         def undated_listing(self):
             return self.view, self.undated
     store = Store()
@@ -253,6 +256,23 @@ def cached_sources(monkeypatch):
     monkeypatch.setattr(notes, "raw_notes_snapshot", lambda: empty_note)
     yield store, db, email, messages, notes
     db.close()
+
+
+def test_stale_hidden_overdue_reminders_leave_the_plan_and_its_counts(cached_sources):
+    """A reminder a week or more overdue that the user didn't keep is hidden from the
+    Day plan, along with its Wisp twin, and it isn't counted as omitted either."""
+    from service.assistant.daily_workspace import collect_evidence
+    store, db, *_ = cached_sources
+    db.executemany("INSERT INTO commitments VALUES(?,?,?,?,?,?,?)", [
+        ("r-old", "reminders", "old", "Get doordash order", at(17) - 16 * 86400, "reminder", "active"),
+        ("r-new", "reminders", "new", "Buy stamps", at(17), "reminder", "active"),
+        ("m-old", "manual", "m-old", "Get doordash order", at(11), "reminder", "active")])
+    store.view = dict(freshness="current", status="complete", stored=0, total=0)
+    store.undated = []
+    store.hidden_commitment_ids = lambda now=None: {"r-old", "m-old"}
+    reminders = collect_evidence(store, state(), DAY, ZONE, now=NOW)["reminders"]
+    assert [r["title"] for r in reminders["records"]] == ["Buy stamps"]
+    assert reminders["omitted"] == 0
 
 
 def test_native_reminder_cap_is_not_consumed_by_manual_rows_and_true_omissions_count(cached_sources):
