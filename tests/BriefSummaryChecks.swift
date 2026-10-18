@@ -75,8 +75,9 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
           "unsynced calendar details are dim")
     let mail = BriefDetail.mail(needing: ["Can you review my draft?", "Tech Week starts today", "50% off everything"],
                                 summary: ["Worth a look", "Advisor: Thesis meeting moved", "Tech Week: starts today"], ready: true)
-    check(mail.lines.map(\.text) == ["Can you review my draft?", "Worth a look", "Advisor: Thesis meeting moved",
-                                     "2 newsletters and promos left out"] && mail.source == .mail,
+    check(mail.lines.map(\.text) == ["Can you review my draft?", "Tech Week starts today", "Worth a look",
+                                     "Advisor: Thesis meeting moved", "Tech Week: starts today",
+                                     "1 newsletter or promo left out"] && mail.source == .mail,
           "mail details: real mail, the summary's mail, and how much bulk was left out: \(mail.lines.map(\.text))")
     check(BriefDetail.mail(needing: [], summary: [], ready: false).lines.map(\.text) == ["Mail hasn't been checked yet"],
           "unread mail details")
