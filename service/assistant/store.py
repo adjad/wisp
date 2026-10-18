@@ -2362,7 +2362,9 @@ class AssistantStore:
             + _seed_clause() + " ORDER BY when_ts ASC", params).fetchall()
         items = self._collapse([dict(r) for r in rows])
         # ``include_stale`` is only for an explicit, confirmed removal the user asked for
-        # (clearing or cancelling reminders): hiding an item must not stop deleting it.
+        # (clearing or cancelling reminders), or for read-only aging
+        # (checkin.reminder_index): hiding an item must not stop deleting it, or stop a
+        # task made from it from aging.
         return items if include_stale else self._hide_stale(items, None)
 
     def history(self, now: float | None = None, days: int = 365, *,
