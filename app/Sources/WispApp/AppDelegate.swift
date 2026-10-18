@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var searchPanel: OverlayPanel?
     private lazy var searchModel = SearchModel(client: client)
     private lazy var researchModel = ResearchModel(client: client)
-    // One day plan for the notch's Today tab and the window's planner.
+    // One day plan for the notch's Brief and Day tabs and the window's planner.
     private lazy var todayModel = TodayModel()
     // One settings loader for the notch's quick settings, the Settings window and
     // the Wisp window's Full access pill: one source for confirmed and pending state.
@@ -1049,7 +1049,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openAssistant()
     }
 
-    /// Today in the notch: where a clicked notification lands.
+    /// Day in the notch: where a clicked notification lands.
     private func openTodayInNotch() {
         prepareTodayInNotch()
         openAssistant()
@@ -1057,7 +1057,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func prepareTodayInNotch() {
         model.showingQuickSettings = false
-        model.tab = .today
+        model.tab = .day
     }
 
     private func showSetupCard() {
@@ -1131,13 +1131,13 @@ extension AppDelegate {
         }
         precondition(delegate.model.brief?.text == "Synthetic daily summary",
                      "Summary response was discarded after dismissal/reopen")
-        precondition(delegate.model.tab == .today && !delegate.model.briefComposing,
-                     "The brief lands on the Today tab")
+        precondition(delegate.model.tab == .brief && !delegate.model.briefComposing,
+                     "The brief lands on the Brief tab")
         precondition(delegate.model.turns.isEmpty, "The brief no longer goes into the chat transcript")
         precondition(delegate.model.conversationSettled && !delegate.model.willQueuePrompt,
                      "A composed brief frees the prompt queue")
         delegate.model.newChat()
-        precondition(delegate.model.brief != nil, "New chat keeps Today's brief")
+        precondition(delegate.model.brief != nil, "New chat keeps the brief")
         delegate.model.reset()
         print("PASS: AppDelegate Daily Summary during dismissal completes")
     }
@@ -1159,13 +1159,13 @@ extension AppDelegate {
         let editing = opened()
         editing.model.messageDraft = OverlayModel.MessageDraft(to: "fixture", text: "Hi", isEditing: true)
         let addingTask = opened()
-        addingTask.model.tab = .today
+        addingTask.model.tab = .day
         addingTask.model.todayTaskTitle = "Lab report draft"
         for delegate in [idle, pinned, typing, editing, addingTask] { delegate.scheduleCollapse() }
         try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
         precondition(idle.presentation.desired == .bar, "Control: an idle panel must auto-collapse")
         for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited"),
-                                 (addingTask, "a Today task being typed")] {
+                                 (addingTask, "a Day task being typed")] {
             precondition(delegate.presentation.desired == .chat, "\(what) must hold the panel open")
         }
         pinned.collapse()
@@ -1183,16 +1183,16 @@ extension AppDelegate {
         precondition(OverlayModel.joining(history: Array(history.prefix(2)), before: local).map(\.text) == ["a", "b", "c", "d"],
                      "History goes before turns asked while it loaded")
         // The tab survives collapse; ⌥Space reopens on Ask, a prompt hover on the last tab.
-        precondition(addingTask.model.tab == .today, "The tab survives collapse")
+        precondition(addingTask.model.tab == .day, "The tab survives collapse")
         addingTask.model.collapsed = true
         addingTask.model.prepareTab(byHover: true)
-        precondition(addingTask.model.tab == .today, "A hover soon after closing reopens the last tab")
+        precondition(addingTask.model.tab == .day, "A hover soon after closing reopens the last tab")
         addingTask.model.prepareTab(byHover: true, at: Date().addingTimeInterval(NotchTabMemory.hoverWindow + 60))
         precondition(addingTask.model.tab == .ask, "A hover long after closing opens Ask")
         addingTask.model.tab = .research
         addingTask.model.prepareTab(byHover: false)
         precondition(addingTask.model.tab == .ask, "⌥Space opens Ask")
-        print("PASS: AppDelegate collapse holds (pin, typing, draft, Today task), unpins on collapse and dismiss; tabs reopen as designed")
+        print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task), unpins on collapse and dismiss; tabs reopen as designed")
     }
 
     static func checkResearchReleasesQueueOffTab() async {
@@ -1249,7 +1249,7 @@ extension AppDelegate {
         let store = delegate.wispWindow.store
         precondition(store.fullAccessKnown && store.fullAccess, "The Wisp window's pill follows the one Full access source")
         model.showingQuickSettings = true
-        model.tab = .today
+        model.tab = .brief
         precondition(!model.showingQuickSettings, "Switching tabs closes quick settings")
         print("PASS: AppDelegate quick settings share one loader; a Full access change survives collapse; unconfirmed is never off")
     }
@@ -1261,7 +1261,7 @@ extension AppDelegate {
         let opening = delegate.presentation.next()!
         model.collapsed = false
         delegate.finishPresentation(opening)
-        model.tab = .today
+        model.tab = .day
         model.showingQuickSettings = true
         delegate.showSetupCard()
         precondition(model.setupCard == .open && model.tab == .ask && !model.showingQuickSettings,
@@ -1276,16 +1276,16 @@ extension AppDelegate {
         precondition(model.tab == .ask, "While setup is open, hovering reopens Ask")
         model.setupCard = .later
         precondition(!model.holdsOpen, "Later lets the panel collapse again")
-        model.tab = .today
+        model.tab = .brief
         model.prepareTab(byHover: true)
-        precondition(model.tab == .today, "Setup set aside leaves hover's last tab alone")
+        precondition(model.tab == .brief, "Setup set aside leaves hover's last tab alone")
         precondition(model.setupCard.afterReadiness(true) == .hidden, "Setup set aside leaves when Wisp is ready")
-        // A clicked notification opens Today, even from quick settings on Ask.
+        // A clicked notification opens Day, even from quick settings on Ask.
         model.tab = .ask
         model.showingQuickSettings = true
         delegate.prepareTodayInNotch()
-        precondition(model.tab == .today && !model.showingQuickSettings, "A clicked notification lands on Today")
-        print("PASS: AppDelegate setup card opens on Ask, holds the panel until Done or Later; notifications open Today")
+        precondition(model.tab == .day && !model.showingQuickSettings, "A clicked notification lands on Day")
+        print("PASS: AppDelegate setup card opens on Ask, holds the panel until Done or Later; notifications open Day")
     }
 
     static func checkInlineReportHoldsOpen() async {
@@ -1296,7 +1296,7 @@ extension AppDelegate {
         let opening = delegate.presentation.next()!
         model.collapsed = false
         delegate.finishPresentation(opening)
-        model.tab = .today
+        model.tab = .day
         model.reportCurrentProblem()
         precondition(model.tab == .ask && model.report.snapshot?.key == "chat:none" && model.reportIsUnattached,
                      "With no reply, Report a problem opens one report at the top of Ask")
@@ -1316,9 +1316,9 @@ extension AppDelegate {
         model.reset()
         precondition(!model.report.isOpen, "A new chat closes the report on the conversation it leaves")
         precondition(!model.holdsOpen, "Closing the report lets the panel collapse")
-        model.tab = .today
+        model.tab = .day
         delegate.todayModel.reportProblem()
-        precondition(model.holdsOpen, "Today's report holds the panel open on the Today tab")
+        precondition(model.holdsOpen, "Today's report holds the panel open on the Day tab")
         delegate.todayModel.report.close()
         print("PASS: AppDelegate inline reports: one at a time, under their reply, holding the panel while open")
     }

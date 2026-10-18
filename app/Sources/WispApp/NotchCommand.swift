@@ -13,7 +13,7 @@ enum NotchCommand: String, CaseIterable, Equatable {
 
     var summary: String {
         switch self {
-        case .today: return "Open Today"
+        case .today: return "Open your day"
         case .memory: return "Open Memory"
         case .research: return "Research your next prompt"
         case .settings: return "Quick settings"

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The Wisp window's Today section: the full planner (both tabs, the task
 /// editor, pins, working hours and the daily email) under the window's top bar.
-/// It shares the app's one TodayModel with the notch's Today tab.
+/// It shares the app's one TodayModel with the notch's Brief and Day tabs.
 struct TodayHomeView: View {
     @ObservedObject var today: TodayModel
     let initialTab: Int
