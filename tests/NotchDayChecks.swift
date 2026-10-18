@@ -176,19 +176,20 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!
     let light = DayLoad.assess(events: [], allDay: ["PA 2 [CSE-20-04]"], from: now, dayStart: dayStart, isToday: true, zone: utc)
+    func mailOf(_ titles: [String]) -> [BriefNeed] { titles.map { BriefNeed(title: $0) } }
     let lines = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []),
-                                       texts: (ready: true, needing: ["nothing", "Priya asked about dinner"]),
+                                       texts: (ready: true, needing: mailOf(["nothing"]) + [BriefNeed(title: "Priya: dinner at 7?", sender: "Priya")]),
                                        soon: .item(title: "UCSC startup club", when: "Wed 6 PM", source: "calendar"))
     check(lines.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"], "four rows in order")
     check(lines[0].text == "Light day: just PA 2 [CSE-20-04] (all day)" && lines[0].trailing == ""
-          && lines[1].text == "Nothing needs a reply" && lines[2].text == "Priya asked about dinner"
+          && lines[1].text == "Nothing needs a reply" && lines[2].text == "Priya is waiting on you"
           && lines[3].source == .calendar && lines[3].trailing == "Wed 6 PM", "row contents: \(lines.map(\.text))")
     check(!lines.contains(where: \.muted), "synced sources are never dim")
-    let quiet = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []), texts: (ready: true, needing: ["nothing"]),
+    let quiet = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []), texts: (ready: true, needing: mailOf(["nothing"])),
                                        soon: .nothing)
     check(quiet.map(\.text).suffix(2) == ["No texts need you", "Nothing in the next week"] && !quiet.contains(where: \.muted),
           "TEXTS and SOON stay with nothing to say")
-    let unsynced = DayTimeline.briefLines(calendar: nil, calendarUnsynced: true, mail: (ready: false, needing: ["x"]),
+    let unsynced = DayTimeline.briefLines(calendar: nil, calendarUnsynced: true, mail: (ready: false, needing: mailOf(["x"])),
                                           texts: (ready: false, needing: []), soon: .unknown)
     check(unsynced.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"] && unsynced.allSatisfy(\.muted)
           && unsynced.map(\.text) == ["Calendar hasn't synced yet", "Mail hasn't been checked yet",
@@ -198,9 +199,18 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(unread.map(\.text) == ["Nothing on your calendar", "Mail hasn't been checked yet", "Messages haven't been checked yet",
                                  "Nothing in the next week"] && unread[1].muted && unread[2].muted,
           "no coverage (the workspace couldn't be read) is unknown, never off")
-    check(DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: ["Lab partner", "Advisor"]),
-                                 texts: (ready: true, needing: ["Mom", "Priya"]), soon: .nothing)
-          .map(\.text)[1...2] == ["2 emails need you", "2 texts need you"], "mail and text counts")
+    // MAIL says what the top email is about; TEXTS says who is waiting, never what they wrote.
+    let described = DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: [
+        BriefNeed(title: "Lab report", sender: "Lab partner", person: true, received: 100),
+        BriefNeed(title: "Thesis meeting", sender: "Prof. Lee", gist: "Prof. Lee moved your thesis meeting to Tuesday",
+                  person: true, received: 200),
+        BriefNeed(title: "Tech Week starts today", sender: "UCSC Events", received: 300)]),
+        texts: (ready: true, needing: [BriefNeed(title: "Mom: call me", sender: "Mom", received: 50),
+                                       BriefNeed(title: "Priya: dinner?", sender: "Priya", received: 90)]), soon: .nothing)
+    check(described[1].text == "Prof. Lee moved your thesis meeting to Tuesday" && described[1].trailing == "+2 more",
+          "MAIL leads with the newest person's gist: \(described[1].text) \(described[1].trailing)")
+    check(described[2].text == "Priya and Mom are waiting on you" && !described[2].text.contains("dinner"),
+          "TEXTS names who is waiting, newest first: \(described[2].text)")
     check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .item(title: "nothing", when: "Fri", source: "reminders"))[3]
           .text == "Nothing in the next week", "a placeholder is never what's coming")
 
@@ -223,9 +233,11 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                  "Weekly digest: CSE 20", "Lab moved to Thursday", "nothing"]
     check(DayTimeline.mailNeedingYou(inbox) == ["Can you review my draft?", "Lab moved to Thursday"],
           "newsletters, promos and placeholders are left out: \(DayTimeline.mailNeedingYou(inbox))")
-    let promos = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: inbox), texts: nil, soon: .nothing)[1]
-    check(promos.text == "2 emails need you" && promos.trailing == "+3 promos", "the MAIL row counts real mail and names what it left out")
-    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: ["Can you review my draft?"]), texts: nil,
+    let promos = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: mailOf(inbox)), texts: nil, soon: .nothing)[1]
+    check(promos.text == "Can you review my draft?" && promos.trailing == "+1 more", "the MAIL row describes real mail: \(promos.text)")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: mailOf(["Can you review my draft?", "50% off everything"])),
+                                 texts: nil, soon: .nothing)[1].trailing == "+1 promo", "one email: the row names the promo it left out")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: mailOf(["Can you review my draft?"])), texts: nil,
                                  soon: .nothing)[1].trailing == "", "no promos, no note")
     for personal in ["Last chance to submit your thesis form", "Webinar slides for Thursday", "Tech Week starts today",
                      "Don't miss the lab meeting", "Re: project offer", "Meeting with Priya", "This week in CSE 20"] {

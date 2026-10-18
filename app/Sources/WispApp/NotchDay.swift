@@ -425,8 +425,8 @@ struct DayTimeline: Equatable {
     /// Always four rows, CAL, MAIL, TEXTS and SOON, so the Brief keeps its shape.
     /// A source Wisp can't read yet shows a dim row saying so instead of disappearing.
     static func briefLines(calendar: DayLoad?, calendarUnsynced: Bool = false,
-                           mail: (ready: Bool, needing: [String])?,
-                           texts: (ready: Bool, needing: [String])?,
+                           mail: (ready: Bool, needing: [BriefNeed])?,
+                           texts: (ready: Bool, needing: [BriefNeed])?,
                            soon: Soon) -> [BriefLine] {
         var lines: [BriefLine] = []
         if let calendar {
@@ -437,21 +437,21 @@ struct DayTimeline: Equatable {
         }
         // No coverage entry means the workspace couldn't be read: unknown, not off.
         if let mail, mail.ready {
-            let needing = mailNeedingYou(mail.needing)
-            let promos = mail.needing.filter { !isJunk($0) && isBulkMail($0) }.count
-            let text = needing.isEmpty ? "Nothing needs a reply"
-                : needing.count == 1 ? needing[0] : "\(needing.count) emails need you"
-            // Say when promos were left out, so a hidden email is never silent.
-            lines.append(BriefLine(tag: "MAIL", text: text, trailing: promos > 0 ? "+\(promos) promo\(promos == 1 ? "" : "s")" : "",
-                                   source: .mail))
+            // What the top email is about, not how many there are.
+            let needing = BriefMail.important(mail.needing)
+            let promos = BriefMail.bulkCount(mail.needing)
+            let text = needing.first.map(BriefMail.describe) ?? "Nothing needs a reply"
+            // Say when more mail or promos were left out, so a hidden email is never silent.
+            let trailing = needing.count > 1 ? "+\(needing.count - 1) more"
+                : promos > 0 ? "+\(promos) promo\(promos == 1 ? "" : "s")" : ""
+            lines.append(BriefLine(tag: "MAIL", text: text, trailing: trailing, source: .mail))
         } else {
             lines.append(BriefLine(tag: "MAIL", text: "Mail hasn't been checked yet", trailing: "", source: .mail, muted: true))
         }
         if let texts, texts.ready {
-            let needing = texts.needing.filter { !isJunk($0) }
-            let text = needing.isEmpty ? "No texts need you"
-                : needing.count == 1 ? needing[0] : "\(needing.count) texts need you"
-            lines.append(BriefLine(tag: "TEXTS", text: text, trailing: "", source: .messages))
+            // Who is waiting on you, never what they wrote.
+            lines.append(BriefLine(tag: "TEXTS", text: BriefTexts.row(BriefTexts.waiting(texts.needing)), trailing: "",
+                                   source: .messages))
         } else {
             lines.append(BriefLine(tag: "TEXTS", text: "Messages haven't been checked yet", trailing: "", source: .messages, muted: true))
         }

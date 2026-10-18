@@ -154,7 +154,9 @@ def test_carry_forward_leaves_behind_a_task_from_a_two_week_old_reminder(store):
     assert left["day"] == "2026-10-18" and left["status"] == "active", "left where it was, not deleted"
     assert fresh["id"] == moved[0]["id"]
     aged = C.aged_out_today("2026-10-19")
-    assert [(a["title"], a["reason"], a["age_days"]) for a in aged] == [("Get doordash order", "aged_out", 16)]
+    # The reminder is a week past due and unkept, so the stale policy hides it: the
+    # task is left behind for that reason, aged from the reminder's due time.
+    assert [(a["title"], a["reason"], a["age_days"]) for a in aged] == [("Get doordash order", "stale_reminder", 16)]
     assert [t["title"] for t in store.today_snapshot("2026-10-19", ZONE)["tasks"]] == ["Call the bank"]
     assert C.carry_forward(store, "2026-10-19", ZONE, now=now) == [], "idempotent"
     assert len(C.aged_out_today("2026-10-19")) == 1

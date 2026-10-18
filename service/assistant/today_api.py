@@ -79,6 +79,14 @@ def snapshot(day, timezone, *, debug=False):
             # The original revisioned planner remains usable when an optional
             # source or private workspace settings are unavailable.
             result["workspace_error"] = "Daily source evidence could not be refreshed; your saved day plan is shown."
+        if "workspace" in result:
+            try:
+                # One-line gists of important emails for the Brief's MAIL row,
+                # when the background writer has made them. Never fatal.
+                from service.assistant import mail_gists
+                mail_gists.attach(result["workspace"])
+            except Exception:  # noqa: BLE001
+                pass
         if debug:
             # Returned only on explicit opt-in; never journaled. Fixed clock and
             # exact inputs make a replay independent of current state/sources.
