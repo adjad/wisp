@@ -78,9 +78,16 @@ async def _tick():
     return task
 
 
+def _brief_rows(store) -> list[dict]:
+    """Every brief ever queued, oldest first, whatever its delivery state."""
+    with store._lock:
+        rows = store._db.execute("SELECT * FROM assistant_events WHERE kind='daily_brief' "
+                                 "ORDER BY created_at,id").fetchall()
+    return [store._event(row) for row in rows]
+
+
 def _published_parts(store) -> list[str]:
-    return [row["payload"]["part_of_day"] for row in store.pending_events()
-            if row["payload"].get("type") == "daily_brief"]
+    return [row["payload"]["part_of_day"] for row in _brief_rows(store)]
 
 
 class TestTwoRunsADay:
@@ -96,8 +103,39 @@ class TestTwoRunsADay:
                 with patch.object(scheduler, "datetime", _clock_at(hour, 30)):
                     await _tick()
         assert _published_parts(store) == ["morning", "evening"]
-        keys = {row["dedupe_key"] for row in store.pending_events()}
+        keys = {row["dedupe_key"] for row in _brief_rows(store)}
         assert keys == {"daily_brief:2026-10-16:morning", "daily_brief:2026-10-16:evening"}
+
+    @pytest.mark.asyncio
+    async def test_an_unacknowledged_morning_brief_never_replays_over_the_evening(self, _isolated):
+        """Found by the Release Auditor: pending events replay oldest first, so a
+        morning brief the app never acknowledged (its notification failed) used to
+        arrive after the evening one on reconnect and replace it on Today."""
+        store = _isolated
+        with patch.object(B, "_sections", AsyncMock(return_value=READY)):
+            with patch.object(scheduler, "datetime", _clock_at(8)):
+                await _tick()
+            with patch.object(scheduler, "datetime", _clock_at(20)):
+                await _tick()
+        pending = [row["payload"]["part_of_day"] for row in store.pending_events()]
+        assert pending == ["evening"]
+        # The morning run still counts as delivered, and a late receipt for it is harmless.
+        morning = next(row for row in _brief_rows(store) if row["payload"]["part_of_day"] == "morning")
+        assert morning["state"] == "superseded"
+        assert scheduler._slot_delivered(DAY, "morning")
+        assert store.acknowledge_event(morning["id"], "daily_brief") is True
+        assert scheduler._pending_slot(datetime(2026, 10, 16, 21)) is None
+
+    def test_requeueing_an_existing_brief_supersedes_nothing(self, _isolated):
+        store = _isolated
+        for part in ("morning", "evening"):
+            store.enqueue_event({"type": "daily_brief", "part_of_day": part, "text": part},
+                                dedupe_key=f"daily_brief:2026-10-16:{part}",
+                                target={"type": "brief", "date": "2026-10-16", "part": part})
+        store.enqueue_event({"type": "daily_brief", "part_of_day": "morning", "text": "again"},
+                            dedupe_key="daily_brief:2026-10-16:morning",
+                            target={"type": "brief", "date": "2026-10-16", "part": "morning"})
+        assert [row["payload"]["part_of_day"] for row in store.pending_events()] == ["evening"]
 
     @pytest.mark.asyncio
     async def test_acknowledging_one_run_leaves_the_other_due(self, _isolated):

@@ -172,13 +172,15 @@ struct QuickSettingsView: View {
 
     // MARK: Brief times
 
+    // Each pill names its run. Two pills led by "AM" and "PM" side by side read
+    // as the old AM/PM switch, when both briefs actually run.
     private func timePill(_ hour: Int, slot: BriefSlot) -> some View {
         let label = QuickSettingsText.pill(hour)
         let open = picking == slot
         return Button { picking = open ? nil : slot } label: {
             HStack(spacing: 5) {
-                Text(label.period).foregroundStyle(Palette.sub)
-                Text(label.time).foregroundStyle(Theme.textPrimary).monospacedDigit()
+                Text(slot == .morning ? "Morning" : "Evening").foregroundStyle(Palette.sub)
+                Text("\(label.time) \(label.period)").foregroundStyle(Theme.textPrimary).monospacedDigit()
             }
             .font(.system(size: 12.5))
             .padding(.horizontal, 9).padding(.vertical, 4)
