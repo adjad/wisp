@@ -51,13 +51,14 @@ enum CalendarMove {
             return "That event changed since Wisp last read Calendar; nothing was moved"
         }
         if !calendarWritable { return "That event's calendar can't be changed from this Mac" }
-        // With invitees, only the organizer moves it (Calendar sends them the new time,
-        // which the card said). Unknown organizer is refused, never assumed.
+        // Someone else's event is never moved, even when its attendee list shows only the
+        // user (Exchange 1:1 invitations), so this check doesn't depend on the count. With
+        // invitees, an unknown organizer is refused too, never assumed.
+        if organizerIsUser == false {
+            return "Only the organizer can move this event; ask them or propose a new time in Calendar"
+        }
         if invitees > 0 && organizerIsUser == nil {
             return "Calendar doesn't say who organizes this event, so Wisp won't move it; move it in Calendar"
-        }
-        if invitees > 0 && organizerIsUser == false {
-            return "Only the organizer can move an event with invitees; ask them or propose a new time in Calendar"
         }
         if startTaken { return "Another occurrence of this event already starts then; nothing was moved" }
         if facts.isAllDay { return "Wisp doesn't move all-day events; move it in Calendar" }
@@ -76,11 +77,11 @@ enum CalendarMove {
             return "That event changed since Wisp last read Calendar; nothing was cancelled"
         }
         if !calendarWritable { return "That event's calendar can't be changed from this Mac" }
+        if organizerIsUser == false {
+            return "Only the organizer can cancel this event; decline it in Calendar instead"
+        }
         if invitees > 0 && organizerIsUser == nil {
             return "Calendar doesn't say who organizes this event, so Wisp won't cancel it; cancel it in Calendar"
-        }
-        if invitees > 0 && organizerIsUser == false {
-            return "Only the organizer can cancel an event with invitees; decline it in Calendar instead"
         }
         return nil
     }

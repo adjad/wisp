@@ -873,12 +873,14 @@ def event_move_plan(title: str, when_iso: str, duration_min: int | None = None,
     if invitees is None:
         return {"error": f"Wisp can't tell yet whether “{row['title']}” has invitees (Calendar "
                          "hasn't synced that); nothing was moved. Try again shortly or move it in Calendar."}
+    # Someone else's event never moves, whatever its invitee count (an invitation can list
+    # only the user as attendee). organizer_is_user is 0/1 from the store, or None.
+    if organizer is not None and not organizer:
+        return {"error": f"Only the organizer can move “{row['title']}”; nothing was moved. "
+                         "Ask them, or propose a new time in Calendar."}
     if invitees and organizer is None:
         return {"error": f"Wisp can't tell who organizes “{row['title']}”, so it won't move an "
                          "event with invitees; nothing was moved. Move it in Calendar."}
-    if invitees and not organizer:
-        return {"error": f"Only the organizer can move “{row['title']}”, which has invitees; "
-                         "nothing was moved. Ask them, or propose a new time in Calendar."}
     if row["end_ts"] is not None and row["end_ts"] >= row["when_ts"]:
         length = duration_min if duration_min is not None else max(1, round((row["end_ts"] - row["when_ts"]) / 60))
     else:

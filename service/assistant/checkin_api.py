@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from service.assistant import checkin
@@ -113,7 +113,7 @@ def _refuse(status: int, outcome: str, message: str):
 
 
 @router.post("/cancel_event")
-async def cancel_event(body: CancelEvent):
+async def cancel_event(body: CancelEvent, request: Request):
     """Cancel one exact Calendar occurrence from the Day tab's Cancel button.
 
     The click (after the card's Undo window) is the confirmation; no agent turn runs.
@@ -123,6 +123,11 @@ async def cancel_event(body: CancelEvent):
     409 not current (or the outcome is unknown: detail.outcome "unknown");
     503 the app isn't connected; 502 Calendar refused or failed.
     """
+    # A destructive action: only the native app's JSON request, never a browser page.
+    if "origin" in request.headers:
+        _refuse(403, "not_allowed", "Cancel this from Wisp's Day tab.")
+    if (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower() != "application/json":
+        _refuse(415, "not_allowed", "Content-Type must be application/json.")
     row = assistant_store.calendar_occurrence(body.source_id, body.expected_start_ts)
     if row is None:
         _refuse(404, "not_found", "That event is no longer in your synced Calendar; nothing was cancelled.")
@@ -137,12 +142,16 @@ async def cancel_event(body: CancelEvent):
         "source_id": row["source_id"], "expected_title": row["title"],
         "expected_start_ts": row["when_ts"], "invitee_count": row["invitee_count"]})
     if result.get("ok") is not True:
-        error = str(result.get("error") or "Calendar did not confirm the cancel.")
+        error = str(result.get("error") or "Calendar did not confirm the cancel").rstrip(". ") + "."
         if result.get("status") == "unknown":
             _refuse(409, "unknown", "Wisp couldn't confirm whether it was cancelled. Check Calendar before trying again.")
         if "changed since" in error or "no longer at the time" in error:
-            _refuse(409, "not_current", error + ".")
-        _refuse(502, "failed", error + ".")
+            _refuse(409, "not_current", error)
+        if "Only the organizer" in error or "who organizes" in error:
+            _refuse(403, "not_allowed", error)
+        if "not connected" in error:
+            _refuse(503, "unavailable", error)
+        _refuse(502, "failed", error)
     from service.assistant.hub import hub
     await hub.publish({"type": "changed"})
     # invitees_notified: Calendar sends the organizer's invitees the cancellation.

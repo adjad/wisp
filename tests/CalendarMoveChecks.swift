@@ -28,6 +28,8 @@ import Foundation
         // and a count that differs from what the card stated is a changed event.
         precondition(refusal(invitees: 3, organizer: true) == nil, "the organizer moves it; invitees are notified")
         precondition(refusal(invitees: 3, organizer: false)?.contains("Only the organizer") == true)
+        precondition(refusal(invitees: 0, organizer: false)?.contains("Only the organizer") == true,
+                     "someone else's event whose attendee list shows only the user")
         precondition(refusal(invitees: 3, organizer: nil)?.contains("who organizes") == true)
         precondition(refusal(invitees: 0, organizer: nil) == nil, "no invitees: no organizer needed")
         precondition(refusal(invitees: 4, expected: 3, organizer: true)?.contains("changed") == true)
@@ -78,6 +80,7 @@ import Foundation
         precondition(cancel(writable: false) != nil)
         precondition(cancel(invitees: 2, organizer: true) == nil)
         precondition(cancel(invitees: 2, organizer: false)?.contains("Only the organizer can cancel") == true)
+        precondition(cancel(invitees: 0, organizer: false)?.contains("Only the organizer can cancel") == true)
         precondition(cancel(invitees: 2, organizer: nil)?.contains("who organizes") == true)
         precondition(cancel(invitees: 3, expected: 2, organizer: true)?.contains("changed") == true)
         let gone = CalendarMove.cancelledResult(stillThere: false)

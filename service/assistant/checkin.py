@@ -122,10 +122,12 @@ def cancel_block_reason(row: dict) -> str:
     invitees, organizer = row.get("invitee_count"), row.get("organizer_is_user")
     if invitees is None:
         return "Wisp hasn't synced this event's invitees yet; cancel it in Calendar."
+    # Someone else's event is never cancelled, whatever its invitee count: an invitation
+    # can list only the user as attendee.
+    if organizer is False:
+        return f"Only the organizer can cancel “{row.get('title', 'this event')}”; decline it in Calendar instead."
     if invitees and organizer is None:
         return "Calendar doesn't say who organizes this event; cancel it in Calendar."
-    if invitees and not organizer:
-        return f"Only the organizer can cancel “{row.get('title', 'this event')}”; decline it in Calendar instead."
     return ""
 
 

@@ -369,11 +369,15 @@ async def test_one_invitee_reads_in_the_singular(store, bridge):
     assert card.endswith("Its 1 invitee will be notified of the new time.")
 
 
-@pytest.mark.parametrize("organizer, says", [(False, "Only the organizer"), (None, "who organizes")])
-async def test_a_non_organizer_or_unknown_organizer_is_refused(store, bridge, organizer, says):
+@pytest.mark.parametrize("invitees, organizer, says", [
+    (3, False, "Only the organizer"), (3, None, "who organizes"),
+    # Audit B1: an invitation can list only the user as attendee (count 0); it is still
+    # someone else's event.
+    (0, False, "Only the organizer")])
+async def test_a_non_organizer_or_unknown_organizer_is_refused(store, bridge, invitees, organizer, says):
     start = _top_of_hour(26)
     extra = {} if organizer is None else {"organizer_is_user": organizer}
-    _calendar(store, _event("ek-1", "Design review", start, invitee_count=3, **extra))
+    _calendar(store, _event("ek-1", "Design review", start, invitee_count=invitees, **extra))
     result = await _move("design review", _iso(start + HOUR))
     assert says in result and bridge == []
     assert "error" in assistant_tools.prepare_event_move({"title": "design review", "when_iso": _iso(start + HOUR)})
@@ -438,9 +442,19 @@ def cancel_client(store, monkeypatch):
     return TestClient(main.app), calls
 
 
-def _cancel(client, start, sid="ek-1", invitees=0):
-    return client.post("/assistant/checkin/cancel_event",
+def _cancel(client, start, sid="ek-1", invitees=0, headers=None):
+    return client.post("/assistant/checkin/cancel_event", headers=headers,
                        json={"source_id": sid, "expected_start_ts": start, "expected_invitees": invitees})
+
+
+def test_cancel_refuses_browser_pages(store, cancel_client):
+    client, calls = cancel_client
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Dentist", start))
+    assert _cancel(client, start, headers={"Origin": "https://example.invalid"}).status_code == 403
+    form = client.post("/assistant/checkin/cancel_event", content=b'{"source_id": "ek-1"}',
+                       headers={"Content-Type": "text/plain"})
+    assert form.status_code in (415, 422) and calls == []
 
 
 def test_cancel_sends_the_exact_occurrence_and_reports_it(store, cancel_client):
@@ -467,6 +481,7 @@ def test_the_organizer_cancels_an_event_with_invitees(store, cancel_client):
 
 @pytest.mark.parametrize("extra, status, says", [
     ({"invitee_count": 3, "organizer_is_user": False}, 403, "Only the organizer can cancel"),
+    ({"invitee_count": 0, "organizer_is_user": False}, 403, "Only the organizer can cancel"),
     ({"invitee_count": 3}, 403, "doesn't say who organizes"),
     ({"invitee_count": None}, 409, "hasn't synced"),
 ])
@@ -504,6 +519,8 @@ def test_cancel_without_the_app_is_unavailable(store, cancel_client, monkeypatch
     ({"ok": False, "status": "failed", "error": "That event changed since Wisp last read Calendar; nothing was cancelled"},
      409, "not_current"),
     ({"ok": False, "status": "failed", "error": "Calendar didn't cancel it: denied"}, 502, "failed"),
+    ({"ok": False, "status": "failed", "error": "Only the organizer can cancel this event; decline it"}, 403, "not_allowed"),
+    ({"ok": False, "error": "Wisp app is not connected; Calendar was not changed"}, 503, "unavailable"),
 ])
 def test_cancel_native_outcomes_map_to_statuses(store, cancel_client, monkeypatch, native, status, outcome):
     client, _ = cancel_client
