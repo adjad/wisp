@@ -485,6 +485,7 @@ class AssistantStore:
                 self._db.create_function('wisp_civil_index', 2, civil_index)
                 self._db.create_function('wisp_civil_index', 3, civil_index)
                 columns = [row['name'] for row in self._db.execute('PRAGMA table_info(commitments)')]
+                self._schedule_columns = tuple(columns)
                 projected = ','.join('wisp_civil_index(when_ts,due_date) AS when_ts' if col == 'when_ts'
                                      else '"' + col + '"' for col in columns)
                 self._db.execute('CREATE TEMP VIEW scheduled_commitments AS '
@@ -1049,7 +1050,7 @@ class AssistantStore:
         from zoneinfo import ZoneInfo
         ZoneInfo(timezone)
         quoted_zone = "'" + timezone.replace("'", "''") + "'"
-        columns = [row['name'] for row in self._db.execute('PRAGMA table_info(commitments)')]
+        columns = self._schedule_columns
         projected = ','.join(
             f'wisp_civil_index(when_ts,due_date,{quoted_zone}) AS when_ts' if col == 'when_ts'
             else '"' + col + '"' for col in columns)
