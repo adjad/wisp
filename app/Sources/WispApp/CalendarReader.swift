@@ -122,6 +122,10 @@ final class CalendarReader {
             if let o = ev.organizer, !o.isCurrentUser, let name = o.name {
                 row["organizer"] = name
             }
+            // For moves: an event with invitees may be moved only by its organizer
+            // (CalendarMove.refusal). No organizer_is_user key means "unknown".
+            row["invitee_count"] = ev.attendees?.count ?? 0
+            if let o = ev.organizer { row["organizer_is_user"] = o.isCurrentUser }
             // `source` is the ACCOUNT this calendar belongs to (e.g. "iCloud",
             // or a Google account's own label) — distinct from `context`
             // (the calendar's own name within that account, e.g. "Work").
@@ -260,13 +264,14 @@ final class CalendarReader {
 
     // Move one exact occurrence to a new start (CalendarMove has the rules). The event is
     // found by identifier AND its current start, like deleteEvent, and must still carry
-    // the title Wisp saw. Events with invitees, and a start another occurrence of the
-    // series already has, are refused. Only startDate/endDate change, with span
+    // the title Wisp saw, and the invitee count the confirmation card stated. An event
+    // with invitees moves only when the user organizes it (Calendar then sends them the
+    // new time); a start another occurrence of the series already has is refused. Only startDate/endDate change, with span
     // .thisEvent so a repeating series never moves. The saved event is read back and
     // compared field by field; anything other than the requested move reads as
     // "unknown", not done.
     func moveEvent(identifier: String, expectedTitle: String, expectedStart: Double,
-                   newStart: Double, durationMin: Int?) -> [String: Any] {
+                   newStart: Double, durationMin: Int?, expectedInvitees: Int) -> [String: Any] {
         guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
         guard let ev = occurrence(identifier, at: expectedStart) else {
             return ["ok": false, "error": "That event is no longer at the time Wisp last read; nothing was moved"]
@@ -275,7 +280,8 @@ final class CalendarReader {
         let startTaken = abs(newStart - expectedStart) >= 1 && occurrence(identifier, at: newStart) != nil
         if let reason = CalendarMove.refusal(before, expectedTitle: expectedTitle, expectedStart: expectedStart,
                                               calendarWritable: ev.calendar?.allowsContentModifications ?? false,
-                                              hasAttendees: ev.hasAttendees, startTaken: startTaken) {
+                                              invitees: ev.attendees?.count ?? 0, expectedInvitees: expectedInvitees,
+                                              organizerIsUser: ev.organizer?.isCurrentUser, startTaken: startTaken) {
             return ["ok": false, "error": reason]
         }
         let newEnd = CalendarMove.newEnd(before, newStart: newStart, durationMin: durationMin)

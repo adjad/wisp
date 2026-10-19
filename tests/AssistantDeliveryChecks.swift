@@ -349,8 +349,14 @@ struct AssistantDeliveryChecks {
         do {
             let move: [String: Any] = ["type": "move_calendar_event", "action_id": "move1",
                 "source_id": "ek-1", "expected_title": "Dentist", "expected_start_ts": 1_900_000_000.0,
-                "when_ts": 1_900_003_600.0, "duration_min": NSNull()]
+                "when_ts": 1_900_003_600.0, "duration_min": NSNull(), "invitee_count": 0]
             precondition(AssistantDelivery.calendarPayload(move, kind: "move_calendar_event")?["duration_min"] is NSNull)
+            var invited = move; invited["invitee_count"] = 3
+            precondition(AssistantDelivery.calendarPayload(invited, kind: "move_calendar_event")?["invitee_count"] as? Int == 3)
+            var negative = move; negative["invitee_count"] = -1
+            precondition(AssistantDelivery.calendarPayload(negative, kind: "move_calendar_event") == nil)
+            var uncounted = move; uncounted.removeValue(forKey: "invitee_count")
+            precondition(AssistantDelivery.calendarPayload(uncounted, kind: "move_calendar_event") == nil)
             var timed = move; timed["duration_min"] = 30
             precondition(AssistantDelivery.calendarPayload(timed, kind: "move_calendar_event")?["duration_min"] as? Int == 30)
             var partial = move; partial["duration_min"] = 30.5

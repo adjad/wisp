@@ -40,16 +40,24 @@ enum CalendarMove {
     /// Why this event must not be moved, or nil when it may. Checked before any write.
     /// `startTaken`: another occurrence of the same event already begins at the new start
     /// (a repeating series), so the read-back could not tell the two apart.
+    /// `invitees` is the event's attendee count now and `expectedInvitees` the count the
+    /// confirmation card stated ("its N invitees will be notified"); `organizerIsUser` is
+    /// nil when Calendar doesn't say who organizes it.
     static func refusal(_ facts: CalendarEventFacts, expectedTitle: String, expectedStart: Double,
-                        calendarWritable: Bool, hasAttendees: Bool, startTaken: Bool) -> String? {
-        if !(abs(facts.start - expectedStart) < 1) || !sameTitle(facts.title, expectedTitle) {
+                        calendarWritable: Bool, invitees: Int, expectedInvitees: Int,
+                        organizerIsUser: Bool?, startTaken: Bool) -> String? {
+        if !(abs(facts.start - expectedStart) < 1) || !sameTitle(facts.title, expectedTitle)
+            || invitees != expectedInvitees {
             return "That event changed since Wisp last read Calendar; nothing was moved"
         }
         if !calendarWritable { return "That event's calendar can't be changed from this Mac" }
-        // Moving an event with invitees sends them an update (or isn't the user's to move),
-        // and the confirmation card can't show that. Not done from Wisp yet.
-        if hasAttendees {
-            return "Wisp doesn't move events with invitees, since Calendar would update them; move it in Calendar"
+        // With invitees, only the organizer moves it (Calendar sends them the new time,
+        // which the card said). Unknown organizer is refused, never assumed.
+        if invitees > 0 && organizerIsUser == nil {
+            return "Calendar doesn't say who organizes this event, so Wisp won't move it; move it in Calendar"
+        }
+        if invitees > 0 && organizerIsUser == false {
+            return "Only the organizer can move an event with invitees; ask them or propose a new time in Calendar"
         }
         if startTaken { return "Another occurrence of this event already starts then; nothing was moved" }
         if facts.isAllDay { return "Wisp doesn't move all-day events; move it in Calendar" }

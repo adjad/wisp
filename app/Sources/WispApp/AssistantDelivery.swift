@@ -65,15 +65,18 @@ final class AssistantDelivery {
             // One exact occurrence (identifier + current start + title) to a new start;
             // duration_min null keeps the event's own length.
             let keys: Set<String> = ["type", "action_id", "source_id", "expected_title",
-                                     "expected_start_ts", "when_ts", "duration_min"]
+                                     "expected_start_ts", "when_ts", "duration_min", "invitee_count"]
             guard Set(value.keys) == keys, value["type"] as? String == kind,
                   text(value["action_id"]) != nil, text(value["source_id"]) != nil,
                   text(value["expected_title"]) != nil,
                   let when = number(value["when_ts"]), when > 0,
                   let expected = number(value["expected_start_ts"]), expected > 0 else { return nil }
+            guard let invitees = number(value["invitee_count"]), invitees >= 0, invitees <= 100000,
+                  invitees.rounded() == invitees else { return nil }
             var result = value
             result["when_ts"] = when
             result["expected_start_ts"] = expected
+            result["invitee_count"] = Int(invitees)
             if value["duration_min"] is NSNull {
                 result["duration_min"] = NSNull()
             } else {

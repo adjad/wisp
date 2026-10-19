@@ -282,7 +282,8 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
             return ToolOutcome("needs_input", text, effect)
         # Only the verified native move's receipt is success. The old cancel +
         # recreate receipt is not, and neither is any other text.
-        if re.fullmatch(r"Moved “.+” to [^.\n]+\.( Only this occurrence moved\.)?", text, re.S):
+        if re.fullmatch(r"Moved “.+” to [^.\n]+\.( Only this occurrence moved\.)?"
+                        r"( Invitees were notified of the new time\.)?", text, re.S):
             return ToolOutcome("succeeded", text, effect)
         return ToolOutcome("failed", text, effect)
     if tool_name == "get_upcoming":

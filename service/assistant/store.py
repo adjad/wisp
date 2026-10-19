@@ -430,6 +430,12 @@ class AssistantStore:
                 self._db.execute("""CREATE TABLE IF NOT EXISTS calendar_event_ends (
                     commitment_id TEXT PRIMARY KEY, end_ts REAL NOT NULL
                 )""")
+                # Invitee count and whether the user organizes the event, from the app's
+                # Calendar sync. organizer_is_user NULL = unknown. No row = not synced yet.
+                self._db.execute("""CREATE TABLE IF NOT EXISTS calendar_event_invitees (
+                    commitment_id TEXT PRIMARY KEY, invitee_count INTEGER NOT NULL,
+                    organizer_is_user INTEGER
+                )""")
                 self._db.execute(_BEHAVIOR_RECEIPTS_SCHEMA)
                 self._validate_behavior_receipt_schema()
                 self._db.execute("""CREATE TABLE IF NOT EXISTS today_source_sync (
@@ -1091,11 +1097,13 @@ class AssistantStore:
                   "delete_calendar_event": {"type", "action_id", "source_id", "when_ts"},
                   # A move names the exact occurrence (identifier + current start + title)
                   # and the new start; duration_min None keeps the event's own length.
+                  # invitee_count: what the card told the user; the app refuses if it differs.
                   "move_calendar_event": {"type", "action_id", "source_id", "expected_title",
-                                          "expected_start_ts", "when_ts", "duration_min"}}[kind]
+                                          "expected_start_ts", "when_ts", "duration_min",
+                                          "invitee_count"}}[kind]
         if set(payload) != fields or payload.get("type") != kind:
             raise ValueError("Calendar payload fields do not match the action")
-        for field in fields - {"when_ts", "duration_min", "expected_start_ts"}:
+        for field in fields - {"when_ts", "duration_min", "expected_start_ts", "invitee_count"}:
             if not isinstance(payload[field], str) or (field != "location" and not payload[field].strip()):
                 raise ValueError("invalid Calendar payload text")
         times = ["when_ts"] + (["expected_start_ts"] if kind == "move_calendar_event" else [])
@@ -1111,6 +1119,9 @@ class AssistantStore:
             duration = payload["duration_min"]
             if duration is not None and (type(duration) is not int or not 1 <= duration <= 10080):
                 raise ValueError("invalid Calendar duration")
+            invitees = payload["invitee_count"]
+            if type(invitees) is not int or not 0 <= invitees <= 100000:
+                raise ValueError("invalid Calendar invitee count")
             return {**payload, "when_ts": float(payload["when_ts"]),
                     "expected_start_ts": float(payload["expected_start_ts"])}
         when = payload["when_ts"]
@@ -1490,8 +1501,10 @@ class AssistantStore:
             return {"error": "Which event should move?", "needs_input": True}
         with self._lock:
             rows = [dict(r) for r in self._db.execute(
-                "SELECT c.id,c.source_id,c.title,c.when_ts,c.location,e.end_ts FROM commitments c "
+                "SELECT c.id,c.source_id,c.title,c.when_ts,c.location,e.end_ts,"
+                "i.invitee_count,i.organizer_is_user FROM commitments c "
                 "LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
+                "LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
                 "WHERE c.source='calendar' AND c.status='active' AND c.source_id IS NOT NULL "
                 "AND c.source_id<>'' AND COALESCE(e.end_ts, c.when_ts) > ? "
                 "ORDER BY c.when_ts, c.source_id", (now,)).fetchall()]
@@ -1985,6 +1998,12 @@ class AssistantStore:
                         "ON CONFLICT(commitment_id) DO UPDATE SET version=excluded.version",
                         (cid, uuid.uuid4().hex))
                 if source == "calendar":
+                    self._db.execute("DELETE FROM calendar_event_invitees WHERE commitment_id=?", (cid,))
+                    count = it.get("invitee_count")
+                    if type(count) is int and count >= 0:
+                        flag = it.get("organizer_is_user")
+                        self._db.execute("INSERT INTO calendar_event_invitees VALUES (?,?,?)",
+                                         (cid, count, int(flag) if type(flag) is bool else None))
                     self._db.execute("DELETE FROM calendar_event_ends WHERE commitment_id=?", (cid,))
                     end_ts = it.get("end_ts")
                     if end_ts is not None:
@@ -2010,6 +2029,8 @@ class AssistantStore:
                 self._db.execute("DELETE FROM commitments WHERE id=?", (rid,))
                 self._db.execute("DELETE FROM notify_log WHERE commitment_id=?", (rid,))
             self._db.execute("DELETE FROM calendar_event_ends WHERE NOT EXISTS "
+                             "(SELECT 1 FROM commitments WHERE id=commitment_id)")
+            self._db.execute("DELETE FROM calendar_event_invitees WHERE NOT EXISTS "
                              "(SELECT 1 FROM commitments WHERE id=commitment_id)")
         return len(items)
 
@@ -2304,6 +2325,7 @@ class AssistantStore:
             cur = self._db.execute("DELETE FROM commitments WHERE id=?", (cid,))
             self._db.execute("DELETE FROM notify_log WHERE commitment_id=?", (cid,))
             self._db.execute("DELETE FROM calendar_event_ends WHERE commitment_id=?", (cid,))
+            self._db.execute("DELETE FROM calendar_event_invitees WHERE commitment_id=?", (cid,))
         return cur.rowcount > 0
 
     def update_schedule(self, ids: list[str], when_ts: float,

@@ -12,16 +12,25 @@ import Foundation
             attendees: [], alarms: ["relative:-900.0"], availability: 0)
         func refusal(_ facts: CalendarEventFacts = event, title: String = "Dentist",
                      start: Double = 1_900_000_000, writable: Bool = true,
-                     attendees: Bool = false, taken: Bool = false) -> String? {
+                     invitees: Int = 0, expected: Int? = nil, organizer: Bool? = nil,
+                     taken: Bool = false) -> String? {
             CalendarMove.refusal(facts, expectedTitle: title, expectedStart: start,
-                                 calendarWritable: writable, hasAttendees: attendees, startTaken: taken)
+                                 calendarWritable: writable, invitees: invitees,
+                                 expectedInvitees: expected ?? invitees, organizerIsUser: organizer,
+                                 startTaken: taken)
         }
         precondition(refusal() == nil)
         precondition(refusal(title: "  Dentist ") == nil, "whitespace is how the backend stores titles")
         precondition(refusal(title: "Dentist appt") != nil, "a renamed event is not the one asked about")
         precondition(refusal(start: 1_900_000_060) != nil, "an event that moved since the last read")
         precondition(refusal(writable: false)?.contains("can't be changed") == true)
-        precondition(refusal(attendees: true)?.contains("invitees") == true, "a move would update invitees")
+        // Invitees: the organizer may move it; a non-organizer or an unknown organizer may not,
+        // and a count that differs from what the card stated is a changed event.
+        precondition(refusal(invitees: 3, organizer: true) == nil, "the organizer moves it; invitees are notified")
+        precondition(refusal(invitees: 3, organizer: false)?.contains("Only the organizer") == true)
+        precondition(refusal(invitees: 3, organizer: nil)?.contains("who organizes") == true)
+        precondition(refusal(invitees: 0, organizer: nil) == nil, "no invitees: no organizer needed")
+        precondition(refusal(invitees: 4, expected: 3, organizer: true)?.contains("changed") == true)
         precondition(refusal(taken: true)?.contains("already starts") == true, "the read-back must be unambiguous")
         var allDay = event; allDay.isAllDay = true
         precondition(refusal(allDay) != nil)

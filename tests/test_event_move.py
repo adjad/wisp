@@ -45,8 +45,9 @@ def store(tmp_path, monkeypatch):
 
 
 def _event(sid, title, start, length_h=1.0, **extra):
+    # As the app syncs it: an invitee count, and organizer_is_user when Calendar says.
     return {"source_id": sid, "kind": "meeting", "title": title, "when_ts": start,
-            "end_ts": start + length_h * HOUR, "context": "Home", **extra}
+            "end_ts": start + length_h * HOUR, "context": "Home", "invitee_count": 0, **extra}
 
 
 def _calendar(store, *events):
@@ -128,7 +129,7 @@ async def test_a_move_sends_the_exact_occurrence_and_reports_the_read_back(store
     result = await _move("dentist", _iso(new))
     assert bridge == [("move_calendar_event", {
         "source_id": "ek-1", "expected_title": "Dentist", "expected_start_ts": start,
-        "when_ts": new, "duration_min": None})]
+        "when_ts": new, "duration_min": None, "invitee_count": 0})]
     assert result.startswith("Moved “Dentist” to ")
     assert classify_tool_outcome("update_event", result).status == "succeeded"
     hub.publish.assert_awaited()
@@ -211,13 +212,14 @@ def test_the_confirmation_card_names_the_occurrence_and_both_times(store):
 def _payload(**over):
     return {"type": "move_calendar_event", "action_id": "move-1", "source_id": "ek-1",
             "expected_title": "Dentist", "expected_start_ts": 1_900_000_000.0,
-            "when_ts": 1_900_007_200.0, "duration_min": None, **over}
+            "when_ts": 1_900_007_200.0, "duration_min": None, "invitee_count": 0, **over}
 
 
 def test_payload_validation():
     assert AssistantStore.calendar_payload("move_calendar_event", _payload())["duration_min"] is None
     for bad in (_payload(duration_min=0), _payload(duration_min=1.5), _payload(expected_title=" "),
-                _payload(expected_start_ts=0), _payload(location="x")):
+                _payload(expected_start_ts=0), _payload(location="x"), _payload(invitee_count=-1),
+                _payload(invitee_count=True)):
         with pytest.raises(ValueError):
             AssistantStore.calendar_payload("move_calendar_event", bad)
 
@@ -303,7 +305,7 @@ async def test_the_card_shows_the_occurrence_the_approved_call_moves(store, brid
     assert seen and seen[0]["preview"].startswith("Move: Dentist — from ")
     assert [p for _, p in bridge] == [{"source_id": "ek-1", "expected_title": "Dentist",
                                        "expected_start_ts": start, "when_ts": start + 2 * HOUR,
-                                       "duration_min": None}]
+                                       "duration_min": None, "invitee_count": 0}]
     assert results[-1].startswith("Moved “Dentist” to ")
 
 
@@ -343,3 +345,72 @@ async def test_a_denied_card_moves_nothing(store, bridge):
 
 def test_a_title_with_quote_marks_still_reads_as_success():
     assert classify_tool_outcome("update_event", "Moved “Sam’s “big” day” to Tue Oct 20, 3:00 PM–4:00 PM.").status == "succeeded"
+
+
+
+# --- invitees: only the organizer moves them, and the card says they'll be told ----------
+
+async def test_the_organizer_may_move_an_event_with_invitees_and_is_told_they_are_notified(store, bridge):
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Design review", start, invitee_count=3, organizer_is_user=True))
+    prepared = assistant_tools.prepare_event_move({"title": "design review", "when_iso": _iso(start + HOUR)})
+    assert prepared["preview"].endswith("Its 3 invitees will be notified of the new time.")
+    assert "@" not in prepared["preview"], "a count, never addresses"
+    result = await _move("design review", _iso(start + HOUR))
+    assert bridge[-1][1]["invitee_count"] == 3
+    assert result.endswith("Invitees were notified of the new time.")
+    assert classify_tool_outcome("update_event", result).status == "succeeded"
+
+
+async def test_one_invitee_reads_in_the_singular(store, bridge):
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "1:1", start, invitee_count=1, organizer_is_user=True))
+    card = assistant_tools.prepare_event_move({"title": "1:1", "when_iso": _iso(start + HOUR)})["preview"]
+    assert card.endswith("Its 1 invitee will be notified of the new time.")
+
+
+@pytest.mark.parametrize("organizer, says", [(False, "Only the organizer"), (None, "who organizes")])
+async def test_a_non_organizer_or_unknown_organizer_is_refused(store, bridge, organizer, says):
+    start = _top_of_hour(26)
+    extra = {} if organizer is None else {"organizer_is_user": organizer}
+    _calendar(store, _event("ek-1", "Design review", start, invitee_count=3, **extra))
+    result = await _move("design review", _iso(start + HOUR))
+    assert says in result and bridge == []
+    assert "error" in assistant_tools.prepare_event_move({"title": "design review", "when_iso": _iso(start + HOUR)})
+
+
+async def test_an_event_synced_without_invitee_data_is_refused(store, bridge):
+    start = _top_of_hour(26)
+    event = _event("ek-1", "Dentist", start)
+    event.pop("invitee_count")
+    _calendar(store, event)
+    result = await _move("dentist", _iso(start + HOUR))
+    assert "can't tell yet whether" in result and bridge == []
+
+
+def test_invitee_metadata_follows_the_synced_row(store):
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Design review", start, invitee_count=2, organizer_is_user=True))
+    row = store.calendar_move_target("design review")["row"]
+    assert (row["invitee_count"], row["organizer_is_user"]) == (2, 1)
+    _calendar(store, _event("ek-1", "Design review", start))
+    row = store.calendar_move_target("design review")["row"]
+    assert (row["invitee_count"], row["organizer_is_user"]) == (0, None)
+    _calendar(store)
+    assert store._db.execute("SELECT COUNT(*) FROM calendar_event_invitees").fetchone()[0] == 0
+
+
+def test_the_sync_endpoint_keeps_only_well_typed_invitee_fields(store, monkeypatch):
+    from fastapi.testclient import TestClient
+    import service.main as main
+    monkeypatch.setattr(main, "assistant_store", store)
+    monkeypatch.setattr(main.assistant_scheduler, "record_sync", lambda *a, **k: None)
+    start = _top_of_hour(26)
+    events = [_event("ek-1", "Review", start, invitee_count=2, organizer_is_user=True),
+              _event("ek-2", "Sync", start + HOUR, invitee_count="2", organizer_is_user=1),
+              _event("ek-3", "Retro", start + 2 * HOUR, invitee_count=-1)]
+    response = TestClient(main.app).post("/assistant/sync/calendar", json={"events": events})
+    assert response.status_code == 200
+    rows = {r["title"]: (r["invitee_count"], r["organizer_is_user"]) for r in (
+        store.calendar_move_target(t)["row"] for t in ("Review", "Sync", "Retro"))}
+    assert rows == {"Review": (2, 1), "Sync": (None, None), "Retro": (None, None)}

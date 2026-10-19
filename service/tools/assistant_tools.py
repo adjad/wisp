@@ -867,6 +867,18 @@ def event_move_plan(title: str, when_iso: str, duration_min: int | None = None,
     if "error" in found:
         return {"error": found["error"]}
     row = found["row"]
+    # Invitees: only the organizer may move such an event, and Calendar then sends them
+    # the new time; the card says so. Unknown either way is refused, never guessed.
+    invitees, organizer = row.get("invitee_count"), row.get("organizer_is_user")
+    if invitees is None:
+        return {"error": f"Wisp can't tell yet whether “{row['title']}” has invitees (Calendar "
+                         "hasn't synced that); nothing was moved. Try again shortly or move it in Calendar."}
+    if invitees and organizer is None:
+        return {"error": f"Wisp can't tell who organizes “{row['title']}”, so it won't move an "
+                         "event with invitees; nothing was moved. Move it in Calendar."}
+    if invitees and not organizer:
+        return {"error": f"Only the organizer can move “{row['title']}”, which has invitees; "
+                         "nothing was moved. Ask them, or propose a new time in Calendar."}
     if row["end_ts"] is not None and row["end_ts"] >= row["when_ts"]:
         length = duration_min if duration_min is not None else max(1, round((row["end_ts"] - row["when_ts"]) / 60))
     else:
@@ -876,7 +888,7 @@ def event_move_plan(title: str, when_iso: str, duration_min: int | None = None,
     return {"row": row, "when_ts": when.timestamp(), "length_min": length,
             "payload": {"source_id": row["source_id"], "expected_title": row["title"],
                         "expected_start_ts": row["when_ts"], "when_ts": when.timestamp(),
-                        "duration_min": duration_min}}
+                        "duration_min": duration_min, "invitee_count": invitees}}
 
 
 # The occurrence the user confirmed, set by the agent loop around the approved call
@@ -913,9 +925,12 @@ def prepare_event_move(args: dict) -> dict:
     new = (calendar_interval_label(bound["when_iso"], plan["length_min"]) if plan["length_min"]
            else datetime.fromtimestamp(plan["when_ts"]).strftime("%a %b %-d, %Y %-I:%M %p"))
     once = " (this occurrence only)" if row["recurring"] else ""
+    invitees = plan["payload"]["invitee_count"]
+    notice = (f" Its {invitees} invitee{'s' if invitees != 1 else ''} will be notified of the new time."
+              if invitees else "")
     return {"args": bound,
             "binding": {"payload": plan["payload"], "title": row["title"], "recurring": row["recurring"]},
-            "preview": f"Move: {row['title']} — from {old:%a %b %-d %-I:%M %p} to {new}{once}"}
+            "preview": f"Move: {row['title']} — from {old:%a %b %-d %-I:%M %p} to {new}{once}.{notice}"}
 
 
 @register(
@@ -925,7 +940,8 @@ def prepare_event_move(args: dict) -> dict:
     "same-titled events. Only the time changes: notes, location, attendees, alerts "
     "and calendar are kept, and for a repeating event only that one occurrence moves. "
     "The length stays the same unless `duration_min` is given. Always confirmed. It "
-    "cannot rename an event, change its location, or move an event with invitees.",
+    "cannot rename an event or change its location, and an event with invitees moves "
+    "only when the user organizes it (Calendar then notifies them).",
     {"type": "object",
      "properties": {
          "title": {"type": "string", "description": "the event's current title (any distinctive part)"},
@@ -983,7 +999,8 @@ async def update_event(title: str, when_iso: str, duration_min: int | None = Non
     start = datetime.fromtimestamp(result["when_ts"])
     end = datetime.fromtimestamp(result["end_ts"])
     once = " Only this occurrence moved." if row["recurring"] else ""
-    return f"Moved “{row['title']}” to {start:%a %b %-d, %-I:%M %p}–{end:%-I:%M %p}.{once}"
+    notified = " Invitees were notified of the new time." if payload["invitee_count"] else ""
+    return f"Moved “{row['title']}” to {start:%a %b %-d, %-I:%M %p}–{end:%-I:%M %p}.{once}{notified}"
 
 
 @register(
