@@ -29,6 +29,8 @@ struct DailySourceCoverage: Decodable, Identifiable {
     let detail: String
     let inspected: Int
     let omitted: Int
+    /// What the user must grant before this source can be read: "full_disk_access".
+    var blocked: String? = nil
     var id: String { source }
 }
 

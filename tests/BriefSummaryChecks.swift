@@ -80,11 +80,34 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
                  BriefNeed(title: "50% off everything", sender: "Shop", received: now),
                  BriefNeed(title: "nothing", sender: "x")]
     let mail = BriefDetail.mail(needing: inbox, ready: true)
-    check(mail.lines.map(\.text) == ["Prof. Lee moved your thesis meeting to Tuesday", "Jordan: Can you review my draft?",
-                                     "UCSC Events: Tech Week starts today", "1 newsletter or promo left out"] && mail.source == .mail,
+    check(mail.lines.map(\.text) == ["Prof. Lee moved your thesis meeting to Tuesday", "Jordan · Can you review my draft?",
+                                     "UCSC Events · Tech Week starts today", "1 newsletter or promo left out"] && mail.source == .mail,
           "mail details: people first, a gist when written, else sender and subject, then the bulk left out: \(mail.lines.map(\.text))")
-    check(BriefMail.describe(BriefNeed(title: "Re: lunch")) == "Re: lunch", "no sender: the subject alone")
-    check(BriefMail.describe(BriefNeed(title: "x", sender: "Ann", gist: "  ")) == "Ann: x", "a blank gist falls back")
+    check(BriefMail.describe(BriefNeed(title: "Lunch plans")) == "Lunch plans" && BriefMail.describe(BriefNeed(title: "Re: lunch")) == "lunch", "no sender: the subject alone, its prefix moved to the tag")
+    check(BriefMail.describe(BriefNeed(title: "x", sender: "Ann", gist: "  ")) == "Ann · x", "a blank gist falls back")
+    // Build 2020's fallback, without gists: names not addresses, repeats collapsed, prefixes as tags, private subjects counted.
+    let messy = [
+        BriefNeed(title: "Dublin Community Office Hours", sender: "John Morada <john@example.edu>", person: true, received: now - 60),
+        BriefNeed(title: "Re: Dublin Community Office Hours", sender: "John Morada <john@example.edu>", person: true, received: now - 120),
+        BriefNeed(title: "Canceled: Dublin Community Office Hours", sender: "John Morada", person: true, received: now - 180),
+        BriefNeed(title: "Private details omitted.", sender: "Bank", received: now),
+        BriefNeed(title: "Private details omitted.", sender: "Bank", received: now - 5),
+        BriefNeed(title: "Re: Re: Lunch Friday?", sender: "<sam@example.com>", person: true, received: now - 300),
+    ]
+    let collapsed = BriefMail.shown(messy)
+    check(collapsed == [BriefMail.Shown(tag: "", text: "John Morada · Dublin Community Office Hours", count: 3),
+                        BriefMail.Shown(tag: "Re", text: "sam@example.com · Lunch Friday?", count: 1)],
+          "one line per sender and subject, no brackets, prefix as a tag: \(collapsed)")
+    let messyDetail = BriefDetail.mail(needing: messy, ready: true)
+    check(messyDetail.lines.map(\.text) == ["John Morada · Dublin Community Office Hours ×3", "sam@example.com · Lunch Friday?",
+                                            "2 private emails not shown"] && messyDetail.lines[1].leading == "Re"
+          && !messyDetail.lines.contains { $0.text.contains("Private details omitted") || $0.text.contains("<") },
+          "mail details: ×N, a muted tag, and private subjects counted, never shown: \(messyDetail.lines.map(\.text))")
+    check(BriefMail.splitPrefix("Updated invitation: Standup") == ("Updated", "Standup")
+          && BriefMail.splitPrefix("Re:") == ("Re", "Re:") && BriefMail.splitPrefix("Note: bring IDs") == ("", "Note: bring IDs"),
+          "only known prefixes become tags")
+    check(BriefMail.displayName("\"Morada, John\" <j@x.edu>") == "Morada, John" && BriefMail.displayName("<j@x.edu>") == "j@x.edu",
+          "display names")
     check(BriefDetail.mail(needing: [], ready: false).lines.map(\.text) == ["Mail hasn't been checked yet"],
           "unread mail details")
     check(BriefDetail.mail(needing: [BriefNeed(title: "50% off")], ready: true).lines.map(\.text) == ["1 newsletter or promo left out"],
@@ -112,6 +135,11 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
     check(BriefDetail.texts(needing: [texts[3]], ready: true, when: { _ in "" }).lines.map(\.text) == ["No texts need you"],
           "everyone answered: no texts need you")
     check(BriefDetail.texts(needing: [], ready: false, when: { _ in "" }).lines.first?.muted == true, "unread messages details are dim")
+    let locked = BriefDetail.texts(needing: texts, ready: false, needsAccess: true, when: { _ in "" })
+    check(locked.lines.map(\.text) == ["Wisp can't read your texts until it has Full Disk Access."]
+          && locked.action?.url.hasPrefix("x-apple.systempreferences:") == true && locked.action?.url.contains("Privacy_AllFiles") == true,
+          "without Full Disk Access the details say so and link to its settings")
+    check(BriefDetail.texts(needing: texts, ready: true, when: { _ in "" }).action == nil, "readable texts open Messages")
     check(BriefTexts.name(BriefNeed(title: "Me: on my way")) == "Me" && BriefTexts.waiting([BriefNeed(title: "Me: on my way")]).isEmpty,
           "your own text never waits on you")
     let week = BriefDetail.soon(soon, when: { $0.allDay ? "Sun" : "later" })

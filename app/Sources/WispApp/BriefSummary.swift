@@ -150,6 +150,16 @@ struct BriefDetail: Equatable {
     }
     let lines: [Line]
     let source: DayTimeline.BriefSource
+    /// A link in place of "Open <app>", for something the user must grant first.
+    struct Action: Equatable {
+        let label: String
+        let url: String
+    }
+    var action: Action? = nil
+
+    /// System Settings > Privacy & Security > Full Disk Access.
+    static let fullDiskAccess = Action(label: "Open Full Disk Access settings ↗",
+                                       url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles")
 
     static func calendar(allDay: [String], events: [(title: String, start: Double, end: Double?)],
                          unsynced: Bool, clock: (Double) -> String) -> BriefDetail {
@@ -167,16 +177,22 @@ struct BriefDetail: Equatable {
         return BriefDetail(lines: lines, source: .calendar)
     }
 
-    /// Each email that needs you, described ("Prof. Lee wants the thesis draft
-    /// by Tuesday"), people first, then how much bulk was left out.
+    /// Each email that needs you, described: a gist, or "Sender · subject" with
+    /// its Re:/Canceled: prefix as a muted tag and repeats collapsed (×N), people
+    /// first; then what was left out (private subjects, newsletters and promos).
     static func mail(needing: [BriefNeed], ready: Bool) -> BriefDetail {
         guard ready else {
             return BriefDetail(lines: [Line(id: "empty", leading: "", text: "Mail hasn't been checked yet", muted: true)], source: .mail)
         }
-        let real = BriefMail.important(needing)
+        let shown = BriefMail.shown(needing)
+        let hidden = BriefMail.privateCount(needing)
         let bulk = BriefMail.bulkCount(needing)
-        var lines = real.prefix(5).enumerated().map { Line(id: "need-\($0.offset)", leading: "", text: BriefMail.describe($0.element)) }
-        if real.count > 5 { lines.append(Line(id: "more", leading: "", text: "+\(real.count - 5) more", muted: true)) }
+        var lines = shown.prefix(5).enumerated().map { Line(id: "need-\($0.offset)", leading: $0.element.tag, text: $0.element.line) }
+        if shown.count > 5 { lines.append(Line(id: "more", leading: "", text: "+\(shown.count - 5) more", muted: true)) }
+        if hidden > 0 {
+            lines.append(Line(id: "private", leading: "",
+                              text: hidden == 1 ? "1 private email not shown" : "\(hidden) private emails not shown", muted: true))
+        }
         if bulk > 0 {
             lines.append(Line(id: "bulk", leading: "",
                               text: bulk == 1 ? "1 newsletter or promo left out" : "\(bulk) newsletters and promos left out",
@@ -188,7 +204,12 @@ struct BriefDetail: Equatable {
 
     /// Who is waiting on you, with how many texts and when the latest came.
     /// Never the texts themselves.
-    static func texts(needing: [BriefNeed], ready: Bool, when: (Double) -> String) -> BriefDetail {
+    static func texts(needing: [BriefNeed], ready: Bool, needsAccess: Bool = false, when: (Double) -> String) -> BriefDetail {
+        if needsAccess {
+            return BriefDetail(lines: [Line(id: "access", leading: "",
+                                            text: "Wisp can't read your texts until it has Full Disk Access.", muted: true)],
+                               source: .messages, action: fullDiskAccess)
+        }
         guard ready else {
             return BriefDetail(lines: [Line(id: "empty", leading: "", text: "Messages haven't been checked yet", muted: true)],
                                source: .messages)
@@ -234,10 +255,19 @@ struct BriefNeed: Equatable {
 }
 
 enum BriefMail {
-    /// Mail worth describing: no placeholders, newsletters or promos; people
-    /// first, then newest, the order the gists are written in.
+    /// One line the Brief shows for mail: a gist, or "Sender · subject" with
+    /// its reply/cancel prefix as a muted tag and repeats collapsed to ×N.
+    struct Shown: Equatable {
+        let tag: String
+        let text: String
+        let count: Int
+        var line: String { count > 1 ? "\(text) ×\(count)" : text }
+    }
+
+    /// Mail worth describing: no placeholders, newsletters, promos or redacted
+    /// subjects; people first, then newest, the order the gists are written in.
     static func important(_ needs: [BriefNeed]) -> [BriefNeed] {
-        needs.filter { !DayTimeline.isJunk($0.title) && !DayTimeline.isBulkMail($0.title) }
+        needs.filter { !DayTimeline.isJunk($0.title) && !DayTimeline.isBulkMail($0.title) && !isPrivate($0.title) }
             .enumerated()
             .sorted { a, b in
                 if a.element.person != b.element.person { return a.element.person }
@@ -248,14 +278,81 @@ enum BriefMail {
     }
 
     static func bulkCount(_ needs: [BriefNeed]) -> Int {
-        needs.filter { !DayTimeline.isJunk($0.title) && DayTimeline.isBulkMail($0.title) }.count
+        needs.filter { !DayTimeline.isJunk($0.title) && DayTimeline.isBulkMail($0.title) && !isPrivate($0.title) }.count
     }
 
-    /// The gist when one was written, else "Sender: subject", else the subject.
+    /// Emails whose subject Wisp withheld (a code or private detail): counted, never shown as a subject.
+    static func privateCount(_ needs: [BriefNeed]) -> Int {
+        needs.filter { isPrivate($0.title) }.count
+    }
+
+    static func isPrivate(_ subject: String) -> Bool {
+        let s = subject.trimmingCharacters(in: .whitespaces).lowercased()
+        return s.hasPrefix("private details omitted") || s.hasPrefix("authentication details omitted")
+            || s.hasPrefix("possible request context (private details omitted")
+    }
+
+    /// "John Morada", never "John Morada <john@x.com>"; a bare address when there's no name.
+    static func displayName(_ sender: String) -> String {
+        let text = sender.trimmingCharacters(in: .whitespaces)
+        let name = text.replacingOccurrences(of: #"<[^>]*>"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+        if !name.isEmpty { return name }
+        if let range = text.range(of: #"<([^>]+)>"#, options: .regularExpression) {
+            return String(text[range].dropFirst().dropLast())
+        }
+        return text
+    }
+
+    static let prefixes: [(match: String, tag: String)] = [
+        ("re", "Re"), ("fwd", "Fwd"), ("fw", "Fwd"), ("canceled", "Canceled"), ("cancelled", "Canceled"),
+        ("canceled event", "Canceled"), ("updated invitation", "Updated"), ("invitation", "Invite"),
+        ("accepted", "Accepted"), ("declined", "Declined"), ("tentatively accepted", "Tentative"),
+    ]
+
+    /// A subject's reply/forward/calendar prefix as a tag, and the rest: "Re: Re: Lunch" -> ("Re", "Lunch").
+    static func splitPrefix(_ subject: String) -> (tag: String, rest: String) {
+        var rest = subject.trimmingCharacters(in: .whitespaces)
+        var tag = ""
+        while let colon = rest.firstIndex(of: ":") {
+            let head = rest[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            guard let known = prefixes.first(where: { $0.match == head }) else { break }
+            if tag.isEmpty { tag = known.tag }
+            rest = String(rest[rest.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+        }
+        return rest.isEmpty ? (tag, subject) : (tag, rest)
+    }
+
+    /// The lines to show, in importance order: a gist stands alone; without one,
+    /// the same subject from the same sender collapses into one line with ×N.
+    static func shown(_ needs: [BriefNeed]) -> [Shown] {
+        var out: [Shown] = []
+        var index: [String: Int] = [:]
+        for need in important(needs) {
+            let (key, line) = describing(need)
+            if let key, let at = index[key] {
+                out[at] = Shown(tag: out[at].tag, text: out[at].text, count: out[at].count + 1)
+                continue
+            }
+            if let key { index[key] = out.count }
+            out.append(line)
+        }
+        return out
+    }
+
+    /// The gist when one was written, else "Sender · subject", else the subject.
     static func describe(_ need: BriefNeed) -> String {
+        describing(need).line.line
+    }
+
+    /// One email's line, and the key repeats of it share (nil for a gist, which stands alone).
+    private static func describing(_ need: BriefNeed) -> (key: String?, line: Shown) {
         let gist = need.gist.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !gist.isEmpty { return gist }
-        return need.who.isEmpty ? need.title : need.who + ": " + need.title
+        if !gist.isEmpty { return (nil, Shown(tag: "", text: gist, count: 1)) }
+        let name = displayName(need.who)
+        let (tag, subject) = splitPrefix(need.title)
+        return (name.lowercased() + "\u{1F}" + subject.lowercased(),
+                Shown(tag: tag, text: name.isEmpty ? subject : "\(name) · \(subject)", count: 1))
     }
 }
 

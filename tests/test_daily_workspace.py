@@ -363,6 +363,31 @@ def test_communication_items_carry_who_and_when_never_more(cached_sources, monke
     assert sam["replied"] is True
 
 
+@pytest.mark.parametrize("sender,address,shown", [
+    ("John Morada <john@example.edu>", "john@example.edu", "John Morada"),
+    ('"Morada, John" <john@example.edu>', "", "Morada, John"),
+    ("<john@example.edu>", "", "john@example.edu"),
+    ("", "john@example.edu", "john@example.edu"),
+    ("Prof. Lee", "lee@school.edu", "Prof. Lee"),
+])
+def test_senders_show_a_display_name_never_an_address_in_brackets(sender, address, shown):
+    from service.assistant.daily_workspace import display_name
+    assert display_name(sender, address) == shown
+
+
+def test_messages_without_full_disk_access_say_so(cached_sources, monkeypatch):
+    from service.assistant.daily_workspace import collect_evidence
+    store, _, _, messages, _ = cached_sources
+    monkeypatch.setattr(messages, "messages_unavailable_reason", lambda: "chat.db not readable (Full Disk Access?)")
+    evidence = collect_evidence(store, state(), DAY, ZONE, now=NOW)["messages"]
+    assert evidence["blocked"] == "full_disk_access" and evidence["detail"] == "Messages need Full Disk Access."
+    coverage = {c["source"]: c for c in run(e={"messages": evidence})["source_coverage"]}
+    assert coverage["messages"]["blocked"] == "full_disk_access" and not coverage["messages"]["ready"]
+    monkeypatch.setattr(messages, "messages_unavailable_reason", lambda: "Messages read timed out")
+    other = collect_evidence(store, state(), DAY, ZONE, now=NOW)["messages"]
+    assert "blocked" not in other and "blocked" not in {c["source"]: c for c in run(e={"messages": other})["source_coverage"]}["messages"]
+
+
 @pytest.mark.parametrize("title,quote", [("Study for the quiz", "Quiz on October 14 at 5pm"),
     ("Prepare a budget", "Budget review is October 14 at 5pm"),
     ("Review the garden proposal", "Proposal review is October 14 at 5pm")])

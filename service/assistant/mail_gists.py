@@ -8,8 +8,13 @@ Rules:
 - IMPORTANT: written in the background, never on a user's turn. The scheduler
   starts a tick only while nobody is waiting (`idle.foreground_busy`), and a
   tick stands down before its model call if a turn has started.
-- IMPORTANT: one model call per tick, for at most `_MAX_PER_CALL` emails that
-  have no gist yet, and at least `_MIN_GAP_S` apart. Each email is written once.
+- IMPORTANT: one model call per tick, for one or two emails that have no gist
+  yet (`batch_size`), at least `_MIN_GAP_S` apart. Each email is written once.
+- IMPORTANT: its own background request, not the 12 s user-facing summary
+  call: thinking off the way Wisp states it elsewhere (config.thinking_kwargs,
+  never `enable_thinking=True`), a token budget that fits the reply (or, for a
+  model whose thinking can't be turned off, the think block too), and a
+  `_TIMEOUT_S` deadline. A user's turn that starts mid-call cancels it.
 - IMPORTANT: never loads or evicts a model. A tick runs only when the fast-role
   model is already resident and nothing else but keep-warm models is, and it
   checks for a user's turn again right before the call.
@@ -34,10 +39,15 @@ import traceback
 from service.paths import MOE_DIR
 
 _PATH = MOE_DIR / "cache" / "mail_gists.json"
-_MAX_PER_CALL = 6
+_MAX_PER_CALL = 2
+_TIMEOUT_S = 120.0
+# Output budget per email when thinking is off, and for a whole one-email call
+# from a model whose think block can't be turned off (it comes out of max_tokens).
+_TOKENS_PER_GIST = 48
+_THINKING_TOKENS = 1200
 _MAX_KEPT = 300
 _KEEP_S = 4 * 86400
-_MIN_GAP_S = 300
+_MIN_GAP_S = 90
 _IDLE_GAP_S = 60
 _FAILURE_GAP_S = 900
 _MAX_GIST_CHARS = 100
@@ -157,10 +167,15 @@ _LINE = re.compile(r"^\s*(?:[-*•]\s*)?(\d{1,2})\s*[.):]\s*(.+?)\s*$")
 def parse_reply(text: str, count: int) -> dict[int, str]:
     """Numbered lines from the model, cleaned; malformed or overlong lines dropped.
 
-    A reply with any think tag is dropped whole: an unclosed `<think>` puts
-    the model's monologue in the content, and its numbered lines are not gists.
+    A closed `<think>…</think>` block is removed first. Any think tag left (an
+    unclosed `<think>` puts the monologue in the content) drops the reply whole:
+    its numbered lines are not gists.
     """
     out: dict[int, str] = {}
+    # A closed think block is the model's reasoning, not gists: drop it and read
+    # what follows. Anything left that looks like a think tag (an unclosed
+    # block, or a stray close) drops the whole reply.
+    text = re.sub(r"<\s*think\s*>.*?<\s*/\s*think\s*>", "", text, flags=re.I | re.S)
     if re.search(r"<\s*/?\s*think", text, re.I):
         return out
     for line in text.splitlines():
@@ -182,15 +197,26 @@ def grounded(gist_text: str, candidate: dict) -> bool:
     return all(re.search(rf"(?<!\d){number}(?!\d)", source) for number in re.findall(r"\d+", gist_text))
 
 
-async def _resident_reply(system: str, material: str, abort) -> str | None:
+def _thinking_off(model: str) -> bool:
+    """The model is known to honor "no think block" (config.thinking_kwargs)."""
+    from service.config import no_thinking_capable, thinks_explicitly
+    return thinks_explicitly(model) or model in no_thinking_capable()
+
+
+def batch_size(model: str) -> int:
+    """Two emails per call when thinking is off, one when the model will think."""
+    return _MAX_PER_CALL if _thinking_off(model) else 1
+
+
+async def _resident_reply(system: str, material: str, abort, *, count: int) -> str | None:
     """The model's reply, or None to stand down without spending anything.
 
     Never loads or evicts: the fast-role model must already be resident, with
-    nothing else but keep-warm models, so `ensure_only` inside the summary call
-    is a no-op. A user's turn that started meanwhile wins.
+    nothing else but keep-warm models. A user's turn that starts before or
+    during the call wins: the request is cancelled.
     """
-    from service.assistant.brief import _brief_synthesis, _c
-    from service.config import role_to_model
+    from service.assistant.brief import _c
+    from service.config import role_to_model, thinking_kwargs
     model = role_to_model("fast")
     client = _c()
     loaded = set(await client.loaded_models())
@@ -200,7 +226,31 @@ async def _resident_reply(system: str, material: str, abort) -> str | None:
         warm = set()
     if model not in loaded or loaded - warm - {model} or abort():
         return None
-    return await _brief_synthesis(system, material, model=model)
+    budget = _TOKENS_PER_GIST * count if _thinking_off(model) else _THINKING_TOKENS
+    request = asyncio.ensure_future(client.chat(
+        model, [{"role": "system", "content": system}, {"role": "user", "content": material}],
+        max_tokens=budget, temperature=0, **thinking_kwargs(model, on=False)))
+    deadline = time.monotonic() + _TIMEOUT_S
+    try:
+        while not request.done():
+            if abort():
+                request.cancel()
+                return None
+            if time.monotonic() >= deadline:
+                request.cancel()
+                raise TimeoutError(f"gist reply took over {_TIMEOUT_S:.0f}s")
+            await asyncio.wait({request}, timeout=0.5)
+        response = request.result()
+    finally:
+        if not request.done():
+            request.cancel()
+    choice = response["choices"][0]
+    if choice.get("finish_reason") != "stop":
+        raise ValueError(f"gist reply did not complete ({choice.get('finish_reason')})")
+    content = (choice.get("message") or {}).get("content")
+    if not isinstance(content, str):
+        raise ValueError("gist reply had no text")
+    return content
 
 
 async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
@@ -210,7 +260,12 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
     now = time.time() if now is None else now
     abort = abort or idle.foreground_busy
     cache = _load()
-    pending = [c for c in important_emails(now) if c["id"] not in cache][:_MAX_PER_CALL]
+    if synth is None:
+        from service.config import role_to_model
+        size = batch_size(role_to_model("fast"))
+    else:
+        size = _MAX_PER_CALL
+    pending = [c for c in important_emails(now) if c["id"] not in cache][:size]
     if not pending or abort():
         # Nothing to write (or someone is waiting): look again a minute from now
         # rather than re-reading the inbox on every scheduler tick.
@@ -219,9 +274,10 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
     from service.memory.identity import identity_prompt_block
     system = (identity_prompt_block(messages=False).strip() + "\n\n" + SYSTEM_RULES).strip()
     _next_call_at = now + _MIN_GAP_S
+    started = time.monotonic()
     try:
         if synth is None:
-            text = await _resident_reply(system, material(pending), abort)
+            text = await _resident_reply(system, material(pending), abort, count=len(pending))
         else:
             text = await synth(system, material(pending))
     except Exception:  # noqa: BLE001 — a missing gist falls back to the subject
@@ -249,6 +305,7 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
     # The open Brief re-reads the day every 30 s (NotchDayView.DayRefreshLoop),
     # which carries the new gists; no event is needed.
     _save(now)
+    print(f"[mail_gists] wrote {written} of {len(pending)} gists in {time.monotonic() - started:.1f}s", flush=True)
     return written
 
 
