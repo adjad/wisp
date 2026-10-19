@@ -270,3 +270,41 @@ def test_quoted_list_footer_does_not_demote_a_real_invitation(monkeypatch):
     snapshot = snapshot_for(header, 'Can you come to dinner?\nOn Monday Taylor wrote:\nManage your email preferences.')
     monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
     assert '1 needs attention' in E.sender_digest([header], 'synthetic')
+
+
+@pytest.mark.parametrize('body', [
+    'Could you help me unsubscribe from this mailing list?',
+    'Can you explain how to manage your email preferences?',
+    'Can you explain why you are receiving this notice?',
+])
+def test_footer_phrase_inside_personal_request_does_not_hide_it(monkeypatch, body):
+    header = row('Can you help?')
+    snapshot = snapshot_for(header, body)
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
+    assert '1 needs attention' in E.sender_digest([header], 'synthetic')
+
+
+@pytest.mark.parametrize('separator', ['. ', '.', '\n'])
+def test_promotion_footer_can_start_a_sentence_or_line(monkeypatch, separator):
+    header = row()
+    snapshot = snapshot_for(header, 'Product showcase' + separator + 'Unsubscribe from this mailing list below.')
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
+    assert 'Needs your attention' not in E.sender_digest([header], 'synthetic')
+
+
+@pytest.mark.parametrize('subject', ['Assignment 1 due tonight', 'Midterm exam rescheduled to Oct 8',
+                                    'PA 1 and the next reading assignment posted', 'Office Hours CANCELLED'])
+def test_course_alert_is_not_hidden_by_normal_preferences_footer(monkeypatch, subject):
+    from service.assistant.daily_workspace import important_email_rows
+    header = {**row(subject, sender='Canvas'), 'sender_address': 'notifications@instructure.com'}
+    snapshot = snapshot_for(header, subject + '.\nManage your email preferences below.')
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
+    assert '1 needs attention' in E.sender_digest([header], 'synthetic')
+    assert important_email_rows(snapshot)
+
+
+def test_course_newsletter_is_not_exempted_as_a_course_alert(monkeypatch):
+    header = row('Course newsletter: new offers', sender='Canvas Newsletter')
+    snapshot = snapshot_for(header, 'Product showcase.\nManage your email preferences below.')
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
+    assert 'Needs your attention' not in E.sender_digest([header], 'synthetic')

@@ -1849,10 +1849,10 @@ _FULL_SECTIONS = {"attention": 10, "people": 10, "school": 10, "accounts": 6}
 _QUOTED_MAIL_HISTORY = re.compile(
     r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>.*)$")
 _LIST_FOOTER = re.compile(
-    r"\bmanage (?:your )?(?:email )?preferences\b|"
-    r"\byou(?:'re| are) (?:receiving this|subscribed to)\b|"
-    r"\bunsubscribe (?:here|below|from (?:this|our|the) (?:mailing )?list)\b|"
-    r"(?:^|\n)\s*(?:to unsubscribe\b|unsubscribe\s*$)", re.I)
+    r"(?:^|[.!?]|\n)\s*(?:manage (?:your )?(?:email )?preferences\b|"
+    r"you(?:'re| are) (?:receiving this|subscribed to)\b|"
+    r"unsubscribe (?:here|below|from (?:this|our|the) (?:mailing )?list)\b|"
+    r"to unsubscribe\b|unsubscribe\s*$)", re.I)
 
 
 def _digest_body_evidence(rows: list[dict]) -> list[dict]:
@@ -1892,8 +1892,8 @@ def digest_category(row: dict) -> str:
     identity = f"{sender} {address}"
     machine = is_machine_sender(sender) or is_machine_sender(address) or is_broadcast(row)
     social = bool(_SOCIAL_RE.search(domain) or _SOCIAL_RE.search(sender))
-    marketing = bool(_MARKETING_SUBJECT.search(subject) or _NEWSLETTER_RE.search(identity)
-                     or row.get("_current_list_footer") is True)
+    header_marketing = bool(_MARKETING_SUBJECT.search(subject) or _NEWSLETTER_RE.search(identity))
+    marketing = header_marketing or row.get("_current_list_footer") is True
     course = bool(_COURSE_RE.search(domain) or _COURSE_RE.search(sender))
     school = domain.endswith(".edu") or course
     urgent = bool(_URGENT_SUBJECT.search(subject)) or bool(_TIME_CHANGE_RE.search(subject))
@@ -1912,7 +1912,11 @@ def digest_category(row: dict) -> str:
         return "attention"
     if urgent and not marketing and not social:
         return "attention"
-    if course and _SCHOOL_ACTION_RE.search(subject) and not marketing:
+    # Course systems add list-management footers to real assignments and
+    # cancellations too. Keep their existing header-based alert semantics;
+    # explicit course newsletters/promotions remain marketing.
+    if (course and not header_marketing
+            and (_SCHOOL_ACTION_RE.search(subject) or (urgent and not social))):
         return "attention"
     if human and row.get("unread") is True:
         return "attention"          # a real person is waiting on a read
