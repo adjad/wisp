@@ -112,6 +112,10 @@ final class TodayModel: ObservableObject {
     /// reminders) for the notch Brief's SOON row, read with UpcomingItem.parseList.
     /// Nil until it has been read once.
     @Published private(set) var upcomingReply: [String: Any]?
+    /// The day's latest composed Daily Summary as the service kept it
+    /// (`/assistant/daily_summary/latest`), so the Brief shows it again after a
+    /// relaunch. Nil until read, or when none was composed that day.
+    @Published private(set) var storedBrief: StoredBrief?
     @Published var error = ""
     @Published var busy = false
     @Published var capturePlannerDetails = false
@@ -298,6 +302,20 @@ final class TodayModel: ObservableObject {
               let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               reply["commitments"] is [[String: Any]] else { return }
         upcomingReply = reply
+    }
+
+    /// Reads today's latest composed brief. A 404 means none was composed today;
+    /// any other failure keeps what was read before.
+    func refreshStoredBrief() async {
+        let day = Self.dayString(nowProvider(), in: timezone)
+        do {
+            let data = try await request("/assistant/daily_summary/latest?day=\(day)")
+            guard let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let brief = StoredBrief.parse(reply, day: day) else { return }
+            storedBrief = brief
+        } catch let error as NSError where error.domain == "Today" && error.code == 404 {
+            storedBrief = nil
+        } catch {}
     }
 
     func diagnosticSnapshot() -> (metadata: [String: Any], details: [String: Any]?) {

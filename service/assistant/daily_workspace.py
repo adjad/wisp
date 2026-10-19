@@ -109,20 +109,31 @@ _QUOTED_HISTORY = re.compile(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]
 _COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied")
 
 
+_BULK_BODY = re.compile(r"\bunsubscribe\b|manage (?:your )?(?:email )?preferences|view (?:this email )?in (?:your )?browser",
+                        re.I)
+
+
 def important_email_rows(snapshot):
     """(row, current_lines) for each snapshot email that counts as attention.
 
-    The one selection rule, shared by the day's evidence and the mail gists:
+    The one selection rule, shared by the day's evidence and the Brief:
     an attention or school category, or a current-body line that reads as a
     request. Newest first, bounded to the 200 newest rows.
+
+    A request line in bulk mail is a call to action, not a request: mail the
+    headers file as newsletters, promos or social updates, or whose body offers
+    an unsubscribe link, needs its category to count. Without this, "RSVP" and
+    "register now" lines put event promos among the emails that need the user.
     """
     from service.tools.email_tools import digest_category
     from service.tools.imessage_tools import important_message_reason
     out = []
     for row in sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]:
         body = _QUOTED_HISTORY.split(row.get("body", ""))[0]
-        current_lines = [line for line in body.splitlines() if important_message_reason("Sender: " + line)]
-        if digest_category(row) not in {"attention", "school"} and not current_lines:
+        category = digest_category(row)
+        bulk = category in {"news", "social"} or bool(_BULK_BODY.search(row.get("body", "") or ""))
+        current_lines = [] if bulk else [line for line in body.splitlines() if important_message_reason("Sender: " + line)]
+        if category not in {"attention", "school"} and not current_lines:
             continue
         out.append((row, current_lines))
     return out

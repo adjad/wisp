@@ -69,18 +69,28 @@ struct NotchBriefView: View {
             // The week ahead changes slowly; SOON reads it while the Brief is open.
             while !Task.isCancelled {
                 await today.refreshUpcoming()
+                // The composed summary the service kept: after a relaunch the
+                // live event and Refresh are gone, and the next run may be hours off.
+                await today.refreshStoredBrief()
                 do { try await Task.sleep(for: .seconds(120)) } catch { break }
             }
         }
     }
 
-    /// Today's composed Daily Summary, when one arrived today and the Brief shows today.
-    private var composedToday: ComposedBrief? {
+    /// Today's composed Daily Summary, when the Brief shows today: the newer of
+    /// the one this launch received (the live event or Refresh) and the one the
+    /// service kept, which survives a relaunch.
+    private var composedBrief: (text: String, at: Date)? {
+        guard today.isShowingCurrentDay else { return nil }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = today.timezone
-        guard let brief = model.brief, today.isShowingCurrentDay,
-              calendar.isDate(brief.receivedAt, inSameDayAs: today.now) else { return nil }
-        return ComposedBrief.parse(brief.text)
+        let now = today.now
+        return StoredBrief.newest(live: model.brief.map { (text: $0.text, at: $0.receivedAt) }, stored: today.storedBrief,
+                                  sameDay: { calendar.isDate($0, inSameDayAs: now) })
+    }
+
+    private var composedToday: ComposedBrief? {
+        composedBrief.map { ComposedBrief.parse($0.text) }
     }
 
     /// The cut-down Daily Summary: what Wisp keeps in mind, then today's events.
@@ -184,9 +194,8 @@ struct NotchBriefView: View {
     /// The newer of the composed brief and the day's plan.
     private var updatedAt: Date? {
         let planned = plan.map { Date(timeIntervalSince1970: $0.generated_at) }
-        guard let brief = model.brief, today.isShowingCurrentDay,
-              Calendar.current.isDateInToday(brief.receivedAt) else { return planned }
-        return max(brief.receivedAt, planned ?? brief.receivedAt)
+        guard let brief = composedBrief else { return planned }
+        return max(brief.at, planned ?? brief.at)
     }
 
     private func lineRow(_ line: DayTimeline.BriefLine, isOpen: Bool) -> some View {
@@ -292,10 +301,10 @@ struct BriefContent {
         details = [
             "CAL": calendarDetail,
             "MAIL": BriefDetail.mail(needing: mailNeeds, ready: coverage("email")?.ready == true,
-                                     summary: isToday ? composed?.lines(.mail) ?? [] : []),
+                                     summary: isToday ? composed?.lines(.mail) : []),
             "TEXTS": BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
                                        needsAccess: coverage("messages")?.blocked == "full_disk_access",
-                                       summary: isToday ? composed?.lines(.messages) ?? [] : [],
+                                       summary: isToday ? composed?.lines(.messages) : [],
                                        age: { BriefTexts.age($0, now: now) }),
             "SOON": BriefDetail.soon(upcoming.flatMap { $0.isEmpty && !weekRead ? nil : $0 }, when: when),
         ]

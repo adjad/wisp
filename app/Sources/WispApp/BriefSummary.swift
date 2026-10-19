@@ -101,6 +101,29 @@ struct ComposedBrief: Equatable {
     }
 }
 
+/// A composed Daily Summary the service kept (`/assistant/daily_summary/latest`),
+/// read again after a relaunch, when the live event and Refresh are gone.
+struct StoredBrief: Equatable {
+    let text: String
+    let composedAt: Date
+    /// The day it was asked for, "yyyy-MM-dd".
+    let day: String
+
+    static func parse(_ obj: [String: Any], day: String) -> StoredBrief? {
+        guard let text = obj["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let at = (obj["composed_at"] as? NSNumber)?.doubleValue, at.isFinite, at > 0 else { return nil }
+        return StoredBrief(text: text, composedAt: Date(timeIntervalSince1970: at), day: day)
+    }
+
+    /// The newer of the brief this launch received and the stored one, among
+    /// those from `day` (per `sameDay`); nil when neither is.
+    static func newest(live: (text: String, at: Date)?, stored: StoredBrief?,
+                       sameDay: (Date) -> Bool) -> (text: String, at: Date)? {
+        let candidates = [live, stored.map { (text: $0.text, at: $0.composedAt) }].compactMap { $0 }.filter { sameDay($0.at) }
+        return candidates.max { $0.at < $1.at }
+    }
+}
+
 /// One upcoming item from `/assistant/upcoming`: a calendar event or a reminder
 /// in the next week.
 struct UpcomingItem: Equatable, Identifiable {
@@ -177,16 +200,22 @@ struct BriefDetail: Equatable {
         return BriefDetail(lines: lines, source: .calendar)
     }
 
+    /// Said in place of the summary's section when today has none yet.
+    static let noSummaryYet = "Today's summary arrives with your morning brief · or press Refresh"
+
     /// The mail section of the composed Daily Summary, then the emails that
     /// need you as "Sender · subject" (repeats collapsed ×N, people first, none
     /// the summary already names), then what was left out. The row above says
-    /// the gist and the count, so neither repeats here.
-    static func mail(needing: [BriefNeed], ready: Bool, summary: [String] = []) -> BriefDetail {
+    /// the gist and the count, so neither repeats here. `summary` is nil when
+    /// today has no composed summary: a muted line says so first, instead of
+    /// the section silently missing.
+    static func mail(needing: [BriefNeed], ready: Bool, summary: [String]? = []) -> BriefDetail {
         guard ready else {
             return BriefDetail(lines: [Line(id: "empty", leading: "", text: "Mail hasn't been checked yet", muted: true)], source: .mail)
         }
-        var lines = summary.prefix(8).enumerated().map { Line(id: "summary-\($0.offset)", leading: "", text: $0.element) }
-        let said = BriefMail.words(summary.joined(separator: " "))
+        let section = summary ?? []
+        var lines = section.prefix(8).enumerated().map { Line(id: "summary-\($0.offset)", leading: "", text: $0.element) }
+        let said = BriefMail.words(section.joined(separator: " "))
         let shown = BriefMail.shown(needing).filter { need in
             let words = BriefMail.words(need.subject)
             return said.isEmpty || words.isEmpty || !said.contains(words)
@@ -206,13 +235,14 @@ struct BriefDetail: Equatable {
                               muted: true))
         }
         if lines.isEmpty { lines = [Line(id: "empty", leading: "", text: "Nothing needs a reply", muted: true)] }
-        return BriefDetail(lines: lines, source: .mail)
+        return BriefDetail(lines: noted(lines, missing: summary == nil), source: .mail)
     }
 
     /// The messages section of the composed Daily Summary without its quotes
     /// and without the people listed under it, then who is waiting on you and
-    /// for how long. Never the texts themselves.
-    static func texts(needing: [BriefNeed], ready: Bool, needsAccess: Bool = false, summary: [String] = [],
+    /// for how long. Never the texts themselves. `summary` is nil when today
+    /// has no composed summary, as for mail.
+    static func texts(needing: [BriefNeed], ready: Bool, needsAccess: Bool = false, summary: [String]? = [],
                       age: (Double) -> String) -> BriefDetail {
         if needsAccess {
             return BriefDetail(lines: [Line(id: "access", leading: "",
@@ -225,7 +255,7 @@ struct BriefDetail: Equatable {
         }
         let waiting = BriefTexts.waiting(needing)
         let names = Set(waiting.map { $0.name.lowercased() })
-        var lines = BriefTexts.unquoted(summary)
+        var lines = BriefTexts.unquoted(summary ?? [])
             .filter { !names.contains(BriefTexts.conversation($0).lowercased()) && !(waiting.isEmpty == false && BriefTexts.isQuiet($0)) }
             .prefix(6).enumerated().map { Line(id: "summary-\($0.offset)", leading: "", text: $0.element) }
         if !waiting.isEmpty, !lines.isEmpty { lines.append(Line(id: "waiting", leading: "", text: "Waiting on you", muted: true)) }
@@ -235,7 +265,11 @@ struct BriefDetail: Equatable {
         }
         if waiting.count > 6 { lines.append(Line(id: "more", leading: "", text: "+\(waiting.count - 6) more", muted: true)) }
         if lines.isEmpty { lines = [Line(id: "empty", leading: "", text: "No texts need you", muted: true)] }
-        return BriefDetail(lines: lines, source: .messages)
+        return BriefDetail(lines: noted(lines, missing: summary == nil), source: .messages)
+    }
+
+    private static func noted(_ lines: [Line], missing: Bool) -> [Line] {
+        missing ? [Line(id: "no-summary", leading: "", text: noSummaryYet, muted: true)] + lines : lines
     }
 
     static func soon(_ items: [UpcomingItem]?, when: (UpcomingItem) -> String) -> BriefDetail {
