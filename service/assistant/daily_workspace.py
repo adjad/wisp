@@ -684,6 +684,9 @@ def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), p
     the API layer: this module stays pure over the records it is handed and
     imports nothing from memory."""
     state = store.today_snapshot(day, timezone)
+    hide = getattr(store, "hide_stale_tasks", None)
+    if hide is not None:  # a Day task twin of a hidden reminder (today_api.snapshot does the same)
+        state = {**state, "tasks": hide(state["tasks"], now)}
     evidence = collect_evidence(store, state, day, timezone, now=now)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
                   ignored_windows=ignored_windows, profile=profile)

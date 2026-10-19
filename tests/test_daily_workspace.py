@@ -244,6 +244,9 @@ def cached_sources(monkeypatch):
         def hidden_commitment_ids(self, now=None):
             return set()
 
+        def hide_stale_tasks(self, tasks, now=None):
+            return tasks
+
         def undated_listing(self):
             return self.view, self.undated
     store = Store()
