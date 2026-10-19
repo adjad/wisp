@@ -40,6 +40,7 @@ enum NotchQADriver {
             return (try JSONSerialization.data(withJSONObject: ["asks": rows]),
                     HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
+        DayCards.qaUse(attention: attention, staleReminders: stale)
         let model = OverlayModel()
         model.qaShow(brief: fixtureBrief)
         let width = SurfaceLayout.maxExpandedWidth
@@ -50,7 +51,7 @@ enum NotchQADriver {
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let content = VStack(alignment: .leading, spacing: 0) {
                 if tab == .brief { NotchBriefView(model: model, today: today, open: open) }
-                else { NotchDayView(model: model, today: today, attention: attention, staleReminders: stale) }
+                else { NotchDayView(model: model, today: today) }
             }
             .padding(EdgeInsets(top: 18, leading: 22, bottom: 16, trailing: 22))
             .frame(width: width, alignment: .topLeading)
