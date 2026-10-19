@@ -197,8 +197,9 @@ struct TodayPlanChecks {
                 : #"{"detail":"no composed summary for that day"}"#
             return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
         }
+        check(!model.storedBriefChecked, "unknown until asked")
         await model.refreshStoredBrief()
-        check(model.storedBrief?.text == "**🧭 Keeping in mind**\n- PA 2" && model.storedBrief?.day == "2027-01-15"
+        check(model.storedBriefChecked && model.storedBrief?.text == "**🧭 Keeping in mind**\n- PA 2" && model.storedBrief?.day == "2027-01-15"
               && asked.last?.contains("/assistant/daily_summary/latest?day=2027-01-15") == true,
               "the kept summary is read for today's local date: \(asked)")
         status = 500

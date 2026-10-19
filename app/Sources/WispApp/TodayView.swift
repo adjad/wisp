@@ -139,6 +139,8 @@ final class TodayModel: ObservableObject {
     /// (`/assistant/daily_summary/latest`), so the Brief shows it again after a
     /// relaunch. Nil until read, or when none was composed that day.
     @Published private(set) var storedBrief: StoredBrief?
+    /// The kept summary has been asked for at least once, so its absence is known.
+    @Published private(set) var storedBriefChecked = false
     @Published var error = ""
     @Published var busy = false
     @Published var capturePlannerDetails = false
@@ -336,9 +338,12 @@ final class TodayModel: ObservableObject {
             guard let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let brief = StoredBrief.parse(reply, day: day) else { return }
             storedBrief = brief
+            storedBriefChecked = true
         } catch {
             let failure = error as NSError
             if failure.domain == "Today", failure.code == 404 { storedBrief = nil }
+            // Any answer settles it: a service that can't say still shows the note.
+            storedBriefChecked = true
         }
     }
 

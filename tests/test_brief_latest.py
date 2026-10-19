@@ -97,6 +97,14 @@ def test_bulk_mail_calls_to_action_do_not_make_it_need_you():
     ]
     picked = [r["subject"] for r, _ in important_email_rows(SimpleNamespace(rows=rows))]
     assert picked == ["Draft"]
+    # An automated sender that isn't marketing still counts by its request, and
+    # an unsubscribe footer in quoted history doesn't make a reply bulk.
+    clinic = row(4, subject="Appointment", sender="Dental Group", sender_address="frontdesk@dentalgroup.example",
+                 body="Could you confirm your appointment by Friday?")
+    reply = row(5, subject="Re: notes", sender="Alice", sender_address="alice@example.test",
+                body="Could you send the notes by Friday?\n\nOn Mon, Bob wrote:\n> Unsubscribe here")
+    picked = [r["subject"] for r, _ in important_email_rows(SimpleNamespace(rows=rows + [clinic, reply]))]
+    assert "Appointment" in picked and "Re: notes" in picked, picked
     # Without the unsubscribe line, a person's request still counts.
     rows[0]["body"] = "Could you submit your RSVP by Friday?"
     assert [r["subject"] for r, _ in important_email_rows(SimpleNamespace(rows=rows))] == ["Draft", "See you there"]

@@ -8,8 +8,8 @@ composed brief here and serves it at GET /assistant/daily_summary/latest.
 
 Rules:
 - IMPORTANT: the file holds mail and message content. It is private from the
-  first byte (0600 in a 0700 directory) and keeps only the newest two days
-  (today's and yesterday's).
+  first byte (0600; a cache directory it creates is 0700) and keeps only the
+  newest two days (today's and yesterday's).
 - IMPORTANT: a brief is recorded only when it is real (`READY`), never a "still
   syncing" hold-back, so the app never shows a hold-back as the day's summary.
 - Days are the local date the run belongs to, as the scheduler names them.

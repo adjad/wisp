@@ -120,18 +120,23 @@ def important_email_rows(snapshot):
     an attention or school category, or a current-body line that reads as a
     request. Newest first, bounded to the 200 newest rows.
 
-    A request line in bulk mail is a call to action, not a request: mail the
-    headers file as newsletters, promos or social updates, or whose body offers
-    an unsubscribe link, needs its category to count. Without this, "RSVP" and
-    "register now" lines put event promos among the emails that need the user.
+    A request line in bulk mail is a call to action, not a request: social
+    updates, mail whose subject or sender reads as marketing or a newsletter,
+    and mail whose own text (not quoted history) offers an unsubscribe link
+    need their category to count. Without this, "RSVP" and "register now"
+    lines put event promos among the emails that need the user. An automated
+    sender that is none of those (a clinic, a landlord's office) still counts
+    by a request line.
     """
-    from service.tools.email_tools import digest_category
+    from service.tools.email_tools import _MARKETING_SUBJECT, _NEWSLETTER_RE, digest_category
     from service.tools.imessage_tools import important_message_reason
     out = []
     for row in sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]:
-        body = _QUOTED_HISTORY.split(row.get("body", ""))[0]
+        body = _QUOTED_HISTORY.split(row.get("body", "") or "")[0]
         category = digest_category(row)
-        bulk = category in {"news", "social"} or bool(_BULK_BODY.search(row.get("body", "") or ""))
+        identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
+        bulk = (category == "social" or bool(_MARKETING_SUBJECT.search(row.get("subject", "") or ""))
+                or bool(_NEWSLETTER_RE.search(identity)) or bool(_BULK_BODY.search(body)))
         current_lines = [] if bulk else [line for line in body.splitlines() if important_message_reason("Sender: " + line)]
         if category not in {"attention", "school"} and not current_lines:
             continue

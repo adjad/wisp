@@ -295,16 +295,24 @@ struct BriefContent {
             mailOverview: plan.workspace?.mail_overview?.text, textsOverview: plan.workspace?.texts_overview?.text,
             soon: soon)
 
+        // Today's section of the composed summary; nil (the dropdown says none
+        // came yet) only once the kept summary has been checked, so a relaunch
+        // doesn't flash the note before it loads.
+        func summarySection(_ kind: ComposedBrief.Kind) -> [String]? {
+            guard isToday else { return [] }
+            if let composed { return composed.lines(kind) }
+            return today.storedBriefChecked ? nil : []
+        }
         let events = calendarBlocks.map { (title: $0.title, start: $0.start, end: $0.end) }
         let allDay = plan.all_day.map(\.title)
         let calendarDetail = BriefDetail.calendar(allDay: allDay, events: events, unsynced: !calendarKnown, clock: today.clock)
         details = [
             "CAL": calendarDetail,
             "MAIL": BriefDetail.mail(needing: mailNeeds, ready: coverage("email")?.ready == true,
-                                     summary: isToday ? composed?.lines(.mail) : []),
+                                     summary: summarySection(.mail)),
             "TEXTS": BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
                                        needsAccess: coverage("messages")?.blocked == "full_disk_access",
-                                       summary: isToday ? composed?.lines(.messages) : [],
+                                       summary: summarySection(.messages),
                                        age: { BriefTexts.age($0, now: now) }),
             "SOON": BriefDetail.soon(upcoming.flatMap { $0.isEmpty && !weekRead ? nil : $0 }, when: when),
         ]
