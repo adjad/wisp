@@ -867,6 +867,11 @@ def event_move_plan(title: str, when_iso: str, duration_min: int | None = None,
     if "error" in found:
         return {"error": found["error"]}
     row = found["row"]
+    # A subscribed or otherwise read-only calendar: the app would refuse the write, so the
+    # confirmation card is never shown. 0/1 from the store, or None when the app didn't say.
+    if row.get("calendar_writable") is not None and not row["calendar_writable"]:
+        return {"error": f"“{row['title']}” is on a read-only calendar; Wisp can't change it from "
+                         "this Mac. Nothing was moved. Move it in Calendar if it is yours to move."}
     # Invitees: only the organizer may move such an event, and Calendar then sends them
     # the new time; the card says so. Unknown either way is refused, never guessed.
     invitees, organizer = row.get("invitee_count"), row.get("organizer_is_user")
