@@ -726,7 +726,6 @@ def test_the_evening_check_in_card_hides_the_same_task_twin(store):
     assert other["id"] in shown and legacy["id"] not in shown
 
 
-
 # --- Keep/Delete answer only the app, never a browser page (2026-10-18) -------------------
 
 @pytest.mark.parametrize("action", ["keep", "delete"])
@@ -745,3 +744,20 @@ def test_answers_from_a_browser_page_are_refused(store, monkeypatch, action):
     assert store.stale_reminder_target("a")["stale_state"] == "ask", "nothing was kept or deleted"
     # The app's own request (JSON, no Origin) still answers.
     assert client.post("/assistant/stale_reminders/keep", json={"source_id": "a"}).status_code == 200
+
+
+
+def test_the_guard_itself_refuses_non_json_and_any_origin():
+    # Over HTTP FastAPI's body validation answers a non-JSON body first (422); the guard
+    # is the second line, pinned here directly.
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    def request(*headers):
+        return Request({"type": "http", "method": "POST", "path": "/", "headers": list(headers)})
+    for bad, code in ((request((b"content-type", b"text/plain")), 415), (request(), 415),
+                      (request((b"content-type", b"application/json"), (b"origin", b"")), 403)):
+        with pytest.raises(HTTPException) as refused:
+            stale_reminders_api._native_only(bad)
+        assert refused.value.status_code == code
+    stale_reminders_api._native_only(request((b"content-type", b"Application/JSON; charset=utf-8")))
