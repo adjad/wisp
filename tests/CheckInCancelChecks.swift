@@ -23,6 +23,19 @@ import Foundation
         precondition(CheckInCancel.blockedReason("Only the organizer can cancel it.") == "Only the organizer can cancel it.")
         precondition(CheckInCancel.blockedReason("").contains("Calendar"), "an older service gives no reason")
 
+        // What replaces Cancel: a read-only calendar is final even if the service allowed it;
+        // someone else's event is declined in Calendar; other blocks open the event there.
+        precondition(CheckInCancel.blockedControl(canCancel: true, calendarWritable: true, organizerIsUser: nil) == .cancel)
+        precondition(CheckInCancel.blockedControl(canCancel: true, calendarWritable: nil, organizerIsUser: true) == .cancel,
+                     "an older app that didn't say is not read-only")
+        precondition(CheckInCancel.blockedControl(canCancel: true, calendarWritable: false, organizerIsUser: nil) == .readOnly,
+                     "a subscribed calendar never gets a Cancel, whatever the service row said")
+        precondition(CheckInCancel.blockedControl(canCancel: false, calendarWritable: false, organizerIsUser: false) == .readOnly)
+        precondition(CheckInCancel.blockedControl(canCancel: false, calendarWritable: true, organizerIsUser: false) == .decline,
+                     "an invitation is declined in Calendar")
+        precondition(CheckInCancel.blockedControl(canCancel: false, calendarWritable: true, organizerIsUser: nil) == .open)
+        precondition(CheckInCancel.blockedControl(canCancel: false, calendarWritable: nil, organizerIsUser: true) == .open)
+
         // The request: exactly the three fields the service accepts, from the row.
         let body = CheckInCancel.requestBody(sourceId: "abc", startTs: 1_900_000_000, inviteeCount: 2)
         precondition(body?.count == 3)

@@ -12,7 +12,11 @@ import AppKit
 /// than in this view, so closing the panel or switching tabs during it neither
 /// drops the cancel nor hurries it; Undo is there again if the card reopens
 /// inside the window. Quitting Wisp inside the window drops it: nothing is
-/// cancelled. Move opens an inline sub-panel: up to three times Wisp found free
+/// cancelled. Neither Cancel nor Move is offered for an event on a read-only
+/// (subscribed) calendar, for someone else's event (only its organizer may
+/// change it), or when Calendar doesn't say who organizes an event with
+/// invitees; the row then says why, and an invitation gets "Decline in
+/// Calendar", which opens that event in Calendar. Move opens an inline sub-panel: up to three times Wisp found free
 /// the way the Day tab plans (GET /assistant/checkin/move_suggestions: working
 /// hours, calendar, planned tasks, learned busy and away windows; no model
 /// call), or another day and time of your choosing. Picking one opens Ask with
@@ -42,7 +46,10 @@ struct CheckInEvent: Identifiable, Equatable {
     /// reason a one-tap Cancel is not offered ("" when it is).
     let inviteeCount: Int?
     let organizerIsUser: Bool?
+    /// false: a read-only (subscribed) calendar; nil: the app didn't say.
+    let calendarWritable: Bool?
     let cancelBlocked: String
+    let moveBlocked: String
 
     init?(_ row: [String: Any], index: Int) {
         guard let title = row["title"] as? String else { return nil }
@@ -54,15 +61,22 @@ struct CheckInEvent: Identifiable, Equatable {
         sourceId = row["source_id"] as? String
         inviteeCount = (row["invitee_count"] as? NSNumber)?.intValue
         organizerIsUser = row["organizer_is_user"] as? Bool
+        calendarWritable = row["calendar_writable"] as? Bool
         cancelBlocked = row["cancel_blocked"] as? String ?? ""
+        // An older service sends no move_blocked: then Move follows Cancel's rules.
+        moveBlocked = row["move_blocked"] as? String ?? (row["cancel_blocked"] as? String ?? "")
     }
+
+    /// Move is offered only when the app would carry it out (CalendarMove.refusal):
+    /// a timed event, on a writable calendar, the user's own or without invitees.
+    var canMove: Bool { !allDay && moveBlocked.isEmpty && calendarWritable != false }
 
     /// The cancel request the service accepts for this row, or nil when Cancel
     /// must not be offered (the service said why, or the row isn't complete).
     var cancelBody: [String: Any]? {
         cancelBlocked.isEmpty ? CheckInCancel.requestBody(sourceId: sourceId, startTs: whenTs, inviteeCount: inviteeCount) : nil
     }
-    var canCancel: Bool { cancelBody != nil }
+    var canCancel: Bool { cancelBody != nil && calendarWritable != false }
     var cancelReason: String { CheckInCancel.blockedReason(cancelBlocked) }
 
     /// How long it runs, for a moved copy; an hour when the calendar gave no end.
@@ -354,6 +368,8 @@ struct CheckInSection: View {
     let timezone: TimeZone
     var clock: (Double) -> String
     var onAsk: (String) -> Void
+    /// Opens the event in Calendar (Decline / Open in Calendar).
+    var onOpenEvent: (CheckInEvent) -> Void
     var onChanged: () -> Void
 
     /// The event whose Move sub-panel is open, if any.
@@ -500,7 +516,7 @@ struct CheckInSection: View {
                 } else {
                     Group {
                         chip("Keep", primary: true) { model.keep(event) }
-                        if !event.allDay {               // an all-day event has no time to move to
+                        if event.canMove {               // never for all-day, read-only or someone else's events
                             chip("Move") { openMove(event) }
                                 .help(model.hasCancelActivity ? "Wait for the cancel to finish first" : "Pick another time; Wisp finds free ones")
                                 .disabled(model.hasCancelActivity)   // the panel would hide the Undo bar
@@ -528,16 +544,28 @@ struct CheckInSection: View {
 
     // MARK: Cancel cancels, after Undo
 
-    /// Cancel when the service will accept it; otherwise why not, kept short in
-    /// the row with the service's full reason on hover and for VoiceOver.
+    /// Cancel when the service will accept it. Otherwise what the person can do
+    /// instead: nothing from here on a read-only calendar (said plainly), or a
+    /// real button that opens the event in Calendar, "Decline" for an
+    /// invitation. The service's full reason is on hover and for VoiceOver.
     @ViewBuilder private func cancelControl(_ event: CheckInEvent) -> some View {
-        if event.canCancel {
+        switch CheckInCancel.blockedControl(canCancel: event.canCancel, calendarWritable: event.calendarWritable,
+                                            organizerIsUser: event.organizerIsUser) {
+        case .cancel:
             chip("Cancel") { model.beginCancel(event, timezone: timezone.identifier) }
                 .help("Removes it from your Calendar after a 5-second Undo; Calendar tells its invitees")
-        } else {
-            Text("Cancel in Calendar").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+        case .readOnly:
+            Text("On a read-only calendar").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
                 .help(event.cancelReason)
                 .accessibilityLabel(event.cancelReason)
+        case .decline:
+            chip("Decline in Calendar ↗") { onOpenEvent(event) }
+                .help(event.cancelReason)
+                .accessibilityLabel("Decline in Calendar. \(event.cancelReason)")
+        case .open:
+            chip("Open in Calendar ↗") { onOpenEvent(event) }
+                .help(event.cancelReason)
+                .accessibilityLabel("Open in Calendar. \(event.cancelReason)")
         }
     }
 

@@ -1351,6 +1351,9 @@ final class OverlayModel: ObservableObject {
     var onCreateCalendarEvent: ((_ title: String, _ startTs: Double,
                                  _ durationMin: Int, _ location: String) -> [String: Any])?
     var onDeleteCalendarEvent: ((_ identifier: String, _ occurrenceTs: Double?) -> [String: Any])?
+    /// Calendar's deep link to one synced occurrence, for the check-in card's
+    /// "Decline in Calendar" / "Open in Calendar"; nil when it is gone.
+    var showCalendarEventURL: ((_ identifier: String, _ startTs: Double) -> URL?)?
     /// Verified cancel of one occurrence (CalendarReader.cancelEvent).
     var onCancelCalendarEvent: ((_ identifier: String, _ expectedTitle: String, _ expectedStart: Double,
                                  _ expectedInvitees: Int) -> [String: Any])?
