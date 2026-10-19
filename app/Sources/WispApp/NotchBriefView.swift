@@ -146,9 +146,10 @@ struct NotchBriefView: View {
                         Text(line.leading).font(.system(size: 12.5)).foregroundStyle(Theme.textMuted).monospacedDigit()
                             .frame(width: Self.timeWidth(detail.lines), alignment: .leading)
                     }
-                    Text(line.text).font(.system(size: 13.5))
-                        .foregroundStyle(line.muted ? Theme.textMuted : Theme.textSecondary)
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    Text(line.text).font(.system(size: line.paragraph ? 14 : 13.5))
+                        .foregroundStyle(line.muted ? Theme.textMuted : line.paragraph ? Theme.textPrimary : Theme.textSecondary)
+                        .lineLimit(line.paragraph ? nil : 2).fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, line.paragraph ? 3 : 0)
                 }
             }
             Button {
@@ -309,7 +310,7 @@ struct BriefContent {
         details = [
             "CAL": calendarDetail,
             "MAIL": BriefDetail.mail(needing: mailNeeds, ready: coverage("email")?.ready == true,
-                                     summary: summarySection(.mail)),
+                                     summary: summarySection(.mail), prose: isToday ? plan.workspace?.mail_summary?.text : nil),
             "TEXTS": BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
                                        needsAccess: coverage("messages")?.blocked == "full_disk_access",
                                        summary: summarySection(.messages),

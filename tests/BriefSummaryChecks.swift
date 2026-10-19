@@ -91,6 +91,23 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
           "mail details: the summary, then needing emails it doesn't already name: \(summarized.lines.map(\.text))")
     check(!BriefDetail.mail(needing: inbox, ready: true, summary: ["Tech Week: starts today!"]).lines.contains { $0.text.contains("UCSC") },
           "punctuation doesn't hide a repeat")
+    // A written summary replaces the summary's sender-and-subject section; the needing list follows.
+    let written = BriefDetail.mail(needing: inbox, ready: true,
+                                   summary: ["Worth a look", "Advisor: Thesis meeting moved to Tuesday"],
+                                   prose: "Prof. Lee moved your thesis meeting to Tuesday. The rest is promos.")
+    check(written.lines.first?.text == "Prof. Lee moved your thesis meeting to Tuesday. The rest is promos."
+          && written.lines.first?.paragraph == true && !written.lines.contains { $0.text == "Worth a look" }
+          && written.lines.contains { $0.text == "Jordan · Can you review my draft?" }
+          && !written.lines.contains { $0.text == "Prof. Lee · Thesis meeting" },
+          "the written summary leads, the needing emails it doesn't name follow: \(written.lines.map(\.text))")
+    check(BriefDetail.mail(needing: inbox, ready: true, summary: nil, prose: "Quiet day.").lines.first?.text == "Quiet day.",
+          "with a written summary there's no 'arrives later' note")
+    check(BriefMail.isPrivate("Re: Private details omitted.") && BriefMail.isPrivate("Invitation: Private details omitted.")
+          && BriefMail.shown([BriefNeed(title: "Re: Private details omitted.", sender: "John Morada", person: true)]).isEmpty
+          && BriefMail.privateCount([BriefNeed(title: "Re: Private details omitted.")]) == 1
+          && BriefMail.isPrivate("Deadline notice (private details omitted).")
+          && BriefMail.isPrivate("Unverified security incident notice (details omitted)."),
+          "a withheld subject behind Re: is counted, never listed")
     let wordless = [BriefNeed(title: "🎉🎉", sender: "Ann", person: true)]
     check(!BriefDetail.mail(needing: wordless, ready: true, summary: ["Worth a look"]).lines.contains { $0.text.contains("Ann") }
           && BriefMail.row(overview: "Quiet", needing: wordless) == "Nothing needs you · Quiet",
