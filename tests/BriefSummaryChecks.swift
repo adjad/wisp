@@ -95,14 +95,17 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
         BriefNeed(title: "Re: Re: Lunch Friday?", sender: "<sam@example.com>", person: true, received: now - 300),
     ]
     let collapsed = BriefMail.shown(messy)
-    check(collapsed == [BriefMail.Shown(tag: "", text: "John Morada · Dublin Community Office Hours", count: 3),
+    check(collapsed == [BriefMail.Shown(tag: "Canceled", text: "John Morada · Dublin Community Office Hours", count: 3),
                         BriefMail.Shown(tag: "Re", text: "sam@example.com · Lunch Friday?", count: 1)],
           "one line per sender and subject, no brackets, prefix as a tag: \(collapsed)")
     let messyDetail = BriefDetail.mail(needing: messy, ready: true)
     check(messyDetail.lines.map(\.text) == ["John Morada · Dublin Community Office Hours ×3", "sam@example.com · Lunch Friday?",
                                             "2 private emails not shown"] && messyDetail.lines[1].leading == "Re"
+          && messyDetail.lines[0].leading == "Canceled"
           && !messyDetail.lines.contains { $0.text.contains("Private details omitted") || $0.text.contains("<") },
           "mail details: ×N, a muted tag, and private subjects counted, never shown: \(messyDetail.lines.map(\.text))")
+    check(collapsed[0].rowLine == "Canceled: John Morada · Dublin Community Office Hours ×3" && collapsed[1].rowLine == collapsed[1].line,
+          "a cancellation stays visible in the row, which has no tag column")
     check(BriefMail.splitPrefix("Updated invitation: Standup") == ("Updated", "Standup")
           && BriefMail.splitPrefix("Re:") == ("Re", "Re:") && BriefMail.splitPrefix("Note: bring IDs") == ("", "Note: bring IDs"),
           "only known prefixes become tags")

@@ -262,6 +262,8 @@ enum BriefMail {
         let text: String
         let count: Int
         var line: String { count > 1 ? "\(text) ×\(count)" : text }
+        /// For the row, which has no tag column: a change of plan stays visible.
+        var rowLine: String { BriefMail.changeTags.contains(tag) ? "\(tag): \(line)" : line }
     }
 
     /// Mail worth describing: no placeholders, newsletters, promos or redacted
@@ -304,6 +306,9 @@ enum BriefMail {
         return text
     }
 
+    /// Tags that change what the email means, so they win when repeats collapse.
+    static let changeTags: Set<String> = ["Canceled", "Declined", "Updated"]
+
     static let prefixes: [(match: String, tag: String)] = [
         ("re", "Re"), ("fwd", "Fwd"), ("fw", "Fwd"), ("canceled", "Canceled"), ("cancelled", "Canceled"),
         ("canceled event", "Canceled"), ("updated invitation", "Updated"), ("invitation", "Invite"),
@@ -331,7 +336,10 @@ enum BriefMail {
         for need in important(needs) {
             let (key, line) = describing(need)
             if let key, let at = index[key] {
-                out[at] = Shown(tag: out[at].tag, text: out[at].text, count: out[at].count + 1)
+                // A cancellation (or decline, or update) must not hide behind its original.
+                let tag = changeTags.contains(line.tag) && !changeTags.contains(out[at].tag) ? line.tag
+                    : out[at].tag.isEmpty ? line.tag : out[at].tag
+                out[at] = Shown(tag: tag, text: out[at].text, count: out[at].count + 1)
                 continue
             }
             if let key { index[key] = out.count }

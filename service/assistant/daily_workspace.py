@@ -135,11 +135,13 @@ def email_record_id(row):
 def display_name(sender, address=""):
     """A sender as a person reads it: "John Morada", never "John Morada <j@x.com>"
     or a bracketed address. A bare address stays when there is no name."""
-    text = clean(sender, 200)
-    name = clean(re.sub(r"<[^>]*>", "", text).strip().strip('"\'').strip(), 80)
+    text = re.sub(r"\s+", " ", str(sender or "")).strip()
+    # Brackets go before any truncation, an unterminated "<addr" too, so no
+    # fragment of an address is left in the name.
+    name = clean(re.sub(r"<[^>]*(?:>|$)", "", text).strip().strip('"\'').strip(), 80)
     if name:
         return name
-    inner = re.search(r"<([^>]+)>", text)
+    inner = re.search(r"<([^>]+)>?", text)
     return clean(inner.group(1) if inner else address, 80)
 
 
@@ -660,8 +662,9 @@ def collect_evidence(store, state, day, timezone, *, now):
         blocked = None
         if not ready and messages_sync_state() == "unavailable":
             from service.tools.imessage_tools import messages_unavailable_reason
-            reason = messages_unavailable_reason().casefold()
-            if "full disk access" in reason or "not readable" in reason:
+            # Only the reader's Full Disk Access wording: another chat.db failure
+            # (a missing file) must not send the user to the wrong setting.
+            if "full disk access" in messages_unavailable_reason().casefold():
                 blocked = "full_disk_access"
         skipped = message_coverage.get("skipped", 0)
         result["messages"] = dict(ready=ready, records=records, inspected=min(100, len(rows)),

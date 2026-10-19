@@ -369,6 +369,8 @@ def test_communication_items_carry_who_and_when_never_more(cached_sources, monke
     ("<john@example.edu>", "", "john@example.edu"),
     ("", "john@example.edu", "john@example.edu"),
     ("Prof. Lee", "lee@school.edu", "Prof. Lee"),
+    ("A Very Long Department Name " * 8 + "<dept@example.edu", "", ("A Very Long Department Name " * 8).strip()[:80]),
+    ("<dept@example.edu", "", "dept@example.edu"),
 ])
 def test_senders_show_a_display_name_never_an_address_in_brackets(sender, address, shown):
     from service.assistant.daily_workspace import display_name
@@ -383,7 +385,7 @@ def test_messages_without_full_disk_access_say_so(cached_sources, monkeypatch):
     assert evidence["blocked"] == "full_disk_access" and evidence["detail"] == "Messages need Full Disk Access."
     coverage = {c["source"]: c for c in run(e={"messages": evidence})["source_coverage"]}
     assert coverage["messages"]["blocked"] == "full_disk_access" and not coverage["messages"]["ready"]
-    monkeypatch.setattr(messages, "messages_unavailable_reason", lambda: "Messages read timed out")
+    monkeypatch.setattr(messages, "messages_unavailable_reason", lambda: "chat.db not readable")
     other = collect_evidence(store, state(), DAY, ZONE, now=NOW)["messages"]
     assert "blocked" not in other and "blocked" not in {c["source"]: c for c in run(e={"messages": other})["source_coverage"]}["messages"]
 

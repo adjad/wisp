@@ -23,6 +23,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(G, "_PATH", Path(tmp_path) / "cache" / "mail_gists.json")
     monkeypatch.setattr(G, "_cache", None)
     monkeypatch.setattr(G, "_next_call_at", 0.0)
+    monkeypatch.setattr(G, "_attempts", {})
     return tmp_path
 
 
@@ -279,3 +280,22 @@ def test_day_planning_never_imports_the_gist_writer():
     names = {alias.name for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
              for alias in node.names} | {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     assert "mail_gists" not in names and "service.assistant.mail_gists" not in names
+
+
+def test_an_email_that_keeps_failing_is_given_up_on(isolated, monkeypatch):
+    """A long email the thinking model can't finish isn't retried every 15 minutes forever."""
+    monkeypatch.setattr(G, "_attempts", {})
+    monkeypatch.setattr(G, "important_emails", lambda now=None: [email(1)])
+    calls = []
+
+    async def synth(system, material):
+        calls.append(material)
+        raise TimeoutError
+
+    asyncio.run(G.refresh(100.0, synth=synth, abort=lambda: False))
+    assert "email:1" not in G._load() and G._attempts == {"email:1": 1}
+    monkeypatch.setattr(G, "_next_call_at", 0.0)
+    asyncio.run(G.refresh(200.0, synth=synth, abort=lambda: False))
+    assert G._load()["email:1"] == {"gist": "", "at": 200.0} and G._attempts == {}
+    monkeypatch.setattr(G, "_next_call_at", 0.0)
+    assert asyncio.run(G.refresh(300.0, synth=synth, abort=lambda: False)) == 0 and len(calls) == 2

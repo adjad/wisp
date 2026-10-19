@@ -53,6 +53,12 @@ _FAILURE_GAP_S = 900
 _MAX_GIST_CHARS = 100
 _EXCERPT_CHARS = 400
 
+# A call that fails (timeout, cut off, unusable) counts against each email in
+# it; after `_MAX_ATTEMPTS` the email is recorded without a gist and shows its
+# subject, so a long email can't take the model's time every 15 minutes.
+_MAX_ATTEMPTS = 2
+_attempts: dict[str, int] = {}
+
 _cache: dict[str, dict] | None = None
 _next_call_at = 0.0
 _task: asyncio.Task | None = None
@@ -253,6 +259,18 @@ async def _resident_reply(system: str, material: str, abort, *, count: int) -> s
     return content
 
 
+def _count_failure(pending: list[dict], now: float) -> None:
+    gave_up = False
+    for candidate in pending:
+        _attempts[candidate["id"]] = _attempts.get(candidate["id"], 0) + 1
+        if _attempts[candidate["id"]] >= _MAX_ATTEMPTS:
+            _load()[candidate["id"]] = {"gist": "", "at": now}
+            _attempts.pop(candidate["id"], None)
+            gave_up = True
+    if gave_up:
+        _save(now)
+
+
 async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
     """Write gists for the important emails that have none. Returns how many."""
     global _next_call_at
@@ -283,6 +301,7 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
     except Exception:  # noqa: BLE001 — a missing gist falls back to the subject
         _next_call_at = now + _FAILURE_GAP_S
         traceback.print_exc()
+        _count_failure(pending, now)
         return 0
     if text is None:
         _next_call_at = now + _IDLE_GAP_S
@@ -292,6 +311,7 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
         # An unusable reply (cut off, a think leak, no numbered lines) is a
         # failure, not an answer: nothing is cached, and it tries again later.
         _next_call_at = now + _FAILURE_GAP_S
+        _count_failure(pending, now)
         return 0
     written = 0
     for index, candidate in enumerate(pending, 1):

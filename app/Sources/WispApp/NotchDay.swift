@@ -442,7 +442,7 @@ struct DayTimeline: Equatable {
             let shown = BriefMail.shown(mail.needing)
             let promos = BriefMail.bulkCount(mail.needing)
             let hidden = BriefMail.privateCount(mail.needing)
-            let text = shown.first?.line
+            let text = shown.first?.rowLine
                 ?? (hidden > 0 ? "\(hidden) private email\(hidden == 1 ? "" : "s") not shown" : "Nothing needs a reply")
             // Say when more mail or promos were left out, so a hidden email is never silent.
             let trailing = shown.count > 1 ? "+\(shown.count - 1) more"
