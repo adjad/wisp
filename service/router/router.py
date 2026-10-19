@@ -945,10 +945,18 @@ _TOMORROW_AGENDA_RE = re.compile(
     r"(?:for\s+)?" + _TOMORROW_WORD + r"[\s.!?]*$",
     re.I,
 )
+# "what should I get ready for tomorrow" is the same question as "what do I
+# need to do tomorrow". VERIFIED FAILURE 2026-10-19: it matched no rule, fell
+# to the retrieved menu without get_upcoming, and the model's get_upcoming call
+# was refused, so Wisp said it couldn't read tomorrow's calendar.
+_PREPARE_VERB = r"(?:get\s+ready|prepare|prep|be\s+ready)"
+_PREPARE_ASK = (r"what\s+(?:should|do|must)\s+i\s+(?:(?:need|have)\s+to\s+)?"
+                + _PREPARE_VERB)
 _TOMORROW_TODO_RE = re.compile(
     r"^" + _PRIVATE_QUERY_PREFIX
     + r"(?:what\s+do\s+i\s+(?:have|need)\s+to\s+do|"
-    r"what(?:'s|\s+is)\s+on\s+(?:my\s+)?(?:to[-\s]?do|do)\s+list)\s+"
+    r"what(?:'s|\s+is)\s+on\s+(?:my\s+)?(?:to[-\s]?do|do)\s+list|"
+    + _PREPARE_ASK + r")\s+"
     r"(?:for\s+)?" + _TOMORROW_WORD + r"[\s.!?]*$",
     re.I,
 )
@@ -1626,7 +1634,12 @@ _TODO_RE = re.compile(
     r"\banything\s+i\s+(?:need\s+to|have\s+to|should)\b|"
     # "anything I'm supposed to remember?" — outstanding items, not a fact query.
     r"\b(?:anything|what)\s+(?:am\s+i|i(?:'m|\s+am))\s+(?:supposed|meant)\s+to\b|"
-    r"\bwhat\s+should\s+i\s+(?:do|work\s+on|tackle|prioriti[sz]e)\b", re.I)
+    r"\bwhat\s+should\s+i\s+(?:do|work\s+on|tackle|prioriti[sz]e)\b|"
+    # Preparing for a named day reads that day's commitments; preparing for
+    # an interview or a trip is advice and keeps its own route.
+    r"\b" + _PREPARE_ASK + r"\s+for\s+(?:" + _TOMORROW_WORD + r"|today|tonight|"
+    r"(?:this|next)\s+(?:week|weekend|morning|afternoon|evening)|"
+    r"(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b", re.I)
 
 # "what's new / anything I missed / catch me up" — a RECENCY question, answered
 # by get_recent_activity's cross-app feed (see tools/recent_tools).
@@ -3028,6 +3041,9 @@ _EDIT_OTHER_ACTION_RE = re.compile(
     r"(?:\b(?:and|then|also)\b|[,;])\s+(?:(?:then|also|please)\s+)*"
     r"(?:e-?mail|text|message|tell|notify|send|remind|add|create|schedule|call|forward|dm|let|ask|"
     r"open|search|look|check|find|show)\b", re.I)
+_AGENDA_COUNTS_RE = re.compile(
+    r"[^\n:]{1,40}:\s+(?P<events>\d+|no)\s+events?"
+    r"(?:,\s+(?P<reminders>\d+|no)\s+reminders?)?[ \t]*(?:\n|$)", re.I)
 _EDIT_BARE_CANCEL_RE = re.compile(
     rf"\b{_EDIT_VERB}\s+{_EDIT_NTH}\s*(?:please|for\s+me|now|thanks)?\s*[.!?]*\s*$", re.I)
 
@@ -3051,8 +3067,14 @@ def _edit_reference_subset(text: str, last_assistant: str | None,
     events = reminders = None
     counts = re.search(r"Calendar events?:\s*(\d+);\s*(?:Wisp/Apple\s+)?reminders?:\s*(\d+)",
                        last_assistant or "", re.I)
+    # get_upcoming's agenda states its counts in words on its first line
+    # ("This week: 9 events, no reminders", "Tomorrow: 1 event, 2 reminders").
+    agenda = _AGENDA_COUNTS_RE.match((last_assistant or "").lstrip())
     if counts:
         events, reminders = int(counts.group(1)), int(counts.group(2))
+    elif agenda:
+        number = lambda value: 0 if not value or value.lower() == "no" else int(value)
+        events, reminders = number(agenda.group("events")), number(agenda.group("reminders"))
     elif any(tool in last_tools for tool in ("add_calendar_event", "update_event")):
         events, reminders = 1, 0
     elif any(tool in last_tools for tool in ("add_reminder", "update_reminder", "search_reminders")):

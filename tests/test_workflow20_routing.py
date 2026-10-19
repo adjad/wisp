@@ -527,11 +527,14 @@ def test_agenda_preserves_both_dst_fold_offsets(monkeypatch):
     time.tzset()
     try:
         rows = []
+        # Asked in October (PDT): the zone is shown only where it differs.
+        now = dt.datetime(2026, 10, 19, 9, tzinfo=ZoneInfo("America/Los_Angeles")).timestamp()
         for fold in (0, 1):
             when = dt.datetime(2026, 11, 1, 1, 30, tzinfo=ZoneInfo("America/Los_Angeles"), fold=fold)
-            rows.append(_agenda_item({"title": "Synthetic event", "when_ts": when.timestamp(), "source": "calendar"}))
-        assert "1:30 AM PDT-0700" in rows[0]
-        assert "1:30 AM PST-0800" in rows[1]
+            rows.append(_agenda_item({"title": "Synthetic event", "when_ts": when.timestamp(), "source": "calendar"},
+                                     now=now))
+        assert "**1:30 AM** —" in rows[0]
+        assert "**1:30 AM PST** —" in rows[1]
         assert rows[0] != rows[1]
     finally:
         monkeypatch.undo()
