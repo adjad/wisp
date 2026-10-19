@@ -383,6 +383,23 @@ async def test_a_non_organizer_or_unknown_organizer_is_refused(store, bridge, in
     assert "error" in assistant_tools.prepare_event_move({"title": "design review", "when_iso": _iso(start + HOUR)})
 
 
+async def test_a_read_only_calendar_is_refused_before_any_card(store, bridge):
+    """A subscribed course calendar (calendar_writable False): Ask refuses the move up
+    front, with the same read-only wording as the Day card, so no confirmation card is
+    shown for a write the app would refuse. Unknown (older app) is not read-only."""
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "STAT 5-02 Office Hours", start, organizer_is_user=True, calendar_writable=False),
+              _event("ek-2", "Dentist", start + HOUR, organizer_is_user=True))
+    target = store.calendar_move_target("stat 5-02", now=start - HOUR)
+    assert target["row"]["calendar_writable"] == 0
+    assert store.calendar_move_target("dentist", now=start - HOUR)["row"]["calendar_writable"] is None
+    result = await _move("stat 5-02 office hours", _iso(start + 2 * HOUR))
+    assert "read-only calendar" in result and "Nothing was moved" in result and bridge == []
+    plan = assistant_tools.prepare_event_move({"title": "stat 5-02 office hours", "when_iso": _iso(start + 2 * HOUR)})
+    assert "error" in plan and "read-only calendar" in plan["error"]
+    assert "error" not in assistant_tools.event_move_plan("dentist", _iso(start + 3 * HOUR), now=start - HOUR)
+
+
 async def test_an_event_synced_without_invitee_data_is_refused(store, bridge):
     start = _top_of_hour(26)
     event = _event("ek-1", "Dentist", start)

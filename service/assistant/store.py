@@ -1552,9 +1552,10 @@ class AssistantStore:
         with self._lock:
             rows = [dict(r) for r in self._db.execute(
                 "SELECT c.id,c.source_id,c.title,c.when_ts,c.location,e.end_ts,"
-                "i.invitee_count,i.organizer_is_user FROM commitments c "
+                "i.invitee_count,i.organizer_is_user,w.writable AS calendar_writable FROM commitments c "
                 "LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
                 "LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
+                "LEFT JOIN calendar_event_writable w ON w.commitment_id=c.id "
                 "WHERE c.source='calendar' AND c.status='active' AND c.source_id IS NOT NULL "
                 "AND c.source_id<>'' AND COALESCE(e.end_ts, c.when_ts) > ? "
                 "ORDER BY c.when_ts, c.source_id", (now,)).fetchall()]
