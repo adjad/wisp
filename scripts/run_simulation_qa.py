@@ -523,6 +523,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/backend-trust-contract": "native/backend-trust-compile",
     "native/reminders-policy-contract": "native/reminders-policy-compile",
     "native/calendar-move-contract": "native/calendar-move-compile",
+    "native/checkin-cancel-contract": "native/checkin-cancel-compile",
     "native/chat-logic-contract": "native/chat-logic-compile",
     "native/chat-store-contract": "native/chat-store-compile",
     "native/notch-command-contract": "native/notch-command-compile",
@@ -809,6 +810,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     chat_store = str(build_dir / "chat-store")
     reminders_policy = str(build_dir / "reminders-policy")
     calendar_move = str(build_dir / "calendar-move")
+    checkin_cancel = str(build_dir / "checkin-cancel")
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
     backend_trust = str(build_dir / "backend-trust")
@@ -982,6 +984,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/calendar-move-contract", [calendar_move]),
+        (
+            "native/checkin-cancel-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/CheckInCancel.swift",
+                "tests/CheckInCancelChecks.swift", "-o", checkin_cancel,
+            ],
+        ),
+        ("native/checkin-cancel-contract", [checkin_cancel]),
         (
             "native/settings-response-compile",
             [
