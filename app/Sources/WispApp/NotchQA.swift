@@ -155,9 +155,9 @@ enum NotchQADriver {
                     need("club", "calendar", "UCSC startup club, E2-506", due: 24 * 4 + 18),
                     need("essay", "reminders", "Essay outline", due: 24 * 4 + 18),
                     need("draft", "email", "Can you review my draft?", due: nil,
-                         extra: ["sender": "Jordan Kim", "person": true, "received_ts": at(11)])
+                         extra: ["sender": "Jordan Kim", "person": true, "received_ts": at(11)]),
                     need("thesis", "email", "Thesis meeting", due: nil,
-                         extra: ["sender": "Prof. Lee", "person": true, "received_ts": at(12.2)])
+                         extra: ["sender": "Prof. Lee", "person": true, "received_ts": at(12.2)]),
                     need("office-1", "email", "Dublin Community Office Hours", due: nil,
                          extra: ["sender": "John Morada <john@example.edu>", "person": true, "received_ts": at(10.5)]),
                     need("office-2", "email", "Canceled: Dublin Community Office Hours", due: nil,
