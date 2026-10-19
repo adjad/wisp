@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 import json
+import logging
+import math
 import os
 import threading
 import time
@@ -31,6 +33,8 @@ from zoneinfo import ZoneInfo
 
 from service.assistant.stale_reminders import ASK_AFTER_S, DAY_S, EXCLUDED_STATES, valid_created_ts
 from service.paths import MOE_DIR
+
+_log = logging.getLogger(__name__)
 
 STATE_PATH = MOE_DIR / "checkins.json"
 # The evening check-in becomes due at this local hour. Earlier, the day is not
@@ -352,6 +356,150 @@ def aged_out_today(day: str) -> list[dict]:
 
 def carried_today(day: str) -> list[dict]:
     return list(day_record(day).get("carried") or [])
+
+
+# ---------------------------------------------------------------------------
+# Moving an event: where else it could go
+
+
+SUGGESTION_GRID_S = 15 * 60       # candidate starts sit on quarter hours
+SUGGESTION_DAYS = 3               # the event's day and the two after it
+SUGGESTION_LIMIT = 3
+
+
+def _weekday(ts: float, timezone: str) -> str:
+    return datetime.fromtimestamp(ts, ZoneInfo(timezone)).strftime("%A")
+
+
+def _clock(ts: float, timezone: str) -> str:
+    return datetime.fromtimestamp(ts, ZoneInfo(timezone)).strftime("%-I:%M %p")
+
+
+def _ceil_grid(ts: float) -> float:
+    return float(math.ceil(ts / SUGGESTION_GRID_S) * SUGGESTION_GRID_S)
+
+
+def find_event(store, event_id: str, day: str, timezone: str) -> dict | None:
+    """The calendar event the check-in showed, by id or source id, on `day`."""
+    from service.assistant.today import day_bounds
+    lo, hi = day_bounds(day, timezone)
+    for event in store.calendar_events_overlapping(lo, hi):
+        if event.get("status", "active") != "active":
+            continue
+        if event_id in (event.get("id"), event.get("source_id")):
+            return event
+    return None
+
+
+def move_suggestions(store, event: dict, timezone: str, *, now: float, behavior=None,
+                     days: int = SUGGESTION_DAYS, limit: int = SUGGESTION_LIMIT) -> dict:
+    """Up to `limit` other times for `event`, found the way the Day tab plans:
+    free time inside working hours on the event's day and the next `days - 1`
+    days, around calendar events, planned tasks and the learned "likely busy"
+    and "possible time away" windows (service/assistant/daily_workspace.py).
+    Deterministic, read-only, no model call; the agent still confirms any move.
+
+    `behavior` is an optional callable(day) -> availability snapshot, the same
+    public contract the Day tab's workspace uses."""
+    from service.assistant import daily_workspace as daily
+    from service.assistant.today import day_bounds, wall_time
+    start = event.get("when_ts")
+    if start is None or not math.isfinite(start):
+        return {"event": _event_summary(event, timezone), "suggestions": [], "reason": "This event has no start time to move from."}
+    end = event.get("end_ts")
+    duration = (end - start) if isinstance(end, (int, float)) and math.isfinite(end) and end > start else 3600.0
+    event_day = local_day(start, timezone)
+    start_local = datetime.fromtimestamp(start, ZoneInfo(timezone))
+    start_minute = start_local.hour * 60 + start_local.minute
+    suggestions: list[dict] = []
+    seen: set[float] = set()
+
+    def add(slot_start: float, reason: str) -> None:
+        if slot_start in seen or len(suggestions) >= limit:
+            return
+        seen.add(slot_start)
+        suggestions.append({"start_ts": slot_start, "end_ts": slot_start + duration,
+                            "day": local_day(slot_start, timezone), "reason": reason,
+                            "label": _weekday(slot_start, timezone) + " " + _clock(slot_start, timezone)})
+
+    for offset in range(max(1, days)):
+        day = (date.fromisoformat(event_day) + timedelta(days=offset)).isoformat()
+        lo, hi = day_bounds(day, timezone)
+        try:
+            plan = daily.workspace(store, day, timezone, now=now,
+                                   behavior=behavior(day) if behavior else None)["proposed_plan"]
+        except Exception as exc:  # noqa: BLE001 — the saved plan still answers when a source is away
+            _log.info("move_suggestions: workspace unavailable for %s (%s); using the saved plan", day, exc)
+            from service.assistant.today import build_plan
+            state = store.today_snapshot(day, timezone)
+            plan = build_plan(day, timezone, state["tasks"], state["commitments"], state["preferences"],
+                              state["sources"], now=now)
+        prefs = plan["preferences"]
+        # Wall-clock minutes, not seconds from midnight: a DST day is 23 or 25 hours long.
+        try:
+            work_lo = wall_time(day, timezone, prefs["start_minute"])
+            work_hi = wall_time(day, timezone, prefs["end_minute"])
+        except ValueError:                     # working hours fall in the DST gap: skip the day
+            continue
+        try:
+            same_time = wall_time(day, timezone, start_minute) if offset else None
+        except ValueError:                     # the event's own minute is ambiguous that day
+            same_time = None
+        occupied = []
+        for block in plan["blocks"]:
+            if block.get("id") == event.get("id") or (block.get("start") == start and block.get("title") == event.get("title")):
+                continue                      # the event being moved does not block itself
+            b_start = block.get("start")
+            if b_start is None or not math.isfinite(b_start):
+                continue
+            b_end = block.get("end")
+            if b_end is None or not math.isfinite(b_end) or b_end <= b_start:
+                b_end = b_start + 3600
+            occupied.append((max(lo, b_start), min(hi, b_end)))
+        earliest = max(work_lo, _ceil_grid(now + 5 * 60))
+        free = [(a, b) for a, b in daily._remaining(earliest, work_hi, occupied) if b - a >= duration]
+
+        def fits(candidate: float) -> bool:
+            return any(a <= candidate and candidate + duration <= b for a, b in free)
+
+        def first_after(point: float) -> float | None:
+            for a, b in free:
+                c = _ceil_grid(max(a, point))
+                if c + duration <= b:
+                    return c
+            return None
+
+        weekday = _weekday(lo, timezone)
+        if offset == 0:
+            later = first_after(start + duration)
+            if later is not None:
+                before = [b for b in plan["blocks"] if finite_end(b) and finite_end(b) <= later]
+                before.sort(key=finite_end)
+                reason = (f"Later that day, after {before[-1]['title']}" if before and later - finite_end(before[-1]) < 3600
+                          else "Later that day")
+                add(later, reason)
+        else:
+            if same_time is not None and fits(same_time):
+                add(same_time, f"Same time {weekday}")
+            first = first_after(work_lo)
+            if first is not None:
+                add(first, f"First free slot {weekday}")
+        if len(suggestions) >= limit:
+            break
+    return {"event": _event_summary(event, timezone), "duration_minutes": int(duration // 60),
+            "suggestions": suggestions[:limit]}
+
+
+def finite_end(block: dict) -> float | None:
+    end = block.get("end")
+    return end if isinstance(end, (int, float)) and math.isfinite(end) else None
+
+
+def _event_summary(event: dict, timezone: str) -> dict:
+    start = event.get("when_ts")
+    return {"id": event.get("id"), "source_id": event.get("source_id"), "title": event.get("title") or "Untitled event",
+            "when_ts": start, "end_ts": event.get("end_ts"),
+            "label": (_weekday(start, timezone) + " " + _clock(start, timezone)) if isinstance(start, (int, float)) and math.isfinite(start) else None}
 
 
 # ---------------------------------------------------------------------------
