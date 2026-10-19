@@ -124,7 +124,7 @@ final class CalendarReader {
             }
             // For moves: an event with invitees may be moved only by its organizer
             // (CalendarMove.refusal). No organizer_is_user key means "unknown".
-            row["invitee_count"] = ev.attendees?.count ?? 0
+            row["invitee_count"] = Self.inviteeCount(ev)
             if let o = ev.organizer { row["organizer_is_user"] = o.isCurrentUser }
             // `source` is the ACCOUNT this calendar belongs to (e.g. "iCloud",
             // or a Google account's own label) — distinct from `context`
@@ -280,7 +280,7 @@ final class CalendarReader {
         let startTaken = abs(newStart - expectedStart) >= 1 && occurrence(identifier, at: newStart) != nil
         if let reason = CalendarMove.refusal(before, expectedTitle: expectedTitle, expectedStart: expectedStart,
                                               calendarWritable: ev.calendar?.allowsContentModifications ?? false,
-                                              invitees: ev.attendees?.count ?? 0, expectedInvitees: expectedInvitees,
+                                              invitees: Self.inviteeCount(ev), expectedInvitees: expectedInvitees,
                                               organizerIsUser: ev.organizer?.isCurrentUser, startTaken: startTaken) {
             return ["ok": false, "error": reason]
         }
@@ -297,6 +297,12 @@ final class CalendarReader {
         let readBack = occurrence(identifier, at: newStart) ?? (ev.refresh() ? ev : nil)
         return CalendarMove.savedResult(before: before, after: readBack.map(Self.facts),
                                         newStart: newStart, newEnd: newEnd)
+    }
+
+    /// Attendees other than the user: who a move would notify. EventKit's list often
+    /// includes the user (as organizer), which must not be counted as an invitee.
+    static func inviteeCount(_ ev: EKEvent) -> Int {
+        (ev.attendees ?? []).filter { !$0.isCurrentUser }.count
     }
 
     /// The occurrence of `identifier` starting at `ts` (to the second), or nil.
