@@ -7302,6 +7302,7 @@ def _knowledge_request(text: str) -> RouteDecision | None:
     tools, bindings = list(envelope.tools), envelope.bindings
     decision = _mk_scoped(tools, 'explicit Wisp knowledge request', light=tools == ['read_knowledge'],
                           expect=False, multi=len(tools) > 1)
+    decision.needs_tools = bool(tools)
     from service.tools.registry import REGISTRY
     decision.forbidden_tools = frozenset(set(REGISTRY) - set(tools))
     decision.tool_argument_bindings = bindings
@@ -7652,12 +7653,19 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
         return decision
     policy_text = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
     remainder, excluded = _private_read_policy(policy_text)
-    if excluded and knowledge_envelope(remainder) is not None:
+    policy_prefix = re.match(r'^' + _PRIVATE_SOURCE_DENIAL_TEXT + r'(?=$|[\s,;])', policy_text, re.I)
+    prefixed_knowledge = False
+    if policy_prefix:
+        tail = policy_text[policy_prefix.end():].lstrip(' ,;')
+        tail = re.sub(r'^(?:and|but)\s+', '', tail, flags=re.I)
+        prefixed_knowledge = knowledge_envelope(tail) is not None
+    if prefixed_knowledge or (excluded and knowledge_envelope(remainder) is not None):
         # The whole-request knowledge grammar did not authorize this compound
         # instruction. Do not let retrieval turn its source restriction into
         # unrelated private reads or grant a partial knowledge action.
         from service.tools.registry import REGISTRY
-        clarification = _mk_scoped([], 'clarify source policy and knowledge request')
+        clarification = _mk('general', reason='clarify source policy and knowledge request')
+        clarification.tool_subset = []
         clarification.forbidden_tools = frozenset(REGISTRY)
         clarification.resolved_request = text + (
             '\n\nNo action or private read has happened. Clarify the complete '

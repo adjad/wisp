@@ -147,12 +147,49 @@ async def test_knowledge_literal_fields_cannot_change_source_policy(prompt, tool
     "Don't read email;", 'Without reading my inbox,',
     'Without reading my messages,', "Don't read reminders;",
     'Without reading my calendar,', "Don't read notes;",
+    'Without reading my inbox', 'Without reading my inbox and',
+    'Without reading my inbox but', "Don't read my messages and",
 ])
 async def test_actual_source_denial_before_knowledge_looking_text_does_not_gain_authority(prefix):
     d = await R.route(prefix + " save a knowledge note titled Project:\nLiteral text.")
     assert not d.tool_subset and not d.direct_calls
+    assert not d.needs_tools and not d.expect_tool_first
     assert not d.force_first_tool and not d.required_tool_groups
     assert {'view_emails', 'view_messages', 'search_notes', 'save_knowledge', 'run_shell'} <= d.forbidden_tools
+
+
+@pytest.mark.asyncio
+async def test_unsupported_knowledge_compound_accepts_first_clarification(monkeypatch):
+    from service.agent import loop
+
+    class Client:
+        def __init__(self):
+            self.requests = []
+
+        async def ensure_only(self, *args, **kwargs):
+            pass
+
+        async def stream_events(self, model, messages, **kwargs):
+            self.requests.append(kwargs)
+            yield {'kind': 'final', 'message': {'role': 'assistant', 'content':
+                'Please provide the complete knowledge note instruction, keeping the inbox restriction.'}}
+
+    async def emit(_event):
+        pass
+
+    execute = AsyncMock(side_effect=AssertionError('clarification must not execute tools'))
+    monkeypatch.setattr(loop, 'run_tool', execute)
+    d = await R.route('Without reading my inbox, save a knowledge note titled Project:\nLiteral text.')
+    client = Client()
+    answer = await loop.run_agent(client, 'Agents-A1-4B-oQe6',
+        [{'role': 'user', 'content': d.resolved_request}], emit, AsyncMock(),
+        tools=d.tool_subset, direct_calls=d.direct_calls, expect_tool_first=d.expect_tool_first,
+        required_tool_groups=d.required_tool_groups, forbidden_tools=d.forbidden_tools,
+        include_memory_context=False, debug=False, max_steps=3)
+    assert answer.startswith('Please provide the complete knowledge note instruction')
+    assert len(client.requests) == 1
+    assert client.requests[0]['tool_choice'] == 'auto'
+    execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
