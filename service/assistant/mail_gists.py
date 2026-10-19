@@ -141,7 +141,9 @@ def important_emails(now: float | None = None) -> list[dict]:
     from service.tools.imessage_tools import redact_summary_codes
     snapshot = raw_email_snapshot()
     if snapshot is None:
-        return []
+        # No complete snapshot (one account failed to read): use the same fresh
+        # headers the day's evidence uses, so gists cover the emails shown.
+        return _header_emails(now)
     out = []
     for row, _lines in important_email_rows(snapshot):
         fields = _sender_fields(row)
@@ -155,6 +157,39 @@ def important_emails(now: float | None = None) -> list[dict]:
                         ts=fields["received_ts"] or 0.0))
     out.sort(key=lambda c: (not c["person"], -c["ts"]))
     return out
+
+
+def _header_emails(now: float | None) -> list[dict]:
+    from service.assistant.daily_workspace import fresh_header_rows, header_record_id, _sender_fields
+    from service.tools import email_tools as mail
+    from service.tools.email_tools import digest_category, _MARKETING_SUBJECT
+    from service.tools.imessage_tools import redact_summary_codes
+    if not callable(getattr(mail, "email_source_details", None)):
+        return []
+    rows, _eligible = fresh_header_rows(mail, time.time() if now is None else now)
+    out = []
+    for row in rows[:200]:
+        if digest_category(row) not in {"attention", "school"}:
+            continue
+        fields = _sender_fields(row)
+        subject = redact_summary_codes(str(row.get("subject") or ""))
+        if not fields["person"] and _MARKETING_SUBJECT.search(subject):
+            continue
+        out.append(dict(id=header_record_id(row, subject), sender=fields["sender"] or "Unknown sender",
+                        subject=subject, excerpt="", person=fields["person"], ts=fields["received_ts"] or 0.0))
+    out.sort(key=lambda c: (not c["person"], -c["ts"]))
+    return out
+
+
+_last_standdown = ""
+
+
+def _stood_down(reason: str) -> None:
+    """One log line when a tick stands down for a new reason."""
+    global _last_standdown
+    if reason != _last_standdown:
+        _last_standdown = reason
+        print(f"[mail_gists] standing down: {reason}", flush=True)
 
 
 def material(candidates: list[dict]) -> str:
@@ -285,6 +320,7 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
         size = _MAX_PER_CALL
     pending = [c for c in important_emails(now) if c["id"] not in cache][:size]
     if not pending or abort():
+        _stood_down("no emails without a gist" if not pending else "a turn is in progress")
         # Nothing to write (or someone is waiting): look again a minute from now
         # rather than re-reading the inbox on every scheduler tick.
         _next_call_at = now + _IDLE_GAP_S
@@ -304,6 +340,7 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> int:
         _count_failure(pending, now)
         return 0
     if text is None:
+        _stood_down("the fast model isn't the only resident model, or a turn started")
         _next_call_at = now + _IDLE_GAP_S
         return 0
     lines = parse_reply(text, len(pending))
@@ -337,6 +374,7 @@ def schedule_tick() -> asyncio.Task | None:
     if (_task is not None and not _task.done()) or time.time() < _next_call_at:
         return None
     if idle.foreground_busy() or not hub.has_subscribers:
+        _stood_down("a turn is in progress" if idle.foreground_busy() else "the app isn't connected to the event stream")
         return None
     _task = asyncio.create_task(refresh())
     return _task
