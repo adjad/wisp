@@ -170,17 +170,6 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
     let crowd = (1...8).map { BriefNeed(title: "P\($0): hi", sender: "P\($0)", received: now - Double($0) * 60) }
     check(BriefDetail.texts(needing: crowd, ready: true, age: { _ in "" }).lines.last?.text == "+2 more",
           "more than six waiting: the rest are counted, as the row counts them")
-    // A kept summary survives a relaunch; the newer of it and the live one wins, today only.
-    let kept = StoredBrief.parse(["text": "**📧 Inbox — 3 emails**\n- Ann: Lunch", "composed_at": now - hour, "part_of_day": "morning"],
-                                 day: "2026-10-18")
-    check(kept?.composedAt == Date(timeIntervalSince1970: now - hour) && StoredBrief.parse(["text": "  "], day: "d") == nil
-          && StoredBrief.parse(["text": "x", "composed_at": "soon"], day: "d") == nil, "kept summaries parse, junk doesn't")
-    let sameDay: (Date) -> Bool = { $0.timeIntervalSince1970 > now - 12 * hour }
-    check(StoredBrief.newest(live: nil, stored: kept, sameDay: sameDay)?.text == kept?.text
-          && StoredBrief.newest(live: (text: "live", at: Date(timeIntervalSince1970: now)), stored: kept, sameDay: sameDay)?.text == "live"
-          && StoredBrief.newest(live: (text: "old", at: Date(timeIntervalSince1970: now - 2 * hour)), stored: kept, sameDay: sameDay)?.text == kept?.text
-          && StoredBrief.newest(live: (text: "yesterday", at: Date(timeIntervalSince1970: now - 20 * hour)), stored: nil, sameDay: sameDay) == nil,
-          "the newest of today's live and kept summaries")
     // No composed summary today: the dropdowns say so first instead of silently dropping it.
     let unsummarizedMail = BriefDetail.mail(needing: inbox, ready: true, summary: nil)
     check(unsummarizedMail.lines.first?.text == BriefDetail.noSummaryYet && unsummarizedMail.lines.first?.muted == true

@@ -102,6 +102,29 @@ struct TodayPlan: Decodable {
     var displayWarnings: [String] { workspace?.proposed_plan.warnings ?? warnings }
 }
 
+/// A composed Daily Summary the service kept (`/assistant/daily_summary/latest`),
+/// read again after a relaunch, when the live event and Refresh are gone.
+struct StoredBrief: Equatable {
+    let text: String
+    let composedAt: Date
+    /// The day it was asked for, "yyyy-MM-dd".
+    let day: String
+
+    static func parse(_ obj: [String: Any], day: String) -> StoredBrief? {
+        guard let text = obj["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let at = (obj["composed_at"] as? NSNumber)?.doubleValue, at.isFinite, at > 0 else { return nil }
+        return StoredBrief(text: text, composedAt: Date(timeIntervalSince1970: at), day: day)
+    }
+
+    /// The newer of the brief this launch received and the stored one, among
+    /// those from `day` (per `sameDay`); nil when neither is.
+    static func newest(live: (text: String, at: Date)?, stored: StoredBrief?,
+                       sameDay: (Date) -> Bool) -> (text: String, at: Date)? {
+        let candidates = [live, stored.map { (text: $0.text, at: $0.composedAt) }].compactMap { $0 }.filter { sameDay($0.at) }
+        return candidates.max { $0.at < $1.at }
+    }
+}
+
 @MainActor
 final class TodayModel: ObservableObject {
     // The one problem report about Today, shared by the notch's Day tab and
@@ -313,9 +336,10 @@ final class TodayModel: ObservableObject {
             guard let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let brief = StoredBrief.parse(reply, day: day) else { return }
             storedBrief = brief
-        } catch let error as NSError where error.domain == "Today" && error.code == 404 {
-            storedBrief = nil
-        } catch {}
+        } catch {
+            let failure = error as NSError
+            if failure.domain == "Today", failure.code == 404 { storedBrief = nil }
+        }
     }
 
     func diagnosticSnapshot() -> (metadata: [String: Any], details: [String: Any]?) {
