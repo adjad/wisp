@@ -2884,7 +2884,11 @@ async def run_agent(
         # from memory / says "I can't" instead of calling the obvious tool — this
         # nudge-and-retry corrects that on the first step. This is the fix for
         # "doesn't use its tools when it should".
-        expecting_tool = expect_tool_first and _step == 0 and not forcing_first_step
+        # Router-direct reads already satisfy the first-tool requirement. Do
+        # not discard a grounded answer and demand an unrelated second action.
+        # Unmet groups still force their own tool; failed reads do not count.
+        expecting_tool = (expect_tool_first and _step == 0 and not forcing_first_step
+                          and not tools_answered)
         if forcing_first_step:
             # An obligation group contains alternatives, not an arbitrary
             # mandatory first member (e.g. list_dir vs find_files).

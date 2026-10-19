@@ -961,10 +961,10 @@ _NO_WEB_POLICY_TEXT = (
 )
 _NO_WEB_POLICY_CLAUSE_RE = re.compile(
     r"^(?:please\s+)?" + _NO_WEB_POLICY_TEXT + r"$", re.I)
-_PRIVATE_SOURCE_NAME = r"(?:notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda)"
+_PRIVATE_SOURCE_NAME = r"(?:notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda|reminders?)"
 _PRIVATE_SOURCE_ACTION = r"(?:check(?:ing)?|search(?:ing)?|read(?:ing)?|use|using)"
 _PRIVATE_SOURCE_DENIAL_TEXT = (
-    r"(?:please\s+)?(?:do\s+not|don't|never|avoid)\s+"
+    r"(?:please\s+)?(?:do\s+not|don't|never|avoid|without)\s+"
     + _PRIVATE_SOURCE_ACTION + r"\s+(?:anything\s+(?:from|in)\s+)?(?:my\s+)?" + _PRIVATE_SOURCE_NAME
     + r"(?:\s+(?:or|and)\s+(?:my\s+)?" + _PRIVATE_SOURCE_NAME + r")*"
 )
@@ -992,6 +992,10 @@ def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
         r"^(" + _PRIVATE_SOURCE_DENIAL_TEXT + r")\s+(?:and|but)\s+"
         r"(?=(?:is|what|for|can|could|please)\b)",
         r"\1; ", normalized, flags=re.I)
+    normalized = re.sub(
+        r"\s+(?=without\s+" + _PRIVATE_SOURCE_ACTION + r"\s+"
+        r"(?:my\s+)?" + _PRIVATE_SOURCE_NAME + r"[.!?\s]*$)",
+        "; ", normalized, flags=re.I)
     clauses = [part.strip() for part in re.split(r"\s*[;,]\s*|(?<=[.!?])\s+", normalized)
                if part.strip()]
     body: list[str] = []
@@ -1003,7 +1007,7 @@ def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
             continue
         if _PRIVATE_SOURCE_DENIAL_CLAUSE_RE.fullmatch(probe):
             targets = re.findall(
-                r"\b(notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda)\b",
+                r"\b(notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda|reminders?)\b",
                 probe, re.I)
             if any(target.lower().startswith("note") for target in targets):
                 forbidden.add("search_notes")
@@ -1017,6 +1021,8 @@ def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
             if any(re.fullmatch(r"calendar|schedule|agenda", target, re.I)
                    for target in targets):
                 forbidden.add("get_upcoming")
+            if any(re.fullmatch(r"reminders?", target, re.I) for target in targets):
+                forbidden.add("search_reminders")
             continue
         body.append(probe)
     return " ".join(body).strip(), frozenset(forbidden)
@@ -6438,7 +6444,7 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
             forbidden.add("run_shell")
     if _calendar_is_excluded(t):
         forbidden.update(_CALENDAR_ROUTE_TOOLS)
-    if _reminder_is_excluded(t):
+    if _reminder_is_excluded(t) or "search_reminders" in forbidden:
         forbidden.update(_REMINDER_ROUTE_TOOLS)
         bindings["get_upcoming"] = {"calendar_only": True}
     if _notes_todo_destination_is_excluded(t):
@@ -6464,6 +6470,11 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
         forbidden.update({"daily_brief", "get_recent_activity", "search_browser_history",
                           "run_shell", "run_applescript", "http_request", "create_tool", "use_skill"})
         for tool in registry_specs(REGISTRY):
+            # Calendar and Reminders share a discovery family, but this
+            # built-in reads only Reminders. A Calendar denial cannot erase it.
+            if (tool.name == "search_reminders" and "search_reminders" not in forbidden
+                    and not _reminder_is_excluded(t)):
+                continue
             family = family_for(tool)
             if (family in {"skills", "connected", "other", "files", "memory"}
                     or (family in source_families and tool.category.endswith("read"))):
@@ -7322,7 +7333,7 @@ def _priority_read(text: str) -> RouteDecision | None:
         return None
     tools = list(read.tools)
     excluded = {"email": "view_emails", "messages": "view_messages",
-                "calendar": "get_upcoming", "notes": "search_notes"}
+                "calendar": "get_upcoming", "notes": "search_notes", "reminders": "search_reminders"}
     args = dict(read.bindings["collect_task_evidence"])
     for name, tool in excluded.items():
         if tool in policy_forbidden:
@@ -7634,16 +7645,18 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
     aggregate or opaque tool cannot be an escape around the exclusion.
     """
     policy_text = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
-    _, excluded = _private_read_policy(policy_text)
-    if not excluded:
-        return decision
     forbidden, bindings = routing_guard_contract(text)
     forbidden = set(forbidden)
-    aggregate = decision.tool_argument_bindings.get("collect_task_evidence", {})
+    # The complete guard also recognizes policies outside standalone clauses,
+    # such as "without reading my inbox" and Reminder exclusions.
+    _, excluded = _private_read_policy(policy_text)
     source_tools = {"email": "view_emails", "messages": "view_messages",
-                    "calendar": "get_upcoming", "notes": "search_notes"}
+                    "calendar": "get_upcoming", "notes": "search_notes", "reminders": "search_reminders"}
+    if not (excluded or bindings or forbidden.intersection(source_tools.values())):
+        return decision
+    aggregate = decision.tool_argument_bindings.get("collect_task_evidence", {})
     if aggregate and all(aggregate.get(f"include_{source}") is False
-                         for source, tool in source_tools.items() if tool in excluded):
+                         for source, tool in source_tools.items() if tool in forbidden):
         forbidden.discard("collect_task_evidence")
     decision.forbidden_tools |= frozenset(forbidden)
     blocked = decision.forbidden_tools
@@ -7652,15 +7665,17 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
     elif decision.needs_tools:
         from service.tools.registry import routable_tool_names
         decision.tool_subset = sorted(routable_tool_names() - blocked)
-    decision.direct_calls = [(name, args) for name, args in decision.direct_calls if name not in blocked]
+    decision.direct_calls = [(name, {**args, **bindings.get(name, {})})
+                             for name, args in decision.direct_calls if name not in blocked]
     decision.required_tool_groups = tuple(group - blocked for group in decision.required_tool_groups
                                           if group - blocked)
     decision.narration_after -= blocked
     decision.conditional_tools = tuple(item for item in decision.conditional_tools
                                        if not blocked.intersection(item[:2]))
-    decision.tool_argument_bindings = {name: {**args, **bindings.get(name, {})}
-                                       for name, args in decision.tool_argument_bindings.items()
-                                       if name not in blocked}
+    decision.tool_argument_bindings = {
+        name: {**decision.tool_argument_bindings.get(name, {}), **bindings.get(name, {})}
+        for name in set(decision.tool_argument_bindings) | set(bindings)
+        if name not in blocked and name in (decision.tool_subset or ())}
     if decision.force_first_tool in blocked:
         decision.force_first_tool = None
         decision.expect_tool_first = bool(decision.required_tool_groups)

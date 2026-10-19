@@ -39,7 +39,7 @@ async def test_priority_spelling_does_not_drop_deadline_sources(period):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('source,tool', [('email', 'view_emails'), ('messages', 'view_messages'), ('calendar', 'get_upcoming'), ('notes', 'search_notes')])
+@pytest.mark.parametrize('source,tool', [('email', 'view_emails'), ('messages', 'view_messages'), ('calendar', 'get_upcoming'), ('notes', 'search_notes'), ('reminders', 'search_reminders')])
 @pytest.mark.parametrize('template', ["don't read {source}; what should I do tomorrow?", "what should I do tomorrow; don't read {source}", "don't read {source}, what should I do tomorrow?"])
 async def test_negative_sources_survive_priority_clause_merging(source, tool, template):
     d = await R.route(template.format(source=source))
@@ -50,6 +50,26 @@ async def test_negative_sources_survive_priority_clause_merging(source, tool, te
     assert tool in d.forbidden_tools
     assert {'run_shell', 'run_applescript', 'daily_brief'} <= d.forbidden_tools
     assert set(d.tool_subset) == {'collect_task_evidence'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prompt', [
+    'without reading my inbox, what should I do tomorrow?',
+    'what should I do tomorrow without reading my inbox',
+])
+async def test_without_reading_inbox_keeps_bound_remaining_priority_sources(prompt):
+    d = await R.route(prompt)
+    assert d.direct_calls[0][0] == 'collect_task_evidence'
+    assert d.direct_calls[0][1]['include_email'] is False
+    assert {'view_emails', 'daily_brief', 'run_shell', 'run_applescript'} <= d.forbidden_tools
+
+
+@pytest.mark.asyncio
+async def test_reminder_denial_narrows_existing_agenda_direct_call():
+    d = await R.route("don't read reminders; what is my plan for tomorrow?")
+    assert d.direct_calls == [('get_upcoming', {'period': 'tomorrow', 'calendar_only': True})]
+    assert d.tool_argument_bindings['get_upcoming']['calendar_only'] is True
+    assert 'daily_brief' in d.forbidden_tools
 
 
 @pytest.mark.asyncio
@@ -123,6 +143,45 @@ async def test_excluded_mail_is_never_read_by_bound_collector(monkeypatch):
     payload = json.loads(await T.collect_task_evidence(**d.direct_calls[0][1]))
     assert set(payload['sources']) == {'messages'} and 'email' in payload['excluded_sources']
     mail.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_direct_evidence_read_accepts_first_grounded_answer(monkeypatch):
+    from service.agent import loop
+    from service.tools.registry import REGISTRY
+
+    class Client:
+        def __init__(self):
+            self.requests = []
+
+        async def ensure_only(self, *args, **kwargs):
+            pass
+
+        async def stream_events(self, model, messages, **kwargs):
+            self.requests.append((messages, kwargs))
+            yield {'kind': 'final', 'message': {'role': 'assistant', 'content':
+                'Sam asks for contract comments by tomorrow at 3 PM. The showcase invitations are promotional.'}}
+
+    async def emit(_event):
+        pass
+
+    evidence = json.dumps({'sources': {'email': {'records': [{'sender': 'Sam',
+        'message_id': 'synthetic-request', 'body': 'Please review the contract by tomorrow at 3 PM.'}]}}})
+    execute = AsyncMock(return_value=evidence)
+    monkeypatch.setattr(loop, 'run_tool', execute)
+    d = await R.route('what needs attention on email/messages')
+    client = Client()
+    answer = await loop.run_agent(client, 'Agents-A1-4B-oQe6',
+        [{'role': 'user', 'content': d.resolved_request}], emit, AsyncMock(),
+        tools=d.tool_subset, direct_calls=d.direct_calls, expect_tool_first=d.expect_tool_first,
+        required_tool_groups=d.required_tool_groups, forbidden_tools=d.forbidden_tools,
+        tool_argument_bindings=d.tool_argument_bindings, strict_read_limits=d.strict_read_limits,
+        multi_round=d.multi_round, narration_after=d.narration_after,
+        include_memory_context=False, debug=False, max_steps=3)
+    assert 'Sam asks for contract comments' in answer
+    assert len(client.requests) == 1
+    assert client.requests[0][1]['tool_choice'] == 'auto'
+    execute.assert_awaited_once_with(REGISTRY['collect_task_evidence'], d.direct_calls[0][1])
 
 
 def row(subject='A special invitation for you', sender='Taylor', message='m1', account='a1'):
