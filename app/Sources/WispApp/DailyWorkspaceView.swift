@@ -49,6 +49,8 @@ struct DailyWorkspace: Decodable {
     /// absent from an older service, or for a source that couldn't be read.
     var mail_overview: DailyOverview? = nil
     var texts_overview: DailyOverview? = nil
+    /// The written inbox summary under MAIL: a model's paragraph, or prose built without one.
+    var mail_summary: DailyOverview? = nil
 }
 
 struct DailyOverview: Decodable, Equatable {
