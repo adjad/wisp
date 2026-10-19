@@ -436,6 +436,11 @@ class AssistantStore:
                     revision INTEGER NOT NULL DEFAULT 1, updated_at REAL NOT NULL
                 )""")
                 self._db.execute("CREATE INDEX IF NOT EXISTS idx_today_task_day ON today_tasks(day)")
+                # When the task was first saved; NULL for tasks made before this column.
+                # Only hide_stale_tasks reads it (was it planned after a reminder hid?).
+                task_cols = {r["name"] for r in self._db.execute("PRAGMA table_info(today_tasks)")}
+                if "created_at" not in task_cols:
+                    self._db.execute("ALTER TABLE today_tasks ADD COLUMN created_at REAL")
                 self._db.execute("""CREATE TABLE IF NOT EXISTS today_preferences (
                     day TEXT NOT NULL, timezone TEXT NOT NULL, payload TEXT NOT NULL,
                     revision INTEGER NOT NULL DEFAULT 1,
@@ -1056,10 +1061,12 @@ class AssistantStore:
                     raise ValueError("Task limit reached")
                 task = validate_task({"kind": "task", "priority": 2, "status": "active", **values,
                                       "id": uuid.uuid4().hex, "revision": 1})
-            self._db.execute("INSERT INTO today_tasks(id,day,payload,revision,updated_at) VALUES (?,?,?,?,?) "
+            saved = time.time()
+            # created_at is set on insert only; an edit or carry keeps the original.
+            self._db.execute("INSERT INTO today_tasks(id,day,payload,revision,updated_at,created_at) VALUES (?,?,?,?,?,?) "
                              "ON CONFLICT(id) DO UPDATE SET day=excluded.day,payload=excluded.payload,"
                              "revision=excluded.revision,updated_at=excluded.updated_at",
-                             (task["id"], task["day"], json.dumps(task, allow_nan=False), task["revision"], time.time()))
+                             (task["id"], task["day"], json.dumps(task, allow_nan=False), task["revision"], saved, saved))
         return task
 
     def today_save_preferences(self, day: str, timezone: str, values: dict, revision: int) -> int:
@@ -2084,15 +2091,18 @@ class AssistantStore:
 
     def hidden_reminders(self, now: float | None = None) -> list[dict]:
         """Every Apple reminder the stale policy currently hides, undated and overdue alike:
-        [{source_id, title, reason: "undated"|"overdue", stale_state: "ask"|"stale"}].
+        [{source_id, title, reason: "undated"|"overdue", stale_state: "ask"|"stale",
+        hidden_since}].
         For features that carry reminders forward on their own (the evening check-in), so
-        they can drop the same items every other reader already leaves out."""
-        from service.assistant.stale_reminders import EXCLUDED_STATES
+        they can drop the same items every other reader already leaves out.
+        ``hidden_since`` is when the policy began hiding it: a week after it was added, or a
+        week after it fell due."""
+        from service.assistant.stale_reminders import ASK_AFTER_S, EXCLUDED_STATES
         out = [{"source_id": r["source_id"], "title": r["title"], "reason": "undated",
-                "stale_state": r["stale_state"]}
+                "stale_state": r["stale_state"], "hidden_since": r["created_ts"] + ASK_AFTER_S}
                for r in self._undated_rows(now) if r["stale_state"] in EXCLUDED_STATES]
         out += [{"source_id": r["source_id"], "title": r["title"], "reason": "overdue",
-                 "stale_state": r["stale_state"]}
+                 "stale_state": r["stale_state"], "hidden_since": r["when_ts"] + ASK_AFTER_S}
                 for r in self._overdue_rows(now) if r["stale_state"] in EXCLUDED_STATES]
         return out
 
@@ -2100,6 +2110,44 @@ class AssistantStore:
         """``hidden_reminders`` titles, whitespace-collapsed and casefolded: the form to
         compare a carried-forward task title against."""
         return {" ".join(r["title"].split()).casefold() for r in self.hidden_reminders(now)}
+
+    def hide_stale_tasks(self, tasks: list[dict], now: float | None = None) -> list[dict]:
+        """``tasks`` without the Wisp Day tasks that duplicate a hidden reminder: same title,
+        whitespace-collapsed and casefolded, or "Review: " plus it. Display only; nothing is
+        deleted, and a Keep on the reminder brings the task back with it.
+
+        A task planned after the reminder was hidden is the user's own choice and stays.
+        "Planned" is its ``origin_ts`` when it has one (Plan time records the reminder's
+        due time there), else when the task was first saved. A task with neither, made
+        before created_at existed, is treated as made from the reminder."""
+        from service.assistant.stale_reminders import valid_created_ts
+        since: dict[str, float] = {}
+        for r in self.hidden_reminders(now):
+            key = " ".join(r["title"].split()).casefold()
+            since[key] = max(since.get(key, 0.0), r["hidden_since"])
+        if not since:
+            return tasks
+
+        def matched(task: dict) -> float | None:
+            title = " ".join(str(task.get("title") or "").split()).casefold()
+            if title.startswith("review:"):
+                title = title[len("review:"):].strip()
+            return since.get(title)
+        candidates = [t for t in tasks if matched(t) is not None]
+        if not candidates:
+            return tasks
+        ids = [t["id"] for t in candidates]
+        with self._lock:
+            created = {r["id"]: r["created_at"] for r in self._db.execute(
+                f"SELECT id,created_at FROM today_tasks WHERE id IN ({','.join('?' * len(ids))})", ids)}
+        hidden = set()
+        for task in candidates:
+            planned = valid_created_ts(task.get("origin_ts"))
+            if planned is None:
+                planned = valid_created_ts(created.get(task["id"]))
+            if planned is None or planned < matched(task):
+                hidden.add(task["id"])
+        return [t for t in tasks if t.get("id") not in hidden]
 
     def keep_stale_reminder(self, source_id: str, title: str) -> None:
         with self._write_transaction():
