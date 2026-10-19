@@ -625,7 +625,7 @@ struct DayRefreshLoop: ViewModifier {
                 // panel is sized once (CheckInView.swift).
                 if today.isShowingCurrentDay {
                     await CheckInModel.shared.load(day: today.day, timezone: today.timezone.identifier)
-                    model.checkInDue = false
+                    if model.checkInDue { model.checkInDue = false }
                 }
                 model.onResize()
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }

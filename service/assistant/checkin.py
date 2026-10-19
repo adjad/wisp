@@ -436,9 +436,12 @@ def move_suggestions(store, event: dict, timezone: str, *, now: float, behavior=
         try:
             work_lo = wall_time(day, timezone, prefs["start_minute"])
             work_hi = wall_time(day, timezone, prefs["end_minute"])
-            same_time = wall_time(day, timezone, start_minute)
         except ValueError:                     # working hours fall in the DST gap: skip the day
             continue
+        try:
+            same_time = wall_time(day, timezone, start_minute) if offset else None
+        except ValueError:                     # the event's own minute is ambiguous that day
+            same_time = None
         occupied = []
         for block in plan["blocks"]:
             if block.get("id") == event.get("id") or (block.get("start") == start and block.get("title") == event.get("title")):
@@ -473,7 +476,7 @@ def move_suggestions(store, event: dict, timezone: str, *, now: float, behavior=
                           else "Later that day")
                 add(later, reason)
         else:
-            if fits(same_time):
+            if same_time is not None and fits(same_time):
                 add(same_time, f"Same time {weekday}")
             first = first_after(work_lo)
             if first is not None:

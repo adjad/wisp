@@ -141,6 +141,7 @@ final class CheckInModel: ObservableObject {
               let next = CheckInCard(json: object) else { return }
         if next.day != card.day { kept = []; goalAnswered = false }
         card = next
+        error = ""
     }
 
     func decide(_ task: CheckInTask, _ decision: String, day: String, timezone: String) async {
@@ -228,7 +229,9 @@ struct CheckInSection: View {
     @State private var otherDate = Date()
 
     var body: some View {
-        if model.card.showsCheckIn {
+        // The shared model may still hold an earlier day's card for a moment;
+        // only today's card is ever shown or tapped.
+        if model.card.showsCheckIn, model.card.day == day {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 6) {
                     Text("Evening check-in").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
@@ -240,8 +243,6 @@ struct CheckInSection: View {
                     movePanel(moving)
                 } else if !model.card.tasksSettled {
                     ForEach(model.card.tasks) { task in taskRow(task) }
-                } else if let moving {
-                    movePanel(moving)
                 } else if !model.card.events.isEmpty {
                     Text(eventsLine).font(.system(size: 12.5)).foregroundStyle(Theme.textPrimary)
                     ForEach(model.card.events) { event in eventRow(event) }
@@ -272,13 +273,15 @@ struct CheckInSection: View {
             .disabled(model.busy)
             .onExitCommand { if moving != nil { closeMove() } }
             // The card may arrive after the Day tab painted; it must never
-            // animate the panel's height, so the only motion is the sub-panel's.
-            .transaction { $0.animation = nil }
+            // animate the panel's height. The sub-panel's own animation sits
+            // inside (nearer the content), so it survives the outer nil.
             .animation(.easeInOut(duration: 0.18), value: moving?.id)
+            .transaction { $0.animation = nil }
             .onChange(of: model.card.events) { _, events in
                 // The event left tomorrow's list (reload, cancelled elsewhere): the panel is stale.
                 if let moving, !events.contains(where: { $0.id == moving.id }) { closeMove() }
             }
+            .onDisappear { closeMove() }     // a hidden card never comes back with a stale panel
         }
     }
 
