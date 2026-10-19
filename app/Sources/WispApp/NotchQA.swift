@@ -182,6 +182,7 @@ enum NotchQADriver {
                 "behavior_detail": "Tentative", "explanation": "",
                 "mail_overview": ["text": "Mostly event updates and tech-week promos", "source": "model"],
                 "texts_overview": ["text": "Mostly dinner plans and family check-ins", "source": "model"],
+                "mail_summary": ["text": "Prof. Lee moved your thesis meeting to Tuesday and Jordan Kim wants feedback on an essay draft by Monday. John Morada canceled Dublin Community Office Hours. The rest is Tech Week promos and newsletters.", "source": "model"],
                 "proposed_plan": ["blocks": blocks, "unscheduled": [],
                                   "warnings": ["Reminders are not current; some deadlines may be missing."]],
             ],

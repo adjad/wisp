@@ -717,6 +717,39 @@ _MACHINE_SENDER_NAMES = (
 )
 
 
+# Mass mail sent under a person's name ("Katia Ameri <hello@tech-week.com>",
+# "Vercel <ship@info.vercel.com>"): a campaign mailbox, a bulk-mail sending
+# subdomain, or a Message-ID minted by a marketing-email service. Headers only,
+# like the rest. Deliberately narrow, because this takes away "a person's
+# unread email needs you": no hi@/contact@/mail@ (people write from those), no
+# transactional relays (SES, SendGrid, Mailgun, HubSpot carry one-to-one mail).
+_BROADCAST_LOCAL = re.compile(
+    r"^(?:hello|team|ship|events?|community|marketing|newsletters?|announcements?|launch|product|"
+    r"community-team)$", re.I)
+# A sending subdomain, never the registrable domain itself ("mail.com", "news.com.au").
+_BROADCAST_DOMAIN = re.compile(r"^(?:info|mail|email|e|em|news|marketing|mkt|go|send|campaign|engage)\.(.+)$", re.I)
+_PUBLIC_SUFFIX = re.compile(r"^(?:[a-z]{2,}|(?:com|co|org|net|gov|edu|ac|or|ne)\.[a-z]{2})$", re.I)
+_ESP_MESSAGE_ID = re.compile(
+    r"@[\w.-]*(?:mcsv\.net|mcdlv\.net|rsgsv\.net|list-manage\.com|mktomail\.com|klaviyo\w*\.\w+|"
+    r"cmail\d*\.com|createsend\w*\.com|exacttarget\.com|beehiiv\.com|substack\.com|convertkit\w*\.com)>?\s*$", re.I)
+
+
+def is_broadcast(row: dict) -> bool:
+    """Mail sent to a list, whatever name it carries."""
+    address = (row.get("sender_address", "") or "").strip().lower()
+    if not address:
+        found = re.search(r"<([^>]+@[^>]+)>", row.get("sender", "") or "")
+        address = found.group(1).lower() if found else ""
+    local, _, domain = address.partition("@")
+    if domain:
+        if _BROADCAST_LOCAL.match(local):
+            return True
+        sub = _BROADCAST_DOMAIN.match(domain)
+        if sub and not _PUBLIC_SUFFIX.match(sub.group(1)):
+            return True
+    return bool(_ESP_MESSAGE_ID.search(str(row.get("message_id", "") or "")))
+
+
 def is_machine_sender(sender: str) -> bool:
     """True for an automated/marketing/notification sender, false for anyone
     who looks like they actually wrote the email themselves."""
@@ -1820,7 +1853,7 @@ def digest_category(row: dict) -> str:
     address = (row.get("sender_address", "") or "").lower()
     domain = address.rpartition("@")[2]
     identity = f"{sender} {address}"
-    machine = is_machine_sender(sender) or is_machine_sender(address)
+    machine = is_machine_sender(sender) or is_machine_sender(address) or is_broadcast(row)
     social = bool(_SOCIAL_RE.search(domain) or _SOCIAL_RE.search(sender))
     marketing = bool(_MARKETING_SUBJECT.search(subject) or _NEWSLETTER_RE.search(identity))
     course = bool(_COURSE_RE.search(domain) or _COURSE_RE.search(sender))
