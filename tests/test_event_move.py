@@ -106,11 +106,26 @@ def test_finished_events_and_unknown_titles_are_not_targets(store):
 
 # --- the tool -----------------------------------------------------------------------------
 
+async def _move(title, when_iso, **extra):
+    """update_event as the agent loop runs it: resolved once, then the bound call."""
+    prepared = assistant_tools.prepare_event_move({"title": title, "when_iso": when_iso, **extra})
+    if "error" in prepared:
+        return prepared["error"]
+    with assistant_tools.bound_event_move(prepared["binding"]):
+        return await assistant_tools.update_event(**prepared["args"])
+
+
+async def test_an_unbound_call_never_moves_anything(store, bridge):
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Dentist", start))
+    result = await assistant_tools.update_event("dentist", _iso(start + HOUR))
+    assert "needs the user's confirmation" in result and bridge == []
+
 async def test_a_move_sends_the_exact_occurrence_and_reports_the_read_back(store, bridge):
     start = _top_of_hour(26)
     _calendar(store, _event("ek-1", "Dentist", start, location="Main St"))
     new = start + 2 * HOUR
-    result = await assistant_tools.update_event("dentist", _iso(new))
+    result = await _move("dentist", _iso(new))
     assert bridge == [("move_calendar_event", {
         "source_id": "ek-1", "expected_title": "Dentist", "expected_start_ts": start,
         "when_ts": new, "duration_min": None})]
@@ -122,7 +137,7 @@ async def test_a_move_sends_the_exact_occurrence_and_reports_the_read_back(store
 async def test_a_new_length_is_sent_only_when_asked(store, bridge):
     start = _top_of_hour(26)
     _calendar(store, _event("ek-1", "Dentist", start))
-    await assistant_tools.update_event("dentist", _iso(start + HOUR), duration_min=30)
+    await _move("dentist", _iso(start + HOUR), duration_min=30)
     assert bridge[-1][1]["duration_min"] == 30
 
 
@@ -130,17 +145,17 @@ async def test_a_new_length_is_sent_only_when_asked(store, bridge):
 async def test_renaming_or_relocating_is_refused_before_anything_runs(store, bridge, change):
     start = _top_of_hour(26)
     _calendar(store, _event("ek-1", "Dentist", start))
-    result = await assistant_tools.update_event("dentist", _iso(start + HOUR), **change)
+    result = await _move("dentist", _iso(start + HOUR), **change)
     assert "can't rename" in result and bridge == []
 
 
 async def test_past_times_ambiguity_and_no_match_change_nothing(store, bridge):
     start = _top_of_hour(26)
     _calendar(store, _event("ek-1", "Standup", start), _event("ek-2", "Standup", start + 24 * HOUR))
-    assert "in the past" in await assistant_tools.update_event("standup", _iso(_top_of_hour(-2)))
-    ambiguous = await assistant_tools.update_event("standup", _iso(start + HOUR))
+    assert "in the past" in await _move("standup", _iso(_top_of_hour(-2)))
+    ambiguous = await _move("standup", _iso(start + HOUR))
     assert classify_tool_outcome("update_event", ambiguous).status == "needs_input"
-    missing = await assistant_tools.update_event("yoga", _iso(start + HOUR))
+    missing = await _move("yoga", _iso(start + HOUR))
     assert classify_tool_outcome("update_event", missing).status == "needs_input"
     assert bridge == []
 
@@ -149,7 +164,7 @@ async def test_the_app_being_down_is_the_unavailable_answer(store, bridge, monke
     start = _top_of_hour(26)
     _calendar(store, _event("ek-1", "Dentist", start))
     monkeypatch.setattr(outbox, "app_connected", AsyncMock(return_value=False))
-    result = await assistant_tools.update_event("dentist", _iso(start + HOUR))
+    result = await _move("dentist", _iso(start + HOUR))
     assert result == EVENT_UPDATE_UNAVAILABLE and bridge == []
     assert classify_tool_outcome("update_event", result).status == "needs_input"
 
@@ -166,7 +181,7 @@ async def test_refused_and_unverified_moves_are_never_success(store, monkeypatch
     monkeypatch.setattr(outbox, "request", AsyncMock(return_value=native))
     monkeypatch.setattr(outbox, "app_connected", AsyncMock(return_value=True))
     monkeypatch.setattr(hub, "publish", AsyncMock())
-    result = await assistant_tools.update_event("dentist", _iso(start + HOUR))
+    result = await _move("dentist", _iso(start + HOUR))
     assert says in result
     assert classify_tool_outcome("update_event", result).status == "failed"
     hub.publish.assert_not_awaited()

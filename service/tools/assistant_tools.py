@@ -962,10 +962,13 @@ async def update_event(title: str, when_iso: str, duration_min: int | None = Non
             return (f"(couldn't move “{binding['title']}”: it changed after you confirmed. "
                     "Nothing was changed.)")
     else:
+        # Only the agent loop's confirmed, bound call may move an event; any other caller
+        # (a direct run_tool, a workflow executor) gets the reason and nothing runs.
         plan = event_move_plan(title, when_iso, duration_min, location, new_title, current_when_iso)
         if "error" in plan:
             return plan["error"]
-        payload, row = plan["payload"], plan["row"]
+        return ("(error: a Calendar move needs the user's confirmation of the exact event; "
+                "nothing was moved.)")
     from service.assistant.outbox import app_connected, request as app_request
     if not await app_connected():
         return EVENT_UPDATE_UNAVAILABLE
