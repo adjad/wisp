@@ -7657,10 +7657,16 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
     forbidden = set(forbidden)
     source_tools = {"email": "view_emails", "messages": "view_messages",
                     "calendar": "get_upcoming", "notes": "search_notes", "reminders": "search_reminders"}
-    aggregate = decision.tool_argument_bindings.get("collect_task_evidence", {})
-    if aggregate and all(aggregate.get(f"include_{source}") is False
-                         for source, tool in source_tools.items() if tool in forbidden):
-        forbidden.discard("collect_task_evidence")
+    for name, supported in (("collect_task_evidence", set(source_tools)),
+                            ("daily_brief", {"calendar", "reminders", "email", "messages"})):
+        # These built-ins honor per-source flags. Only trusted route bindings,
+        # never a model's proposed flags, can exempt an aggregate from the ban.
+        if name not in decision.tool_argument_bindings:
+            continue
+        aggregate = decision.tool_argument_bindings[name]
+        if all(aggregate.get(f"include_{source}") is False
+               for source, tool in source_tools.items() if source in supported and tool in forbidden):
+            forbidden.discard(name)
     decision.forbidden_tools |= frozenset(forbidden)
     blocked = decision.forbidden_tools
     if decision.tool_subset is not None:

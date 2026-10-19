@@ -73,6 +73,24 @@ async def test_reminder_denial_narrows_existing_agenda_direct_call():
 
 
 @pytest.mark.asyncio
+async def test_bound_daily_digest_keeps_compatible_sources(monkeypatch):
+    from service.tools import everyday
+    calendar = AsyncMock(side_effect=AssertionError('excluded Calendar read'))
+    reminders = AsyncMock(return_value='Synthetic reminder evidence')
+    activity = AsyncMock(return_value='Synthetic communication evidence')
+    monkeypatch.setattr(everyday, '_daily_calendar', calendar)
+    monkeypatch.setattr(everyday, '_daily_reminders', reminders)
+    monkeypatch.setattr(everyday, '_daily_activity', activity)
+    d = await R.route('Daily digest next week, no calendar and weather')
+    [(name, args)] = d.direct_calls
+    assert name == 'daily_brief' and args['include_calendar'] is False
+    await everyday.daily_brief(**args)
+    calendar.assert_not_called()
+    reminders.assert_awaited_once()
+    assert activity.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_negative_source_guard_also_covers_nonpriority_routes():
     d = await R.route("don't read email; show my unread messages")
     assert {'view_emails', 'summarize_emails', 'triage_inbox', 'collect_task_evidence'} <= d.forbidden_tools
