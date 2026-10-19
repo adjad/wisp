@@ -18,7 +18,10 @@ import AppKit
 struct NotchDayView: View {
     @ObservedObject var model: OverlayModel
     @ObservedObject var today: TodayModel
-    @StateObject private var attention: AttentionModel
+    // Plans caught in texts and the stale-reminder questions come from shared
+    // models (DayCards) that outlive a tab switch and load with the plan on
+    // Brief, so the Day tab's first frame already holds every card.
+    @ObservedObject private var attention = DayCards.attention
     @State private var minutes = 45
     @State private var addingTask = false
     @State private var ignoredCaught = IgnoredCaught.load()
@@ -26,20 +29,17 @@ struct NotchDayView: View {
     // task at the end of the day, so tomorrow's plan starts honest.
     @ObservedObject private var checkIn = CheckInModel.shared
     // Old undated reminders to keep or delete (StaleReminders.swift).
-    @StateObject private var staleReminders: StaleRemindersModel
+    @ObservedObject private var staleReminders = DayCards.staleReminders
 
     /// One hour of the lane.
     private let hourHeight: CGFloat = 44
     /// Tallest the lane gets before it scrolls, so the tab fits the notch.
     private let laneLimit: CGFloat = 280
 
-    @MainActor
-    init(model: OverlayModel, today: TodayModel,
-         attention: AttentionModel? = nil, staleReminders: StaleRemindersModel? = nil) {
+
+    init(model: OverlayModel, today: TodayModel) {
         self.model = model
         self.today = today
-        _attention = StateObject(wrappedValue: attention ?? AttentionModel())
-        _staleReminders = StateObject(wrappedValue: staleReminders ?? StaleRemindersModel(baseURL: WispClient.baseURL))
     }
 
     private var plan: TodayPlan? { today.currentPlan }
@@ -67,18 +67,10 @@ struct NotchDayView: View {
         }
         .environment(\.timeZone, today.timezone)
         .modifier(DayRefreshLoop(model: model, today: today))
-        .task {
-            while !Task.isCancelled {
-                await attention.refresh()
-                await staleReminders.refresh()
-                model.onResize()
-                do { try await Task.sleep(for: .seconds(60)) } catch { break }
-            }
-        }
         // A change anywhere (a sync, an answer from another place) refreshes the
         // stale-reminder questions now instead of at the next minute.
         .onReceive(NotificationCenter.default.publisher(for: .wispAssistantChanged)) { _ in
-            Task { await staleReminders.refresh(); model.onResize() }
+            Task { await DayCards.refresh(force: true); model.onResize() }
         }
         .onChange(of: model.checkInDue) { _, due in
             guard due, today.isShowingCurrentDay else { return }
@@ -151,7 +143,10 @@ struct NotchDayView: View {
         }
         lane(timeline)
         if !timeline.styles.isEmpty { legend(timeline.styles) }
-        if today.isShowingCurrentDay && !staleReminders.asks.isEmpty { staleSection }
+        if today.isShowingCurrentDay && !staleReminders.asks.isEmpty {
+            // A question that arrives after the first frame never animates the panel's height.
+            staleSection.transaction { $0.animation = nil }
+        }
         if let first = plan.displayUnscheduled.first(where: { !DayTimeline.isJunk($0.title) }) {
             Text("Still to fit: \(first.title), \(DayTimeline.plainReason(first.reason)).")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
@@ -627,11 +622,42 @@ struct DayRefreshLoop: ViewModifier {
                     await CheckInModel.shared.load(day: today.day, timezone: today.timezone.identifier)
                     if model.checkInDue { model.checkInDue = false }
                 }
+                // The Day tab's cards load here too, on Brief as well as Day,
+                // before the panel is sized.
+                await DayCards.refresh()
                 model.onResize()
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }
             }
         }
     }
+}
+
+/// The Day tab's card sources: plans caught in texts and the stale-reminder
+/// questions. One instance each for the whole app, so switching tabs keeps
+/// what was loaded instead of starting empty and refetching. DayRefreshLoop
+/// refreshes them with the plan, while Brief or Day is on screen.
+@MainActor
+enum DayCards {
+    static var attention = AttentionModel()
+    static var staleReminders = StaleRemindersModel(baseURL: WispClient.baseURL)
+    private static var refreshedAt: Date?
+
+    /// At most once a minute (the old per-tab cadence) unless forced: the loop
+    /// ticks every 30 s, and a tab switch restarts it.
+    static func refresh(force: Bool = false, now: Date = Date()) async {
+        if !force, let last = refreshedAt, now.timeIntervalSince(last) < 60 { return }
+        refreshedAt = now
+        await attention.refresh()
+        await staleReminders.refresh()
+    }
+
+    #if WISP_NOTCH_QA
+    static func qaUse(attention: AttentionModel, staleReminders: StaleRemindersModel) {
+        self.attention = attention
+        self.staleReminders = staleReminders
+        refreshedAt = nil
+    }
+    #endif
 }
 
 /// Plans caught in texts that the person chose to ignore here. Kept on this Mac
