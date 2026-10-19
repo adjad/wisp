@@ -126,6 +126,9 @@ final class CalendarReader {
             // (CalendarMove.refusal). No organizer_is_user key means "unknown".
             row["invitee_count"] = Self.inviteeCount(ev)
             if let o = ev.organizer { row["organizer_is_user"] = o.isCurrentUser }
+            // A subscribed or otherwise read-only calendar: the card then offers neither
+            // Cancel nor Move (CalendarMove.refusal would refuse them anyway).
+            row["calendar_writable"] = ev.calendar?.allowsContentModifications ?? false
             // `source` is the ACCOUNT this calendar belongs to (e.g. "iCloud",
             // or a Google account's own label) — distinct from `context`
             // (the calendar's own name within that account, e.g. "Work").
@@ -328,6 +331,13 @@ final class CalendarReader {
     /// includes the user (as organizer), which must not be counted as an invitee.
     static func inviteeCount(_ ev: EKEvent) -> Int {
         (ev.attendees ?? []).filter { !$0.isCurrentUser }.count
+    }
+
+    /// A link that shows this occurrence in Calendar (its calendarItemIdentifier, which
+    /// Calendar's ical://ekevent URLs take), or nil when it is no longer in the store.
+    func showInCalendarURL(identifier: String, at ts: Double) -> URL? {
+        guard isAuthorized, let ev = occurrence(identifier, at: ts) else { return nil }
+        return CalendarMove.showURL(calendarItemIdentifier: ev.calendarItemIdentifier)
     }
 
     /// The occurrence of `identifier` starting at `ts` (to the second), or nil.

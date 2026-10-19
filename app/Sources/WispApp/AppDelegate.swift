@@ -712,6 +712,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                               durationMin: dur, location: loc)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
+        model.showCalendarEventURL = { [weak self] identifier, startTs in
+            self?.calendarReader?.showInCalendarURL(identifier: identifier, at: startTs)
+        }
         model.onDeleteCalendarEvent = { [weak self] identifier, occurrenceTs in
             self?.calendarReader?.deleteEvent(identifier: identifier, occurrenceTs: occurrenceTs)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]

@@ -39,6 +39,22 @@ enum CheckInCancel {
         serviceReason.isEmpty ? "Wisp hasn't synced this event's details yet; cancel it in Calendar." : serviceReason
     }
 
+    /// What the row shows in Cancel's place when a one-tap Cancel isn't offered.
+    enum BlockedControl: Equatable {
+        case cancel        // offered
+        case readOnly      // a subscribed/read-only calendar: nothing can be done from here
+        case decline       // someone else's event: "Decline in Calendar"
+        case open          // not synced / organizer unknown: "Open in Calendar"
+    }
+
+    /// A read-only calendar wins over everything (even the service's reason), then an
+    /// invitation gets Decline; anything else that blocks Cancel opens the event.
+    static func blockedControl(canCancel: Bool, calendarWritable: Bool?, organizerIsUser: Bool?) -> BlockedControl {
+        if calendarWritable == false { return .readOnly }
+        if canCancel { return .cancel }
+        return organizerIsUser == false ? .decline : .open
+    }
+
     /// The body of POST /assistant/checkin/cancel_event, or nil when the row lacks
     /// what the service rejects without: the calendar id, the start the card
     /// showed, and a synced invitee count (null means not synced).
