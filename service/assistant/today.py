@@ -168,7 +168,8 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
                 item["warnings"].append("Fixed event has no end time")
                 blocks.append(item)
         elif lo <= when < hi:
-            deadlines.append(dict(id=c["id"], title=c["title"], due_ts=when, source=c["source"]))
+            deadlines.append(dict(id=c["id"], title=c["title"], due_ts=when, source=c["source"],
+                                      **({'all_day': True, 'due_date': c.get('due_date')} if c.get('all_day') else {})))
     if not sources["calendar"]["ready"]:
         warnings.append("Calendar is not current. Flexible tasks are waiting for a successful sync.")
     if old_unknown:

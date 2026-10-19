@@ -31,6 +31,7 @@ CREATE TABLE {table} (
     account TEXT,
     when_ts REAL,
     all_day INTEGER DEFAULT 0,
+    due_date TEXT,
     location TEXT,
     url TEXT,
     status TEXT DEFAULT 'active',
@@ -41,7 +42,7 @@ CREATE TABLE {table} (
 )
 """
 OLD_COLUMNS = tuple(
-    column for column in recovery.CURRENT_COLUMNS if column not in {"organizer", "account"}
+    column for column in recovery.CURRENT_COLUMNS if column not in {"organizer", "account", "due_date"}
 )
 OLD_SCHEMA = """
 CREATE TABLE {table} (
@@ -56,7 +57,7 @@ CREATE TABLE {table} (
 def row(row_id: str, source_id: str, title: str, when_ts: float) -> tuple:
     return (
         row_id, "calendar", source_id, "event", title, "Work", "Alex", "iCloud",
-        when_ts, 0, "Room 1", None, "active", 1.0, 100.0, 200.0,
+        when_ts, 0, None, "Room 1", None, "active", 1.0, 100.0, 200.0,
     )
 
 

@@ -83,7 +83,7 @@ CAPABILITY_INVENTORY_RE = re.compile(
     re.I | re.S)
 _REQUEST_PREFIX = re.compile(
     r"^\s*(?:(?:hey|hi|ok|okay|please|can\s+you|could\s+you|would\s+you|"
-    r"i\s+need\s+you\s+to|go\s+ahead\s+and)[,\s]+)*", re.I)
+    r"i\s+need\s+you\s+to|i\s+want\s+you\s+to|go\s+ahead\s+and)[,\s]+)*", re.I)
 _HOUR_WORD = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
 _MINUTE_WORD = r"(?:ten|fifteen|twenty|thirty|forty|fifty)"
 _WORD_MINUTES = rf"(?:oh\s+(?:{_HOUR_WORD}|{_MINUTE_WORD})|{_MINUTE_WORD})"

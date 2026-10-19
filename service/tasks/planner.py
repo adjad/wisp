@@ -9,6 +9,7 @@ class InvalidTaskPlan(ValueError):
 
 
 def plan_task(plan: TaskPlan) -> list[StepPlan]:
+    plan.steps = []
     plan.recompute_status()
     if plan.status != "ready":
         raise InvalidTaskPlan(f"task is {plan.status}: {plan.missing_slots}")
@@ -77,13 +78,25 @@ def plan_task(plan: TaskPlan) -> list[StepPlan]:
         raise InvalidTaskPlan("reminder tasks must target Reminders")
 
     if plan.intent == "reminder.create":
+        if 'items' in plan.parameters:
+            from service.tasks.reminder_batch import validated_items
+            try:
+                items = validated_items(plan)
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise InvalidTaskPlan(str(exc)) from None
+            plan.steps = [StepPlan(id=item['id'], tool='add_reminder', effect=True,
+                args={'title': item['title'], 'when_iso': item['when_iso'], 'kind': 'reminder',
+                      **({'all_day': True} if item['all_day'] else {})}) for item in items]
+            return plan.steps
         title = str(plan.subject.value or "").strip()
         when_iso = plan.temporal.absolute_iso
         if not title or not when_iso:
             raise InvalidTaskPlan("reminder.create needs a subject and canonical time")
         plan.steps = [StepPlan(
             id="create_reminder", tool="add_reminder",
-            args={"title": title, "when_iso": when_iso, "kind": "reminder"},
+            args={"title": title, "when_iso": when_iso, "kind": "reminder",
+                  **({'all_day': True} if plan.parameters.get('all_day', None)
+                      and plan.parameters['all_day'].value is True else {})},
             max_calls=1, effect=True)]
     elif plan.intent == "reminder.update":
         if len(plan.resolved_targets) != 1:
