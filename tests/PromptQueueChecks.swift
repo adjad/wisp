@@ -102,8 +102,11 @@ enum PromptQueueChecks {
                      + "2 queued messages will follow it.", notice)
         precondition(AgentSend.notice(message: "socket closed", unsent: false, queued: 0)
                      .hasPrefix("Wisp didn't answer. Your message is back in the box."))
-        precondition(AgentSend.notice(message: "", unsent: true, queued: 0, backInBox: false).contains("first in line"))
+        precondition(AgentSend.notice(message: "", unsent: true, queued: 0, place: .queued).contains("first in line"))
+        // A prompt whose stream had begun is set aside, never queued to resend.
+        precondition(AgentSend.notice(message: "", unsent: false, queued: 1, place: .setAside)
+                     .contains("won't be sent again by itself"))
 
-        print("PromptSubmissionState: 50 regression checks passed")
+        print("PromptSubmissionState: 51 regression checks passed")
     }
 }

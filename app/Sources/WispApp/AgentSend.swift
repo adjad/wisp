@@ -6,10 +6,11 @@ import Foundation
 /// Rules:
 /// - IMPORTANT: retry only before a 200 stream exists. Once the stream starts,
 ///   the server may have run a tool ("delete …"), so a drop then is never resent.
-/// - Retryable: the connection never opened, or a pooled keep-alive socket the
-///   server had already closed (the request never reached a handler), or a 5xx
-///   returned instead of the stream (the handler streams 200 before any work).
-///   A 4xx is the request itself, so sending it again can't help.
+/// - Retryable: the connection never opened, or it was lost before any response,
+///   or a 5xx came back instead of the stream. /agent writes its 200 headers
+///   before routing or running anything, so none of these follow a tool run.
+///   A 4xx is the request itself, so sending it again can't help; a timeout
+///   or a cancel is never resent.
 enum AgentSend {
     static let retryDelay: UInt64 = 800_000_000
 
@@ -34,10 +35,18 @@ enum AgentSend {
 
     /// What the Ask tab says when a prompt didn't go through: why (when the
     /// server never ran it), where the prompt is now, and what waits for it.
-    static func notice(message: String, unsent: Bool, queued: Int, backInBox: Bool = true) -> String {
+    /// Where a dropped prompt went.
+    enum Place { case box, queued, setAside }
+
+    static func notice(message: String, unsent: Bool, queued: Int, place: Place = .box) -> String {
         let why = unsent && !message.isEmpty ? message : "Wisp didn't answer."
-        if !backInBox {
+        switch place {
+        case .queued:
             return why + " That message is first in line; it sends after the one in the box (or press Return on an empty box)."
+        case .setAside:
+            return why + " It may have started on that message, so it won't be sent again by itself."
+                + " Press Return on an empty box to bring it back."
+        case .box: break
         }
         var text = why + " Your message is back in the box. Press Return to send it again."
         if queued > 0 { text += " \(queued) queued message\(queued == 1 ? "" : "s") will follow it." }

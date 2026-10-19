@@ -554,16 +554,17 @@ final class WispClient {
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         // The request goes out at most twice, and the second time only when the
         // server provably never ran the turn (AgentSend.retryable): no
-        // connection, a pooled socket the server had already closed, or a 5xx
-        // before the stream began. Never once a 200 stream has started, since
-        // a tool may already have run.
+        // connection, a connection lost before any response, or a 5xx before
+        // the stream began. Never once a 200 stream has started, since a tool
+        // may already have run, and never after the turn was cancelled.
         var bytes: URLSession.AsyncBytes?
         for attempt in 0..<2 {
             do {
                 let (stream, response) = try await URLSession.shared.bytes(for: req)
                 if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                    if attempt == 0, AgentSend.retryable(status: http.statusCode) {
+                    if attempt == 0, !Task.isCancelled, AgentSend.retryable(status: http.statusCode) {
                         try? await Task.sleep(nanoseconds: AgentSend.retryDelay)
+                        if Task.isCancelled { return }
                         continue
                     }
                     onEvent(Event(type: "error", payload: AgentSend.unsent(status: http.statusCode)))
@@ -574,6 +575,7 @@ final class WispClient {
             } catch {
                 if attempt == 0, !Task.isCancelled, AgentSend.retryable(error: error) {
                     try? await Task.sleep(nanoseconds: AgentSend.retryDelay)
+                    if Task.isCancelled { return }
                     continue
                 }
                 onEvent(Event(type: "error", payload: AgentSend.unsent(error: error)))
