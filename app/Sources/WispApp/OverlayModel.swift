@@ -1351,6 +1351,12 @@ final class OverlayModel: ObservableObject {
     var onCreateCalendarEvent: ((_ title: String, _ startTs: Double,
                                  _ durationMin: Int, _ location: String) -> [String: Any])?
     var onDeleteCalendarEvent: ((_ identifier: String, _ occurrenceTs: Double?) -> [String: Any])?
+    /// Verified cancel of one occurrence (CalendarReader.cancelEvent).
+    var onCancelCalendarEvent: ((_ identifier: String, _ expectedTitle: String, _ expectedStart: Double,
+                                 _ expectedInvitees: Int) -> [String: Any])?
+    /// Verified move of one occurrence (CalendarReader.moveEvent). nil duration keeps its length.
+    var onMoveCalendarEvent: ((_ identifier: String, _ expectedTitle: String, _ expectedStart: Double,
+                               _ newStart: Double, _ durationMin: Int?, _ expectedInvitees: Int) -> [String: Any])?
     var onVerifiedReminderAction: ((_ kind: String, _ actionID: String, _ sourceID: String,
                                     _ expectedTitle: String, _ expectedDueTs: Double?,
                                     _ title: String, _ dueTs: Double,
@@ -1387,8 +1393,35 @@ final class OverlayModel: ObservableObject {
                           ev.str("title"), ev.payload["due_ts"] as? Double ?? 0,
                           ev.str("commitment_kind"))
         }
+        if ev.type == "cancel_calendar_event" {
+            guard !ev.str("source_id").isEmpty, !ev.str("expected_title").isEmpty,
+                  let expected = ev.payload["expected_start_ts"] as? Double, expected.isFinite, expected > 0,
+                  let invitees = ev.payload["invitee_count"] as? Int, invitees >= 0,
+                  let cancel = onCancelCalendarEvent else {
+                return ["ok": false, "error": "Calendar cancel identity or handler is unavailable"]
+            }
+            return cancel(ev.str("source_id"), ev.str("expected_title"), expected, invitees)
+        }
         guard let ts = ev.payload["when_ts"] as? Double, ts.isFinite, ts > 0 else {
             return ["ok": false, "error": "Calendar time is invalid"]
+        }
+        if ev.type == "move_calendar_event" {
+            guard !ev.str("source_id").isEmpty, !ev.str("expected_title").isEmpty,
+                  let expected = ev.payload["expected_start_ts"] as? Double, expected.isFinite, expected > 0,
+                  let invitees = ev.payload["invitee_count"] as? Int, invitees >= 0,
+                  let move = onMoveCalendarEvent else {
+                return ["ok": false, "error": "Calendar move identity or handler is unavailable"]
+            }
+            // JSON null keeps the event's own length; anything else must be a whole minute count.
+            let rawDuration = ev.payload["duration_min"]
+            var duration: Int?
+            if !(rawDuration is NSNull) {
+                guard let minutes = rawDuration as? Int, (1...10080).contains(minutes) else {
+                    return ["ok": false, "error": "Calendar move length is invalid"]
+                }
+                duration = minutes
+            }
+            return move(ev.str("source_id"), ev.str("expected_title"), expected, ts, duration, invitees)
         }
         if ev.type == "create_calendar_event" {
             guard !ev.str("title").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

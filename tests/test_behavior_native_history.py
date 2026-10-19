@@ -24,6 +24,7 @@ def test_native_history_mapping_contract(tmp_path):
             "-module-cache-path",
             str(tmp_path / "modules"),
             "app/Sources/WispApp/CalendarReader.swift",
+            "app/Sources/WispApp/CalendarMove.swift",
             "app/Sources/WispApp/RemindersWriter.swift",
             "tests/BehaviorHistoryReaderRegression.swift",
             "-o",

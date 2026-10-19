@@ -58,7 +58,7 @@ def test_internal_tools_are_registered_but_never_searchable():
     searchable = set(searchable_tool_names())
     assert INTERNAL.isdisjoint(searchable)
     assert not any(is_tool_searchable(name) for name in INTERNAL)
-    assert not is_tool_searchable("update_event")
+    assert is_tool_searchable("update_event"), "a real verified move since 2026-10-18"
 
 
 @pytest.mark.parametrize("prompt, tool, args", [
