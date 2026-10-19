@@ -69,6 +69,22 @@ enum CalendarMove {
     /// and organizer rules as a move: it must still be the event the card showed, on a
     /// writable calendar, and an event with invitees is cancelled only by its organizer
     /// (Calendar then tells them). All-day events may be cancelled.
+    /// Calendar's own deep link to an event: ical://ekevent/<calendarItemIdentifier>?method=show&options=more.
+    /// nil for an empty identifier. The identifier is one percent-encoded path segment, so a
+    /// slash, question mark or hash inside it can't change the URL's shape.
+    static func showURL(calendarItemIdentifier: String) -> URL? {
+        guard !calendarItemIdentifier.isEmpty else { return nil }
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#;")
+        guard let segment = calendarItemIdentifier.addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+        var parts = URLComponents()
+        parts.scheme = "ical"
+        parts.host = "ekevent"
+        parts.percentEncodedPath = "/" + segment
+        parts.queryItems = [URLQueryItem(name: "method", value: "show"), URLQueryItem(name: "options", value: "more")]
+        return parts.url
+    }
+
     static func cancelRefusal(_ facts: CalendarEventFacts, expectedTitle: String, expectedStart: Double,
                               calendarWritable: Bool, invitees: Int, expectedInvitees: Int,
                               organizerIsUser: Bool?) -> String? {

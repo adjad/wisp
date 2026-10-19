@@ -34,6 +34,12 @@ import Foundation
         precondition(refusal(invitees: 0, organizer: nil) == nil, "no invitees: no organizer needed")
         precondition(refusal(invitees: 4, expected: 3, organizer: true)?.contains("changed") == true)
         precondition(refusal(taken: true)?.contains("already starts") == true, "the read-back must be unambiguous")
+        // Calendar's deep link for "Decline / Open in Calendar": the item id as one path segment.
+        precondition(CalendarMove.showURL(calendarItemIdentifier: "")?.absoluteString == nil)
+        precondition(CalendarMove.showURL(calendarItemIdentifier: "ABC-123")?.absoluteString
+                     == "ical://ekevent/ABC-123?method=show&options=more")
+        precondition(CalendarMove.showURL(calendarItemIdentifier: "x y/z")?.absoluteString
+                     == "ical://ekevent/x%20y%2Fz?method=show&options=more", "unsafe characters are escaped")
         var allDay = event; allDay.isAllDay = true
         precondition(refusal(allDay) != nil)
         var noStart = event; noStart.start = .nan

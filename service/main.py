@@ -2728,6 +2728,10 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
                               and 0 <= e["invitee_count"] <= 100000 else None),
             "organizer_is_user": (e["organizer_is_user"] if type(e.get("organizer_is_user")) is bool
                                   else None),
+            # Whether its calendar accepts changes from this Mac (EventKit's
+            # allowsContentModifications); False for subscribed and read-only calendars.
+            "calendar_writable": (e["calendar_writable"] if type(e.get("calendar_writable")) is bool
+                                  else None),
             "confidence": 1.0,
         })
     from service.assistant.today import RevisionConflict

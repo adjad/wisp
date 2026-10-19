@@ -484,6 +484,7 @@ def test_the_organizer_cancels_an_event_with_invitees(store, cancel_client):
     ({"invitee_count": 0, "organizer_is_user": False}, 403, "Only the organizer can cancel"),
     ({"invitee_count": 3}, 403, "doesn't say who organizes"),
     ({"invitee_count": None}, 409, "hasn't synced"),
+    ({"invitee_count": 0, "organizer_is_user": True, "calendar_writable": False}, 403, "read-only calendar"),
 ])
 def test_cancel_refusals_send_nothing(store, cancel_client, extra, status, says):
     client, calls = cancel_client
@@ -520,6 +521,7 @@ def test_cancel_without_the_app_is_unavailable(store, cancel_client, monkeypatch
      409, "not_current"),
     ({"ok": False, "status": "failed", "error": "Calendar didn't cancel it: denied"}, 502, "failed"),
     ({"ok": False, "status": "failed", "error": "Only the organizer can cancel this event; decline it"}, 403, "not_allowed"),
+    ({"ok": False, "status": "failed", "error": "That event's calendar can't be changed from this Mac"}, 403, "not_allowed"),
     ({"ok": False, "error": "Wisp app is not connected; Calendar was not changed"}, 503, "unavailable"),
 ])
 def test_cancel_native_outcomes_map_to_statuses(store, cancel_client, monkeypatch, native, status, outcome):
@@ -562,3 +564,99 @@ def test_card_rows_carry_what_cancel_needs(store):
     assert "Only the organizer" in rows["ek-1"]["cancel_blocked"]
     assert (rows["ek-1"]["invitee_count"], rows["ek-1"]["organizer_is_user"]) == (2, False)
     assert rows["ek-2"]["cancel_blocked"] == "" and rows["ek-2"]["invitee_count"] == 0
+    # Move follows the same rules, so the card never offers a move the app would refuse.
+    assert "Only the organizer can move" in rows["ek-1"]["move_blocked"]
+    assert rows["ek-2"]["move_blocked"] == ""
+    # An older app said nothing about the calendar: unknown, not read-only.
+    assert rows["ek-1"]["calendar_writable"] is None and rows["ek-2"]["calendar_writable"] is None
+
+
+def test_card_rows_block_a_read_only_calendar(store):
+    """A subscribed course calendar: the app syncs calendar_writable False, the store keeps
+    it, and the card gets neither Cancel nor Move with the reason said once."""
+    from datetime import timezone as tz
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-ro", "STAT 5-02 Office Hours", start, invitee_count=0, organizer_is_user=True,
+                            calendar_writable=False),
+              _event("ek-rw", "Dentist", start + 60, calendar_writable=True))
+    assert store.calendar_occurrence("ek-ro", start)["calendar_writable"] is False
+    assert store.calendar_occurrence("ek-rw", start + 60)["calendar_writable"] is True
+    day = datetime.fromtimestamp(start, tz.utc).strftime("%Y-%m-%d")
+    rows = {r["source_id"]: r for r in checkin._event_rows(store, day, "UTC")}
+    assert rows["ek-ro"]["calendar_writable"] is False
+    assert rows["ek-ro"]["cancel_blocked"] == checkin.READ_ONLY_CALENDAR
+    assert rows["ek-ro"]["move_blocked"] == checkin.READ_ONLY_CALENDAR
+    assert rows["ek-rw"]["cancel_blocked"] == "" and rows["ek-rw"]["move_blocked"] == ""
+    # The read-only rule wins over the organizer rules.
+    assert checkin.cancel_block_reason({"invitee_count": 3, "organizer_is_user": False,
+                                        "calendar_writable": False}) == checkin.READ_ONLY_CALENDAR
+    assert checkin.move_block_reason({"invitee_count": None, "calendar_writable": False}) == checkin.READ_ONLY_CALENDAR
+    # Not a bool from the app → not stored, read back as unknown.
+    _calendar(store, _event("ek-odd", "Odd", start + 120, calendar_writable="no"))
+    assert store.calendar_occurrence("ek-odd", start + 120)["calendar_writable"] is None
+
+
+def test_store_migration_adds_calendar_writable(tmp_path):
+    """An existing store from before the column still opens and reads the flag as unknown."""
+    import sqlite3
+    path = tmp_path / "old.db"
+    s = AssistantStore(path)
+    s._db.close()
+    db = sqlite3.connect(path)
+    db.execute("DROP TABLE calendar_event_invitees")
+    db.execute("CREATE TABLE calendar_event_invitees (commitment_id TEXT PRIMARY KEY, "
+               "invitee_count INTEGER NOT NULL, organizer_is_user INTEGER)")
+    db.commit(); db.close()
+    s = AssistantStore(path)
+    try:
+        start = _top_of_hour(26)
+        _calendar(s, _event("ek-1", "Dentist", start))
+        row = s.calendar_occurrence("ek-1", start)
+        assert row["invitee_count"] == 0 and row["calendar_writable"] is None
+    finally:
+        s._db.close()
+
+
+def test_sync_endpoint_keeps_calendar_writable_only_when_a_bool(store, monkeypatch):
+    """The app's Calendar sync carries calendar_writable; the production route keeps a bool
+    and drops anything else, so an older app reads as unknown rather than read-only."""
+    import ast
+    import sys
+    import types
+    from pathlib import Path
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+    import service.assistant as assistant_package
+    fake_behavior = types.ModuleType("service.assistant.behavior_runtime")
+    fake_behavior.poke = lambda *args: None
+    monkeypatch.setitem(sys.modules, fake_behavior.__name__, fake_behavior)
+    monkeypatch.setattr(assistant_package, "behavior_runtime", fake_behavior, raising=False)
+
+    async def publish(*args):
+        pass
+    # Bind the unchanged production route, without importing application startup.
+    path = Path(__file__).resolve().parents[1] / "service/main.py"
+    node = next(n for n in ast.parse(path.read_text()).body if isinstance(n, ast.AsyncFunctionDef)
+                and n.name == "assistant_sync_calendar")
+    node.decorator_list = []
+    namespace = dict(Any=object, HTTPException=HTTPException, assistant_store=store,
+                     assistant_scheduler=types.SimpleNamespace(record_sync=lambda *args, **kwargs: None),
+                     assistant_hub=types.SimpleNamespace(publish=publish))
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+    app = FastAPI()
+    app.post("/assistant/sync/calendar")(namespace["assistant_sync_calendar"])
+    start = _top_of_hour(26)
+    now = time.time()
+    diagnostics = dict(authorized=True, snapshot_started_at=now, coverage_start=now - 3600,
+                       coverage_end=start + 7 * 86400, event_ids=["synthetic"])
+    events = [_event("ek-ro", "STAT 5-02 Office Hours", start, calendar_writable=False),
+              _event("ek-rw", "Dentist", start + 60, calendar_writable=True),
+              _event("ek-odd", "Odd", start + 120, calendar_writable="no"),
+              _event("ek-old", "Older app", start + 180)]
+    with TestClient(app) as client:
+        response = client.post("/assistant/sync/calendar",
+                               json=dict(source="calendar", events=events, diagnostics=diagnostics))
+    assert response.status_code == 200, response.text
+    flags = {sid: store.calendar_occurrence(sid, start + offset)["calendar_writable"]
+             for sid, offset in (("ek-ro", 0), ("ek-rw", 60), ("ek-odd", 120), ("ek-old", 180))}
+    assert flags == {"ek-ro": False, "ek-rw": True, "ek-odd": None, "ek-old": None}

@@ -435,8 +435,13 @@ class AssistantStore:
                 # Calendar sync. organizer_is_user NULL = unknown. No row = not synced yet.
                 self._db.execute("""CREATE TABLE IF NOT EXISTS calendar_event_invitees (
                     commitment_id TEXT PRIMARY KEY, invitee_count INTEGER NOT NULL,
-                    organizer_is_user INTEGER
+                    organizer_is_user INTEGER, calendar_writable INTEGER
                 )""")
+                # calendar_writable (2026-10-18): 0 for a subscribed or otherwise read-only
+                # calendar, NULL = the app didn't say (older app). Added to existing stores.
+                if "calendar_writable" not in {r["name"] for r in self._db.execute(
+                        "PRAGMA table_info(calendar_event_invitees)").fetchall()}:
+                    self._db.execute("ALTER TABLE calendar_event_invitees ADD COLUMN calendar_writable INTEGER")
                 self._db.execute(_BEHAVIOR_RECEIPTS_SCHEMA)
                 self._validate_behavior_receipt_schema()
                 self._db.execute("""CREATE TABLE IF NOT EXISTS today_source_sync (
@@ -1500,18 +1505,21 @@ class AssistantStore:
 
     def calendar_occurrence(self, source_id: str, start_ts: float) -> dict | None:
         """The active synced Calendar occurrence (identifier + exact start) with its invitee
-        metadata, or None. invitee_count None = not synced; organizer_is_user None = unknown."""
+        metadata, or None. invitee_count None = not synced; organizer_is_user None = unknown;
+        calendar_writable False = a read-only (e.g. subscribed) calendar, None = not said."""
         with self._lock:
             row = self._db.execute(
-                "SELECT c.id,c.source_id,c.title,c.when_ts,i.invitee_count,i.organizer_is_user "
+                "SELECT c.id,c.source_id,c.title,c.when_ts,i.invitee_count,i.organizer_is_user,"
+                "i.calendar_writable "
                 "FROM commitments c LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
                 "WHERE c.source='calendar' AND c.status='active' AND c.source_id=? AND c.when_ts=?",
                 (source_id, start_ts)).fetchone()
         if row is None:
             return None
         row = dict(row)
-        if row["organizer_is_user"] is not None:
-            row["organizer_is_user"] = bool(row["organizer_is_user"])
+        for flag in ("organizer_is_user", "calendar_writable"):
+            if row[flag] is not None:
+                row[flag] = bool(row[flag])
         return row
 
     def calendar_occurrence_current(self, source_id: str, start_ts: float, title: str) -> bool:
@@ -2045,8 +2053,10 @@ class AssistantStore:
                     count = it.get("invitee_count")
                     if type(count) is int and count >= 0:
                         flag = it.get("organizer_is_user")
-                        self._db.execute("INSERT INTO calendar_event_invitees VALUES (?,?,?)",
-                                         (cid, count, int(flag) if type(flag) is bool else None))
+                        writable = it.get("calendar_writable")
+                        self._db.execute("INSERT INTO calendar_event_invitees VALUES (?,?,?,?)",
+                                         (cid, count, int(flag) if type(flag) is bool else None,
+                                          int(writable) if type(writable) is bool else None))
                     self._db.execute("DELETE FROM calendar_event_ends WHERE commitment_id=?", (cid,))
                     end_ts = it.get("end_ts")
                     if end_ts is not None:
