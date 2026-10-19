@@ -67,14 +67,24 @@ def test_hardware_rounds_real_memory_and_survives_failure():
 
 # --- recommendations --------------------------------------------------------
 
-def test_fresh_mac_is_offered_a_public_model_not_the_private_mellum_build():
-    # A new user with nothing installed cannot fetch the private Mellum build, so
-    # setup offers the best public download instead of a folder they don't have.
+def test_fresh_mac_downloads_mellum_at_24gb_and_ling_below():
+    # The user's rule: Mellum (Wisp's own fine-tune, public on Hugging Face) is
+    # the download on 24 GB or more; Ling below that.
     missing = _status(ram=32, installed=[], roles=_roles(MELLUM))
-    assert missing["models"]["recommended"] == Q6
-    assert missing["models"]["download"]["model"] == Q6
+    assert missing["models"]["recommended"] == MELLUM
+    assert missing["models"]["download"]["model"] == MELLUM
+    assert missing["models"]["download"]["repo"] == catalog.by_id(MELLUM).repo
     assert _check(missing, "model")["action"] == "download_model"
     assert not missing["ready"]
+    small = _status(ram=16, installed=[], roles=_roles(MELLUM))
+    assert small["models"]["recommended"] == Q4
+    assert small["models"]["download"]["model"] == Q4
+
+
+def test_mellum_repo_name_is_the_model_id():
+    # The engine serves a download under its repo name; roles name the model id.
+    repo = catalog.by_id(MELLUM).repo
+    assert repo and repo.split("/")[1] == MELLUM
 
 
 def test_mellum_local_default_is_discovered_without_a_fabricated_download():
@@ -84,14 +94,15 @@ def test_mellum_local_default_is_discovered_without_a_fabricated_download():
     assert entry["tested"] is False
     assert entry["fit"] == "recommended"
     assert found["ready"]  # Discovery/readiness is separate from inference qualification.
-    assert guide.download_info(MELLUM, "/models") is None
+    assert guide.download_info(MELLUM, "/models")["repo"] == catalog.by_id(MELLUM).repo
 
 
-def test_mellum_missing_does_not_prompt_an_unrequested_ling_upgrade():
+def test_an_installed_ling_keeps_working_and_mellum_is_offered():
+    # On 24 GB+ an existing Ling stays in use; Mellum is offered, never fetched unasked.
     result = catalog.recommend(32, [Q4])
     assert result["first_choice"] == MELLUM
     assert result["use"] == Q4
-    assert result["get"] is None
+    assert result["get"] == MELLUM
     assert catalog.fit(catalog.by_id(MELLUM), 16) == "heavy"
     assert catalog.recommend(16, [Q4, MELLUM])["use"] == Q4
 
@@ -122,7 +133,7 @@ def test_mellum_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkey
     finally:
         config.models_config.cache_clear()
 
-@pytest.mark.parametrize("ram,first", [(64, Q6), (24, Q6), (16, Q4), (12, Q4), (8, Q4), (0, Q4)])
+@pytest.mark.parametrize("ram,first", [(64, MELLUM), (24, MELLUM), (16, Q4), (12, Q4), (8, Q4), (0, Q4)])
 def test_first_choice_follows_memory(ram, first):
     # Fresh Macs: the first choice is the best build they can actually download.
     assert catalog.recommend(ram, [])["first_choice"] == first
@@ -142,7 +153,7 @@ def test_16gb_is_offered_a_download_it_can_actually_get():
 
 def test_24gb_with_only_legacy_oq4e_keeps_it_without_an_unrelated_download():
     rec = catalog.recommend(24, [Q4])
-    assert rec["use"] == Q4 and rec["get"] is None
+    assert rec["use"] == Q4 and rec["get"] == MELLUM
 
 
 def test_best_installed_model_wins_and_nothing_is_offered_when_optimal():
@@ -189,7 +200,8 @@ def test_old_macos_is_not_sent_to_download_omlx(monkeypatch):
 def test_fresh_mac_recommendation_is_public_and_labelled():
     s = _status(installed=(), running=True, roles=_roles(MELLUM))
     assert _check(s, "model")["action"] == "download_model"
-    assert "Mellum" not in s["models"]["recommended_label"]
+    rec = catalog.by_id(s["models"]["recommended"])
+    assert rec.repo and s["models"]["recommended_label"] == f"{rec.label} · {rec.quant}"
 
 
 @pytest.mark.parametrize("macos,available", [("14.0", False), ("26.1", False),

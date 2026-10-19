@@ -20,11 +20,13 @@ class CatalogModel:
     tested: bool = False
 
 
+# The repo's name is the model id on purpose: the engine downloads into
+# models/<owner>/<name> and serves it under <name>, which roles must match.
 MELLUM_R1_Q4 = CatalogModel(
     "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-    "Mellum 2.1 Wisp R1", "merged oQ4e", 7.14, 24, None,
-    "Local merged build. Add its folder to the engine's model directory. "
-    "Model validation is pending.", tested=False)
+    "Mellum 2.1 Wisp R1", "merged oQ4e", 7.14, 24,
+    "Neo-Arid/Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
+    "Wisp's own fine-tune. The default on Macs with 24 GB or more.", tested=False)
 
 
 LING_Q6 = CatalogModel(
