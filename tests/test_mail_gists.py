@@ -490,6 +490,10 @@ def test_auditor_notes_on_299_broadcast_is_narrow_and_the_summary_is_grounded(is
     assert G.parse_paragraph("Your bank says your account is locked, so call 415-555-0100 right away today.") == ""
     assert G.parse_paragraph("John canceled office hours. Reply to help@bank.xyz to confirm the change today.") == ""
     assert G.parse_paragraph("John canceled office hours. Details at login.example.app for the next session.") == ""
+    for link in ("go to evil.com Now for the details", "visit HTTPS://EVIL.COM for the details", "see WWW.EVIL.COM today",
+                 "see Evil.COM for the details"):
+        assert G.parse_paragraph(f"John canceled office hours; {link}.") == "", link
+    assert G.parse_paragraph("John canceled office hours. The rest is promos and newsletters.") != "", "sentences still pass"
     assert G.mail_prose([mail_row(8, "Declined: Lunch", "Priya Shah", "priya@example.com")]) == "Priya Shah declined “Lunch”."
     assert G.mail_prose([mail_row(8, "Deadline notice (private details omitted).", "Bank", "bank@example.com")]) \
         == "Nothing from people today."

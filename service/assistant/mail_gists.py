@@ -441,7 +441,7 @@ def parse_paragraph(text: str) -> str:
                        " ".join(lines).replace("**", ""), flags=re.I).strip()
     low, high = _SUMMARY_CHARS
     if (not low <= len(paragraph) <= high or "<" in paragraph
-            or re.search(r"===|https?://|www\.|\S@\S|\b[\w-]+\.[a-z]{2,}(?:/|\b)(?!\s*[A-Z])", paragraph)
+            or re.search(r"===|https?://|www\.|\S@\S|\b[\w-]+\.[a-z]{2,}(?![a-z])", paragraph, re.I)
             or re.search(r"\d{7,}|\d{3}\D{1,3}\d{3}\D{1,2}\d{4}", paragraph)):
         return ""
     return paragraph
