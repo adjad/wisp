@@ -186,8 +186,8 @@ struct BriefDetail: Equatable {
             return BriefDetail(lines: [Line(id: "empty", leading: "", text: "Mail hasn't been checked yet", muted: true)], source: .mail)
         }
         var lines = summary.prefix(8).enumerated().map { Line(id: "summary-\($0.offset)", leading: "", text: $0.element) }
-        let said = summary.joined(separator: "\n").lowercased()
-        let shown = BriefMail.shown(needing).filter { said.isEmpty || !said.contains($0.subject.lowercased()) }
+        let said = BriefMail.words(summary.joined(separator: " "))
+        let shown = BriefMail.shown(needing).filter { said.isEmpty || !said.contains(BriefMail.words($0.subject)) }
         if !shown.isEmpty, !lines.isEmpty { lines.append(Line(id: "needs", leading: "", text: "Needs you", muted: true)) }
         lines += shown.prefix(5).enumerated().map { Line(id: "need-\($0.offset)", leading: $0.element.tag, text: $0.element.line) }
         if shown.count > 5 { lines.append(Line(id: "more", leading: "", text: "+\(shown.count - 5) more", muted: true)) }
@@ -317,6 +317,13 @@ enum BriefMail {
         return text
     }
 
+    /// Lowercased words separated by single spaces, so "Tech Week: starts today"
+    /// matches "Tech Week starts today". Empty for text without words.
+    static func words(_ text: String) -> String {
+        let parts = text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        return parts.isEmpty ? "" : " " + parts.joined(separator: " ") + " "
+    }
+
     /// Tags that change what the email means, so they win when repeats collapse.
     static let changeTags: Set<String> = ["Canceled", "Declined", "Updated"]
 
@@ -374,9 +381,10 @@ enum BriefMail {
 
     /// The MAIL row: what the inbox is about and how many emails need you
     /// ("Mostly event updates · 1 needs you", "Nothing needs you · 12 new,
-    /// mostly newsletters"). Private emails count; newsletters and promos don't.
+    /// mostly newsletters"). Counted as the details list them (repeats once,
+    /// private emails included); newsletters and promos don't count.
     static func row(overview: String, needing: [BriefNeed]) -> String {
-        let n = important(needing).count + privateCount(needing)
+        let n = shown(needing).count + privateCount(needing)
         let about = overview.trimmingCharacters(in: .whitespacesAndNewlines)
         if about.isEmpty { return n == 0 ? "Nothing needs you" : "\(n) need\(n == 1 ? "s" : "") you" }
         return n == 0 ? "Nothing needs you · \(about)" : "\(about) · \(n) need\(n == 1 ? "s" : "") you"

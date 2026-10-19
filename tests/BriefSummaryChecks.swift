@@ -89,6 +89,11 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
                                            "Needs you", "Jordan · Can you review my draft?", "UCSC Events · Tech Week starts today",
                                            "1 newsletter or promo left out"],
           "mail details: the summary, then needing emails it doesn't already name: \(summarized.lines.map(\.text))")
+    check(!BriefDetail.mail(needing: inbox, ready: true, summary: ["Tech Week: starts today!"]).lines.contains { $0.text.contains("UCSC") },
+          "punctuation doesn't hide a repeat")
+    check(BriefMail.row(overview: "Office hours", needing: [BriefNeed(title: "Office hours", sender: "John", person: true),
+                                                           BriefNeed(title: "Canceled: Office hours", sender: "John", person: true)])
+            == "Office hours · 1 needs you", "repeats count once, as the details list them")
     check(BriefMail.row(overview: "Mostly event updates and tech-week promos", needing: inbox)
             == "Mostly event updates and tech-week promos · 3 need you"
           && BriefMail.row(overview: "12 new, mostly newsletters and promos", needing: [BriefNeed(title: "50% off")])
