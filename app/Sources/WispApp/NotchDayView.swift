@@ -81,6 +81,10 @@ struct NotchDayView: View {
         .onReceive(NotificationCenter.default.publisher(for: .wispAssistantChanged)) { _ in
             Task { await DayCards.refresh(force: true); model.onResize() }
         }
+        .onChange(of: model.checkInDue) { _, due in
+            guard due, today.isShowingCurrentDay else { return }
+            Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
+        }
     }
 
     /// Old undated reminders: keep or delete, one quiet row each. Delete runs only
