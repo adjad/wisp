@@ -752,6 +752,7 @@ def test_the_guard_itself_refuses_non_json_and_any_origin():
     # is the second line, pinned here directly.
     from fastapi import HTTPException
     from starlette.requests import Request
+    from service.assistant import stale_reminders_api
 
     def request(*headers):
         return Request({"type": "http", "method": "POST", "path": "/", "headers": list(headers)})
