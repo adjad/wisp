@@ -2119,7 +2119,8 @@ class AssistantStore:
         A task planned after the reminder was hidden is the user's own choice and stays.
         "Planned" is its ``origin_ts`` when it has one (Plan time records the reminder's
         due time there), else when the task was first saved. A task with neither, made
-        before created_at existed, is treated as made from the reminder."""
+        before created_at existed, is treated as made from the reminder. created_at is the
+        first save, so renaming an older task to a hidden reminder's title hides it too."""
         from service.assistant.stale_reminders import valid_created_ts
         since: dict[str, float] = {}
         for r in self.hidden_reminders(now):

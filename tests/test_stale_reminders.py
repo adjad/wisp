@@ -705,3 +705,14 @@ def test_today_tasks_created_at_migrates_and_is_set_once(tmp_path):
         assert again == first, "an edit or carry keeps the original save time"
     finally:
         s._db.close()
+
+
+def test_the_evening_check_in_card_hides_the_same_task_twin(store):
+    from service.assistant import checkin
+    _overdue(store)
+    legacy = _day_task(store, "Get doordash order", legacy=True)
+    other = _day_task(store, "Write report")
+    day = datetime.fromtimestamp(NOW, _tz.utc).date().isoformat()
+    card = checkin.build(store, day, "UTC", now=NOW)
+    shown = {t["id"] for t in card["tasks"]}
+    assert other["id"] in shown and legacy["id"] not in shown
