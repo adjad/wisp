@@ -91,6 +91,10 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
           "mail details: the summary, then needing emails it doesn't already name: \(summarized.lines.map(\.text))")
     check(!BriefDetail.mail(needing: inbox, ready: true, summary: ["Tech Week: starts today!"]).lines.contains { $0.text.contains("UCSC") },
           "punctuation doesn't hide a repeat")
+    let wordless = [BriefNeed(title: "🎉🎉", sender: "Ann", person: true)]
+    check(!BriefDetail.mail(needing: wordless, ready: true, summary: ["Worth a look"]).lines.contains { $0.text.contains("Ann") }
+          && BriefMail.row(overview: "Quiet", needing: wordless) == "Nothing needs you · Quiet",
+          "a subject without words is neither listed nor counted")
     check(BriefMail.row(overview: "Office hours", needing: [BriefNeed(title: "Office hours", sender: "John", person: true),
                                                            BriefNeed(title: "Canceled: Office hours", sender: "John", person: true)])
             == "Office hours · 1 needs you", "repeats count once, as the details list them")
@@ -163,6 +167,9 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
     check(BriefTexts.row(overview: "Mostly family check-ins", people: waiting) == "Mostly family check-ins · 3 waiting on you"
           && BriefTexts.row(overview: "Quiet", people: []) == "Quiet · nobody waiting",
           "TEXTS row: the gist and how many are waiting")
+    let crowd = (1...8).map { BriefNeed(title: "P\($0): hi", sender: "P\($0)", received: now - Double($0) * 60) }
+    check(BriefDetail.texts(needing: crowd, ready: true, age: { _ in "" }).lines.last?.text == "+2 more",
+          "more than six waiting: the rest are counted, as the row counts them")
     check(BriefTexts.age(now - 30, now: now) == "1m" && BriefTexts.age(now - 2 * 86400, now: now) == "2d", "ages")
     check(!detail.lines.contains { $0.text.contains("dinner") || $0.text.contains("call me") }, "a text's words are never shown")
     check(BriefTexts.row([]) == "No texts need you" && BriefTexts.row(Array(waiting.prefix(1))) == "Priya is waiting on you"

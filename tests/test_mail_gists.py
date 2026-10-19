@@ -81,7 +81,7 @@ def test_recent_texts_leave_the_users_own_messages_out(monkeypatch):
         (NOW - 120, "Priya", "", "dinner at 7?"),
         (NOW - 3 * 86400, "Old", "", "ancient"),
     ])
-    assert G.recent_texts(NOW) == [{"label": "Priya", "ts": NOW - 60, "bodies": ["dinner at 7?"]}]
+    assert G.recent_texts(NOW) == [{"label": "Priya", "ts": NOW - 60, "bodies": ["dinner at 7?"], "names": []}]
     monkeypatch.setattr(imessage_tools, "messages_sync_state", lambda: "unavailable")
     assert G.recent_texts(NOW) == []
 
@@ -116,6 +116,17 @@ def test_the_texts_gist_names_topics_never_people_or_words():
     assert not G.texts_gist_ok("Priya asked about dinner", convos), "no conversation names"
     assert not G.texts_gist_ok("Mom says call me when you can", convos), "no copied run of words"
     assert not G.texts_gist_ok("Dinner at 7", convos) and not G.texts_gist_ok("“dinner tonight”", convos)
+
+
+def test_the_texts_gist_names_nobody_mentioned_in_a_message_or_a_group():
+    """Auditor finding on #297: a name inside a message passed the label check."""
+    convos = [convo("Family", "yes Priya's birthday dinner is Saturday", "Can Ravi bring cake"),
+              {"label": "Book club", "ts": NOW, "bodies": ["next week?"], "names": ["Ann Lee"]}]
+    assert not G.texts_gist_ok("Mostly Priya's birthday plans", convos)
+    assert not G.texts_gist_ok("Plans with ravi", convos)
+    assert not G.texts_gist_ok("Mostly lee and family news", convos)
+    assert not G.texts_gist_ok("Book recommendations", convos), "every word of a label"
+    assert G.texts_gist_ok("Mostly birthday plans and cake", convos), "a sentence's first word isn't a name"
 
 
 # --- the tick ---------------------------------------------------------------------------

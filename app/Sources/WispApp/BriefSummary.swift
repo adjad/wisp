@@ -187,7 +187,10 @@ struct BriefDetail: Equatable {
         }
         var lines = summary.prefix(8).enumerated().map { Line(id: "summary-\($0.offset)", leading: "", text: $0.element) }
         let said = BriefMail.words(summary.joined(separator: " "))
-        let shown = BriefMail.shown(needing).filter { said.isEmpty || !said.contains(BriefMail.words($0.subject)) }
+        let shown = BriefMail.shown(needing).filter { need in
+            let words = BriefMail.words(need.subject)
+            return said.isEmpty || words.isEmpty || !said.contains(words)
+        }
         if !shown.isEmpty, !lines.isEmpty { lines.append(Line(id: "needs", leading: "", text: "Needs you", muted: true)) }
         lines += shown.prefix(5).enumerated().map { Line(id: "need-\($0.offset)", leading: $0.element.tag, text: $0.element.line) }
         if shown.count > 5 { lines.append(Line(id: "more", leading: "", text: "+\(shown.count - 5) more", muted: true)) }
@@ -230,6 +233,7 @@ struct BriefDetail: Equatable {
             Line(id: "person-" + person.name, leading: person.latest.map(age) ?? "",
                  text: person.name + " · \(person.count) text\(person.count == 1 ? "" : "s")")
         }
+        if waiting.count > 6 { lines.append(Line(id: "more", leading: "", text: "+\(waiting.count - 6) more", muted: true)) }
         if lines.isEmpty { lines = [Line(id: "empty", leading: "", text: "No texts need you", muted: true)] }
         return BriefDetail(lines: lines, source: .messages)
     }

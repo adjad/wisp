@@ -211,9 +211,11 @@ def recent_texts(now: float) -> list[dict]:
     for ts, label, speaker, body in _message_rows(now, limit=200):
         if now - ts > _WINDOW_S:
             continue
-        convo = conversations.setdefault(label, {"label": label, "ts": ts, "bodies": []})
+        convo = conversations.setdefault(label, {"label": label, "ts": ts, "bodies": [], "names": []})
         if speaker != "you" and body and len(convo["bodies"]) < 3:
             convo["bodies"].append(body)
+            if speaker:
+                convo["names"].append(speaker)
     return list(conversations.values())
 
 
@@ -269,14 +271,29 @@ def mail_gist_ok(gist: str, lines: list[str]) -> bool:
     return all(re.search(rf"(?<!\d){n}(?!\d)", source) for n in re.findall(r"\d+", gist))
 
 
+def _names(conversations: list[dict]) -> set[str]:
+    """Words that may name someone: every word of a conversation's label or a
+    group speaker, and each capitalized word inside a message except its first."""
+    names: set[str] = set()
+    for convo in conversations:
+        for who in [convo.get("label") or "", *convo.get("names", [])]:
+            names.update(w.casefold() for w in re.findall(r"[\w']+", who) if len(w) > 1)
+        for body in convo["bodies"]:
+            words = re.findall(r"[\w']+", body)
+            names.update(re.sub(r"'s$", "", w).casefold() for w in words[1:] if w[:1].isupper())
+    return names
+
+
 def texts_gist_ok(gist: str, conversations: list[dict]) -> bool:
-    """Topics only: no numbers, no quote marks, no conversation's name, and no
-    four-word run copied from a message."""
+    """Topics only: no numbers, no quote marks, no word that may name someone
+    (a conversation, a group speaker, a capitalized word in a message), and no
+    four-word run copied from a message. A refused gist costs only the
+    deterministic sentence."""
     if re.search(r"\d|[\"“”]", gist):
         return False
     lowered = gist.casefold()
-    if any(c["label"] and re.search(rf"\b{re.escape(c['label'].casefold())}\b", lowered)
-           for c in conversations):
+    names = _names(conversations)
+    if any(re.sub(r"'s$", "", w) in names for w in re.findall(r"[\w']+", lowered)):
         return False
     words = re.findall(r"[\w']+", lowered)
     runs = {" ".join(words[i:i + 4]) for i in range(len(words) - 3)}
