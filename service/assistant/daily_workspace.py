@@ -128,6 +128,32 @@ def important_email_rows(snapshot):
     return out
 
 
+def fresh_header_rows(mail, now):
+    """(rows, eligible): cached inbox headers from accounts whose own read is
+    fresh (within 20 minutes, no error), when there is no complete snapshot.
+    Read twice around the rows so a sync landing mid-read is not mixed in."""
+    details = mail.email_source_details(part="headers")
+    rows = mail.header_rows()
+    after = mail.email_source_details(part="headers")
+    signature = lambda values: sorted((d.get("account"), d.get("source"), d.get("fresh"),
+        d.get("last_success"), d.get("error")) for d in values)
+    if signature(details) != signature(after):
+        return [], False
+    fresh = {d["account"] for d in details if d.get("fresh") is True and not d.get("error")
+             and finite(d.get("last_success")) and 0 <= now - d["last_success"] <= 20 * 60
+             and all(other.get("fresh") is True and not other.get("error") for other in details if other.get("account") == d["account"])}
+    selected = [r for r in rows if r.get("account") in fresh and finite(r.get("ts")) and r["ts"] <= now]
+    return selected, bool(fresh)
+
+
+def _header_identity(row, subject):
+    return (row.get("account_id"), row.get("account"), row.get("message_id"), row["ts"], subject)
+
+
+def header_record_id(row, subject):
+    return key("email", _header_identity(row, subject))
+
+
 def email_record_id(row):
     return key("email", (row["account_id"], row["message_id"]))
 
@@ -589,26 +615,16 @@ def collect_evidence(store, state, day, timezone, *, now):
             # The independently owned direct-mail integration exports this
             # per-account freshness contract. Older builds without it withhold
             # headers rather than inventing source age from a ready flag.
-            details = mail.email_source_details(part="headers")
-            rows = mail.header_rows()
-            after = mail.email_source_details(part="headers")
-            signature = lambda values: sorted((d.get("account"), d.get("source"), d.get("fresh"),
-                d.get("last_success"), d.get("error")) for d in values)
-            if signature(details) == signature(after):
-                fresh = {d["account"] for d in details if d.get("fresh") is True and not d.get("error")
-                         and finite(d.get("last_success")) and 0 <= now - d["last_success"] <= 20 * 60
-                         and all(other.get("fresh") is True and not other.get("error") for other in details if other.get("account") == d["account"])}
-                selected = [r for r in rows if r.get("account") in fresh and finite(r.get("ts")) and r["ts"] <= now]
-                header_count, header_eligible = len(selected), bool(fresh)
-                for row in selected[:200]:
-                    if digest_category(row) not in {"attention", "school"}:
-                        continue
-                    subject = redact_summary_codes(row["subject"])
-                    identity = (row.get("account_id"), row.get("account"), row.get("message_id"), row["ts"], subject)
-                    records.append(dict(id=key("email", identity), title=subject, quote=subject,
-                        reference="email-header-cache:" + key("item", identity),
-                        review_reason="Header-only review suggestion; read the original email. Body, ownership, reply status and deadlines are unverified.",
-                        **_sender_fields(row)))
+            selected, header_eligible = fresh_header_rows(mail, now)
+            header_count = len(selected)
+            for row in selected[:200]:
+                if digest_category(row) not in {"attention", "school"}:
+                    continue
+                subject = redact_summary_codes(row["subject"])
+                records.append(dict(id=header_record_id(row, subject), title=subject, quote=subject,
+                    reference="email-header-cache:" + key("item", _header_identity(row, subject)),
+                    review_reason="Header-only review suggestion; read the original email. Body, ownership, reply status and deadlines are unverified.",
+                    **_sender_fields(row)))
         result["email"] = dict(ready=snapshot is not None or header_eligible, records=records,
             inspected=min(200, len(snapshot.rows)) if snapshot else min(200, header_count),
             omitted=max(0, len(snapshot.rows) - 200) if snapshot else max(0, header_count - 200),

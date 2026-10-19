@@ -254,7 +254,7 @@ struct BriefContent {
             plan.workspace?.source_coverage.first { $0.source == source }
         }
         func need(_ item: DailyAttentionItem) -> BriefNeed {
-            BriefNeed(title: item.title, sender: item.sender ?? "", gist: item.gist ?? "", person: item.person ?? false,
+            BriefNeed(title: item.title, sender: item.sender ?? "", person: item.person ?? false,
                       received: item.received_ts, replied: item.replied ?? false)
         }
         let mailNeeds = needs.filter { $0.source == "email" }.map(need)
@@ -283,6 +283,7 @@ struct BriefContent {
             mail: coverage("email").map { (ready: $0.ready, needing: mailNeeds) },
             texts: coverage("messages").map { (ready: $0.ready, needing: textNeeds) },
             textsNeedAccess: coverage("messages")?.blocked == "full_disk_access",
+            mailOverview: plan.workspace?.mail_overview?.text, textsOverview: plan.workspace?.texts_overview?.text,
             soon: soon)
 
         let events = calendarBlocks.map { (title: $0.title, start: $0.start, end: $0.end) }
@@ -290,10 +291,12 @@ struct BriefContent {
         let calendarDetail = BriefDetail.calendar(allDay: allDay, events: events, unsynced: !calendarKnown, clock: today.clock)
         details = [
             "CAL": calendarDetail,
-            "MAIL": BriefDetail.mail(needing: mailNeeds, ready: coverage("email")?.ready == true),
+            "MAIL": BriefDetail.mail(needing: mailNeeds, ready: coverage("email")?.ready == true,
+                                     summary: isToday ? composed?.lines(.mail) ?? [] : []),
             "TEXTS": BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
                                        needsAccess: coverage("messages")?.blocked == "full_disk_access",
-                                       when: { $0 >= dayStart ? today.clock($0) : NotchChrome.dayClock($0, zone: zone) }),
+                                       summary: isToday ? composed?.lines(.messages) ?? [] : [],
+                                       age: { BriefTexts.age($0, now: now) }),
             "SOON": BriefDetail.soon(upcoming.flatMap { $0.isEmpty && !weekRead ? nil : $0 }, when: when),
         ]
 
