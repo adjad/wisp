@@ -449,7 +449,7 @@ def test_cancel_sends_the_exact_occurrence_and_reports_it(store, cancel_client):
     _calendar(store, *[_event("ek-1", "Standup", start + day * 24 * HOUR, 0.25) for day in range(2)])
     response = _cancel(client, start + 24 * HOUR)
     assert response.status_code == 200, response.text
-    assert response.json()["invitees_notified"] == 0 and response.json()["title"] == "Standup"
+    assert response.json()["invitees_notified"] is False and response.json()["title"] == "Standup"
     assert calls == [("cancel_calendar_event", {"source_id": "ek-1", "expected_title": "Standup",
                                                 "expected_start_ts": start + 24 * HOUR, "invitee_count": 0})]
     hub.publish.assert_awaited()
@@ -460,7 +460,8 @@ def test_the_organizer_cancels_an_event_with_invitees(store, cancel_client):
     start = _top_of_hour(26)
     _calendar(store, _event("ek-1", "Design review", start, invitee_count=3, organizer_is_user=True))
     response = _cancel(client, start, invitees=3)
-    assert response.status_code == 200 and response.json()["invitees_notified"] == 3
+    assert response.status_code == 200 and response.json()["invitees_notified"] is True
+    assert response.json()["invitee_count"] == 3
     assert calls[-1][1]["invitee_count"] == 3
 
 

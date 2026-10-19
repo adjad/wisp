@@ -145,5 +145,7 @@ async def cancel_event(body: CancelEvent):
         _refuse(502, "failed", error + ".")
     from service.assistant.hub import hub
     await hub.publish({"type": "changed"})
+    # invitees_notified: Calendar sends the organizer's invitees the cancellation.
     return {"ok": True, "source_id": row["source_id"], "title": row["title"],
-            "invitees_notified": row["invitee_count"], "at": time.time()}
+            "invitees_notified": row["invitee_count"] > 0, "invitee_count": row["invitee_count"],
+            "at": time.time()}
