@@ -92,8 +92,13 @@ and tap-only, the way a chief of staff actually works:
   window, and quitting Wisp inside the window drops it (nothing cancelled). Refusals show
   the service's message in the row (404 gone, 403/409 not the user's to cancel or invitees
   not synced, 409 not current, 409 unknown "check Calendar" with no retry, 503 app not
-  connected, 502 failed); rows whose `cancel_blocked` is set show "Cancel in Calendar"
-  with the reason on hover. Move opens an inline sub-panel in the card: up to three times Wisp found free
+  connected, 502 failed). Any answer that cannot prove nothing happened is uncertain: a 409
+  unknown, no answer within 70 s (the service may wait 8 s + 45 s on the app), a connection
+  dropped mid-request, or an error without the service's structured outcome; the row then
+  reads "Check Calendar" with no tap target, so a second native cancel is never one tap
+  away. Try again appears only when nothing was cancelled (not current, app not connected,
+  failed, service unreachable, row changed) and restarts the Undo window. Rows whose
+  `cancel_blocked` is set show "Cancel in Calendar" with the reason on hover. Move opens an inline sub-panel in the card: up to three times Wisp found free
   the way the Day tab plans (`GET /assistant/checkin/move_suggestions`: working hours,
   calendar, planned tasks, learned busy and away windows; deterministic, no model call),
   each with a short reason, plus "Other time…" with a day and time picker. Picking one
