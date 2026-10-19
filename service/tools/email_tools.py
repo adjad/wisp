@@ -1846,8 +1846,45 @@ DIGEST_SECTIONS = (
 _FULL_SECTIONS = {"attention": 10, "people": 10, "school": 10, "accounts": 6}
 
 
+_QUOTED_MAIL_HISTORY = re.compile(
+    r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>.*)$")
+_LIST_FOOTER = re.compile(
+    r"\bmanage (?:your )?(?:email )?preferences\b|"
+    r"\byou(?:'re| are) (?:receiving this|subscribed to)\b|"
+    r"\bunsubscribe (?:here|below|from (?:this|our|the) (?:mailing )?list)\b|"
+    r"(?:^|\n)\s*(?:to unsubscribe\b|unsubscribe\s*$)", re.I)
+
+
+def _digest_body_evidence(rows: list[dict]) -> list[dict]:
+    """Classify list footers using one eligible body generation, without fetching.
+
+    Header-only records cannot establish whether an invitation is a promotion.
+    Never join by display name/subject alone or retain a flag from an older call.
+    No body text is added to the digest or its header records.
+    """
+    clean = [{key: value for key, value in row.items() if key != "_current_list_footer"}
+             for row in rows]
+    snapshot = raw_email_snapshot()
+    if snapshot is None or type(getattr(snapshot, "generation", None)) is not int:
+        return clean
+    bodies = {(row["account_id"], row["message_id"]): row for row in snapshot.rows}
+    enriched = []
+    for row in clean:
+        body = bodies.get((row.get("account_id"), row.get("message_id")))
+        if (body is not None and row.get("account_id") and row.get("message_id")
+                and row.get("account") == body["account"]
+                and row.get("subject") == body["subject"]):
+            current = _QUOTED_MAIL_HISTORY.split(body["body"])[0]
+            if _LIST_FOOTER.search(current):
+                row = {**row, "_current_list_footer": True}
+        enriched.append(row)
+    return enriched if raw_email_snapshot(expected_generation=snapshot.generation) is snapshot else clean
+
+
 def digest_category(row: dict) -> str:
-    """The section a message belongs in, from its headers alone."""
+    """Classify headers, using body evidence only from a current matched record."""
+    if "body" in row and row.get("_current_list_footer") is not True:
+        row = _digest_body_evidence([row])[0]
     subject = row.get("subject", "") or ""
     sender = row.get("sender", "") or ""
     address = (row.get("sender_address", "") or "").lower()
@@ -1855,7 +1892,8 @@ def digest_category(row: dict) -> str:
     identity = f"{sender} {address}"
     machine = is_machine_sender(sender) or is_machine_sender(address) or is_broadcast(row)
     social = bool(_SOCIAL_RE.search(domain) or _SOCIAL_RE.search(sender))
-    marketing = bool(_MARKETING_SUBJECT.search(subject) or _NEWSLETTER_RE.search(identity))
+    marketing = bool(_MARKETING_SUBJECT.search(subject) or _NEWSLETTER_RE.search(identity)
+                     or row.get("_current_list_footer") is True)
     course = bool(_COURSE_RE.search(domain) or _COURSE_RE.search(sender))
     school = domain.endswith(".edu") or course
     urgent = bool(_URGENT_SUBJECT.search(subject)) or bool(_TIME_CHANGE_RE.search(subject))
@@ -2010,7 +2048,7 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
     ``layout="flat"`` is the older one-bullet-per-sender list; the Daily Summary
     feeds that to a model and keeps it.
     """
-    rows = _unique_records(rows)
+    rows = _digest_body_evidence(_unique_records(rows))
     if not rows:
         return f"No emails found for {label}."
     newest = max(row["ts"] for row in rows)

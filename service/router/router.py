@@ -937,11 +937,12 @@ _WEEKLY_PERSONAL_TOPIC_RES = (
         r"(?:that\s+)?i\s+should\s+know\s+about\s+(?P<topic>[^?;]{1,80}?)[\s.!?]*$",
         re.I),
 )
-_TOMORROW_WORD = r"(?:tomorrow|tommorow|tommorrow|tomorow|tmrw|tmrow)"
+_TOMORROW_WORD = r"(?:tomorrow|tommorow|tommorrow|tomorow|tommrow|tmrw|tmrow)"
 _TOMORROW_AGENDA_RE = re.compile(
     r"^" + _PRIVATE_QUERY_PREFIX
     + r"(?:what(?:'s|\s+is)\s+(?:up|on)|what\s+do\s+i\s+have|"
-    r"what\s+am\s+i\s+doing|what\s+are\s+my\s+plans|any\s+plans)\s+"
+    r"what\s+am\s+i\s+doing|what\s+are\s+my\s+plans|any\s+plans|"
+    r"what(?:'s|\s+is)\s+my\s+(?:plan|agenda|schedule)|show\s+me\s+my\s+plan)\s+"
     r"(?:for\s+)?" + _TOMORROW_WORD + r"[\s.!?]*$",
     re.I,
 )
@@ -1052,7 +1053,7 @@ def _weekly_personal_topic_args(text: str) -> tuple[str, str] | None:
 def _tomorrow_agenda_args(text: str) -> dict | None:
     if not _TOMORROW_AGENDA_RE.fullmatch(text.strip()):
         return None
-    return {"period": "tomorrow", "calendar_only": True}
+    return {"period": "tomorrow", "calendar_only": not bool(re.search(r"\bmy\s+plan\b", text, re.I))}
 
 
 def _tomorrow_target_day() -> str:
@@ -7313,17 +7314,37 @@ def _knowledge_request(text: str) -> RouteDecision | None:
 
 
 def _priority_read(text: str) -> RouteDecision | None:
-    from service.workflows.workflow20 import priority_read
-    read = priority_read(text)
+    from service.workflows.workflow20 import attention_read, priority_read
+    source, policy_forbidden = _private_read_policy(text)
+    attention = attention_read(source)
+    read = attention or priority_read(source)
     if read is None:
         return None
     tools = list(read.tools)
+    excluded = {"email": "view_emails", "messages": "view_messages",
+                "calendar": "get_upcoming", "notes": "search_notes"}
+    args = dict(read.bindings["collect_task_evidence"])
+    for name, tool in excluded.items():
+        if tool in policy_forbidden:
+            args[f"include_{name}"] = False
+    bindings = {"collect_task_evidence": args}
     decision = _mk_scoped(tools, "source-grounded personal priorities",
                           multi=True, after=frozenset(tools), light=False)
     decision.verified_results_only = True
     decision.required_tool_groups = read.groups
-    decision.tool_argument_bindings = read.bindings
-    decision.direct_calls = [(tool, read.bindings[tool]) for tool in tools]
+    decision.tool_argument_bindings = bindings
+    decision.direct_calls = [(tool, bindings[tool]) for tool in tools]
+    decision.forbidden_tools |= policy_forbidden
+    decision.strict_read_limits = {"collect_task_evidence": 1}
+    if attention:
+        decision.resolved_request = (text + "\n\nRead the selected current communication sources once. "
+            "Identify actual requests, unresolved decisions, deadlines and account/security alerts using exact source quotes/IDs. "
+            "Unread state and a human-looking sender name do not establish importance. "
+            "Promotions, newsletter invitations and list footers are not personal obligations. "
+            "Keep outgoing promises and other people's responsibilities distinct. "
+            "Cover every selected source or explicitly state its unavailable/omitted coverage; "
+            "an empty Messages result says nothing about Mail. Never invent urgency or claim an action was performed.")
+        return decision
     decision.resolved_request = (text + "\n\nUse the current source results to suggest priorities. "
         "Use collect_task_evidence once before narration. Its window describes task due dates and Calendar occurrences, "
         "not communication receipt dates. Preserve every excluded source. "
@@ -7606,6 +7627,63 @@ def _behavior_request(text: str, last_tools: str | None = None) -> RouteDecision
     return decision
 
 
+def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision:
+    """An excluded source stays excluded after clause merging and retrieval.
+
+    A host-bound evidence read may retain other sources, but an unbound
+    aggregate or opaque tool cannot be an escape around the exclusion.
+    """
+    policy_text = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
+    _, excluded = _private_read_policy(policy_text)
+    if not excluded:
+        return decision
+    forbidden, bindings = routing_guard_contract(text)
+    forbidden = set(forbidden)
+    aggregate = decision.tool_argument_bindings.get("collect_task_evidence", {})
+    source_tools = {"email": "view_emails", "messages": "view_messages",
+                    "calendar": "get_upcoming", "notes": "search_notes"}
+    if aggregate and all(aggregate.get(f"include_{source}") is False
+                         for source, tool in source_tools.items() if tool in excluded):
+        forbidden.discard("collect_task_evidence")
+    decision.forbidden_tools |= frozenset(forbidden)
+    blocked = decision.forbidden_tools
+    if decision.tool_subset is not None:
+        decision.tool_subset = [name for name in decision.tool_subset if name not in blocked]
+    elif decision.needs_tools:
+        from service.tools.registry import routable_tool_names
+        decision.tool_subset = sorted(routable_tool_names() - blocked)
+    decision.direct_calls = [(name, args) for name, args in decision.direct_calls if name not in blocked]
+    decision.required_tool_groups = tuple(group - blocked for group in decision.required_tool_groups
+                                          if group - blocked)
+    decision.narration_after -= blocked
+    decision.conditional_tools = tuple(item for item in decision.conditional_tools
+                                       if not blocked.intersection(item[:2]))
+    decision.tool_argument_bindings = {name: {**args, **bindings.get(name, {})}
+                                       for name, args in decision.tool_argument_bindings.items()
+                                       if name not in blocked}
+    if decision.force_first_tool in blocked:
+        decision.force_first_tool = None
+        decision.expect_tool_first = bool(decision.required_tool_groups)
+    if decision.needs_tools and not decision.tool_subset:
+        decision.needs_tools = False
+        decision.expect_tool_first = False
+    return decision
+
+
+def _assistant_read_claim(text: str) -> RouteDecision | None:
+    """Complete personal questions precede generic chat and current-web rules."""
+    decision = _priority_read(text)
+    source, _ = _private_read_policy(text)
+    if decision is None and _tomorrow_agenda_args(source) is not None:
+        decision = _strict_private_read_decision(text)
+    if decision is None:
+        return None
+    request = _classify_web_request(text)
+    return _finalize(decision, text, web_request=replace(
+        request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
+        public_reference=False, inherited=False, clarification=None))
+
+
 async def route(text: str, *,
                 last_user: str | None = None,
                 recent_users: list[str] | None = None,
@@ -7614,7 +7692,9 @@ async def route(text: str, *,
     original_text = text
     # Behavior-learning questions are claimed here, ahead of _route_impl (whose
     # body is pinned), only while behavior learning is on.
-    behavior = _behavior_route(text, last_user=last_user, recent_users=recent_users,
+    behavior = _assistant_read_claim(text)
+    if behavior is None:
+        behavior = _behavior_route(text, last_user=last_user, recent_users=recent_users,
                                last_assistant=last_assistant, last_tools=last_tools)
     if behavior is None:
         behavior = _no_tool_claim(text, last_user=last_user, recent_users=recent_users,
@@ -7623,7 +7703,7 @@ async def route(text: str, *,
         text, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)
     _clarify_unnamed_offer_channel(decision, text, last_assistant=last_assistant)
-    return _guard_scheduled_cancel(decision, original_text)
+    return _guard_explicit_sources(_guard_scheduled_cancel(decision, original_text), original_text)
 
 
 def _no_tool_claim(text: str, *, last_user: str | None, recent_users: list[str] | None,
@@ -7632,7 +7712,13 @@ def _no_tool_claim(text: str, *, last_user: str | None, recent_users: list[str] 
     it" that opens a conversation. Claimed ahead of _route_impl (whose body is
     pinned) because their nouns otherwise decide the route — "compose a haiku"
     became a channel-ambiguous send with a forced Notes lookup."""
-    if not (last_user or recent_users or last_assistant or last_tools) and _BARE_SEND_RE.match(text):
+    if re.fullmatch(
+            r"\s*(?:please\s+)?(?:explain|describe|teach\s+me)\s+"
+            r"(?:how\s+to|how\s+I\s+(?:can|should))\s+"
+            r"(?:prioriti[sz]e|triage|organi[sz]e|manage|sort)\s+"
+            r"(?:my\s+|an?\s+|the\s+)?(?:e-?mails?|inbox|messages?|texts?)[.!?\s]*", text, re.I):
+        decision = _mk("general", reason="general communication advice, no private reads")
+    elif not (last_user or recent_users or last_assistant or last_tools) and _BARE_SEND_RE.match(text):
         # Nothing is drafted, so there is nothing to send. Offering the send
         # tools left the loop hunting for a message the user never wrote.
         decision = _mk("general", reason="bare send with nothing drafted -> ask what to send")

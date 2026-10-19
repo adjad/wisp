@@ -59,7 +59,7 @@ def _evidence_sources(included: str | None, excluded: str | None,
                       allowed: tuple[str, ...]) -> tuple[str, ...] | None:
     def parse(value):
         found = []
-        for part in re.split(r"\s*(?:,|\band\b|\bor\b)\s*", value, flags=re.I):
+        for part in re.split(r"\s*(?:,|/|\band\b|\bor\b)\s*", value, flags=re.I):
             part = re.sub(r"^(?:my|our|the)\s+", "", part.strip(), flags=re.I)
             names = [name for name in allowed if re.fullmatch(_SOURCE[name], part, re.I)]
             if len(names) != 1:
@@ -78,8 +78,9 @@ def priority_read(text: str) -> PersonalRead | None:
     match = re.fullmatch(
         r"\s*(?:(?:please|can you|could you)\s+)?(?:what\s+(?:should\s+I\s+"
         r"(?:work\s+on|focus\s+on|do|prioriti[sz]e|tackle)|do\s+I\s+need\s+to\s+do)|"
-        r"help\s+me\s+prioriti[sz]e(?:\s+my\s+(?:work|tasks))?)"
-        r"(?:\s+(?P<period>now|today|tomorrow|tmrow|tmrw|(?:this|next)\s+(?:week|month)))?"
+        r"help\s+me\s+prioriti[sz]e(?:\s+my\s+(?:work|tasks))?|"
+        r"what\s+are\s+my\s+priorities|what\s+needs\s+(?:me|my\s+attention))"
+        r"(?:\s+(?P<period>now|today|tomorrow|tommorow|tommorrow|tomorow|tommrow|tmrow|tmrw|(?:this|next)\s+(?:week|month)))?"
         r"(?:\s+(?:using|from)\s+(?P<include>[^.!?;\n]+?)(?:\s+only)?)?"
         r"(?:\s*,?\s*(?:without|excluding|skip)\s+(?P<exclude>[^.!?;\n]+))?[.!?\s]*", text, re.I)
     if not match:
@@ -88,8 +89,36 @@ def priority_read(text: str) -> PersonalRead | None:
     if sources is None:
         return None
     period = (match["period"] or "today").casefold()
-    period = {"now": "today", "tmrow": "tomorrow", "tmrw": "tomorrow"}.get(period, period)
+    period = {"now": "today", **dict.fromkeys(
+        ("tommorow", "tommorrow", "tomorow", "tommrow", "tmrow", "tmrw"), "tomorrow")}.get(period, period)
     args = {"period": period, "include_overdue": True, "include_undated": True,
+            **{f"include_{source}": source in sources for source in _SOURCE}}
+    return PersonalRead(sources, ("collect_task_evidence",), (frozenset({"collect_task_evidence"}),),
+                        {"collect_task_evidence": args})
+
+
+def attention_read(text: str) -> PersonalRead | None:
+    """Importance questions need current bodies, not an unread-header ranking.
+
+    Only complete read-only questions are consumed. A request to compose/send,
+    a source-specific date, or an additional clause keeps its existing owner.
+    """
+    prefix = r"\s*(?:(?:please|can you|could you)\s+)?"
+    patterns = (
+        r"what\s+(?:needs|requires)\s+(?:my\s+)?attention\s+(?:in|on|from|across)\s+(?P<sources>.+?)",
+        r"(?:which|what)\s+(?P<sources>.+?)\s+(?:are|is)\s+(?:important|urgent)",
+        r"which\s+(?P<sources>.+?)\s+should\s+I\s+(?:reply|respond)\s+to(?:\s+first)?",
+    )
+    sources = None
+    for pattern in patterns:
+        if match := re.fullmatch(prefix + pattern + r"[.!?\s]*", text, re.I):
+            sources = _evidence_sources(match["sources"], None, ("email", "messages"))
+            break
+    if re.fullmatch(prefix + r"what\s+should\s+I\s+(?:reply|respond)\s+to\s+first[.!?\s]*", text, re.I):
+        sources = ("email", "messages")
+    if not sources:
+        return None
+    args = {"period": "today", "include_overdue": False, "include_undated": False,
             **{f"include_{source}": source in sources for source in _SOURCE}}
     return PersonalRead(sources, ("collect_task_evidence",), (frozenset({"collect_task_evidence"}),),
                         {"collect_task_evidence": args})
@@ -212,7 +241,7 @@ def email_summary_excluding_messages(text: str) -> PersonalRead | None:
 
 
 def personal_read(text: str) -> PersonalRead | None:
-    if (typed := priority_read(text) or weather_read(text) or calendar_question(text) or conversation_read(text)
+    if (typed := priority_read(text) or attention_read(text) or weather_read(text) or calendar_question(text) or conversation_read(text)
             or email_summary_excluding_messages(text)) is not None:
         return typed
     if (daily := daily_read(text)) is not None:

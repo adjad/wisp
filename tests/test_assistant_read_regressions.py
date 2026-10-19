@@ -1,0 +1,195 @@
+"""User-facing assistant read contracts; synthetic state and tool execution only."""
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+import json
+
+import pytest
+
+import service.tools  # noqa: F401
+from service.router import router as R
+from service.tools import email_tools as E
+
+
+@pytest.fixture(autouse=True)
+def offline_retrieval(monkeypatch):
+    monkeypatch.setattr(R, '_semantic_core', AsyncMock(return_value=[
+        'get_upcoming', 'summarize_emails', 'summarize_messages', 'search_notes']))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prompt', [
+    'what is my plan for tomorrow', 'what is my plan for tommorow',
+    "what's my plan tomorrow?", 'show me my plan for tomorrow',
+])
+async def test_existing_personal_plan_reads_tomorrow_commitments(prompt):
+    d = await R.route(prompt)
+    assert d.needs_tools and d.verified_results_only
+    assert d.direct_calls == [('get_upcoming', {'period': 'tomorrow', 'calendar_only': False})]
+    assert {'web_search', 'recall', 'run_shell'} <= d.forbidden_tools
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('period', ['tomorrow', 'tommorow', 'tommorrow', 'tomorow', 'tommrow', 'tmrow', 'tmrw'])
+async def test_priority_spelling_does_not_drop_deadline_sources(period):
+    d = await R.route('what should I do ' + period)
+    [(name, args)] = d.direct_calls
+    assert name == 'collect_task_evidence' and args['period'] == 'tomorrow'
+    assert all(args['include_' + source] for source in ('calendar', 'reminders', 'email', 'messages', 'notes'))
+    assert d.strict_read_limits == {'collect_task_evidence': 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source,tool', [('email', 'view_emails'), ('messages', 'view_messages'), ('calendar', 'get_upcoming'), ('notes', 'search_notes')])
+@pytest.mark.parametrize('template', ["don't read {source}; what should I do tomorrow?", "what should I do tomorrow; don't read {source}", "don't read {source}, what should I do tomorrow?"])
+async def test_negative_sources_survive_priority_clause_merging(source, tool, template):
+    d = await R.route(template.format(source=source))
+    [(name, args)] = d.direct_calls
+    assert name == 'collect_task_evidence' and args['period'] == 'tomorrow'
+    assert args['include_' + source] is False
+    assert any(args['include_' + other] for other in ('calendar', 'reminders', 'email', 'messages', 'notes') if other != source)
+    assert tool in d.forbidden_tools
+    assert {'run_shell', 'run_applescript', 'daily_brief'} <= d.forbidden_tools
+    assert set(d.tool_subset) == {'collect_task_evidence'}
+
+
+@pytest.mark.asyncio
+async def test_negative_source_guard_also_covers_nonpriority_routes():
+    d = await R.route("don't read email; show my unread messages")
+    assert {'view_emails', 'summarize_emails', 'triage_inbox', 'collect_task_evidence'} <= d.forbidden_tools
+    assert not set(d.tool_subset or ()) & {'view_emails', 'summarize_emails', 'triage_inbox'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prompt,sources', [
+    ('what needs attention on email/messages', {'email', 'messages'}),
+    ('what needs my attention in email and messages?', {'email', 'messages'}),
+    ('which emails are important?', {'email'}),
+    ('what needs attention in my messages?', {'messages'}),
+    ('which texts should I reply to?', {'messages'}),
+    ('what should I reply to first?', {'email', 'messages'}),
+])
+async def test_attention_reads_current_bodies_for_every_selected_source(prompt, sources):
+    d = await R.route(prompt)
+    [(name, args)] = d.direct_calls
+    assert name == 'collect_task_evidence'
+    selected = {source for source in ('calendar', 'reminders', 'email', 'messages', 'notes') if args['include_' + source]}
+    assert selected == sources
+    assert set(d.tool_subset) == {'collect_task_evidence'}
+    assert d.verified_results_only
+    assert 'promotions' in d.resolved_request.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prompt', ['hello', 'thanks', 'write a fictional day plan', 'explain how to prioritize email'])
+async def test_general_conversation_does_not_read_private_sources(prompt):
+    assert not (await R.route(prompt)).needs_tools
+
+
+@pytest.mark.asyncio
+async def test_personal_priorities_do_not_become_current_web_search():
+    d = await R.route('what needs me today?')
+    assert d.direct_calls[0][0] == 'collect_task_evidence'
+    assert 'web_search' in d.forbidden_tools
+
+
+@pytest.mark.asyncio
+async def test_empty_messages_does_not_skip_requested_mail_bodies(monkeypatch):
+    from service.tools import task_evidence as T, imessage_tools as I
+    header = {**row(), 'to': ['self@synthetic.invalid'], 'body': 'Please review the contract.'}
+    snapshot = SimpleNamespace(generation=1, rows=(header,), accounts=('Synthetic',),
+                               synced_at=100, raw_digest='synthetic')
+    mail = Mock(return_value=snapshot)
+    messages = Mock(return_value={'state': 'synthetic bounded snapshot', 'records': [], 'coverage': {}})
+    monkeypatch.setattr(E, 'raw_email_snapshot', mail)
+    monkeypatch.setattr(I, 'structured_messages_snapshot', messages)
+    monkeypatch.setattr(T, '_native_source', Mock(side_effect=AssertionError('unrequested source')))
+    d = await R.route('what needs attention on email/messages')
+    payload = json.loads(await T.collect_task_evidence(**d.direct_calls[0][1]))
+    assert set(payload['sources']) == {'email', 'messages'}
+    assert payload['sources']['email']['records'][0]['body'] == header['body']
+    assert payload['sources']['messages']['records'] == []
+    mail.assert_called_once()
+    messages.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_excluded_mail_is_never_read_by_bound_collector(monkeypatch):
+    from service.tools import task_evidence as T, imessage_tools as I
+    mail = Mock(side_effect=AssertionError('excluded Mail read'))
+    monkeypatch.setattr(E, 'raw_email_snapshot', mail)
+    monkeypatch.setattr(I, 'structured_messages_snapshot', lambda: {
+        'state': 'synthetic bounded snapshot', 'records': [], 'coverage': {}})
+    d = await R.route("don't read email; what needs attention on email/messages")
+    payload = json.loads(await T.collect_task_evidence(**d.direct_calls[0][1]))
+    assert set(payload['sources']) == {'messages'} and 'email' in payload['excluded_sources']
+    mail.assert_not_called()
+
+
+def row(subject='A special invitation for you', sender='Taylor', message='m1', account='a1'):
+    return dict(ts=100, account='Synthetic', account_id=account, message_id=message,
+                native_id='', sender=sender, sender_address='taylor@events.example',
+                subject=subject, unread=True)
+
+
+def snapshot_for(header, body):
+    return SimpleNamespace(generation=1, rows=({**header, 'body': body},))
+
+
+@pytest.mark.parametrize('subject,body', [
+    ('Last chance: RSVP by tomorrow', 'Register for our showcase. Manage your email preferences below.'),
+    ('A special invitation for you', 'Product showcase. Unsubscribe from this mailing list below.'),
+])
+def test_promo_body_changes_digest_category_without_exposing_body(monkeypatch, subject, body):
+    header = row(subject)
+    snapshot = snapshot_for(header, body)
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
+    assert E.digest_category(header) == 'attention'  # header-only evidence is ambiguous
+    digest = E.sender_digest([header], 'synthetic')
+    assert 'Needs your attention' not in digest
+    assert body not in digest
+    assert '_current_list_footer' not in header
+
+
+@pytest.mark.parametrize('changed', [dict(account_id='another-account'), dict(message_id='another-message'),
+                                    dict(account='Another label'), dict(subject='Another subject')])
+def test_promo_evidence_cannot_cross_account_or_message_identity(monkeypatch, changed):
+    header = row()
+    snapshot = snapshot_for({**header, **changed}, 'Product showcase. Manage your email preferences.')
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
+    assert '1 needs attention' in E.sender_digest([header], 'synthetic')
+
+
+@pytest.mark.parametrize('snapshot', [None, SimpleNamespace(rows=())])
+def test_missing_body_generation_preserves_header_evidence(monkeypatch, snapshot):
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
+    assert '1 needs attention' in E.sender_digest([row()], 'synthetic')
+
+
+def test_current_promo_body_is_not_a_workspace_obligation(monkeypatch):
+    from service.assistant.daily_workspace import important_email_rows
+    header = row()
+    snapshot = snapshot_for(header, 'Product showcase. Unsubscribe from this mailing list below.')
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
+    assert important_email_rows(snapshot) == []
+
+
+def test_body_generation_change_drops_classification_evidence(monkeypatch):
+    header = row()
+    snapshot = snapshot_for(header, 'Product showcase. Manage your email preferences.')
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: None if kwargs else snapshot)
+    assert '1 needs attention' in E.sender_digest([header], 'synthetic')
+
+
+@pytest.mark.parametrize('subject', ['Security alert: verify your account', 'Payment failed'])
+def test_protected_alert_still_surfaces_with_a_list_footer(monkeypatch, subject):
+    header = row(subject, sender='Shop Newsletter')
+    snapshot = snapshot_for(header, 'Manage your email preferences. A problem with your account needs review.')
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
+    assert '1 needs attention' in E.sender_digest([header], 'synthetic')
+
+
+def test_quoted_list_footer_does_not_demote_a_real_invitation(monkeypatch):
+    header = row()
+    snapshot = snapshot_for(header, 'Can you come to dinner?\nOn Monday Taylor wrote:\nManage your email preferences.')
+    monkeypatch.setattr(E, 'raw_email_snapshot', lambda **kwargs: snapshot)
+    assert '1 needs attention' in E.sender_digest([header], 'synthetic')
