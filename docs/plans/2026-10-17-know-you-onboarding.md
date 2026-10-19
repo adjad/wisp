@@ -82,8 +82,13 @@ and tap-only, the way a chief of staff actually works:
 - **Evening (from 17:00 local).** Today's card: "You planned 4 things today." Each
   active task has Done / Tomorrow / Drop. Tomorrow moves the task (pin cleared, a
   missed deadline cleared, `carried_from` set to the first planned day); Drop dismisses
-  it. Then tomorrow's events with Keep / Move / Cancel; Move and Cancel only prefill Ask,
-  so the existing draft-and-confirm path decides what is sent. The scheduler posts one
+  it. Then tomorrow's events with Keep / Move / Cancel. Cancel opens Ask with the request
+  naming the exact event (title, day, time, calendar id), so the agent's confirmation stays
+  the gate. Move opens an inline sub-panel in the card: up to three times Wisp found free
+  the way the Day tab plans (`GET /assistant/checkin/move_suggestions`: working hours,
+  calendar, planned tasks, learned busy and away windows; deterministic, no model call),
+  each with a short reason, plus "Other time…" with a day and time picker. Picking one
+  opens Ask with "Move … to …"; nothing changes from the card itself. The scheduler posts one
   notification when the card becomes due and the app is listening; "Skip tonight" or
   "Done for today" completes it. Decisions are recorded in `~/.moe/checkins.json`
   (60 days), which also answers "how many evenings has this been moved".

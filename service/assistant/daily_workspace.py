@@ -132,9 +132,22 @@ def email_record_id(row):
     return key("email", (row["account_id"], row["message_id"]))
 
 
+def display_name(sender, address=""):
+    """A sender as a person reads it: "John Morada", never "John Morada <j@x.com>"
+    or a bracketed address. A bare address stays when there is no name."""
+    text = re.sub(r"\s+", " ", str(sender or "")).strip()
+    # Brackets go before any truncation, an unterminated "<addr" too, so no
+    # fragment of an address is left in the name.
+    name = clean(re.sub(r"<[^>]*(?:>|$)", "", text).strip().strip('"\'').strip(), 80)
+    if name:
+        return name
+    inner = re.search(r"<([^>]+)>?", text)
+    return clean(inner.group(1) if inner else address, 80)
+
+
 def _sender_fields(row):
     from service.tools.email_tools import is_machine_sender
-    sender = clean(row.get("sender"), 80)
+    sender = display_name(row.get("sender"), row.get("sender_address", ""))
     return dict(sender=sender, received_ts=row["ts"] if finite(row.get("ts")) else None,
                 person=bool(sender) and not is_machine_sender(f"{sender} {row.get('sender_address', '')}"))
 
@@ -277,6 +290,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
                              detail=clean(info.get("detail") or "Source evidence is unavailable", 500),
                              inspected=info.get("inspected", len(records)),
                              omitted=info.get("omitted", 0)))
+        # What the user must grant before this source can be read, when known.
+        if info.get("blocked") == "full_disk_access":
+            coverage[-1]["blocked"] = "full_disk_access"
         if info.get("ready") is not True:
             records = [r for r in records if r.get("wisp_only") is True]
         for record in records:
@@ -641,12 +657,24 @@ def collect_evidence(store, state, day, timezone, *, now):
                     review_reason="Important conversation context; review the original before choosing an action.")
             records.append(record)
         message_coverage = structured.get("coverage") or {}
+        # Messages without Full Disk Access: say so, with what to grant, rather than
+        # reading as "still syncing" (MessagesReader: "chat.db not readable").
+        blocked = None
+        if not ready and messages_sync_state() == "unavailable":
+            from service.tools.imessage_tools import messages_unavailable_reason
+            # Only the reader's Full Disk Access wording: another chat.db failure
+            # (a missing file) must not send the user to the wrong setting.
+            if "full disk access" in messages_unavailable_reason().casefold():
+                blocked = "full_disk_access"
         skipped = message_coverage.get("skipped", 0)
         result["messages"] = dict(ready=ready, records=records, inspected=min(100, len(rows)),
             omitted=max(0, len(rows) - 100) + (skipped if type(skipped) is int else 0),
             detail=("Current-launch cached conversations; cache publication age and exhaustive coverage unknown. "
                     + f"Feed reports {skipped} skipped, {message_coverage.get('truncated', 0)} shortened and {message_coverage.get('malformed', 0)} malformed records.") if ready else
+                   "Messages need Full Disk Access." if blocked else
                    "Messages unavailable or still syncing.")
+        if blocked:
+            result["messages"]["blocked"] = blocked
     except Exception:
         result["messages"] = dict(ready=False, records=[], detail="Messages could not be assessed.")
     try:
@@ -684,6 +712,9 @@ def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), p
     the API layer: this module stays pure over the records it is handed and
     imports nothing from memory."""
     state = store.today_snapshot(day, timezone)
+    hide = getattr(store, "hide_stale_tasks", None)
+    if hide is not None:  # a Day task twin of a hidden reminder (today_api.snapshot does the same)
+        state = {**state, "tasks": hide(state["tasks"], now)}
     evidence = collect_evidence(store, state, day, timezone, now=now)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
                   ignored_windows=ignored_windows, profile=profile)

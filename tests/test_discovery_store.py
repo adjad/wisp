@@ -230,7 +230,7 @@ def test_additive_migration_preserves_legacy_and_today_rows(tmp_path, monkeypatc
     manual = old.add_manual('Manual override', 1900000000)
     old.set_status(manual['id'], 'dismissed')
     old.mark_notified(manual['id'], 'due')
-    old._db.execute('INSERT INTO today_tasks VALUES (?,?,?,?,?)',
+    old._db.execute('INSERT INTO today_tasks(id,day,payload,revision,updated_at) VALUES (?,?,?,?,?)',
                     ('today','2026-09-25', '{"pinned_start":1900000000,"title":"Keep"}',7,123.5))
     old._db.execute('INSERT INTO today_preferences VALUES (?,?,?,?)',
                     ('2026-09-25','UTC','{"start_minute":600}',4))

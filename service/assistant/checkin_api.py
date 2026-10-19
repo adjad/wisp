@@ -61,6 +61,32 @@ def get_checkin(day: str, timezone: str = "UTC"):
         _fail(exc)
 
 
+def _availability():
+    """The Day tab's behavior-availability provider, or None when that layer is unavailable."""
+    try:
+        from service.assistant.daily_workspace_api import availability
+    except Exception:  # noqa: BLE001
+        return None
+    now = time.time()
+    return lambda day, timezone=None: availability(day, timezone or "UTC", now)
+
+
+@router.get("/move_suggestions")
+def move_suggestions(event_id: str, day: str, timezone: str = "UTC"):
+    """Other times an event from the check-in could move to: deterministic,
+    read-only, no model call. The agent's own confirmation still gates the move."""
+    now = time.time()
+    try:
+        event = checkin.find_event(assistant_store, event_id, day, timezone)
+        if event is None:
+            raise KeyError("That event is no longer on the calendar")
+        provider = _availability()
+        behavior = (lambda d: provider(d, timezone)) if provider else None
+        return checkin.move_suggestions(assistant_store, event, timezone, now=now, behavior=behavior)
+    except (ValueError, KeyError) as exc:
+        _fail(exc)
+
+
 @router.post("/tasks/{task_id}")
 def decide(task_id: str, body: TaskDecision):
     now = time.time()

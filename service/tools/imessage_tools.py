@@ -1676,6 +1676,12 @@ def _unavailable_message() -> str:
             "try again.)")
 
 
+def messages_unavailable_reason() -> str:
+    """Why the last Messages read failed ("chat.db not readable (Full Disk
+    Access?)"), or "" when it didn't."""
+    return _unavailable_reason or ""
+
+
 def messages_sync_state() -> str:
     """Current-launch Messages readiness: ready, syncing, or unavailable."""
     if not _sync_completed:
