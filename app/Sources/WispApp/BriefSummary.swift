@@ -326,7 +326,7 @@ enum BriefMail {
     /// A withheld subject, also behind a Re:/Invitation: prefix ("Re: Private details omitted.").
     static func isPrivate(_ subject: String) -> Bool {
         let s = splitPrefix(subject).rest.trimmingCharacters(in: .whitespaces).lowercased()
-        return s.hasPrefix("private details omitted") || s.hasPrefix("authentication details omitted")
+        return s.hasPrefix("private details omitted") || s.hasPrefix("authentication details omitted") || s.contains("details omitted)")
             || s.hasPrefix("possible request context (private details omitted")
     }
 

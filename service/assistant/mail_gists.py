@@ -84,6 +84,9 @@ KINDS = ("summary", "inbox", "texts")
 _attempts: dict[str, int] = {}
 _cache: dict[str, dict] | None = None
 _next_call_at = 0.0
+# A kind whose call failed waits _FAILURE_GAP_S on its own, so a failing summary
+# never holds up the MAIL and TEXTS lines.
+_retry_at: dict[str, float] = {}
 _task: asyncio.Task | None = None
 _last_standdown = ""
 
@@ -164,7 +167,10 @@ def _stood_down(reason: str) -> None:
 
 _CHANGE = re.compile(r"^\s*(?:canceled|cancelled)(?: event)?\s*:", re.I)
 _EVENT = re.compile(r"^\s*(?:invitation|updated invitation|accepted|declined|tentatively accepted)\s*:", re.I)
-_PRIVATE = re.compile(r"^\s*(?:private details omitted|authentication details omitted|possible request context)", re.I)
+# Subjects Wisp withheld: "Private details omitted.", "Deadline notice (private
+# details omitted).", "Unverified security incident notice (details omitted)."
+_PRIVATE = re.compile(r"^\s*(?:private details omitted|authentication details omitted|possible request context)"
+                      r"|details omitted\)", re.I)
 
 
 def recent_mail(now: float) -> list[dict]:
@@ -240,12 +246,15 @@ def _bare(subject: str) -> str:
     return subject.strip()
 
 
-def _from_user(row: dict) -> bool:
+def _user_addresses() -> set[str]:
     try:
         from service.memory.identity import user_emails
-        mine = {e.casefold() for e in user_emails()}
+        return {e.casefold() for e in user_emails()}
     except Exception:  # noqa: BLE001 — unknown identity: nothing is the user's
-        return False
+        return set()
+
+
+def _from_user(row: dict, mine: set[str]) -> bool:
     address = (row.get("sender_address", "") or "").casefold()
     if not address:
         found = re.search(r"<([^>]+@[^>]+)>", row.get("sender", "") or "")
@@ -259,12 +268,13 @@ def _people_mail(rows: list[dict]):
     count of mass mail by sender, and of private subjects."""
     from service.assistant.daily_workspace import display_name
     from service.tools.imessage_tools import redact_summary_codes
-    picked: dict[tuple[str, str], tuple] = {}
+    picked: dict[tuple[str, str, bool], tuple] = {}
     bulk: dict[str, int] = {}
     private = 0
-    for row in rows:
+    mine = _user_addresses()
+    for row in rows[:200]:
         subject = redact_summary_codes(str(row.get("subject") or "")).strip()
-        if not subject or _from_user(row):
+        if not subject or _from_user(row, mine):
             continue
         sender = display_name(row.get("sender"), row.get("sender_address", "")) or "Unknown sender"
         if _PRIVATE.search(_bare(subject)):
@@ -282,11 +292,16 @@ def _people_mail(rows: list[dict]):
 
 
 def _bulk(row: dict) -> bool:
-    """Newsletters, promos, alerts and other mass mail: counted, not described."""
+    """Newsletters, promos, alerts and other mass mail: counted, not described.
+    A calendar change from an automated sender (a cancellation, an invitation)
+    is described; mass mail never is, whatever its subject says."""
     from service.tools.email_tools import digest_category, is_broadcast, is_machine_sender
+    if is_broadcast(row):
+        return True
     identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
-    return (digest_category(row) in {"news", "social"} or is_broadcast(row) or is_machine_sender(identity)) \
-        and not (_CHANGE.search(str(row.get("subject") or "")) or _EVENT.search(str(row.get("subject") or "")))
+    subject = str(row.get("subject") or "")
+    return (digest_category(row) in {"news", "social"} or is_machine_sender(identity)) \
+        and not (_CHANGE.search(subject) or _EVENT.search(subject))
 
 
 def _excerpt(row: dict) -> str:
@@ -316,6 +331,12 @@ def summary_lines(rows: list[dict]) -> list[str]:
     return lines
 
 
+def _reply_verb(subject: str) -> str:
+    head = subject.split(":", 1)[0].strip().lower()
+    return {"accepted": "accepted", "declined": "declined", "tentatively accepted": "tentatively accepted",
+            "updated invitation": "updated the invitation for"}.get(head, "sent an invitation to")
+
+
 def mail_prose(rows: list[dict]) -> str:
     """The summary without a model: who wrote and what changed, then the rest.
     "John Morada canceled “Dublin Community Office Hours”. Devarsh wrote about
@@ -327,7 +348,7 @@ def mail_prose(rows: list[dict]) -> str:
     said: dict[str, tuple[int, str]] = {}
     for sender, subject, _, rank in people:
         rest = _bare(subject)
-        line = (f"{sender} canceled “{rest}”." if rank == 2 else f"{sender} sent an invitation: “{rest}”." if rank == 1
+        line = (f"{sender} canceled “{rest}”." if rank == 2 else f"{sender} {_reply_verb(subject)} “{rest}”." if rank == 1
                 else f"{sender} wrote about “{rest}”.")
         if sender not in said and len(said) >= 3:
             continue
@@ -420,9 +441,25 @@ def parse_paragraph(text: str) -> str:
                        " ".join(lines).replace("**", ""), flags=re.I).strip()
     low, high = _SUMMARY_CHARS
     if (not low <= len(paragraph) <= high or "<" in paragraph
-            or re.search(r"===|https?://|www\.|\b[\w-]+\.(?:com|net|org|io|co|edu|gov|ly|me|ai)\b", paragraph, re.I)):
+            or re.search(r"===|https?://|www\.|\S@\S|\b[\w-]+\.[a-z]{2,}(?:/|\b)(?!\s*[A-Z])", paragraph)
+            or re.search(r"\d{7,}|\d{3}\D{1,3}\d{3}\D{1,2}\d{4}", paragraph)):
         return ""
     return paragraph
+
+
+def summary_ok(summary: str, lines: list[str]) -> bool:
+    """Grounded in the mail: no number it doesn't carry, and every capitalized
+    word past a sentence's start (a name, a place, a day) appears in it."""
+    if not mail_gist_ok(summary, lines):
+        return False
+    source = " " + " ".join(re.findall(r"[\w']+", "\n".join(lines).casefold())) + " "
+    for sentence in re.split(r"(?<=[.!?])\s+", summary):
+        words = re.findall(r"[\w'’]+", sentence)
+        for word in words[1:]:
+            bare = re.sub(r"['’]s$", "", word)
+            if bare[:1].isupper() and bare not in ("I",) and f" {bare.casefold()} " not in source:
+                return False
+    return True
 
 
 def mail_gist_ok(gist: str, lines: list[str]) -> bool:
@@ -538,7 +575,7 @@ def _jobs(now: float) -> list[dict]:
     if slines:
         jobs.append(dict(kind="summary", lines=slines, key=_key(slines), rules=SUMMARY_RULES, paragraph=True,
                          tokens=(_SUMMARY_TOKENS, _SUMMARY_THINKING_TOKENS),
-                         ok=lambda text, lines=slines: mail_gist_ok(text, lines)))
+                         ok=lambda text, lines=slines: summary_ok(text, lines)))
     lines = mail_lines(rows)
     if lines:
         jobs.append(dict(kind="inbox", lines=lines, key=_key(lines), rules=MAIL_RULES,
@@ -551,7 +588,7 @@ def _jobs(now: float) -> list[dict]:
     due = []
     for job in jobs:
         entry = cache.get(job["kind"])
-        if _attempts.get(job["kind"] + ":" + job["key"], 0) >= _MAX_ATTEMPTS:
+        if _attempts.get(job["kind"] + ":" + job["key"], 0) >= _MAX_ATTEMPTS or now < _retry_at.get(job["kind"], 0):
             continue
         if entry and (entry["key"] == job["key"] or now - entry["at"] < _REWRITE_S):
             continue
@@ -585,7 +622,7 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
         text = await (_resident_reply(system, material, abort, tokens=job.get("tokens", (_TOKENS, _THINKING_TOKENS)))
                       if synth is None else synth(system, material))
     except Exception:  # noqa: BLE001 — the deterministic sentence stands in
-        _next_call_at = now + _FAILURE_GAP_S
+        _retry_at[job["kind"]] = now + _FAILURE_GAP_S
         _attempts[attempt_key] = _attempts.get(attempt_key, 0) + 1
         traceback.print_exc()
         return False
@@ -595,7 +632,7 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
     gist = parse_paragraph(text) if job.get("paragraph") else parse_line(text)
     if not gist or not job["ok"](gist):
         # Unusable, or it quoted, named or invented: a failure, nothing cached.
-        _next_call_at = now + _FAILURE_GAP_S
+        _retry_at[job["kind"]] = now + _FAILURE_GAP_S
         _attempts[attempt_key] = _attempts.get(attempt_key, 0) + 1
         print(f"[mail_gists] dropped an unusable {job['kind']} gist", flush=True)
         return False
@@ -627,9 +664,13 @@ def schedule_tick() -> asyncio.Task | None:
 # --- what the Brief shows -----------------------------------------------------------
 
 
-def overview(kind: str, fallback: str, now: float) -> dict:
+def overview(kind: str, fallback: str, now: float, key: str | None = None) -> dict:
+    """The model's text while it is fresh, else the fallback. Given the current
+    inputs' key, a text written from other mail gives way once it is
+    `_REWRITE_S` older than that would allow (a rewrite is overdue)."""
     entry = _load().get(kind)
-    if entry and entry["gist"] and now - entry["at"] < _FRESH_S:
+    stale = key is not None and entry is not None and entry["key"] != key and now - entry["at"] > 2 * _REWRITE_S
+    if entry and entry["gist"] and now - entry["at"] < _FRESH_S and not stale:
         return {"text": entry["gist"], "source": "model"}
     return {"text": fallback, "source": "summary"}
 
@@ -643,9 +684,18 @@ def attach(workspace: dict, now: float | None = None) -> None:
     """
     now = time.time() if now is None else now
     coverage = {c.get("source"): c for c in workspace.get("source_coverage") or []}
+    # Each on its own: one failing never takes the others with it.
     if (coverage.get("email") or {}).get("ready"):
-        rows = recent_mail(now)
-        workspace["mail_overview"] = overview("inbox", mail_fallback(rows), now)
-        workspace["mail_summary"] = overview("summary", mail_prose(rows), now)
+        try:
+            rows = recent_mail(now)
+            workspace["mail_overview"] = overview("inbox", mail_fallback(rows), now)
+            slines = summary_lines(rows)
+            workspace["mail_summary"] = (overview("summary", mail_prose(rows), now, key=_key(slines)) if slines
+                                         else {"text": mail_prose(rows), "source": "summary"})
+        except Exception:  # noqa: BLE001 — the rows fall back to their older form
+            traceback.print_exc()
     if (coverage.get("messages") or {}).get("ready"):
-        workspace["texts_overview"] = overview("texts", texts_fallback(recent_texts(now)), now)
+        try:
+            workspace["texts_overview"] = overview("texts", texts_fallback(recent_texts(now)), now)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()

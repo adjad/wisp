@@ -718,15 +718,19 @@ _MACHINE_SENDER_NAMES = (
 
 
 # Mass mail sent under a person's name ("Katia Ameri <hello@tech-week.com>",
-# "Vercel <ship@info.vercel.com>"): a role mailbox, a bulk-mail subdomain, or a
-# Message-ID minted by a bulk-email service. Headers only, like the rest.
+# "Vercel <ship@info.vercel.com>"): a campaign mailbox, a bulk-mail sending
+# subdomain, or a Message-ID minted by a marketing-email service. Headers only,
+# like the rest. Deliberately narrow, because this takes away "a person's
+# unread email needs you": no hi@/contact@/mail@ (people write from those), no
+# transactional relays (SES, SendGrid, Mailgun, HubSpot carry one-to-one mail).
 _BROADCAST_LOCAL = re.compile(
-    r"^(?:hello|hi|hey|ship|team|events?|community|marketing|contact|mail|email|newsletters?|"
-    r"announcements?|launch|product|community-team)$", re.I)
-_BROADCAST_DOMAIN = re.compile(r"^(?:info|mail|email|e|em|news|marketing|mkt|go|send|campaign|engage)\.", re.I)
+    r"^(?:hello|team|ship|events?|community|marketing|newsletters?|announcements?|launch|product|"
+    r"community-team)$", re.I)
+# A sending subdomain, never the registrable domain itself ("mail.com", "news.com.au").
+_BROADCAST_DOMAIN = re.compile(r"^(?:info|mail|email|e|em|news|marketing|mkt|go|send|campaign|engage)\.(.+)$", re.I)
+_PUBLIC_SUFFIX = re.compile(r"^(?:[a-z]{2,}|(?:com|co|org|net|gov|edu|ac|or|ne)\.[a-z]{2})$", re.I)
 _ESP_MESSAGE_ID = re.compile(
-    r"@[\w.-]*(?:mcsv\.net|mcdlv\.net|rsgsv\.net|list-manage\.com|sendgrid\.net|amazonses\.com|mailgun\.\w+|"
-    r"sparkpostmail\.com|mktomail\.com|hubspot\w*\.\w+|klaviyo\w*\.\w+|customeriomail\.com|mandrillapp\.com|"
+    r"@[\w.-]*(?:mcsv\.net|mcdlv\.net|rsgsv\.net|list-manage\.com|mktomail\.com|klaviyo\w*\.\w+|"
     r"cmail\d*\.com|createsend\w*\.com|exacttarget\.com|beehiiv\.com|substack\.com|convertkit\w*\.com)>?\s*$", re.I)
 
 
@@ -737,8 +741,12 @@ def is_broadcast(row: dict) -> bool:
         found = re.search(r"<([^>]+@[^>]+)>", row.get("sender", "") or "")
         address = found.group(1).lower() if found else ""
     local, _, domain = address.partition("@")
-    if domain and (_BROADCAST_LOCAL.match(local) or _BROADCAST_DOMAIN.match(domain)):
-        return True
+    if domain:
+        if _BROADCAST_LOCAL.match(local):
+            return True
+        sub = _BROADCAST_DOMAIN.match(domain)
+        if sub and not _PUBLIC_SUFFIX.match(sub.group(1)):
+            return True
     return bool(_ESP_MESSAGE_ID.search(str(row.get("message_id", "") or "")))
 
 

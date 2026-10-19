@@ -30,6 +30,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(G, "_cache", None)
     monkeypatch.setattr(G, "_next_call_at", 0.0)
     monkeypatch.setattr(G, "_attempts", {})
+    monkeypatch.setattr(G, "_retry_at", {})
     monkeypatch.setattr(G, "_last_standdown", "")
     monkeypatch.setattr(G, "recent_mail", lambda now: [row(1, "Tech Week starts today"), row(2, "Invitation: Demo day")])
     monkeypatch.setattr(G, "recent_texts", lambda now: [convo("Mom", "call me when you can")])
@@ -177,7 +178,7 @@ def test_an_ungrounded_or_quoting_gist_is_dropped_for_the_sentence(isolated, mon
         return "Mom wants a call"
 
     assert asyncio.run(G.refresh(NOW, synth=synth, abort=lambda: False)) is False
-    assert "texts" not in G._load() and G._next_call_at == NOW + G._FAILURE_GAP_S
+    assert "texts" not in G._load() and G._retry_at["texts"] == NOW + G._FAILURE_GAP_S
 
 
 def test_stands_down_for_a_turn_and_when_nothing_is_new(isolated, monkeypatch, capsys):
@@ -206,12 +207,28 @@ def test_a_failure_backs_off_and_twice_gives_up_until_inputs_change(isolated, mo
         raise TimeoutError
 
     asyncio.run(G.refresh(NOW, synth=synth, abort=lambda: False))
-    assert "inbox" not in G._load() and G._next_call_at == NOW + G._FAILURE_GAP_S
-    asyncio.run(G.refresh(NOW + 1, synth=synth, abort=lambda: False))
-    assert asyncio.run(G.refresh(NOW + 2, synth=synth, abort=lambda: False)) is False and len(calls) == 2
+    assert "inbox" not in G._load() and G._retry_at["inbox"] == NOW + G._FAILURE_GAP_S
+    gap = G._FAILURE_GAP_S
+    assert asyncio.run(G.refresh(NOW + 1, synth=synth, abort=lambda: False)) is False and len(calls) == 1, "backing off"
+    asyncio.run(G.refresh(NOW + gap + 1, synth=synth, abort=lambda: False))
+    assert asyncio.run(G.refresh(NOW + 2 * gap + 2, synth=synth, abort=lambda: False)) is False and len(calls) == 2
     monkeypatch.setattr(G, "recent_mail", lambda now: [row(7, "Something new")])
-    asyncio.run(G.refresh(NOW + 3, synth=synth, abort=lambda: False))
+    asyncio.run(G.refresh(NOW + 3 * gap, synth=synth, abort=lambda: False))
     assert len(calls) == 3
+
+
+def test_a_failing_summary_never_holds_up_the_row_lines(isolated, monkeypatch):
+    """Auditor note on #299: one global backoff let a failing summary starve the gists."""
+    monkeypatch.setattr(G, "summary_lines", lambda rows: ["- From Ann Lee: Lunch"])
+    seen = []
+
+    async def synth(system, material):
+        seen.append(material)
+        return "Ann Lee asked about lunch at 12. The rest is quiet." if len(seen) == 1 else "Mostly lunch plans"
+
+    assert asyncio.run(G.refresh(NOW, synth=synth, abort=lambda: False)) is False, "an invented number"
+    assert asyncio.run(G.refresh(NOW + G._MIN_GAP_S, synth=synth, abort=lambda: False)) is True
+    assert "From Ann Lee" in seen[0] and "Tech Week" in seen[1] and G._load()["inbox"]["gist"] == "Mostly lunch plans"
 
 
 def test_schedule_tick_is_single_flight_and_waits_for_quiet(isolated, monkeypatch, capsys):
@@ -319,9 +336,9 @@ def test_a_slow_but_successful_reply_is_cached(isolated, monkeypatch, model):
     client = use(monkeypatch, FakeClient(["fast"], delay=0.6, content="<think>Events.</think>\nMostly event updates"))
     monkeypatch.setattr(G, "_TIMEOUT_S", 0.3)
     assert asyncio.run(G.refresh(NOW, abort=lambda: False)) is False, "past the deadline it fails"
-    assert G._next_call_at == NOW + G._FAILURE_GAP_S and client.cancelled
+    assert G._retry_at["inbox"] == NOW + G._FAILURE_GAP_S and client.cancelled
     monkeypatch.setattr(G, "_TIMEOUT_S", 5.0)
-    assert asyncio.run(G.refresh(NOW + 100, abort=lambda: False)) is True
+    assert asyncio.run(G.refresh(NOW + G._FAILURE_GAP_S + 1, abort=lambda: False)) is True
     assert G._load()["inbox"]["gist"] == "Mostly event updates" and G._PATH.exists()
 
 
@@ -335,7 +352,7 @@ def test_a_turn_that_starts_mid_call_cancels_it(isolated, monkeypatch, model):
 def test_a_cut_off_reply_is_a_failure(isolated, monkeypatch, model):
     use(monkeypatch, FakeClient(["fast"], content="<think>still going", finish="length"))
     assert asyncio.run(G.refresh(NOW, abort=lambda: False)) is False
-    assert "inbox" not in G._load() and G._next_call_at == NOW + G._FAILURE_GAP_S
+    assert "inbox" not in G._load() and G._retry_at["inbox"] == NOW + G._FAILURE_GAP_S
 
 
 # --- what the Brief shows ----------------------------------------------------------------------
@@ -458,3 +475,21 @@ def test_an_invented_number_drops_the_summary_for_the_prose(isolated, monkeypatc
     workspace = {"source_coverage": [{"source": "email", "ready": True}]}
     G.attach(workspace, NOW)
     assert workspace["mail_summary"]["source"] == "summary"
+
+
+def test_auditor_notes_on_299_broadcast_is_narrow_and_the_summary_is_grounded(isolated):
+    from service.tools.email_tools import is_broadcast
+    person = lambda address, mid="<1@example.com>": {"sender": "Maya Chen", "sender_address": address, "message_id": mid}
+    assert not any(is_broadcast(person(a)) for a in ("maya@mail.com", "maya@email.com", "x@go.com", "x@news.com.au",
+                                                      "hi@mayachen.com", "contact@mayachen.com"))
+    assert not is_broadcast(person("maya@corp.example", "<abc@email.amazonses.com>")), "relays carry one-to-one mail"
+    assert is_broadcast(person("x@mail.shop.example")) and is_broadcast(person("hello@tech-week.com"))
+    lines = ["- From John Morada: Canceled: Office Hours — We'll meet Monday instead."]
+    assert G.summary_ok("John Morada canceled office hours and will meet Monday instead.", lines)
+    assert not G.summary_ok("John Morada canceled office hours; Priya will cover.", lines), "a name the mail lacks"
+    assert G.parse_paragraph("Your bank says your account is locked, so call 415-555-0100 right away today.") == ""
+    assert G.parse_paragraph("John canceled office hours. Reply to help@bank.xyz to confirm the change today.") == ""
+    assert G.parse_paragraph("John canceled office hours. Details at login.example.app for the next session.") == ""
+    assert G.mail_prose([mail_row(8, "Declined: Lunch", "Priya Shah", "priya@example.com")]) == "Priya Shah declined “Lunch”."
+    assert G.mail_prose([mail_row(8, "Deadline notice (private details omitted).", "Bank", "bank@example.com")]) \
+        == "Nothing from people today."

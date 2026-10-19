@@ -104,7 +104,9 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
           "with a written summary there's no 'arrives later' note")
     check(BriefMail.isPrivate("Re: Private details omitted.") && BriefMail.isPrivate("Invitation: Private details omitted.")
           && BriefMail.shown([BriefNeed(title: "Re: Private details omitted.", sender: "John Morada", person: true)]).isEmpty
-          && BriefMail.privateCount([BriefNeed(title: "Re: Private details omitted.")]) == 1,
+          && BriefMail.privateCount([BriefNeed(title: "Re: Private details omitted.")]) == 1
+          && BriefMail.isPrivate("Deadline notice (private details omitted).")
+          && BriefMail.isPrivate("Unverified security incident notice (details omitted)."),
           "a withheld subject behind Re: is counted, never listed")
     let wordless = [BriefNeed(title: "🎉🎉", sender: "Ann", person: true)]
     check(!BriefDetail.mail(needing: wordless, ready: true, summary: ["Worth a look"]).lines.contains { $0.text.contains("Ann") }
