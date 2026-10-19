@@ -65,10 +65,6 @@ enum CalendarMove {
         return nil
     }
 
-    /// Why this occurrence must not be cancelled, or nil when it may. The same identity
-    /// and organizer rules as a move: it must still be the event the card showed, on a
-    /// writable calendar, and an event with invitees is cancelled only by its organizer
-    /// (Calendar then tells them). All-day events may be cancelled.
     /// Calendar's own deep link to an event: ical://ekevent/<calendarItemIdentifier>?method=show&options=more.
     /// nil for an empty identifier. The identifier is one percent-encoded path segment, so a
     /// slash, question mark or hash inside it can't change the URL's shape.
@@ -85,6 +81,10 @@ enum CalendarMove {
         return parts.url
     }
 
+    /// Why this occurrence must not be cancelled, or nil when it may. The same identity
+    /// and organizer rules as a move: it must still be the event the card showed, on a
+    /// writable calendar, and an event with invitees is cancelled only by its organizer
+    /// (Calendar then tells them). All-day events may be cancelled.
     static func cancelRefusal(_ facts: CalendarEventFacts, expectedTitle: String, expectedStart: Double,
                               calendarWritable: Bool, invitees: Int, expectedInvitees: Int,
                               organizerIsUser: Bool?) -> String? {

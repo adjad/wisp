@@ -596,23 +596,26 @@ def test_card_rows_block_a_read_only_calendar(store):
     assert store.calendar_occurrence("ek-odd", start + 120)["calendar_writable"] is None
 
 
-def test_store_migration_adds_calendar_writable(tmp_path):
-    """An existing store from before the column still opens and reads the flag as unknown."""
+def test_store_from_before_the_flag_opens_and_an_older_build_still_syncs(tmp_path):
+    """The flag lives in its own table: an existing store gets it created on open and reads
+    unknown until the app says; and a build from before it (which inserts into
+    calendar_event_invitees without naming columns) can still sync after a rollback."""
     import sqlite3
     path = tmp_path / "old.db"
     s = AssistantStore(path)
     s._db.close()
     db = sqlite3.connect(path)
-    db.execute("DROP TABLE calendar_event_invitees")
-    db.execute("CREATE TABLE calendar_event_invitees (commitment_id TEXT PRIMARY KEY, "
-               "invitee_count INTEGER NOT NULL, organizer_is_user INTEGER)")
+    db.execute("DROP TABLE calendar_event_writable")
     db.commit(); db.close()
     s = AssistantStore(path)
     try:
         start = _top_of_hour(26)
-        _calendar(s, _event("ek-1", "Dentist", start))
+        _calendar(s, _event("ek-1", "Dentist", start, calendar_writable=False))
         row = s.calendar_occurrence("ek-1", start)
-        assert row["invitee_count"] == 0 and row["calendar_writable"] is None
+        assert row["invitee_count"] == 0 and row["calendar_writable"] is False
+        # What the 2066-era store code does, unchanged: a positional 3-value insert.
+        s._db.execute("INSERT INTO calendar_event_invitees VALUES (?,?,?)", ("rollback-probe", 1, None))
+        s._db.rollback()
     finally:
         s._db.close()
 

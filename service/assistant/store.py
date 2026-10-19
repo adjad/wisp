@@ -435,13 +435,16 @@ class AssistantStore:
                 # Calendar sync. organizer_is_user NULL = unknown. No row = not synced yet.
                 self._db.execute("""CREATE TABLE IF NOT EXISTS calendar_event_invitees (
                     commitment_id TEXT PRIMARY KEY, invitee_count INTEGER NOT NULL,
-                    organizer_is_user INTEGER, calendar_writable INTEGER
+                    organizer_is_user INTEGER
                 )""")
-                # calendar_writable (2026-10-18): 0 for a subscribed or otherwise read-only
-                # calendar, NULL = the app didn't say (older app). Added to existing stores.
-                if "calendar_writable" not in {r["name"] for r in self._db.execute(
-                        "PRAGMA table_info(calendar_event_invitees)").fetchall()}:
-                    self._db.execute("ALTER TABLE calendar_event_invitees ADD COLUMN calendar_writable INTEGER")
+                # Whether the event's calendar accepts changes from this Mac (EventKit's
+                # allowsContentModifications): 0 for a subscribed or read-only calendar. Its
+                # own table, not a new column, so a build from before it (which inserts into
+                # calendar_event_invitees without naming columns) still syncs after a rollback.
+                # No row = the app didn't say (older app).
+                self._db.execute("""CREATE TABLE IF NOT EXISTS calendar_event_writable (
+                    commitment_id TEXT PRIMARY KEY, writable INTEGER NOT NULL
+                )""")
                 self._db.execute(_BEHAVIOR_RECEIPTS_SCHEMA)
                 self._validate_behavior_receipt_schema()
                 self._db.execute("""CREATE TABLE IF NOT EXISTS today_source_sync (
@@ -1510,8 +1513,9 @@ class AssistantStore:
         with self._lock:
             row = self._db.execute(
                 "SELECT c.id,c.source_id,c.title,c.when_ts,i.invitee_count,i.organizer_is_user,"
-                "i.calendar_writable "
+                "w.writable AS calendar_writable "
                 "FROM commitments c LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
+                "LEFT JOIN calendar_event_writable w ON w.commitment_id=c.id "
                 "WHERE c.source='calendar' AND c.status='active' AND c.source_id=? AND c.when_ts=?",
                 (source_id, start_ts)).fetchone()
         if row is None:
@@ -2053,10 +2057,12 @@ class AssistantStore:
                     count = it.get("invitee_count")
                     if type(count) is int and count >= 0:
                         flag = it.get("organizer_is_user")
-                        writable = it.get("calendar_writable")
-                        self._db.execute("INSERT INTO calendar_event_invitees VALUES (?,?,?,?)",
-                                         (cid, count, int(flag) if type(flag) is bool else None,
-                                          int(writable) if type(writable) is bool else None))
+                        self._db.execute("INSERT INTO calendar_event_invitees VALUES (?,?,?)",
+                                         (cid, count, int(flag) if type(flag) is bool else None))
+                    self._db.execute("DELETE FROM calendar_event_writable WHERE commitment_id=?", (cid,))
+                    writable = it.get("calendar_writable")
+                    if type(writable) is bool:
+                        self._db.execute("INSERT INTO calendar_event_writable VALUES (?,?)", (cid, int(writable)))
                     self._db.execute("DELETE FROM calendar_event_ends WHERE commitment_id=?", (cid,))
                     end_ts = it.get("end_ts")
                     if end_ts is not None:
@@ -2084,6 +2090,8 @@ class AssistantStore:
             self._db.execute("DELETE FROM calendar_event_ends WHERE NOT EXISTS "
                              "(SELECT 1 FROM commitments WHERE id=commitment_id)")
             self._db.execute("DELETE FROM calendar_event_invitees WHERE NOT EXISTS "
+                             "(SELECT 1 FROM commitments WHERE id=commitment_id)")
+            self._db.execute("DELETE FROM calendar_event_writable WHERE NOT EXISTS "
                              "(SELECT 1 FROM commitments WHERE id=commitment_id)")
         return len(items)
 
@@ -2421,6 +2429,7 @@ class AssistantStore:
             self._db.execute("DELETE FROM notify_log WHERE commitment_id=?", (cid,))
             self._db.execute("DELETE FROM calendar_event_ends WHERE commitment_id=?", (cid,))
             self._db.execute("DELETE FROM calendar_event_invitees WHERE commitment_id=?", (cid,))
+            self._db.execute("DELETE FROM calendar_event_writable WHERE commitment_id=?", (cid,))
         return cur.rowcount > 0
 
     def update_schedule(self, ids: list[str], when_ts: float,

@@ -70,9 +70,6 @@ struct CheckInEvent: Identifiable, Equatable {
     /// Move is offered only when the app would carry it out (CalendarMove.refusal):
     /// a timed event, on a writable calendar, the user's own or without invitees.
     var canMove: Bool { !allDay && moveBlocked.isEmpty && calendarWritable != false }
-    var onReadOnlyCalendar: Bool { calendarWritable == false }
-    /// Someone else's event: the user can only decline it, in Calendar.
-    var isInvitation: Bool { organizerIsUser == false }
 
     /// The cancel request the service accepts for this row, or nil when Cancel
     /// must not be offered (the service said why, or the row isn't complete).
@@ -81,7 +78,6 @@ struct CheckInEvent: Identifiable, Equatable {
     }
     var canCancel: Bool { cancelBody != nil && calendarWritable != false }
     var cancelReason: String { CheckInCancel.blockedReason(cancelBlocked) }
-    var moveReason: String { CheckInCancel.blockedReason(moveBlocked) }
 
     /// How long it runs, for a moved copy; an hour when the calendar gave no end.
     var durationMinutes: Int {
