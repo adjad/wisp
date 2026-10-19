@@ -141,8 +141,11 @@ struct NotchBriefView: View {
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Button { NotchChrome.open(detail.source) } label: {
-                Text("Open \(NotchChrome.appName(detail.source)) ↗").font(.system(size: 12.5, weight: .medium))
+            Button {
+                if let action = detail.action, let url = URL(string: action.url) { NSWorkspace.shared.open(url) }
+                else { NotchChrome.open(detail.source) }
+            } label: {
+                Text(detail.action?.label ?? "Open \(NotchChrome.appName(detail.source)) ↗").font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(Theme.textPrimary).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -279,6 +282,7 @@ struct BriefContent {
             calendar: calendarKnown ? load : nil, calendarUnsynced: !calendarKnown,
             mail: coverage("email").map { (ready: $0.ready, needing: mailNeeds) },
             texts: coverage("messages").map { (ready: $0.ready, needing: textNeeds) },
+            textsNeedAccess: coverage("messages")?.blocked == "full_disk_access",
             soon: soon)
 
         let events = calendarBlocks.map { (title: $0.title, start: $0.start, end: $0.end) }
@@ -288,6 +292,7 @@ struct BriefContent {
             "CAL": calendarDetail,
             "MAIL": BriefDetail.mail(needing: mailNeeds, ready: coverage("email")?.ready == true),
             "TEXTS": BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
+                                       needsAccess: coverage("messages")?.blocked == "full_disk_access",
                                        when: { $0 >= dayStart ? today.clock($0) : NotchChrome.dayClock($0, zone: zone) }),
             "SOON": BriefDetail.soon(upcoming.flatMap { $0.isEmpty && !weekRead ? nil : $0 }, when: when),
         ]

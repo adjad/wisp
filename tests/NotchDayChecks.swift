@@ -195,6 +195,14 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           && unsynced.map(\.text) == ["Calendar hasn't synced yet", "Mail hasn't been checked yet",
                                       "Messages haven't been checked yet", "The week ahead hasn't loaded yet"],
           "unread sources keep the four rows, dim: \(unsynced.map(\.text))")
+    let noAccess = DayTimeline.briefLines(calendar: light, mail: nil, texts: (ready: false, needing: []), textsNeedAccess: true,
+                                          soon: .nothing)[2]
+    check(noAccess.text == "Texts need Full Disk Access" && !noAccess.muted, "missing Full Disk Access is said plainly, not 'not checked yet'")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: [
+        BriefNeed(title: "Office hours", sender: "John", received: 2), BriefNeed(title: "Canceled: Office hours", sender: "John", received: 1)]),
+        texts: nil, soon: .nothing)[1].text == "Canceled: John · Office hours ×2", "a cancellation isn't hidden by its original")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: [BriefNeed(title: "Private details omitted.")]),
+                                 texts: nil, soon: .nothing)[1].text == "1 private email not shown", "only private mail: counted")
     let unread = DayTimeline.briefLines(calendar: nil, mail: nil, texts: nil, soon: .nothing)
     check(unread.map(\.text) == ["Nothing on your calendar", "Mail hasn't been checked yet", "Messages haven't been checked yet",
                                  "Nothing in the next week"] && unread[1].muted && unread[2].muted,

@@ -23,6 +23,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(G, "_PATH", Path(tmp_path) / "cache" / "mail_gists.json")
     monkeypatch.setattr(G, "_cache", None)
     monkeypatch.setattr(G, "_next_call_at", 0.0)
+    monkeypatch.setattr(G, "_attempts", {})
     return tmp_path
 
 
@@ -76,7 +77,7 @@ def test_refresh_stands_down_for_a_turn_and_bounds_the_batch(isolated, monkeypat
 
     assert asyncio.run(G.refresh(100.0, synth=synth, abort=lambda: True)) == 0 and not seen
     asyncio.run(G.refresh(100.0, synth=synth, abort=lambda: False))
-    assert len(seen) == 1 and "6. From" in seen[0] and "7. From" not in seen[0]
+    assert len(seen) == 1 and "2. From" in seen[0] and "3. From" not in seen[0]
 
 
 def test_a_failed_call_caches_nothing_and_backs_off(isolated, monkeypatch):
@@ -143,8 +144,11 @@ def test_nothing_pending_waits_a_minute_before_reading_the_inbox_again(isolated,
 
 
 class FakeClient:
-    def __init__(self, loaded, warm=()):
+    def __init__(self, loaded, warm=(), *, delay=0.0, content="1. ok", finish="stop", turn=None):
         self.loaded, self.warm = list(loaded), set(warm)
+        self.delay, self.content, self.finish, self.turn = delay, content, finish, turn
+        self.requests = []
+        self.cancelled = False
 
     async def loaded_models(self):
         return self.loaded
@@ -152,29 +156,106 @@ class FakeClient:
     def keep_warm(self):
         return self.warm
 
+    async def chat(self, model, messages, **kwargs):
+        self.requests.append((model, kwargs))
+        try:
+            steps = max(1, int(self.delay / 0.05))
+            for step in range(steps):
+                if self.turn is not None and step == 2:
+                    self.turn[0] = True
+                await asyncio.sleep(self.delay / steps)
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return {"choices": [{"finish_reason": self.finish, "message": {"content": self.content}}]}
+
+
+@pytest.fixture
+def model(monkeypatch):
+    """The fast role is "fast"; tests pick whether it honors thinking off."""
+    import service.config as config
+    state = {"off": True}
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast")
+    monkeypatch.setattr(config, "no_thinking_capable", lambda: ["fast"] if state["off"] else [])
+    monkeypatch.setattr(config, "thinks_explicitly", lambda name: False)
+    return state
+
+
+def use(monkeypatch, client):
+    from service.assistant import brief
+    monkeypatch.setattr(brief, "_c", lambda: client)
+    return client
+
 
 @pytest.mark.parametrize("loaded,warm,turn,expect_call", [
     (["fast"], (), False, True),
     (["fast", "embed"], ("embed",), False, True),
     (["coder"], (), False, False),               # another model is resident: never evict it
-    (["fast", "coder"], (), False, False),       # ensure_only would evict the coder
+    (["fast", "coder"], (), False, False),       # loading "fast" alone would evict the coder
     ([], (), False, False),                      # nothing loaded: never load one
     (["fast"], (), True, False),                 # a turn started: stand down
 ])
-def test_the_model_call_never_loads_evicts_or_races_a_turn(monkeypatch, loaded, warm, turn, expect_call):
-    from service.assistant import brief
-    import service.config as config
-    calls = []
+def test_the_model_call_never_loads_evicts_or_races_a_turn(monkeypatch, model, loaded, warm, turn, expect_call):
+    client = use(monkeypatch, FakeClient(loaded, warm))
+    reply = asyncio.run(G._resident_reply("s", "m", lambda: turn, count=1))
+    assert (reply == "1. ok") is expect_call and bool(client.requests) is expect_call
 
-    async def fake_synthesis(system, material, *, model=None):
-        calls.append(model)
-        return "1. ok"
 
-    monkeypatch.setattr(brief, "_c", lambda: FakeClient(loaded, warm))
-    monkeypatch.setattr(brief, "_brief_synthesis", fake_synthesis)
-    monkeypatch.setattr(config, "role_to_model", lambda role: "fast")
-    reply = asyncio.run(G._resident_reply("s", "m", lambda: turn))
-    assert (reply == "1. ok") is expect_call and (calls == ["fast"]) is expect_call
+def test_the_request_is_background_shaped_thinking_off_and_tightly_bounded(monkeypatch, model):
+    client = use(monkeypatch, FakeClient(["fast"]))
+    asyncio.run(G._resident_reply("s", "m", lambda: False, count=2))
+    name, kwargs = client.requests[0]
+    assert name == "fast" and kwargs["max_tokens"] == 2 * G._TOKENS_PER_GIST and kwargs["temperature"] == 0
+    assert kwargs["chat_template_kwargs"] == {"enable_thinking": False}
+    # A model whose think block can't be turned off: nothing is claimed about
+    # thinking (never enable_thinking=True), one email per call, room for the block.
+    model["off"] = False
+    client.requests.clear()
+    asyncio.run(G._resident_reply("s", "m", lambda: False, count=1))
+    _, kwargs = client.requests[0]
+    assert "chat_template_kwargs" not in kwargs and kwargs["max_tokens"] == G._THINKING_TOKENS
+    assert G.batch_size("fast") == 1
+    model["off"] = True
+    assert G.batch_size("fast") == 2
+    assert G._TIMEOUT_S >= 60, "a background gist is not held to the 12 s user-facing limit"
+
+
+def test_a_slow_but_successful_reply_is_cached(isolated, monkeypatch, model):
+    """Build 2020: the resident thinking model took longer than the 12 s summary
+    timeout, so every tick failed and no gist was ever written."""
+    monkeypatch.setattr(G, "important_emails", lambda now=None: [email(1), email(2), email(3)])
+    client = use(monkeypatch, FakeClient(["fast"], delay=0.6,
+                                         content="<think>Email 1 is about a reply.</think>\n1. Sender 1 wants a reply\n2. Sender 2 shared notes"))
+    monkeypatch.setattr(G, "_TIMEOUT_S", 0.3)
+    assert asyncio.run(G.refresh(100.0, abort=lambda: False)) == 0, "past the deadline it fails"
+    assert G._next_call_at == 100.0 + G._FAILURE_GAP_S and client.cancelled
+    monkeypatch.setattr(G, "_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(G, "_next_call_at", 0.0)
+    assert asyncio.run(G.refresh(200.0, abort=lambda: False)) == 2
+    assert G.gist("email:1") == "Sender 1 wants a reply" and G.gist("email:2") == "Sender 2 shared notes"
+    assert "email:3" not in G._load(), "two per call; the third waits for the next tick"
+    assert G._PATH.exists()
+
+
+def test_a_turn_that_starts_mid_call_cancels_it(isolated, monkeypatch, model):
+    monkeypatch.setattr(G, "important_emails", lambda now=None: [email(1)])
+    turn = [False]
+    client = use(monkeypatch, FakeClient(["fast"], delay=1.0, turn=turn))
+    assert asyncio.run(G.refresh(100.0, abort=lambda: turn[0])) == 0
+    assert client.cancelled and "email:1" not in G._load() and G._next_call_at == 100.0 + G._IDLE_GAP_S
+
+
+def test_a_cut_off_reply_is_a_failure(isolated, monkeypatch, model):
+    monkeypatch.setattr(G, "important_emails", lambda now=None: [email(1)])
+    use(monkeypatch, FakeClient(["fast"], content="<think>still going", finish="length"))
+    assert asyncio.run(G.refresh(100.0, abort=lambda: False)) == 0
+    assert "email:1" not in G._load() and G._next_call_at == 100.0 + G._FAILURE_GAP_S
+
+
+def test_a_closed_think_block_is_dropped_and_an_unclosed_one_drops_the_reply():
+    assert G.parse_reply("<think>1. not a gist</think>\n1. Ann wants the notes", 1) == {1: "Ann wants the notes"}
+    assert G.parse_reply("<think>1. Ann wants the notes", 1) == {}
+    assert G.parse_reply("1. Ann wants the notes</think>", 1) == {}
 
 
 def test_attach_puts_written_gists_on_email_items_only(isolated):
@@ -199,3 +280,22 @@ def test_day_planning_never_imports_the_gist_writer():
     names = {alias.name for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
              for alias in node.names} | {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     assert "mail_gists" not in names and "service.assistant.mail_gists" not in names
+
+
+def test_an_email_that_keeps_failing_is_given_up_on(isolated, monkeypatch):
+    """A long email the thinking model can't finish isn't retried every 15 minutes forever."""
+    monkeypatch.setattr(G, "_attempts", {})
+    monkeypatch.setattr(G, "important_emails", lambda now=None: [email(1)])
+    calls = []
+
+    async def synth(system, material):
+        calls.append(material)
+        raise TimeoutError
+
+    asyncio.run(G.refresh(100.0, synth=synth, abort=lambda: False))
+    assert "email:1" not in G._load() and G._attempts == {"email:1": 1}
+    monkeypatch.setattr(G, "_next_call_at", 0.0)
+    asyncio.run(G.refresh(200.0, synth=synth, abort=lambda: False))
+    assert G._load()["email:1"] == {"gist": "", "at": 200.0} and G._attempts == {}
+    monkeypatch.setattr(G, "_next_call_at", 0.0)
+    assert asyncio.run(G.refresh(300.0, synth=synth, abort=lambda: False)) == 0 and len(calls) == 2
