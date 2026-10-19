@@ -4,9 +4,15 @@ import AppKit
 /// The evening check-in and the weekly goal pulse on the notch's Day tab
 /// (service/assistant/checkin.py). Nothing here needs typing: each planned task
 /// takes one tap (Done, Tomorrow, Drop), each of tomorrow's events one tap
-/// (Keep, Move, Cancel; Move and Cancel open Ask with the request so the usual
-/// draft-and-confirm path decides what is sent), and the goal pulse one tap
-/// (On track, Behind, Done).
+/// (Keep, Move, Cancel), and the goal pulse one tap (On track, Behind, Done).
+///
+/// Cancel opens Ask with the request naming the exact event, so the agent's
+/// own confirmation stays the gate (cancelling can notify attendees). Move
+/// opens an inline sub-panel: up to three times Wisp found free the way the
+/// Day tab plans (GET /assistant/checkin/move_suggestions: working hours,
+/// calendar, planned tasks, learned busy and away windows; no model call), or
+/// another day and time of your choosing. Picking one opens Ask with the move
+/// request; nothing is changed from this card.
 
 struct CheckInTask: Identifiable, Equatable {
     let id: String
@@ -25,14 +31,45 @@ struct CheckInEvent: Identifiable, Equatable {
     let id: String
     let title: String
     let whenTs: Double?
+    let endTs: Double?
     let allDay: Bool
+    let sourceId: String?
 
     init?(_ row: [String: Any], index: Int) {
         guard let title = row["title"] as? String else { return nil }
         id = (row["id"] as? String) ?? "event-\(index)"
         self.title = title
         whenTs = (row["when_ts"] as? NSNumber)?.doubleValue
+        endTs = (row["end_ts"] as? NSNumber)?.doubleValue
         allDay = row["all_day"] as? Bool ?? false
+        sourceId = row["source_id"] as? String
+    }
+
+    /// How long it runs, for a moved copy; an hour when the calendar gave no end.
+    var durationMinutes: Int {
+        guard let whenTs, let endTs, endTs > whenTs else { return 60 }
+        return Int((endTs - whenTs) / 60)
+    }
+}
+
+/// One time Wisp found for a moved event (service/assistant/checkin.py).
+struct MoveSlot: Identifiable, Equatable {
+    let startTs: Double
+    let endTs: Double
+    let day: String
+    let label: String
+    let reason: String
+    var id: Double { startTs }
+
+    init?(_ row: [String: Any]) {
+        guard let start = (row["start_ts"] as? NSNumber)?.doubleValue,
+              let end = (row["end_ts"] as? NSNumber)?.doubleValue,
+              let label = row["label"] as? String else { return nil }
+        startTs = start
+        endTs = end
+        day = row["day"] as? String ?? ""
+        self.label = label
+        reason = row["reason"] as? String ?? ""
     }
 }
 
@@ -112,6 +149,23 @@ final class CheckInModel: ObservableObject {
 
     func keep(_ event: CheckInEvent) { kept.insert(event.id) }
 
+    /// Other times for `event`, from the planner. Empty when nothing fits or
+    /// the service is away; the card then offers only "Other time".
+    func moveSuggestions(for event: CheckInEvent, day: String, timezone: String) async -> [MoveSlot] {
+        var components = URLComponents(url: WispClient.baseURL.appendingPathComponent("assistant/checkin/move_suggestions"),
+                                       resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "event_id", value: event.id),
+                                 URLQueryItem(name: "day", value: day),
+                                 URLQueryItem(name: "timezone", value: timezone)]
+        guard let url = components.url else { return [] }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false,
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return [] }
+        return (object["suggestions"] as? [[String: Any]] ?? []).compactMap(MoveSlot.init)
+    }
+
     func answerGoal(_ goal: String, _ status: String) async {
         busy = true
         defer { busy = false }
@@ -162,6 +216,13 @@ struct CheckInSection: View {
     var onAsk: (String) -> Void
     var onChanged: () -> Void
 
+    /// The event whose Move sub-panel is open, if any.
+    @State private var moving: CheckInEvent?
+    @State private var slots: [MoveSlot] = []
+    @State private var loadingSlots = false
+    @State private var choosingOther = false
+    @State private var otherDate = Date()
+
     var body: some View {
         if model.card.showsCheckIn {
             VStack(alignment: .leading, spacing: 10) {
@@ -173,6 +234,8 @@ struct CheckInSection: View {
                 .accessibilityAddTraits(.isHeader)
                 if !model.card.tasksSettled {
                     ForEach(model.card.tasks) { task in taskRow(task) }
+                } else if let moving {
+                    movePanel(moving)
                 } else if !model.card.events.isEmpty {
                     Text(eventsLine).font(.system(size: 12.5)).foregroundStyle(Theme.textPrimary)
                     ForEach(model.card.events) { event in eventRow(event) }
@@ -180,18 +243,20 @@ struct CheckInSection: View {
                 if !model.error.isEmpty {
                     Text(model.error).font(.system(size: 11)).foregroundStyle(Theme.bad)
                 }
-                HStack {
-                    Text(model.card.tasksSettled ? "That's the day. Carried tasks are on tomorrow's plan."
-                         : "One tap each. Tomorrow carries it; Drop forgets it.")
-                        .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
-                    Spacer()
-                    Button(model.card.tasksSettled ? "Done for today" : "Skip tonight") {
-                        Task { await model.complete(day: day, timezone: timezone.identifier); onChanged() }
+                if moving == nil {
+                    HStack {
+                        Text(model.card.tasksSettled ? "That's the day. Carried tasks are on tomorrow's plan."
+                             : "One tap each. Tomorrow carries it; Drop forgets it.")
+                            .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                        Spacer()
+                        Button(model.card.tasksSettled ? "Done for today" : "Skip tonight") {
+                            Task { await model.complete(day: day, timezone: timezone.identifier); onChanged() }
+                        }
+                        .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(Theme.chipFill))
+                        .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                     }
-                    .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
-                    .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(Capsule().fill(Theme.chipFill))
-                    .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                 }
             }
             .padding(12)
@@ -199,6 +264,8 @@ struct CheckInSection: View {
             .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
             .disabled(model.busy)
+            .onExitCommand { if moving != nil { closeMove() } }
+            .animation(.easeInOut(duration: 0.18), value: moving?.id)
         }
     }
 
@@ -242,10 +309,124 @@ struct CheckInSection: View {
                 Text("Kept").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
             } else {
                 chip("Keep", primary: true) { model.keep(event) }
-                chip("Move") { onAsk("Reschedule “\(event.title)”" + (event.whenTs.map { " (tomorrow \(clock($0)))" } ?? "") + " to ") }
-                chip("Cancel") { onAsk("Cancel “\(event.title)”" + (event.whenTs.map { " (tomorrow \(clock($0)))" } ?? "") + " and let people know: ") }
+                chip("Move") { openMove(event) }
+                    .help("Pick another time; Wisp finds free ones")
+                chip("Cancel") { onAsk(cancelRequest(event)) }
+                    .help("Opens Ask with the cancel request; Wisp confirms before anything changes")
             }
         }
+    }
+
+    // MARK: Cancel and Move hand off to Ask
+
+    /// The event, named precisely enough for the agent's calendar tools and
+    /// unambiguous to a reader: title, day and time, and the calendar id.
+    private func describe(_ event: CheckInEvent) -> String {
+        var text = "“\(event.title)”"
+        if let when = event.whenTs {
+            text += event.allDay ? " on \(dayLabel(when)) (all day)" : " on \(dayLabel(when)) at \(clock(when))"
+        }
+        let ref = event.sourceId ?? event.id
+        if !ref.isEmpty { text += " [calendar event \(ref)]" }
+        return text
+    }
+
+    private func cancelRequest(_ event: CheckInEvent) -> String {
+        "Cancel \(describe(event)) and let anyone invited know."
+    }
+
+    private func moveRequest(_ event: CheckInEvent, to start: Double) -> String {
+        "Move \(describe(event)) to \(dayLabel(start)) at \(clock(start)), keeping it \(event.durationMinutes) minutes."
+    }
+
+    private func dayLabel(_ ts: Double) -> String {
+        Date(timeIntervalSince1970: ts).formatted(Date.FormatStyle(timeZone: timezone).weekday(.wide).month(.abbreviated).day())
+    }
+
+    private func openMove(_ event: CheckInEvent) {
+        moving = event
+        slots = []
+        choosingOther = false
+        otherDate = Date(timeIntervalSince1970: (event.whenTs ?? Date().timeIntervalSince1970) + 86400)
+        loadingSlots = true
+        Task {
+            let found = await model.moveSuggestions(for: event, day: model.card.tomorrowDay.isEmpty ? day : model.card.tomorrowDay,
+                                                    timezone: timezone.identifier)
+            if moving?.id == event.id {
+                slots = found
+                loadingSlots = false
+                choosingOther = found.isEmpty
+            }
+        }
+    }
+
+    private func closeMove() {
+        moving = nil
+        slots = []
+        choosingOther = false
+    }
+
+    /// "Move to…": Wisp's suggested times, then another day and time of your own.
+    private func movePanel(_ event: CheckInEvent) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Button { closeMove() } label: {
+                    Label("Back", systemImage: "chevron.left").labelStyle(.titleAndIcon)
+                        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain).help("Back to tomorrow's events (Esc)")
+                Text("Move “\(event.title)” to…").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                Spacer()
+                if let when = event.whenTs {
+                    Text("Now \(dayLabel(when)) \(clock(when))").font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                }
+            }
+            if loadingSlots {
+                ProcessingRow(label: "Looking at your days…")
+            } else if slots.isEmpty {
+                Text("Nothing free fits in the next few days' working hours. Pick a time yourself.")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+            } else {
+                ForEach(slots) { slot in slotRow(event, slot) }
+            }
+            if choosingOther {
+                otherTimeRow(event)
+            } else {
+                chip("Other time…") { choosingOther = true }
+                    .help("Choose a day and time yourself")
+            }
+            Text("Picking a time opens Ask with the request. Wisp confirms before the calendar changes.")
+                .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Move \(event.title)")
+    }
+
+    private func slotRow(_ event: CheckInEvent, _ slot: MoveSlot) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(slot.label).font(.system(size: 12.5, weight: .medium).monospacedDigit()).foregroundStyle(Theme.textPrimary)
+                .frame(width: 150, alignment: .leading)
+            Text(slot.reason).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            Spacer(minLength: 8)
+            chip("Move here", primary: true) { onAsk(moveRequest(event, to: slot.startTs)); closeMove() }
+        }
+    }
+
+    private func otherTimeRow(_ event: CheckInEvent) -> some View {
+        HStack(spacing: 8) {
+            DatePicker("Day", selection: $otherDate, displayedComponents: .date)
+                .datePickerStyle(.stepperField).labelsHidden()
+                .environment(\.timeZone, timezone)
+                .font(.system(size: 11.5))
+            DatePicker("Time", selection: $otherDate, displayedComponents: .hourAndMinute)
+                .datePickerStyle(.stepperField).labelsHidden()
+                .environment(\.timeZone, timezone)
+                .font(.system(size: 11.5))
+            Spacer(minLength: 8)
+            chip("Move here", primary: true) { onAsk(moveRequest(event, to: otherDate.timeIntervalSince1970)); closeMove() }
+                .disabled(event.whenTs.map { abs(otherDate.timeIntervalSince1970 - $0) < 60 } ?? false)
+        }
+        .accessibilityLabel("Another day and time")
     }
 
     private func chip(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {

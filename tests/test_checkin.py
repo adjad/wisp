@@ -38,6 +38,16 @@ def task(store, title, day, **extra):
                                   "duration_minutes": 30, **extra})
 
 
+def event(store, sid, title, start, end, **values):
+    store.sync_source("calendar", [dict(id=sid, source_id=sid, source="calendar", title=title, kind="event",
+                                        when_ts=start, end_ts=end, all_day=False) | values])
+
+
+def events(store, *rows):
+    store.sync_source("calendar", [dict(id=sid, source_id=sid, source="calendar", title=title, kind="event",
+                                        when_ts=start, end_ts=end, all_day=False) for sid, title, start, end in rows])
+
+
 # --- due / build ------------------------------------------------------------------
 
 def test_due_only_in_the_evening_of_that_day(store):
@@ -305,6 +315,78 @@ def test_keeping_in_mind_names_carried_tasks_even_without_a_profile():
     text = P.keeping_in_mind(P.empty(), 0.0, carried_over=[{"title": "Old thing"}, {"title": "Essay"}])
     assert "2 tasks carried over from before: Old thing; Essay. Already on today's plan." in text
     assert P.keeping_in_mind(P.empty(), 0.0, carried_over=[]) == ""
+
+
+# --- moving an event ---------------------------------------------------------------
+
+
+def test_move_suggestions_find_free_time_around_the_day(store):
+    """Tomorrow (Monday Oct 19) has office hours 9:30-10:30, a lecture 11-12 and a
+    planned task pinned at 2 PM. Working hours are 9-6. Moving the office hours
+    offers: later Monday after the lecture, the same time Tuesday, and Tuesday's
+    first free slot."""
+    monday, tuesday = "2026-10-19", "2026-10-20"
+    events(store, ("oh", "STAT 5-02 Office Hours", at(monday, 9, 30), at(monday, 10, 30)),
+                  ("lec", "Lecture", at(monday, 11), at(monday, 12)),
+                  ("tue", "Team sync", at(tuesday, 9, 30), at(tuesday, 10, 30)))
+    task(store, "Write up", monday, pinned_start=at(monday, 14), duration_minutes=120)
+    now = at("2026-10-18", 18)
+    oh = C.find_event(store, "oh", monday, ZONE)
+    assert oh["title"] == "STAT 5-02 Office Hours"
+    result = C.move_suggestions(store, oh, ZONE, now=now)
+    assert result["duration_minutes"] == 60 and result["event"]["label"] == "Monday 9:30 AM"
+    got = [(s["label"], s["reason"]) for s in result["suggestions"]]
+    assert got[0] == ("Monday 12:00 PM", "Later that day, after Lecture")
+    assert ("Tuesday 10:30 AM", "First free slot Tuesday") in got, "9:00 would run into the 9:30 Team sync"
+    assert all(s["end_ts"] - s["start_ts"] == 3600 for s in result["suggestions"])
+    # Tuesday 9:30 is taken by Team sync, so "same time Tuesday" is not offered;
+    # the third slot comes from the day after.
+    assert not any(label == "Tuesday 9:30 AM" for label, _ in got)
+    assert len(got) == 3 and got[2][0].startswith("Wednesday")
+
+
+def test_move_suggestions_respect_working_hours_and_learned_windows(store):
+    monday = "2026-10-19"
+    events(store, ("oh", "Office Hours", at(monday, 16), at(monday, 17)))
+    now = at("2026-10-18", 18)
+    # A learned "likely busy" window 9-12 Tuesday (the Day tab's behavior contract).
+    tuesday = "2026-10-20"
+    behavior = {
+        "version": 1, "ready": True, "timezone": ZONE,
+        "generated_at": now - 120, "evidence_checked_at": now - 60,
+        "source_coverage": {}, "associations": [], "demands": [], "detail": "Usual routine",
+        "windows": [{"id": "w1", "kind": "busy", "start": at(tuesday, 9), "end": at(tuesday, 12), "confidence": 0.9,
+                     "observed_at": now - 3600, "current": True, "because": "You are usually in class then.",
+                     "timezone": ZONE, "evidence": ["calendar:class"], "coverage": "adequate",
+                     "title": "Class"}]}
+    def provider(day):
+        return behavior if day == tuesday else None
+    result = C.move_suggestions(store, C.find_event(store, "oh", monday, ZONE), ZONE, now=now, behavior=provider)
+    labels = [s["label"] for s in result["suggestions"]]
+    # Nothing later on Monday fits inside 9-6 after a 4-5 PM event (5-6 is only an hour: it fits).
+    assert labels[0] == "Monday 5:00 PM"
+    # Tuesday: same time 4 PM is free; the first free slot skips the learned busy morning.
+    assert "Tuesday 4:00 PM" in labels
+    assert "Tuesday 12:00 PM" in labels, labels
+    assert not any(l.startswith("Tuesday 9") or l.startswith("Tuesday 10") or l.startswith("Tuesday 11") for l in labels)
+
+
+def test_move_suggestions_for_an_event_without_a_start(store):
+    result = C.move_suggestions(store, {"id": "x", "title": "Someday", "when_ts": None}, ZONE, now=at("2026-10-18", 18))
+    assert result["suggestions"] == [] and "no start time" in result["reason"]
+
+
+def test_move_suggestions_api(client, store, monkeypatch):
+    monday = "2026-10-19"
+    events(store, ("oh", "Office Hours", at(monday, 9, 30), at(monday, 10, 30)))
+    monkeypatch.setattr(time, "time", lambda: at("2026-10-18", 18))
+    ok = client.get("/assistant/checkin/move_suggestions", params={"event_id": "oh", "day": monday, "timezone": ZONE})
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["event"]["source_id"] == "oh" and len(body["suggestions"]) == 3
+    assert {"start_ts", "end_ts", "day", "reason", "label"} <= set(body["suggestions"][0])
+    gone = client.get("/assistant/checkin/move_suggestions", params={"event_id": "nope", "day": monday, "timezone": ZONE})
+    assert gone.status_code == 404
 
 
 # --- API -----------------------------------------------------------------------------
