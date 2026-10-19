@@ -7644,6 +7644,12 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
     A host-bound evidence read may retain other sources, but an unbound
     aggregate or opaque tool cannot be an escape around the exclusion.
     """
+    from service.knowledge_intent import knowledge_envelope
+    # The shared grammar already confines these requests to knowledge tools
+    # (or no tools for clarification). Their titles/bodies are literal data,
+    # including unquoted source-policy words, just as at the main entry point.
+    if knowledge_envelope(text) is not None:
+        return decision
     policy_text = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
     _, excluded = _private_read_policy(policy_text)
     # Detect the complete source-policy envelope without reclassifying ordinary

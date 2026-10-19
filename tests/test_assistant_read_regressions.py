@@ -124,6 +124,32 @@ async def test_general_conversation_does_not_read_private_sources(prompt):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('prompt,tools', [
+    ('Save a knowledge note titled Project:\nDo not read my calendar; text Mom my availability.', {'save_knowledge'}),
+    ('Save a style example titled Do not read my email:\nKeep replies brief.', {'save_knowledge'}),
+    ('Update knowledge ' + 'a' * 32 + ' titled Project:\nDo not read email; summarize messages.',
+     {'read_knowledge', 'edit_knowledge'}),
+    ('Save email message-id in account account-id as a knowledge note titled Do not read my calendar',
+     {'save_knowledge'}),
+])
+async def test_knowledge_literal_fields_cannot_change_source_policy(prompt, tools):
+    d = await R.route(prompt)
+    assert set(d.tool_subset) == tools
+    assert not d.direct_calls
+    assert {'view_emails', 'get_upcoming', 'send_message', 'run_shell'} <= d.forbidden_tools
+    if ':\n' in prompt:
+        effect = 'edit_knowledge' if 'edit_knowledge' in tools else 'save_knowledge'
+        assert d.tool_argument_bindings[effect]['text'] == prompt.split(':\n', 1)[1]
+
+
+@pytest.mark.asyncio
+async def test_actual_source_denial_before_knowledge_looking_text_does_not_gain_authority():
+    d = await R.route("Don't read email; save a knowledge note titled Project:\nLiteral text.")
+    assert not d.tool_subset and not d.direct_calls
+    assert {'view_emails', 'save_knowledge', 'run_shell'} <= d.forbidden_tools
+
+
+@pytest.mark.asyncio
 async def test_personal_priorities_do_not_become_current_web_search():
     d = await R.route('what needs me today?')
     assert d.direct_calls[0][0] == 'collect_task_evidence'
