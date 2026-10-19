@@ -204,6 +204,8 @@ final class OverlayModel: ObservableObject {
     @Published var dailySyncLabel = ""
     @Published var sourceSyncStatuses: [WispClient.SourceSyncStatus] = []
     @Published private(set) var queuedPromptCount = 0
+    /// The line beside the box while prompts wait: what they wait on, never silent.
+    @Published private(set) var queueLabel = ""
     private var sourceSyncTask: Task<Void, Never>?
     private var sourceSyncID = UUID()
     private var trackedSyncSources: [String] = []
@@ -445,7 +447,11 @@ final class OverlayModel: ObservableObject {
 
     func submit() {
         let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else { return }
+        guard !prompt.isEmpty else {
+            // Return on an empty box sends on prompts held behind a dropped one.
+            if let next = submissionState.resume() { syncQueue(); start(next) }
+            return
+        }
         if let command = NotchCommand.match(prompt) {
             input = ""
             run(command)
@@ -460,8 +466,28 @@ final class OverlayModel: ObservableObject {
         attachedImage = nil
         attachedImageName = nil
         let dispatch = submissionState.submit(submission)
+        syncQueue()
+        if let dispatch { start(dispatch) } else {
+            // Queued behind something slow: say so, rather than a silent "1 queued".
+            switch submissionState.waiting {
+            case .summary: showTransientNotice("Waiting for the daily summary to finish. Your message sends right after it.", duration: 6)
+            case .research: showTransientNotice("Research is open. Your message sends when you go back to chat.", duration: 6)
+            default: break
+            }
+            onResize()
+        }
+    }
+
+    private func syncQueue() {
         queuedPromptCount = submissionState.queuedCount
-        if let dispatch { start(dispatch) } else { onResize() }
+        let count = submissionState.queuedCount
+        switch submissionState.waiting {
+        case .summary: queueLabel = "\(count) waiting for the summary"
+        case .research: queueLabel = "\(count) waiting for research"
+        case .resend: queueLabel = "\(count) waiting for your message"
+        case .reply: queueLabel = "\(count) queued"
+        case nil: queueLabel = ""
+        }
     }
 
     private func start(_ dispatch: PromptDispatch) {
@@ -746,7 +772,7 @@ final class OverlayModel: ObservableObject {
         briefComposing = false
         submissionState.reset()
         researchDispatchID = nil
-        queuedPromptCount = 0
+        syncQueue()
         stopSyncProgress()
         input = ""; answer = ""; reasoning = ""; activity = []
         routeSource = ""; statusText = ""
@@ -1085,16 +1111,28 @@ final class OverlayModel: ObservableObject {
                 if let id = turnTraceID { lastDroppedReport?["trace_id"] = id }
                 // One key per dropped turn, so reopening its report keeps the note.
                 lastDroppedReportKey = "chat:dropped:" + (turnTraceID ?? UUID().uuidString)
-                if let retry = submissionState.dropForRetry(dispatchID) {
+                // Text typed meanwhile stays in the box; the dropped prompt then
+                // waits first in line instead of overwriting it.
+                let typed = !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                var backInBox = false
+                if typed {
+                    _ = submissionState.dropToQueue(dispatchID)
+                } else if let retry = submissionState.dropForRetry(dispatchID) {
                     input = retry.text
                     attachedImage = retry.image
                     attachedImageName = retry.imageName
                     researchMode = retry.researchMode
+                    backInBox = true
                 }
+                syncQueue()
                 if turns.last?.role == "user" {
                     turns.removeLast()
                 }
                 phase = .idle
+                // Never silent: say what happened and how to send it again.
+                showTransientNotice(AgentSend.notice(message: ev.str("message"), unsent: ev.bool("unsent"),
+                                                     queued: submissionState.queuedCount, backInBox: backInBox),
+                                    duration: 12)
             } else {
                 let msg = ev.str("message").isEmpty ? "Something went wrong." : ev.str("message")
                 phase = .error
@@ -1138,7 +1176,7 @@ final class OverlayModel: ObservableObject {
 
     private func completeSubmission(_ dispatchID: UInt64) {
         let next = submissionState.complete(dispatchID)
-        queuedPromptCount = submissionState.queuedCount
+        syncQueue()
         if let next { start(next) } else { refreshRecentChats() }
     }
 
