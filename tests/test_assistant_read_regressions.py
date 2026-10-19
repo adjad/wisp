@@ -151,6 +151,8 @@ async def test_knowledge_literal_fields_cannot_change_source_policy(prompt, tool
     'Without reading my inbox but', "Don't read my messages and",
     ' Without reading my inbox', '\nWithout reading my inbox',
     '\tWithout reading my inbox and',
+    'Without reading my inbox\nand', 'Without reading my inbox\tand',
+    'Without reading my inbox\r\nbut', '\tWithout reading my inbox\tbut\t',
 ])
 async def test_actual_source_denial_before_knowledge_looking_text_does_not_gain_authority(prefix):
     d = await R.route(prefix + " save a knowledge note titled Project:\nLiteral text.")

@@ -7656,7 +7656,7 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
     policy_prefix = re.match(r'^\s*' + _PRIVATE_SOURCE_DENIAL_TEXT + r'(?=$|[\s,;])', policy_text, re.I)
     prefixed_knowledge = False
     if policy_prefix:
-        tail = policy_text[policy_prefix.end():].lstrip(' ,;')
+        tail = re.sub(r'^[\s,;]*', '', policy_text[policy_prefix.end():])
         tail = re.sub(r'^(?:and|but)\s+', '', tail, flags=re.I)
         prefixed_knowledge = knowledge_envelope(tail) is not None
     if prefixed_knowledge or (excluded and knowledge_envelope(remainder) is not None):
