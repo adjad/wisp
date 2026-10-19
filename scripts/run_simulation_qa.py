@@ -112,6 +112,7 @@ PROFILE_TESTS = {
     },
     "outbound": {
         "tests/test_action_tools_sanitize.py",
+        "tests/test_event_move.py",
         "tests/test_outbound_content_provenance.py",
         "tests/test_outbound_language_clarification.py",
         "tests/test_outbound_payload_presentation.py",
@@ -315,6 +316,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_brief_summary_contract.py",
     # Mail gists with a fake model and an isolated cache; nothing is read or sent.
     "tests/test_mail_gists.py",
+    # The kept Daily Summary with an isolated file and a stand-in hub; nothing is composed, read or sent.
+    "tests/test_brief_latest.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
     "tests/test_backend_identity_and_sandbox_isolation.py",
     # Environment-variable echo only; no server, socket or process.
@@ -519,6 +522,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/port-guard-contract": "native/port-guard-compile",
     "native/backend-trust-contract": "native/backend-trust-compile",
     "native/reminders-policy-contract": "native/reminders-policy-compile",
+    "native/calendar-move-contract": "native/calendar-move-compile",
     "native/chat-logic-contract": "native/chat-logic-compile",
     "native/chat-store-contract": "native/chat-store-compile",
     "native/notch-command-contract": "native/notch-command-compile",
@@ -804,6 +808,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
     reminders_policy = str(build_dir / "reminders-policy")
+    calendar_move = str(build_dir / "calendar-move")
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
     backend_trust = str(build_dir / "backend-trust")
@@ -967,6 +972,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/reminders-policy-contract", [reminders_policy]),
+        (
+            "native/calendar-move-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/CalendarMove.swift",
+                "tests/CalendarMoveChecks.swift", "-o", calendar_move,
+            ],
+        ),
+        ("native/calendar-move-contract", [calendar_move]),
         (
             "native/settings-response-compile",
             [

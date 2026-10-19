@@ -3007,7 +3007,7 @@ _CANCEL_VERB_RE = re.compile(r"\b(?:cancel|delete|remove|drop)\b", re.I)
 # point at a calendar item. "delete this file", "remove it from my notes",
 # "change that to dark mode", "update that document" and "change it to Spanish"
 # are about something else and must not be scoped to calendar tools (or forced to
-# update_event, which the loop answers with a refusal).
+# update_event, which moves a real Calendar event).
 _EDIT_OTHER_DOMAIN_RE = re.compile(
     r"\b(?:files?|folders?|directory|documents?|docs?|e-?mails?|inbox|notes?|messages?|"
     r"paragraphs?|sentences?|lines?|words?|pages?|tabs?|windows?|apps?|settings?|modes?|themes?|"
@@ -3081,12 +3081,10 @@ def _edit_reference_subset(text: str, last_assistant: str | None,
     decision = _mk_scoped(subset, f"{kind} of an item from the previous list -> scoped tools ({len(subset)})",
                           expect=False, light=False, multi=True)
     if kind == "calendar event edit" and (timed or renamed):
-        # Wisp deliberately cannot edit a calendar event (update_event is
-        # registered as unavailable: it would lose duration, calendar and
-        # attendees). Require it so the loop answers with that registered,
-        # honest reason before any model call, exactly as the "reschedule ..."
-        # rule does, instead of letting retrieval flail with update_reminder or
-        # a cancel-then-recreate that destroys the event's details.
+        # A calendar event moves only through update_event (a verified native
+        # move that keeps its details, always confirmed). Require it, exactly as
+        # the "reschedule ..." rule does, instead of letting retrieval flail with
+        # update_reminder or a cancel-then-recreate that destroys the details.
         decision.force_first_tool = "update_event"
         decision.expect_tool_first = True
         decision.required_tool_groups = (frozenset({"update_event"}),)
@@ -5121,10 +5119,9 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
             # unconditional required group would force an ungrounded update.
             d.forbidden_tools = frozenset({"add_calendar_event", "add_reminder"})
             if "update_event" in updating:
-                # Existing Calendar metadata cannot support a preservation-
-                # safe update. The loop reports the registered unavailability
-                # before reading/approving/dispatching anything; do not bind
-                # a title query as identity or invent location/duration values.
+                # update_event resolves the exact occurrence itself and asks
+                # when it is ambiguous; never bind a title query as identity
+                # here, or cancel and recreate the event.
                 d.force_first_tool = "update_event"
                 d.expect_tool_first = True
                 d.required_tool_groups = (frozenset({"update_event"}),)

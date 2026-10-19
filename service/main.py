@@ -2722,6 +2722,12 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
             "end_ts": e.get("end_ts"),
             "all_day": bool(e.get("all_day")),
             "location": e.get("location"),
+            # Who organizes it and how many invitees it has: a move of an event with
+            # invitees is allowed only for its organizer, who sends them the new time.
+            "invitee_count": (e["invitee_count"] if type(e.get("invitee_count")) is int
+                              and 0 <= e["invitee_count"] <= 100000 else None),
+            "organizer_is_user": (e["organizer_is_user"] if type(e.get("organizer_is_user")) is bool
+                                  else None),
             "confidence": 1.0,
         })
     from service.assistant.today import RevisionConflict
@@ -2841,9 +2847,28 @@ async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[st
             sid = store.create_session()
         store.add_turn(sid, "user", "Daily summary")
         store.add_turn(sid, "assistant", text)
+        try:
+            from service.assistant import brief_latest
+            brief_latest.record(text, part)
+        except Exception:  # noqa: BLE001 — keeping a copy never fails the button
+            import traceback
+            traceback.print_exc()
     return {"ok": ok, "text": text, "part_of_day": part,
             "session_id": sid, "summary_sync": snapshot,
             **({} if ok else {"error": "sources syncing"})}
+
+
+@app.get("/assistant/daily_summary/latest")
+async def assistant_daily_summary_latest(day: str | None = None, timezone: str | None = None) -> dict[str, Any]:
+    """The day's latest composed Daily Summary, {text, composed_at, part_of_day},
+    so the app shows it again after a relaunch; 404 when none was composed.
+    `day` defaults to today's local date. `timezone` is accepted for clients
+    that send it; days are the Mac's local dates, as the scheduler names them."""
+    from service.assistant import brief_latest
+    entry = brief_latest.latest(day or brief_latest.today())
+    if entry is None:
+        raise HTTPException(status_code=404, detail="no composed summary for that day")
+    return entry
 
 
 def _summary_schedule() -> dict[str, Any]:

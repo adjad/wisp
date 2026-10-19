@@ -173,9 +173,47 @@ struct TodayPlanChecks {
         }
         nextReopen.close()
     }
+    /// The composed summary the service kept: parsed, chosen against the live
+    /// one, read on a relaunch, forgotten on a 404 and kept through other failures.
+    @MainActor
+    static func storedBriefChecks() async {
+        let now = 1_800_043_200.0, hour = 3600.0  // noon, 2027-01-15, Los Angeles
+        let kept = StoredBrief.parse(["text": "**📧 Inbox — 3 emails**\n- Ann: Lunch", "composed_at": now - hour, "part_of_day": "morning"],
+                                     day: "2027-01-15")
+        check(kept?.composedAt == Date(timeIntervalSince1970: now - hour) && StoredBrief.parse(["text": "  "], day: "d") == nil
+              && StoredBrief.parse(["text": "x", "composed_at": "soon"], day: "d") == nil, "kept summaries parse, junk doesn't")
+        let sameDay: (Date) -> Bool = { $0.timeIntervalSince1970 > now - 12 * hour }
+        check(StoredBrief.newest(live: nil, stored: kept, sameDay: sameDay)?.text == kept?.text
+              && StoredBrief.newest(live: (text: "live", at: Date(timeIntervalSince1970: now)), stored: kept, sameDay: sameDay)?.text == "live"
+              && StoredBrief.newest(live: (text: "old", at: Date(timeIntervalSince1970: now - 2 * hour)), stored: kept, sameDay: sameDay)?.text == kept?.text
+              && StoredBrief.newest(live: (text: "yesterday", at: Date(timeIntervalSince1970: now - 20 * hour)), stored: nil, sameDay: sameDay) == nil,
+              "the newest of today's live and kept summaries")
+        var status = 200
+        var asked: [String] = []
+        let zone = TimeZone(identifier: "America/Los_Angeles")!
+        let model = TodayModel(now: { Date(timeIntervalSince1970: now) }, timeZoneProvider: { zone }) { request in
+            asked.append(request.url?.absoluteString ?? "")
+            let body = status == 200 ? #"{"text":"**🧭 Keeping in mind**\n- PA 2","composed_at":1800039600,"part_of_day":"morning"}"#
+                : #"{"detail":"no composed summary for that day"}"#
+            return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+        }
+        check(!model.storedBriefChecked, "unknown until asked")
+        await model.refreshStoredBrief()
+        check(model.storedBriefChecked && model.storedBrief?.text == "**🧭 Keeping in mind**\n- PA 2" && model.storedBrief?.day == "2027-01-15"
+              && asked.last?.contains("/assistant/daily_summary/latest?day=2027-01-15") == true,
+              "the kept summary is read for today's local date: \(asked)")
+        status = 500
+        await model.refreshStoredBrief()
+        check(model.storedBrief != nil, "a failed read keeps the summary read before")
+        status = 404
+        await model.refreshStoredBrief()
+        check(model.storedBrief == nil, "none composed today: forgotten")
+    }
+
     @MainActor
     static func main() async throws {
         try evidenceLabelChecks()
+        await storedBriefChecks()
         let zone = TimeZone(identifier: "America/Los_Angeles")!
         let model = TodayModel(timezone: zone)
         check(model.clock(instant("2026-09-24T07:00:00Z").timeIntervalSince1970) == "12:00 AM")

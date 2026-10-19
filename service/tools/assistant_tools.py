@@ -9,6 +9,8 @@ fed by the app's CalendarReader (EventKit) plus manual additions.
 from __future__ import annotations
 
 import re
+import contextlib
+import contextvars
 import time
 from datetime import date, datetime, timedelta, timezone
 
@@ -837,36 +839,170 @@ async def add_calendar_event(title: str, when_iso: str,
 
 
 
+def event_move_plan(title: str, when_iso: str, duration_min: int | None = None,
+                    location: str = "", new_title: str = "", current_when_iso: str = "",
+                    *, now: float | None = None) -> dict:
+    """What update_event would do, without doing it: the exact synced occurrence, its
+    new start and length, and the native payload. {"error": text} when it can't run.
+
+    Shared by the tool and its confirmation card, so the card names the same event
+    and times the move will use."""
+    if (location or "").strip() or (new_title or "").strip():
+        return {"error": "Wisp can move an event to a new time, but it can't rename an "
+                         "event or change its location. Nothing was changed; edit that in Calendar."}
+    if problem := calendar_time_problem(when_iso):
+        return {"error": problem}
+    when, _ = _calendar_local_start(when_iso)
+    now = time.time() if now is None else now
+    if when.timestamp() < now - 60:
+        return {"error": f"({when_iso} is in the past — nothing was moved.)"}
+    if duration_min is not None and (type(duration_min) is not int or not 1 <= duration_min <= 10080):
+        return {"error": "(error: a new length must be 1–10080 minutes; nothing was moved.)"}
+    current = None
+    if (current_when_iso or "").strip():
+        if calendar_time_problem(current_when_iso):
+            return {"error": "(error: the event's current start time is invalid; nothing was moved.)"}
+        current = _calendar_local_start(current_when_iso)[0].timestamp()
+    found = assistant_store.calendar_move_target(title, now=now, current_start=current)
+    if "error" in found:
+        return {"error": found["error"]}
+    row = found["row"]
+    # Invitees: only the organizer may move such an event, and Calendar then sends them
+    # the new time; the card says so. Unknown either way is refused, never guessed.
+    invitees, organizer = row.get("invitee_count"), row.get("organizer_is_user")
+    if invitees is None:
+        return {"error": f"Wisp can't tell yet whether “{row['title']}” has invitees (Calendar "
+                         "hasn't synced that); nothing was moved. Try again shortly or move it in Calendar."}
+    # Someone else's event never moves, whatever its invitee count (an invitation can list
+    # only the user as attendee). organizer_is_user is 0/1 from the store, or None.
+    if organizer is not None and not organizer:
+        return {"error": f"Only the organizer can move “{row['title']}”; nothing was moved. "
+                         "Ask them, or propose a new time in Calendar."}
+    if invitees and organizer is None:
+        return {"error": f"Wisp can't tell who organizes “{row['title']}”, so it won't move an "
+                         "event with invitees; nothing was moved. Move it in Calendar."}
+    if row["end_ts"] is not None and row["end_ts"] >= row["when_ts"]:
+        length = duration_min if duration_min is not None else max(1, round((row["end_ts"] - row["when_ts"]) / 60))
+    else:
+        length = duration_min
+    if abs(when.timestamp() - row["when_ts"]) < 60 and duration_min is None:
+        return {"error": f"“{row['title']}” already starts then; nothing was moved."}
+    return {"row": row, "when_ts": when.timestamp(), "length_min": length,
+            "payload": {"source_id": row["source_id"], "expected_title": row["title"],
+                        "expected_start_ts": row["when_ts"], "when_ts": when.timestamp(),
+                        "duration_min": duration_min, "invitee_count": invitees}}
+
+
+# The occurrence the user confirmed, set by the agent loop around the approved call
+# (see prepare_event_move). update_event then moves exactly that occurrence and never
+# re-resolves the title, so the card and the write can't name different events.
+_MOVE_BINDING: contextvars.ContextVar[dict | None] = contextvars.ContextVar("event_move_binding", default=None)
+
+
+@contextlib.contextmanager
+def bound_event_move(binding: dict | None):
+    token = _MOVE_BINDING.set(binding)
+    try:
+        yield
+    finally:
+        _MOVE_BINDING.reset(token)
+
+
+def prepare_event_move(args: dict) -> dict:
+    """Resolve an update_event call once, before its confirmation card.
+
+    Returns {"error": text} (no card: the text is the tool result) or {"args": args with
+    the start pinned to this Mac's UTC offset, "binding": the exact occurrence and native
+    payload, "preview": the card line}."""
+    if problem := calendar_time_problem(args.get("when_iso")):
+        return {"error": problem}
+    bound = {**args, "when_iso": bind_calendar_local_start(args["when_iso"])}
+    plan = event_move_plan(bound.get("title", ""), bound["when_iso"], bound.get("duration_min"),
+                           bound.get("location", ""), bound.get("new_title", ""),
+                           bound.get("current_when_iso", ""))
+    if "error" in plan:
+        return {"error": plan["error"]}
+    row = plan["row"]
+    old = datetime.fromtimestamp(row["when_ts"])
+    new = (calendar_interval_label(bound["when_iso"], plan["length_min"]) if plan["length_min"]
+           else datetime.fromtimestamp(plan["when_ts"]).strftime("%a %b %-d, %Y %-I:%M %p"))
+    once = " (this occurrence only)" if row["recurring"] else ""
+    invitees = plan["payload"]["invitee_count"]
+    notice = (f" Its {invitees} invitee{'s' if invitees != 1 else ''} will be notified of the new time."
+              if invitees else "")
+    return {"args": bound,
+            "binding": {"payload": plan["payload"], "title": row["title"], "recurring": row["recurring"]},
+            "preview": f"Move: {row['title']} — from {old:%a %b %-d %-I:%M %p} to {new}{once}.{notice}"}
+
+
 @register(
     "update_event",
-    "Unavailable: Wisp cannot safely preserve an existing calendar event's "
-    "details when changing it. No update will run; edit the event in Calendar.",
+    "Move an existing event in the user's macOS Calendar to a new time (reschedule "
+    "it). Matched by its title; pass `current_when_iso` only to pick one of several "
+    "same-titled events. Only the time changes: notes, location, attendees, alerts "
+    "and calendar are kept, and for a repeating event only that one occurrence moves. "
+    "The length stays the same unless `duration_min` is given. Always confirmed. It "
+    "cannot rename an event or change its location, and an event with invitees moves "
+    "only when the user organizes it (Calendar then notifies them).",
     {"type": "object",
      "properties": {
-         "title": {"type": "string", "description": "Existing title (compatibility only; updates are unavailable)."},
-         "when_iso": {"type": "string", "description": "Requested start (compatibility only; no change will run)."},
-         "duration_min": {"type": "integer", "description": "Compatibility only; ignored without changing the event."},
-         "location": {"type": "string", "description": "Compatibility only; ignored without changing the event."},
-         "new_title": {"type": "string", "description": "Compatibility only; ignored without changing the event."},
+         "title": {"type": "string", "description": "the event's current title (any distinctive part)"},
+         "when_iso": {"type": "string", "description": "NEW local start datetime, e.g. 2026-07-14T15:00"},
+         "duration_min": {"type": "integer",
+                          "description": "new length in minutes, only when the user asks for one; omit to keep it"},
+         "current_when_iso": {"type": "string",
+                              "description": "the event's CURRENT local start, only when several events share the title"},
+         "location": {"type": "string", "description": "not supported; leave empty"},
+         "new_title": {"type": "string", "description": "not supported; leave empty"},
      },
      "required": ["title", "when_iso"]},
     category="calendar_write",
     aliases=["move my dentist appointment to 3pm", "reschedule the meeting to tomorrow",
-             "push my lunch back an hour", "change the location of the standup"],
-    unavailable_reason=EVENT_UPDATE_UNAVAILABLE,
+             "push my lunch back an hour", "move the standup to 10am"],
     retrieval_description=(
-        "Change an existing calendar event's time, duration, or location — "
-        "reschedule it. Matched by part of its current title, same as "
-        "cancel_event. Implemented as cancel + recreate, so if the title should "
-        "ALSO change, pass `new_title`; otherwise the original title is kept."),
+        "Move an existing calendar event to a new time — reschedule it — keeping its "
+        "details. Matched by its current title, like cancel_event."),
 )
-async def update_event(title: str, when_iso: str, duration_min: int = 60,
-                       location: str = "", new_title: str = "") -> str:
-    # No safe executable path exists with the current synced metadata. Do not
-    # resolve a title through collapsed cross-source rows or cancel/recreate:
-    # either can retire Reminders and discard Calendar details. This guard
-    # also covers direct Python callers outside the registry/agent loop.
-    return EVENT_UPDATE_UNAVAILABLE
+async def update_event(title: str, when_iso: str, duration_min: int | None = None,
+                       location: str = "", new_title: str = "", current_when_iso: str = "") -> str:
+    # A native, verified move of one exact occurrence (CalendarReader.moveEvent): the app
+    # checks the event still has this title and start, changes only its start and end,
+    # and reads back that nothing else changed. Never cancel + recreate.
+    binding = _MOVE_BINDING.get()
+    if binding is not None:
+        # The approved call: move exactly the confirmed occurrence, if it is still there
+        # as the card showed it, to exactly the confirmed start.
+        payload, row = binding["payload"], binding
+        if (calendar_time_problem(when_iso)
+                or abs(_calendar_local_start(when_iso)[0].timestamp() - payload["when_ts"]) >= 1
+                or not assistant_store.calendar_occurrence_current(
+                    payload["source_id"], payload["expected_start_ts"], payload["expected_title"])):
+            return (f"(couldn't move “{binding['title']}”: it changed after you confirmed. "
+                    "Nothing was changed.)")
+    else:
+        # Only the agent loop's confirmed, bound call may move an event; any other caller
+        # (a direct run_tool, a workflow executor) gets the reason and nothing runs.
+        plan = event_move_plan(title, when_iso, duration_min, location, new_title, current_when_iso)
+        if "error" in plan:
+            return plan["error"]
+        return ("(error: a Calendar move needs the user's confirmation of the exact event; "
+                "nothing was moved.)")
+    from service.assistant.outbox import app_connected, request as app_request
+    if not await app_connected():
+        return EVENT_UPDATE_UNAVAILABLE
+    result = await app_request("move_calendar_event", payload)
+    if result.get("ok") is not True:
+        if result.get("status") == "unknown":
+            return (f"(not confirmed: Calendar may have moved “{row['title']}”; check it in "
+                    "Calendar before trying again.)")
+        return f"(couldn't move “{row['title']}”: {result.get('error') or 'Calendar did not confirm the move'}. Nothing was changed.)"
+    from service.assistant.hub import hub
+    await hub.publish({"type": "changed"})
+    start = datetime.fromtimestamp(result["when_ts"])
+    end = datetime.fromtimestamp(result["end_ts"])
+    once = " Only this occurrence moved." if row["recurring"] else ""
+    notified = " Invitees were notified of the new time." if payload["invitee_count"] else ""
+    return f"Moved “{row['title']}” to {start:%a %b %-d, %-I:%M %p}–{end:%-I:%M %p}.{once}{notified}"
 
 
 @register(

@@ -175,6 +175,7 @@ def wisp_capabilities(query: str = "") -> str:
         ("Reply in an existing email thread", {"reply_to_email"}, True),
         ("Schedule a new email or text for later", {"schedule_send"}, True),
         ("Create reminders", {"add_reminder"}, True),
+        ("Move calendar events to a new time", {"update_event"}, True),
         ("Read calendar/reminders", {"get_upcoming"}, False),
         ("Read browser history", {"search_browser_history"}, False),
         ("Read Mail", {"view_emails", "summarize_emails"}, False),

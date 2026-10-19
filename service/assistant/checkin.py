@@ -119,6 +119,22 @@ def _task_row(task: dict) -> dict:
                                       "priority", "due_ts", "day", "carried_from", "origin_ts")}
 
 
+def cancel_block_reason(row: dict) -> str:
+    """Why a one-tap Cancel of this synced occurrence is not allowed, or "" when it is.
+    The same organizer rules as a move (CalendarMove.cancelRefusal checks them again on the
+    live event): invitees mean only the organizer may cancel, and unknown is refused."""
+    invitees, organizer = row.get("invitee_count"), row.get("organizer_is_user")
+    if invitees is None:
+        return "Wisp hasn't synced this event's invitees yet; cancel it in Calendar."
+    # Someone else's event is never cancelled, whatever its invitee count: an invitation
+    # can list only the user as attendee.
+    if organizer is False:
+        return f"Only the organizer can cancel “{row.get('title', 'this event')}”; decline it in Calendar instead."
+    if invitees and organizer is None:
+        return "Calendar doesn't say who organizes this event; cancel it in Calendar."
+    return ""
+
+
 def _event_rows(store, day: str, timezone: str) -> list[dict]:
     from service.assistant.today import day_bounds
     lo, hi = day_bounds(day, timezone)
@@ -126,9 +142,18 @@ def _event_rows(store, day: str, timezone: str) -> list[dict]:
     for event in store.calendar_events_overlapping(lo, hi):
         if event.get("status", "active") != "active":
             continue
-        rows.append({"id": event.get("id"), "title": event.get("title") or "Untitled event",
-                     "when_ts": event.get("when_ts"), "end_ts": event.get("end_ts"),
-                     "all_day": bool(event.get("all_day")), "source_id": event.get("source_id")})
+        row = {"id": event.get("id"), "title": event.get("title") or "Untitled event",
+               "when_ts": event.get("when_ts"), "end_ts": event.get("end_ts"),
+               "all_day": bool(event.get("all_day")), "source_id": event.get("source_id")}
+        # What a one-tap Cancel needs: the invitee count to state ("its N invitees will be
+        # notified") and send back, and why Cancel isn't offered, if it isn't.
+        found = (store.calendar_occurrence(row["source_id"], row["when_ts"])
+                 if row["source_id"] and row["when_ts"] is not None
+                 and hasattr(store, "calendar_occurrence") else None)
+        row["invitee_count"] = found["invitee_count"] if found else None
+        row["organizer_is_user"] = found["organizer_is_user"] if found else None
+        row["cancel_blocked"] = cancel_block_reason(found) if found else "Not in your synced Calendar."
+        rows.append(row)
     rows.sort(key=lambda r: (r["when_ts"] is None, r["when_ts"] or 0))
     return rows[:MAX_EVENTS]
 
