@@ -7645,15 +7645,18 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
     aggregate or opaque tool cannot be an escape around the exclusion.
     """
     policy_text = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
+    _, excluded = _private_read_policy(policy_text)
+    # Detect the complete source-policy envelope without reclassifying ordinary
+    # web requests. Keep these triggers aligned with routing_guard_contract.
+    if not (excluded or _calendar_is_excluded(policy_text) or _reminder_is_excluded(policy_text)
+            or _notes_todo_destination_is_excluded(policy_text)
+            or re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b",
+                         policy_text, re.I)):
+        return decision
     forbidden, bindings = routing_guard_contract(text)
     forbidden = set(forbidden)
-    # The complete guard also recognizes policies outside standalone clauses,
-    # such as "without reading my inbox" and Reminder exclusions.
-    _, excluded = _private_read_policy(policy_text)
     source_tools = {"email": "view_emails", "messages": "view_messages",
                     "calendar": "get_upcoming", "notes": "search_notes", "reminders": "search_reminders"}
-    if not (excluded or bindings or forbidden.intersection(source_tools.values())):
-        return decision
     aggregate = decision.tool_argument_bindings.get("collect_task_evidence", {})
     if aggregate and all(aggregate.get(f"include_{source}") is False
                          for source, tool in source_tools.items() if tool in forbidden):
