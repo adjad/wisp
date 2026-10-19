@@ -7653,7 +7653,7 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
         return decision
     policy_text = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
     remainder, excluded = _private_read_policy(policy_text)
-    policy_prefix = re.match(r'^' + _PRIVATE_SOURCE_DENIAL_TEXT + r'(?=$|[\s,;])', policy_text, re.I)
+    policy_prefix = re.match(r'^\s*' + _PRIVATE_SOURCE_DENIAL_TEXT + r'(?=$|[\s,;])', policy_text, re.I)
     prefixed_knowledge = False
     if policy_prefix:
         tail = policy_text[policy_prefix.end():].lstrip(' ,;')
