@@ -133,6 +133,9 @@ def build(store, day: str, timezone: str, *, now: float, profile: dict | None = 
     """Everything the check-in card shows for `day`. Read-only."""
     snapshot = store.today_snapshot(day, timezone)
     tasks = [t for t in snapshot["tasks"] if t.get("day") == day]
+    hide = getattr(store, "hide_stale_tasks", None)
+    if hide is not None:  # the Day plan hides a hidden reminder's task twin; so does the card
+        tasks = hide(tasks, now)
     active = [_task_row(t) for t in tasks if t.get("status") == "active"]
     done = [t for t in tasks if t.get("status") == "done"]
     record = day_record(day)
