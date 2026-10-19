@@ -967,7 +967,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // gets killed — see PendingConfigWrites' docstring for the race this
             // closes. Capped so a genuinely stuck request can't hang quitting.
             await PendingConfigWrites.shared.waitUntilIdle()
-            await client.shutdownOMLX()
+            // Only Wisp's own service: another program on the port (kept open at
+            // the port-conflict alert) must not have its engine stopped for good.
+            if !backend.portConflict { await client.shutdownOMLX() }
             await BrowserBridgeActivation.shared.shutdown()
             await backend.stopAndWait()
             await MainActor.run { self.finishShutdown() }
