@@ -67,16 +67,21 @@ enum CheckInCancel {
         var canRetry: Bool { ["not_current", "unavailable", "failed", "unreachable", "changed"].contains(outcome) }
     }
 
-    /// Transport errors that prove the request never reached the service.
+    /// Transport errors that prove the request never reached the service. A
+    /// connection lost mid-request is not one: the service may have handed the
+    /// cancel to the app and died while waiting for the answer.
     static let notSent: Set<URLError.Code> = [.cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
-                                              .notConnectedToInternet, .networkConnectionLost]
+                                              .notConnectedToInternet]
 
     /// Reads the answer. nil on a verified 200 {ok: true}; otherwise what to
-    /// show. Every non-2xx body carries detail {outcome, message}; a 422 from
-    /// a malformed body carries pydantic's list instead, so it gets a plain
+    /// show. Every deliberate refusal carries detail {outcome, message}; a 422
+    /// from a malformed body carries pydantic's list instead and gets a plain
     /// line. No status with a transport error in `notSent` means nothing was
-    /// cancelled; any other missing answer (a timeout above all) is uncertain.
+    /// cancelled. Any other missing answer (a timeout, a dropped connection)
+    /// and any error without a structured outcome (a 500 from an unknown point
+    /// in the handler, possibly after the app already cancelled) is uncertain.
     static func failure(status: Int?, body: [String: Any]?, transport: URLError.Code? = nil) -> Failure? {
+        let uncertain = Failure(outcome: "unknown", message: "Wisp couldn't confirm whether it was cancelled. Check Calendar before trying again.")
         guard let status else {
             if let transport, notSent.contains(transport) {
                 return Failure(outcome: "unreachable", message: "Wisp's service isn't reachable, so nothing was cancelled.")
@@ -84,12 +89,15 @@ enum CheckInCancel {
             return Failure(outcome: "no_answer", message: "Wisp's service didn't answer in time. Check Calendar: it may have been cancelled.")
         }
         if (200..<300).contains(status) {
-            if body?["ok"] as? Bool == true { return nil }
-            return Failure(outcome: "unknown", message: "Wisp couldn't confirm whether it was cancelled. Check Calendar before trying again.")
+            return body?["ok"] as? Bool == true ? nil : uncertain
+        }
+        if status == 422 {
+            return Failure(outcome: "invalid", message: "Couldn't cancel that. Nothing was cancelled.")
         }
         let detail = body?["detail"] as? [String: Any]
-        let outcome = detail?["outcome"] as? String ?? (status == 422 ? "invalid" : "failed")
-        let message = detail?["message"] as? String ?? "Couldn't cancel that. Nothing was cancelled."
+        guard let outcome = detail?["outcome"] as? String, let message = detail?["message"] as? String else {
+            return uncertain
+        }
         return Failure(outcome: outcome, message: message)
     }
 

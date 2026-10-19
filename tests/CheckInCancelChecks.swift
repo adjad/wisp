@@ -51,6 +51,9 @@ import Foundation
         precondition(down?.outcome == "unreachable" && down?.isUncertain == false && down?.canRetry == true)
         precondition(down?.message.contains("nothing was cancelled") == true)
         precondition(CheckInCancel.failure(status: nil, body: nil, transport: .notConnectedToInternet)?.outcome == "unreachable")
+        let dropped = CheckInCancel.failure(status: nil, body: nil, transport: .networkConnectionLost)
+        precondition(dropped?.isUncertain == true && dropped?.canRetry == false,
+                     "a connection lost mid-request may have delivered the cancel")
         func failure(_ status: Int, _ outcome: String, _ message: String = "msg.") -> CheckInCancel.Failure? {
             CheckInCancel.failure(status: status, body: ["detail": ["outcome": outcome, "message": message]])
         }
@@ -68,7 +71,12 @@ import Foundation
         precondition(invalid?.outcome == "invalid" && invalid?.message.contains("Nothing was cancelled") == true,
                      "pydantic's list detail gets a plain line")
         precondition(invalid?.canRetry == false, "the same body would fail again")
-        precondition(CheckInCancel.failure(status: 500, body: nil)?.outcome == "failed")
+        let crashed = CheckInCancel.failure(status: 500, body: nil)
+        precondition(crashed?.isUncertain == true && crashed?.canRetry == false,
+                     "an error without a structured outcome may have come after the app cancelled")
+        precondition(CheckInCancel.failure(status: 502, body: ["detail": "plain text"])?.isUncertain == true)
+        precondition(CheckInCancel.failure(status: 502, body: ["detail": ["outcome": "failed"]])?.isUncertain == true,
+                     "outcome without a message is not the service's structured refusal")
         let changed = CheckInCancel.changed(title: "Sync")
         precondition(changed.canRetry == true && changed.isUncertain == false && changed.message.contains("“Sync”"))
 

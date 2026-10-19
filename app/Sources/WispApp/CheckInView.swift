@@ -205,7 +205,8 @@ final class CheckInModel: ObservableObject {
     private func reconcilePendingCancels() {
         for (id, pending) in pendingCancels {
             let row = card.events.first { $0.id == id }
-            let same = row.map { $0.canCancel && $0.whenTs == pending.event.whenTs && $0.inviteeCount == pending.event.inviteeCount } ?? false
+            let same = row.map { $0.canCancel && $0.sourceId == pending.event.sourceId
+                && $0.whenTs == pending.event.whenTs && $0.inviteeCount == pending.event.inviteeCount } ?? false
             if same { continue }
             undoCancel(pending.event)
             let title = CheckInSection.plainTitle(pending.event.title)
@@ -369,7 +370,7 @@ struct CheckInSection: View {
         // A cancel in its window or in flight, or an outcome not yet read,
         // keeps the card up: the person must be able to see Undo and the result.
         if model.card.day == day, model.card.showsCheckIn || model.hasCancelActivity
-            || (model.hasCancelOutcomes && !model.card.completed) {
+            || (model.hasCancelOutcomes && model.card.due && !model.card.completed) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 6) {
                     Text("Evening check-in").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
@@ -386,7 +387,7 @@ struct CheckInSection: View {
                     ForEach(model.card.events) { event in eventRow(event) }
                 }
                 // Outcomes for rows that have already left tomorrow's list.
-                ForEach(outcomeLines, id: \.text) { line in
+                ForEach(outcomeLines) { line in
                     Text(line.text).font(.system(size: 11.5)).foregroundStyle(line.failed ? Theme.bad : Theme.textMuted)
                 }
                 if !model.error.isEmpty {
@@ -405,7 +406,7 @@ struct CheckInSection: View {
                         .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                         // Closing the card would hide Undo and the outcome.
                         .disabled(model.busy || model.hasCancelActivity)
-                        .help(model.hasCancelActivity ? "Wait for the cancel to finish first" : "")
+                        .help(model.hasCancelActivity ? "Wait for the cancel to finish first" : "Closes tonight's check-in")
                     }
                 }
             }
@@ -446,14 +447,14 @@ struct CheckInSection: View {
             : "One tap each. Tomorrow carries it; Drop forgets it."
     }
 
-    private struct OutcomeLine: Hashable { let text: String; let failed: Bool }
+    private struct OutcomeLine: Identifiable { let id: String; let text: String; let failed: Bool }
 
     private var outcomeLines: [OutcomeLine] {
         let shown = Set(model.card.events.map(\.id))
         let done = model.cancelled.filter { !shown.contains($0.key) }.sorted { $0.key < $1.key }
-            .map { OutcomeLine(text: $0.value, failed: false) }
+            .map { OutcomeLine(id: $0.key, text: $0.value, failed: false) }
         let failed = model.cancelFailures.filter { !shown.contains($0.key) }.sorted { $0.key < $1.key }
-            .map { OutcomeLine(text: "“\($0.value.title)”: \($0.value.failure.message)", failed: true) }
+            .map { OutcomeLine(id: $0.key, text: "“\($0.value.title)”: \($0.value.failure.message)", failed: true) }
         return done + failed
     }
 
