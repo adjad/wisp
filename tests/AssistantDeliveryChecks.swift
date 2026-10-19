@@ -344,6 +344,37 @@ struct AssistantDeliveryChecks {
             precondition(AssistantDelivery.calendarPayload(zero, kind: "delete_reminder") == nil)
             scenarios += 1
         }
+        // A Calendar move names the exact occurrence and the new start; a null length keeps
+        // the event's own. A verified result carries exactly its read-back start and end.
+        do {
+            let move: [String: Any] = ["type": "move_calendar_event", "action_id": "move1",
+                "source_id": "ek-1", "expected_title": "Dentist", "expected_start_ts": 1_900_000_000.0,
+                "when_ts": 1_900_003_600.0, "duration_min": NSNull()]
+            precondition(AssistantDelivery.calendarPayload(move, kind: "move_calendar_event")?["duration_min"] is NSNull)
+            var timed = move; timed["duration_min"] = 30
+            precondition(AssistantDelivery.calendarPayload(timed, kind: "move_calendar_event")?["duration_min"] as? Int == 30)
+            var partial = move; partial["duration_min"] = 30.5
+            precondition(AssistantDelivery.calendarPayload(partial, kind: "move_calendar_event") == nil)
+            var untitled = move; untitled["expected_title"] = " "
+            precondition(AssistantDelivery.calendarPayload(untitled, kind: "move_calendar_event") == nil)
+            var extra = move; extra["location"] = "Elsewhere"
+            precondition(AssistantDelivery.calendarPayload(extra, kind: "move_calendar_event") == nil)
+            var noStart = move; noStart.removeValue(forKey: "expected_start_ts")
+            precondition(AssistantDelivery.calendarPayload(noStart, kind: "move_calendar_event") == nil)
+            let verified = AssistantDelivery.terminalResult(["ok": true, "when_ts": 1_900_003_600.0,
+                "end_ts": 1_900_007_200.0], kind: "move_calendar_event", native: true)
+            precondition(verified?["status"] as? String == "succeeded" && verified?["end_ts"] as? Double == 1_900_007_200.0)
+            precondition(AssistantDelivery.terminalResult(["ok": true], kind: "move_calendar_event", native: true) == nil)
+            precondition(AssistantDelivery.terminalResult(["ok": true, "when_ts": 2.0, "end_ts": 1.0],
+                kind: "move_calendar_event", native: true) == nil)
+            let unknown = AssistantDelivery.terminalResult(["ok": false, "status": "unknown",
+                "error": "Calendar saved the move but its read-back differs (notes); the outcome is unknown."],
+                kind: "move_calendar_event", native: true)
+            precondition(unknown?["status"] as? String == "unknown")
+            precondition(AssistantDelivery.terminalResult(["ok": false, "error": "denied", "when_ts": 1.0],
+                kind: "move_calendar_event", native: true) == nil)
+            scenarios += 1
+        }
         print("AssistantDelivery: \(scenarios) offline audit/receipt/transport scenarios passed")
     }
 }

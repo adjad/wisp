@@ -1267,9 +1267,9 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(target, R.rule_route(prompt).tool_subset)
                 d = await R.route(prompt)
                 if target == "update_event":
-                    self.assertEqual(d.tool_subset, [])
+                    self.assertEqual(d.tool_subset, ["update_event"])
                     self.assertEqual(d.required_tool_groups, (frozenset({"update_event"}),))
-                    self.assertIsNone(d.force_first_tool)
+                    self.assertEqual(d.force_first_tool, "update_event")
                 else:
                     self.assertEqual(set(d.tool_subset), {"get_upcoming", target})
                     self.assertEqual(d.required_tool_groups, ())
@@ -1278,7 +1278,7 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(d.tool_argument_bindings, {})
                 self.assertFalse(CREATION.intersection(d.tool_subset))
         both = await R.route("reschedule my meeting and my reminder to tomorrow")
-        self.assertEqual(set(both.tool_subset), {"get_upcoming", "update_reminder"})
+        self.assertEqual(set(both.tool_subset), {"get_upcoming", "update_reminder", "update_event"})
         self.assertEqual(both.required_tool_groups, (frozenset({"update_event"}),))
 
     async def test_incomplete_reschedule_can_ask_without_forcing_an_update(self):
@@ -1293,44 +1293,43 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         prompt = "reschedule the team meeting to tomorrow at 3pm"
         d = await R.route(prompt)
         self.assertEqual(d.required_tool_groups, (frozenset({"update_event"}),))
-        self.assertIsNone(d.force_first_tool)
-        self.assertNotIn("update_event", d.tool_subset)
+        self.assertEqual(d.force_first_tool, "update_event")
         self.assertEqual(d.tool_argument_bindings, {})
+        self.assertIn("cancel_event", d.forbidden_tools)
         claim = "Done — I've rescheduled the team meeting to tomorrow at 3 PM."
-        result, client, approver = await self.run_loop(prompt, [claim] * 4)
-        self.assertEqual(result, EVENT_UPDATE_UNAVAILABLE)
-        self.assertEqual(client.requests, [])
-        approver.confirm.assert_not_awaited()
-        read = AsyncMock(return_value="Calendar events: 1. team meeting tomorrow at noon.")
-        with patch.object(REGISTRY["get_upcoming"], "func", read):
-            result, _, approver = await self.run_loop(prompt, [("get_upcoming", {}), *([claim] * 3)])
-        read.assert_not_awaited()
-        self.assertEqual(result, EVENT_UPDATE_UNAVAILABLE)
-        approver.confirm.assert_not_awaited()
+        moved = "Moved “team meeting” to Thu Sep 10, 3:00 PM–4:00 PM."
+        update = AsyncMock(return_value=moved)
+        args = {"title": "team meeting", "when_iso": "2026-09-10T15:00"}
+        with patch.object(REGISTRY["update_event"], "func", update):
+            result, _, approver = await self.run_loop(prompt, [claim] * 4)
+        self.assertNotEqual(result, claim)
+        update.assert_not_awaited()
+        # The move itself is always confirmed, and a denial changes nothing.
+        with patch.object(REGISTRY["update_event"], "func", update):
+            result, _, approver = await self.run_loop(prompt, [("update_event", args), claim])
+        approver.confirm.assert_awaited()
+        update.assert_not_awaited()
+        with patch.object(REGISTRY["update_event"], "func", update):
+            result, _, approver = await self.run_loop(prompt, [("update_event", args), "Moved it."],
+                                                      approve=True)
+        update.assert_awaited_once()
+        self.assertEqual(classify_tool_outcome("update_event", moved).status, "succeeded")
 
     async def test_reschedule_does_not_bind_partially_understood_destinations(self):
         for when in ("October 1 at 3pm", "next week at 3pm", "tomorrow at 3pm UTC",
                      "tomorrow at 3pm or Friday at 4pm", "tomorrow at 3pm for 30 minutes",
-                     "tomorrow at 25pm", "tomorrow at 6:7"):
+                     "tomorrow at 25pm", "tomorrow at 6:7", "tomorrow 3pm", "15:00 tomorrow",
+                     "tomorrow noon", "noon tomorrow"):
             with self.subTest(when=when):
                 d = await R.route("reschedule the team meeting to " + when)
-                self.assertEqual(d.tool_subset, [])
                 self.assertIn("cancel_event", d.forbidden_tools)
                 self.assertEqual(d.tool_argument_bindings, {})
                 self.assertEqual(d.required_tool_groups, (frozenset({"update_event"}),))
-        for when in ("tomorrow 3pm", "15:00 tomorrow", "tomorrow noon", "noon tomorrow"):
-            with self.subTest(when=when):
-                d = await R.route("reschedule the team meeting to " + when)
-                self.assertEqual(d.tool_argument_bindings, {})
-                result, _, approver = await self.run_loop(
-                    "reschedule the team meeting to " + when, ["Done."])
-                self.assertEqual(result, EVENT_UPDATE_UNAVAILABLE)
-                approver.confirm.assert_not_awaited()
 
     async def test_unavailable_inventory_is_non_routable_and_never_dispatches(self):
-        # The twelve placeholder registrations were retired outright; the only
-        # remaining unavailable registration is update_event, which keeps its
-        # reschedule-intent contract.
+        # The twelve placeholder registrations were retired outright, and
+        # update_event became a real verified move (2026-10-18). The generic
+        # unavailable mechanism is still exercised below with a patched reason.
         retired = {
             "country_info", "find_local_events", "get_lyrics", "identify_song",
             "live_captions", "lookup_media_title", "set_hotkey",
@@ -1339,19 +1338,21 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertTrue(retired.isdisjoint(REGISTRY))
         unavailable = {name for name, tool in REGISTRY.items() if tool.unavailable_reason}
-        self.assertEqual(unavailable, {"update_event"})
+        self.assertNotIn("update_event", unavailable)
         advertised = {schema["function"]["name"] for schema in tool_schemas(None)}
         self.assertTrue((retired | unavailable).isdisjoint(advertised))
+        self.assertIn("update_event", advertised)
         tool = REGISTRY["update_event"]
-        self.assertEqual(tool.unavailable_reason, EVENT_UPDATE_UNAVAILABLE)
         implementation = AsyncMock(side_effect=AssertionError(
             "an unavailable compatibility implementation must not run"))
-        with patch.object(tool, "func", implementation):
+        with patch.object(tool, "func", implementation), \
+                patch.object(tool, "unavailable_reason", EVENT_UPDATE_UNAVAILABLE):
             result = await run_tool(tool, {})
         implementation.assert_not_awaited()
         self.assertEqual(result, EVENT_UPDATE_UNAVAILABLE)
         self.assertEqual(classify_tool_outcome("update_event", result).status, "needs_input")
 
+    @patch.object(REGISTRY["update_event"], "unavailable_reason", EVENT_UPDATE_UNAVAILABLE)
     async def test_legacy_mixed_menu_keeps_genuine_tool_and_filters_unavailable_one(self):
         receipt = "Calendar fixture: team meeting tomorrow at noon."
         calendar = AsyncMock(return_value=receipt)
@@ -1375,6 +1376,7 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("get_upcoming", offered)
             self.assertNotIn("update_event", offered)
 
+    @patch.object(REGISTRY["update_event"], "unavailable_reason", EVENT_UPDATE_UNAVAILABLE)
     async def test_legacy_forced_unavailable_tool_returns_without_model_or_dispatch(self):
         client = ScriptedClient(["unrelated model prose"])
         unavailable = AsyncMock(side_effect=AssertionError(
@@ -1397,7 +1399,7 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         report = wisp_capabilities("email scheduling")
         self.assertIn("Yes — Schedule a new email or text for later", report)
         self.assertIn("No — schedule a reply inside an existing email thread", report)
-        self.assertIn("unavailable and non-routable", report)
+        self.assertIn("Yes — Move calendar events to a new time (confirmation required)", report)
         self.assertNotIn("settings under API keys", report)
 
     async def test_compound_reminder_lookup_requires_both_actual_sources(self):
@@ -1469,77 +1471,6 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         reminders.assert_not_awaited()
         approver.confirm.assert_not_awaited()
 
-    async def test_real_calendar_backend_is_unavailable_without_preservation_safe_update(self):
-        from service.assistant.hub import hub
-        from service.assistant import sync_status
-
-        # Real disposable SQLite rows, including collapsed cross-source
-        # duplicates and repeated EventKit occurrence identifiers. The only
-        # intercepted effects are approval and the Hub/native bridge.
-        fixtures = (
-            ("empty", [], "available"),
-            ("reminder-only", [("reminders", "team meeting", 0)], "available"),
-            ("calendar-metadata", [("calendar", "Quarterly team meeting", 0)], "available"),
-            ("cross-source-duplicate", [("calendar", "team meeting", 0),
-                                        ("reminders", "team meeting", 0)], "available"),
-            ("ambiguous", [("calendar", "team meeting", 0),
-                            ("calendar", "team meeting", 3600)], "available"),
-            ("syncing", [("calendar", "team meeting", 0)], "syncing"),
-            ("unavailable", [("calendar", "team meeting", 0)], "unavailable"),
-            ("stale", [("calendar", "team meeting", -172800)], "available"),
-        )
-        for label, rows, state in fixtures:
-            for entry in ("routed-loop", "direct-backend", "registry"):
-                with self.subTest(fixture=label, entry=entry):
-                    root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="wisp-event-guard-")))
-                    store = AssistantStore(root / "assistant.db")
-                    sessions = SessionStore(root / "sessions.db")
-                    self.addCleanup(store._db.close)
-                    self.addCleanup(sessions._db.close)
-                    for source in {row[0] for row in rows}:
-                        store.sync_source(source, [{
-                            "source_id": "fixture-occurrence", "kind": "event" if source == "calendar" else "reminder",
-                            "title": title, "when_ts": (NOW + timedelta(days=1)).timestamp() + offset,
-                            "location": "Room 42", "context": "Work calendar", "account": "fixture",
-                            "organizer": "Fixture organizer", "url": "https://example.invalid/event",
-                            # Intentionally ignored by the current store: this
-                            # missing preservation metadata must not become 60.
-                            "duration_min": 90,
-                        } for row_source, title, offset in rows if row_source == source])
-                    before = [tuple(row) for row in store._db.execute("SELECT * FROM commitments ORDER BY id")]
-                    ready = {"sources": [
-                        {"id": "calendar", "label": "Calendar", "state": state},
-                        {"id": "reminders", "label": "Reminders", "state": "available"}]}
-                    publish = AsyncMock()
-                    args = {"title": "team meeting", "when_iso": "2026-09-10T15:00",
-                            "duration_min": 90, "location": "Room 42", "new_title": "Quarterly team meeting"}
-                    with patch.object(assistant_tools, "assistant_store", store), \
-                            patch.object(assistant_tools.time, "time", return_value=NOW.timestamp()), \
-                            patch.object(hub, "publish", publish), \
-                            patch.object(sync_status, "ensure_sources", AsyncMock(return_value=ready)):
-                        if entry == "routed-loop":
-                            prompt = "reschedule the team meeting to tomorrow at 3pm"
-                            sid = sessions.create_session()
-                            self.assertIsNone(await prepare_task_turn_async(
-                                sessions, sid, prompt, assistant_store=store, now=NOW, allow_native=False))
-                            self.assertIsNone(prepare_legacy_turn(sessions, sid, prompt))
-                            result, _, approver = await self.run_loop(prompt, [
-                                ("get_upcoming", {}), ("update_event", args), "Confirmed rescheduled in Calendar."],
-                                approve=True)
-                        elif entry == "direct-backend":
-                            result = await assistant_tools.update_event(**args)
-                        else:
-                            result = await run_tool(REGISTRY["update_event"], args)
-                    after = [tuple(row) for row in store._db.execute("SELECT * FROM commitments ORDER BY id")]
-                    self.assertEqual(after, before, "All stored event and Reminder metadata must remain unchanged")
-                    publish.assert_not_awaited()
-                    if entry == "routed-loop":
-                        approver.confirm.assert_not_awaited()
-                    self.assertIn("unavailable", result.lower())
-                    self.assertIn("preserv", result.lower())
-                    self.assertNotIn("Confirmed rescheduled", result)
-                    self.assertEqual(classify_tool_outcome("update_event", result).status, "needs_input")
-
     async def test_calendar_discovery_empty_or_degraded_is_not_success(self):
         from service.assistant.hub import hub
         from service.assistant import sync_status
@@ -1565,7 +1496,12 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         for receipt, expected in (
                 (EVENT_UPDATE_UNAVAILABLE, "needs_input"),
                 (UPDATE_RECEIPT, "failed"),
-                ('Nothing upcoming or past matches “team meeting”.', "needs_input"),
+                ('No upcoming Calendar event matches “team meeting”.', "needs_input"),
+                ('Nothing upcoming or past matches “team meeting”.', "failed"),
+                ('Moved “team meeting” to Thu Sep 10, 3:00 PM–4:00 PM.', "succeeded"),
+                ('Moved “standup” to Fri Sep 11, 10:00 AM–10:15 AM. Only this occurrence moved.', "succeeded"),
+                ('Moved “team meeting”.', "failed"),
+                ('(not confirmed: Calendar may have moved “team meeting”; check it in Calendar before trying again.)', "failed"),
                 ('Several items match “team meeting”. Which one?', "needs_input"),
                 ('Cancelled “team meeting”.', "failed"),
                 (UPDATE_RECEIPT.split("\n")[1], "failed"),
@@ -1580,6 +1516,7 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(classify_tool_outcome("update_event", UPDATE_RECEIPT,
                                               denied=True).status, "denied")
 
+    @patch.object(REGISTRY["update_event"], "unavailable_reason", EVENT_UPDATE_UNAVAILABLE)
     async def test_reschedule_unavailability_precedes_model_and_effect_dispatch(self):
         prompt = "reschedule the team meeting to tomorrow at 3pm"
         read = AsyncMock(return_value="Calendar events: 1. team meeting tomorrow at noon.")
@@ -1599,6 +1536,7 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         approver.confirm.assert_not_awaited()
         self.assertEqual(result, EVENT_UPDATE_UNAVAILABLE)
 
+    @patch.object(REGISTRY["update_event"], "unavailable_reason", EVENT_UPDATE_UNAVAILABLE)
     async def test_reschedule_model_and_direct_calls_cannot_bypass_unavailability(self):
         prompt = "reschedule the team meeting to tomorrow at 3pm"
         args = {"title": "team meeting", "when_iso": "2026-09-10T15:00"}
@@ -1619,6 +1557,7 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result, EVENT_UPDATE_UNAVAILABLE)
                     self.assertFalse(any(call.args[0].get("type") == "tool_call" for call in emit.await_args_list))
 
+    @patch.object(REGISTRY["update_event"], "unavailable_reason", EVENT_UPDATE_UNAVAILABLE)
     async def test_unavailable_update_preflights_legacy_direct_mixed_tool_batch(self):
         args = {"title": "team meeting", "when_iso": "2026-09-10T15:00"}
         create = ("add_calendar_event", args)

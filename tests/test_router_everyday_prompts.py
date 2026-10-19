@@ -78,12 +78,12 @@ def _edit(text, last_assistant, last_tools):
                                   "change it to 5pm", "make it 5pm", "actually 5pm", "shift the last one to tomorrow"])
 def test_editing_a_listed_calendar_event_requires_update_event_not_a_reminder_tool(text):
     decision, final = _edit(text, EVENTS, "get_upcoming")
-    # Wisp deliberately cannot edit events; requiring update_event makes the loop
-    # say so honestly instead of retrieval picking update_reminder and looping.
+    # An event moves only through update_event (a verified native move); requiring
+    # it keeps retrieval from picking update_reminder or a cancel-and-recreate.
     assert ("update_event" in {t for g in decision.required_tool_groups for t in g})
     assert "update_reminder" in decision.forbidden_tools
     assert {"add_calendar_event", "cancel_event"} <= set(decision.forbidden_tools)
-    assert REGISTRY["update_event"].unavailable_reason
+    assert not REGISTRY["update_event"].unavailable_reason
 
 
 @pytest.mark.parametrize("text", ["move the first one to 6pm", "push that to tomorrow", "change the second one to 7pm"])

@@ -33,7 +33,7 @@ SHORT: dict[str, str] = {
     "plan_meeting": "Read-only private Calendar block proposal; never infer an event's end yourself.",
     "commit_private_meeting": "Create the exact block from plan_meeting, only after explicit user confirmation.",
     "search_reminders": "Search reminders by title, incl. overdue and Wisp-only copies; not events.",
-    "update_event": "Unavailable: calendar events cannot be edited; tell the user to use Calendar.",
+    "update_event": "Move an existing Calendar event to a new time, keeping its details (confirmed).",
     "update_reminder": "Reschedule or rename an existing reminder, matched by title.",
     "contact_dates": "List upcoming birthdays from Contacts, soonest first.",
     # timers and clock

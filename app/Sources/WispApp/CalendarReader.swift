@@ -258,6 +258,63 @@ final class CalendarReader {
         }
     }
 
+    // Move one exact occurrence to a new start (CalendarMove has the rules). The event is
+    // found by identifier AND its current start, like deleteEvent, and must still carry
+    // the title Wisp saw. Only startDate/endDate change, with span .thisEvent so a
+    // repeating series never moves. The saved event is read back and compared field by
+    // field; anything other than the requested move reads as "unknown", not done.
+    func moveEvent(identifier: String, expectedTitle: String, expectedStart: Double,
+                   newStart: Double, durationMin: Int?) -> [String: Any] {
+        guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
+        guard let ev = occurrence(identifier, at: expectedStart) else {
+            return ["ok": false, "error": "That event is no longer at the time Wisp last read; nothing was moved"]
+        }
+        let before = Self.facts(ev)
+        let organizerIsUser = ev.organizer?.isCurrentUser ?? false
+        if let reason = CalendarMove.refusal(before, expectedTitle: expectedTitle, expectedStart: expectedStart,
+                                              calendarWritable: ev.calendar?.allowsContentModifications ?? false,
+                                              hasAttendees: ev.hasAttendees, organizerIsUser: organizerIsUser) {
+            return ["ok": false, "error": reason]
+        }
+        let newEnd = CalendarMove.newEnd(before, newStart: newStart, durationMin: durationMin)
+        ev.startDate = Date(timeIntervalSince1970: newStart)
+        ev.endDate = Date(timeIntervalSince1970: newEnd)
+        do {
+            try store.save(ev, span: .thisEvent, commit: true)
+        } catch {
+            ev.rollback()
+            return ["ok": false, "error": "Calendar didn't save the move: \(error.localizedDescription)"]
+        }
+        // A fresh lookup at the new start, else the saved object refreshed from the store.
+        let readBack = occurrence(identifier, at: newStart) ?? (ev.refresh() ? ev : nil)
+        return CalendarMove.savedResult(before: before, after: readBack.map(Self.facts),
+                                        newStart: newStart, newEnd: newEnd)
+    }
+
+    /// The occurrence of `identifier` starting at `ts` (to the second), or nil.
+    private func occurrence(_ identifier: String, at ts: Double) -> EKEvent? {
+        let pred = store.predicateForEvents(withStart: Date(timeIntervalSince1970: ts - 86400),
+                                            end: Date(timeIntervalSince1970: ts + 86400), calendars: nil)
+        return store.events(matching: pred).first {
+            $0.eventIdentifier == identifier && abs(($0.startDate?.timeIntervalSince1970 ?? .infinity) - ts) < 1
+        }
+    }
+
+    private static func facts(_ ev: EKEvent) -> CalendarEventFacts {
+        CalendarEventFacts(
+            title: ev.title ?? "(untitled)",
+            start: ev.startDate?.timeIntervalSince1970 ?? .nan,
+            end: ev.endDate?.timeIntervalSince1970 ?? .nan,
+            isAllDay: ev.isAllDay,
+            calendarID: ev.calendar?.calendarIdentifier ?? "",
+            notes: ev.notes ?? "", url: ev.url?.absoluteString ?? "", location: ev.location ?? "",
+            attendees: (ev.attendees ?? []).map { $0.url.absoluteString }.sorted(),
+            alarms: (ev.alarms ?? []).map { alarm in
+                alarm.absoluteDate.map { "absolute:\($0.timeIntervalSince1970)" } ?? "relative:\(alarm.relativeOffset)"
+            }.sorted(),
+            availability: ev.availability.rawValue)
+    }
+
     private func post(events: [[String: Any]], diagnostics: [String: Any] = [:]) {
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/calendar")
         var req = URLRequest(url: url)

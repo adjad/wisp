@@ -170,11 +170,11 @@ class StoredDisplayArtifact:
                 "sha256": hashlib.sha256(self.text.encode("utf-8")).hexdigest()}
 
 
+# update_event's answer when the Wisp app (which holds the Calendar grant) is not
+# connected: nothing can be moved, and nothing was.
 EVENT_UPDATE_UNAVAILABLE = (
-    "Calendar event updates are unavailable in Wisp because it cannot yet "
-    "preserve the existing event's duration, calendar, attendees, and other details. "
-    "This update made no changes to any calendar event or reminder. "
-    "Please edit the event in Calendar.")
+    "Calendar events can't be moved right now because the Wisp app isn't connected. "
+    "Nothing was changed; try again once Wisp is running, or edit the event in Calendar.")
 
 
 @dataclass
@@ -277,11 +277,13 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
             "(no recipient", "(nothing to send", "(channel must", "was not sent")):
         return ToolOutcome("failed", text, effect)
     if tool_name == "update_event":
-        if (text == EVENT_UPDATE_UNAVAILABLE
-                or low.startswith("nothing upcoming or past matches") or "which one?" in low):
+        if (text == EVENT_UPDATE_UNAVAILABLE or low.startswith("no upcoming calendar event matches")
+                or "which one?" in low or low == "which event should move?"):
             return ToolOutcome("needs_input", text, effect)
-        # The old cancel + recreate receipt is no longer an executable or
-        # preservation-safe contract, nor evidence of native completion.
+        # Only the verified native move's receipt is success. The old cancel +
+        # recreate receipt is not, and neither is any other text.
+        if re.fullmatch(r"Moved “[^”]+” to [^.]+\.( Only this occurrence moved\.)?", text):
+            return ToolOutcome("succeeded", text, effect)
         return ToolOutcome("failed", text, effect)
     if tool_name == "get_upcoming":
         if low.startswith("wisp is still syncing"):

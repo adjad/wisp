@@ -3772,6 +3772,11 @@ async def run_agent(
                         action["preview"] = f"Cancel: {args.get('title', '?')}"
                     elif name == "add_calendar_event":
                         action["preview"] = _calendar_create_preview(args)
+                    elif name == "update_event":
+                        # The same resolution the tool runs, so the card names the
+                        # exact occurrence and both times the move will use.
+                        from service.tools.assistant_tools import event_move_preview
+                        action["preview"] = event_move_preview(args)
                     elif name == "commit_private_meeting":
                         from service.tools.schedule_extras import private_meeting_review
                         # Consume the inert reference before validation/await.

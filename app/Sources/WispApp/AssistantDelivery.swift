@@ -61,6 +61,28 @@ final class AssistantDelivery {
             }
             return result
         }
+        if kind == "move_calendar_event" {
+            // One exact occurrence (identifier + current start + title) to a new start;
+            // duration_min null keeps the event's own length.
+            let keys: Set<String> = ["type", "action_id", "source_id", "expected_title",
+                                     "expected_start_ts", "when_ts", "duration_min"]
+            guard Set(value.keys) == keys, value["type"] as? String == kind,
+                  text(value["action_id"]) != nil, text(value["source_id"]) != nil,
+                  text(value["expected_title"]) != nil,
+                  let when = number(value["when_ts"]), when > 0,
+                  let expected = number(value["expected_start_ts"]), expected > 0 else { return nil }
+            var result = value
+            result["when_ts"] = when
+            result["expected_start_ts"] = expected
+            if value["duration_min"] is NSNull {
+                result["duration_min"] = NSNull()
+            } else {
+                guard let duration = number(value["duration_min"]), (1...10080).contains(duration),
+                      duration.rounded() == duration else { return nil }
+                result["duration_min"] = Int(duration)
+            }
+            return result
+        }
         let create = kind == "create_calendar_event"
         guard create || kind == "delete_calendar_event" else { return nil }
         let keys: Set<String> = create
@@ -94,6 +116,14 @@ final class AssistantDelivery {
         let reminder = ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(kind)
         var allowed: Set<String> = kind == "create_calendar_event"
             ? ["ok", "status", "error", "source_id"] : ["ok", "status", "error"]
+        if kind == "move_calendar_event" && ok {
+            // A verified move carries the start and end it read back, and nothing else.
+            allowed.formUnion(["when_ts", "end_ts"])
+            guard Set(value.keys) == allowed, let start = number(value["when_ts"]), start > 0,
+                  let end = number(value["end_ts"]), end >= start else { return nil }
+            value["when_ts"] = start
+            value["end_ts"] = end
+        }
         if reminder && ok {
             allowed.insert("source_id")
             if kind == "create_reminder" || kind == "update_reminder" {
@@ -182,8 +212,9 @@ final class AssistantDelivery {
         inFlight.insert(id)
         defer { inFlight.remove(id) }
         if let receipt = receipts[id], receipt["kind"] as? String != event.type { return false }
-        let isCalendar = ["create_calendar_event", "delete_calendar_event", "create_reminder",
-                          "update_reminder", "complete_reminder", "delete_reminder"].contains(event.type)
+        let isCalendar = ["create_calendar_event", "delete_calendar_event", "move_calendar_event",
+                          "create_reminder", "update_reminder", "complete_reminder",
+                          "delete_reminder"].contains(event.type)
         let isReminder = ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(event.type)
         if isCalendar {
             var raw = event.payload
