@@ -147,6 +147,8 @@ struct BriefDetail: Equatable {
         let leading: String
         let text: String
         var muted = false
+        /// A paragraph, shown whole rather than cut to two lines.
+        var paragraph = false
     }
     let lines: [Line]
     let source: DayTimeline.BriefSource
@@ -186,12 +188,19 @@ struct BriefDetail: Equatable {
     /// the gist and the count, so neither repeats here. `summary` is nil when
     /// today has no composed summary: a muted line says so first, instead of
     /// the section silently missing.
-    static func mail(needing: [BriefNeed], ready: Bool, summary: [String]? = []) -> BriefDetail {
+    ///
+    /// `prose` is the service's written inbox summary (mail_gists.py). When it
+    /// is there it replaces the summary's section, which lists senders and
+    /// subjects: the user asked for "an actual email summary not email headers".
+    static func mail(needing: [BriefNeed], ready: Bool, summary: [String]? = [], prose: String? = nil) -> BriefDetail {
         guard ready else {
             return BriefDetail(lines: [Line(id: "empty", leading: "", text: "Mail hasn't been checked yet", muted: true)], source: .mail)
         }
-        let section = summary ?? []
-        var lines = section.prefix(8).enumerated().map { Line(id: "summary-\($0.offset)", leading: "", text: $0.element) }
+        let written = prose?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let section = written.isEmpty ? summary ?? [] : [written]
+        var lines = written.isEmpty
+            ? section.prefix(8).enumerated().map { Line(id: "summary-\($0.offset)", leading: "", text: $0.element) }
+            : [Line(id: "prose", leading: "", text: written, paragraph: true)]
         let said = BriefMail.words(section.joined(separator: " "))
         let shown = BriefMail.shown(needing).filter { need in
             let words = BriefMail.words(need.subject)
@@ -212,7 +221,7 @@ struct BriefDetail: Equatable {
                               muted: true))
         }
         if lines.isEmpty { lines = [Line(id: "empty", leading: "", text: "Nothing needs a reply", muted: true)] }
-        return BriefDetail(lines: noted(lines, missing: summary == nil), source: .mail)
+        return BriefDetail(lines: noted(lines, missing: summary == nil && written.isEmpty), source: .mail)
     }
 
     /// The messages section of the composed Daily Summary without its quotes
@@ -314,8 +323,9 @@ enum BriefMail {
         needs.filter { isPrivate($0.title) }.count
     }
 
+    /// A withheld subject, also behind a Re:/Invitation: prefix ("Re: Private details omitted.").
     static func isPrivate(_ subject: String) -> Bool {
-        let s = subject.trimmingCharacters(in: .whitespaces).lowercased()
+        let s = splitPrefix(subject).rest.trimmingCharacters(in: .whitespaces).lowercased()
         return s.hasPrefix("private details omitted") || s.hasPrefix("authentication details omitted")
             || s.hasPrefix("possible request context (private details omitted")
     }

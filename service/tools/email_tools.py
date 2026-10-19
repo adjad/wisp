@@ -717,6 +717,31 @@ _MACHINE_SENDER_NAMES = (
 )
 
 
+# Mass mail sent under a person's name ("Katia Ameri <hello@tech-week.com>",
+# "Vercel <ship@info.vercel.com>"): a role mailbox, a bulk-mail subdomain, or a
+# Message-ID minted by a bulk-email service. Headers only, like the rest.
+_BROADCAST_LOCAL = re.compile(
+    r"^(?:hello|hi|hey|ship|team|events?|community|marketing|contact|mail|email|newsletters?|"
+    r"announcements?|launch|product|community-team)$", re.I)
+_BROADCAST_DOMAIN = re.compile(r"^(?:info|mail|email|e|em|news|marketing|mkt|go|send|campaign|engage)\.", re.I)
+_ESP_MESSAGE_ID = re.compile(
+    r"@[\w.-]*(?:mcsv\.net|mcdlv\.net|rsgsv\.net|list-manage\.com|sendgrid\.net|amazonses\.com|mailgun\.\w+|"
+    r"sparkpostmail\.com|mktomail\.com|hubspot\w*\.\w+|klaviyo\w*\.\w+|customeriomail\.com|mandrillapp\.com|"
+    r"cmail\d*\.com|createsend\w*\.com|exacttarget\.com|beehiiv\.com|substack\.com|convertkit\w*\.com)>?\s*$", re.I)
+
+
+def is_broadcast(row: dict) -> bool:
+    """Mail sent to a list, whatever name it carries."""
+    address = (row.get("sender_address", "") or "").strip().lower()
+    if not address:
+        found = re.search(r"<([^>]+@[^>]+)>", row.get("sender", "") or "")
+        address = found.group(1).lower() if found else ""
+    local, _, domain = address.partition("@")
+    if domain and (_BROADCAST_LOCAL.match(local) or _BROADCAST_DOMAIN.match(domain)):
+        return True
+    return bool(_ESP_MESSAGE_ID.search(str(row.get("message_id", "") or "")))
+
+
 def is_machine_sender(sender: str) -> bool:
     """True for an automated/marketing/notification sender, false for anyone
     who looks like they actually wrote the email themselves."""
@@ -1820,7 +1845,7 @@ def digest_category(row: dict) -> str:
     address = (row.get("sender_address", "") or "").lower()
     domain = address.rpartition("@")[2]
     identity = f"{sender} {address}"
-    machine = is_machine_sender(sender) or is_machine_sender(address)
+    machine = is_machine_sender(sender) or is_machine_sender(address) or is_broadcast(row)
     social = bool(_SOCIAL_RE.search(domain) or _SOCIAL_RE.search(sender))
     marketing = bool(_MARKETING_SUBJECT.search(subject) or _NEWSLETTER_RE.search(identity))
     course = bool(_COURSE_RE.search(domain) or _COURSE_RE.search(sender))

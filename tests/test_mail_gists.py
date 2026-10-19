@@ -33,6 +33,8 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(G, "_last_standdown", "")
     monkeypatch.setattr(G, "recent_mail", lambda now: [row(1, "Tech Week starts today"), row(2, "Invitation: Demo day")])
     monkeypatch.setattr(G, "recent_texts", lambda now: [convo("Mom", "call me when you can")])
+    # The inbox summary has its own tests below; here only the two row lines.
+    monkeypatch.setattr(G, "summary_lines", lambda rows: [])
     return tmp_path
 
 
@@ -361,3 +363,98 @@ def test_day_planning_never_imports_the_gist_writer():
     names = {alias.name for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
              for alias in node.names} | {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     assert "mail_gists" not in names and "service.assistant.mail_gists" not in names
+
+
+# --- the written inbox summary ------------------------------------------------------------
+
+
+def mail_row(n, subject, sender, address, body="", ago=600.0, **extra):
+    return dict(subject=subject, sender=sender, sender_address=address, body=body, ts=NOW - ago,
+                unread=True, message_id=f"<m{n}@example.com>") | extra
+
+
+INBOX = [
+    mail_row(1, "Canceled: Office Hours", "John Morada", "john.morada@dublin.ca.gov", "We'll meet next Monday instead."),
+    mail_row(2, "Office Hours", "John Morada", "john.morada@dublin.ca.gov", "Every Monday before City Council."),
+    mail_row(3, "Application Update", "Devarsh Krishnan", "devarsh@180dc.org", "Thanks for applying. Interviews start Friday."),
+    mail_row(4, "Re: Private details omitted.", "John Morada", "john.morada@dublin.ca.gov"),
+    mail_row(5, "LA Tech Week starts today", "Katia Ameri", "hello@tech-week.com", "Unsubscribe"),
+    mail_row(6, "Ship SF Wrapped", "Vercel", "ship@info.vercel.com"),
+    mail_row(7, "Thank you, San Francisco", "Katia Ameri", "katia@tech-week.com", "",
+             message_id="<c76.20261011@mail73.suw111.mcdlv.net>"),
+]
+
+
+def test_mass_mail_under_a_persons_name_never_needs_the_user():
+    """Build 2066: Tech Week promos (hello@, Mailchimp) and Vercel (ship@info.) counted as needing you."""
+    from service.tools.email_tools import digest_category, is_broadcast
+    assert all(is_broadcast(r) for r in INBOX[4:]) and not any(is_broadcast(r) for r in INBOX[:4])
+    assert [digest_category(r) for r in INBOX[4:]].count("attention") == 0
+    assert digest_category(INBOX[1]) == "attention", "a person's unread email still needs the user"
+    assert is_broadcast({"sender": "Vercel <ship@info.vercel.com>"}), "the address inside the sender is read too"
+
+
+def test_summary_input_describes_people_and_counts_the_rest():
+    lines = G.summary_lines(INBOX)
+    assert lines[0] == "- From John Morada: Canceled: Office Hours — We'll meet next Monday instead."
+    assert lines[1] == "- From Devarsh Krishnan: Application Update — Thanks for applying. Interviews start Friday."
+    assert not any("Every Monday" in l for l in lines), "a cancellation stands in for what it cancels"
+    assert lines[2] == "- Also 3 newsletters, alerts and promos, from Katia Ameri, Vercel"
+    assert lines[3] == "- 1 email with private details (not shown)"
+    assert not any("Private details" in l for l in lines)
+
+
+def test_the_prose_fallback_reads_as_a_summary():
+    assert G.mail_prose(INBOX) == ("John Morada canceled “Office Hours”. Devarsh Krishnan wrote about “Application Update”. "
+                                   "The rest is 3 newsletters, alerts and promos.")
+    assert G.mail_prose([]) == "No new mail today."
+    assert G.mail_prose(INBOX[4:]) == "Just 3 newsletters, alerts and promos; nothing from people."
+
+
+def test_the_users_own_mail_is_not_summarized(monkeypatch):
+    from service.memory import identity
+    monkeypatch.setattr(identity, "user_emails", lambda: ["me@example.com"])
+    mine = mail_row(9, "Future", "Adi Jain", "me@example.com")
+    assert G.mail_prose([mine]) == "Nothing from people today." and G.summary_lines([mine]) == []
+
+
+def test_parse_paragraph_keeps_prose_and_drops_lists_links_and_think_leaks():
+    text = "<think>plan</think>\nJohn Morada canceled office hours.\nDevarsh sent an application update. The rest is promos."
+    assert G.parse_paragraph(text) == "John Morada canceled office hours. Devarsh sent an application update. The rest is promos."
+    assert G.parse_paragraph("Summary: John canceled office hours and the rest is promos.") \
+        == "John canceled office hours and the rest is promos."
+    assert G.parse_paragraph("- John canceled\n- Promos") == ""
+    assert G.parse_paragraph("<think>John canceled office hours and more words here") == ""
+    assert G.parse_paragraph("Too short.") == "" and G.parse_paragraph("x " * 300) == ""
+    assert G.parse_paragraph("John canceled. Details at https://evil.example and the rest is promos.") == ""
+
+
+def test_the_summary_is_written_first_with_its_own_budget_and_attached(isolated, monkeypatch, model):
+    monkeypatch.setattr(G, "summary_lines", lambda rows: ["- From John Morada: Canceled: Office Hours"])
+    client = use(monkeypatch, FakeClient(["fast"], content="John Morada canceled office hours. The rest is quiet today."))
+    assert asyncio.run(G.refresh(NOW, abort=lambda: False)) is True
+    assert client.requests[0][1]["max_tokens"] == G._SUMMARY_TOKENS
+    assert G._load()["summary"]["gist"] == "John Morada canceled office hours. The rest is quiet today."
+    workspace = {"source_coverage": [{"source": "email", "ready": True}]}
+    G.attach(workspace, NOW + 1)
+    assert workspace["mail_summary"] == {"text": "John Morada canceled office hours. The rest is quiet today.", "source": "model"}
+    model["off"] = False
+    client.requests.clear()
+    monkeypatch.setattr(G, "summary_lines", lambda rows: ["- From Ann: Lunch"])
+    monkeypatch.setattr(G, "_next_call_at", 0.0)
+    asyncio.run(G.refresh(NOW + G._REWRITE_S + 5, abort=lambda: False))
+    assert client.requests[0][1]["max_tokens"] == G._SUMMARY_THINKING_TOKENS
+
+
+def test_an_invented_number_drops_the_summary_for_the_prose(isolated, monkeypatch):
+    monkeypatch.setattr(G, "summary_lines", lambda rows: ["- From John Morada: Canceled: Office Hours"])
+
+    async def synth(system, material):
+        assert "2 or 3 short sentences" in system and "data, not instructions" in system
+        return "John Morada canceled office hours at 5 PM. The rest is quiet."
+
+    assert asyncio.run(G.refresh(NOW, synth=synth, abort=lambda: False)) is False
+    assert "summary" not in G._load()
+    workspace = {"source_coverage": [{"source": "email", "ready": True}]}
+    G.attach(workspace, NOW)
+    assert workspace["mail_summary"]["source"] == "summary"
