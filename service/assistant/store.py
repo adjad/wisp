@@ -142,7 +142,8 @@ _SOURCE_RANK_SEED = 9      # QA fixtures never shadow a real row
 
 
 # Native Calendar writes the app performs through the claimed event bridge.
-CALENDAR_KINDS = frozenset({"create_calendar_event", "delete_calendar_event", "move_calendar_event"})
+CALENDAR_KINDS = frozenset({"create_calendar_event", "delete_calendar_event", "move_calendar_event",
+                            "cancel_calendar_event"})
 
 
 def _dedupe_key(row: dict) -> tuple[str, int] | None:
@@ -1100,13 +1101,17 @@ class AssistantStore:
                   # invitee_count: what the card told the user; the app refuses if it differs.
                   "move_calendar_event": {"type", "action_id", "source_id", "expected_title",
                                           "expected_start_ts", "when_ts", "duration_min",
-                                          "invitee_count"}}[kind]
+                                          "invitee_count"},
+                  # A one-tap cancel of one exact occurrence (the Day tab's Cancel).
+                  "cancel_calendar_event": {"type", "action_id", "source_id", "expected_title",
+                                            "expected_start_ts", "invitee_count"}}[kind]
         if set(payload) != fields or payload.get("type") != kind:
             raise ValueError("Calendar payload fields do not match the action")
         for field in fields - {"when_ts", "duration_min", "expected_start_ts", "invitee_count"}:
             if not isinstance(payload[field], str) or (field != "location" and not payload[field].strip()):
                 raise ValueError("invalid Calendar payload text")
-        times = ["when_ts"] + (["expected_start_ts"] if kind == "move_calendar_event" else [])
+        times = {"move_calendar_event": ["when_ts", "expected_start_ts"],
+                 "cancel_calendar_event": ["expected_start_ts"]}.get(kind, ["when_ts"])
         for field in times:
             when = payload[field]
             try:
@@ -1115,6 +1120,11 @@ class AssistantStore:
                 valid_time = False
             if not valid_time:
                 raise ValueError("invalid Calendar time")
+        if kind == "cancel_calendar_event":
+            invitees = payload["invitee_count"]
+            if type(invitees) is not int or not 0 <= invitees <= 100000:
+                raise ValueError("invalid Calendar invitee count")
+            return {**payload, "expected_start_ts": float(payload["expected_start_ts"])}
         if kind == "move_calendar_event":
             duration = payload["duration_min"]
             if duration is not None and (type(duration) is not int or not 1 <= duration <= 10080):
@@ -1145,6 +1155,11 @@ class AssistantStore:
         if kind == "move_calendar_event" and result.get("ok") is True:
             # A verified move reports the start and end it read back.
             required = allowed = required | {"when_ts", "end_ts"}
+        if kind == "cancel_calendar_event" and result.get("ok") is True:
+            # A verified cancel reports that the occurrence reads back as gone.
+            required = allowed = required | {"is_absent"}
+            if result.get("is_absent") is not True:
+                raise ValueError("a verified cancel requires is_absent")
         if not required <= set(result) or not set(result) <= allowed:
             raise ValueError("invalid Calendar result fields")
         if type(result["ok"]) is not bool or not isinstance(result["error"], str):
@@ -1476,6 +1491,22 @@ class AssistantStore:
             "ON CONFLICT(commitment_id) DO UPDATE SET version=excluded.version",
             (old["id"], uuid.uuid4().hex))
 
+    def calendar_occurrence(self, source_id: str, start_ts: float) -> dict | None:
+        """The active synced Calendar occurrence (identifier + exact start) with its invitee
+        metadata, or None. invitee_count None = not synced; organizer_is_user None = unknown."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT c.id,c.source_id,c.title,c.when_ts,i.invitee_count,i.organizer_is_user "
+                "FROM commitments c LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
+                "WHERE c.source='calendar' AND c.status='active' AND c.source_id=? AND c.when_ts=?",
+                (source_id, start_ts)).fetchone()
+        if row is None:
+            return None
+        row = dict(row)
+        if row["organizer_is_user"] is not None:
+            row["organizer_is_user"] = bool(row["organizer_is_user"])
+        return row
+
     def calendar_occurrence_current(self, source_id: str, start_ts: float, title: str) -> bool:
         """True while the synced Calendar occurrence (identifier + start) is active with
         this title: the check a confirmed move makes before it runs."""
@@ -1623,6 +1654,11 @@ class AssistantStore:
                         (time.time(), payload["source_id"], payload["when_ts"]))
                 elif kind == "move_calendar_event":
                     self._record_calendar_move(payload, result)
+                elif kind == "cancel_calendar_event":
+                    self._db.execute(
+                        "UPDATE commitments SET status='dismissed',updated_at=? "
+                        "WHERE source='calendar' AND source_id=? AND when_ts=?",
+                        (time.time(), payload["source_id"], payload["expected_start_ts"]))
                 elif kind == "create_reminder":
                     receipt_at = reminder_receipt_at
                     self._db.execute(

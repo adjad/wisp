@@ -56,7 +56,7 @@ enum DiagnosticReport {
             for (key, choices) in ["error_kind": ["TimeoutError", "ConnectionError", "PermissionError", "ValueError", "RuntimeError", "OSError", "KeyError", "HTTPError", "CancelledError"],
                                    "source": ["calendar", "reminders", "email", "messages", "notes", "browser_history"],
                                    "source_state": ["ready", "syncing", "unavailable", "disabled"],
-                                   "native_operation": ["create_calendar_event", "delete_calendar_event", "move_calendar_event", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"],
+                                   "native_operation": ["create_calendar_event", "delete_calendar_event", "move_calendar_event", "cancel_calendar_event", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"],
                                    "native_outcome": ["succeeded", "failed", "unknown"],
                                    "component": ["agent", "today", "daily_brief", "source_sync", "native"],
                                    "route_role": ["fast", "agent", "general", "coding", "reasoning"],

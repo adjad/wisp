@@ -716,6 +716,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.calendarReader?.deleteEvent(identifier: identifier, occurrenceTs: occurrenceTs)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
+        model.onCancelCalendarEvent = { [weak self] identifier, title, expected, invitees in
+            self?.calendarReader?.cancelEvent(identifier: identifier, expectedTitle: title,
+                                              expectedStart: expected, expectedInvitees: invitees)
+                ?? ["ok": false, "error": "Calendar handler unavailable"]
+        }
         model.onMoveCalendarEvent = { [weak self] identifier, title, expected, start, duration, invitees in
             self?.calendarReader?.moveEvent(identifier: identifier, expectedTitle: title,
                                             expectedStart: expected, newStart: start, durationMin: duration,

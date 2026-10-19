@@ -65,6 +65,24 @@ import Foundation
         precondition(CalendarMove.mismatch(before: event, after: wrongTime, newStart: newStart, newEnd: newEnd)?.contains("start") == true)
         let unread = CalendarMove.savedResult(before: event, after: nil, newStart: newStart, newEnd: newEnd)
         precondition(unread["status"] as? String == "unknown")
+        // Cancel: same identity and organizer rules; all-day is fine; gone means verified.
+        func cancel(_ facts: CalendarEventFacts = event, invitees: Int = 0, expected: Int? = nil,
+                    organizer: Bool? = nil, writable: Bool = true) -> String? {
+            CalendarMove.cancelRefusal(facts, expectedTitle: "Dentist", expectedStart: 1_900_000_000,
+                                       calendarWritable: writable, invitees: invitees,
+                                       expectedInvitees: expected ?? invitees, organizerIsUser: organizer)
+        }
+        precondition(cancel() == nil)
+        precondition(cancel(allDay) == nil, "an all-day event may be cancelled")
+        precondition(cancel(noStart) != nil)
+        precondition(cancel(writable: false) != nil)
+        precondition(cancel(invitees: 2, organizer: true) == nil)
+        precondition(cancel(invitees: 2, organizer: false)?.contains("Only the organizer can cancel") == true)
+        precondition(cancel(invitees: 2, organizer: nil)?.contains("who organizes") == true)
+        precondition(cancel(invitees: 3, expected: 2, organizer: true)?.contains("changed") == true)
+        let gone = CalendarMove.cancelledResult(stillThere: false)
+        precondition(gone["ok"] as? Bool == true && gone["is_absent"] as? Bool == true && gone.count == 2)
+        precondition(CalendarMove.cancelledResult(stillThere: true)["status"] as? String == "unknown")
         print("CalendarMove: refusal, length and read-back checks passed")
     }
 }

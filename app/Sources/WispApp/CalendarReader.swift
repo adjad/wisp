@@ -299,6 +299,31 @@ final class CalendarReader {
                                         newStart: newStart, newEnd: newEnd)
     }
 
+    // Cancel one exact occurrence (a one-tap Cancel on the Day tab). Found by identifier
+    // AND start, with the title and invitee count the card showed as preconditions, and the
+    // same organizer rules as a move. Removed with span .thisEvent, so a repeating series
+    // keeps every other occurrence; then read back that this one is gone.
+    func cancelEvent(identifier: String, expectedTitle: String, expectedStart: Double,
+                     expectedInvitees: Int) -> [String: Any] {
+        guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
+        guard let ev = occurrence(identifier, at: expectedStart) else {
+            return ["ok": false, "error": "That event is no longer at the time Wisp last read; nothing was cancelled"]
+        }
+        if let reason = CalendarMove.cancelRefusal(Self.facts(ev), expectedTitle: expectedTitle,
+                                                    expectedStart: expectedStart,
+                                                    calendarWritable: ev.calendar?.allowsContentModifications ?? false,
+                                                    invitees: Self.inviteeCount(ev), expectedInvitees: expectedInvitees,
+                                                    organizerIsUser: ev.organizer?.isCurrentUser) {
+            return ["ok": false, "error": reason]
+        }
+        do {
+            try store.remove(ev, span: .thisEvent, commit: true)
+        } catch {
+            return ["ok": false, "error": "Calendar didn't cancel it: \(error.localizedDescription)"]
+        }
+        return CalendarMove.cancelledResult(stillThere: occurrence(identifier, at: expectedStart) != nil)
+    }
+
     /// Attendees other than the user: who a move would notify. EventKit's list often
     /// includes the user (as organizer), which must not be counted as an invitee.
     static func inviteeCount(_ ev: EKEvent) -> Int {

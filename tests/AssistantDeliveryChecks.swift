@@ -381,6 +381,24 @@ struct AssistantDeliveryChecks {
                 kind: "move_calendar_event", native: true) == nil)
             scenarios += 1
         }
+        // A one-tap cancel names one exact occurrence; a verified result says it is gone.
+        do {
+            let cancel: [String: Any] = ["type": "cancel_calendar_event", "action_id": "cancel1",
+                "source_id": "ek-1", "expected_title": "Dentist", "expected_start_ts": 1_900_000_000.0,
+                "invitee_count": 2]
+            precondition(AssistantDelivery.calendarPayload(cancel, kind: "cancel_calendar_event")?["invitee_count"] as? Int == 2)
+            var timed = cancel; timed["when_ts"] = 1.0
+            precondition(AssistantDelivery.calendarPayload(timed, kind: "cancel_calendar_event") == nil)
+            var untitled = cancel; untitled["expected_title"] = ""
+            precondition(AssistantDelivery.calendarPayload(untitled, kind: "cancel_calendar_event") == nil)
+            let gone = AssistantDelivery.terminalResult(["ok": true, "is_absent": true],
+                kind: "cancel_calendar_event", native: true)
+            precondition(gone?["status"] as? String == "succeeded")
+            precondition(AssistantDelivery.terminalResult(["ok": true], kind: "cancel_calendar_event", native: true) == nil)
+            precondition(AssistantDelivery.terminalResult(["ok": true, "is_absent": false],
+                kind: "cancel_calendar_event", native: true) == nil)
+            scenarios += 1
+        }
         print("AssistantDelivery: \(scenarios) offline audit/receipt/transport scenarios passed")
     }
 }

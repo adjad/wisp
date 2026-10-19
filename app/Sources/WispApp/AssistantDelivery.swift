@@ -61,6 +61,22 @@ final class AssistantDelivery {
             }
             return result
         }
+        if kind == "cancel_calendar_event" {
+            // One exact occurrence (identifier + start + title + the invitee count the
+            // card stated), removed with .thisEvent only.
+            let keys: Set<String> = ["type", "action_id", "source_id", "expected_title",
+                                     "expected_start_ts", "invitee_count"]
+            guard Set(value.keys) == keys, value["type"] as? String == kind,
+                  text(value["action_id"]) != nil, text(value["source_id"]) != nil,
+                  text(value["expected_title"]) != nil,
+                  let expected = number(value["expected_start_ts"]), expected > 0,
+                  let invitees = number(value["invitee_count"]), invitees >= 0, invitees <= 100000,
+                  invitees.rounded() == invitees else { return nil }
+            var result = value
+            result["expected_start_ts"] = expected
+            result["invitee_count"] = Int(invitees)
+            return result
+        }
         if kind == "move_calendar_event" {
             // One exact occurrence (identifier + current start + title) to a new start;
             // duration_min null keeps the event's own length.
@@ -119,6 +135,11 @@ final class AssistantDelivery {
         let reminder = ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(kind)
         var allowed: Set<String> = kind == "create_calendar_event"
             ? ["ok", "status", "error", "source_id"] : ["ok", "status", "error"]
+        if kind == "cancel_calendar_event" && ok {
+            // A verified cancel says the occurrence reads back as gone, and nothing else.
+            allowed.insert("is_absent")
+            guard Set(value.keys) == allowed, jsonBoolean(value["is_absent"]) == true else { return nil }
+        }
         if kind == "move_calendar_event" && ok {
             // A verified move carries the start and end it read back, and nothing else.
             allowed.formUnion(["when_ts", "end_ts"])
@@ -216,6 +237,7 @@ final class AssistantDelivery {
         defer { inFlight.remove(id) }
         if let receipt = receipts[id], receipt["kind"] as? String != event.type { return false }
         let isCalendar = ["create_calendar_event", "delete_calendar_event", "move_calendar_event",
+                          "cancel_calendar_event",
                           "create_reminder", "update_reminder", "complete_reminder",
                           "delete_reminder"].contains(event.type)
         let isReminder = ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(event.type)

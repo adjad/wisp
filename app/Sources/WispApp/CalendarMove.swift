@@ -64,6 +64,36 @@ enum CalendarMove {
         return nil
     }
 
+    /// Why this occurrence must not be cancelled, or nil when it may. The same identity
+    /// and organizer rules as a move: it must still be the event the card showed, on a
+    /// writable calendar, and an event with invitees is cancelled only by its organizer
+    /// (Calendar then tells them). All-day events may be cancelled.
+    static func cancelRefusal(_ facts: CalendarEventFacts, expectedTitle: String, expectedStart: Double,
+                              calendarWritable: Bool, invitees: Int, expectedInvitees: Int,
+                              organizerIsUser: Bool?) -> String? {
+        if !(abs(facts.start - expectedStart) < 1) || !sameTitle(facts.title, expectedTitle)
+            || invitees != expectedInvitees {
+            return "That event changed since Wisp last read Calendar; nothing was cancelled"
+        }
+        if !calendarWritable { return "That event's calendar can't be changed from this Mac" }
+        if invitees > 0 && organizerIsUser == nil {
+            return "Calendar doesn't say who organizes this event, so Wisp won't cancel it; cancel it in Calendar"
+        }
+        if invitees > 0 && organizerIsUser == false {
+            return "Only the organizer can cancel an event with invitees; decline it in Calendar instead"
+        }
+        return nil
+    }
+
+    /// The native result for a removal EventKit accepted, from whether the occurrence can
+    /// still be found at its start.
+    static func cancelledResult(stillThere: Bool) -> [String: Any] {
+        stillThere
+            ? ["ok": false, "status": "unknown",
+               "error": "Calendar accepted the cancel but the event still reads back; the outcome is unknown. Check Calendar before trying again"]
+            : ["ok": true, "is_absent": true]
+    }
+
     /// The new end: the requested length, or the event's own length when none is given.
     static func newEnd(_ facts: CalendarEventFacts, newStart: Double, durationMin: Int?) -> Double {
         if let minutes = durationMin { return newStart + Double(minutes) * 60 }

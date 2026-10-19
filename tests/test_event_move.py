@@ -414,3 +414,133 @@ def test_the_sync_endpoint_keeps_only_well_typed_invitee_fields(store, monkeypat
     rows = {r["title"]: (r["invitee_count"], r["organizer_is_user"]) for r in (
         store.calendar_move_target(t)["row"] for t in ("Review", "Sync", "Retro"))}
     assert rows == {"Review": (2, 1), "Sync": (None, None), "Retro": (None, None)}
+
+
+# --- one-tap Cancel from the Day tab: a verified native cancel of one occurrence ---------
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from service.assistant import checkin, checkin_api  # noqa: E402
+
+
+@pytest.fixture()
+def cancel_client(store, monkeypatch):
+    import service.main as main
+    monkeypatch.setattr(checkin_api, "assistant_store", store)
+    monkeypatch.setattr(hub, "publish", AsyncMock())
+    monkeypatch.setattr(outbox, "app_connected", AsyncMock(return_value=True))
+    calls = []
+
+    async def request(kind, payload, timeout=None):
+        calls.append((kind, payload))
+        return {"ok": True, "status": "succeeded", "error": "", "is_absent": True}
+    monkeypatch.setattr(outbox, "request", request)
+    return TestClient(main.app), calls
+
+
+def _cancel(client, start, sid="ek-1", invitees=0):
+    return client.post("/assistant/checkin/cancel_event",
+                       json={"source_id": sid, "expected_start_ts": start, "expected_invitees": invitees})
+
+
+def test_cancel_sends_the_exact_occurrence_and_reports_it(store, cancel_client):
+    client, calls = cancel_client
+    start = _top_of_hour(26)
+    _calendar(store, *[_event("ek-1", "Standup", start + day * 24 * HOUR, 0.25) for day in range(2)])
+    response = _cancel(client, start + 24 * HOUR)
+    assert response.status_code == 200, response.text
+    assert response.json()["invitees_notified"] == 0 and response.json()["title"] == "Standup"
+    assert calls == [("cancel_calendar_event", {"source_id": "ek-1", "expected_title": "Standup",
+                                                "expected_start_ts": start + 24 * HOUR, "invitee_count": 0})]
+    hub.publish.assert_awaited()
+
+
+def test_the_organizer_cancels_an_event_with_invitees(store, cancel_client):
+    client, calls = cancel_client
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Design review", start, invitee_count=3, organizer_is_user=True))
+    response = _cancel(client, start, invitees=3)
+    assert response.status_code == 200 and response.json()["invitees_notified"] == 3
+    assert calls[-1][1]["invitee_count"] == 3
+
+
+@pytest.mark.parametrize("extra, status, says", [
+    ({"invitee_count": 3, "organizer_is_user": False}, 403, "Only the organizer can cancel"),
+    ({"invitee_count": 3}, 403, "doesn't say who organizes"),
+    ({"invitee_count": None}, 409, "hasn't synced"),
+])
+def test_cancel_refusals_send_nothing(store, cancel_client, extra, status, says):
+    client, calls = cancel_client
+    start = _top_of_hour(26)
+    event = {**_event("ek-1", "Design review", start), **extra}
+    if event["invitee_count"] is None:
+        event.pop("invitee_count")
+    _calendar(store, event)
+    response = _cancel(client, start, invitees=extra.get("invitee_count") or 0)
+    assert response.status_code == status and says in response.json()["detail"]["message"]
+    assert calls == []
+
+
+def test_cancel_needs_the_count_the_card_showed_and_a_synced_occurrence(store, cancel_client):
+    client, calls = cancel_client
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Design review", start, invitee_count=3, organizer_is_user=True))
+    assert _cancel(client, start, invitees=2).json()["detail"]["outcome"] == "not_current"
+    assert _cancel(client, start + 60, invitees=3).status_code == 404
+    assert calls == []
+
+
+def test_cancel_without_the_app_is_unavailable(store, cancel_client, monkeypatch):
+    client, calls = cancel_client
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Dentist", start))
+    monkeypatch.setattr(outbox, "app_connected", AsyncMock(return_value=False))
+    assert _cancel(client, start).status_code == 503 and calls == []
+
+
+@pytest.mark.parametrize("native, status, outcome", [
+    ({"ok": False, "status": "unknown", "error": "the outcome is unknown"}, 409, "unknown"),
+    ({"ok": False, "status": "failed", "error": "That event changed since Wisp last read Calendar; nothing was cancelled"},
+     409, "not_current"),
+    ({"ok": False, "status": "failed", "error": "Calendar didn't cancel it: denied"}, 502, "failed"),
+])
+def test_cancel_native_outcomes_map_to_statuses(store, cancel_client, monkeypatch, native, status, outcome):
+    client, _ = cancel_client
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Dentist", start))
+    monkeypatch.setattr(outbox, "request", AsyncMock(return_value=native))
+    response = _cancel(client, start)
+    assert response.status_code == status and response.json()["detail"]["outcome"] == outcome
+    hub.publish.assert_not_awaited()
+
+
+def test_cancel_payload_result_and_receipt(store):
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Dentist", start))
+    payload = {"type": "cancel_calendar_event", "action_id": "cancel-1", "source_id": "ek-1",
+               "expected_title": "Dentist", "expected_start_ts": start, "invitee_count": 0}
+    assert AssistantStore.calendar_payload("cancel_calendar_event", payload)["expected_start_ts"] == start
+    for bad in ({**payload, "invitee_count": -1}, {**payload, "when_ts": start},
+                {k: v for k, v in payload.items() if k != "expected_title"}):
+        with pytest.raises(ValueError):
+            AssistantStore.calendar_payload("cancel_calendar_event", bad)
+    with pytest.raises(ValueError):
+        AssistantStore.calendar_result("cancel_calendar_event", {"ok": True, "status": "succeeded", "error": ""}, payload)
+    row = store.enqueue_event(payload, target={"type": "calendar"}, dedupe_key="action:cancel-1",
+                              expires_at=time.time() + 60)
+    claim = store.claim_calendar_action(row["id"], "cancel_calendar_event", "cancel-1", payload)
+    store.complete_calendar_action(row["id"], "cancel_calendar_event", claim["claim_token"],
+                                   {"ok": True, "status": "succeeded", "error": "", "is_absent": True})
+    assert store.calendar_occurrence("ek-1", start) is None
+
+
+def test_card_rows_carry_what_cancel_needs(store):
+    from datetime import timezone as tz
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Design review", start, invitee_count=2, organizer_is_user=False),
+              _event("ek-2", "Dentist", start + 60))
+    day = datetime.fromtimestamp(start, tz.utc).strftime("%Y-%m-%d")
+    rows = {r["source_id"]: r for r in checkin._event_rows(store, day, "UTC")}
+    assert "Only the organizer" in rows["ek-1"]["cancel_blocked"]
+    assert (rows["ek-1"]["invitee_count"], rows["ek-1"]["organizer_is_user"]) == (2, False)
+    assert rows["ek-2"]["cancel_blocked"] == "" and rows["ek-2"]["invitee_count"] == 0
