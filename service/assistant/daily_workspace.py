@@ -128,13 +128,52 @@ def important_email_rows(snapshot):
     return out
 
 
+def fresh_header_rows(mail, now):
+    """(rows, eligible): cached inbox headers from accounts whose own read is
+    fresh (within 20 minutes, no error), when there is no complete snapshot.
+    Read twice around the rows so a sync landing mid-read is not mixed in."""
+    details = mail.email_source_details(part="headers")
+    rows = mail.header_rows()
+    after = mail.email_source_details(part="headers")
+    signature = lambda values: sorted((d.get("account"), d.get("source"), d.get("fresh"),
+        d.get("last_success"), d.get("error")) for d in values)
+    if signature(details) != signature(after):
+        return [], False
+    fresh = {d["account"] for d in details if d.get("fresh") is True and not d.get("error")
+             and finite(d.get("last_success")) and 0 <= now - d["last_success"] <= 20 * 60
+             and all(other.get("fresh") is True and not other.get("error") for other in details if other.get("account") == d["account"])}
+    selected = [r for r in rows if r.get("account") in fresh and finite(r.get("ts")) and r["ts"] <= now]
+    return selected, bool(fresh)
+
+
+def _header_identity(row, subject):
+    return (row.get("account_id"), row.get("account"), row.get("message_id"), row["ts"], subject)
+
+
+def header_record_id(row, subject):
+    return key("email", _header_identity(row, subject))
+
+
 def email_record_id(row):
     return key("email", (row["account_id"], row["message_id"]))
 
 
+def display_name(sender, address=""):
+    """A sender as a person reads it: "John Morada", never "John Morada <j@x.com>"
+    or a bracketed address. A bare address stays when there is no name."""
+    text = re.sub(r"\s+", " ", str(sender or "")).strip()
+    # Brackets go before any truncation, an unterminated "<addr" too, so no
+    # fragment of an address is left in the name.
+    name = clean(re.sub(r"<[^>]*(?:>|$)", "", text).strip().strip('"\'').strip(), 80)
+    if name:
+        return name
+    inner = re.search(r"<([^>]+)>?", text)
+    return clean(inner.group(1) if inner else address, 80)
+
+
 def _sender_fields(row):
     from service.tools.email_tools import is_machine_sender
-    sender = clean(row.get("sender"), 80)
+    sender = display_name(row.get("sender"), row.get("sender_address", ""))
     return dict(sender=sender, received_ts=row["ts"] if finite(row.get("ts")) else None,
                 person=bool(sender) and not is_machine_sender(f"{sender} {row.get('sender_address', '')}"))
 
@@ -277,6 +316,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
                              detail=clean(info.get("detail") or "Source evidence is unavailable", 500),
                              inspected=info.get("inspected", len(records)),
                              omitted=info.get("omitted", 0)))
+        # What the user must grant before this source can be read, when known.
+        if info.get("blocked") == "full_disk_access":
+            coverage[-1]["blocked"] = "full_disk_access"
         if info.get("ready") is not True:
             records = [r for r in records if r.get("wisp_only") is True]
         for record in records:
@@ -573,26 +615,16 @@ def collect_evidence(store, state, day, timezone, *, now):
             # The independently owned direct-mail integration exports this
             # per-account freshness contract. Older builds without it withhold
             # headers rather than inventing source age from a ready flag.
-            details = mail.email_source_details(part="headers")
-            rows = mail.header_rows()
-            after = mail.email_source_details(part="headers")
-            signature = lambda values: sorted((d.get("account"), d.get("source"), d.get("fresh"),
-                d.get("last_success"), d.get("error")) for d in values)
-            if signature(details) == signature(after):
-                fresh = {d["account"] for d in details if d.get("fresh") is True and not d.get("error")
-                         and finite(d.get("last_success")) and 0 <= now - d["last_success"] <= 20 * 60
-                         and all(other.get("fresh") is True and not other.get("error") for other in details if other.get("account") == d["account"])}
-                selected = [r for r in rows if r.get("account") in fresh and finite(r.get("ts")) and r["ts"] <= now]
-                header_count, header_eligible = len(selected), bool(fresh)
-                for row in selected[:200]:
-                    if digest_category(row) not in {"attention", "school"}:
-                        continue
-                    subject = redact_summary_codes(row["subject"])
-                    identity = (row.get("account_id"), row.get("account"), row.get("message_id"), row["ts"], subject)
-                    records.append(dict(id=key("email", identity), title=subject, quote=subject,
-                        reference="email-header-cache:" + key("item", identity),
-                        review_reason="Header-only review suggestion; read the original email. Body, ownership, reply status and deadlines are unverified.",
-                        **_sender_fields(row)))
+            selected, header_eligible = fresh_header_rows(mail, now)
+            header_count = len(selected)
+            for row in selected[:200]:
+                if digest_category(row) not in {"attention", "school"}:
+                    continue
+                subject = redact_summary_codes(row["subject"])
+                records.append(dict(id=header_record_id(row, subject), title=subject, quote=subject,
+                    reference="email-header-cache:" + key("item", _header_identity(row, subject)),
+                    review_reason="Header-only review suggestion; read the original email. Body, ownership, reply status and deadlines are unverified.",
+                    **_sender_fields(row)))
         result["email"] = dict(ready=snapshot is not None or header_eligible, records=records,
             inspected=min(200, len(snapshot.rows)) if snapshot else min(200, header_count),
             omitted=max(0, len(snapshot.rows) - 200) if snapshot else max(0, header_count - 200),
@@ -641,12 +673,24 @@ def collect_evidence(store, state, day, timezone, *, now):
                     review_reason="Important conversation context; review the original before choosing an action.")
             records.append(record)
         message_coverage = structured.get("coverage") or {}
+        # Messages without Full Disk Access: say so, with what to grant, rather than
+        # reading as "still syncing" (MessagesReader: "chat.db not readable").
+        blocked = None
+        if not ready and messages_sync_state() == "unavailable":
+            from service.tools.imessage_tools import messages_unavailable_reason
+            # Only the reader's Full Disk Access wording: another chat.db failure
+            # (a missing file) must not send the user to the wrong setting.
+            if "full disk access" in messages_unavailable_reason().casefold():
+                blocked = "full_disk_access"
         skipped = message_coverage.get("skipped", 0)
         result["messages"] = dict(ready=ready, records=records, inspected=min(100, len(rows)),
             omitted=max(0, len(rows) - 100) + (skipped if type(skipped) is int else 0),
             detail=("Current-launch cached conversations; cache publication age and exhaustive coverage unknown. "
                     + f"Feed reports {skipped} skipped, {message_coverage.get('truncated', 0)} shortened and {message_coverage.get('malformed', 0)} malformed records.") if ready else
+                   "Messages need Full Disk Access." if blocked else
                    "Messages unavailable or still syncing.")
+        if blocked:
+            result["messages"]["blocked"] = blocked
     except Exception:
         result["messages"] = dict(ready=False, records=[], detail="Messages could not be assessed.")
     try:
@@ -684,6 +728,9 @@ def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), p
     the API layer: this module stays pure over the records it is handed and
     imports nothing from memory."""
     state = store.today_snapshot(day, timezone)
+    hide = getattr(store, "hide_stale_tasks", None)
+    if hide is not None:  # a Day task twin of a hidden reminder (today_api.snapshot does the same)
+        state = {**state, "tasks": hide(state["tasks"], now)}
     evidence = collect_evidence(store, state, day, timezone, now=now)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
                   ignored_windows=ignored_windows, profile=profile)

@@ -195,6 +195,14 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           && unsynced.map(\.text) == ["Calendar hasn't synced yet", "Mail hasn't been checked yet",
                                       "Messages haven't been checked yet", "The week ahead hasn't loaded yet"],
           "unread sources keep the four rows, dim: \(unsynced.map(\.text))")
+    let noAccess = DayTimeline.briefLines(calendar: light, mail: nil, texts: (ready: false, needing: []), textsNeedAccess: true,
+                                          soon: .nothing)[2]
+    check(noAccess.text == "Texts need Full Disk Access" && !noAccess.muted, "missing Full Disk Access is said plainly, not 'not checked yet'")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: [
+        BriefNeed(title: "Office hours", sender: "John", received: 2), BriefNeed(title: "Canceled: Office hours", sender: "John", received: 1)]),
+        texts: nil, soon: .nothing)[1].text == "Canceled: John · Office hours ×2", "a cancellation isn't hidden by its original")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: [BriefNeed(title: "Private details omitted.")]),
+                                 texts: nil, soon: .nothing)[1].text == "1 private email not shown", "only private mail: counted")
     let unread = DayTimeline.briefLines(calendar: nil, mail: nil, texts: nil, soon: .nothing)
     check(unread.map(\.text) == ["Nothing on your calendar", "Mail hasn't been checked yet", "Messages haven't been checked yet",
                                  "Nothing in the next week"] && unread[1].muted && unread[2].muted,
@@ -202,13 +210,24 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     // MAIL says what the top email is about; TEXTS says who is waiting, never what they wrote.
     let described = DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: [
         BriefNeed(title: "Lab report", sender: "Lab partner", person: true, received: 100),
-        BriefNeed(title: "Thesis meeting", sender: "Prof. Lee", gist: "Prof. Lee moved your thesis meeting to Tuesday",
-                  person: true, received: 200),
+        BriefNeed(title: "Thesis meeting", sender: "Prof. Lee", person: true, received: 200),
         BriefNeed(title: "Tech Week starts today", sender: "UCSC Events", received: 300)]),
         texts: (ready: true, needing: [BriefNeed(title: "Mom: call me", sender: "Mom", received: 50),
                                        BriefNeed(title: "Priya: dinner?", sender: "Priya", received: 90)]), soon: .nothing)
-    check(described[1].text == "Prof. Lee moved your thesis meeting to Tuesday" && described[1].trailing == "+2 more",
-          "MAIL leads with the newest person's gist: \(described[1].text) \(described[1].trailing)")
+    check(described[1].text == "Prof. Lee · Thesis meeting" && described[1].trailing == "+2 more",
+          "MAIL from an older service leads with the newest person's email: \(described[1].text) \(described[1].trailing)")
+    // With overviews: the gist and how many need you / are waiting, with nothing trailing.
+    let overviewed = DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: [
+        BriefNeed(title: "Lab report", sender: "Lab partner", person: true, received: 100),
+        BriefNeed(title: "50% off everything", sender: "Shop", received: 300)]),
+        texts: (ready: true, needing: [BriefNeed(title: "Mom: call me", sender: "Mom", received: 50)]),
+        mailOverview: "Mostly lab work and promos", textsOverview: "Mostly family check-ins", soon: .nothing)
+    check(overviewed[1].text == "Mostly lab work and promos · 1 needs you" && overviewed[1].trailing.isEmpty
+          && overviewed[2].text == "Mostly family check-ins · 1 waiting on you",
+          "MAIL and TEXTS rows with overviews: \(overviewed[1].text) / \(overviewed[2].text)")
+    check(DayTimeline.briefLines(calendar: nil, mail: nil, texts: (ready: false, needing: []), textsNeedAccess: true,
+                                 textsOverview: "Quiet", soon: .nothing)[2].text == "Texts need Full Disk Access",
+          "Full Disk Access wins over an overview")
     check(described[2].text == "Priya and Mom are waiting on you" && !described[2].text.contains("dinner"),
           "TEXTS names who is waiting, newest first: \(described[2].text)")
     check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .item(title: "nothing", when: "Fri", source: "reminders"))[3]

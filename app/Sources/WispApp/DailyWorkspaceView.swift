@@ -14,12 +14,10 @@ struct DailyAttentionItem: Decodable, Identifiable {
     let task_kind: String?
     let ownership: String?
     /// Email and Messages only: who it's from, whether that looks like a
-    /// person, when it came, a model-written gist of an email, and whether
-    /// you've texted that conversation since.
+    /// person, when it came, and whether you've texted that conversation since.
     let sender: String?
     let person: Bool?
     let received_ts: Double?
-    let gist: String?
     let replied: Bool?
 }
 
@@ -29,6 +27,8 @@ struct DailySourceCoverage: Decodable, Identifiable {
     let detail: String
     let inspected: Int
     let omitted: Int
+    /// What the user must grant before this source can be read: "full_disk_access".
+    var blocked: String? = nil
     var id: String { source }
 }
 
@@ -45,6 +45,16 @@ struct DailyWorkspace: Decodable {
     let behavior_detail: String
     let proposed_plan: DailyProposal
     let explanation: String
+    /// The Brief's one-line MAIL and TEXTS overviews (service/assistant/mail_gists.py);
+    /// absent from an older service, or for a source that couldn't be read.
+    var mail_overview: DailyOverview? = nil
+    var texts_overview: DailyOverview? = nil
+}
+
+struct DailyOverview: Decodable, Equatable {
+    let text: String
+    /// "model" for a gist, "summary" for the sentence built without one.
+    let source: String
 }
 
 struct DailyAttentionView: View {

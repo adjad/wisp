@@ -40,6 +40,7 @@ enum NotchQADriver {
             return (try JSONSerialization.data(withJSONObject: ["asks": rows]),
                     HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
+        DayCards.qaUse(attention: attention, staleReminders: stale)
         let model = OverlayModel()
         model.qaShow(brief: fixtureBrief)
         let width = SurfaceLayout.maxExpandedWidth
@@ -50,7 +51,7 @@ enum NotchQADriver {
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let content = VStack(alignment: .leading, spacing: 0) {
                 if tab == .brief { NotchBriefView(model: model, today: today, open: open) }
-                else { NotchDayView(model: model, today: today, attention: attention, staleReminders: stale) }
+                else { NotchDayView(model: model, today: today) }
             }
             .padding(EdgeInsets(top: 18, leading: 22, bottom: 16, trailing: 22))
             .frame(width: width, alignment: .topLeading)
@@ -155,11 +156,15 @@ enum NotchQADriver {
                     need("club", "calendar", "UCSC startup club, E2-506", due: 24 * 4 + 18),
                     need("essay", "reminders", "Essay outline", due: 24 * 4 + 18),
                     need("draft", "email", "Can you review my draft?", due: nil,
-                         extra: ["sender": "Jordan Kim", "person": true, "received_ts": at(11),
-                                 "gist": "Jordan wants your feedback on their essay draft by Monday"]),
+                         extra: ["sender": "Jordan Kim", "person": true, "received_ts": at(11)]),
                     need("thesis", "email", "Thesis meeting", due: nil,
-                         extra: ["sender": "Prof. Lee", "person": true, "received_ts": at(12.2),
-                                 "gist": "Prof. Lee moved your thesis meeting to Tuesday at 3"]),
+                         extra: ["sender": "Prof. Lee", "person": true, "received_ts": at(12.2)]),
+                    need("office-1", "email", "Dublin Community Office Hours", due: nil,
+                         extra: ["sender": "John Morada <john@example.edu>", "person": true, "received_ts": at(10.5)]),
+                    need("office-2", "email", "Canceled: Dublin Community Office Hours", due: nil,
+                         extra: ["sender": "John Morada <john@example.edu>", "person": true, "received_ts": at(10.4)]),
+                    need("private", "email", "Private details omitted.", due: nil,
+                         extra: ["sender": "Bank", "person": false, "received_ts": at(9)]),
                     need("techweek", "email", "Tech Week starts today", due: nil,
                          extra: ["sender": "UCSC Events", "person": false, "received_ts": at(8)]),
                     need("subscribed", "email", "You're subscribed: The Download", due: nil,
@@ -169,6 +174,8 @@ enum NotchQADriver {
                 "source_coverage": [["source": "email", "ready": true, "detail": "5 unread", "inspected": 5, "omitted": 0],
                                     ["source": "messages", "ready": true, "detail": "", "inspected": 3, "omitted": 0]],
                 "behavior_detail": "Tentative", "explanation": "",
+                "mail_overview": ["text": "Mostly event updates and tech-week promos", "source": "model"],
+                "texts_overview": ["text": "Mostly dinner plans and family check-ins", "source": "model"],
                 "proposed_plan": ["blocks": blocks, "unscheduled": [],
                                   "warnings": ["Reminders are not current; some deadlines may be missing."]],
             ],
@@ -202,8 +209,9 @@ enum NotchQADriver {
     - Tech Week: starts today
 
     **💬 Messages**
-    **👤 Priya**
-    - Asked about dinner at 7; no reply yet.
+    - **Priya** · 2 messages, latest 12:54 PM — Priya: “lmk!”
+    - **Mom** · 1 message, latest 9:12 AM — “call me when you can”
+    - **Sam** · 2 messages, latest 10:00 AM — Me: “np”
 
     Let me know if you'd like me to dig into any of these or draft a reply.
     """

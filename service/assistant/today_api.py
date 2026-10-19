@@ -61,6 +61,8 @@ def snapshot(day, timezone, *, debug=False):
     with diagnostics.span("today") as trace:
         state = assistant_store.today_snapshot(day, timezone)
         now = time.time()
+        # A Day task that duplicates a reminder the stale policy hides is hidden with it.
+        state = {**state, "tasks": assistant_store.hide_stale_tasks(state["tasks"], now)}
         plan = build_plan(day, timezone, state["tasks"], state["commitments"], state["preferences"],
                           state["sources"], now=now)
         trace.event("plan", tasks=len(plan["tasks"]), blocks=len(plan["blocks"]),

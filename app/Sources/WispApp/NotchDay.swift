@@ -427,6 +427,8 @@ struct DayTimeline: Equatable {
     static func briefLines(calendar: DayLoad?, calendarUnsynced: Bool = false,
                            mail: (ready: Bool, needing: [BriefNeed])?,
                            texts: (ready: Bool, needing: [BriefNeed])?,
+                           textsNeedAccess: Bool = false,
+                           mailOverview: String? = nil, textsOverview: String? = nil,
                            soon: Soon) -> [BriefLine] {
         var lines: [BriefLine] = []
         if let calendar {
@@ -436,19 +438,32 @@ struct DayTimeline: Equatable {
                                    trailing: "", source: .calendar, muted: calendarUnsynced))
         }
         // No coverage entry means the workspace couldn't be read: unknown, not off.
-        if let mail, mail.ready {
-            // What the top email is about, not how many there are.
-            let needing = BriefMail.important(mail.needing)
+        if let mail, mail.ready, let mailOverview {
+            // What the inbox is about, and how many emails need you.
+            lines.append(BriefLine(tag: "MAIL", text: BriefMail.row(overview: mailOverview, needing: mail.needing),
+                                   trailing: "", source: .mail))
+        } else if let mail, mail.ready {
+            // An older service sends no overview: what the top email is about.
+            let shown = BriefMail.shown(mail.needing)
             let promos = BriefMail.bulkCount(mail.needing)
-            let text = needing.first.map(BriefMail.describe) ?? "Nothing needs a reply"
+            let hidden = BriefMail.privateCount(mail.needing)
+            let text = shown.first?.rowLine
+                ?? (hidden > 0 ? "\(hidden) private email\(hidden == 1 ? "" : "s") not shown" : "Nothing needs a reply")
             // Say when more mail or promos were left out, so a hidden email is never silent.
-            let trailing = needing.count > 1 ? "+\(needing.count - 1) more"
+            let trailing = shown.count > 1 ? "+\(shown.count - 1) more"
                 : promos > 0 ? "+\(promos) promo\(promos == 1 ? "" : "s")" : ""
             lines.append(BriefLine(tag: "MAIL", text: text, trailing: trailing, source: .mail))
         } else {
             lines.append(BriefLine(tag: "MAIL", text: "Mail hasn't been checked yet", trailing: "", source: .mail, muted: true))
         }
-        if let texts, texts.ready {
+        if textsNeedAccess {
+            // Not "haven't been checked yet": Wisp can't read them until the user grants access.
+            lines.append(BriefLine(tag: "TEXTS", text: "Texts need Full Disk Access", trailing: "", source: .messages))
+        } else if let texts, texts.ready, let textsOverview {
+            // What texts are about and how many people are waiting, never what they wrote.
+            lines.append(BriefLine(tag: "TEXTS", text: BriefTexts.row(overview: textsOverview, people: BriefTexts.waiting(texts.needing)),
+                                   trailing: "", source: .messages))
+        } else if let texts, texts.ready {
             // Who is waiting on you, never what they wrote.
             lines.append(BriefLine(tag: "TEXTS", text: BriefTexts.row(BriefTexts.waiting(texts.needing)), trailing: "",
                                    source: .messages))
