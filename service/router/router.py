@@ -7651,7 +7651,18 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
     if knowledge_envelope(text) is not None:
         return decision
     policy_text = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
-    _, excluded = _private_read_policy(policy_text)
+    remainder, excluded = _private_read_policy(policy_text)
+    if excluded and knowledge_envelope(remainder) is not None:
+        # The whole-request knowledge grammar did not authorize this compound
+        # instruction. Do not let retrieval turn its source restriction into
+        # unrelated private reads or grant a partial knowledge action.
+        from service.tools.registry import REGISTRY
+        clarification = _mk_scoped([], 'clarify source policy and knowledge request')
+        clarification.forbidden_tools = frozenset(REGISTRY)
+        clarification.resolved_request = text + (
+            '\n\nNo action or private read has happened. Clarify the complete '
+            'knowledge instruction while preserving the source restriction.')
+        return clarification
     # Detect the complete source-policy envelope without reclassifying ordinary
     # web requests. Keep these triggers aligned with routing_guard_contract.
     if not (excluded or _calendar_is_excluded(policy_text) or _reminder_is_excluded(policy_text)

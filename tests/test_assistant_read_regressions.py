@@ -143,10 +143,16 @@ async def test_knowledge_literal_fields_cannot_change_source_policy(prompt, tool
 
 
 @pytest.mark.asyncio
-async def test_actual_source_denial_before_knowledge_looking_text_does_not_gain_authority():
-    d = await R.route("Don't read email; save a knowledge note titled Project:\nLiteral text.")
+@pytest.mark.parametrize('prefix', [
+    "Don't read email;", 'Without reading my inbox,',
+    'Without reading my messages,', "Don't read reminders;",
+    'Without reading my calendar,', "Don't read notes;",
+])
+async def test_actual_source_denial_before_knowledge_looking_text_does_not_gain_authority(prefix):
+    d = await R.route(prefix + " save a knowledge note titled Project:\nLiteral text.")
     assert not d.tool_subset and not d.direct_calls
-    assert {'view_emails', 'save_knowledge', 'run_shell'} <= d.forbidden_tools
+    assert not d.force_first_tool and not d.required_tool_groups
+    assert {'view_emails', 'view_messages', 'search_notes', 'save_knowledge', 'run_shell'} <= d.forbidden_tools
 
 
 @pytest.mark.asyncio
