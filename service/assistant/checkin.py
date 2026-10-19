@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 import json
+import logging
 import math
 import os
 import threading
@@ -32,6 +33,8 @@ from zoneinfo import ZoneInfo
 
 from service.assistant.stale_reminders import ASK_AFTER_S, DAY_S, EXCLUDED_STATES, valid_created_ts
 from service.paths import MOE_DIR
+
+_log = logging.getLogger(__name__)
 
 STATE_PATH = MOE_DIR / "checkins.json"
 # The evening check-in becomes due at this local hour. Earlier, the day is not
@@ -396,13 +399,15 @@ def move_suggestions(store, event: dict, timezone: str, *, now: float, behavior=
     `behavior` is an optional callable(day) -> availability snapshot, the same
     public contract the Day tab's workspace uses."""
     from service.assistant import daily_workspace as daily
-    from service.assistant.today import day_bounds
+    from service.assistant.today import day_bounds, wall_time
     start = event.get("when_ts")
     if start is None or not math.isfinite(start):
         return {"event": _event_summary(event, timezone), "suggestions": [], "reason": "This event has no start time to move from."}
     end = event.get("end_ts")
     duration = (end - start) if isinstance(end, (int, float)) and math.isfinite(end) and end > start else 3600.0
     event_day = local_day(start, timezone)
+    start_local = datetime.fromtimestamp(start, ZoneInfo(timezone))
+    start_minute = start_local.hour * 60 + start_local.minute
     suggestions: list[dict] = []
     seen: set[float] = set()
 
@@ -420,14 +425,20 @@ def move_suggestions(store, event: dict, timezone: str, *, now: float, behavior=
         try:
             plan = daily.workspace(store, day, timezone, now=now,
                                    behavior=behavior(day) if behavior else None)["proposed_plan"]
-        except Exception:  # noqa: BLE001 — fall back to the saved plan if sources are unavailable
+        except Exception as exc:  # noqa: BLE001 — the saved plan still answers when a source is away
+            _log.info("move_suggestions: workspace unavailable for %s (%s); using the saved plan", day, exc)
             from service.assistant.today import build_plan
             state = store.today_snapshot(day, timezone)
             plan = build_plan(day, timezone, state["tasks"], state["commitments"], state["preferences"],
                               state["sources"], now=now)
         prefs = plan["preferences"]
-        work_lo = lo + prefs["start_minute"] * 60
-        work_hi = lo + prefs["end_minute"] * 60
+        # Wall-clock minutes, not seconds from midnight: a DST day is 23 or 25 hours long.
+        try:
+            work_lo = wall_time(day, timezone, prefs["start_minute"])
+            work_hi = wall_time(day, timezone, prefs["end_minute"])
+            same_time = wall_time(day, timezone, start_minute)
+        except ValueError:                     # working hours fall in the DST gap: skip the day
+            continue
         occupied = []
         for block in plan["blocks"]:
             if block.get("id") == event.get("id") or (block.get("start") == start and block.get("title") == event.get("title")):
@@ -452,7 +463,6 @@ def move_suggestions(store, event: dict, timezone: str, *, now: float, behavior=
                     return c
             return None
 
-        same_time = lo + (start - day_bounds(event_day, timezone)[0])
         weekday = _weekday(lo, timezone)
         if offset == 0:
             later = first_after(start + duration)

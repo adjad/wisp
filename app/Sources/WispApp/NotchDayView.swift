@@ -24,7 +24,7 @@ struct NotchDayView: View {
     @State private var ignoredCaught = IgnoredCaught.load()
     // Evening check-in and weekly goal pulse (CheckInView.swift): one tap per
     // task at the end of the day, so tomorrow's plan starts honest.
-    @StateObject private var checkIn = CheckInModel()
+    @ObservedObject private var checkIn = CheckInModel.shared
     // Old undated reminders to keep or delete (StaleReminders.swift).
     @StateObject private var staleReminders: StaleRemindersModel
 
@@ -71,10 +71,6 @@ struct NotchDayView: View {
             while !Task.isCancelled {
                 await attention.refresh()
                 await staleReminders.refresh()
-                if today.isShowingCurrentDay {
-                    await checkIn.load(day: today.day, timezone: today.timezone.identifier)
-                    model.checkInDue = false
-                }
                 model.onResize()
                 do { try await Task.sleep(for: .seconds(60)) } catch { break }
             }
@@ -624,6 +620,13 @@ struct DayRefreshLoop: ViewModifier {
             while !Task.isCancelled {
                 today.reconcileClock()
                 await today.refresh()
+                // The evening check-in loads with the plan, on Brief as well as
+                // Day, so the Day tab's first frame already holds it and the
+                // panel is sized once (CheckInView.swift).
+                if today.isShowingCurrentDay {
+                    await CheckInModel.shared.load(day: today.day, timezone: today.timezone.identifier)
+                    model.checkInDue = false
+                }
                 model.onResize()
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }
             }

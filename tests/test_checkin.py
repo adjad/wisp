@@ -371,6 +371,37 @@ def test_move_suggestions_respect_working_hours_and_learned_windows(store):
     assert not any(l.startswith("Tuesday 9") or l.startswith("Tuesday 10") or l.startswith("Tuesday 11") for l in labels)
 
 
+def test_move_suggestions_use_wall_clock_across_the_dst_change(store):
+    """Nov 1 2026 is the fall-back day in Los Angeles (25 hours long). Working
+    hours and "same time" must be wall-clock minutes, not seconds from midnight."""
+    saturday, sunday, monday = "2026-10-31", "2026-11-01", "2026-11-02"
+    events(store, ("oh", "Office Hours", at(saturday, 15), at(saturday, 16)))
+    result = C.move_suggestions(store, C.find_event(store, "oh", saturday, ZONE), ZONE, now=at("2026-10-30", 18))
+    labels = [s["label"] for s in result["suggestions"]]
+    assert "Sunday 3:00 PM" in labels, labels            # same wall time, despite the extra hour
+    sunday_slots = [s for s in result["suggestions"] if s["day"] == sunday]
+    assert all(at(sunday, 9) <= s["start_ts"] < at(sunday, 18) for s in sunday_slots), "inside 9-6 wall clock"
+    assert all(s["day"] in (saturday, sunday, monday) for s in result["suggestions"])
+
+
+def test_move_suggestions_fall_back_to_the_saved_plan_when_the_workspace_fails(store, monkeypatch):
+    from service.assistant import daily_workspace as D
+    monday = "2026-10-19"
+    events(store, ("oh", "Office Hours", at(monday, 9, 30), at(monday, 10, 30)),
+                  ("lec", "Lecture", at(monday, 11), at(monday, 12)))
+    def boom(*args, **kwargs):
+        raise RuntimeError("evidence source offline")
+    monkeypatch.setattr(D, "workspace", boom)
+    result = C.move_suggestions(store, C.find_event(store, "oh", monday, ZONE), ZONE, now=at("2026-10-18", 18))
+    labels = [s["label"] for s in result["suggestions"]]
+    assert labels and labels[0] == "Monday 12:00 PM", "the saved plan still sees the lecture"
+
+
+def test_move_suggestions_api_rejects_a_bad_day(client, store):
+    assert client.get("/assistant/checkin/move_suggestions",
+                      params={"event_id": "x", "day": "not-a-day", "timezone": ZONE}).status_code == 422
+
+
 def test_move_suggestions_for_an_event_without_a_start(store):
     result = C.move_suggestions(store, {"id": "x", "title": "Someday", "when_ts": None}, ZONE, now=at("2026-10-18", 18))
     assert result["suggestions"] == [] and "no start time" in result["reason"]

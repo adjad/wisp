@@ -118,6 +118,10 @@ struct CheckInCard: Equatable {
 
 @MainActor
 final class CheckInModel: ObservableObject {
+    /// One card for the whole app, so the Day tab's first frame already has it
+    /// after a tab switch instead of fetching again and growing the panel.
+    static let shared = CheckInModel()
+
     @Published var card = CheckInCard()
     @Published var busy = false
     @Published var error = ""
@@ -232,7 +236,9 @@ struct CheckInSection: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
-                if !model.card.tasksSettled {
+                if let moving, model.card.tasksSettled {
+                    movePanel(moving)
+                } else if !model.card.tasksSettled {
                     ForEach(model.card.tasks) { task in taskRow(task) }
                 } else if let moving {
                     movePanel(moving)
@@ -243,7 +249,7 @@ struct CheckInSection: View {
                 if !model.error.isEmpty {
                     Text(model.error).font(.system(size: 11)).foregroundStyle(Theme.bad)
                 }
-                if moving == nil {
+                if moving == nil || !model.card.tasksSettled {
                     HStack {
                         Text(model.card.tasksSettled ? "That's the day. Carried tasks are on tomorrow's plan."
                              : "One tap each. Tomorrow carries it; Drop forgets it.")
@@ -265,7 +271,14 @@ struct CheckInSection: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
             .disabled(model.busy)
             .onExitCommand { if moving != nil { closeMove() } }
+            // The card may arrive after the Day tab painted; it must never
+            // animate the panel's height, so the only motion is the sub-panel's.
+            .transaction { $0.animation = nil }
             .animation(.easeInOut(duration: 0.18), value: moving?.id)
+            .onChange(of: model.card.events) { _, events in
+                // The event left tomorrow's list (reload, cancelled elsewhere): the panel is stale.
+                if let moving, !events.contains(where: { $0.id == moving.id }) { closeMove() }
+            }
         }
     }
 
@@ -309,8 +322,10 @@ struct CheckInSection: View {
                 Text("Kept").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
             } else {
                 chip("Keep", primary: true) { model.keep(event) }
-                chip("Move") { openMove(event) }
-                    .help("Pick another time; Wisp finds free ones")
+                if !event.allDay {               // an all-day event has no time to move to
+                    chip("Move") { openMove(event) }
+                        .help("Pick another time; Wisp finds free ones")
+                }
                 chip("Cancel") { onAsk(cancelRequest(event)) }
                     .help("Opens Ask with the cancel request; Wisp confirms before anything changes")
             }
@@ -320,9 +335,11 @@ struct CheckInSection: View {
     // MARK: Cancel and Move hand off to Ask
 
     /// The event, named precisely enough for the agent's calendar tools and
-    /// unambiguous to a reader: title, day and time, and the calendar id.
+    /// unambiguous to a reader: title, day and time, and the calendar id. The
+    /// title came from a calendar invite, so it is flattened to one short line
+    /// and the instruction never depends on it.
     private func describe(_ event: CheckInEvent) -> String {
-        var text = "“\(event.title)”"
+        var text = "“\(Self.plainTitle(event.title))”"
         if let when = event.whenTs {
             text += event.allDay ? " on \(dayLabel(when)) (all day)" : " on \(dayLabel(when)) at \(clock(when))"
         }
@@ -331,12 +348,19 @@ struct CheckInSection: View {
         return text
     }
 
+    static func plainTitle(_ raw: String) -> String {
+        let flat = raw.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+            .replacingOccurrences(of: "“", with: "'").replacingOccurrences(of: "”", with: "'")
+            .replacingOccurrences(of: "\"", with: "'")
+        return flat.count > 80 ? String(flat.prefix(79)) + "…" : flat
+    }
+
     private func cancelRequest(_ event: CheckInEvent) -> String {
-        "Cancel \(describe(event)) and let anyone invited know."
+        "Cancel this calendar event and let anyone invited know: \(describe(event))"
     }
 
     private func moveRequest(_ event: CheckInEvent, to start: Double) -> String {
-        "Move \(describe(event)) to \(dayLabel(start)) at \(clock(start)), keeping it \(event.durationMinutes) minutes."
+        "Move this calendar event to \(dayLabel(start)) at \(clock(start)), keeping it \(event.durationMinutes) minutes: \(describe(event))"
     }
 
     private func dayLabel(_ ts: Double) -> String {
@@ -397,6 +421,8 @@ struct CheckInSection: View {
             }
             Text("Picking a time opens Ask with the request. Wisp confirms before the calendar changes.")
                 .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+            Text("Moving events arrives in the next update; until then Wisp will say so.")
+                .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Move \(event.title)")
@@ -414,11 +440,11 @@ struct CheckInSection: View {
 
     private func otherTimeRow(_ event: CheckInEvent) -> some View {
         HStack(spacing: 8) {
-            DatePicker("Day", selection: $otherDate, displayedComponents: .date)
+            DatePicker("Day", selection: $otherDate, in: Date()..., displayedComponents: .date)
                 .datePickerStyle(.stepperField).labelsHidden()
                 .environment(\.timeZone, timezone)
                 .font(.system(size: 11.5))
-            DatePicker("Time", selection: $otherDate, displayedComponents: .hourAndMinute)
+            DatePicker("Time", selection: $otherDate, in: Date()..., displayedComponents: .hourAndMinute)
                 .datePickerStyle(.stepperField).labelsHidden()
                 .environment(\.timeZone, timezone)
                 .font(.system(size: 11.5))
