@@ -588,7 +588,13 @@ def _reminder_due_time(when_iso: str) -> tuple[float, str]:
     from math import isfinite
     from service.tasks.temporal import unambiguous_local_time
 
-    if not isinstance(when_iso, str) or not re.search(r'T\d{2}:\d{2}', when_iso):
+    # Preserve datetime.fromisoformat's clock formats (including a space
+    # separator), while refusing every date-only form it accepts as midnight.
+    try:
+        date.fromisoformat(when_iso)
+    except (TypeError, ValueError):
+        pass
+    else:
         raise ValueError("timed reminders require an explicit clock; use all_day for a date")
     when = datetime.fromisoformat(when_iso)
     if when.tzinfo is None and not unambiguous_local_time(when):
