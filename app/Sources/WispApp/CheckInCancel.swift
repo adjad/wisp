@@ -1,8 +1,9 @@
 import Foundation
 
 /// The one-tap Cancel on the Day tab's check-in card (CheckInView.swift): its
-/// wording, the request it sends and how the service's answer is read. Kept
-/// free of SwiftUI so tests/CheckInCancelChecks.swift can run it offline.
+/// wording, the request it sends, how the service's answer is read, and the
+/// Undo windows themselves. Kept free of SwiftUI so
+/// tests/CheckInCancelChecks.swift can run all of it offline.
 ///
 /// Tapping Cancel does not cancel yet: the row turns into an Undo bar for
 /// `undoWindow` seconds, and only then is POST /assistant/checkin/cancel_event
@@ -11,6 +12,12 @@ import Foundation
 enum CheckInCancel {
     /// How long Undo stays before the cancel is sent (user decision, 2026-10-18).
     static let undoWindow: TimeInterval = 5
+
+    /// How long the card waits for the service's answer. The service itself
+    /// waits up to 8 s for the app to reconnect and 45 s for the app's answer
+    /// (service/assistant/outbox.py), so giving up sooner would call a cancel
+    /// that may still complete a failure.
+    static let requestTimeout: TimeInterval = 70
 
     /// The bar while Undo is still possible. The count is what the service
     /// synced for this occurrence; the same number goes back in the request.
@@ -43,23 +50,38 @@ enum CheckInCancel {
     }
 
     struct Failure: Equatable {
-        /// The service's detail.outcome: not_found, not_allowed, not_current,
-        /// unknown, unavailable, failed; or no_answer / invalid from this side.
+        /// The service's detail.outcome (not_found, not_allowed, not_current,
+        /// unknown, unavailable, failed), or from this side: unreachable (the
+        /// request never left), no_answer (it may have), invalid, changed.
         let outcome: String
         let message: String
 
-        /// Try again is offered when a retry could succeed. An unknown outcome
-        /// means "check Calendar first"; a missing event or one that isn't the
-        /// user's to cancel will not change on a retry.
-        var canRetry: Bool { !["unknown", "not_found", "not_allowed"].contains(outcome) }
+        /// The cancel may have happened: the request reached the service (or
+        /// may have) and no verified answer came back. The card then offers no
+        /// tap that would send another one; the person checks Calendar.
+        var isUncertain: Bool { outcome == "unknown" || outcome == "no_answer" }
+
+        /// Try again is offered only when nothing was cancelled and a retry
+        /// could succeed. Never after an uncertain outcome, for a missing event,
+        /// for one that isn't the user's to cancel, or for a malformed body.
+        var canRetry: Bool { ["not_current", "unavailable", "failed", "unreachable", "changed"].contains(outcome) }
     }
+
+    /// Transport errors that prove the request never reached the service.
+    static let notSent: Set<URLError.Code> = [.cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                                              .notConnectedToInternet, .networkConnectionLost]
 
     /// Reads the answer. nil on a verified 200 {ok: true}; otherwise what to
     /// show. Every non-2xx body carries detail {outcome, message}; a 422 from
-    /// a malformed body carries pydantic's list instead, so it gets a plain line.
-    static func failure(status: Int?, body: [String: Any]?) -> Failure? {
+    /// a malformed body carries pydantic's list instead, so it gets a plain
+    /// line. No status with a transport error in `notSent` means nothing was
+    /// cancelled; any other missing answer (a timeout above all) is uncertain.
+    static func failure(status: Int?, body: [String: Any]?, transport: URLError.Code? = nil) -> Failure? {
         guard let status else {
-            return Failure(outcome: "no_answer", message: "Wisp's service didn't answer. Check Calendar before trying again.")
+            if let transport, notSent.contains(transport) {
+                return Failure(outcome: "unreachable", message: "Wisp's service isn't reachable, so nothing was cancelled.")
+            }
+            return Failure(outcome: "no_answer", message: "Wisp's service didn't answer in time. Check Calendar: it may have been cancelled.")
         }
         if (200..<300).contains(status) {
             if body?["ok"] as? Bool == true { return nil }
@@ -71,9 +93,81 @@ enum CheckInCancel {
         return Failure(outcome: outcome, message: message)
     }
 
+    /// The row the card reloaded no longer matches the one Cancel was tapped
+    /// on, so that cancel is dropped before it is sent.
+    static func changed(title: String) -> Failure {
+        Failure(outcome: "changed", message: "“\(title)” changed since you tapped Cancel; nothing was cancelled.")
+    }
+
     /// The invitee count a verified answer reports, falling back to the row's.
     static func notifiedCount(body: [String: Any]?, rowCount: Int?) -> Int {
         if let count = (body?["invitee_count"] as? NSNumber)?.intValue, count >= 0 { return count }
         return max(0, rowCount ?? 0)
+    }
+}
+
+/// The Undo windows: one timer per event id, all on the main actor. A window
+/// opens with `begin`, closes with `undo`, or runs out and calls `commit` once,
+/// after which the id is in flight until `commit` returns. The sleep and the
+/// commit are injected so the checks can drive them without waiting.
+@MainActor
+final class CheckInCancelQueue {
+    struct Entry: Equatable {
+        let id: String
+        let startedAt: Date
+    }
+
+    private(set) var pending: [String: Entry] = [:]
+    private(set) var inFlight: Set<String> = []
+    private var timers: [String: Task<Void, Never>] = [:]
+    let window: TimeInterval
+    private let sleep: @MainActor (TimeInterval) async throws -> Void
+    private let commit: @MainActor (String) async -> Void
+    /// Called after every change to `pending` or `inFlight`.
+    var onChange: (@MainActor () -> Void)?
+
+    init(window: TimeInterval = CheckInCancel.undoWindow,
+         sleep: @escaping @MainActor (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
+         commit: @escaping @MainActor (String) async -> Void) {
+        self.window = window
+        self.sleep = sleep
+        self.commit = commit
+    }
+
+    var isEmpty: Bool { pending.isEmpty && inFlight.isEmpty }
+    func isActive(_ id: String) -> Bool { pending[id] != nil || inFlight.contains(id) }
+
+    /// Opens the window. false when one is already open for this id or its
+    /// cancel is being sent, so a second tap never sends a second request.
+    @discardableResult
+    func begin(_ id: String, now: Date = Date()) -> Bool {
+        guard !isActive(id) else { return false }
+        pending[id] = Entry(id: id, startedAt: now)
+        timers[id] = Task { [weak self] in
+            guard let self else { return }
+            do { try await self.sleep(self.window) } catch { return }  // Undo cancelled the wait
+            // Undo may have landed while the sleep was ending: then nothing is sent.
+            guard !Task.isCancelled, self.pending[id] != nil else { return }
+            self.pending[id] = nil
+            self.timers[id] = nil
+            self.inFlight.insert(id)
+            self.onChange?()
+            await self.commit(id)
+            self.inFlight.remove(id)
+            self.onChange?()
+        }
+        onChange?()
+        return true
+    }
+
+    /// Closes the window without sending. false when none is open (too late).
+    @discardableResult
+    func undo(_ id: String) -> Bool {
+        guard pending[id] != nil else { return false }
+        timers[id]?.cancel()
+        timers[id] = nil
+        pending[id] = nil
+        onChange?()
+        return true
     }
 }

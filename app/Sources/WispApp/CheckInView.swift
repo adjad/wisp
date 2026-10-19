@@ -149,24 +149,38 @@ final class CheckInModel: ObservableObject {
     @Published var kept: Set<String> = []
     @Published var goalAnswered = false
 
-    /// A Cancel waiting out its Undo window. One per event, so a second
-    /// Cancel never hurries the first.
+    /// A Cancel waiting out its Undo window: the row as it was when Cancel was
+    /// tapped (what the request will say), and where to reload afterwards.
     struct PendingCancel: Equatable {
         let event: CheckInEvent
         let startedAt: Date
-        let day: String
         let timezone: String
+    }
+    struct CancelFailure: Equatable {
+        let title: String
+        let failure: CheckInCancel.Failure
     }
     /// Cancels inside their Undo window, by event id. They live on the shared
     /// model, not the card, so a closed panel or a tab switch neither drops
-    /// nor hurries them, and Undo is back if the card reopens in time.
-    @Published var pendingCancels: [String: PendingCancel] = [:]
+    /// nor hurries them, and Undo is back if the card reopens in time. One
+    /// window per event, so a second Cancel never hurries the first.
+    @Published private(set) var pendingCancels: [String: PendingCancel] = [:]
     /// Cancels sent and awaiting the service's verified answer.
-    @Published var cancelling: Set<String> = []
+    @Published private(set) var cancelling: Set<String> = []
     /// Verified cancels, by event id: the line the card shows for them.
-    @Published var cancelled: [String: String] = [:]
-    @Published var cancelFailures: [String: CheckInCancel.Failure] = [:]
-    private var cancelTimers: [String: Task<Void, Never>] = [:]
+    @Published private(set) var cancelled: [String: String] = [:]
+    @Published private(set) var cancelFailures: [String: CancelFailure] = [:]
+    private var cancelDetails: [String: PendingCancel] = [:]
+    private lazy var cancelQueue = CheckInCancelQueue { [weak self] id in await self?.sendCancel(id) }
+
+    init() {
+        cancelQueue.onChange = { [weak self] in self?.syncCancelState() }
+    }
+
+    /// A window is open or a request is out: the card must stay where the
+    /// person can see Undo and the outcome.
+    var hasCancelActivity: Bool { !pendingCancels.isEmpty || !cancelling.isEmpty }
+    var hasCancelOutcomes: Bool { !cancelled.isEmpty || !cancelFailures.isEmpty }
 
     func load(day: String, timezone: String) async {
         var components = URLComponents(url: WispClient.baseURL.appendingPathComponent("assistant/checkin"), resolvingAgainstBaseURL: false)!
@@ -181,56 +195,86 @@ final class CheckInModel: ObservableObject {
         if next.day != card.day { kept = []; goalAnswered = false; cancelled = [:]; cancelFailures = [:] }
         card = next
         error = ""
+        reconcilePendingCancels()
+    }
+
+    /// A reloaded row must still be the one Cancel was tapped on. If its start
+    /// or invitee count changed, or it left the list, that cancel is dropped
+    /// before it is sent and the card says so; the service would refuse it
+    /// anyway (404 or not_current), but the person shouldn't wait to learn that.
+    private func reconcilePendingCancels() {
+        for (id, pending) in pendingCancels {
+            let row = card.events.first { $0.id == id }
+            let same = row.map { $0.canCancel && $0.whenTs == pending.event.whenTs && $0.inviteeCount == pending.event.inviteeCount } ?? false
+            if same { continue }
+            undoCancel(pending.event)
+            let title = CheckInSection.plainTitle(pending.event.title)
+            cancelFailures[id] = CancelFailure(title: title, failure: row == nil
+                ? CheckInCancel.Failure(outcome: "changed", message: "“\(title)” is no longer on tomorrow's list; nothing was cancelled.")
+                : CheckInCancel.changed(title: title))
+        }
     }
 
     // MARK: Cancel with Undo
 
     /// Starts the Undo window. The cancel is sent only when it runs out untouched.
-    func beginCancel(_ event: CheckInEvent, day: String, timezone: String) {
-        guard event.canCancel, pendingCancels[event.id] == nil, !cancelling.contains(event.id) else { return }
+    func beginCancel(_ event: CheckInEvent, timezone: String) {
+        guard event.canCancel, !cancelQueue.isActive(event.id) else { return }
         cancelFailures[event.id] = nil
-        pendingCancels[event.id] = PendingCancel(event: event, startedAt: Date(), day: day, timezone: timezone)
-        cancelTimers[event.id]?.cancel()
-        cancelTimers[event.id] = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(CheckInCancel.undoWindow))
-            guard !Task.isCancelled, let self, let pending = self.pendingCancels[event.id] else { return }
-            self.pendingCancels[event.id] = nil
-            self.cancelTimers[event.id] = nil
-            await self.commitCancel(pending)
-        }
+        cancelDetails[event.id] = PendingCancel(event: event, startedAt: Date(), timezone: timezone)
+        cancelQueue.begin(event.id, now: cancelDetails[event.id]!.startedAt)
     }
 
     func undoCancel(_ event: CheckInEvent) {
-        cancelTimers[event.id]?.cancel()
-        cancelTimers[event.id] = nil
-        pendingCancels[event.id] = nil
+        if cancelQueue.undo(event.id) { cancelDetails[event.id] = nil }
+    }
+
+    private func syncCancelState() {
+        let open = cancelQueue.pending
+        pendingCancels = cancelDetails.filter { open[$0.key] != nil }
+        cancelling = cancelQueue.inFlight
     }
 
     /// POST /assistant/checkin/cancel_event for one occurrence, then reload
     /// the card so the row goes (verified) or shows fresh facts (refused).
-    private func commitCancel(_ pending: PendingCancel) async {
+    private func sendCancel(_ id: String) async {
+        guard let pending = cancelDetails[id] else { return }
+        defer { cancelDetails[id] = nil }
         let event = pending.event
         guard let body = event.cancelBody else { return }
-        cancelling.insert(event.id)
-        defer { cancelling.remove(event.id) }
         var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/checkin/cancel_event"))
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = CheckInCancel.requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         var status: Int?
         var object: [String: Any]?
-        if let (data, response) = try? await URLSession.shared.data(for: request) {
+        var transport: URLError.Code?
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
             status = (response as? HTTPURLResponse)?.statusCode
             object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        } catch let error as URLError {
+            transport = error.code
+        } catch {
+            transport = .unknown
         }
-        if let failure = CheckInCancel.failure(status: status, body: object) {
-            cancelFailures[event.id] = failure
+        let title = CheckInSection.plainTitle(event.title)
+        if let failure = CheckInCancel.failure(status: status, body: object, transport: transport) {
+            cancelFailures[id] = CancelFailure(title: title, failure: failure)
+            announce(failure.isUncertain ? "Cancel of “\(title)” unconfirmed. \(failure.message)" : "Not cancelled: \(failure.message)")
         } else {
             let count = CheckInCancel.notifiedCount(body: object, rowCount: event.inviteeCount)
-            cancelled[event.id] = CheckInCancel.doneLabel(title: CheckInSection.plainTitle(event.title), inviteeCount: count)
+            cancelled[id] = CheckInCancel.doneLabel(title: title, inviteeCount: count)
+            announce(cancelled[id]!)
         }
-        await load(day: pending.day, timezone: pending.timezone)
+        // The day the card shows now, not the one Cancel was tapped on: a
+        // window that crosses midnight must not flip the card back a day.
+        await load(day: card.day, timezone: pending.timezone)
+    }
+
+    private func announce(_ text: String) {
+        AccessibilityNotification.Announcement(text).post()
     }
 
     func decide(_ task: CheckInTask, _ decision: String, day: String, timezone: String) async {
@@ -239,6 +283,7 @@ final class CheckInModel: ObservableObject {
 
     func complete(day: String, timezone: String) async {
         await post("assistant/checkin/complete", ["day": day, "timezone": timezone])
+        if error.isEmpty { cancelled = [:]; cancelFailures = [:] }
     }
 
     func keep(_ event: CheckInEvent) { kept.insert(event.id) }
@@ -321,7 +366,10 @@ struct CheckInSection: View {
     var body: some View {
         // The shared model may still hold an earlier day's card for a moment;
         // only today's card is ever shown or tapped.
-        if model.card.showsCheckIn, model.card.day == day {
+        // A cancel in its window or in flight, or an outcome not yet read,
+        // keeps the card up: the person must be able to see Undo and the result.
+        if model.card.day == day, model.card.showsCheckIn || model.hasCancelActivity
+            || (model.hasCancelOutcomes && !model.card.completed) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 6) {
                     Text("Evening check-in").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
@@ -337,18 +385,16 @@ struct CheckInSection: View {
                     Text(eventsLine).font(.system(size: 12.5)).foregroundStyle(Theme.textPrimary)
                     ForEach(model.card.events) { event in eventRow(event) }
                 }
-                // Verified cancels whose row has already left tomorrow's list.
-                ForEach(cancelledLines, id: \.self) { line in
-                    Text(line).font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                // Outcomes for rows that have already left tomorrow's list.
+                ForEach(outcomeLines, id: \.text) { line in
+                    Text(line.text).font(.system(size: 11.5)).foregroundStyle(line.failed ? Theme.bad : Theme.textMuted)
                 }
                 if !model.error.isEmpty {
                     Text(model.error).font(.system(size: 11)).foregroundStyle(Theme.bad)
                 }
                 if moving == nil || !model.card.tasksSettled {
                     HStack {
-                        Text(model.card.tasksSettled ? "That's the day. Carried tasks are on tomorrow's plan."
-                             : "One tap each. Tomorrow carries it; Drop forgets it.")
-                            .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                        Text(footerLine).font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
                         Spacer()
                         Button(model.card.tasksSettled ? "Done for today" : "Skip tonight") {
                             Task { await model.complete(day: day, timezone: timezone.identifier); onChanged() }
@@ -357,6 +403,9 @@ struct CheckInSection: View {
                         .padding(.horizontal, 10).padding(.vertical, 5)
                         .background(Capsule().fill(Theme.chipFill))
                         .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                        // Closing the card would hide Undo and the outcome.
+                        .disabled(model.busy || model.hasCancelActivity)
+                        .help(model.hasCancelActivity ? "Wait for the cancel to finish first" : "")
                     }
                 }
             }
@@ -364,7 +413,6 @@ struct CheckInSection: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
-            .disabled(model.busy)
             .onExitCommand { if moving != nil { closeMove() } }
             // The card may arrive after the Day tab painted; it must never
             // animate the panel's height. The sub-panel's own animation sits
@@ -392,9 +440,21 @@ struct CheckInSection: View {
         return "Tomorrow has \(count) event\(count == 1 ? "" : "s"). Anything to move?"
     }
 
-    private var cancelledLines: [String] {
+    private var footerLine: String {
+        if model.hasCancelActivity { return "A cancel is under way. Undo is on its row." }
+        return model.card.tasksSettled ? "That's the day. Carried tasks are on tomorrow's plan."
+            : "One tap each. Tomorrow carries it; Drop forgets it."
+    }
+
+    private struct OutcomeLine: Hashable { let text: String; let failed: Bool }
+
+    private var outcomeLines: [OutcomeLine] {
         let shown = Set(model.card.events.map(\.id))
-        return model.cancelled.filter { !shown.contains($0.key) }.sorted { $0.key < $1.key }.map(\.value)
+        let done = model.cancelled.filter { !shown.contains($0.key) }.sorted { $0.key < $1.key }
+            .map { OutcomeLine(text: $0.value, failed: false) }
+        let failed = model.cancelFailures.filter { !shown.contains($0.key) }.sorted { $0.key < $1.key }
+            .map { OutcomeLine(text: "“\($0.value.title)”: \($0.value.failure.message)", failed: true) }
+        return done + failed
     }
 
     private func taskRow(_ task: CheckInTask) -> some View {
@@ -406,9 +466,12 @@ struct CheckInSection: View {
                 }
             }
             Spacer(minLength: 8)
-            chip("Done", primary: true) { Task { await model.decide(task, "done", day: day, timezone: timezone.identifier); onChanged() } }
-            chip("Tomorrow") { Task { await model.decide(task, "tomorrow", day: day, timezone: timezone.identifier); onChanged() } }
-            chip("Drop") { Task { await model.decide(task, "drop", day: day, timezone: timezone.identifier); onChanged() } }
+            Group {
+                chip("Done", primary: true) { Task { await model.decide(task, "done", day: day, timezone: timezone.identifier); onChanged() } }
+                chip("Tomorrow") { Task { await model.decide(task, "tomorrow", day: day, timezone: timezone.identifier); onChanged() } }
+                chip("Drop") { Task { await model.decide(task, "drop", day: day, timezone: timezone.identifier); onChanged() } }
+            }
+            .disabled(model.busy)
         }
     }
 
@@ -422,31 +485,40 @@ struct CheckInSection: View {
                     .strikethrough(model.pendingCancels[event.id] != nil || model.cancelled[event.id] != nil)
                 Spacer(minLength: 8)
                 if let pending = model.pendingCancels[event.id] {
-                    undoBar(event, pending)
+                    undoBar(pending)
                 } else if model.cancelling.contains(event.id) {
                     Text("Cancelling…").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
                 } else if let done = model.cancelled[event.id] {
                     Text(done).font(.system(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                } else if model.cancelFailures[event.id]?.failure.isUncertain == true {
+                    // It may be cancelled; no tap here may send another request.
+                    Text("Check Calendar").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        .help(model.cancelFailures[event.id]?.failure.message ?? "")
                 } else if model.kept.contains(event.id) {
                     Text("Kept").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
                 } else {
-                    chip("Keep", primary: true) { model.keep(event) }
-                    if !event.allDay {               // an all-day event has no time to move to
-                        chip("Move") { openMove(event) }
-                            .help("Pick another time; Wisp finds free ones")
+                    Group {
+                        chip("Keep", primary: true) { model.keep(event) }
+                        if !event.allDay {               // an all-day event has no time to move to
+                            chip("Move") { openMove(event) }
+                                .help(model.hasCancelActivity ? "Wait for the cancel to finish first" : "Pick another time; Wisp finds free ones")
+                                .disabled(model.hasCancelActivity)   // the panel would hide the Undo bar
+                        }
+                        cancelControl(event)
                     }
-                    cancelControl(event)
+                    .disabled(model.busy)
                 }
             }
             if let pending = model.pendingCancels[event.id] {
                 countdown(pending)
             }
-            if let failure = model.cancelFailures[event.id] {
+            if let failed = model.cancelFailures[event.id] {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(failure.message).font(.system(size: 11)).foregroundStyle(Theme.bad)
-                    if failure.canRetry, event.canCancel {
-                        chip("Try again") { model.beginCancel(event, day: day, timezone: timezone.identifier) }
+                    Text(failed.failure.message).font(.system(size: 11)).foregroundStyle(Theme.bad)
+                    if failed.failure.canRetry, event.canCancel {
+                        chip("Try again") { model.beginCancel(event, timezone: timezone.identifier) }
                             .help("Starts the 5-second Undo again, then cancels")
+                            .disabled(model.busy)
                     }
                 }
             }
@@ -459,7 +531,7 @@ struct CheckInSection: View {
     /// the row with the service's full reason on hover and for VoiceOver.
     @ViewBuilder private func cancelControl(_ event: CheckInEvent) -> some View {
         if event.canCancel {
-            chip("Cancel") { model.beginCancel(event, day: day, timezone: timezone.identifier) }
+            chip("Cancel") { model.beginCancel(event, timezone: timezone.identifier) }
                 .help("Removes it from your Calendar after a 5-second Undo; Calendar tells its invitees")
         } else {
             Text("Cancel in Calendar").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
@@ -468,13 +540,15 @@ struct CheckInSection: View {
         }
     }
 
-    /// "Cancelled · its 3 invitees will be notified · Undo"
-    private func undoBar(_ event: CheckInEvent, _ pending: CheckInModel.PendingCancel) -> some View {
+    /// "Cancelled · its 3 invitees will be notified · Undo". The count is the
+    /// one captured at the tap, which is also what the request will send.
+    private func undoBar(_ pending: CheckInModel.PendingCancel) -> some View {
         HStack(spacing: 6) {
-            Text(CheckInCancel.undoLabel(inviteeCount: event.inviteeCount ?? 0) + " ·")
+            Text(CheckInCancel.undoLabel(inviteeCount: pending.event.inviteeCount ?? 0) + " ·")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(1)
-            chip("Undo", primary: true) { model.undoCancel(event) }
+            chip("Undo", primary: true) { model.undoCancel(pending.event) }
                 .help("Keeps the event; nothing has been sent yet")
+                .accessibilityLabel("Undo cancelling “\(Self.plainTitle(pending.event.title))”; 5 seconds")
         }
     }
 
@@ -486,7 +560,7 @@ struct CheckInSection: View {
                 .scaleEffect(x: max(0.001, left), y: 1, anchor: .leading)
         }
         .frame(height: 2)
-        .accessibilityHidden(true)
+        .accessibilityHidden(true)       // the Undo button's label carries the window
     }
 
     // MARK: Move hands off to Ask

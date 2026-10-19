@@ -1,11 +1,20 @@
 import Foundation
 
 /// Offline checks for CheckInCancel (app/Sources/WispApp/CheckInCancel.swift): the
-/// Undo-bar wording, the exact request the service accepts, and how each outcome
-/// of POST /assistant/checkin/cancel_event is shown.
+/// Undo-bar wording, the exact request the service accepts, how each outcome of
+/// POST /assistant/checkin/cancel_event is shown, and the Undo windows: the delete
+/// is sent once, only after the window, never after Undo, and never hurried by a
+/// second Cancel.
 @main struct CheckInCancelCheck {
-    static func main() {
+    static func main() async {
+        await MainActor.run { mappingChecks() }
+        await queueChecks()
+        print("CheckInCancel checks passed")
+    }
+
+    @MainActor static func mappingChecks() {
         precondition(CheckInCancel.undoWindow == 5, "the user confirmed a 5-second Undo")
+        precondition(CheckInCancel.requestTimeout >= 60, "the service may wait 8 s + 45 s before answering")
         precondition(CheckInCancel.undoLabel(inviteeCount: 0) == "Cancelled")
         precondition(CheckInCancel.undoLabel(inviteeCount: 1) == "Cancelled · its 1 invitee will be notified")
         precondition(CheckInCancel.undoLabel(inviteeCount: 3) == "Cancelled · its 3 invitees will be notified")
@@ -29,10 +38,19 @@ import Foundation
 
         // The answer: only {ok: true} on 2xx is a verified cancel.
         precondition(CheckInCancel.failure(status: 200, body: ["ok": true, "invitee_count": 2]) == nil)
-        precondition(CheckInCancel.failure(status: 200, body: ["ok": false])?.outcome == "unknown")
+        let odd = CheckInCancel.failure(status: 200, body: ["ok": false])
+        precondition(odd?.outcome == "unknown" && odd?.isUncertain == true && odd?.canRetry == false)
         precondition(CheckInCancel.failure(status: 200, body: nil)?.outcome == "unknown")
-        let noAnswer = CheckInCancel.failure(status: nil, body: nil)
-        precondition(noAnswer?.outcome == "no_answer" && noAnswer?.canRetry == true)
+        // No answer: a timeout may mean it was cancelled, so no retry; a connection
+        // that never opened means nothing was sent, so a retry is fine.
+        let timedOut = CheckInCancel.failure(status: nil, body: nil, transport: .timedOut)
+        precondition(timedOut?.outcome == "no_answer" && timedOut?.isUncertain == true && timedOut?.canRetry == false)
+        precondition(timedOut?.message.contains("Check Calendar") == true)
+        precondition(CheckInCancel.failure(status: nil, body: nil)?.isUncertain == true, "no error at all is still uncertain")
+        let down = CheckInCancel.failure(status: nil, body: nil, transport: .cannotConnectToHost)
+        precondition(down?.outcome == "unreachable" && down?.isUncertain == false && down?.canRetry == true)
+        precondition(down?.message.contains("nothing was cancelled") == true)
+        precondition(CheckInCancel.failure(status: nil, body: nil, transport: .notConnectedToInternet)?.outcome == "unreachable")
         func failure(_ status: Int, _ outcome: String, _ message: String = "msg.") -> CheckInCancel.Failure? {
             CheckInCancel.failure(status: status, body: ["detail": ["outcome": outcome, "message": message]])
         }
@@ -41,17 +59,126 @@ import Foundation
         precondition(failure(403, "not_allowed")?.canRetry == false)
         precondition(failure(409, "not_allowed")?.canRetry == false, "invitees not synced yet")
         precondition(failure(409, "not_current")?.canRetry == true, "a refreshed card may cancel it")
-        precondition(failure(409, "unknown")?.canRetry == false, "check Calendar first; never a retry button")
+        let unknown = failure(409, "unknown")
+        precondition(unknown?.canRetry == false && unknown?.isUncertain == true, "check Calendar first; never a retry button")
         precondition(failure(503, "unavailable")?.canRetry == true)
         precondition(failure(502, "failed")?.canRetry == true)
+        precondition(failure(502, "failed")?.isUncertain == false)
         let invalid = CheckInCancel.failure(status: 422, body: ["detail": [["loc": ["body"], "msg": "x"]]])
         precondition(invalid?.outcome == "invalid" && invalid?.message.contains("Nothing was cancelled") == true,
                      "pydantic's list detail gets a plain line")
+        precondition(invalid?.canRetry == false, "the same body would fail again")
         precondition(CheckInCancel.failure(status: 500, body: nil)?.outcome == "failed")
+        let changed = CheckInCancel.changed(title: "Sync")
+        precondition(changed.canRetry == true && changed.isUncertain == false && changed.message.contains("“Sync”"))
 
         precondition(CheckInCancel.notifiedCount(body: ["invitee_count": 3], rowCount: 1) == 3, "the service's count wins")
         precondition(CheckInCancel.notifiedCount(body: [:], rowCount: 1) == 1)
         precondition(CheckInCancel.notifiedCount(body: nil, rowCount: nil) == 0)
-        print("CheckInCancel checks passed")
+    }
+
+    /// Drives the queue with a sleep that waits for the test to release it.
+    @MainActor final class Harness {
+        var slept: [TimeInterval] = []
+        var waiters: [String: CheckedContinuation<Void, Error>] = [:]
+        var committed: [String] = []
+        var inFlightSeen: [String] = []
+        var changes = 0
+        var current = ""
+        var queue: CheckInCancelQueue!
+
+        init() {
+            queue = CheckInCancelQueue(window: 5, sleep: { [unowned self] seconds in
+                self.slept.append(seconds)
+                let id = self.current
+                try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in self.waiters[id] = c }
+            }, commit: { [unowned self] id in
+                self.committed.append(id)
+                self.inFlightSeen.append(contentsOf: self.queue.inFlight.sorted())
+            })
+            queue.onChange = { [unowned self] in self.changes += 1 }
+        }
+
+        /// Opens a window and lets its timer task reach the sleep, so the next
+        /// begin's id is not what this sleep records.
+        func begin(_ id: String) async -> Bool {
+            current = id
+            let opened = queue.begin(id)
+            await settle()
+            return opened
+        }
+        /// Lets the timer task reach its sleep (or finish) before asserting.
+        func settle() async { for _ in 0..<200 { await Task.yield() } }
+        func elapse(_ id: String) async {
+            let waiter = waiters.removeValue(forKey: id)
+            precondition(waiter != nil, "no sleep was waiting for \(id)")
+            waiter?.resume()
+            await settle()
+        }
+    }
+
+    @MainActor static func queueChecks() async {
+        let h = Harness()
+        precondition(h.queue.isEmpty)
+
+        // Undo inside the window: the sleep is cancelled and nothing is sent.
+        let opened1 = await h.begin("a")
+        precondition(opened1)
+        precondition(h.queue.pending["a"] != nil && h.queue.isActive("a"))
+        await h.settle()
+        precondition(h.slept == [5], "the wait is the full Undo window")
+        precondition(h.queue.undo("a"))
+        precondition(h.queue.pending["a"] == nil && !h.queue.isActive("a"))
+        precondition(h.committed.isEmpty, "Undo sends nothing")
+        await h.elapse("a")       // the old sleep ending late must not send either
+        precondition(h.committed.isEmpty, "a sleep that ends after Undo sends nothing")
+        precondition(!h.queue.undo("a"), "nothing left to undo")
+
+        // Two windows side by side: each sends once, the first never hurried.
+        let opened2 = await h.begin("a")
+        precondition(opened2)
+        let opened3 = await h.begin("b")
+        precondition(opened3)
+        let opened4 = await h.begin("a")
+        precondition(!opened4, "a second Cancel on a pending row is refused")
+        await h.settle()
+        precondition(h.slept == [5, 5, 5])
+        precondition(h.committed.isEmpty, "opening b does not send a")
+        await h.elapse("b")
+        precondition(h.committed == ["b"], "b ran out first; a is still waiting")
+        precondition(h.inFlightSeen == ["b"], "b was in flight while its commit ran")
+        precondition(h.queue.pending["a"] != nil && h.queue.pending["b"] == nil && !h.queue.isActive("b"))
+        await h.elapse("a")
+        precondition(h.committed == ["b", "a"])
+        precondition(h.queue.isEmpty)
+
+        // A commit in flight blocks a new window for the same id until it returns.
+        let slow = Harness()
+        var release: CheckedContinuation<Void, Never>?
+        slow.queue = CheckInCancelQueue(window: 5, sleep: { [unowned slow] seconds in
+            slow.slept.append(seconds)
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in slow.waiters[slow.current] = c }
+        }, commit: { [unowned slow] id in
+            slow.committed.append(id)
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in release = c }
+        })
+        let opened5 = await slow.begin("c")
+        precondition(opened5)
+        await slow.settle()
+        await slow.elapse("c")
+        precondition(slow.committed == ["c"] && slow.queue.inFlight.contains("c"))
+        let opened6 = await slow.begin("c")
+        precondition(!opened6, "no second request while the first is unanswered")
+        precondition(!slow.queue.undo("c"), "too late to undo once sent")
+        release?.resume()
+        await slow.settle()
+        precondition(slow.queue.isEmpty, "the id frees once the service answered")
+        let opened7 = await slow.begin("c")
+        precondition(opened7, "and may be cancelled again after that")
+        precondition(slow.queue.undo("c"))
+        slow.waiters.removeValue(forKey: "c")?.resume(throwing: CancellationError())   // tidy the undone sleep
+        await slow.settle()
+        precondition(slow.committed == ["c"], "the undone window sent nothing more")
+        precondition(h.changes > 0, "the model is told about every change")
     }
 }
