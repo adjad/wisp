@@ -5,18 +5,24 @@ import Foundation
 /// CalendarReader.moveEvent gathers these facts from the EKEvent before and after
 /// the save and applies them.
 ///
-/// A move changes only the start and end of one exact occurrence. Everything else
-/// the user put on the event must read back unchanged, or the move is reported as
-/// not verified instead of done.
+/// A move changes only the start and end of one exact occurrence. The fields below
+/// (title, all-day, calendar, time zone, notes, URL, location, structured location,
+/// attendees, alerts, availability) must read back unchanged, or the move is reported
+/// as not verified instead of done.
 struct CalendarEventFacts: Equatable {
     var title: String
     var start: Double
     var end: Double
     var isAllDay: Bool
     var calendarID: String
+    /// The event's time zone identifier, or "floating".
+    var timeZone: String
     var notes: String
+    /// The URL, or "<none>" so a missing URL never reads the same as an empty one.
     var url: String
     var location: String
+    /// The structured location's title and coordinates, or "".
+    var structuredLocation: String
     /// Participant URLs, sorted, so order never reads as a change.
     var attendees: [String]
     /// Each alarm as "relative:<seconds>" or "absolute:<ts>", sorted.
@@ -32,15 +38,20 @@ enum CalendarMove {
     }
 
     /// Why this event must not be moved, or nil when it may. Checked before any write.
+    /// `startTaken`: another occurrence of the same event already begins at the new start
+    /// (a repeating series), so the read-back could not tell the two apart.
     static func refusal(_ facts: CalendarEventFacts, expectedTitle: String, expectedStart: Double,
-                        calendarWritable: Bool, hasAttendees: Bool, organizerIsUser: Bool) -> String? {
+                        calendarWritable: Bool, hasAttendees: Bool, startTaken: Bool) -> String? {
         if !(abs(facts.start - expectedStart) < 1) || !sameTitle(facts.title, expectedTitle) {
             return "That event changed since Wisp last read Calendar; nothing was moved"
         }
         if !calendarWritable { return "That event's calendar can't be changed from this Mac" }
-        if hasAttendees && !organizerIsUser {
-            return "Only the organizer can move an event with invitees; ask them or move it in Calendar"
+        // Moving an event with invitees sends them an update (or isn't the user's to move),
+        // and the confirmation card can't show that. Not done from Wisp yet.
+        if hasAttendees {
+            return "Wisp doesn't move events with invitees, since Calendar would update them; move it in Calendar"
         }
+        if startTaken { return "Another occurrence of this event already starts then; nothing was moved" }
         if facts.isAllDay { return "Wisp doesn't move all-day events; move it in Calendar" }
         return nil
     }
@@ -64,8 +75,10 @@ enum CalendarMove {
         expected.end = after.end
         let pairs: [(String, Bool)] = [
             ("title", expected.title == after.title), ("all-day", expected.isAllDay == after.isAllDay),
-            ("calendar", expected.calendarID == after.calendarID), ("notes", expected.notes == after.notes),
+            ("calendar", expected.calendarID == after.calendarID), ("time zone", expected.timeZone == after.timeZone),
+            ("notes", expected.notes == after.notes),
             ("URL", expected.url == after.url), ("location", expected.location == after.location),
+            ("structured location", expected.structuredLocation == after.structuredLocation),
             ("attendees", expected.attendees == after.attendees), ("alerts", expected.alarms == after.alarms),
             ("availability", expected.availability == after.availability),
         ]

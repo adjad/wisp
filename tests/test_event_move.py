@@ -182,9 +182,13 @@ def test_update_event_is_a_confirmed_calendar_write():
 def test_the_confirmation_card_names_the_occurrence_and_both_times(store):
     start = _top_of_hour(26)
     _calendar(store, *[_event("ek-series", "Standup", start + day * 24 * HOUR, 0.25) for day in range(2)])
-    card = assistant_tools.event_move_preview({"title": "standup", "when_iso": _iso(start + HOUR)})
+    prepared = assistant_tools.prepare_event_move({"title": "standup", "when_iso": _iso(start + HOUR)})
+    card = prepared["preview"]
     assert card.startswith("Move: Standup — from ")
     assert "(this occurrence only)" in card and " to " in card
+    # The approved call carries the start pinned to this Mac's UTC offset.
+    assert prepared["args"]["when_iso"] != _iso(start + HOUR) and "+" in prepared["args"]["when_iso"] or "-" in prepared["args"]["when_iso"][16:]
+    assert prepared["binding"]["payload"]["expected_start_ts"] == start
 
 
 # --- payload, result and receipt ---------------------------------------------------------
@@ -233,3 +237,94 @@ def test_the_receipt_moves_the_synced_row_and_resets_its_notices(store):
         "WHERE c.id=?", (cid,)).fetchone()
     assert (moved["when_ts"], moved["end_ts"]) == (start + 2 * HOUR, start + 3 * HOUR)
     assert store._db.execute("SELECT COUNT(*) FROM notify_log WHERE commitment_id=?", (cid,)).fetchone()[0] == 0
+
+
+# --- the agent loop: one resolution, bound from card to write (audit B1, 2026-10-18) ------
+
+import json  # noqa: E402
+
+from service.agent import loop  # noqa: E402
+
+
+class _Client:
+    def __init__(self, replies):
+        self.replies = iter(replies)
+
+    async def ensure_only(self, *args, **kwargs):
+        pass
+
+    async def stream_events(self, model, messages, *, tools=None, **kwargs):
+        reply = next(self.replies, "Done.")
+        if isinstance(reply, tuple):
+            name, arguments = reply
+            message = {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call-1", "type": "function",
+                "function": {"name": name, "arguments": json.dumps(arguments)}}]}
+        else:
+            message = {"role": "assistant", "content": reply}
+        yield {"kind": "final", "message": message}
+
+
+async def _turn(args, *, confirm):
+    approver = type("Approver", (), {"confirm": AsyncMock(side_effect=confirm)})()
+    emit = AsyncMock()
+    with patch.object(loop, "audit"):
+        await loop.run_agent(_Client([("update_event", args), "Okay."]), "fixture-model",
+                             [{"role": "user", "content": "move it"}], emit, approver,
+                             tools=["update_event"], include_memory_context=False, max_steps=3)
+    results = [c.args[0]["result"] for c in emit.await_args_list if c.args[0].get("type") == "tool_result"]
+    return approver, results
+
+
+async def test_the_card_shows_the_occurrence_the_approved_call_moves(store, bridge):
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Dentist", start))
+    seen = []
+
+    async def confirm(action):
+        seen.append(action)
+        return True
+    approver, results = await _turn({"title": "dentist", "when_iso": _iso(start + 2 * HOUR)}, confirm=confirm)
+    assert seen and seen[0]["preview"].startswith("Move: Dentist — from ")
+    assert [p for _, p in bridge] == [{"source_id": "ek-1", "expected_title": "Dentist",
+                                       "expected_start_ts": start, "when_ts": start + 2 * HOUR,
+                                       "duration_min": None}]
+    assert results[-1].startswith("Moved “Dentist” to ")
+
+
+async def test_a_change_while_the_card_is_open_never_moves_a_different_event(store, bridge):
+    # Audit B1: the card resolved today's standup; by approval it had ended, and a fresh
+    # resolution would have picked tomorrow's. The bound call moves only what was shown.
+    start = _top_of_hour(26)
+    _calendar(store, *[_event("ek-series", "Standup", start + day * 24 * HOUR, 0.5) for day in range(2)])
+
+    async def confirm(action):
+        # While the card is open, the shown occurrence disappears from Calendar.
+        store.sync_source("calendar", [_event("ek-series", "Standup", start + 24 * HOUR, 0.5)])
+        return True
+    approver, results = await _turn({"title": "standup", "when_iso": _iso(start + HOUR)}, confirm=confirm)
+    approver.confirm.assert_awaited_once()
+    assert bridge == [], "tomorrow's occurrence must not move in its place"
+    assert "changed after you confirmed" in results[-1]
+
+
+async def test_a_move_that_cannot_resolve_raises_no_card(store, bridge):
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Standup", start), _event("ek-2", "Standup", start + 24 * HOUR))
+    approver, results = await _turn({"title": "standup", "when_iso": _iso(start + HOUR)},
+                                    confirm=AsyncMock(return_value=True))
+    approver.confirm.assert_not_awaited()
+    assert "Which one?" in results[-1] and bridge == []
+
+
+async def test_a_denied_card_moves_nothing(store, bridge):
+    start = _top_of_hour(26)
+    _calendar(store, _event("ek-1", "Dentist", start))
+    approver, _ = await _turn({"title": "dentist", "when_iso": _iso(start + HOUR)},
+                              confirm=AsyncMock(return_value=False))
+    approver.confirm.assert_awaited_once()
+    assert bridge == []
+
+
+def test_a_title_with_quote_marks_still_reads_as_success():
+    assert classify_tool_outcome("update_event", "Moved “Sam’s “big” day” to Tue Oct 20, 3:00 PM–4:00 PM.").status == "succeeded"

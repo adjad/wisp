@@ -7,21 +7,22 @@ import Foundation
     static func main() {
         let event = CalendarEventFacts(
             title: "Dentist", start: 1_900_000_000, end: 1_900_003_600, isAllDay: false,
-            calendarID: "cal-home", notes: "Bring card", url: "https://example.invalid/visit",
-            location: "Main St", attendees: [], alarms: ["relative:-900.0"], availability: 0)
+            calendarID: "cal-home", timeZone: "America/Los_Angeles", notes: "Bring card",
+            url: "https://example.invalid/visit", location: "Main St", structuredLocation: "Main St|37.0,-122.0",
+            attendees: [], alarms: ["relative:-900.0"], availability: 0)
         func refusal(_ facts: CalendarEventFacts = event, title: String = "Dentist",
                      start: Double = 1_900_000_000, writable: Bool = true,
-                     attendees: Bool = false, organizer: Bool = false) -> String? {
+                     attendees: Bool = false, taken: Bool = false) -> String? {
             CalendarMove.refusal(facts, expectedTitle: title, expectedStart: start,
-                                 calendarWritable: writable, hasAttendees: attendees, organizerIsUser: organizer)
+                                 calendarWritable: writable, hasAttendees: attendees, startTaken: taken)
         }
         precondition(refusal() == nil)
         precondition(refusal(title: "  Dentist ") == nil, "whitespace is how the backend stores titles")
         precondition(refusal(title: "Dentist appt") != nil, "a renamed event is not the one asked about")
         precondition(refusal(start: 1_900_000_060) != nil, "an event that moved since the last read")
         precondition(refusal(writable: false)?.contains("can't be changed") == true)
-        precondition(refusal(attendees: true, organizer: false)?.contains("organizer") == true)
-        precondition(refusal(attendees: true, organizer: true) == nil, "the organizer may move it")
+        precondition(refusal(attendees: true)?.contains("invitees") == true, "a move would update invitees")
+        precondition(refusal(taken: true)?.contains("already starts") == true, "the read-back must be unambiguous")
         var allDay = event; allDay.isAllDay = true
         precondition(refusal(allDay) != nil)
         var noStart = event; noStart.start = .nan
@@ -39,7 +40,9 @@ import Foundation
         precondition(ok["ok"] as? Bool == true && ok["when_ts"] as? Double == newStart && ok["end_ts"] as? Double == newEnd)
         precondition(Set(ok.keys) == ["ok", "when_ts", "end_ts"])
         for (field, change) in [("notes", { (f: inout CalendarEventFacts) in f.notes = "" }),
-                                ("URL", { $0.url = "" }), ("location", { $0.location = "Elm St" }),
+                                ("URL", { $0.url = "<none>" }), ("location", { $0.location = "Elm St" }),
+                                ("time zone", { $0.timeZone = "floating" }),
+                                ("structured location", { $0.structuredLocation = "" }),
                                 ("attendees", { $0.attendees = ["mailto:a@example.invalid"] }),
                                 ("alerts", { $0.alarms = [] }), ("calendar", { $0.calendarID = "cal-work" }),
                                 ("availability", { $0.availability = 1 }), ("title", { $0.title = "Dentist!" })] {

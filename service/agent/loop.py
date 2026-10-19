@@ -1619,9 +1619,34 @@ async def run_agent(
         from service.safety.policy import read_only_shell_argv
         return set(args) == {"cmd"} and read_only_shell_argv(args.get("cmd")) is not None
 
+    # update_event: the exact occurrence each confirmation card showed, by the call's
+    # fingerprint (see bind_event_move). Execution moves only that occurrence.
+    move_bindings: dict[str, dict] = {}
+
+    def bind_event_move(args: dict) -> tuple[dict, str | None, str | None]:
+        """Resolve an update_event call once, before its card: (args, preview, error)."""
+        from service.tools.assistant_tools import prepare_event_move
+        prepared = prepare_event_move(args)
+        if "error" in prepared:
+            return args, None, prepared["error"]
+        move_bindings[_action_fingerprint("update_event", prepared["args"])] = prepared["binding"]
+        return prepared["args"], prepared["preview"], None
+
     async def execute_tool(tool, args):
         nonlocal guarded_meeting
         _exec_state["ran"] = False
+        if tool.name == "update_event":
+            binding = move_bindings.get(_action_fingerprint(tool.name, args))
+            if binding is None:
+                return ("(error: This move was not confirmed against an exact Calendar event. "
+                        "Nothing was moved.)")
+            from service.tools.assistant_tools import bound_event_move
+            with bound_event_move(binding):
+                return await execute_tool_unbound(tool, args)
+        return await execute_tool_unbound(tool, args)
+
+    async def execute_tool_unbound(tool, args):
+        nonlocal guarded_meeting
         if tool.name in {"plan_meeting", "commit_private_meeting"}:
             if public_web_synthesis or not _meeting_local_client(client):
                 return "(error: Private meeting capability transport requires local inference; no action ran.)"
@@ -2377,6 +2402,13 @@ async def run_agent(
         if _tool is None:  # a roster/registry mismatch must not kill the turn
             continue
         _cid = f"direct_{_name}"
+        _move_preview = None
+        if _name == "update_event" and not _tool.unavailable_reason and not test_mode:
+            _args, _move_preview, _problem = bind_event_move(_args)
+            if _problem:
+                await emit({"type": "tool_result", "id": _cid, "result": _problem})
+                failed_tools.add(_name)
+                continue
         _dec = tool_policy(_tool, _args)
         await emit({"type": "tool_call", "id": _cid, "name": _name, "args": _args,
                     "decision": _dec.tier.value, "reason": _dec.reason,
@@ -2398,6 +2430,8 @@ async def run_agent(
             # that normally builds confirmation previews. Preserve the same
             # safety contract here: the card must show the exact reminder set
             # selected by the same helper the tool will execute.
+            if _move_preview:
+                _action["preview"] = _move_preview
             if _name == "clear_reminders":
                 from service.tools.assistant_tools import reminders_matching
                 _scope = str(_args.get("scope", "all"))
@@ -3314,6 +3348,7 @@ async def run_agent(
             return response
         batch_verdict: dict[str, bool] = {}
         batch_calendar_args: dict[str, dict] = {}
+        move_previews: dict[str, str] = {}
         _batch_calls = []
         for tc in tool_calls:
             _batch_name = _clean_tool_name(tc["function"]["name"])
@@ -3449,6 +3484,15 @@ async def run_agent(
                 continue
             if name == "add_calendar_event" and cid not in batch_calendar_args:
                 args["when_iso"] = bind_calendar_local_start(args["when_iso"])
+            if name == "update_event" and get_tool(name) and not get_tool(name).unavailable_reason:
+                # Resolve the move once: a failure is the tool result (no card to
+                # approve); success binds the exact occurrence the card will show.
+                args, move_preview, problem = bind_event_move(args)
+                if problem:
+                    await emit({"type": "tool_result", "id": cid, "result": problem})
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": problem})
+                    continue
+                move_previews[cid] = move_preview
             if name == "get_stock_price" and excluded_stocks:
                 original_symbols = args.get("symbols")
                 args = permitted_stock_args(name, args)
@@ -3773,10 +3817,8 @@ async def run_agent(
                     elif name == "add_calendar_event":
                         action["preview"] = _calendar_create_preview(args)
                     elif name == "update_event":
-                        # The same resolution the tool runs, so the card names the
-                        # exact occurrence and both times the move will use.
-                        from service.tools.assistant_tools import event_move_preview
-                        action["preview"] = event_move_preview(args)
+                        # The occurrence bound above: the one the approved call moves.
+                        action["preview"] = move_previews.get(cid, "")
                     elif name == "commit_private_meeting":
                         from service.tools.schedule_extras import private_meeting_review
                         # Consume the inert reference before validation/await.

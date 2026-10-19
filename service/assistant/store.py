@@ -1465,6 +1465,15 @@ class AssistantStore:
             "ON CONFLICT(commitment_id) DO UPDATE SET version=excluded.version",
             (old["id"], uuid.uuid4().hex))
 
+    def calendar_occurrence_current(self, source_id: str, start_ts: float, title: str) -> bool:
+        """True while the synced Calendar occurrence (identifier + start) is active with
+        this title: the check a confirmed move makes before it runs."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT title FROM commitments WHERE source='calendar' AND status='active' "
+                "AND source_id=? AND when_ts=?", (source_id, start_ts)).fetchone()
+        return row is not None and " ".join(row["title"].split()) == " ".join(str(title).split())
+
     def calendar_move_target(self, query: str, *, now: float | None = None,
                              current_start: float | None = None) -> dict:
         """The synced Calendar occurrence a move refers to, by title and (optionally) its

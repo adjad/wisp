@@ -9,6 +9,8 @@ fed by the app's CalendarReader (EventKit) plus manual additions.
 from __future__ import annotations
 
 import re
+import contextlib
+import contextvars
 import time
 from datetime import date, datetime, timedelta, timezone
 
@@ -877,19 +879,43 @@ def event_move_plan(title: str, when_iso: str, duration_min: int | None = None,
                         "duration_min": duration_min}}
 
 
-def event_move_preview(args: dict) -> str:
-    """The confirmation card line for update_event."""
-    plan = event_move_plan(args.get("title", ""), args.get("when_iso", ""), args.get("duration_min"),
-                           args.get("location", ""), args.get("new_title", ""),
-                           args.get("current_when_iso", ""))
+# The occurrence the user confirmed, set by the agent loop around the approved call
+# (see prepare_event_move). update_event then moves exactly that occurrence and never
+# re-resolves the title, so the card and the write can't name different events.
+_MOVE_BINDING: contextvars.ContextVar[dict | None] = contextvars.ContextVar("event_move_binding", default=None)
+
+
+@contextlib.contextmanager
+def bound_event_move(binding: dict | None):
+    token = _MOVE_BINDING.set(binding)
+    try:
+        yield
+    finally:
+        _MOVE_BINDING.reset(token)
+
+
+def prepare_event_move(args: dict) -> dict:
+    """Resolve an update_event call once, before its confirmation card.
+
+    Returns {"error": text} (no card: the text is the tool result) or {"args": args with
+    the start pinned to this Mac's UTC offset, "binding": the exact occurrence and native
+    payload, "preview": the card line}."""
+    if problem := calendar_time_problem(args.get("when_iso")):
+        return {"error": problem}
+    bound = {**args, "when_iso": bind_calendar_local_start(args["when_iso"])}
+    plan = event_move_plan(bound.get("title", ""), bound["when_iso"], bound.get("duration_min"),
+                           bound.get("location", ""), bound.get("new_title", ""),
+                           bound.get("current_when_iso", ""))
     if "error" in plan:
-        return f"Move: {args.get('title', '?')} — {plan['error']}"
+        return {"error": plan["error"]}
     row = plan["row"]
     old = datetime.fromtimestamp(row["when_ts"])
-    new = (calendar_interval_label(args["when_iso"], plan["length_min"]) if plan["length_min"]
+    new = (calendar_interval_label(bound["when_iso"], plan["length_min"]) if plan["length_min"]
            else datetime.fromtimestamp(plan["when_ts"]).strftime("%a %b %-d, %Y %-I:%M %p"))
     once = " (this occurrence only)" if row["recurring"] else ""
-    return f"Move: {row['title']} — from {old:%a %b %-d %-I:%M %p} to {new}{once}"
+    return {"args": bound,
+            "binding": {"payload": plan["payload"], "title": row["title"], "recurring": row["recurring"]},
+            "preview": f"Move: {row['title']} — from {old:%a %b %-d %-I:%M %p} to {new}{once}"}
 
 
 @register(
@@ -899,7 +925,7 @@ def event_move_preview(args: dict) -> str:
     "same-titled events. Only the time changes: notes, location, attendees, alerts "
     "and calendar are kept, and for a repeating event only that one occurrence moves. "
     "The length stays the same unless `duration_min` is given. Always confirmed. It "
-    "cannot rename an event or change its location.",
+    "cannot rename an event, change its location, or move an event with invitees.",
     {"type": "object",
      "properties": {
          "title": {"type": "string", "description": "the event's current title (any distinctive part)"},
@@ -924,14 +950,26 @@ async def update_event(title: str, when_iso: str, duration_min: int | None = Non
     # A native, verified move of one exact occurrence (CalendarReader.moveEvent): the app
     # checks the event still has this title and start, changes only its start and end,
     # and reads back that nothing else changed. Never cancel + recreate.
-    plan = event_move_plan(title, when_iso, duration_min, location, new_title, current_when_iso)
-    if "error" in plan:
-        return plan["error"]
+    binding = _MOVE_BINDING.get()
+    if binding is not None:
+        # The approved call: move exactly the confirmed occurrence, if it is still there
+        # as the card showed it, to exactly the confirmed start.
+        payload, row = binding["payload"], binding
+        if (calendar_time_problem(when_iso)
+                or abs(_calendar_local_start(when_iso)[0].timestamp() - payload["when_ts"]) >= 1
+                or not assistant_store.calendar_occurrence_current(
+                    payload["source_id"], payload["expected_start_ts"], payload["expected_title"])):
+            return (f"(couldn't move “{binding['title']}”: it changed after you confirmed. "
+                    "Nothing was changed.)")
+    else:
+        plan = event_move_plan(title, when_iso, duration_min, location, new_title, current_when_iso)
+        if "error" in plan:
+            return plan["error"]
+        payload, row = plan["payload"], plan["row"]
     from service.assistant.outbox import app_connected, request as app_request
     if not await app_connected():
         return EVENT_UPDATE_UNAVAILABLE
-    row = plan["row"]
-    result = await app_request("move_calendar_event", plan["payload"])
+    result = await app_request("move_calendar_event", payload)
     if result.get("ok") is not True:
         if result.get("status") == "unknown":
             return (f"(not confirmed: Calendar may have moved “{row['title']}”; check it in "

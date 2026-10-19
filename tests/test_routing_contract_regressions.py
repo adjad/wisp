@@ -1297,23 +1297,15 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(d.tool_argument_bindings, {})
         self.assertIn("cancel_event", d.forbidden_tools)
         claim = "Done — I've rescheduled the team meeting to tomorrow at 3 PM."
-        moved = "Moved “team meeting” to Thu Sep 10, 3:00 PM–4:00 PM."
-        update = AsyncMock(return_value=moved)
-        args = {"title": "team meeting", "when_iso": "2026-09-10T15:00"}
+        update = AsyncMock(side_effect=AssertionError("no move without a tool call"))
         with patch.object(REGISTRY["update_event"], "func", update):
             result, _, approver = await self.run_loop(prompt, [claim] * 4)
-        self.assertNotEqual(result, claim)
         update.assert_not_awaited()
-        # The move itself is always confirmed, and a denial changes nothing.
-        with patch.object(REGISTRY["update_event"], "func", update):
-            result, _, approver = await self.run_loop(prompt, [("update_event", args), claim])
-        approver.confirm.assert_awaited()
-        update.assert_not_awaited()
-        with patch.object(REGISTRY["update_event"], "func", update):
-            result, _, approver = await self.run_loop(prompt, [("update_event", args), "Moved it."],
-                                                      approve=True)
-        update.assert_awaited_once()
-        self.assertEqual(classify_tool_outcome("update_event", moved).status, "succeeded")
+        approver.confirm.assert_not_awaited()
+        # The fabricated claim is withheld; the answer names the missing step.
+        self.assertNotIn("rescheduled", result.lower())
+        self.assertIn("update_event", result)
+        # Approval, binding and execution of a real move: tests/test_event_move.py.
 
     async def test_reschedule_does_not_bind_partially_understood_destinations(self):
         for when in ("October 1 at 3pm", "next week at 3pm", "tomorrow at 3pm UTC",

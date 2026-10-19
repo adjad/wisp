@@ -260,9 +260,11 @@ final class CalendarReader {
 
     // Move one exact occurrence to a new start (CalendarMove has the rules). The event is
     // found by identifier AND its current start, like deleteEvent, and must still carry
-    // the title Wisp saw. Only startDate/endDate change, with span .thisEvent so a
-    // repeating series never moves. The saved event is read back and compared field by
-    // field; anything other than the requested move reads as "unknown", not done.
+    // the title Wisp saw. Events with invitees, and a start another occurrence of the
+    // series already has, are refused. Only startDate/endDate change, with span
+    // .thisEvent so a repeating series never moves. The saved event is read back and
+    // compared field by field; anything other than the requested move reads as
+    // "unknown", not done.
     func moveEvent(identifier: String, expectedTitle: String, expectedStart: Double,
                    newStart: Double, durationMin: Int?) -> [String: Any] {
         guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
@@ -270,10 +272,10 @@ final class CalendarReader {
             return ["ok": false, "error": "That event is no longer at the time Wisp last read; nothing was moved"]
         }
         let before = Self.facts(ev)
-        let organizerIsUser = ev.organizer?.isCurrentUser ?? false
+        let startTaken = abs(newStart - expectedStart) >= 1 && occurrence(identifier, at: newStart) != nil
         if let reason = CalendarMove.refusal(before, expectedTitle: expectedTitle, expectedStart: expectedStart,
                                               calendarWritable: ev.calendar?.allowsContentModifications ?? false,
-                                              hasAttendees: ev.hasAttendees, organizerIsUser: organizerIsUser) {
+                                              hasAttendees: ev.hasAttendees, startTaken: startTaken) {
             return ["ok": false, "error": reason]
         }
         let newEnd = CalendarMove.newEnd(before, newStart: newStart, durationMin: durationMin)
@@ -307,7 +309,12 @@ final class CalendarReader {
             end: ev.endDate?.timeIntervalSince1970 ?? .nan,
             isAllDay: ev.isAllDay,
             calendarID: ev.calendar?.calendarIdentifier ?? "",
-            notes: ev.notes ?? "", url: ev.url?.absoluteString ?? "", location: ev.location ?? "",
+            timeZone: ev.timeZone?.identifier ?? "floating",
+            notes: ev.notes ?? "", url: ev.url?.absoluteString ?? "<none>", location: ev.location ?? "",
+            structuredLocation: ev.structuredLocation.map { place in
+                let geo = place.geoLocation.map { "\($0.coordinate.latitude),\($0.coordinate.longitude)" } ?? ""
+                return (place.title ?? "") + "|" + geo
+            } ?? "",
             attendees: (ev.attendees ?? []).map { $0.url.absoluteString }.sorted(),
             alarms: (ev.alarms ?? []).map { alarm in
                 alarm.absoluteDate.map { "absolute:\($0.timeIntervalSince1970)" } ?? "relative:\(alarm.relativeOffset)"
