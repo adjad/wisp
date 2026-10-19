@@ -376,7 +376,9 @@ struct NotchDayView: View {
                     NotchChrome.small("Add") { addCaught(item) }.disabled(today.busy)
                 }
             case .needsYou, .overdue:
-                NotchChrome.small("Plan time") { planTime(item) }.disabled(today.busy)
+                if let need = need(for: item), !planned(need) {
+                    NotchChrome.small("Plan time") { planTime(item) }.disabled(today.busy)
+                }
             case .calendar, .task:
                 EmptyView()
             }
@@ -452,14 +454,22 @@ struct NotchDayView: View {
     }
 
     /// Plan time for a reminder: it joins the plan as a task the planner fits in.
+    /// The task keeps the reminder's due time as its origin, so an old reminder
+    /// planned today still ages out of the carry-forward (checkin.task_origin).
     private func planTime(_ item: DayItem) {
-        guard let need = need(for: item) else { return }
+        guard let need = need(for: item), !planned(need) else { return }
         let now = today.now.timeIntervalSince1970
         Task {
-            _ = await today.add(title: need.needs_review && need.ownership != "user" ? "Review: " + need.title : need.title,
+            _ = await today.add(title: DayTimeline.plannedTitle(need.title, review: need.needs_review && need.ownership != "user"),
                                 kind: need.task_kind ?? "task", minutes: need.suggested_minutes, priority: need.priority,
-                                due: need.due_ts.flatMap { $0 > now ? Date(timeIntervalSince1970: $0) : nil })
+                                due: need.due_ts.flatMap { $0 > now ? Date(timeIntervalSince1970: $0) : nil },
+                                origin: DayTimeline.planOrigin(due: need.due_ts, now: now))
         }
+    }
+
+    /// The day already has an active task for this need, so Plan time would add it twice.
+    private func planned(_ need: DailyAttentionItem) -> Bool {
+        DayTimeline.alreadyPlanned(need.title, tasks: (plan?.tasks ?? []).map { (title: $0.title, active: $0.status == "active") })
     }
 
     /// Add a plan caught in your texts to your day, at the time the text gave.

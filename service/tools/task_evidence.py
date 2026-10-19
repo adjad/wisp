@@ -108,6 +108,10 @@ def _native_source(source: str, *, now: float, start: float, end: float, query: 
                 "SELECT c.id,c.source,c.source_id,c.title,c.context,c.account,c.when_ts "
                 + sql + " ORDER BY c.when_ts DESC,c.source_id LIMIT 5000", params)]
             view, undated = assistant_store.undated_listing(query) if include_undated else ({}, [])
+            # Overdue reminders the stale policy hides are not evidence of anything.
+            hidden = assistant_store.hidden_commitment_ids(now)
+            total -= sum(row["id"] in hidden for row in rows)
+            rows = [row for row in rows if row["id"] not in hidden]
     current = _native_receipt_current(receipt, now)
     coverage = receipt.get("diagnostics") or {}
     if source == "calendar":

@@ -88,7 +88,12 @@ and tap-only, the way a chief of staff actually works:
   "Done for today" completes it. Decisions are recorded in `~/.moe/checkins.json`
   (60 days), which also answers "how many evenings has this been moved".
 - **Morning.** `carry_forward` moves every still-active task from an earlier day onto
-  today (scheduler tick and the first Today load, idempotent). The brief's Keeping in
+  today (scheduler tick and the first Today load, idempotent), unless it has aged out:
+  a task keeps an `origin_ts` from the first day it was planned (never later than a
+  same-titled reminder's due or creation time), and from seven days on it is left on
+  its last day instead of carried, the same rule the user set for stale reminders. A
+  task whose title matches an undated reminder the stale policy has stopped using is
+  left behind too. Nothing is deleted; `checkins.json` lists what aged out and why. The brief's Keeping in
   mind says "2 tasks carried over from before: …", and Needs you's reason reads
   "Carried over from 2026-10-16."
 - **Weekly goal pulse.** One goal, one tap: On track / Behind / Done, due seven days

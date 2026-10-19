@@ -1929,11 +1929,13 @@ class AssistantStore:
             "VALUES (?,?,?,?,?)",
             [row + (now,) for row in rows])
         if not snapshot.truncated:
-            # A complete read is authoritative: a Keep for a reminder that no longer exists
-            # (completed, given a date, or deleted elsewhere) has nothing left to protect.
+            # A complete read is authoritative: a Keep for a reminder that is gone from both
+            # the undated list and the active dated rows (completed or deleted elsewhere) has
+            # nothing left to protect. A Keep follows its reminder through a reschedule.
             self._db.execute(
                 "DELETE FROM assistant_stale_reminder_decisions WHERE source_id NOT IN "
-                "(SELECT source_id FROM assistant_undated_reminders)")
+                "(SELECT source_id FROM assistant_undated_reminders) AND source_id NOT IN "
+                "(SELECT source_id FROM commitments WHERE source='reminders' AND status='active')")
         self._db.execute(
             "INSERT INTO assistant_undated_state(id,snapshot_started_at,status,total,stored,recorded_at) "
             "VALUES (1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET snapshot_started_at=excluded.snapshot_started_at, "
@@ -1987,14 +1989,117 @@ class AssistantStore:
         now = time.time() if now is None else now
         rows = [r for r in self._undated_rows(now) if r["stale_state"] == "ask"]
         rows.sort(key=lambda r: (r["created_ts"], r["source_id"]))
-        return [{"kind": "stale_reminder", "source_id": r["source_id"], "title": r["title"],
-                 "context": r["context"], "created_ts": r["created_ts"],
-                 "age_days": int((now - r["created_ts"]) // 86400),
+        asks = [{"kind": "stale_reminder", "reason": "undated", "source_id": r["source_id"],
+                 "title": r["title"], "context": r["context"], "created_ts": r["created_ts"],
+                 "due_ts": None, "age_days": int((now - r["created_ts"]) // 86400),
                  "actions": ["keep", "delete"]} for r in rows]
+        overdue = self._overdue_rows(now)
+        once = {r["source_id"] for r in overdue}
+        counts = {sid: sum(r["source_id"] == sid for r in overdue) for sid in once}
+        # ``age_days`` is days overdue for these. A native ID with two active rows is
+        # ambiguous for an exact delete, so it is hidden but never offered.
+        asks += [{"kind": "stale_reminder", "reason": "overdue", "source_id": r["source_id"],
+                  "title": r["title"], "context": r["context"], "created_ts": None,
+                  "due_ts": r["when_ts"], "age_days": int((now - r["when_ts"]) // 86400),
+                  "actions": ["keep", "delete"]}
+                 for r in overdue if r["stale_state"] == "ask" and counts[r["source_id"]] == 1]
+        asks.sort(key=lambda a: (a["created_ts"] if a["reason"] == "undated" else a["due_ts"],
+                                 a["source_id"]))
+        return asks
 
     def stale_reminder_target(self, source_id: str, now: float | None = None) -> dict | None:
-        """The stored row for a Keep/Delete answer, with its policy state, or None."""
-        return next((r for r in self._undated_rows(now) if r["source_id"] == source_id), None)
+        """The stored row for a Keep/Delete answer, with its policy state and ``reason``,
+        or None. An overdue native ID with more than one active row is ambiguous: None."""
+        row = next((r for r in self._undated_rows(now) if r["source_id"] == source_id), None)
+        if row is not None:
+            return {**row, "reason": "undated"}
+        from service.assistant.stale_reminders import classify_overdue
+        now = time.time() if now is None else now
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT c.id,c.source_id,c.title,c.context,c.when_ts,d.decision FROM commitments c "
+                "LEFT JOIN assistant_stale_reminder_decisions d ON d.source_id=c.source_id "
+                "WHERE c.source='reminders' AND c.status='active' AND c.when_ts IS NOT NULL "
+                "AND c.source_id=?", (source_id,)).fetchall()
+        if len(rows) != 1:
+            return None
+        row = dict(rows[0])
+        return {**row, "reason": "overdue",
+                "stale_state": classify_overdue(row["when_ts"], row["decision"], now)}
+
+    def _overdue_rows(self, now: float | None = None) -> list[dict]:
+        """Active DATED Apple reminders at least ASK_AFTER_S overdue, with their policy
+        state. Only Reminders.app items (source 'reminders'); a Wisp-only reminder has its
+        own 14-day rule in the reminder tools."""
+        from service.assistant.stale_reminders import ASK_AFTER_S, classify_overdue
+        now = time.time() if now is None else now
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT c.id,c.source_id,c.title,c.context,c.when_ts,d.decision FROM commitments c "
+                "LEFT JOIN assistant_stale_reminder_decisions d ON d.source_id=c.source_id "
+                "WHERE c.source='reminders' AND c.status='active' AND c.when_ts IS NOT NULL "
+                "AND c.when_ts<=? ORDER BY c.when_ts, c.source_id", (now - ASK_AFTER_S,)).fetchall()
+        return [{**dict(r), "stale_state": classify_overdue(r["when_ts"], r["decision"], now)}
+                for r in rows]
+
+    def hidden_commitment_ids(self, now: float | None = None) -> set[str]:
+        """Commitment rows no reader may use: overdue Apple reminders in the ask or stale
+        state, plus any row describing the same item (a Wisp mirror of it collapses with it
+        in every list, so leaving the twin would bring the reminder straight back)."""
+        from service.assistant.stale_reminders import EXCLUDED_STATES
+        with self._lock:
+            rows = [r for r in self._overdue_rows(now) if r["stale_state"] in EXCLUDED_STATES]
+            hidden = {r["id"] for r in rows}
+            keys = {_dedupe_key(r) for r in rows} - {None}
+            if not keys:
+                return hidden
+            # One query for every twin, not one per hidden row. A twin is a non-native row
+            # (a Wisp mirror, a same-minute event) that collapses with a hidden reminder.
+            # Another Apple reminder is never a twin: it has its own question and its own
+            # Keep, and must not disappear because a same-titled one was left unanswered.
+            lo = min(k[1] for k in keys) * 60.0
+            hi = (max(k[1] for k in keys) + 1) * 60.0
+            for twin in self._db.execute(
+                    "SELECT id,title,when_ts FROM commitments WHERE status='active' "
+                    "AND source<>'reminders' AND when_ts>=? AND when_ts<?", (lo, hi)).fetchall():
+                if _dedupe_key(dict(twin)) in keys:
+                    hidden.add(twin["id"])
+        return hidden
+
+    def _hide_stale(self, items: list[dict], now: float | None) -> list[dict]:
+        """Drop collapsed items the stale policy hides (the item or any of its twins)."""
+        hidden = self.hidden_commitment_ids(now)
+        if not hidden:
+            return items
+
+        def shown(c: dict) -> bool:
+            members = [(c["id"], c.get("source"))] + list(zip(
+                c.get("duplicate_ids") or (), c.get("duplicate_sources") or ()))
+            # A group stays while any Apple reminder in it is still shown (one the user
+            # kept, say), so it never vanishes because a same-titled one went unanswered.
+            if any(src == "reminders" and mid not in hidden for mid, src in members):
+                return True
+            return not any(mid in hidden for mid, _ in members)
+        return [c for c in items if shown(c)]
+
+    def hidden_reminders(self, now: float | None = None) -> list[dict]:
+        """Every Apple reminder the stale policy currently hides, undated and overdue alike:
+        [{source_id, title, reason: "undated"|"overdue", stale_state: "ask"|"stale"}].
+        For features that carry reminders forward on their own (the evening check-in), so
+        they can drop the same items every other reader already leaves out."""
+        from service.assistant.stale_reminders import EXCLUDED_STATES
+        out = [{"source_id": r["source_id"], "title": r["title"], "reason": "undated",
+                "stale_state": r["stale_state"]}
+               for r in self._undated_rows(now) if r["stale_state"] in EXCLUDED_STATES]
+        out += [{"source_id": r["source_id"], "title": r["title"], "reason": "overdue",
+                 "stale_state": r["stale_state"]}
+                for r in self._overdue_rows(now) if r["stale_state"] in EXCLUDED_STATES]
+        return out
+
+    def hidden_reminder_titles(self, now: float | None = None) -> set[str]:
+        """``hidden_reminders`` titles, whitespace-collapsed and casefolded: the form to
+        compare a carried-forward task title against."""
+        return {" ".join(r["title"].split()).casefold() for r in self.hidden_reminders(now)}
 
     def keep_stale_reminder(self, source_id: str, title: str) -> None:
         with self._write_transaction():
@@ -2233,10 +2338,10 @@ class AssistantStore:
             "SELECT * FROM commitments WHERE status='active' AND created_at >= ?"
             + _seed_clause() +
             " ORDER BY created_at DESC LIMIT ?", (since_ts, limit)).fetchall()
-        return self._collapse([dict(r) for r in rows])
+        return self._hide_stale(self._collapse([dict(r) for r in rows]), None)
 
     def active_between(self, start_ts: float | None = None,
-                       end_ts: float | None = None) -> list[dict]:
+                       end_ts: float | None = None, *, include_stale: bool = False) -> list[dict]:
         """Active commitments in an optional half-open time range.
 
         Bulk reminder operations need local calendar-day boundaries and a
@@ -2255,9 +2360,15 @@ class AssistantStore:
         rows = self._db.execute(
             "SELECT * FROM commitments WHERE " + " AND ".join(where)
             + _seed_clause() + " ORDER BY when_ts ASC", params).fetchall()
-        return self._collapse([dict(r) for r in rows])
+        items = self._collapse([dict(r) for r in rows])
+        # ``include_stale`` is only for an explicit, confirmed removal the user asked for
+        # (clearing or cancelling reminders), or for read-only aging
+        # (checkin.reminder_index): hiding an item must not stop deleting it, or stop a
+        # task made from it from aging.
+        return items if include_stale else self._hide_stale(items, None)
 
-    def history(self, now: float | None = None, days: int = 365) -> list[dict]:
+    def history(self, now: float | None = None, days: int = 365, *,
+                include_stale: bool = False) -> list[dict]:
         """Past active commitments — the mirror of `upcoming`, most-recent
         first. Safe to widen: `due_reminders` only ever reads `active_future`
         (when_ts >= now), so past rows synced in here can never trigger a
@@ -2267,7 +2378,8 @@ class AssistantStore:
             "SELECT * FROM commitments WHERE status='active' AND when_ts < ? AND when_ts >= ?"
             + _seed_clause() +
             " ORDER BY when_ts DESC", (now - 300, now - days * 86400)).fetchall()
-        return self._collapse([dict(r) for r in rows])
+        items = self._collapse([dict(r) for r in rows])
+        return items if include_stale else self._hide_stale(items, now)
 
     def reminder_snapshot(self, now: float | None = None, horizon_days: int = 30) -> list[dict]:
         """Capture payload inputs, twin schedules and revisions in one SELECT.

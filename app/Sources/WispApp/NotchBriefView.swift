@@ -250,8 +250,12 @@ struct BriefContent {
         func coverage(_ source: String) -> DailySourceCoverage? {
             plan.workspace?.source_coverage.first { $0.source == source }
         }
-        let mailNeeds = needs.filter { $0.source == "email" }.map(\.title)
-        let textNeeds = needs.filter { $0.source == "messages" }.map(\.title)
+        func need(_ item: DailyAttentionItem) -> BriefNeed {
+            BriefNeed(title: item.title, sender: item.sender ?? "", gist: item.gist ?? "", person: item.person ?? false,
+                      received: item.received_ts, replied: item.replied ?? false)
+        }
+        let mailNeeds = needs.filter { $0.source == "email" }.map(need)
+        let textNeeds = needs.filter { $0.source == "messages" }.map(need)
         let upcoming = UpcomingItem.parseList(today.upcomingReply).map {
             UpcomingItem.soon($0, after: reference, dayEnd: dayEnd)
         }
@@ -282,10 +286,9 @@ struct BriefContent {
         let calendarDetail = BriefDetail.calendar(allDay: allDay, events: events, unsynced: !calendarKnown, clock: today.clock)
         details = [
             "CAL": calendarDetail,
-            "MAIL": BriefDetail.mail(needing: mailNeeds, summary: composed?.lines(.mail) ?? [],
-                                     ready: coverage("email")?.ready == true),
-            "TEXTS": BriefDetail.texts(needing: textNeeds, summary: composed?.lines(.messages) ?? [],
-                                       ready: coverage("messages")?.ready == true),
+            "MAIL": BriefDetail.mail(needing: mailNeeds, ready: coverage("email")?.ready == true),
+            "TEXTS": BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
+                                       when: { $0 >= dayStart ? today.clock($0) : NotchChrome.dayClock($0, zone: zone) }),
             "SOON": BriefDetail.soon(upcoming.flatMap { $0.isEmpty && !weekRead ? nil : $0 }, when: when),
         ]
 

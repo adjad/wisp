@@ -127,6 +127,131 @@ def test_carry_forward_moves_only_active_earlier_tasks_once(store):
     assert old["id"] == moved[0]["id"]
 
 
+def _reminders(store, *items, undated=()):
+    """One native Reminders read: dated items as commitments, undated as a snapshot."""
+    from service.assistant.store import parse_undated_snapshot
+    snapshot = parse_undated_snapshot(list(undated), len(undated)) if undated else None
+    store.sync_source("reminders", [{"source_id": sid, "kind": "reminder", "title": title,
+                                     "context": "Reminders", "when_ts": when} for sid, title, when in items],
+                      diagnostics={"authorized": True, "count": len(items), "snapshot_started_at": 1000.0},
+                      undated=snapshot)
+
+
+def test_carry_forward_leaves_behind_a_task_from_a_two_week_old_reminder(store):
+    """The user's case (build 1998): "Get doordash order" is a Reminders item due
+    Oct 2. On Oct 18 the Day tab's Plan time made it a fresh undated Wisp task,
+    so the next morning the carry-forward used to move it onto Oct 19 as if it
+    were new. It is sixteen days old and must not ride along."""
+    due = 1790990100.0                                           # 2026-10-02, the reminder's due time
+    _reminders(store, ("E4EFB131-DF70-4000-9778-CC70E0C425B4", "Get doordash order", due))
+    stale = task(store, "Get doordash order", "2026-10-18", priority=1, duration_minutes=25)
+    fresh = task(store, "Call the bank", "2026-10-18")
+    now = at("2026-10-19", 8)
+    moved = C.carry_forward(store, "2026-10-19", ZONE, now=now)
+    assert [t["title"] for t in moved] == ["Call the bank"]
+    assert moved[0]["origin_ts"] == at("2026-10-18", 0) and moved[0]["carried_from"] == "2026-10-18"
+    left = store.today_task(stale["id"])
+    assert left["day"] == "2026-10-18" and left["status"] == "active", "left where it was, not deleted"
+    assert fresh["id"] == moved[0]["id"]
+    aged = C.aged_out_today("2026-10-19")
+    # The reminder is a week past due and unkept, so the stale policy hides it: the
+    # task is left behind for that reason, aged from the reminder's due time.
+    assert [(a["title"], a["reason"], a["age_days"]) for a in aged] == [("Get doordash order", "stale_reminder", 16)]
+    assert [t["title"] for t in store.today_snapshot("2026-10-19", ZONE)["tasks"]] == ["Call the bank"]
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now) == [], "idempotent"
+    assert len(C.aged_out_today("2026-10-19")) == 1
+
+
+def test_plan_time_task_keeps_the_reminder_due_time_as_its_origin(store, monkeypatch):
+    """The Day tab's Plan time on the overdue "Get doordash order" posts origin_ts =
+    the reminder's due time (NotchDayView.planTime, DayTimeline.planOrigin). Even
+    when no same-titled reminder is left to match (renamed, or planned as
+    "Review: …"), the task is sixteen days old on day one and is not carried."""
+    from service.assistant import today_api
+    monkeypatch.setattr(today_api, "assistant_store", store)
+    app = FastAPI()
+    app.include_router(today_api.router)
+    api = TestClient(app)
+    due = 1790990100.0                                           # 2026-10-02
+    body = {"title": "Get doordash order", "day": "2026-10-18", "timezone": ZONE, "kind": "task",
+            "duration_minutes": 25, "priority": 1}
+    made = api.post("/assistant/today/tasks", json=body | {"origin_ts": due})
+    assert made.status_code == 201 and made.json()["origin_ts"] == due
+    plain = api.post("/assistant/today/tasks", json=body | {"title": "Call the bank"})
+    assert plain.status_code == 201 and plain.json().get("origin_ts") is None
+    assert api.post("/assistant/today/tasks", json=body | {"origin_ts": -5.0}).status_code >= 400
+    assert api.post("/assistant/today/tasks", json=body | {"origin_ts": "yesterday"}).status_code == 422
+    # origin_ts is the one new field: anything else unknown is still refused.
+    for extra in ({"source_id": "E4EFB131"}, {"carried_from": "2026-10-02"}, {"revision": 7}, {"origin": due}):
+        assert api.post("/assistant/today/tasks", json=body | {"origin_ts": due} | extra).status_code == 422, extra
+    moved = C.carry_forward(store, "2026-10-19", ZONE, now=at("2026-10-19", 8))
+    assert [t["title"] for t in moved] == ["Call the bank"]
+    assert [(a["title"], a["age_days"]) for a in C.aged_out_today("2026-10-19")] == [("Get doordash order", 16)]
+
+
+def test_carry_forward_stops_after_a_week_even_when_the_task_kept_moving(store):
+    """"Work on Zybook" was planned on Sept 26 and carried every single morning
+    until the user dropped it on Oct 17. The age counts from the first day it
+    was planned, not from the last day it was moved to."""
+    zybook = task(store, "Work on Zybook", "2026-10-16", carried_from="2026-09-26")
+    recent = task(store, "Read the paper", "2026-10-12")
+    moved = C.carry_forward(store, "2026-10-17", ZONE, now=at("2026-10-17", 8))
+    assert [t["title"] for t in moved] == ["Read the paper"], "five days old still carries; three weeks does not"
+    assert moved[0]["origin_ts"] == at("2026-10-12", 0)
+    assert store.today_task(zybook["id"])["day"] == "2026-10-16"
+    assert [a["title"] for a in C.aged_out_today("2026-10-17")] == ["Work on Zybook"]
+    # Three days later the paper is eight days old by origin, although its `day` is Oct 17.
+    assert C.carry_forward(store, "2026-10-20", ZONE, now=at("2026-10-20", 8)) == []
+    # Zybook is still sitting on Oct 16, so it is noted again; nothing is ever deleted for the user.
+    assert sorted(a["title"] for a in C.aged_out_today("2026-10-20")) == ["Read the paper", "Work on Zybook"]
+    # The evening tap "Tomorrow" is explicit and still honoured, and keeps the origin.
+    saved = C.decide_task(store, moved[0]["id"], "tomorrow", day="2026-10-20", timezone=ZONE, now=at("2026-10-20", 18))
+    assert saved["day"] == "2026-10-21" and saved["origin_ts"] == at("2026-10-12", 0)
+
+
+def test_carry_forward_skips_titles_the_stale_reminder_policy_excludes(store):
+    now = at("2026-10-19", 8)
+    _reminders(store, undated=[
+        {"source_id": "u-ask", "title": "Clean the garage", "context": "Reminders", "created_ts": now - 8 * 86400},
+        {"source_id": "u-kept", "title": "Renew passport", "context": "Reminders", "created_ts": now - 20 * 86400},
+        {"source_id": "u-fresh", "title": "Buy stamps", "context": "Reminders", "created_ts": now - 2 * 86400},
+    ])
+    store.keep_stale_reminder("u-kept", "Renew passport")
+    task(store, "Clean the garage", "2026-10-18")
+    task(store, "Renew passport", "2026-10-18")
+    task(store, "buy  stamps", "2026-10-18")                    # title match ignores case and spacing
+    moved = C.carry_forward(store, "2026-10-19", ZONE, now=now)
+    assert sorted(t["title"] for t in moved) == ["Renew passport", "buy  stamps"]
+    assert moved[1]["origin_ts"] == now - 2 * 86400 or moved[0]["origin_ts"] == now - 2 * 86400, \
+        "a fresh reminder's creation time becomes the task's origin"
+    assert [(a["title"], a["reason"]) for a in C.aged_out_today("2026-10-19")] == [("Clean the garage", "stale_reminder")]
+
+
+def test_carry_forward_honours_the_store_hidden_reminder_set(store):
+    """Once the store knows which reminders are hidden (undated or overdue
+    dated, #286), carry-forward asks it rather than re-deriving the rule."""
+    class Store(type(store)):
+        def hidden_reminder_titles(self, now=None):
+            return {"pay the parking ticket"}
+    store.__class__ = Store
+    task(store, "Pay the  Parking ticket", "2026-10-18")
+    task(store, "Water the plants", "2026-10-18")
+    moved = C.carry_forward(store, "2026-10-19", ZONE, now=at("2026-10-19", 8))
+    assert [t["title"] for t in moved] == ["Water the plants"]
+    assert [(a["title"], a["reason"]) for a in C.aged_out_today("2026-10-19")] == [("Pay the  Parking ticket", "stale_reminder")]
+
+
+def test_origin_ts_is_validated():
+    from service.assistant.today import validate_task
+    base = {"title": "x", "day": "2026-10-18", "timezone": ZONE, "kind": "task", "duration_minutes": 30,
+            "priority": 2, "status": "active", "id": "a", "revision": 1}
+    assert validate_task({**base, "origin_ts": None})["origin_ts"] is None
+    assert validate_task({**base, "origin_ts": 1790990100.0})["origin_ts"] == 1790990100.0
+    for bad in ("soon", True, -1, 0):
+        with pytest.raises(ValueError):
+            validate_task({**base, "origin_ts": bad})
+
+
 def test_workspace_explains_a_carried_task(store):
     from service.assistant import daily_workspace as D
     today = "2026-10-17"

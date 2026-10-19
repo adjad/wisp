@@ -20,6 +20,11 @@ class CreateTask(BaseModel):
     priority: StrictInt = Field(default=2, ge=1, le=3)
     due_ts: float | None = Field(default=None, strict=True, allow_inf_nan=False)
     pinned_start: float | None = Field(default=None, strict=True, allow_inf_nan=False)
+    # When the thing this task came from first mattered: a reminder's due time
+    # once it has passed. The morning carry-forward ages the task from here
+    # (checkin.task_origin), so a task made from a two-week-old reminder is not
+    # carried as if it were new. Range-checked by today.validate_task.
+    origin_ts: float | None = Field(default=None, strict=True, allow_inf_nan=False)
 
 
 class EditTask(BaseModel):
@@ -74,6 +79,14 @@ def snapshot(day, timezone, *, debug=False):
             # The original revisioned planner remains usable when an optional
             # source or private workspace settings are unavailable.
             result["workspace_error"] = "Daily source evidence could not be refreshed; your saved day plan is shown."
+        if "workspace" in result:
+            try:
+                # One-line gists of important emails for the Brief's MAIL row,
+                # when the background writer has made them. Never fatal.
+                from service.assistant import mail_gists
+                mail_gists.attach(result["workspace"])
+            except Exception:  # noqa: BLE001
+                pass
         if debug:
             # Returned only on explicit opt-in; never journaled. Fixed clock and
             # exact inputs make a replay independent of current state/sources.

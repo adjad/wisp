@@ -9,6 +9,9 @@ what did not, and keeps the goal in view. None of it needs typing.
     existing draft-and-confirm path decides what is sent.
   * Morning (`carry_forward`): anything still active from an earlier day moves
     onto today, marked `carried_from`, and the brief says how many came over.
+    Not forever: a task that first entered a plan a week ago (or came from a
+    reminder that old) is left behind instead, the same rule the user set for
+    stale reminders, so nothing rides along unexamined for weeks.
   * Weekly (`goal_pulse`): one goal, one tap: On track, Behind or Done. Behind
     makes it the goal the brief leads with; Done retires it from the rotation.
 
@@ -26,6 +29,7 @@ import threading
 import time
 from zoneinfo import ZoneInfo
 
+from service.assistant.stale_reminders import ASK_AFTER_S, DAY_S, EXCLUDED_STATES, valid_created_ts
 from service.paths import MOE_DIR
 
 STATE_PATH = MOE_DIR / "checkins.json"
@@ -108,7 +112,7 @@ def is_due(now: float, timezone: str, *, hour: int = CHECKIN_HOUR) -> bool:
 
 def _task_row(task: dict) -> dict:
     return {k: task.get(k) for k in ("id", "title", "status", "revision", "kind", "duration_minutes",
-                                      "priority", "due_ts", "day", "carried_from")}
+                                      "priority", "due_ts", "day", "carried_from", "origin_ts")}
 
 
 def _event_rows(store, day: str, timezone: str) -> list[dict]:
@@ -169,6 +173,7 @@ def decide_task(store, task_id: str, decision: str, *, day: str, timezone: str, 
         values["timezone"] = timezone
         values["pinned_start"] = None               # a pin belongs to the day it was made on
         values["carried_from"] = task.get("carried_from") or task.get("day") or day
+        values["origin_ts"] = task_origin(task, timezone)
         due = task.get("due_ts")
         if due is not None and due < lo:
             values["due_ts"] = None                 # a deadline already missed is not tomorrow's
@@ -210,16 +215,108 @@ def times_moved(title: str, *, before_day: str, days: int = 14) -> int:
 # Morning
 
 
+CARRY_MAX_AGE_S = ASK_AFTER_S   # the user's rule for reminders, applied to carried tasks too
+
+
+def task_origin(task: dict, timezone: str, reminder_origin: float | None = None) -> float:
+    """When this task first entered a plan: its recorded origin, else the start
+    of the first day it was planned for, and never later than the reminder it
+    came from (matched by title), so a task made from a two-week-old reminder
+    is two weeks old on day one."""
+    from service.assistant.today import day_bounds
+    candidates = []
+    recorded = task.get("origin_ts")
+    if type(recorded) in (int, float) and recorded > 0:
+        candidates.append(float(recorded))
+    try:
+        candidates.append(day_bounds(task.get("carried_from") or task["day"], timezone)[0])
+    except (ValueError, TypeError, KeyError):
+        pass
+    if reminder_origin is not None:
+        candidates.append(float(reminder_origin))
+    return min(candidates) if candidates else float("inf")
+
+
+def _title_key(title: object) -> str:
+    return " ".join(str(title or "").split()).casefold()
+
+
+def reminder_index(store, now: float) -> dict[str, dict]:
+    """Reminders by normalised title: the earliest time each one became due or
+    was created, and whether the stale-reminder policy now excludes it
+    (service/assistant/stale_reminders.py).
+
+    Exclusion comes from the store's ``hidden_reminder_titles`` when it has one
+    (undated and overdue dated reminders alike, normalised the same way as
+    here); until then, from the undated rows' own stale state."""
+    index: dict[str, dict] = {}
+
+    def note(title, origin, excluded):
+        key = _title_key(title)
+        if not key:
+            return
+        entry = index.setdefault(key, {"origin": None, "excluded": False})
+        if origin is not None and (entry["origin"] is None or origin < entry["origin"]):
+            entry["origin"] = float(origin)
+        entry["excluded"] = entry["excluded"] or bool(excluded)
+
+    try:
+        # Aging a task against its reminder, not showing the reminder: a reminder the
+        # stale policy hides still supplies its due time, so its age reads true.
+        for c in store.active_between(None, now, include_stale=True):  # dated, already due
+            if c.get("source") in ("reminders", "manual") and c.get("kind") == "reminder":
+                note(c.get("title"), c.get("when_ts"), False)
+    except Exception:  # noqa: BLE001 — carry-forward must never fail on a read
+        pass
+    hidden = getattr(store, "hidden_reminder_titles", None)
+    if callable(hidden):
+        try:
+            for title in hidden(now):
+                note(title, None, True)
+        except Exception:  # noqa: BLE001
+            pass
+    rows = getattr(store, "_undated_rows", None)
+    if callable(rows):
+        try:
+            for r in rows(now):
+                state = r.get("stale_state")
+                # A reminder the user chose to keep is wanted at any age, so it
+                # does not age a task of the same name.
+                note(r.get("title"), None if state == "kept" else valid_created_ts(r.get("created_ts")),
+                     state in EXCLUDED_STATES)
+        except Exception:  # noqa: BLE001
+            pass
+    return index
+
+
 def carry_forward(store, day: str, timezone: str, *, now: float) -> list[dict]:
-    """Move every still-active task from an earlier day onto `day`.
+    """Move every still-active task from an earlier day onto `day`, unless it
+    has aged out.
+
+    A task is left where it is, and so drops out of today's plan, when it
+    first entered a plan a week or more ago (counting a source reminder's due
+    or creation time, matched by title), or when its title matches an undated
+    reminder the stale policy has stopped using. Nothing is deleted; the task
+    stays on its last day, and the day record lists what aged out.
 
     Idempotent: once moved, nothing earlier is active, so a second call (the
     scheduler and the Today tab both ask) moves nothing and the recorded list
     for the day is unchanged."""
-    moved = []
+    moved, aged = [], []
+    index = None
     for task in store.today_active_tasks_before(day):
+        if index is None:
+            index = reminder_index(store, now)
+        match = index.get(_title_key(task.get("title")))
+        origin = task_origin(task, timezone, match["origin"] if match else None)
+        if match and match["excluded"]:
+            aged.append((task, "stale_reminder", origin))
+            continue
+        if now - origin >= CARRY_MAX_AGE_S:
+            aged.append((task, "aged_out", origin))
+            continue
         values = {"day": day, "timezone": timezone, "pinned_start": None,
-                  "carried_from": task.get("carried_from") or task["day"]}
+                  "carried_from": task.get("carried_from") or task["day"], "origin_ts": origin}
         due = task.get("due_ts")
         if due is not None and due < now:
             values["due_ts"] = None
@@ -227,16 +324,27 @@ def carry_forward(store, day: str, timezone: str, *, now: float) -> list[dict]:
             moved.append(store.today_save_task(values, task_id=task["id"], revision=task["revision"]))
         except (ValueError, KeyError):
             continue  # changed under us or no longer valid; the next morning gets it
-    if moved:
+    if moved or aged:
         def record(day_state: dict) -> None:
             known = {c["id"] for c in day_state.get("carried", [])}
             for task in moved:
                 if task["id"] not in known:
                     day_state.setdefault("carried", []).append(
                         {"id": task["id"], "title": task["title"], "from": task.get("carried_from")})
+            known = {c["id"] for c in day_state.get("aged_out", [])}
+            for task, reason, origin in aged:
+                if task["id"] not in known:
+                    day_state.setdefault("aged_out", []).append(
+                        {"id": task["id"], "title": task["title"], "from": task.get("carried_from") or task["day"],
+                         "reason": reason, "age_days": int(max(0.0, now - origin) // DAY_S)})
             day_state["carried_at"] = now
         _update_day(day, record)
     return moved
+
+
+def aged_out_today(day: str) -> list[dict]:
+    """Tasks the morning carry-forward left behind for `day`, with why."""
+    return list(day_record(day).get("aged_out") or [])
 
 
 def carried_today(day: str) -> list[dict]:

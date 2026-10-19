@@ -425,8 +425,8 @@ struct DayTimeline: Equatable {
     /// Always four rows, CAL, MAIL, TEXTS and SOON, so the Brief keeps its shape.
     /// A source Wisp can't read yet shows a dim row saying so instead of disappearing.
     static func briefLines(calendar: DayLoad?, calendarUnsynced: Bool = false,
-                           mail: (ready: Bool, needing: [String])?,
-                           texts: (ready: Bool, needing: [String])?,
+                           mail: (ready: Bool, needing: [BriefNeed])?,
+                           texts: (ready: Bool, needing: [BriefNeed])?,
                            soon: Soon) -> [BriefLine] {
         var lines: [BriefLine] = []
         if let calendar {
@@ -437,21 +437,21 @@ struct DayTimeline: Equatable {
         }
         // No coverage entry means the workspace couldn't be read: unknown, not off.
         if let mail, mail.ready {
-            let needing = mailNeedingYou(mail.needing)
-            let promos = mail.needing.filter { !isJunk($0) && isBulkMail($0) }.count
-            let text = needing.isEmpty ? "Nothing needs a reply"
-                : needing.count == 1 ? needing[0] : "\(needing.count) emails need you"
-            // Say when promos were left out, so a hidden email is never silent.
-            lines.append(BriefLine(tag: "MAIL", text: text, trailing: promos > 0 ? "+\(promos) promo\(promos == 1 ? "" : "s")" : "",
-                                   source: .mail))
+            // What the top email is about, not how many there are.
+            let needing = BriefMail.important(mail.needing)
+            let promos = BriefMail.bulkCount(mail.needing)
+            let text = needing.first.map(BriefMail.describe) ?? "Nothing needs a reply"
+            // Say when more mail or promos were left out, so a hidden email is never silent.
+            let trailing = needing.count > 1 ? "+\(needing.count - 1) more"
+                : promos > 0 ? "+\(promos) promo\(promos == 1 ? "" : "s")" : ""
+            lines.append(BriefLine(tag: "MAIL", text: text, trailing: trailing, source: .mail))
         } else {
             lines.append(BriefLine(tag: "MAIL", text: "Mail hasn't been checked yet", trailing: "", source: .mail, muted: true))
         }
         if let texts, texts.ready {
-            let needing = texts.needing.filter { !isJunk($0) }
-            let text = needing.isEmpty ? "No texts need you"
-                : needing.count == 1 ? needing[0] : "\(needing.count) texts need you"
-            lines.append(BriefLine(tag: "TEXTS", text: text, trailing: "", source: .messages))
+            // Who is waiting on you, never what they wrote.
+            lines.append(BriefLine(tag: "TEXTS", text: BriefTexts.row(BriefTexts.waiting(texts.needing)), trailing: "",
+                                   source: .messages))
         } else {
             lines.append(BriefLine(tag: "TEXTS", text: "Messages haven't been checked yet", trailing: "", source: .messages, muted: true))
         }
@@ -464,6 +464,28 @@ struct DayTimeline: Equatable {
             lines.append(BriefLine(tag: "SOON", text: "The week ahead hasn't loaded yet", trailing: "", source: .reminders, muted: true))
         }
         return lines
+    }
+
+    /// The task Plan time makes from a need: "Review: …" for mail and texts.
+    static func plannedTitle(_ title: String, review: Bool) -> String {
+        review ? "Review: " + title : title
+    }
+
+    /// When a task made from a reminder first mattered: the reminder's due time
+    /// once it has passed. A reminder due two weeks ago makes a task two weeks
+    /// old on its first day, so the morning carry-forward leaves it behind
+    /// instead of carrying it as new. Nil for one not yet due or undated.
+    static func planOrigin(due: Double?, now: Double) -> Double? {
+        guard let due, due.isFinite, due > 0, due <= now else { return nil }
+        return due
+    }
+
+    /// Whether the day already has an active task for this need (its title, or
+    /// "Review: " and its title), so a second Plan time can't add a duplicate.
+    static func alreadyPlanned(_ title: String, tasks: [(title: String, active: Bool)]) -> Bool {
+        let key = { (s: String) in s.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased() }
+        let wanted: Set<String> = [key(title), key(plannedTitle(title, review: true))]
+        return tasks.contains { $0.active && wanted.contains(key($0.title)) }
     }
 
     /// Mail worth the MAIL row's count: no placeholders, newsletters or promos.
