@@ -161,7 +161,8 @@ struct NotchDayView: View {
         let dayStart = bounds.start.timeIntervalSince1970
         let blocks = plan.displayBlocks.map {
             DayBlockInput(id: $0.id, title: $0.title, start: $0.start, end: $0.end, kind: $0.kind,
-                          taskID: $0.task_id, patternID: $0.pattern_id, evidenceID: $0.evidence_id)
+                          taskID: $0.task_id, patternID: $0.pattern_id, evidenceID: $0.evidence_id,
+                          members: ($0.members ?? []).map { DayMember(title: $0.title, evidenceID: $0.evidence_id) })
         }
         let caught = attention.items.filter { !ignoredCaught.contains($0.source_id) }.map {
             DayCaughtInput(id: $0.source_id, title: $0.title ?? "", when: $0.event_ts ?? $0.due_ts, state: $0.state)
@@ -254,7 +255,9 @@ struct NotchDayView: View {
     private func positioned(_ item: DayItem, _ timeline: DayTimeline, width: CGFloat) -> some View {
         let column: CGFloat = (width - 10) / CGFloat(item.columns)
         let top: CGFloat = y(item.start, timeline)
-        let tall: CGFloat = max(22, y(item.end, timeline) - top - 3)
+        // The same shortest size DayTimeline.arrange lays blocks out by, less the gap.
+        let shortest = CGFloat(DayTimeline.minimumDrawn / DayTimeline.hour) * hourHeight
+        let tall: CGFloat = max(shortest, y(item.end, timeline) - top - 3)
         let wide: CGFloat = max(40, column - 4)
         let left: CGFloat = 8 + CGFloat(item.column) * column
         return blockView(item, compact: tall < 32).frame(width: wide, height: tall).offset(x: left, y: top)
@@ -326,6 +329,7 @@ struct NotchDayView: View {
         .opacity(item.past ? 0.45 : 1)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(item.title), \(detail(item)), \(today.clock(item.start)) to \(today.clock(item.end))"
+                            + (item.members.count > 1 ? ", covers " + item.members.map(\.title).joined(separator: "; ") : "")
                             + (item.past ? ", already over" : ""))
     }
 
@@ -372,6 +376,18 @@ struct NotchDayView: View {
                 ForEach([(30, "Keep 30 minutes later"), (60, "Keep 1 hour later"), (120, "Keep 2 hours later")]
                     .filter { item.end + Double($0.0 * 60) <= today.dayInterval.end.timeIntervalSince1970 }, id: \.0) { later in
                     Button(later.1) { keep(item, laterBy: later.0) }
+                }
+                // A grouped review: what it covers, each one askable on its own.
+                if item.members.count > 1 {
+                    Section("In this block") {
+                        ForEach(Array(item.members.enumerated()), id: \.offset) { _, member in
+                            Button(member.title) {
+                                let reference = plan?.workspace?.attention.first { $0.id == member.evidenceID }?.reference ?? ""
+                                model.askAbout(member.title, reference: reference)
+                            }
+                            .help("Ask Wisp about this one")
+                        }
+                    }
                 }
             case .task:
                 if let task = task(for: item) {

@@ -280,7 +280,7 @@ def _people_mail(rows: list[dict]):
         if _PRIVATE.search(_bare(subject)):
             private += 1
             continue
-        if _bulk(row):
+        if is_mass_mail(row):
             bulk[sender] = bulk.get(sender, 0) + 1
             continue
         rank = 2 if _CHANGE.search(subject) else 1 if _EVENT.search(subject) else 0
@@ -291,10 +291,14 @@ def _people_mail(rows: list[dict]):
     return list(picked.values()), bulk, private
 
 
-def _bulk(row: dict) -> bool:
+def is_mass_mail(row: dict) -> bool:
     """Newsletters, promos, alerts and other mass mail: counted, not described.
     A calendar change from an automated sender (a cancellation, an invitation)
-    is described; mass mail never is, whatever its subject says."""
+    is described; mass mail never is, whatever its subject says.
+
+    The one "this isn't a person needing you" rule: the inbox summary counts
+    these instead of describing them, and the Day never turns one into a
+    review block or hands it to the behavior pass as possible work."""
     from service.tools.email_tools import digest_category, is_broadcast, is_machine_sender
     if is_broadcast(row):
         return True
