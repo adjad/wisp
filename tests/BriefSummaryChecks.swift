@@ -74,18 +74,30 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
     check(BriefDetail.calendar(allDay: [], events: [], unsynced: true, clock: { _ in "" }).lines.first?.muted == true,
           "unsynced calendar details are dim")
     let inbox = [BriefNeed(title: "Can you review my draft?", sender: "Jordan", person: true, received: now - 2 * hour),
-                 BriefNeed(title: "Thesis meeting", sender: "Prof. Lee", gist: "Prof. Lee moved your thesis meeting to Tuesday",
-                           person: true, received: now - hour),
+                 BriefNeed(title: "Thesis meeting", sender: "Prof. Lee", person: true, received: now - hour),
                  BriefNeed(title: "Tech Week starts today", sender: "UCSC Events", received: now),
                  BriefNeed(title: "50% off everything", sender: "Shop", received: now),
                  BriefNeed(title: "nothing", sender: "x")]
     let mail = BriefDetail.mail(needing: inbox, ready: true)
-    check(mail.lines.map(\.text) == ["Prof. Lee moved your thesis meeting to Tuesday", "Jordan · Can you review my draft?",
+    check(mail.lines.map(\.text) == ["Prof. Lee · Thesis meeting", "Jordan · Can you review my draft?",
                                      "UCSC Events · Tech Week starts today", "1 newsletter or promo left out"] && mail.source == .mail,
-          "mail details: people first, a gist when written, else sender and subject, then the bulk left out: \(mail.lines.map(\.text))")
+          "mail details: people first, sender and subject, then the bulk left out: \(mail.lines.map(\.text))")
+    // With the composed summary: its mail section first, then only the emails it doesn't name.
+    let summarized = BriefDetail.mail(needing: inbox, ready: true,
+                                      summary: ["Worth a look", "Advisor: Thesis meeting moved to Tuesday", "Other mail", "3 newsletters"])
+    check(summarized.lines.map(\.text) == ["Worth a look", "Advisor: Thesis meeting moved to Tuesday", "Other mail", "3 newsletters",
+                                           "Needs you", "Jordan · Can you review my draft?", "UCSC Events · Tech Week starts today",
+                                           "1 newsletter or promo left out"],
+          "mail details: the summary, then needing emails it doesn't already name: \(summarized.lines.map(\.text))")
+    check(BriefMail.row(overview: "Mostly event updates and tech-week promos", needing: inbox)
+            == "Mostly event updates and tech-week promos · 3 need you"
+          && BriefMail.row(overview: "12 new, mostly newsletters and promos", needing: [BriefNeed(title: "50% off")])
+            == "Nothing needs you · 12 new, mostly newsletters and promos"
+          && BriefMail.row(overview: "Quiet", needing: [BriefNeed(title: "Private details omitted.")]) == "Quiet · 1 needs you",
+          "MAIL row: the gist and how many need you; promos don't count, private emails do")
     check(BriefMail.describe(BriefNeed(title: "Lunch plans")) == "Lunch plans" && BriefMail.describe(BriefNeed(title: "Re: lunch")) == "lunch", "no sender: the subject alone, its prefix moved to the tag")
-    check(BriefMail.describe(BriefNeed(title: "x", sender: "Ann", gist: "  ")) == "Ann · x", "a blank gist falls back")
-    // Build 2020's fallback, without gists: names not addresses, repeats collapsed, prefixes as tags, private subjects counted.
+    check(BriefMail.describe(BriefNeed(title: "x", sender: "Ann")) == "Ann · x", "sender and subject")
+    // Names not addresses, repeats collapsed, prefixes as tags, private subjects counted.
     let messy = [
         BriefNeed(title: "Dublin Community Office Hours", sender: "John Morada <john@example.edu>", person: true, received: now - 60),
         BriefNeed(title: "Re: Dublin Community Office Hours", sender: "John Morada <john@example.edu>", person: true, received: now - 120),
@@ -95,8 +107,9 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
         BriefNeed(title: "Re: Re: Lunch Friday?", sender: "<sam@example.com>", person: true, received: now - 300),
     ]
     let collapsed = BriefMail.shown(messy)
-    check(collapsed == [BriefMail.Shown(tag: "Canceled", text: "John Morada · Dublin Community Office Hours", count: 3),
-                        BriefMail.Shown(tag: "Re", text: "sam@example.com · Lunch Friday?", count: 1)],
+    check(collapsed == [BriefMail.Shown(tag: "Canceled", text: "John Morada · Dublin Community Office Hours", count: 3,
+                                        subject: "Dublin Community Office Hours"),
+                        BriefMail.Shown(tag: "Re", text: "sam@example.com · Lunch Friday?", count: 1, subject: "Lunch Friday?")],
           "one line per sender and subject, no brackets, prefix as a tag: \(collapsed)")
     let messyDetail = BriefDetail.mail(needing: messy, ready: true)
     check(messyDetail.lines.map(\.text) == ["John Morada · Dublin Community Office Hours ×3", "sam@example.com · Lunch Friday?",
@@ -127,22 +140,38 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
                       BriefTexts.Person(name: "Mom", count: 1, latest: now - 3 * hour),
                       BriefTexts.Person(name: "Ravi", count: 1, latest: now - 5 * hour)],
           "one entry per person waiting, newest first; answered and placeholder texts left out: \(waiting)")
-    let detail = BriefDetail.texts(needing: texts, ready: true, when: { _ in "1 PM" })
-    check(detail.lines.map(\.text) == ["Priya · 2 texts", "Mom · 1 text", "Ravi · 1 text"] && detail.lines[0].leading == "1 PM"
-          && detail.source == .messages, "texts details: who, how many, when: \(detail.lines.map(\.text))")
+    let detail = BriefDetail.texts(needing: texts, ready: true, age: { BriefTexts.age($0, now: now) })
+    check(detail.lines.map(\.text) == ["Priya · 2 texts", "Mom · 1 text", "Ravi · 1 text"] && detail.lines.map(\.leading) == ["10m", "3h", "5h"]
+          && detail.source == .messages, "texts details: who, how many, how long: \(detail.lines.map(\.text))")
+    // With the composed summary: its messages section without quotes or the people listed under it.
+    let composedTexts = BriefDetail.texts(needing: texts, ready: true,
+                                          summary: ["Priya · 2 messages, latest 1:40 PM — Priya: \u{201C}lmk!\u{201D}",
+                                                    "Sam · 2 messages, latest 10:00 AM — Me: \u{201C}np\u{201D}",
+                                                    "Book club · 9 messages, latest 9:00 AM — Ann: \u{201C}see \u{201D}\u{201C}you\u{201D}",
+                                                    "…and 2 other conversation(s)."],
+                                          age: { _ in "1h" })
+    check(composedTexts.lines.map(\.text) == ["Sam · 2 messages, latest 10:00 AM", "Book club · 9 messages, latest 9:00 AM",
+                                              "…and 2 other conversation(s).", "Waiting on you", "Priya · 2 texts", "Mom · 1 text",
+                                              "Ravi · 1 text"]
+          && !composedTexts.lines.contains { $0.text.contains("lmk") || $0.text.contains("np") || $0.text.contains("\u{201C}") },
+          "texts details: the summary without quotes or waiting people, then who's waiting: \(composedTexts.lines.map(\.text))")
+    check(BriefTexts.row(overview: "Mostly family check-ins", people: waiting) == "Mostly family check-ins · 3 waiting on you"
+          && BriefTexts.row(overview: "Quiet", people: []) == "Quiet · nobody waiting",
+          "TEXTS row: the gist and how many are waiting")
+    check(BriefTexts.age(now - 30, now: now) == "1m" && BriefTexts.age(now - 2 * 86400, now: now) == "2d", "ages")
     check(!detail.lines.contains { $0.text.contains("dinner") || $0.text.contains("call me") }, "a text's words are never shown")
     check(BriefTexts.row([]) == "No texts need you" && BriefTexts.row(Array(waiting.prefix(1))) == "Priya is waiting on you"
           && BriefTexts.row(waiting) == "Priya, Mom and Ravi are waiting on you"
           && BriefTexts.row(waiting + [BriefTexts.Person(name: "Ann", count: 1, latest: nil)]) == "Priya, Mom and 2 others are waiting on you",
           "TEXTS row wording")
-    check(BriefDetail.texts(needing: [texts[3]], ready: true, when: { _ in "" }).lines.map(\.text) == ["No texts need you"],
+    check(BriefDetail.texts(needing: [texts[3]], ready: true, age: { _ in "" }).lines.map(\.text) == ["No texts need you"],
           "everyone answered: no texts need you")
-    check(BriefDetail.texts(needing: [], ready: false, when: { _ in "" }).lines.first?.muted == true, "unread messages details are dim")
-    let locked = BriefDetail.texts(needing: texts, ready: false, needsAccess: true, when: { _ in "" })
+    check(BriefDetail.texts(needing: [], ready: false, age: { _ in "" }).lines.first?.muted == true, "unread messages details are dim")
+    let locked = BriefDetail.texts(needing: texts, ready: false, needsAccess: true, age: { _ in "" })
     check(locked.lines.map(\.text) == ["Wisp can't read your texts until it has Full Disk Access."]
           && locked.action?.url.hasPrefix("x-apple.systempreferences:") == true && locked.action?.url.contains("Privacy_AllFiles") == true,
           "without Full Disk Access the details say so and link to its settings")
-    check(BriefDetail.texts(needing: texts, ready: true, when: { _ in "" }).action == nil, "readable texts open Messages")
+    check(BriefDetail.texts(needing: texts, ready: true, age: { _ in "" }).action == nil, "readable texts open Messages")
     check(BriefTexts.name(BriefNeed(title: "Me: on my way")) == "Me" && BriefTexts.waiting([BriefNeed(title: "Me: on my way")]).isEmpty,
           "your own text never waits on you")
     let week = BriefDetail.soon(soon, when: { $0.allDay ? "Sun" : "later" })
