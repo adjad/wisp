@@ -623,3 +623,96 @@ def test_hidden_ids_take_one_twin_query(store):
         store._db.set_trace_callback(None)
     assert len(hidden) == 50
     assert sum("source<>'reminders'" in s for s in statements) == 1
+
+
+# --- Day tasks that duplicate a hidden reminder (2026-10-18: task 8cfed052, made by the
+# old Plan time from "Get doordash order" before #289, still showed on the Day plan and in
+# attention as "On your day plan." after the reminder itself was hidden) ---------------
+
+from datetime import datetime, timezone as _tz  # noqa: E402
+
+from service.assistant import today_api  # noqa: E402
+
+
+def _day_task(store, title, *, origin=None, legacy=False):
+    values = {"title": title, "day": datetime.fromtimestamp(NOW, _tz.utc).date().isoformat(),
+              "timezone": "UTC", "duration_minutes": 30}
+    if origin is not None:
+        values["origin_ts"] = origin
+    task = store.today_save_task(values)
+    if legacy:  # saved before today_tasks.created_at existed
+        with store._db:
+            store._db.execute("UPDATE today_tasks SET created_at=NULL WHERE id=?", (task["id"],))
+    return task
+
+
+def _today(store, monkeypatch):
+    monkeypatch.setattr(today_api, "assistant_store", store)
+    day = datetime.fromtimestamp(NOW, _tz.utc).date().isoformat()
+    body = TestClient(main.app).get("/assistant/today", params={"day": day, "timezone": "UTC"}).json()
+    planned = {t["id"] for t in body["tasks"]}
+    attention = {i["title"] for i in body["workspace"]["attention"] if i["source"] == "wisp"}
+    return planned, attention
+
+
+def test_a_day_task_twin_of_a_hidden_reminder_leaves_the_plan_and_attention(store, monkeypatch):
+    _overdue(store)
+    legacy = _day_task(store, "Get doordash order", legacy=True)          # the 8cfed052 case
+    review = _day_task(store, "Review: get  DoorDash order", legacy=True)
+    from_plan_time = _day_task(store, "Get doordash order", origin=NOW - 16 * DAY_S)
+    other = _day_task(store, "Write report")
+    planned, attention = _today(store, monkeypatch)
+    assert other["id"] in planned and "Write report" in attention
+    assert not {legacy["id"], review["id"], from_plan_time["id"]} & planned
+    assert not any("doordash" in t.casefold() for t in attention)
+    from service.assistant import daily_workspace
+    day = datetime.fromtimestamp(NOW, _tz.utc).date().isoformat()
+    alone = daily_workspace.workspace(store, day, "UTC", now=NOW)["attention"]
+    assert not any("doordash" in i["title"].casefold() for i in alone if i["source"] == "wisp")
+    # Nothing was deleted, and a Keep on the reminder brings them all back.
+    assert store.today_task(legacy["id"])["status"] == "active"
+    assert TestClient(main.app).post("/assistant/stale_reminders/keep",
+                                     json={"source_id": "o-stale"}).status_code == 200
+    planned, attention = _today(store, monkeypatch)
+    assert {legacy["id"], review["id"], from_plan_time["id"]} <= planned
+    assert "Get doordash order" in attention
+
+
+def test_a_day_task_planned_after_the_reminder_was_hidden_stays(store, monkeypatch):
+    _overdue(store)   # "Get doordash order" hidden since 9 days ago
+    typed_today = _day_task(store, "Get doordash order")                   # created now
+    recent_origin = _day_task(store, "Get doordash order", origin=NOW - DAY_S, legacy=True)
+    planned, attention = _today(store, monkeypatch)
+    assert {typed_today["id"], recent_origin["id"]} <= planned
+    assert "Get doordash order" in attention
+
+
+def test_today_tasks_created_at_migrates_and_is_set_once(tmp_path):
+    import sqlite3
+    path = tmp_path / "assistant.db"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE today_tasks (id TEXT PRIMARY KEY, day TEXT NOT NULL, payload TEXT NOT NULL, "
+               "revision INTEGER NOT NULL DEFAULT 1, updated_at REAL NOT NULL)")
+    db.commit()
+    db.close()
+    s = AssistantStore(path)
+    try:
+        task = _day_task(s, "Write report")
+        first = s._db.execute("SELECT created_at FROM today_tasks WHERE id=?", (task["id"],)).fetchone()[0]
+        assert first is not None
+        s.today_save_task({"title": "Write the report"}, task_id=task["id"], revision=1)
+        again = s._db.execute("SELECT created_at FROM today_tasks WHERE id=?", (task["id"],)).fetchone()[0]
+        assert again == first, "an edit or carry keeps the original save time"
+    finally:
+        s._db.close()
+
+
+def test_the_evening_check_in_card_hides_the_same_task_twin(store):
+    from service.assistant import checkin
+    _overdue(store)
+    legacy = _day_task(store, "Get doordash order", legacy=True)
+    other = _day_task(store, "Write report")
+    day = datetime.fromtimestamp(NOW, _tz.utc).date().isoformat()
+    card = checkin.build(store, day, "UTC", now=NOW)
+    shown = {t["id"] for t in card["tasks"]}
+    assert other["id"] in shown and legacy["id"] not in shown
