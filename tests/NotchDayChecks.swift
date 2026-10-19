@@ -124,8 +124,10 @@ func dayChecks(_ check: (Bool, String) -> Void) {
         DayItem(id: "r\($0)", title: "Review \($0)", detail: "", start: Double($0) * 15 * minute,
                 end: Double($0 + 1) * 15 * minute, style: .suggested)
     })
-    check(Set(slivers.map(\.column)).count == 3 && slivers.allSatisfy { $0.columns == 3 },
-          "short back-to-back blocks get their own columns: \(slivers.map(\.column)) \(slivers.map(\.columns))")
+    // The first two overlap as drawn, so they share the width; the third starts
+    // where the first's drawn 30 minutes end, so it reuses the first column.
+    check(slivers.map(\.column) == [0, 1, 0] && slivers.allSatisfy { $0.columns == 2 },
+          "short back-to-back blocks sit side by side: \(slivers.map(\.column)) \(slivers.map(\.columns))")
     let apart = DayTimeline.arrange([
         DayItem(id: "x", title: "x", detail: "", start: 0, end: 15 * minute, style: .suggested),
         DayItem(id: "y", title: "y", detail: "", start: 30 * minute, end: 45 * minute, style: .suggested),
