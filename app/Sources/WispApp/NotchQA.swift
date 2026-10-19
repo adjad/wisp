@@ -24,6 +24,11 @@ enum NotchQADriver {
         let dayStart = midnight.timeIntervalSince1970
         let today = TodayModel(now: { now }, timeZoneProvider: { zone }, transport: { request in
             let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }
+            if components?.path == "/assistant/daily_summary/latest" {
+                // No kept summary: the "brief" scenes use the live one, "brief-nosummary" shows the note.
+                return (Data(#"{"detail":"no composed summary for that day"}"#.utf8),
+                        HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+            }
             let body = components?.path == "/assistant/upcoming" ? try fixtureUpcoming(dayStart: dayStart)
                 : try fixturePlan(day: components?.queryItems?.first { $0.name == "day" }?.value ?? "", dayStart: dayStart)
             return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
@@ -43,14 +48,15 @@ enum NotchQADriver {
         DayCards.qaUse(attention: attention, staleReminders: stale)
         let model = OverlayModel()
         model.qaShow(brief: fixtureBrief)
+        let unsummarized = OverlayModel()
         let width = SurfaceLayout.maxExpandedWidth
         for (name, tab, open) in [("brief", NotchTab.brief, nil), ("brief-open", NotchTab.brief, "MAIL"),
-                                  ("brief-texts", NotchTab.brief, "TEXTS"),
+                                  ("brief-texts", NotchTab.brief, "TEXTS"), ("brief-nosummary", NotchTab.brief, "MAIL"),
                                   ("day", NotchTab.day, nil)] as [(String, NotchTab, String?)] {
             let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 760),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let content = VStack(alignment: .leading, spacing: 0) {
-                if tab == .brief { NotchBriefView(model: model, today: today, open: open) }
+                if tab == .brief { NotchBriefView(model: name == "brief-nosummary" ? unsummarized : model, today: today, open: open) }
                 else { NotchDayView(model: model, today: today) }
             }
             .padding(EdgeInsets(top: 18, leading: 22, bottom: 16, trailing: 22))

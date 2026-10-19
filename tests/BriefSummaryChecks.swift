@@ -170,6 +170,14 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
     let crowd = (1...8).map { BriefNeed(title: "P\($0): hi", sender: "P\($0)", received: now - Double($0) * 60) }
     check(BriefDetail.texts(needing: crowd, ready: true, age: { _ in "" }).lines.last?.text == "+2 more",
           "more than six waiting: the rest are counted, as the row counts them")
+    // No composed summary today: the dropdowns say so first instead of silently dropping it.
+    let unsummarizedMail = BriefDetail.mail(needing: inbox, ready: true, summary: nil)
+    check(unsummarizedMail.lines.first?.text == BriefDetail.noSummaryYet && unsummarizedMail.lines.first?.muted == true
+          && unsummarizedMail.lines.dropFirst().first?.text == "Prof. Lee · Thesis meeting", "MAIL without a summary today")
+    check(BriefDetail.texts(needing: texts, ready: true, summary: nil, age: { _ in "" }).lines.first?.text == BriefDetail.noSummaryYet
+          && BriefDetail.mail(needing: inbox, ready: true, summary: []).lines.first?.text != BriefDetail.noSummaryYet
+          && BriefDetail.texts(needing: texts, ready: true, needsAccess: true, summary: nil, age: { _ in "" }).lines.count == 1,
+          "TEXTS without a summary today; an empty section or no access says nothing about it")
     check(BriefTexts.age(now - 30, now: now) == "1m" && BriefTexts.age(now - 2 * 86400, now: now) == "2d", "ages")
     check(!detail.lines.contains { $0.text.contains("dinner") || $0.text.contains("call me") }, "a text's words are never shown")
     check(BriefTexts.row([]) == "No texts need you" && BriefTexts.row(Array(waiting.prefix(1))) == "Priya is waiting on you"

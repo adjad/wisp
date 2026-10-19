@@ -109,20 +109,36 @@ _QUOTED_HISTORY = re.compile(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]
 _COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied")
 
 
+_BULK_BODY = re.compile(r"\bunsubscribe\b|manage (?:your )?(?:email )?preferences|view (?:this email )?in (?:your )?browser",
+                        re.I)
+
+
 def important_email_rows(snapshot):
     """(row, current_lines) for each snapshot email that counts as attention.
 
-    The one selection rule, shared by the day's evidence and the mail gists:
+    The one selection rule, shared by the day's evidence and the Brief:
     an attention or school category, or a current-body line that reads as a
     request. Newest first, bounded to the 200 newest rows.
+
+    A request line in bulk mail is a call to action, not a request: social
+    updates, mail whose subject or sender reads as marketing or a newsletter,
+    and mail whose own text (not quoted history) offers an unsubscribe link
+    need their category to count. Without this, "RSVP" and "register now"
+    lines put event promos among the emails that need the user. An automated
+    sender that is none of those (a clinic, a landlord's office) still counts
+    by a request line.
     """
-    from service.tools.email_tools import digest_category
+    from service.tools.email_tools import _MARKETING_SUBJECT, _NEWSLETTER_RE, digest_category
     from service.tools.imessage_tools import important_message_reason
     out = []
     for row in sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]:
-        body = _QUOTED_HISTORY.split(row.get("body", ""))[0]
-        current_lines = [line for line in body.splitlines() if important_message_reason("Sender: " + line)]
-        if digest_category(row) not in {"attention", "school"} and not current_lines:
+        body = _QUOTED_HISTORY.split(row.get("body", "") or "")[0]
+        category = digest_category(row)
+        identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
+        bulk = (category == "social" or bool(_MARKETING_SUBJECT.search(row.get("subject", "") or ""))
+                or bool(_NEWSLETTER_RE.search(identity)) or bool(_BULK_BODY.search(body)))
+        current_lines = [] if bulk else [line for line in body.splitlines() if important_message_reason("Sender: " + line)]
+        if category not in {"attention", "school"} and not current_lines:
             continue
         out.append((row, current_lines))
     return out
