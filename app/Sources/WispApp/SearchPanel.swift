@@ -19,7 +19,7 @@ struct SearchView: View {
             field
             if model.needsAccessibility && !model.hasPage {
                 permissionPrompt
-            } else if !model.errorText.isEmpty && model.rows.isEmpty {
+            } else if !model.errorText.isEmpty && model.rows.isEmpty && model.answer.isEmpty {
                 notice(model.errorText, symbol: "exclamationmark.triangle")
             } else {
                 content
@@ -94,6 +94,7 @@ struct SearchView: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
+                    if !model.errorText.isEmpty { partialFailureCard }
                     if model.answering { answeringCard }
                     if !model.answer.isEmpty { answerCard }
                     if model.notFound { notFoundCard }
@@ -117,6 +118,24 @@ struct SearchView: View {
         .padding(.vertical, 10).padding(.horizontal, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
+    }
+
+    private var partialFailureCard: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(Theme.textMuted)
+                .accessibilityHidden(true)
+            Text(model.errorText)
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 10).padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Search issue: \(model.errorText)")
     }
 
     private var answerCard: some View {
