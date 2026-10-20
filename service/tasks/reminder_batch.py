@@ -40,6 +40,39 @@ def batch_time_answer(text: str) -> bool:
         r'(?:\s+(?:today|tomorrow))?[.!?\s]*', text, re.I))
 
 
+def batch_correction_reference(text: str) -> bool:
+    """Recognize an unbound correction, without choosing an item or a time.
+
+    This is an ambiguity detector, not a clock parser. Even an unsupported
+    clock after "move it" must not fall through to a last-created-item write.
+    Named subjects, fresh creates and unrelated questions retain their owners.
+    """
+    value = re.sub(r'^\s*(?:actually|like|I\s+(?:mean|meant))\s*[,!:]?\s*', '', text, flags=re.I)
+    if batch_time_answer(value):
+        return True
+    reference = re.match(
+        r'^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)?'
+        r'(?P<verb>make|set|move|push|shift|bump|change|update|edit|reschedule|postpone|delay)\s+'
+        r'(?:it|that(?:\s+one)?|this(?:\s+one)?|them|both|the\s+(?:first|second|last)\s+one)'
+        r'(?:\s+(?:reminders?|items?))?\b',
+        value, re.I)
+    if not reference:
+        return False
+    rest = value[reference.end():].strip()
+    rest = re.sub(r'^(?:to|for|at|by|until|on)\s+', '', rest, flags=re.I)
+    temporal_text = rest.rstrip('.!?').strip()
+    if quoted_spans(temporal_text) == [(0, len(temporal_text))]:
+        rest = temporal_text[1:-1]
+    # Temporal-shaped complements, including invalid clock attempts, are
+    # ambiguous. A digit somewhere in a file/device request is not a time.
+    return bool(re.match(
+        rf'(?:{_DAY}\b|\d{{1,2}}(?::\d{{1,2}})?\s*[ap]\.?m\.?(?=\W|$)|\d{{1,2}}:\d|'
+        r'\d{1,2}[.!?\s]*$|(?:\d+|an?|one|two)\s+(?:minutes?|hours?|days?|weeks?)\b|'
+        r'(?:next|this)\s+(?:week|month|morning|afternoon|evening)\b|'
+        r'(?:noon|midnight|morning|afternoon|evening|later|earlier|all[ -]day)\b)', rest, re.I))
+
+
+
 def is_batch(plan: TaskPlan) -> bool:
     return plan.intent == 'reminder.create' and 'items' in plan.parameters
 

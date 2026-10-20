@@ -190,7 +190,10 @@ def test_explicit_single_all_day_forms(text):
     assert plan.steps[0].args == {'title': 'review report', 'when_iso': '2026-10-20', 'kind': 'reminder', 'all_day': True}
 
 
-@pytest.mark.parametrize('answer', ['9am', 'actually 9am', 'like 9am tomorrow', 'I mean today', 'keep it all day long'])
+@pytest.mark.parametrize('answer', ['9am', 'actually 9am', 'like 9am tomorrow', 'I mean today', 'keep it all day long',
+    'Actually, make it 4 PM.', 'Actually, 4 PM.', 'Set it for 4 PM.', 'Move it to 25pm.',
+    'Could you change it to 4 PM?', 'Make both 4 PM.', 'Push it to 4 PM.',
+    'Shift it to 4 PM.', 'Set it to "4 PM".', 'Bump it to tomorrow.', 'Delay it by an hour.', 'Update it to 25pm.'])
 def test_post_batch_correction_requires_an_item_not_the_first_title(stores, answer):
     sessions, assistant, sid = stores
     turn = prepare_task_turn(sessions, sid, REQUEST, assistant_store=assistant, now=NOW)
@@ -200,6 +203,22 @@ def test_post_batch_correction_requires_an_item_not_the_first_title(stores, answ
     assert next_turn is not None and not next_turn.executable
     assert next_turn.event == 'batch_item_clarification'
     assert 'Which reminder' in next_turn.response
+
+
+def test_batch_guard_does_not_steal_named_new_or_later_read_context(stores):
+    from service.tasks.engine import prepare_batch_correction_guard
+    sessions, assistant, sid = stores
+    turn = prepare_task_turn(sessions, sid, REQUEST, assistant_store=assistant, now=NOW)
+    finish_task(sessions, sid, turn.plan, status='completed', result='synthetic completion')
+    sessions.add_turn(sid, 'assistant', 'Both reminders created.', tool_digest='add_reminder, add_reminder')
+    for prompt in ['Move vicor earnings report to 4 PM.', 'What is on my calendar?',
+                   'Create a reminder tomorrow at 4 PM to review the report.',
+                   'Explain "make it 4 PM".', 'Change it to Spanish.', 'Move it into my Downloads folder.',
+                   'Set it to 50% volume.', 'Can you make it 50 percent brighter?',
+                   'Move it into my Downloads 2026 folder.']:
+        assert prepare_batch_correction_guard(sessions, sid, prompt) is None
+    sessions.add_turn(sid, 'assistant', 'A calendar event at 3 PM.', tool_digest='get_upcoming')
+    assert prepare_batch_correction_guard(sessions, sid, 'Actually, make it 4 PM.') is None
 
 
 @pytest.mark.asyncio
