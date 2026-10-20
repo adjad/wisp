@@ -283,10 +283,8 @@ def native_email_accounts() -> list[dict]:
         key = row.get("account_id") or row["account"]
         if key:
             found[key] = {"id": key, "name": row["account"]}
-    snapshot = raw_email_snapshot()
-    if snapshot is not None:
-        for key, label in snapshot.account_inventory:
-            found[key] = {"id": key, "name": label}
+    for key, label in _native_catalog_inventory():
+        found[key] = {"id": key, "name": label}
     return list(found.values())
 
 
@@ -635,9 +633,52 @@ def _history_warning(account: str | None = None) -> str:
     return email_freshness_warning(account, part="history")
 
 
+def _raw_scan_warning(account: str | None = None) -> str:
+    """Describe v2 scan coverage independently of display rows or label arrays."""
+    inventory = raw_email_inventory()
+    pairs = list(inventory.account_inventory) if inventory is not None else []
+    for record in _swift_raw.split(_RAW_RS):
+        if record.strip():
+            label, native_id = _source_identity(record, raw=True)
+            if (native_id, label) not in pairs:
+                pairs.append((native_id, label))
+    extra = [{"account_id": key, "account": label} for key, label in pairs]
+    selected = _resolve_account_groups(account, extra)[0] if account else None
+    provided = [(address, item) for address, item in _external_accounts.items()
+                if _provider_selected(address, item, "raw")]
+    relevant = {key for key, label in pairs
+                if (selected is None or _account_group(label, key) in selected)
+                and not any(_covered_source(label, key, address, item) for address, item in provided)}
+    if not relevant:
+        return ""
+    if inventory is not None:
+        if not relevant <= {key for key, _ in inventory.account_inventory}:
+            return ("Saved bodies include accounts outside the current Mail inventory; "
+                    "their current inbox coverage is unverified.")
+        if inventory.body_complete:
+            return ""
+        labels = dict(inventory.account_inventory)
+        failed = "; ".join(f"{labels[key]} (account ID: {key})"
+                           for key in inventory.failed_account_ids if key in relevant)
+        detail = f" Failed account scans: {failed}." if failed else ""
+        return ("Mail's recent body scan is incomplete; matching inbox coverage is unknown."
+                + detail + " Only available cached bodies can be displayed.")
+    with _raw_snapshot_lock:
+        snapshot = _raw_mail_snapshot
+        if snapshot is not None and snapshot.coverage_version == 1:
+            if raw_email_snapshot() is not None:
+                return ""
+            if snapshot.failed_accounts:
+                return "Mail's recent body scan is incomplete; matching inbox coverage is unknown."
+        return ("Current Mail account inventory is unavailable or unverified; "
+                "saved bodies do not establish current inbox coverage.")
+
+
 def email_freshness_warning(account: str | None = None, *, part: str = "headers") -> str:
     details = email_source_details(account, part=part)
     warnings = []
+    if part == "raw" and (scan_warning := _raw_scan_warning(account)):
+        warnings.append(scan_warning)
     for item in details:
         if item["fresh"] or part == "history" and item["source"] == "gmail" and external_recent_complete(item["account"]):
             continue
@@ -838,6 +879,42 @@ class RawEmailSnapshot:
     account_inventory: tuple[tuple[str, str], ...] = ()
     successful_account_ids: tuple[str, ...] = ()
     failed_account_ids: tuple[str, ...] = ()
+    inventory_complete: bool = False
+
+
+@dataclass(frozen=True)
+class RawEmailInventory:
+    """Current captured account identities, never a body-evidence receipt."""
+    generation: int
+    synced_at: float
+    account_inventory: tuple[tuple[str, str], ...]
+    successful_account_ids: tuple[str, ...]
+    failed_account_ids: tuple[str, ...]
+    body_complete: bool
+
+
+def raw_email_inventory() -> RawEmailInventory | None:
+    """Keep valid partial captures visible without admitting their bodies.
+
+    This process-local identity view expires at the original body receipt age
+    and follows availability withdrawal. Retained display bytes cannot issue it.
+    """
+    with _raw_snapshot_lock:
+        snapshot = _raw_mail_snapshot
+        if (snapshot is None or snapshot.coverage_version != 2 or not snapshot.inventory_complete
+                or _email_available is not True or not 0 <= time.time() - snapshot.synced_at <= 1200):
+            return None
+        return RawEmailInventory(snapshot.generation, snapshot.synced_at, snapshot.account_inventory,
+            snapshot.successful_account_ids, snapshot.failed_account_ids, snapshot.complete)
+
+
+def _native_catalog_inventory() -> tuple[tuple[str, str], ...]:
+    inventory = raw_email_inventory()
+    if inventory is not None:
+        return inventory.account_inventory
+    # Unique-label legacy publications retain their existing compatibility path.
+    snapshot = raw_email_snapshot()
+    return snapshot.account_inventory if snapshot is not None else ()
 
 
 def _scan_failure_diagnostics(value) -> tuple[tuple[str, int], ...]:
@@ -909,6 +986,7 @@ def _raw_snapshot_candidate(raw: str, coverage: dict | None, stamp: float) -> Ra
         labels = {}
     decode_complete = record_count == len(rows) and scan.get("decode_complete", True) is True
     identities, row_labels = {}, {}
+    inventory_complete = explicit and type(version) is int and version == 2 and valid
     identity_complete = valid
     for row in rows:
         account_id, message_id = row["account_id"], row["message_id"]
@@ -916,6 +994,7 @@ def _raw_snapshot_candidate(raw: str, coverage: dict | None, stamp: float) -> Ra
             identity_complete = False
         if version == 2 and explicit:
             if account_id not in successes or labels.get(account_id) != row["account"]:
+                inventory_complete = False
                 identity_complete = False
         elif row["account"] not in accounts:
             identity_complete = False
@@ -939,7 +1018,8 @@ def _raw_snapshot_candidate(raw: str, coverage: dict | None, stamp: float) -> Ra
         raw_digest=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
         scan_failures=_scan_failure_diagnostics(scan.get('failure_diagnostics')),
         coverage_version=version if type(version) is int else 0,
-        account_inventory=inventory, successful_account_ids=successes, failed_account_ids=failed_ids)
+        account_inventory=inventory, successful_account_ids=successes, failed_account_ids=failed_ids,
+        inventory_complete=inventory_complete)
 
 
 def provider_history_snapshot(provider, *, expected_receipt=None, required_refs=()):
@@ -1685,9 +1765,7 @@ def _account_catalog(extra: list[dict]) -> dict:
             group["ids"].add(native_id)
         if label:
             group["labels"].add(label.casefold())
-    snapshot = raw_email_snapshot()
-    if snapshot is not None:
-        inventory += [{"account_id": key, "account": label} for key, label in snapshot.account_inventory]
+    inventory += [{"account_id": key, "account": label} for key, label in _native_catalog_inventory()]
     for row in inventory:
         add(str(row.get("account") or ""), str(row.get("account_id") or ""))
     for address, item in _external_accounts.items():
@@ -1760,6 +1838,29 @@ def _raw_account_scope(rows: list[dict], account: str | None) -> tuple[list[dict
                             for key in sorted(keys))
         return [], (f"(error: several email accounts match {account!r}: {choices}. "
                     "Which one? Use an exact account ID, or rename the accounts in Mail and sync again.)")
+    key = next(iter(keys))
+    exact_id = account.strip() in groups[key]["ids"]
+    provided = [(address, item) for address, item in _external_accounts.items()
+                if _provider_selected(address, item, "raw")]
+    provider = any(_account_group(address, address) in keys for address, _ in provided)
+    inventory = raw_email_inventory()
+    if inventory is not None:
+        labels = dict(inventory.account_inventory)
+        failed = [native_id for native_id in inventory.failed_account_ids
+                  if _account_group(labels[native_id], native_id) in keys
+                  and not any(_covered_source(labels[native_id], native_id, address, item)
+                              for address, item in provided)]
+        if failed:
+            return [], "(error: Mail's body scan failed for this account; recent inbox coverage is unknown. Refresh Mail and try again.)"
+        captured = {_account_group(label, native_id) for native_id, label in inventory.account_inventory}
+        verified = key in captured
+    else:
+        legacy = raw_email_snapshot()
+        verified = legacy is not None and legacy.coverage_version == 1
+    if groups[key]["ids"] and not exact_id and not provider and not verified:
+        return [], ("(error: Current Mail account inventory is unavailable or unverified. "
+                    "A matching saved message cannot identify a unique account. "
+                    "Use an exact account ID for saved display data, or refresh Mail.)")
     return [row for row in rows if _account_group(str(row.get("account") or ""),
                                                   str(row.get("account_id") or "")) in keys], ""
 
@@ -1805,13 +1906,11 @@ def _known_accounts() -> list[str]:
         a = r["account"]
         if a and a not in seen:
             seen.append(a)
-    snapshot = raw_email_snapshot()
-    if snapshot is not None:
-        for key, label in snapshot.account_inventory:
-            if key not in seen:
-                seen.append(key)
-            if label not in seen:
-                seen.append(label)
+    for key, label in _native_catalog_inventory():
+        if key not in seen:
+            seen.append(key)
+        if label not in seen:
+            seen.append(label)
     return seen
 
 
@@ -2743,21 +2842,24 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     # dead-ending on "no raw content cached" and forcing a retry.
     await _ensure_email_cache(want_raw=True)
     _purge_raw_if_expired()
+    rows = _parse_raw()
+    rows, account_problem = _raw_account_scope(rows, account)
+    if account_problem:
+        return account_problem
+    inventory = raw_email_inventory()
+    if inventory is not None and not inventory.body_complete and not rows:
+        return "Mail's recent body scan is incomplete; no matching bodies are available and inbox coverage is unknown."
     if not _raw_emails.strip() and _external_accounts and all(
             item.get("raw") == "" for item in _external_accounts.values()):
         return "No emails found in the available body snapshot." if not email_freshness_warning(account, part="raw") else (
             "No messages are available in the saved body cache; I couldn’t verify whether you have new email.")
     if _email_available is False and not _raw_emails.strip():
         return _no_inbox_message()
-    if not _raw_emails.strip():
+    if not _raw_emails.strip() and inventory is None:
         return ("(No raw email content cached right now — either Mail.app hasn't synced "
                 "yet, or the cache expired and is waiting on the next body "
                 "sync. Try again shortly, or use summarize_emails for a header digest in the "
                 "meantime.)")
-    rows = _parse_raw()
-    rows, account_problem = _raw_account_scope(rows, account)
-    if account_problem:
-        return account_problem
     label = "your recent inbox"
     # `period` (a range) wins over `day` (one day) when both are supplied — see
     # summarize_emails for why.

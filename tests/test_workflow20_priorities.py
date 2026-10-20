@@ -585,3 +585,184 @@ def test_header_deduplication_keeps_legacy_label_matching_case_insensitive(messa
     assert len(M._parse_header_records(header('Work') + '\n' + header('work'))) == 1
     separate = M._parse_header_records(header('Work')) + M._parse_header_records(header('work'))
     assert len(M._unique_records(separate)) == 1
+
+
+@pytest.fixture
+def registered_mail_display(monkeypatch):
+    """Only refresh is inert; public registry, receipt, scopes and rendering run."""
+    from service.publication_authority import Authority
+    for name, value in {'_headers': '', '_swift_headers': '', '_history': '', '_swift_history': '',
+                        '_raw_emails': '', '_swift_raw': '', '_external_accounts': {},
+                        '_raw_reference_scan': {}, '_native_raw_at': 0., '_native_headers_at': 0.,
+                        '_email_read_source': 'mail_app', '_email_reason': ''}.items():
+        monkeypatch.setattr(M, name, value)
+    monkeypatch.setattr(M, '_raw_availability', Authority('synthetic-display-availability'))
+    monkeypatch.setattr(M, '_raw_publication', Authority('synthetic-display-body'))
+    monkeypatch.setattr(M, '_ensure_email_cache', AsyncMock())
+    clock = [STAMP]
+    monkeypatch.setattr(M.time, 'time', lambda: clock[0])
+    M.set_email_availability(True, read_source='mail_app')
+    def publish(second_label='Work', *, complete=False, change=None):
+        envelope = v2_coverage(('Native-A', 'Work'), ('Native-B', second_label))
+        if not complete:
+            envelope.update(successful_account_ids=['Native-A'], failed_account_ids=['Native-B'], complete=False)
+        envelope.update(change or {})
+        raw = email_raw([{**mail('SYNTHETIC-A-BODY', account='Work'), 'account_id': 'Native-A'}])
+        M.cache_raw_emails(raw, envelope)
+        return envelope
+    def view(account=None, query='Project update'):
+        args = {'query': query}
+        if account is not None:
+            args['account'] = account
+        return asyncio.run(run_tool(REGISTRY['view_emails'], args))
+    return publish, view, clock
+
+
+@pytest.mark.parametrize('second_label', ['Work', 'work'])
+@pytest.mark.parametrize('complete', [False, True])
+def test_registered_display_scopes_include_failed_empty_v2_account(registered_mail_display, second_label, complete):
+    publish, view, _ = registered_mail_display
+    publish(second_label, complete=complete)
+    scoped = view('Work')
+    assert 'Which one?' in scoped and 'SYNTHETIC-A-BODY' not in scoped
+    assert {item['id'] for item in M.native_email_accounts()} == {'Native-A', 'Native-B'}
+    assert {'Native-A', 'Native-B'} <= set(M._known_accounts())
+    assert 'SYNTHETIC-A-BODY' in view('Native-A')
+    unscoped = view()
+    assert 'SYNTHETIC-A-BODY' in unscoped
+    failed = view('Native-B')
+    assert 'SYNTHETIC-A-BODY' not in failed
+    if not complete:
+        assert 'incomplete' in unscoped.lower() and 'Native-B' in unscoped
+        assert 'failed' in failed.lower() and 'coverage' in failed.lower() and 'unknown' in failed.lower()
+        assert 'no cached email account' not in failed.lower()
+        assert 'No emails matching' not in failed
+        assert M.raw_email_snapshot() is None
+        assert not dispatch(email_account='Work')['sources']['email']['records']
+        from service.tasks.source_readers import current_mail_reader
+        from service.tasks.references import SourceRef, resolve_reference
+        result = resolve_reference(SourceRef('email', hints={'account': 'Native-A'}),
+                                   current_mail_reader(), now=NOW)
+        assert result.status == 'unavailable'
+    else:
+        assert M.raw_email_snapshot() is not None
+        assert 'incomplete' not in unscoped.lower()
+        assert 'No emails matching' in failed
+
+
+@pytest.mark.parametrize('change', [
+    {'version': 3}, {'successful_account_ids': ['Native-A', 'unknown']},
+    {'failed_account_ids': ['Native-A', 'Native-B']},
+    {'account_inventory': [{'id': 'Native-A', 'label': 'Work'}, {'id': 'Native-A', 'label': 'Work'}]},
+    {'account_inventory': [{'id': 'Native-A', 'label': 'Other'}, {'id': 'Native-B', 'label': 'Work'}]},
+])
+def test_registered_display_cannot_infer_native_label_scope_from_malformed_v2(registered_mail_display, change):
+    publish, view, _ = registered_mail_display
+    publish(change=change)
+    scoped = view('Work')
+    assert 'SYNTHETIC-A-BODY' not in scoped
+    assert 'inventory' in scoped.lower() or 'Which one?' in scoped
+    assert M.raw_email_snapshot() is None and M.raw_email_inventory() is None
+    assert M.native_email_accounts() == [] and M._known_accounts() == []
+    assert not dispatch(email_account='Work')['sources']['email']['records']
+
+
+@pytest.mark.parametrize('boundary', ['stale', 'withdrawn', 'restart'])
+def test_registered_retained_display_cannot_restore_current_native_label_identity(registered_mail_display, monkeypatch, boundary):
+    publish, view, clock = registered_mail_display
+    publish(complete=True)
+    if boundary == 'stale':
+        clock[0] += 1201
+    elif boundary == 'withdrawn':
+        M.set_email_availability(False, reason='Synthetic Mail scan unavailable')
+    else:
+        monkeypatch.setattr(M, '_raw_mail_snapshot', None)
+        monkeypatch.setattr(M, '_raw_reference_scan', {})
+        monkeypatch.setattr(M, '_email_available', None)
+        monkeypatch.setattr(M, '_email_read_source', '')
+    scoped = view('Work')
+    assert 'SYNTHETIC-A-BODY' not in scoped
+    assert 'inventory' in scoped.lower() or 'Which one?' in scoped
+    assert 'SYNTHETIC-A-BODY' in view('Native-A')
+    unscoped = view()
+    assert 'SYNTHETIC-A-BODY' in unscoped and ('unverified' in unscoped or 'unknown' in unscoped)
+    assert M.raw_email_snapshot() is None and M.raw_email_inventory() is None
+    assert M.native_email_accounts() == [] and M._known_accounts() == []
+    assert not dispatch(email_account='Native-A')['sources']['email']['records']
+
+
+def test_registered_all_failed_new_inventory_does_not_authorize_old_label_scope(registered_mail_display):
+    publish, view, _ = registered_mail_display
+    publish(complete=True)
+    envelope = {**v2_coverage(('Native-C', 'Home')), 'successful_account_ids': [],
+                'failed_account_ids': ['Native-C'], 'complete': False}
+    M.cache_raw_emails('', envelope)
+    inventory = M.raw_email_inventory()
+    assert inventory.account_inventory == (('Native-C', 'Home'),)
+    assert 'SYNTHETIC-A-BODY' not in view('Work')
+    retained = view('Native-A')
+    assert 'SYNTHETIC-A-BODY' in retained and 'unverified' in retained
+    failed = view('Native-C')
+    assert 'failed' in failed and 'coverage' in failed and 'unknown' in failed
+    assert M.raw_email_snapshot() is None
+    assert M.prepare_publication_witness(inventory) is None
+
+
+def test_registered_zero_account_capture_replaces_identity_without_restoring_display(registered_mail_display):
+    publish, view, _ = registered_mail_display
+    publish()
+    previous = M.raw_email_inventory()
+    M.cache_raw_emails('', v2_coverage())
+    current = M.raw_email_inventory()
+    assert current is not None and current.account_inventory == () and current.generation > previous.generation
+    assert M.native_email_accounts() == [] and M._known_accounts() == []
+    assert 'SYNTHETIC-A-BODY' not in view()
+    assert 'No emails matching' in view()
+    assert M.raw_email_snapshot() is not None
+
+
+def test_registered_provider_alias_display_remains_available_when_bound_native_scan_fails(registered_mail_display, monkeypatch):
+    publish, view, _ = registered_mail_display
+    publish()
+    address = 'provider@synthetic.invalid'
+    raw = email_raw([{**mail('SYNTHETIC-PROVIDER-BODY', account=address), 'account_id': address}])
+    monkeypatch.setattr(M, '_external_accounts', {address: {
+        'mail_account_id': 'Native-B', 'mail_account_name': 'Work', 'raw': raw,
+        'raw_at': STAMP, 'raw_verified': True, 'raw_error': ''}})
+    M._recompose_all()
+    assert 'Which one?' in view('Work')
+    provider = view(address)
+    assert 'SYNTHETIC-PROVIDER-BODY' in provider and 'scan failed' not in provider
+    assert 'SYNTHETIC-A-BODY' not in provider
+    assert 'SYNTHETIC-PROVIDER-BODY' in view('Native-B')
+    assert M.raw_email_snapshot() is None
+
+
+def test_registered_partial_distinct_label_and_legacy_controls(registered_mail_display):
+    publish, view, _ = registered_mail_display
+    publish('Home')
+    assert 'SYNTHETIC-A-BODY' in view('Work')
+    assert 'failed' in view('Home') and 'unknown' in view('Home')
+    raw = email_raw([{**mail('SYNTHETIC-A-BODY', account='Work'), 'account_id': 'Native-A'}])
+    M.cache_raw_emails(raw, {'accounts': ['Work'], 'failed_accounts': [], 'complete': True})
+    assert 'SYNTHETIC-A-BODY' in view('Work') and M.raw_email_snapshot() is not None
+    M.cache_raw_emails(raw, {'accounts': ['Work', 'work'], 'failed_accounts': [], 'complete': True})
+    assert 'SYNTHETIC-A-BODY' not in view('Work') and M.raw_email_snapshot() is None
+
+
+
+def test_registered_partial_identity_receipt_is_immutable_and_never_body_evidence(registered_mail_display):
+    publish, view, _ = registered_mail_display
+    envelope = publish()
+    inventory = M.raw_email_inventory()
+    assert inventory.generation == M._raw_mail_snapshot.generation and inventory.synced_at == STAMP
+    envelope['account_inventory'][1]['label'] = 'Home'
+    envelope['failed_account_ids'].clear()
+    envelope['successful_account_ids'].append('Native-B')
+    assert M.raw_email_inventory().account_inventory == (('Native-A', 'Work'), ('Native-B', 'Work'))
+    assert M.raw_email_inventory().failed_account_ids == ('Native-B',)
+    assert 'Which one?' in view('Work')
+    with pytest.raises(AttributeError):
+        inventory.failed_account_ids += ('injected',)
+    assert M.raw_email_snapshot() is None
+    assert M.prepare_publication_witness(inventory) is None
