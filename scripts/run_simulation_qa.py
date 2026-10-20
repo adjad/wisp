@@ -486,6 +486,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_priorities.py",
     "tests/test_workflow20_reminder_time.py",
     "tests/test_workflow20_routing.py",
+    # Actual unread stream with temporary stores and synthetic read tools only.
+    "tests/test_unread_summary_entrypoint.py",
     "tests/test_workflow20_schedule_time.py",
     "tests/test_workflow20_snapshot.py",
     "tests/test_workflow20_travel.py",
