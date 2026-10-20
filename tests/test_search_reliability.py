@@ -62,6 +62,29 @@ class LexicalFoldTests(unittest.TestCase):
         self.assertEqual([(hit.start, hit.end) for hit in literal_hits(accented, "cafe")],
                          [(0, 4), (6, 10)])
 
+    def test_sparse_unicode_preserves_per_codepoint_case_and_composition(self):
+        # Each middle uses the sparse path; expected text is independent of
+        # Python's contextual whole-string lower and global normalization.
+        cases = [("ΟΣ ΣΟΣ ΟΣΑ", "οσ σοσ οσα"), ("İ É e\u0301", "i e e\u0301"),
+                 ("👩🏽‍💻 ’ ß", "👩🏽‍💻 ’ ß"), ("\ud800 A \udfff", "\ud800 a \udfff")]
+        for middle, expected in cases:
+            with self.subTest(middle=middle):
+                text = "A" * 256 + middle + "Z" * 256
+                self.assertEqual(fold(text), "a" * 256 + expected + "z" * 256)
+                self.assertEqual(len(fold(text)), len(text))
+
+    def test_unicode_density_boundaries_and_fragment_ends(self):
+        # 31/32/33 characters straddle the first sparse threshold. With two
+        # accents, 63/64/65 characters straddle the next one.
+        for size, accents in ((31, 1), (32, 1), (33, 1), (63, 2), (64, 2), (65, 2)):
+            for where in ("first", "middle", "last"):
+                plain = "A" * (size - accents)
+                pos = {"first": 0, "middle": len(plain) // 2, "last": len(plain)}[where]
+                with self.subTest(size=size, accents=accents, where=where):
+                    text = plain[:pos] + "É" * accents + plain[pos:]
+                    self.assertEqual(fold(text), "a" * pos + "e" * accents + "a" * (len(plain) - pos))
+                    self.assertEqual(len(fold(text)), size)
+
     def test_tokenizer_and_bm25_results_remain_stable(self):
         self.assertEqual(tokenize("Project VIOLET, café e\u0301!"),
                          ["project", "violet", "cafe", "e"])
@@ -327,6 +350,22 @@ class LazyLexicalTests(SearchCase):
         eager = await self.collect("   ", "violet")
         self.assertEqual([{k: v for k, v in event.items() if k != "ms"} for event in cold],
                          [{k: v for k, v in event.items() if k != "ms"} for event in eager])
+
+    async def test_sparse_unicode_literal_rows_keep_exact_original_offsets(self):
+        text = "A" * 512 + "\nCAFÉ ΟΣ İ e\u0301 🙂 VIOLET" + "Z" * 512
+        cases = [('"cafe"', (513, 517), "CAFÉ"), ('"οσ"', (518, 520), "ΟΣ"),
+                 ('"İ e\u0301"', (521, 525), "İ e\u0301"), ('"e\u0301"', (523, 525), "e\u0301"),
+                 ('"🙂"', (526, 527), "🙂"), ('"violet"', (528, 534), "VIOLET")]
+        for query, span, original in cases:
+            with self.subTest(query=query):
+                events = await self.collect(text, query)
+                self.assertEqual([event["event"] for event in events], ["query", "literal", "done"])
+                rows = events[1]["results"]
+                self.assertEqual([(row["start"], row["end"], row["match"], row["line"])
+                                  for row in rows], [(*span, original, 2)])
+                chunks = engine._docs[embedder.doc_key(text)].chunks
+                self.assertEqual(rows[0]["chunk_idx"], engine._chunk_for_offset(chunks, span[0]))
+        self.assertEqual(self.build.call_count, 0)
 
 
 class IndexLifecycleTests(SearchCase):
