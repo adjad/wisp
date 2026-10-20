@@ -46,9 +46,40 @@ def test_literal_preservation_does_not_broaden_shortcut_admission(prompt):
     assert compile_read(prompt) is None
 
 
+@pytest.mark.parametrize('suffix,args', [
+    ('; do not browse', {'period': 'tomorrow'}),
+    ('; do not use the web', {'period': 'tomorrow'}),
+    (', but do not use my notes', {'period': 'tomorrow'}),
+    ('; do not use reminders', {'period': 'tomorrow', 'calendar_only': True}),
+    ("; don't use Reminders", {'period': 'tomorrow', 'calendar_only': True}),
+    ('; do not browse; do not use reminders', {'period': 'tomorrow', 'calendar_only': True}),
+    ('; do not use reminders; do not browse', {'period': 'tomorrow', 'calendar_only': True}),
+])
+def test_explicit_unneeded_source_exclusions_preserve_local_calendar(suffix, args):
+    from service.workflows.reads import compile_read
+    assert compile_read('Show my calendar tomorrow' + suffix) == ([('get_upcoming', args)], '')
+
+
+@pytest.mark.parametrize('suffix', [
+    '; do not use Calendar', '; do not browse and text Mom',
+    '; do not use the web unless needed', '; do not use reminders and email Mom',
+])
+def test_unknown_or_effectful_source_clause_still_requires_interpretation(suffix):
+    from service.workflows.reads import compile_read
+    assert compile_read('Show my calendar tomorrow' + suffix) is None
+
+
+def test_source_denial_inside_a_title_is_only_literal_text():
+    from service.workflows.reads import compile_read
+    assert compile_read('Show my schedule named "tmrw; do not use Reminders" tomorrow') == (
+        [('get_upcoming', {'period': 'tomorrow', 'query': 'tmrw; do not use Reminders'})], '')
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('opening,closing', QUOTES)
-async def test_calendar_stream_executes_exact_quoted_query(tmp_path, monkeypatch, opening, closing):
+@pytest.mark.parametrize('suffix', ['', '; do not browse', '; do not use the web',
+                                   ', but do not use my notes', '; do not use reminders'])
+async def test_calendar_stream_executes_exact_quoted_query(tmp_path, monkeypatch, opening, closing, suffix):
     from service import main
     from service.memory.store import SessionStore
     from service.assistant.store import AssistantStore
@@ -71,7 +102,7 @@ async def test_calendar_stream_executes_exact_quoted_query(tmp_path, monkeypatch
 
     monkeypatch.setattr(reads, 'run_tool', synthetic_read)
     try:
-        response = await main.agent({'prompt': f'Show calender events named {opening}tmrw{closing} tmrow', 'debug': False})
+        response = await main.agent({'prompt': f'Show calender events named {opening}tmrw{closing} tmrow{suffix}', 'debug': False})
         chunks = []
         async for chunk in response.body_iterator:
             chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)

@@ -235,18 +235,33 @@ def _calendar_read_args(text: str, period: str, today: date | None = None,
     # filter is fully represented. Other status predicates remain unresolved.
     tail = re.sub(r"^that\s+are\s+not\s+cancelled\b|^that\s+are\s+not\s+canceled\b",
                   "", tail, flags=re.I).strip()
-    exclusion = re.search(
-        r"(?:[,;]\s*|\s+)?(?:do\s+not\s+include|don[’']t\s+include|without|"
-        r"excluding|exclude|skip|leave\s+out|no)\s+reminders?\s*$", tail, re.I)
-    reminders_excluded = exclusion is not None
-    if exclusion:
-        tail = tail[:exclusion.start()].strip()
     title = re.search(
         r'''\b(?:named|titled|called)\s+(?:"(?P<double>[^"\n]+)"|“(?P<curly>[^”\n]+)”|'''
         r"'(?P<single>[^'\n]+)'|`(?P<backtick>[^`\n]+)`)", tail, re.I)
     query = next((v for v in title.groupdict().values() if v is not None), "") if title else ""
     if title:
         tail = (tail[:title.start()] + tail[title.end():]).strip()
+    # Interpret source clauses only after removing the literal title. Calendar
+    # never reads the web or Notes; excluding Reminders needs calendar_only.
+    # Consume complete trailing clauses, leaving unknown conditions or actions
+    # intact so they cannot accidentally authorize a narrower read.
+    reminders_excluded = False
+    while True:
+        exclusion = re.search(
+            r"(?:^|[,;]\s*|\s+)(?:but\s+)?(?:do\s+not\s+(?:include|use)|"
+            r"don[’']t\s+(?:include|use)|without|excluding|exclude|skip|leave\s+out|no)"
+            r"\s+reminders?\s*$", tail, re.I)
+        if exclusion:
+            reminders_excluded = True
+        else:
+            exclusion = re.search(
+                r"(?:^|[,;]\s*|\s+)(?:but\s+)?(?:do\s+not|don[’']t)\s+(?:"
+                r"browse(?:\s+(?:the\s+)?(?:web|internet))?|"
+                r"(?:use|search)\s+(?:the\s+)?(?:web|internet)|"
+                r"(?:use|read|search)\s+(?:my\s+|the\s+)?notes)\s*$", tail, re.I)
+        if not exclusion:
+            break
+        tail = tail[:exclusion.start()].strip()
     scope = re.sub(r"^(?:for|on)\s+", "", tail, flags=re.I).strip()
     numeric = re.fullmatch(r"(?:the\s+)?next\s+(\d+)\s+(days?|weeks?)", scope, re.I)
     if not scope:
