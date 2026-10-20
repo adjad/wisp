@@ -2606,6 +2606,11 @@ def _bind_inline_read_then_deliver(text: str) -> str:
     return f"{verb} {who + ' ' if who else ''}a summary of {obj_text}"
 
 
+def projected_workflow_supported(plan: WorkflowPlan) -> bool:
+    """Pure shared admission for a retained compound delivery clause."""
+    return plan.status == 'ready' and not plan.content_error
+
+
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
                 prior_display=None) -> WorkflowPlan | None:
     from service.tools.registry import StoredDisplayArtifact

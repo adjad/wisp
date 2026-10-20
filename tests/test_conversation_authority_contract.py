@@ -538,6 +538,20 @@ def test_current_authored_operand_bytes_survive_explanation_projection():
     assert 'Define unread email; delete all reminders' in task.subject.value
 
 
+@pytest.mark.parametrize('prompt', [
+    'Delete the Laundry reminder.',
+    'Set a reminder tomorrow at 6pm titled “Define unread email”.',
+    'Text +15555550123 saying Please define unread email.',
+])
+def test_projected_capability_admission_does_not_mutate_task_plan(prompt):
+    from service.tasks.compiler import projected_task_capabilities
+    task = compile_task(prompt)
+    assert task is not None
+    before = copy.deepcopy(task.to_dict())
+    assert projected_task_capabilities(prompt, task)
+    assert task.to_dict() == before
+
+
 @pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
 @pytest.mark.parametrize('owner', ['reminder', 'reply-body', 'reply-target',
                                    'workflow-addressed', 'workflow-unaddressed'])
@@ -568,6 +582,154 @@ def test_unresolved_or_unconsumed_current_delete_has_no_compound_capability(prom
     from service.tools.registry import REGISTRY
     forbidden, bindings = routing_guard_contract(prompt)
     assert set(REGISTRY) <= forbidden and bindings == {}
+    assert compile_task(prompt) is None
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('owner', [None, 'reminder', 'reply-body', 'workflow-addressed'])
+@pytest.mark.parametrize('suffix', [
+    'delete reminders.',
+    'delete the Laundry reminder from the Work account.',
+    'delete the Laundry reminder if needed.',
+    'complete reminders.',
+    'complete the Laundry reminder from the Work account.',
+    'complete the Laundry reminder if needed.',
+    'update reminders.',
+    'update the Laundry reminder to tomorrow from the Work account.',
+    'update the Laundry reminder to tomorrow if needed.',
+    'Text Mom.',
+    'Text +15555550123 at 9pm saying hello.',
+    "Reply to Alex's email saying Thanks.",
+    'Remind me to buy milk.',
+    'Email alex@example.invalid saying hello.',
+])
+def test_actual_unsupported_projected_operation_has_no_early_or_pending_owner(
+        pending_entrypoint, monkeypatch, tmp_path, mode, owner, suffix):
+    state = pending_entrypoint
+    state.reminders.add_manual('Laundry', time.time() + 3600)
+    state.reminders.add_manual('Fictional keep blue folder reminder', time.time() + 3600)
+    sid = seed_pending(state, owner)[0] if owner else None
+    before, reminders = pending_rows(state), state.reminders.active_between()
+    prompt = 'Define delete all reminders; ' + suffix
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'clear_reminders',
+                            {'scope': 'all', 'query': ''}, sid=sid)
+    (tmp_path / 'unsupported-operation-receipt.json').write_text(json.dumps({
+        'mode': mode, 'owner': owner, 'prompt': prompt, 'before': before,
+        'after': pending_rows(state), 'reminders_before': reminders,
+        'reminders_after': state.reminders.active_between(), 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert pending_rows(state) == before and state.reminders.active_between() == reminders
+    assert not state.executed and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt,intent,tool,change', [
+    ('Complete the Laundry reminder.', 'reminder.complete', 'complete_reminder', {}),
+    ('Update the Laundry reminder to tomorrow', 'reminder.update', 'update_reminder', {'day': 'tomorrow'}),
+])
+def test_actual_original_complete_update_actions_keep_identity_and_owner(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, intent, tool, change):
+    state = pending_entrypoint
+    state.reminders.add_manual('Laundry', time.time() + 3600)
+    before = state.reminders.active_between()
+    expected = {'title': 'Laundry', 'expected_id': before[0]['id'], **change}
+    task = compile_task(prompt)
+    assert task and task.intent == intent and not task.missing_slots
+    events = actual_attempt(state, monkeypatch, mode, prompt, tool, expected)
+    (tmp_path / 'original-operation-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'expected': expected, 'events': events,
+        'before': before, 'after': state.reminders.active_between(), 'requests': state.requests,
+        'raw_sse': state.raw_sse, 'registry_calls': state.executed,
+        'source_calls': state.source_calls, 'native_calls': state.native}, indent=2, default=str))
+    owners = [e['task'] for e in events if e['type'] == 'task_plan']
+    assert (any(owner['intent'] == intent and owner['target']['value'] == 'Laundry' for owner in owners)
+            or any(e['type'] == 'confirm' and e.get('tool') == tool for e in events) or state.executed)
+    assert all(name == tool and args['title'] == 'Laundry' for name, args in state.executed)
+    assert all(args.get('expected_id', before[0]['id']) == before[0]['id'] for _, args in state.executed)
+    if mode in {'normal', 'planner'}:
+        assert all(args['expected_id'] == before[0]['id'] for _, args in state.executed)
+    assert state.reminders.active_between() == before and not state.source_calls and not state.native
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt', ['Define ephemeral.', 'Explain portfolio theory.'])
+@pytest.mark.parametrize('name', ['view_emails', 'fictional_private_alias'])
+def test_actual_public_explanation_cannot_acquire_private_capabilities(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, name):
+    from service.tools.registry import REGISTRY
+    from service.router.router import routing_guard_contract
+    state = pending_entrypoint
+    monkeypatch.setitem(REGISTRY, 'fictional_private_alias', replace(
+        REGISTRY['view_emails'], name='fictional_private_alias'))
+    forbidden, bindings = routing_guard_contract(prompt)
+    assert set(REGISTRY) - forbidden == {'web_search', 'wikipedia_summary'}
+    assert bindings == {'web_search': {'query': prompt},
+                        'wikipedia_summary': {'topic': 'ephemeral' if 'ephemeral' in prompt else 'portfolio theory'}}
+    events = actual_attempt(state, monkeypatch, mode, prompt, name, {})
+    (tmp_path / 'public-explanation-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'attempt': name, 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests,
+        'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert not pending_rows(state) and not state.source_calls and not state.executed and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt,name,key,value', [
+    ('Define ephemeral.', 'wikipedia_summary', 'topic', 'ephemeral'),
+    ('Explain portfolio theory.', 'web_search', 'query', 'Explain portfolio theory.'),
+])
+def test_actual_public_explanation_binds_current_public_request_not_private_history(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, name, key, value):
+    state = pending_entrypoint
+    sid = state.sessions.create_session()
+    state.sessions.add_turn(sid, 'user', 'Fictional private history: secret-project-abc.')
+    state.sessions.add_turn(sid, 'assistant', 'Fictional private history acknowledged.')
+    events = actual_attempt(state, monkeypatch, mode, prompt, name,
+                            {key: 'Fictional private history secret-project-abc'}, sid=sid)
+    (tmp_path / 'public-request-binding-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'tool': name, 'expected': {key: value},
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests,
+        'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    routed = next(e for e in events if e['type'] == 'routed')
+    assert routed['tool_argument_bindings'][name] == {key: value}
+    assert all(tool == name and args.get(key) == value for tool, args in state.executed)
+    for event in events:
+        if event['type'] == 'tool_call' and event.get('name') == name:
+            assert event['args'][key] == value
+    # Optional web remains subject to the existing private-context guard; a
+    # denial/no attempt is not evidence of an executed lookup. Never force it.
+    if name == 'wikipedia_summary':
+        assert state.executed
+    assert not pending_rows(state) and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('suffix,supported', [
+    ('read my inbox.', True),
+    ('read my inbox without reading Mail.', False),
+    ('read my inbox from the Work account.', False),
+    ('read my inbox; delete all reminders.', False),
+])
+def test_actual_independent_inbox_read_is_complete_and_source_scoped(
+        pending_entrypoint, monkeypatch, tmp_path, mode, suffix, supported):
+    state = pending_entrypoint
+    prompt = 'Explain "read my inbox"; ' + suffix
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'view_emails', {})
+    (tmp_path / 'independent-inbox-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'supported': supported, 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests,
+        'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert bool(state.executed) == supported
+    assert all(name == 'view_emails' for name, _ in state.executed)
+    assert not pending_rows(state) and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
 
 
 @pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])

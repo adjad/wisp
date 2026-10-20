@@ -392,10 +392,59 @@ def _operation_target(text: str, verbs: str) -> str:
     return _clean_target(match.group("body")) if match else ""
 
 
+def _complete_reminder_delete_clause(text: str, plan: TaskPlan) -> bool:
+    """Pure full-clause authority proof, shared by projected early/late owners."""
+    if plan.intent != 'reminder.delete' or plan.missing_slots:
+        return False
+    target = str(plan.target.value or '')
+    identity = re.escape(target)
+    literal = rf'''(?:{identity}|"{identity}"|“{identity}”|'{identity}'|‘{identity}’|`{identity}`)'''
+    body = (rf'(?:(?:the|my)\s+)?(?:{literal}\s+reminders?|'
+            rf'reminders?\s+(?:called|named|about)\s+{literal})') if target else (
+                r'(?:all|every)(?:\s+(?:of\s+)?(?:my|the))?\s+reminders?')
+    return bool(re.fullmatch(
+        r'\s*(?:please\s+)?(?:delete|remove|clear)\s+' + body + r'[.!?\s]*', text, re.I))
+
+
+def projected_task_capabilities(text: str, plan: TaskPlan) -> dict[str, dict] | None:
+    """Pure complete retained-clause proof shared before every projected owner.
+
+    Unsupported compound intents clarify; they cannot allocate or resolve an
+    early task before the later capability envelope sees the same proof.
+    """
+    if plan.missing_slots:
+        return None
+    if plan.intent == 'reminder.delete' and _complete_reminder_delete_clause(text, plan):
+        return {'clear_reminders': {'scope': plan.parameters['scope'].value,
+                                    'query': str(plan.target.value or '')}}
+    if plan.intent == 'reminder.create':
+        from service.tasks.planner import plan_task, InvalidTaskPlan
+        try:
+            steps = plan_task(TaskPlan.from_dict(plan.to_dict()))
+        except InvalidTaskPlan:
+            return None
+        if len({step.tool for step in steps}) != len(steps):
+            return None  # A single binding cannot represent several authored operands.
+        return {step.tool: dict(step.args) for step in steps}
+    if plan.intent in {'message.send', 'email.send'} and not plan.temporal.absolute_iso:
+        effect = 'send_message' if plan.intent == 'message.send' else 'send_email'
+        recipient = str(plan.recipient.value or '')
+        args = {'to': recipient, 'text' if effect == 'send_message' else 'body': plan.subject.value}
+        if effect == 'send_email':
+            args['subject'] = plan.parameters['email_subject'].value
+        bindings = {effect: args}
+        if not re.fullmatch(r'\+?[\d ()-]+|[^\s@]+@[^\s@]+', recipient):
+            bindings['lookup_contact'] = {'name': recipient}
+        return bindings
+    return None
+
+
 def compile_reminder_delete(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
     if (remainder := explanation_remainder(text)) is not None:
         plan = compile_reminder_delete(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
         if plan is not None:
             plan.original_request = text
         return plan
@@ -433,6 +482,8 @@ def compile_reminder_complete(text: str, *, now: datetime | None = None,
                               turn: int = 0) -> TaskPlan | None:
     if (remainder := explanation_remainder(text)) is not None:
         plan = compile_reminder_complete(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
         if plan is not None:
             plan.original_request = text
         return plan
@@ -460,6 +511,8 @@ def compile_reminder_update(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
     if (remainder := explanation_remainder(text)) is not None:
         plan = compile_reminder_update(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
         if plan is not None:
             plan.original_request = text
         return plan
@@ -603,6 +656,8 @@ def compile_task(text: str, *, now: datetime | None = None,
     remainder = explanation_remainder(text)
     if remainder is not None:
         plan = compile_task(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
         if plan is not None:
             plan.original_request = text
         return plan

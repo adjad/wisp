@@ -76,7 +76,7 @@ _PERSONAL_OR_OPEN_TERM = re.compile(
     r"did|does|do|has|have|had|was|were|is|are|can|could|would|will)\b|['’]s\b", re.I)
 
 
-def is_complete_explanation(text: str) -> bool:
+def explanation_terms(text: str) -> tuple[str, ...] | None:
     """A fully consumed explanation of language or a generic term.
 
     This is intentionally narrower than every request to explain something:
@@ -99,8 +99,13 @@ def is_complete_explanation(text: str) -> bool:
     for frame in _EXPLANATION_FRAMES:
         match = frame.fullmatch(masked)
         if match and all(term(value) for value in match.groupdict().values()):
-            return True
-    return False
+            return tuple(re.sub(r'^' + _TERM_LABEL, '', value.strip(), count=1, flags=re.I)
+                         for value in match.groupdict().values())
+    return None
+
+
+def is_complete_explanation(text: str) -> bool:
+    return explanation_terms(text) is not None
 
 
 _CLAUSE_COMMAND = (r"(?:(?:please|and|then|also|but)\s+)*(?:(?:can|could|would|will)\s+you\s+)?"
@@ -119,6 +124,9 @@ _AUTHORED_CLAUSE_OWNER = re.compile(
     r"(?:\bsaying\b|\bthat\s+says\b|\band\s+say\b|\bto\s+say\b|\bthat\b|:)\s+|"
     r"(?:save|store|write|draft|update|edit|replace)\b[^;?\n]{0,160}"
     r"\b(?:knowledge|style|follow-up|note|file)\b)", re.I)
+_DEPENDENT_EXPLANATION = re.compile(
+    _EXPLANATION_LEAD + r"explain\s+(?:it|(?:the\s+)?(?:findings|results)|what\s+it\s+means)"
+    r"(?:,?\s+please)?[.!?\s]*", re.I)
 
 
 def explanation_remainder(text: str) -> str | None:
@@ -130,6 +138,8 @@ def explanation_remainder(text: str) -> str | None:
     """
     if _AUTHORED_CLAUSE_OWNER.match(text or ""):
         return None
+    if _DEPENDENT_EXPLANATION.fullmatch(text or ""):
+        return None  # Presentation belongs to its existing source/result owner.
     if is_complete_explanation(text):
         return ""
     opaque = list(text or "")
@@ -148,7 +158,7 @@ def explanation_remainder(text: str) -> str | None:
         if not clause:
             cursor, prior_boundary = next_start, end
             continue
-        if is_complete_explanation(clause):
+        if is_complete_explanation(clause) and not _DEPENDENT_EXPLANATION.fullmatch(clause):
             explained = True
             start = prior_boundary if actual_before else 0
             stop = end if actual_before and text[next_start:].strip() else next_start
@@ -199,8 +209,6 @@ def is_mention(text: str) -> bool:
     """The request talks about a word, phrase or command rather than asking for
     it to happen."""
     text = text or ""
-    if is_complete_explanation(text):
-        return True
     match = _MENTION_VERB.match(text)
     if not match:
         return False

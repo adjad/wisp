@@ -15,7 +15,10 @@ import re
 from dataclasses import dataclass, field, replace
 
 from service.authored_message import authored_message_intent
-from service.utterance_shape import is_mention, is_prohibition, mask_quoted, explanation_remainder
+from service.utterance_shape import (
+    is_mention, is_prohibition, mask_quoted, explanation_remainder,
+    quoted_spans, explanation_terms,
+)
 from service.config import (
     models_config,
     role_to_model,
@@ -6549,48 +6552,28 @@ def _explanation_clause_contract(text: str) -> tuple[list[str], dict[str, dict]]
     if remainder is None:
         return None
     if not remainder:
+        # Generic public vocabulary/concepts keep the existing public owner.
+        # Only fully consumed language about private sources/actions closes
+        # every capability. This is never positive private-source authority.
+        if not (quoted_spans(text) or re.search(r'\b' + _PRIVATE_SOURCE_NAME + r'\b', text, re.I)
+                or has_write_intent(text) or _matched_device_tools(text)):
+            return None if explanation_terms(text) is not None else ([], {})
         return [], {}
     from service.workflows.reads import compile_read
     read = compile_read(remainder)
     if read is not None and read[0] and not read[1]:
         return list(dict.fromkeys(name for name, _ in read[0])), dict(read[0])
-    from service.tasks.compiler import compile_task
+    if re.fullmatch(r'\s*(?:(?:please|can you|could you)\s+)?(?:read|show|check|list)\s+'
+                    r'(?:my\s+|the\s+)?inbox[.!?\s]*', remainder, re.I):
+        return ['view_emails'], {'view_emails': {}}
+    from service.tasks.compiler import compile_task, projected_task_capabilities
     task = compile_task(remainder)
-    if task is not None and task.intent == 'reminder.delete' and not task.missing_slots:
-        target = str(task.target.value or '')
-        identity = re.escape(target)
-        literal = rf'''(?:{identity}|"{identity}"|“{identity}”|'{identity}'|‘{identity}’|`{identity}`)'''
-        body = (rf'(?:(?:the|my)\s+)?(?:{literal}\s+reminders?|'
-                rf'reminders?\s+(?:called|named|about)\s+{literal})') if target else (
-                    r'(?:all|every)(?:\s+(?:of\s+)?(?:my|the))?\s+reminders?')
-        # The ordinary operation parser extracts slots, but an unconsumed
-        # account/source clause cannot grant a broader compound capability.
-        if re.fullmatch(r'\s*(?:please\s+)?(?:delete|remove|clear)\s+' + body + r'[.!?\s]*',
-                        remainder, re.I):
-            return ['clear_reminders'], {'clear_reminders': {
-                'scope': task.parameters['scope'].value, 'query': target}}
-    if task is not None and not task.missing_slots:
-        if task.intent == 'reminder.create':
-            from service.tasks.planner import plan_task, InvalidTaskPlan
-            try:
-                steps = plan_task(task)
-            except InvalidTaskPlan:
-                return [], {}
-            return [step.tool for step in steps], {step.tool: dict(step.args) for step in steps}
-        if task.intent in {'message.send', 'email.send'} and not task.temporal.absolute_iso:
-            effect = 'send_message' if task.intent == 'message.send' else 'send_email'
-            recipient = str(task.recipient.value or '')
-            args = {'to': recipient, 'text' if effect == 'send_message' else 'body': task.subject.value}
-            if effect == 'send_email':
-                args['subject'] = task.parameters['email_subject'].value
-            names, bindings = [effect], {effect: args}
-            if not re.fullmatch(r'\+?[\d ()-]+|[^\s@]+@[^\s@]+', recipient):
-                names.append('lookup_contact')
-                bindings['lookup_contact'] = {'name': recipient}
-            return names, bindings
-    from service.workflows.compiler import compile_new, compile_decision
+    if task is not None:
+        bindings = projected_task_capabilities(remainder, task)
+        return (list(bindings), bindings) if bindings is not None else ([], {})
+    from service.workflows.compiler import compile_new, compile_decision, projected_workflow_supported
     workflow = compile_new(remainder)
-    if workflow is not None and workflow.status == 'ready' and not workflow.content_error:
+    if workflow is not None and projected_workflow_supported(workflow):
         decision = compile_decision(workflow)
         return list(decision.tool_subset or ()), dict(decision.tool_argument_bindings)
     return [], {}
@@ -6612,6 +6595,15 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
         bindings = {name: {**args, **policy_bindings.get(name, {})}
                     for name, args in bindings.items() if name in allowed}
         return frozenset((set(REGISTRY) - allowed) | set(policy_forbidden)), bindings
+
+    if explanation_remainder(text) == '':
+        # Public explanation menus remain optional and cannot acquire private
+        # reads, effects, opaque transports or newly registered aliases.
+        terms = explanation_terms(text)
+        return frozenset(set(REGISTRY) - {'web_search', 'wikipedia_summary'}), {
+            'web_search': {'query': text},
+            'wikipedia_summary': {'topic': ' and '.join(terms or ())},
+        }
 
     # Authored/quoted text is data, never fresh authority or prohibitions.
     t = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
@@ -7899,7 +7891,7 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
         return clarification
     # Detect the complete source-policy envelope without reclassifying ordinary
     # web requests. Keep these triggers aligned with routing_guard_contract.
-    if not (excluded or _calendar_is_excluded(policy_text) or _reminder_is_excluded(policy_text)
+    if not (explanation_remainder(text) == '' or excluded or _calendar_is_excluded(policy_text) or _reminder_is_excluded(policy_text)
             or _notes_todo_destination_is_excluded(policy_text)
             or re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b",
                          policy_text, re.I)):
