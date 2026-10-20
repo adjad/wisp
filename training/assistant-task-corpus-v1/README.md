@@ -8,6 +8,18 @@ The corpus contains 48 cases in JSON Lines format. The `smoke` split is a short 
 
 Run a case against an isolated Wisp test profile with fixture data loaded as described in `setup`. Intercept writes and outbound actions. Grade the response against `expected.behavior`; wording can vary. For an action marked `confirmation_required`, the test passes only if Wisp shows the exact proposed effect and waits for an explicit approval. Do not approve an outbound send or deletion in a live account.
 
+For a live, visible routing dry run in Wisp, enter one of these commands in the Ask tab:
+
+```text
+/corpus smoke
+/corpus regression
+/corpus challenge
+/corpus ATC-001
+/corpus all
+```
+
+The Ask runner uses the live Wisp router and configured model, streams each planned tool call, and compares the observed tool names with `expected.tools`. It sends each case without chat history and uses Wisp's `/agent` test mode, which blocks tool execution. The synthetic `setup` is included as prompt context; the runner does not seed or simulate fixture data, so this mode checks routing and lets a person inspect the response against the behavior rubric, but does not verify fixture-backed answers or end-to-end actions. Use an isolated Wisp test profile and fixture harness for that deeper evaluation.
+
 Run the static corpus check with:
 
 ```sh
@@ -27,5 +39,7 @@ Each line in `cases.jsonl` has:
 - `risk`, which tells the harness whether the case is read-only, an explicitly user-authorized local write, needs a confirmation, requires clarification, uses live facts, or checks an injection boundary.
 
 The rows intentionally avoid fixed ideal-answer strings. The expected behavior is the contract; exact phrasing is not.
+
+The app-bundled JSONL used by the Ask command is `app/Sources/WispApp/Resources/assistant-task-corpus-v1.jsonl`; `validate.py` checks that copy stays identical to this corpus.
 
 See `DATA_CARD.md` for provenance, limits, and safe-use notes.

@@ -69,6 +69,7 @@ struct ChatToolRow: Identifiable, Equatable {
     var decision: String        // "allow" | "confirm" | "deny"
     var result: String = ""
     var finished = false
+    var isTestPlan = false
 
     var kind: ChatToolKind { ChatToolKind.from(toolName: name) }
 
@@ -81,6 +82,7 @@ struct ChatToolRow: Identifiable, Equatable {
     /// One short line of what came back, or what is still happening.
     var detail: String {
         if decision == "deny" { return "blocked" }
+        if isTestPlan { return "dry run · not executed" }
         if !finished { return decision == "confirm" ? "waiting for you" : "running" }
         let flat = result.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? ""
         return flat.count > 60 ? String(flat.prefix(60)) + "…" : flat
@@ -116,6 +118,24 @@ struct ChatDraft: Equatable {
     var sent = false
     var discarded = false
     var status = ""
+}
+
+/// The model's planned tool path and the rubric shown for a live corpus dry run.
+/// Behavior checks remain for a human to review; the client only compares tools.
+struct ChatCorpusEvaluation: Equatable {
+    let caseID: String
+    let split: String
+    let category: String
+    let expectedTools: [String]
+    let behavior: [String]
+    var observedTools: [String] = []
+    var completed = false
+    var stopped = false
+
+    var toolPathMatches: Bool? {
+        guard completed, !stopped else { return nil }
+        return expectedTools == observedTools
+    }
 }
 
 // MARK: - Metadata
@@ -180,6 +200,7 @@ struct ChatMessage: Identifiable, Equatable {
     var isError = false
     var errorDetail = ""
     var attachmentName: String?
+    var corpusEvaluation: ChatCorpusEvaluation?
 
     init(id: UUID = UUID(), role: Role, text: String = "", phase: Phase = .done) {
         self.id = id; self.role = role; self.text = text; self.phase = phase
@@ -222,7 +243,8 @@ enum ChatTurnReducer {
             msg.phase = meta.needsTools ? .working : .streaming
         case "tool_call":
             let row = ChatToolRow(id: ev.str("id").isEmpty ? UUID().uuidString : ev.str("id"),
-                                  name: ev.str("name"), decision: ev.str("decision"))
+                                  name: ev.str("name"), decision: ev.str("decision"),
+                                  isTestPlan: ev.bool("test_mode"))
             msg.tools.append(row)
             if meta.firstTokenAt == nil { meta.firstTokenAt = now }
             msg.phase = .working

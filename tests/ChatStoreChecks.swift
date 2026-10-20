@@ -53,6 +53,7 @@ final class ScriptedBackend: ChatBackend {
     }
     func deleteChat(id: String) async -> Bool { deleted.append(id); return true }
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
+             testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
         runs.append((prompt, sessionId))
         for event in script(prompt) { onEvent(event) }

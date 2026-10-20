@@ -63,6 +63,9 @@ class PipelineTests(unittest.TestCase):
             path = bundle / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture")
+        corpus = bundle / "Contents/Resources/WispApp_WispApp.bundle/Contents/Resources/assistant-task-corpus-v1.jsonl"
+        corpus.parent.mkdir(parents=True, exist_ok=True)
+        corpus.write_bytes((ROOT / "training/assistant-task-corpus-v1/cases.jsonl").read_bytes())
         (bundle / "Contents/MacOS/Wisp").chmod(0o755)
         (bundle / "Contents/Resources/backend/.venv/bin/python3").chmod(0o755)
         (bundle / "Contents/Resources/backend/.venv/bin/python").symlink_to("python3")

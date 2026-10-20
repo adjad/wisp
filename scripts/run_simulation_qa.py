@@ -937,6 +937,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
                 "-module-cache-path", module_cache,
                 "app/Sources/WispApp/Chat/ChatTypes.swift",
+                "app/Sources/WispApp/Chat/AssistantTaskCorpus.swift",
                 "app/Sources/WispApp/Chat/ChatStore.swift",
                 "tests/ChatStoreChecks.swift", "-o", chat_store,
             ],

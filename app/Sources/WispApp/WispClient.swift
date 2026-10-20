@@ -533,9 +533,11 @@ final class WispClient {
     // POST /agent and yield decoded SSE events to `onEvent` (called on a background task).
     // Pass `sessionId` to continue a conversation; the server loads & budgets the
     // history. Omit it (empty) to start a fresh chat — the new id arrives in the
-    // first `session` event.
+    // first `session` event. `testMode` asks the service to run a stateless dry
+    // run where tool calls are reported but never executed.
     func runAgent(prompt: String, image: String?, sessionId: String = "",
                   debug: Bool = false,
+                  testMode: Bool = false,
                   onEvent: @escaping @Sendable (Event) -> Void) async {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("agent"))
         req.httpMethod = "POST"
@@ -549,7 +551,8 @@ final class WispClient {
         // response per model call this turn) — real cost, not free, so it
         // only goes out when the user has Debug Mode on and might export.
         var body: [String: Any] = ["prompt": prompt, "debug": debug]
-        if !sessionId.isEmpty { body["session_id"] = sessionId }
+        if testMode { body["test_mode"] = true }
+        if !testMode && !sessionId.isEmpty { body["session_id"] = sessionId }
         if let image { body["image"] = image }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {

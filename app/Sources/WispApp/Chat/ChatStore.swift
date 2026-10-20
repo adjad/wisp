@@ -9,6 +9,7 @@ protocol ChatBackend: AnyObject {
     func loadChat(id: String) async -> [ChatMessage]?
     func deleteChat(id: String) async -> Bool
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
+             testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async
     func approve(sessionId: String, actionId: String, approved: Bool, scope: String, requestId: String) async
     func sendDraft(to: String, text: String) async -> (ok: Bool, result: String)
@@ -31,11 +32,13 @@ final class ChatConversation: ObservableObject, Identifiable {
     @Published var loaded: Bool
     @Published var loading = false
     @Published var busy = false
+    @Published fileprivate(set) var corpusRunning = false
     /// Text to put back in the composer after a dropped request.
     @Published var restoredInput: String?
 
     // Per-run streaming state, outside the published surface.
     fileprivate var task: Task<Void, Never>?
+    fileprivate var corpusTask: Task<Void, Never>?
     fileprivate var pendingDelta = ""
     fileprivate var flushScheduled = false
     fileprivate var streamStart: Date?
@@ -216,16 +219,50 @@ final class ChatStore: ObservableObject {
 
     // MARK: - Sending
 
+    /// Interprets the Ask composer command and otherwise sends a normal prompt.
+    func submit(_ text: String, attachmentName: String? = nil, image: String? = nil) {
+        do {
+            guard let selection = try AssistantTaskCorpusCommand.resolve(text) else {
+                send(text, attachmentName: attachmentName, image: image)
+                return
+            }
+            guard attachmentName == nil, image == nil else {
+                appendLocalNotice("Remove the image attachment before starting the corpus runner.")
+                return
+            }
+            switch selection {
+            case .help:
+                appendLocalNotice(AssistantTaskCorpusCommand.helpText)
+            case .cases(let label, let cases):
+                runCorpus(label: label, cases: cases, command: text)
+            }
+        } catch {
+            appendLocalNotice(error.localizedDescription)
+        }
+    }
+
     func send(_ text: String, attachmentName: String? = nil, image: String? = nil) {
+        let conversation = selected ?? newChat()
+        send(text, attachmentName: attachmentName, image: image, in: conversation,
+             testMode: false, corpusCase: nil)
+    }
+
+    private func send(_ text: String, attachmentName: String? = nil, image: String? = nil,
+                      in conversation: ChatConversation, testMode: Bool,
+                      corpusCase: AssistantTaskCorpusCase?) {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
-        let conversation = selected ?? newChat()
         guard !conversation.busy, !conversation.loading else { return }
-        if conversation.messages.isEmpty { conversation.title = ChatTitle.make(from: prompt) }
+        if conversation.messages.isEmpty && corpusCase == nil { conversation.title = ChatTitle.make(from: prompt) }
         var user = ChatMessage(role: .user, text: prompt)
         user.attachmentName = attachmentName
         var reply = ChatMessage(role: .assistant, phase: .waiting)
         reply.meta = ChatMeta(startedAt: Date())
+        if let corpusCase {
+            reply.corpusEvaluation = ChatCorpusEvaluation(
+                caseID: corpusCase.id, split: corpusCase.split, category: corpusCase.category,
+                expectedTools: corpusCase.expected.tools, behavior: corpusCase.expected.behavior)
+        }
         conversation.messages.append(contentsOf: [user, reply])
         conversation.lastUsed = Date()
         conversation.busy = true
@@ -240,7 +277,8 @@ final class ChatStore: ObservableObject {
         let wantsDebug = false
         conversation.task = Task { [weak self, weak conversation] in
             guard let self else { return }
-            await self.backend.run(prompt: prompt, image: image, sessionId: sid, debug: wantsDebug) { event in
+            await self.backend.run(prompt: prompt, image: image, sessionId: sid, debug: wantsDebug,
+                                   testMode: testMode) { event in
                 Task { @MainActor in
                     guard let conversation else { return }
                     self.handle(event, in: conversation, replyID: replyID, runID: runID)
@@ -249,14 +287,80 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    private func runCorpus(label: String, cases: [AssistantTaskCorpusCase], command: String) {
+        guard !cases.isEmpty else {
+            appendLocalNotice("No corpus cases were found for `\(label)`. Check the bundled corpus and try again.")
+            return
+        }
+        let conversation = newChat()
+        conversation.title = "Assistant corpus · \(label)"
+        conversation.messages.append(ChatMessage(role: .user, text: command))
+        let intro = """
+        Running \(cases.count) case\(cases.count == 1 ? "" : "s") through Wisp's live router and model in dry-run mode. Planned tools are visible below; no tool is executed and no case uses chat history. Compare each tool path and response with the behavior rubric.
+        """
+        conversation.messages.append(ChatMessage(role: .assistant, text: intro))
+        conversation.corpusRunning = true
+        conversation.lastUsed = Date()
+
+        conversation.corpusTask = Task { [weak self, weak conversation] in
+            guard let self, let conversation else { return }
+            var matched = 0
+            var reviewed = 0
+            for corpusCase in cases {
+                guard !Task.isCancelled else { break }
+                self.send(corpusCase.dryRunPrompt, in: conversation, testMode: true, corpusCase: corpusCase)
+                while conversation.busy && !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                guard !Task.isCancelled else { break }
+                if let evaluation = conversation.messages.last(where: { $0.role == .assistant })?.corpusEvaluation,
+                   evaluation.completed {
+                    if evaluation.toolPathMatches == true { matched += 1 } else { reviewed += 1 }
+                } else {
+                    reviewed += 1
+                }
+            }
+            let wasCancelled = Task.isCancelled
+            conversation.corpusRunning = false
+            conversation.corpusTask = nil
+            if !wasCancelled {
+                let summary = """
+                Corpus run finished: \(matched) tool path\(matched == 1 ? "" : "s") matched the expected list; \(reviewed) need review. This compares tool names only. Review the behavior rubric and Wisp's streamed response for each case.
+                """
+                conversation.messages.append(ChatMessage(role: .assistant, text: summary))
+            }
+        }
+    }
+
+    private func appendLocalNotice(_ text: String) {
+        let conversation = selected ?? newChat()
+        guard !conversation.busy, !conversation.corpusRunning else { return }
+        if conversation.messages.isEmpty { conversation.title = "Corpus runner" }
+        conversation.messages.append(ChatMessage(role: .assistant, text: text))
+    }
+
     /// Stop the reply in flight. The text so far stays; a pending approval is denied.
     func stop(_ conversation: ChatConversation) {
-        guard conversation.busy else { return }
+        guard conversation.busy || conversation.corpusRunning else { return }
+        let stoppedCorpus = conversation.corpusRunning
+        conversation.corpusTask?.cancel()
+        conversation.corpusTask = nil
+        conversation.corpusRunning = false
+        guard conversation.busy else {
+            if stoppedCorpus {
+                conversation.messages.append(ChatMessage(role: .assistant, text: "Corpus run stopped. Completed cases remain above."))
+            }
+            return
+        }
         conversation.task?.cancel()
         conversation.task = nil
         flush(conversation)
         conversation.runID = UUID()
         if let i = conversation.messages.lastIndex(where: { $0.role == .assistant }) {
+            if conversation.messages[i].corpusEvaluation != nil {
+                conversation.messages[i].corpusEvaluation?.observedTools = conversation.messages[i].tools.map(\.name)
+                conversation.messages[i].corpusEvaluation?.stopped = true
+            }
             if conversation.messages[i].approval?.state == .pending {
                 resolve(conversation, messageID: conversation.messages[i].id, approved: false, scope: "once")
             }
@@ -264,6 +368,9 @@ final class ChatStore: ObservableObject {
             conversation.messages[i].meta?.finishedAt = Date()
         }
         conversation.busy = false
+        if stoppedCorpus {
+            conversation.messages.append(ChatMessage(role: .assistant, text: "Corpus run stopped. Completed cases remain above."))
+        }
     }
 
     private func handle(_ event: ChatEvent, in conversation: ChatConversation, replyID: UUID, runID: UUID) {
@@ -287,21 +394,39 @@ final class ChatStore: ObservableObject {
             let rate = ChatTurnReducer.tokensPerSecond(chars: conversation.streamChars, since: start)
             if rate > 0 { message.meta?.tokensPerSecond = rate }
         }
+        if event.type == "confirm", message.corpusEvaluation != nil, let approval = message.approval {
+            message.approval?.state = .denied
+            conversation.messages[i] = message
+            Task {
+                await self.backend.approve(sessionId: "", actionId: approval.actionId, approved: false,
+                                           scope: "once", requestId: approval.requestId)
+            }
+            return
+        }
         switch outcome {
         case .none:
             conversation.messages[i] = message
         case .session(let id):
-            if conversation.sessionId.isEmpty { conversation.sessionId = id }
+            if message.corpusEvaluation == nil && conversation.sessionId.isEmpty { conversation.sessionId = id }
         case .finished, .failed:
             if message.approval?.state == .pending { message.approval?.state = .timedOut }
             conversation.messages[i] = message
+            if conversation.messages[i].corpusEvaluation != nil {
+                conversation.messages[i].corpusEvaluation?.observedTools = conversation.messages[i].tools.map(\.name)
+                conversation.messages[i].corpusEvaluation?.completed = outcome == .finished
+            }
             conversation.busy = false
             conversation.lastUsed = Date()
             conversation.preview = message.text.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? ""
-            Task { await self.refresh() }
+            if message.corpusEvaluation == nil { Task { await self.refresh() } }
         case .droppedEmpty:
             // Nothing arrived: take the exchange back and hand the prompt to the composer.
-            if i > 0, conversation.messages[i - 1].role == .user {
+            if message.corpusEvaluation != nil {
+                message.isError = true
+                message.text = "Wisp did not return a response. This case was not scored."
+                message.phase = .failed
+                conversation.messages[i] = message
+            } else if i > 0, conversation.messages[i - 1].role == .user {
                 conversation.restoredInput = conversation.messages[i - 1].text
                 conversation.messages.removeSubrange((i - 1)...i)
             }
@@ -339,6 +464,7 @@ final class ChatStore: ObservableObject {
         guard let i = conversation.messages.firstIndex(where: { $0.id == messageID }),
               conversation.busy,
               var approval = conversation.messages[i].approval, approval.state == .pending else { return }
+        guard !(approved && conversation.messages[i].corpusEvaluation != nil) else { return }
         approval.state = approved ? .allowed : .denied
         conversation.messages[i].approval = approval
         conversation.messages[i].phase = .working

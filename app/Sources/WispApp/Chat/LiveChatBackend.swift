@@ -65,8 +65,10 @@ final class LiveChatBackend: ChatBackend {
     func deleteChat(id: String) async -> Bool { await client.deleteChat(id: id) }
 
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
+             testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
-        await client.runAgent(prompt: prompt, image: image, sessionId: sessionId, debug: debug) { event in
+        await client.runAgent(prompt: prompt, image: image, sessionId: sessionId, debug: debug,
+                              testMode: testMode) { event in
             onEvent(ChatEvent(type: event.type, payload: event.payload))
         }
     }

@@ -8,6 +8,7 @@ let package = Package(
         .executableTarget(
             name: "WispApp",
             path: "Sources/WispApp",
+            resources: [.copy("Resources/assistant-task-corpus-v1.jsonl")],
             // sqlite3: direct read of ~/Library/Messages/chat.db (Messages.app's
             // AppleScript API can't read message content, only chat names).
             linkerSettings: [.linkedLibrary("sqlite3")]

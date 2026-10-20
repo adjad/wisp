@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parents[1]
 ROWS = ROOT / "cases.jsonl"
+BUNDLED_ROWS = REPO_ROOT / "app/Sources/WispApp/Resources/assistant-task-corpus-v1.jsonl"
 EXPECTED_SPLITS = {"smoke": 12, "regression": 24, "challenge": 12}
 ALLOWED_CATEGORIES = {
     "calendar", "mail", "messages", "memory", "files", "research",
@@ -52,6 +53,8 @@ def existing_prompt_inventory() -> set[str]:
 
 
 def main() -> None:
+    if not BUNDLED_ROWS.exists() or BUNDLED_ROWS.read_bytes() != ROWS.read_bytes():
+        fail("the app-bundled corpus differs from cases.jsonl")
     schema = json.loads((ROOT / "schema.json").read_text())
     if schema.get("title") != "Wisp assistant task corpus case":
         fail("unexpected schema")
