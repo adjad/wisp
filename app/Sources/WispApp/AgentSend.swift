@@ -33,12 +33,14 @@ enum AgentSend {
         return ["message": reason, "dropped": true, "unsent": true]
     }
 
-    /// What the Ask tab says when a prompt didn't go through: why (when the
-    /// server never ran it), where the prompt is now, and what waits for it.
     /// Where a dropped prompt went.
     enum Place { case box, queued, setAside }
 
-    static func notice(message: String, unsent: Bool, queued: Int, place: Place = .box) -> String {
+    /// What the Ask tab says when a prompt didn't go through: why (when the
+    /// server never ran it), where the prompt is now, and what waits for it.
+    /// `setAside` is how many set-aside prompts there are now, this one included.
+    static func notice(message: String, unsent: Bool, queued: Int, place: Place = .box,
+                       setAside: Int = 1) -> String {
         let why = unsent && !message.isEmpty ? message : "Wisp didn't answer."
         switch place {
         case .queued:
@@ -46,6 +48,7 @@ enum AgentSend {
         case .setAside:
             return why + " It may have started on that message, so it won't be sent again by itself."
                 + " Press Return on an empty box to bring it back."
+                + (setAside > 1 ? " \(setAside - 1) earlier set-aside message\(setAside == 2 ? "" : "s") stay behind it." : "")
         case .box: break
         }
         var text = why + " Your message is back in the box. Press Return to send it again."

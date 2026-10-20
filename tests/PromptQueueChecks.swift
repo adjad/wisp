@@ -75,6 +75,23 @@ enum PromptQueueChecks {
         precondition(typedDispatch.work == .prompt(image))
         precondition(typed.complete(typedDispatch.id)?.work == .prompt(first), "the dropped prompt is next")
 
+        // A prompt set aside after a drop is only ever handed back, never sent:
+        // restoring it dispatches nothing, and a second drop keeps the first.
+        var aside = SetAsidePrompts()
+        var asideState = PromptSubmissionState()
+        let abandoned = asideState.submit(first)!
+        aside.push(asideState.dropForRetry(abandoned.id))
+        let abandonedAgain = asideState.submit(image)!
+        aside.push(asideState.dropForRetry(abandonedAgain.id))
+        aside.push(asideState.dropForRetry(abandonedAgain.id))
+        precondition(aside.count == 2, "a stale drop adds nothing and a second drop keeps the first")
+        precondition(aside.restore() == image && aside.restore() == first && aside.restore() == nil)
+        precondition(!asideState.isActive && asideState.queuedCount == 0 && !asideState.held, "restoring dispatches nothing")
+        aside.push(first)
+        aside.push(last)
+        aside.reset()
+        precondition(aside.count == 0 && aside.restore() == nil, "reset clears every set-aside prompt")
+
         // What queued prompts wait on.
         var waits = PromptSubmissionState()
         precondition(waits.waiting == nil)
@@ -106,7 +123,10 @@ enum PromptQueueChecks {
         // A prompt whose stream had begun is set aside, never queued to resend.
         precondition(AgentSend.notice(message: "", unsent: false, queued: 1, place: .setAside)
                      .contains("won't be sent again by itself"))
+        precondition(!AgentSend.notice(message: "", unsent: false, queued: 0, place: .setAside).contains("earlier"))
+        precondition(AgentSend.notice(message: "", unsent: false, queued: 0, place: .setAside, setAside: 3)
+                     .hasSuffix("2 earlier set-aside messages stay behind it."))
 
-        print("PromptSubmissionState: 51 regression checks passed")
+        print("PromptSubmissionState: 57 regression checks passed")
     }
 }
