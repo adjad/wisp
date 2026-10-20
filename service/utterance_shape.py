@@ -66,6 +66,9 @@ _EXPLANATION_FRAMES = tuple(re.compile(_EXPLANATION_LEAD + frame + r"(?:,?\s+ple
     r"(?:explain|help\s+me\s+understand)\s+what\s+(?P<term>.+?)\s+means?",
     r"(?:explain|define|help\s+me\s+understand)\s+(?P<term>.+?)",
     r"what\s+is\s+the\s+difference\s+between\s+(?P<left>.+?)\s+and\s+(?P<right>.+?)",
+    r"how\s+(?:can|do)\s+I\s+(?:tell|decide)\s+(?:whether|if)\s+"
+    r"(?P<term>an?\s+(?:e-?mail|message|text))\s+(?:needs|requires|warrants)\s+"
+    r"a\s+(?:reply|response)(?:[.!?]?\*{1,2})?",
 ))
 _PERSONAL_OR_OPEN_TERM = re.compile(
     r"\b(?:my|our|your|his|her|their|mine|ours|yours|me|us|this|that|these|those|"
