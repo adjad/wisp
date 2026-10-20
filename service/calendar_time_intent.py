@@ -37,6 +37,7 @@ class CalendarTimeIntent:
     no_web: bool = False
     no_calendar: bool = False
     query: str = ''
+    public_provenance: bool = False
 
     def calendar_args(self) -> dict:
         args = {'calendar_only': True, 'query': self.title}
@@ -54,8 +55,15 @@ class CalendarTimeIntent:
 
 def named_calendar_time(text: str) -> CalendarTimeIntent | None:
     """Return None for other owners; unsupported named envelopes clarify only."""
-    quotes = []
+    # The established generic agenda owner already understands this complete
+    # relative selector. It is not a literal event named "next meeting".
+    # Do not delegate endpoints, dates, policies, quoted titles or compounds.
+    if re.fullmatch(r"\s*(?:please\s+)?(?:when\s+is|what\s+time\s+is)\s+"
+                    r"(?:my|our)\s+next\s+(?:meeting|event|class|appointment)[.!?\s]*", text, re.I):
+        return None
+    quotes, quote_literals = [], []
     def hide(match):
+        quote_literals.append(match.group())
         quotes.append(match.group()[1:-1])
         return f'QUOTEDTITLE{len(quotes)-1}TOKEN'
     shape = _QUOTE.sub(hide, text)
@@ -139,7 +147,14 @@ def named_calendar_time(text: str) -> CalendarTimeIntent | None:
     if personal and not explicit_source and not _KIND.search(title):
         supported = False
     # Public query bytes contain only the fully consumed question, no policies.
-    for index, value in enumerate(quotes):
-        query = query.replace(f'QUOTEDTITLE{index}TOKEN', '"' + value + '"')
+    for index, literal in enumerate(quote_literals):
+        query = query.replace(f'QUOTEDTITLE{index}TOKEN', literal)
+    question = text[:head.end()] + query + '?'
+    # Calendar ownership and permission to export a public query are distinct.
+    # Classify only the consumed question, retaining quote/private/local/
+    # relative/unknown ownership; outside source denials cannot make it private
+    # or launder private title material into a public query.
+    from service.router.web_request import Provenance, classify
+    public_provenance = classify(question).provenance == Provenance.EXTERNAL
     return CalendarTimeIntent(title, personal, boundary, period, bool(supported),
-                              no_web, no_calendar, text[:head.end()] + query + '?')
+                              no_web, no_calendar, question, public_provenance)

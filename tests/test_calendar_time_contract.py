@@ -534,3 +534,95 @@ def test_public_time_interpretation_never_forces_a_public_lookup(prompt):
     assert not decision.expect_tool_first and not decision.required_tool_groups
     assert decision.tool_subset == ['web_search']
     assert decision.tool_argument_bindings['web_search'] == {'query': prompt}
+
+
+PRIVATE_TIME_SUBJECTS = [
+    'When is the confidential board review?', 'When is the internal budget review?',
+    'When is the review of my notes?', 'When is their appointment?',
+    'When is the meeting we discussed?', 'When is the "my secret project review"?',
+    'When is the workshop here?', "When is Jordan's board review?",
+    'When is the review of her notes?', 'When is the ‘my secret project review’?',
+]
+
+
+@pytest.mark.parametrize('prompt', PRIVATE_TIME_SUBJECTS)
+def test_unowned_private_local_relative_or_ambiguous_subject_is_not_public_authority(prompt):
+    from service.router.router import route, routing_guard_contract
+    from service.tools.registry import REGISTRY
+    from service.workflows.reads import compile_read
+    assert compile_read(prompt) is None
+    decision = asyncio.run(route(prompt))
+    assert not decision.tool_subset and not decision.direct_calls
+    assert set(REGISTRY) <= decision.forbidden_tools
+    forbidden, bindings = routing_guard_contract(prompt)
+    assert set(REGISTRY) <= forbidden and not bindings
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt', PRIVATE_TIME_SUBJECTS)
+def test_actual_unowned_private_local_relative_or_quoted_subject_cannot_egress(
+        inert_entrypoint, monkeypatch, mode, prompt):
+    record = run_capture(inert_entrypoint, monkeypatch, mode, prompt,
+                         'web_search', {'query': 'malicious replacement'})
+    assert record['executed'] == []
+
+
+@pytest.mark.parametrize('prompt', ['when is my next meeting', 'When is our next appointment?',
+                                    'What time is my next class?'])
+def test_complete_generic_next_question_retains_established_owner(prompt):
+    from service.calendar_time_intent import named_calendar_time
+    from service.router.router import route
+    assert named_calendar_time(prompt) is None
+    decision = asyncio.run(route(prompt))
+    assert 'get_upcoming' in decision.tool_subset
+    assert 'next' not in decision.tool_argument_bindings.get('get_upcoming', {}).get('query', '')
+    assert not any('next' in args.get('query', '') for _, args in decision.direct_calls)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+def test_actual_generic_next_meeting_keeps_baseline_read_arguments(
+        inert_entrypoint, monkeypatch, mode):
+    record = run_capture(inert_entrypoint, monkeypatch, mode, 'when is my next meeting',
+                         'get_upcoming', {})
+    assert record['executed'] == [{'name': 'get_upcoming', 'args': {}}]
+    assert not any('clarify named' in e.get('reason', '') for e in record['events'])
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('name,args', [
+    ('get_upcoming', {'calendar_only': True}), ('daily_brief', {}),
+    ('collect_task_evidence', {}), ('run_shell', {'command': 'fictional'}),
+    ('view_emails', {}), ('send_message', {'to': 'Fictional', 'text': 'fictional'}),
+])
+def test_actual_private_time_subject_grants_no_alternative_source_or_effect(
+        inert_entrypoint, monkeypatch, mode, name, args):
+    record = run_capture(inert_entrypoint, monkeypatch, mode,
+                         'When is the internal budget review?', name, args)
+    assert record['executed'] == []
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt', [
+    'When is my next meeting tomorrow?', 'When does my next meeting end?',
+    'When is my next meeting? Do not browse.',
+    'When is my next meeting? Do not use Calendar.',
+    'When is my next meeting and email Mom?',
+])
+def test_next_selector_delegation_never_discards_an_unknown_endpoint_date_or_policy(
+        inert_entrypoint, monkeypatch, mode, prompt):
+    from service.calendar_time_intent import named_calendar_time
+    intent = named_calendar_time(prompt)
+    assert intent is not None
+    record = run_capture(inert_entrypoint, monkeypatch, mode, prompt, 'get_upcoming', {})
+    assert record['executed'] == []
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+def test_literal_next_is_a_title_under_explicit_calendar_authority(
+        inert_entrypoint, monkeypatch, mode):
+    record = run_capture(inert_entrypoint, monkeypatch, mode,
+                         'When is my calendar event named "next meeting"?',
+                         'get_upcoming', {'query': 'replacement'})
+    assert record['executed']
+    assert all(c['name'] == 'get_upcoming' and c['args']['query'] == 'next meeting'
+               and c['args']['calendar_only'] is True for c in record['executed'])

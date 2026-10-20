@@ -209,7 +209,7 @@ def build_menu(text: str, *, last_assistant: str | None = None,
     if named is not None and named.supported:
         if named.personal and not named.no_calendar:
             add('get_upcoming', 'calendar')
-        elif not named.personal and not named.no_web:
+        elif not named.personal and named.public_provenance and not named.no_web:
             add('web_search', 'public_web')
 
     # Interleave so every touched family keeps its first core tools even when

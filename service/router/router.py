@@ -6559,7 +6559,7 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
         if named.supported and named.personal and not named.no_calendar:
             allowed.add('get_upcoming')
             bindings['get_upcoming'] = named.calendar_bindings()
-        elif named.supported and not named.personal and not named.no_web:
+        elif named.supported and not named.personal and named.public_provenance and not named.no_web:
             allowed.add('web_search')
             bindings['web_search'] = {'query': named.query}
         # This whole envelope already consumes every outside source policy.
@@ -7895,7 +7895,7 @@ def _named_time_claim(text: str) -> RouteDecision | None:
         decision.tool_argument_bindings['get_upcoming'] = intent.calendar_bindings()
         decision.forbidden_tools = frozenset(set(REGISTRY) - {'get_upcoming'})
         return decision
-    if intent.supported and not intent.personal and not intent.no_web:
+    if intent.supported and not intent.personal and intent.public_provenance and not intent.no_web:
         # A simple public noun phrase can still be a stable concept or need
         # disambiguation. Offer the exact public lookup without forcing it.
         decision = _mk('agent', tools=True, source='default',
