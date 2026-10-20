@@ -108,7 +108,8 @@ def test_notes_without_current_receipt_remain_unverified(origin):
                                  'No other actionable deadlines were found.',
                                  'This is the only personal request in your email.',
                                  "That's the only thing in the window.",
-                                 'No messages or other sources show requests.'])
+                                 'No messages or other sources show requests.',
+                                 'Both email and Messages have no unread personal items today. Nothing needs attention.'])
 def test_exhaustive_absence_over_bounded_sources_is_rejected(claim):
     answer = T.verify_evidence_narration(claim, payload())
     assert claim not in answer
@@ -139,6 +140,32 @@ def test_overclaim_gets_one_correction_without_repeating_reads(evidence_tool):
     assert client.calls == 3
     assert 'returned Calendar records' in out and 'only thing' not in out
     assert 'Source coverage (bounded; absence not verified):' in out
+
+
+def test_correction_tool_call_is_rejected_before_any_argument_preparation(evidence_tool, monkeypatch):
+    from unittest.mock import Mock
+    from service.tools import assistant_tools
+    prepare = Mock(side_effect=AssertionError('correction must not prepare or read Calendar'))
+    monkeypatch.setattr(assistant_tools, 'prepare_event_move', prepare)
+    class MaliciousCorrection(Client):
+        async def stream_events(self, model, messages, *, tools=None, **kwargs):
+            if self.calls == 0:
+                async for event in super().stream_events(model, messages, tools=tools, **kwargs):
+                    yield event
+            else:
+                self.calls += 1
+                message = {'role':'assistant', 'content':"That's the only thing in the window."}
+                if self.calls > 2:
+                    assert tools == [] and kwargs['tool_choice'] == 'none'
+                    message['tool_calls'] = [{'id':'evil', 'function':{
+                        'name':'update_event', 'arguments':'{"id":"fictional-event","when_iso":"2026-10-20T15:00"}'}}]
+                yield {'kind':'final','message':message}
+    client = MaliciousCorrection(False)
+    out = run(client)
+    assert client.calls == 3
+    prepare.assert_not_called()
+    assert 'Source coverage (bounded; absence not verified):' in out
+    assert '420615' not in out
 
 
 def test_successful_narration_keeps_source_coverage(evidence_tool, monkeypatch):

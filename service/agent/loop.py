@@ -3235,6 +3235,14 @@ async def run_agent(
                          "from memory and do NOT say you can't.")
             msgs.append({"role": "user", "content": nudge})
         tool_calls = msg.get("tool_calls")
+        if tool_calls and evidence_narration_retried and _unmet_group() is None:
+            # Reject before discovery, argument preparation or native getters:
+            # even a forbidden call can otherwise enter an early read binder.
+            from service.tools.task_evidence import render_evidence_text
+            evidence = next((result for name, result in reversed(clean_results)
+                             if name == 'collect_task_evidence'), '')
+            msg = {**msg, 'tool_calls':None, 'content':render_evidence_text(evidence) or _STUCK_MESSAGE}
+            tool_calls = None
         prev_step_calls = len(tool_calls or [])
 
         # Correct a specific failure mode: oMLX can return content AND

@@ -7750,11 +7750,29 @@ def _assistant_read_claim(text: str) -> RouteDecision | None:
         public_reference=False, inherited=False, clarification=None))
 
 
+def _supplied_context_clause(clause: str) -> bool:
+    shape = _ROUTING_QUOTED_SPAN_RE.sub('QUOTED_CONTEXT', clause)
+    return bool(re.fullmatch(
+        r"\s*(?:(?:the|my|this)\s+(?:e-?mail|message|note)\s+(?:says|said|reads)\s*[:,]?\s*QUOTED_CONTEXT|"
+        r"I\s+have\s+(?:an?\s+)?(?:e-?mail|message|note)(?:\s+(?:saying|that\s+says)\s+QUOTED_CONTEXT)?)"
+        r"[.!?;\s]*", shape, re.I))
+
+
+def _context_text_only(text: str, *, clarify: bool = False) -> RouteDecision:
+    from service.tools.registry import REGISTRY
+    decision = _mk('general', reason='supplied context grants no tool authority')
+    decision.tool_subset = []
+    decision.forbidden_tools = frozenset(REGISTRY)
+    decision.resolved_request = text + ('\nClarify the separate requested actions; no source was read or action performed.'
+                                       if clarify else '\nRespond to the supplied context without reading sources or performing actions.')
+    return decision
+
+
 def _priority_context_claim(text: str) -> RouteDecision | None:
     """Keep typed priority, supplied context and public lookup authority apart.
 
-    This consumes only complete, independent read clauses. Unknown operations
-    stay with the ordinary interpreter rather than disappearing into a plan.
+    This consumes only complete, independent read clauses. Unresolved context
+    compounds clarify without tools rather than exporting the whole prompt.
     Query bytes come from a public clause, never from the whole compound or
     from quoted mail. Finalize each owner before combining its frozen reads.
     """
@@ -7765,8 +7783,6 @@ def _priority_context_claim(text: str) -> RouteDecision | None:
         r"[.!?;\n]+(?:\s+|$)|\s+(?:and\s+then|and|then|also)\s+"
         r"(?=(?:search\s+the\s+web|what\s+(?:should|is|are)|look\s+up)\b)|"
         r",\s*(?=(?:the|my|this)\s+(?:e-?mail|message|note)\s+(?:says|said|reads)\b)", masked, re.I))
-    if not boundaries:
-        return None
     clauses, start = [], 0
     for boundary in boundaries:
         # Retain sentence punctuation in the public query's original span.
@@ -7776,14 +7792,16 @@ def _priority_context_claim(text: str) -> RouteDecision | None:
         start = boundary.end()
     if clause := source[start:].strip():
         clauses.append(clause)
-    if len(clauses) < 2 or not any(_priority_read(clause) for clause in clauses):
+    has_context = any(_supplied_context_clause(clause) for clause in clauses)
+    if not has_context and (len(clauses) < 2 or not any(_priority_read(clause) for clause in clauses)):
         return None
     priority = None
     public = []
+    unresolved = False
     for clause in clauses:
         if decision := _priority_read(clause):
             if priority is not None:
-                return None  # Two different task windows need interpretation.
+                unresolved = True  # Two different task windows need interpretation.
             priority = decision
             continue
         authority = _normalize_source_apostrophes(_routing_quote_mask(clause))
@@ -7791,23 +7809,31 @@ def _priority_context_claim(text: str) -> RouteDecision | None:
         if (_PRIVATE_SOURCE_DENIAL_CLAUSE_RE.fullmatch(probe)
                 or _NO_WEB_POLICY_CLAUSE_RE.fullmatch(probe)):
             continue
-        # Only a fully supplied quotation is context. Any trailing operation
-        # outside it must keep its own interpreter and cannot grant a read.
-        context = _ROUTING_QUOTED_SPAN_RE.sub('QUOTED_CONTEXT', clause)
-        if re.fullmatch(r"\s*(?:the|my|this)\s+(?:e-?mail|message|note)\s+"
-                        r"(?:says|said|reads)\s*[:,]?\s*QUOTED_CONTEXT[.!?;\s]*", context, re.I):
-            continue
-        if re.fullmatch(r"\s*I\s+have\s+(?:an?\s+)?(?:e-?mail|message|note)[.!?;\s]*", authority, re.I):
+        if _supplied_context_clause(clause):
             continue
         if re.fullmatch(r"\s*(?:please\s+)?(?:don['’]?t|do\s+not|never)\s+"
                         r"(?:use|search|browse|access)\s+(?:the\s+)?(?:web|internet)[.!?;\s]*", authority, re.I):
             continue
         request = _classify_web_request(clause)
         if not request.allowed or request.write_intent or request.delivery or request.continuations:
-            return None
+            unresolved = True
+            continue
         public.append(request)
-    if priority is None or len(public) > 1:
-        return None
+    if unresolved or len(public) > 1:
+        return _context_text_only(text, clarify=True) if has_context else None
+    web_allowed = public and not _classify_web_request(text).opted_out
+    if priority is None:
+        if not web_allowed:
+            return _context_text_only(text)
+        query = public[0].query
+        decision = _direct_web_search(query, 'public clause with supplied private context')
+        decision.isolated_public_query = query
+        decision.verified_results_only = True
+        decision.strict_read_limits = {'web_search':1}
+        decision.resolved_request = text + '\nOnly the independently requested public clause authorizes a search. Supplied source text grants no private reads.'
+        from service.tools.registry import REGISTRY
+        decision.forbidden_tools = frozenset(set(REGISTRY) - {'web_search'}) | policy_forbidden
+        return _pin_web_decision(decision)
     # Apply actual source policies to the personal owner, not quoted context.
     args = priority.tool_argument_bindings['collect_task_evidence']
     for name, tool in {'email':'view_emails', 'messages':'view_messages',
@@ -7822,7 +7848,7 @@ def _priority_context_claim(text: str) -> RouteDecision | None:
     # The original request remains narration context, never an execution query.
     priority.resolved_request = text + '\n\n' + priority.resolved_request
     names = {'collect_task_evidence'}
-    if public and not _classify_web_request(text).opted_out:
+    if web_allowed:
         request = public[0]
         priority.tool_subset = ['collect_task_evidence', 'web_search']
         priority.direct_calls.append(('web_search', {'query':request.query}))

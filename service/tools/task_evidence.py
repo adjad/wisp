@@ -368,7 +368,10 @@ def verify_evidence_narration(text: str, result: str) -> str:
             r"\b(?:that['’]s|this\s+is|it['’]s|that\s+is)\s+(?:the\s+)?only\s+"
             r"(?:thing|item|task|event|commitment)\b|"
             r"\bno\s+(?:messages?|e-?mails?|mail|notes?|other\s+sources)\b"
-            r"[^.!?\n]{0,100}\b(?:show|contain|have|need|require)\b", narration, re.I):
+            r"[^.!?\n]{0,100}\b(?:show|contain|have|need|require)\b|"
+            r"\b(?:nothing|no(?:thing)?\s+else)\s+(?:needs|requires)\s+(?:your\s+|my\s+)?attention\b|"
+            r"\b(?:e-?mail|messages?|inbox)\b[^.!?\n]{0,60}\b(?:have|has)\s+no\s+"
+            r"(?:unread\s+)?(?:personal\s+)?(?:items?|messages?|e-?mails?|requests?)\b", narration, re.I):
         return render_evidence_text(result)
     return text
 
