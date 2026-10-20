@@ -12,7 +12,7 @@ from service.tools.registry import register
 _SOURCES = ("calendar", "reminders", "email", "messages", "notes")
 _SCHEMA = {"type": "object", "properties": {
     "period": {"type": "string", "description": "Task due/occurrence window, e.g. today/tomorrow/this week/this month. Not communication receipt time."},
-    "email_account": {"type": "string", "description": "Exact cached Mail account label only."},
+    "email_account": {"type": "string", "description": "Exact native Mail account ID or unambiguous cached label."},
     "chat_id": {"type": "string", "description": "Exact native Messages conversation GUID only, not a guessed contact name."},
     "query": {"type": "string", "description": "Literal text a record must contain; leave empty normally. Never a date or period word like tomorrow/today/this week - that is `period`."},
     "include_overdue": {"type": "boolean"}, "include_undated": {"type": "boolean"},
@@ -229,17 +229,17 @@ async def collect_task_evidence(period: str = "today", email_account: str = "", 
             evidence["reminders"] = _native_source("reminders", now=now, start=start, end=end,
                 query=query, include_overdue=include_overdue, include_undated=include_undated)
     if include_email:
-        from service.tools.email_tools import raw_email_snapshot
+        from service.tools.email_tools import raw_email_snapshot, resolve_mail_account
         eligibility = {}
         snapshot = raw_email_snapshot(diagnostics=eligibility)
         if snapshot is None:
             evidence["email"] = {"state": "unknown: no eligible current immutable body snapshot", "records": [],
                 "eligibility_reason_codes": eligibility.get('reason_codes', [])}
-        elif email_account and email_account.strip() not in snapshot.accounts:
-            evidence["email"] = {"state": "unknown: exact account label absent from eligible snapshot", "records": []}
         else:
+            selected_id, problem = resolve_mail_account(snapshot.account_inventory, email_account, accounts=snapshot.accounts)
             selected = [row for row in snapshot.rows
-                if (not email_account or row["account"] == email_account.strip())
+                if not problem and (not email_account or row["account_id"] == selected_id
+                    or selected_id == "" and row["account"].casefold() == email_account.strip().casefold())
                 and (not needle or needle in "\n".join(str(row[key]) for key in ("sender", "subject", "body")).casefold())]
             records = [{"account_id": row["account_id"], "account_label": row["account"],
                 "message_id": row["message_id"], "received_at": row["ts"], "sender": row["sender"],
@@ -252,6 +252,8 @@ async def collect_task_evidence(period: str = "today", email_account: str = "", 
                 "generation": snapshot.generation, "synced_at": snapshot.synced_at, "raw_digest": snapshot.raw_digest,
                 "matching": len(records), "shown": len(kept), "omitted": omitted,
                 "receipt_date_filter_applied": False, "records": kept}
+            if problem:
+                evidence["email"] = {"state": "unknown: " + problem, "records": []}
     if include_messages:
         from service.tools.imessage_tools import structured_messages_snapshot
         snapshot = structured_messages_snapshot()
