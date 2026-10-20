@@ -110,9 +110,11 @@ def prepare_news_selector_guard(store, sid: str, prompt: str) -> WorkflowTurn | 
 def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True,
                  owner_only: bool = False) -> WorkflowTurn | None:
     """Compile a new task or advance the current task with this reply."""
-    from service.utterance_shape import is_complete_explanation
+    from service.utterance_shape import is_complete_explanation, explanation_remainder
     if is_complete_explanation(prompt):
         return None  # Preserve pending owners; this is not a slot correction.
+    if explanation_remainder(prompt) is not None and compile_new(prompt) is None:
+        return None
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
     prior_display = store.display_artifact(sid, immediate=True) if persist else None

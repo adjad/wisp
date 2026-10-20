@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import re
 
-from service.utterance_shape import deliberate, quoted_spans
+from service.utterance_shape import deliberate, quoted_spans, explanation_remainder
 from service.reminder_intent import (
     CAPABILITY_INVENTORY_RE, REMINDER_CREATE_RE, has_unsupported_alert_clock,
     reminder_command_parts, reminder_temporal_text, reminder_subject_labelled, _NAMED_DATE,
@@ -394,6 +394,11 @@ def _operation_target(text: str, verbs: str) -> str:
 
 def compile_reminder_delete(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
+    if (remainder := explanation_remainder(text)) is not None:
+        plan = compile_reminder_delete(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     del now
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
@@ -426,6 +431,11 @@ def compile_reminder_delete(text: str, *, now: datetime | None = None,
 
 def compile_reminder_complete(text: str, *, now: datetime | None = None,
                               turn: int = 0) -> TaskPlan | None:
+    if (remainder := explanation_remainder(text)) is not None:
+        plan = compile_reminder_complete(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     del now
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
@@ -448,6 +458,11 @@ def compile_reminder_complete(text: str, *, now: datetime | None = None,
 
 def compile_reminder_update(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
+    if (remainder := explanation_remainder(text)) is not None:
+        plan = compile_reminder_update(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
             or not _UPDATE_REMINDER.search(_unquoted(text))):
@@ -585,6 +600,12 @@ def compile_email_send(text: str, *, now: datetime | None = None,
 def compile_task(text: str, *, now: datetime | None = None,
                  turn: int = 0) -> TaskPlan | None:
     """Compile one unambiguous reminder intent in guarded operation order."""
+    remainder = explanation_remainder(text)
+    if remainder is not None:
+        plan = compile_task(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     if reminder_subject_labelled(_reminder_parts(text)):
         # The complete labelled content is literal data. Batch 'for' and
         # trailing all-day preprocessing must not reinterpret its title words.
@@ -634,6 +655,7 @@ def compile_task(text: str, *, now: datetime | None = None,
                    or compile_email_send(text, now=now, turn=turn))
         if literal:
             return literal
+        return None  # A declined authored body cannot re-arm a reminder verb.
     unquoted = _unquoted(text)
     clauses = reminder_request_clauses(text)
     if (len(clauses) == 2 and _RECEIPT_REQUEST.fullmatch(clauses[1])

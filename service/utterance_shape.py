@@ -103,6 +103,65 @@ def is_complete_explanation(text: str) -> bool:
     return False
 
 
+_CLAUSE_COMMAND = (r"(?:(?:please|and|then|also|but)\s+)*(?:(?:can|could|would|will)\s+you\s+)?"
+                   r"(?:explain|define|help|what|show|list|check|read|search|find|send|"
+                   r"text|message|e-?mail|share|forward|draft|compose|write|delete|remove|"
+                   r"clear|complete|finish|mark|update|rename|reschedule|move|remind|"
+                   r"create|add|set|lock|open)\b")
+_EXPLANATION_BOUNDARY = re.compile(
+    r"[;\n]+|[.!?](?=\s|$)|\s+(?:and(?:\s+then)?|then|but|also)\s+(?=" + _CLAUSE_COMMAND + r")|"
+    r",\s*(?=" + _CLAUSE_COMMAND + r")", re.I)
+_AUTHORED_CLAUSE_OWNER = re.compile(
+    _LEAD + r"(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:"
+    r"remind\s+me\b|(?:remember|don['’]?t\s+forget)\s+to\b|"
+    r"(?:add|create|set|make|schedule)\s+(?:me\s+)?(?:(?:an?|the|my)\s+)?(?:reminders?|alarm)\b|"
+    r"(?:text|message|imessage|e-?mail|send|reply|respond)\b[^;?\n]{0,200}?"
+    r"(?:\bsaying\b|\bthat\s+says\b|\band\s+say\b|\bto\s+say\b|\bthat\b|:)\s+|"
+    r"(?:save|store|write|draft|update|edit|replace)\b[^;?\n]{0,160}"
+    r"\b(?:knowledge|style|follow-up|note|file)\b)", re.I)
+
+
+def explanation_remainder(text: str) -> str | None:
+    """Current clauses after removing independently complete explanations.
+
+    None means no clause was recognized. Only clear outside-quote boundaries
+    split clauses; original quoted bytes, addresses and authored slots stay
+    intact. This is an authority projection, never replacement user content.
+    """
+    if _AUTHORED_CLAUSE_OWNER.match(text or ""):
+        return None
+    if is_complete_explanation(text):
+        return ""
+    opaque = list(text or "")
+    for match in _QUOTED.finditer(text or ""):
+        opaque[match.start():match.end()] = "x" * (match.end() - match.start())
+    projected, explained, actual_before, cursor, prior_boundary = list(text), False, False, 0, 0
+    boundaries = list(_EXPLANATION_BOUNDARY.finditer("".join(opaque)))
+    if not boundaries:
+        return None
+    for end, next_start in [(m.start(), m.end()) for m in boundaries] + [(len(text), len(text))]:
+        tail = re.sub(r"^(?:(?:and|then|also|but)\s+)+", "", text[cursor:].strip(), flags=re.I)
+        if _AUTHORED_CLAUSE_OWNER.match(tail):
+            break  # An explicit body/title owner consumes its literal tail.
+        clause = text[cursor:end].strip()
+        clause = re.sub(r"^(?:(?:and|then|also|but)\s+)+", "", clause, flags=re.I)
+        if not clause:
+            cursor, prior_boundary = next_start, end
+            continue
+        if is_complete_explanation(clause):
+            explained = True
+            start = prior_boundary if actual_before else 0
+            stop = end if actual_before and text[next_start:].strip() else next_start
+            projected[start:stop] = " " * (stop - start)
+        else:
+            actual_before = True
+        cursor, prior_boundary = next_start, end
+    if not explained:
+        return None
+    result = "".join(projected).lstrip()
+    return re.sub(r"^(?:(?:and|then|also|but)\s+)+", "", result, flags=re.I)
+
+
 def quoted_spans(text: str) -> list[tuple[int, int]]:
     return [m.span() for m in _QUOTED.finditer(text or "")]
 

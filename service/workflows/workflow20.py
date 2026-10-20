@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from service.utterance_shape import mask_quoted, is_complete_explanation
+from service.utterance_shape import mask_quoted, is_complete_explanation, explanation_remainder
 
 
 _SOURCE = {
@@ -234,6 +234,8 @@ def email_summary_excluding_messages(text: str) -> PersonalRead | None:
 def personal_read(text: str) -> PersonalRead | None:
     if is_complete_explanation(text):
         return None
+    if (remainder := explanation_remainder(text)) is not None:
+        return personal_read(remainder) if remainder else None
     if (typed := priority_read(text) or attention_read(text) or weather_read(text) or calendar_question(text) or conversation_read(text)
             or email_summary_excluding_messages(text)) is not None:
         return typed

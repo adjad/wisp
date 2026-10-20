@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field, replace
 
 from service.authored_message import authored_message_intent
-from service.utterance_shape import is_mention, is_prohibition, mask_quoted, is_complete_explanation
+from service.utterance_shape import is_mention, is_prohibition, mask_quoted, explanation_remainder
 from service.config import (
     models_config,
     role_to_model,
@@ -6539,6 +6539,63 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
 
 
 
+def _explanation_clause_contract(text: str) -> tuple[list[str], dict[str, dict]] | None:
+    """Capabilities from independently authored clauses, never explained words.
+
+    Existing pure compilers must consume the remainder. Unknown compositions
+    clarify without capabilities; no source selection or native work occurs.
+    """
+    remainder = explanation_remainder(text)
+    if remainder is None:
+        return None
+    if not remainder:
+        return [], {}
+    from service.workflows.reads import compile_read
+    read = compile_read(remainder)
+    if read is not None and read[0] and not read[1]:
+        return list(dict.fromkeys(name for name, _ in read[0])), dict(read[0])
+    from service.tasks.compiler import compile_task
+    task = compile_task(remainder)
+    if task is not None and task.intent == 'reminder.delete' and not task.missing_slots:
+        target = str(task.target.value or '')
+        identity = re.escape(target)
+        literal = rf'''(?:{identity}|"{identity}"|“{identity}”|'{identity}'|‘{identity}’|`{identity}`)'''
+        body = (rf'(?:(?:the|my)\s+)?(?:{literal}\s+reminders?|'
+                rf'reminders?\s+(?:called|named|about)\s+{literal})') if target else (
+                    r'(?:all|every)(?:\s+(?:of\s+)?(?:my|the))?\s+reminders?')
+        # The ordinary operation parser extracts slots, but an unconsumed
+        # account/source clause cannot grant a broader compound capability.
+        if re.fullmatch(r'\s*(?:please\s+)?(?:delete|remove|clear)\s+' + body + r'[.!?\s]*',
+                        remainder, re.I):
+            return ['clear_reminders'], {'clear_reminders': {
+                'scope': task.parameters['scope'].value, 'query': target}}
+    if task is not None and not task.missing_slots:
+        if task.intent == 'reminder.create':
+            from service.tasks.planner import plan_task, InvalidTaskPlan
+            try:
+                steps = plan_task(task)
+            except InvalidTaskPlan:
+                return [], {}
+            return [step.tool for step in steps], {step.tool: dict(step.args) for step in steps}
+        if task.intent in {'message.send', 'email.send'} and not task.temporal.absolute_iso:
+            effect = 'send_message' if task.intent == 'message.send' else 'send_email'
+            recipient = str(task.recipient.value or '')
+            args = {'to': recipient, 'text' if effect == 'send_message' else 'body': task.subject.value}
+            if effect == 'send_email':
+                args['subject'] = task.parameters['email_subject'].value
+            names, bindings = [effect], {effect: args}
+            if not re.fullmatch(r'\+?[\d ()-]+|[^\s@]+@[^\s@]+', recipient):
+                names.append('lookup_contact')
+                bindings['lookup_contact'] = {'name': recipient}
+            return names, bindings
+    from service.workflows.compiler import compile_new, compile_decision
+    workflow = compile_new(remainder)
+    if workflow is not None and workflow.status == 'ready' and not workflow.content_error:
+        decision = compile_decision(workflow)
+        return list(decision.tool_subset or ()), dict(decision.tool_argument_bindings)
+    return [], {}
+
+
 def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
     """Negative-only envelope for discovery, never a positive heuristic menu.
 
@@ -6547,8 +6604,9 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
     from service.tools.registry import REGISTRY
     from service.router.model_led import family_for, registry_specs
 
-    if is_complete_explanation(text):
-        return frozenset(REGISTRY), {}
+    if (explanation := _explanation_clause_contract(text)) is not None:
+        allowed, bindings = explanation
+        return frozenset(set(REGISTRY) - set(allowed)), bindings
 
     # Authored/quoted text is data, never fresh authority or prohibitions.
     t = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
@@ -7922,12 +7980,18 @@ def _named_time_claim(text: str) -> RouteDecision | None:
 
 def _assistant_read_claim(text: str) -> RouteDecision | None:
     """Complete personal questions precede generic chat and current-web rules."""
-    if is_complete_explanation(text):
+    if (explanation := _explanation_clause_contract(text)) is not None:
         from service.tools.registry import REGISTRY
-        decision = _mk('general', reason='complete explanation, no source or action authority')
-        decision.tool_subset = []
-        decision.forbidden_tools = frozenset(REGISTRY)
+        allowed, bindings = explanation
+        decision = _mk('agent' if allowed else 'general', tools=bool(allowed),
+                       reason='complete explanation clauses; only independently authored capability')
+        decision.tool_subset = allowed
+        decision.tool_argument_bindings = bindings
+        decision.forbidden_tools = frozenset(set(REGISTRY) - set(allowed))
         decision.resolved_request = text
+        if not allowed and explanation_remainder(text):
+            decision.resolved_request += ('\nClarify the unsupported independent clause; '
+                'the explanation itself needs no source read or action. Nothing has been performed.')
         return decision
     if (named := _named_time_claim(text)) is not None:
         return named

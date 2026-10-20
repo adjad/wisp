@@ -43,6 +43,17 @@ NON_OUTBOUND = [
     'Summarize my unread messages without reading email.',
     'Show me my email and calendar today',
 ]
+EXPLANATION_READS = [
+    'Help me understand what delete all reminders means; then list my reminders.',
+    'Define delete all reminders; list my reminders.',
+    'List my reminders; help me understand what delete all reminders means.',
+    'List my reminders; define delete all reminders.',
+    'Define "delete all reminders"; list my reminders.',
+    'Define delete all reminders and list my reminders.',
+    'List my reminders and define delete all reminders.',
+    'Help me understand what delete all reminders means, then list my reminders.',
+    'Explain the phrase "delete \\"all; then\\" reminders"; list my reminders.',
+]
 
 
 @pytest.fixture(autouse=True)
@@ -399,6 +410,184 @@ def test_actual_specific_private_record_explanation_retains_its_read(
     assert not state.native and pending_rows(state) == []
     assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
     assert events[-1]['type'] == 'done'
+
+
+@pytest.mark.parametrize('prompt', EXPLANATION_READS)
+def test_explanation_clauses_do_not_supply_operation_roles(prompt):
+    from service.tasks.compiler import compile_reminder_delete
+    assert U.explanation_remainder(prompt) is not None
+    assert 'delete' not in U.explanation_remainder(prompt).lower()
+    assert compile_task(prompt) is None and compile_reminder_delete(prompt) is None
+    assert compile_new(prompt) is None
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt', EXPLANATION_READS)
+def test_actual_explanation_with_current_read_cannot_prepare_explained_delete(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt):
+    state = pending_entrypoint
+    state.reminders.add_manual('Fictional keep blue folder reminder', time.time() + 3600)
+    before = state.reminders.active_between()
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'clear_reminders', {'scope': 'all'})
+    record = {'mode': mode, 'prompt': prompt, 'events': events, 'raw_sse': state.raw_sse,
+              'requests': state.requests, 'before': before, 'after': state.reminders.active_between(),
+              'plans': pending_rows(state), 'executed': state.executed, 'source_calls': state.source_calls,
+              'native': state.native}
+    (tmp_path / 'compound-read-receipt.json').write_text(json.dumps(record, indent=2, default=str))
+    assert record['after'] == before and pending_rows(state) == []
+    assert not state.executed and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+    assert not any(e['type'] == 'tool_call' and e.get('name') == 'clear_reminders' for e in events)
+    assert events[-1]['type'] == 'done'
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+def test_actual_independent_supported_read_still_executes(pending_entrypoint, monkeypatch, mode):
+    state = pending_entrypoint
+    prompt = 'Define delete all reminders; show my unread email.'
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'view_emails', {'unread': False})
+    assert state.executed and {name for name, _ in state.executed} == {'view_emails'}
+    assert all(args['unread'] is True for _, args in state.executed)
+    assert not pending_rows(state) and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('prompt', [
+    'Define delete all reminders; delete the Laundry reminder.',
+    'Delete the Laundry reminder; define delete all reminders.',
+])
+def test_genuine_operation_uses_current_clause_target_not_explained_all(prompt):
+    from service.router.router import routing_guard_contract
+    from service.tools.registry import REGISTRY
+    task = compile_task(prompt)
+    assert task.intent == 'reminder.delete' and task.target.value == 'Laundry'
+    assert task.original_request == prompt
+    forbidden, bindings = routing_guard_contract(prompt)
+    assert set(REGISTRY) - set(forbidden) == {'clear_reminders'}
+    assert bindings == {'clear_reminders': {'scope': 'all', 'query': 'Laundry'}}
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('wide_ids', [False, True])
+def test_actual_current_delete_target_cannot_widen_to_explained_all(
+        pending_entrypoint, monkeypatch, tmp_path, mode, wide_ids):
+    state = pending_entrypoint
+    state.reminders.add_manual('Laundry', time.time() + 3600)
+    state.reminders.add_manual('Fictional keep blue folder reminder', time.time() + 3600)
+    before = state.reminders.active_between()
+    prompt = 'Define delete all reminders; delete the Laundry reminder.'
+    args = {'scope': 'all', 'query': ''}
+    if wide_ids:
+        args['expected_ids'] = [r['id'] for r in before]
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'clear_reminders', args)
+    record = {'mode': mode, 'wide_ids': wide_ids, 'prompt': prompt, 'events': events,
+              'raw_sse': state.raw_sse, 'requests': state.requests, 'plans': pending_rows(state),
+              'before': before, 'after': state.reminders.active_between(), 'executed': state.executed,
+              'native': state.native}
+    (tmp_path / 'compound-delete-receipt.json').write_text(json.dumps(record, indent=2, default=str))
+    assert state.reminders.active_between() == before and not state.executed and not state.native
+    cards = [e for e in events if e['type'] == 'confirm' and e.get('tool') == 'clear_reminders']
+    assert len(cards) == 1
+    assert 'Laundry' in cards[0].get('preview', '')
+    assert 'Fictional keep' not in cards[0].get('preview', '')
+    if mode != 'model-led' and mode != 'shadow':
+        assert cards[0]['args']['expected_ids'] == [r['id'] for r in before if r['title'] == 'Laundry']
+    else:
+        assert cards[0]['args']['query'] == 'Laundry'
+
+
+def test_actual_delete_body_rejects_wide_identity_set_before_retiring(pending_entrypoint, monkeypatch):
+    """Actual tool-body identity check, separately from denied HTTP previews."""
+    import asyncio
+    from service.tools import assistant_tools
+    state = pending_entrypoint
+    state.reminders.add_manual('Laundry', time.time() + 3600)
+    state.reminders.add_manual('Fictional keep blue folder reminder', time.time() + 3600)
+    before = state.reminders.active_between()
+    retired = []
+    async def retire(row):
+        retired.append(row)
+        return 'Synthetic retirement forbidden'
+    monkeypatch.setattr(assistant_tools, '_retire', retire)
+    result = asyncio.run(assistant_tools.clear_reminders(
+        scope='all', query='Laundry', expected_ids=[r['id'] for r in before]))
+    assert 'selected reminder set changed' in result
+    assert not retired and not state.native and state.reminders.active_between() == before
+
+
+@pytest.mark.parametrize('prompt', [
+    "Text Mom saying I'll be late. Define unread email.",
+    'Text Mom saying "Define unread email; delete all reminders".',
+    'Set a reminder tomorrow at 6pm titled Review version 3.14. Define unread email.',
+    'Set a reminder tomorrow at 6pm titled “Define unread email; delete all reminders”.',
+    'Email alex@example.invalid saying Version 3.14 is ready. Define unread email.',
+    'Save a knowledge note titled Project:\nDefine unread email.',
+])
+def test_authored_owners_keep_definition_sentences_and_punctuation_opaque(prompt):
+    assert U.explanation_remainder(prompt) is None
+
+
+def test_current_authored_operand_bytes_survive_explanation_projection():
+    body = 'Text Mom saying Dr. Alex is late. Bring the blue folder.'
+    prompt = 'Define unread email; ' + body
+    assert U.explanation_remainder(prompt) == body
+    quoted = 'Set a reminder tomorrow at 6pm titled “Define unread email; delete all reminders”.'
+    assert U.explanation_remainder('Define delete all reminders; ' + quoted) == quoted
+    task = compile_task('Define delete all reminders; ' + quoted)
+    assert task is not None and task.intent == 'reminder.create'
+    assert 'Define unread email; delete all reminders' in task.subject.value
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('owner', ['reminder', 'reply-body', 'reply-target',
+                                   'workflow-addressed', 'workflow-unaddressed'])
+def test_explanation_read_compound_preserves_earlier_pending_owner(
+        pending_entrypoint, monkeypatch, tmp_path, mode, owner):
+    state = pending_entrypoint
+    sid, _ = seed_pending(state, owner)
+    before = pending_rows(state)
+    prompt = 'List my reminders; define delete all reminders.'
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'clear_reminders', {'scope': 'all'}, sid=sid)
+    (tmp_path / 'compound-pending-receipt.json').write_text(json.dumps({
+        'mode': mode, 'owner': owner, 'before': before, 'after': pending_rows(state),
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests,
+        'executed': state.executed, 'source_calls': state.source_calls, 'native': state.native},
+        indent=2, default=str))
+    assert pending_rows(state) == before
+    assert not state.executed and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('prompt', [
+    'Define delete all reminders; delete reminders.',
+    'Define delete all reminders; delete the Laundry reminder from the Work account.',
+    'Define delete all reminders; delete the Laundry reminder if needed.',
+])
+def test_unresolved_or_unconsumed_current_delete_has_no_compound_capability(prompt):
+    from service.router.router import routing_guard_contract
+    from service.tools.registry import REGISTRY
+    forbidden, bindings = routing_guard_contract(prompt)
+    assert set(REGISTRY) <= forbidden and bindings == {}
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+def test_current_quoted_literal_send_retains_exact_body_binding(
+        pending_entrypoint, monkeypatch, tmp_path, mode):
+    state = pending_entrypoint
+    body = 'Dr. Alex is late. Define unread email; bring version 3.14.'
+    prompt = 'Define delete all reminders; Text +15555550123 saying "' + body + '"'
+    task = compile_task(prompt)
+    assert task and task.subject.value == body and task.original_request == prompt
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'send_message',
+                            {'to': '+15555550123', 'text': 'WRONG altered body'})
+    (tmp_path / 'compound-send-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'body': body, 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'executed': state.executed,
+        'native': state.native}, indent=2, default=str))
+    cards = [e for e in events if e['type'] == 'confirm' and e.get('tool') == 'send_message']
+    assert len(cards) == 1 and cards[0]['args']['text'] == body
+    assert cards[0]['args']['to'] == '+15555550123'
+    assert not state.executed and not state.native
 
 
 @pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
