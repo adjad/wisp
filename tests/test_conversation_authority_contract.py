@@ -590,6 +590,69 @@ def test_current_quoted_literal_send_retains_exact_body_binding(
     assert not state.executed and not state.native
 
 
+@pytest.mark.parametrize('prompt', [
+    'Do not read Mail; explain quantum mechanics.',
+    'Explain quantum mechanics; do not read Mail.',
+])
+def test_projection_keeps_explicit_denials_even_without_current_registration(prompt, monkeypatch):
+    from service.router.router import routing_guard_contract
+    from service.tools.registry import REGISTRY
+    monkeypatch.delitem(REGISTRY, 'view_emails', raising=False)
+    forbidden, bindings = routing_guard_contract(prompt)
+    assert 'view_emails' in forbidden
+    assert set(REGISTRY) <= forbidden and not bindings
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+def test_current_unquoted_literal_send_retains_exact_body_binding(
+        pending_entrypoint, monkeypatch, tmp_path, mode):
+    state = pending_entrypoint
+    body = "I'll define unread email for Alex."
+    prompt = 'Define delete all reminders; Text +15555550123 saying ' + body
+    task = compile_task(prompt)
+    assert task and task.subject.value == body and task.original_request == prompt
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'send_message',
+                            {'to': '+15555550123', 'text': 'WRONG altered body'})
+    (tmp_path / 'compound-unquoted-send-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'body': body, 'task': task.to_dict(),
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests,
+        'executed': state.executed, 'native': state.native}, indent=2, default=str))
+    cards = [e for e in events if e['type'] == 'confirm' and e.get('tool') == 'send_message']
+    assert len(cards) == 1 and cards[0]['args']['text'] == body
+    assert cards[0]['args']['to'] == '+15555550123'
+    assert not state.executed and not state.native
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('body', [
+    "I'll be late. Define unread email.",
+    'Dr. Alex is late. Bring the blue folder.',
+])
+def test_current_unquoted_multisentence_send_preserves_exact_operand(
+        pending_entrypoint, monkeypatch, tmp_path, mode, body):
+    state = pending_entrypoint
+    authored = 'Text Mom saying ' + body
+    task = compile_task(authored)
+    assert task and task.subject.value == body
+    assert U.explanation_remainder(authored) is None
+    prompt = 'Define delete all reminders; Text +15555550123 saying ' + body
+    assert U.explanation_remainder(prompt) == 'Text +15555550123 saying ' + body
+    projected = compile_task(prompt)
+    assert projected and projected.subject.value == body and projected.original_request == prompt
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'send_message',
+                            {'to': '+15555550123', 'text': 'WRONG altered body'})
+    (tmp_path / 'compound-unquoted-multisentence-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'exact_remainder': U.explanation_remainder(prompt),
+        'task': task.to_dict(), 'projected_task': projected.to_dict(), 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests,
+        'executed': state.executed, 'native': state.native}, indent=2, default=str))
+    cards = [e for e in events if e['type'] == 'confirm' and e.get('tool') == 'send_message']
+    assert len(cards) == 1 and cards[0]['args']['text'] == body
+    assert cards[0]['args']['to'] == '+15555550123'
+    assert not any(e['type'] == 'workflow' for e in events)
+    assert not state.executed and not state.native
+
+
 @pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
 @pytest.mark.parametrize('owner,prompt', [
     ('reminder', 'Define unread email.'),

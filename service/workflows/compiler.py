@@ -2622,6 +2622,17 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         return None
     if _file_directed_write(text):
         return None
+    # A proven literal send already owns its authored body. In shadow mode
+    # the typed engine can fall through here; body nouns are not read sources.
+    from service.tasks.compiler import (
+        _MESSAGE_SEND_INTRO, _EMAIL_SEND_INTRO, compile_message_send, compile_email_send,
+    )
+    literal = _MESSAGE_SEND_INTRO.match(text) or _EMAIL_SEND_INTRO.match(text)
+    # Bare "that" can instead refer to a stored display ("text Mom that via
+    # Messages without the links"). Keep that existing reference precedence.
+    explicit_body = literal and not text[:literal.start('body')].rstrip().casefold().endswith(' that')
+    if explicit_body and (compile_message_send(text) or compile_email_send(text)):
+        return None
     text = _delivery_scope_text(_normalize(_message_scope_text(text)))
     text = _bind_inline_read_then_deliver(text)
     if REMINDER_CREATE_RE.search(text):

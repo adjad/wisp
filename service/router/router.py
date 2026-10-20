@@ -6606,7 +6606,12 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
 
     if (explanation := _explanation_clause_contract(text)) is not None:
         allowed, bindings = explanation
-        return frozenset(set(REGISTRY) - set(allowed)), bindings
+        remainder = explanation_remainder(text)
+        policy_forbidden, policy_bindings = routing_guard_contract(remainder) if remainder else (frozenset(), {})
+        allowed = set(allowed) - set(policy_forbidden)
+        bindings = {name: {**args, **policy_bindings.get(name, {})}
+                    for name, args in bindings.items() if name in allowed}
+        return frozenset((set(REGISTRY) - allowed) | set(policy_forbidden)), bindings
 
     # Authored/quoted text is data, never fresh authority or prohibitions.
     t = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
@@ -7983,11 +7988,13 @@ def _assistant_read_claim(text: str) -> RouteDecision | None:
     if (explanation := _explanation_clause_contract(text)) is not None:
         from service.tools.registry import REGISTRY
         allowed, bindings = explanation
+        forbidden, bindings = routing_guard_contract(text)
+        allowed = [name for name in allowed if name not in forbidden]
         decision = _mk('agent' if allowed else 'general', tools=bool(allowed),
                        reason='complete explanation clauses; only independently authored capability')
         decision.tool_subset = allowed
         decision.tool_argument_bindings = bindings
-        decision.forbidden_tools = frozenset(set(REGISTRY) - set(allowed))
+        decision.forbidden_tools = forbidden
         decision.resolved_request = text
         if not allowed and explanation_remainder(text):
             decision.resolved_request += ('\nClarify the unsupported independent clause; '
