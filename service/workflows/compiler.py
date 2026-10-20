@@ -70,15 +70,6 @@ def outbound_verb(text: str) -> bool:
     from service.workflows.workflow20 import personal_read
     if personal_read(text) is not None:
         return False
-    # Retrospective communication questions are reads. Consume the whole
-    # question so a subsequent independent delivery still reaches compilation.
-    if re.fullmatch(
-            r"\s*(?:what\s+(?:did|has|had)|did)\s+(?:my\s+)?"
-            r"[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2}\s+"
-            r"(?:text(?:ed)?|e-?mail(?:ed)?|message[ds]?|send|sent|write|wrote|say|said|tell|told)"
-            r"(?:\s+(?:me|to\s+me|back|earlier|today|yesterday|last\s+night|this\s+morning|recently|lately))*"
-            r"[.!?\s]*", text, re.I):
-        return False
     masked = _EMAIL_NOUN_USE.sub(" ", text)
     if _LEADING_EMAIL_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
         masked = _LEADING_EMAIL_NOUN.sub(" ", masked, count=1)

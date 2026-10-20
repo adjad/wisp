@@ -108,19 +108,32 @@ def is_complete_explanation(text: str) -> bool:
     return explanation_terms(text) is not None
 
 
+_HISTORICAL_RECIPIENT = (
+    r"(?:[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|"
+    r"\+?\d[\d(). -]{6,}\d|"
+    r"(?!(?:and|then|but|also)\b)[A-Za-z][A-Za-z'’-]*"
+    r"(?:\s+(?!(?:and|then|but|also)\b)[A-Za-z][A-Za-z'’-]*){0,2})")
 _RETROSPECTIVE_COMMUNICATION = re.compile(
-    r"[ \t]*\**[ \t]*what\s+(?:(?:messages?|texts?|iMessages?|e-?mails?)\s+)?"
+    r"\s*\**[ \t]*(?:"
+    # Existing whole-question family, shared with every admission boundary.
+    r"(?:what\s+(?:did|has|had)|did)\s+(?:my\s+)?"
+    r"[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2}\s+"
+    r"(?:text(?:ed)?|e-?mail(?:ed)?|message[ds]?|send|sent|write|wrote|say|said|tell|told)"
+    r"(?:\s+(?:me|to\s+me|back|earlier|today|yesterday|last\s+night|this\s+morning|recently|lately))*"
+    r"|what\s+(?:(?:messages?|texts?|iMessages?|e-?mails?)\s+)?"
     r"did\s+I\s+(?:send|write)"
-    r"(?:\s+(?:yesterday|today|last\s+night|this\s+morning|earlier|recently|lately))?"
-    r"[?! .]*\**[ \t]*", re.I)
+    r"(?:\s+to\s+" + _HISTORICAL_RECIPIENT + r")?"
+    r"(?:\s+(?:yesterday|today|last\s+(?:night|week|month|year)|this\s+morning|earlier|recently|lately))?"
+    r")[.!?\s]*\**[ \t]*", re.I)
 
 
 def is_retrospective_communication_question(text: str) -> bool:
     """A whole past-send question, never current delivery or authored data.
 
     This finite grammar consumes every byte, including optional leading
-    emphasis. A quoted body, recipient, qualifier or independent clause does
-    not match and retains its existing owner and source policy.
+    emphasis and the bounded historical recipient/time operands. An authored
+    body, unsupported qualifier or independent clause does not match and
+    retains its existing owner and source policy.
     """
     return _RETROSPECTIVE_COMMUNICATION.fullmatch(text or "") is not None
 

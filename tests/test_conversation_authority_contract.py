@@ -1125,3 +1125,195 @@ def test_actual_marked_direct_phone_source_delivery_keeps_exact_existing_binding
             assert event['workflow']['recipient'] == '+15555550123'
         if event['type'] == 'confirm':
             assert event['tool'] == 'send_message' and event['args']['to'] == '+15555550123'
+
+
+OLD_HISTORY_QUESTIONS = [
+    'Did Mom email me?',
+    'What did Mom email me?',
+    'What did Alex text me yesterday?',
+    'Did I send yesterday?',
+    'What has Alex said?',
+    'What had my brother told me?',
+    'Did my father write to me?',
+    'What did Adi e-mail me earlier?',
+]
+
+
+@pytest.mark.parametrize('marker', ['', '*', '**'])
+@pytest.mark.parametrize('verb', [
+    'text', 'texted', 'email', 'emailed', 'e-mail', 'e-mailed',
+    'message', 'messaged', 'messages', 'send', 'sent', 'write', 'wrote',
+    'say', 'said', 'tell', 'told',
+])
+def test_existing_retrospective_verb_family_has_one_shared_full_question_proof(marker, verb):
+    from service.router.router import routing_guard_contract
+    from service.tools.registry import REGISTRY
+    prompt = marker + 'What did Alex ' + verb + ' me yesterday?'
+    assert U.is_retrospective_communication_question(prompt)
+    assert not outbound_verb(prompt) and compile_new(prompt) is None
+    forbidden, bindings = routing_guard_contract(prompt)
+    reads = {'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'}
+    assert set(REGISTRY) - reads <= forbidden and not bindings
+    # Neither the old family nor the new family can consume a later command.
+    assert not U.is_retrospective_communication_question(prompt + ' Text Mom saying "Bring blue folder."')
+    assert not U.is_retrospective_communication_question('Text Mom saying "' + prompt + '"')
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt', OLD_HISTORY_QUESTIONS)
+@pytest.mark.parametrize('name,args', [
+    ('send_message', {'to': '+15555550123', 'text': 'Unrequested synthetic action'}),
+    ('send_email', {'to': 'fictional@example.invalid', 'subject': 'fictional', 'body': 'Unrequested synthetic action'}),
+    ('fictional_action_alias', {'to': '+15555550123', 'text': 'fictional'}),
+    ('run_shell', {'command': 'fictional'}),
+    ('web_search', {'query': 'Unrequested disclosure of private history'}),
+])
+def test_actual_existing_history_families_reject_all_outbound_and_opaque_attempts(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, name, args):
+    from service.tools.registry import REGISTRY
+    state = pending_entrypoint
+    monkeypatch.setitem(REGISTRY, 'fictional_action_alias', replace(
+        REGISTRY['send_message'], name='fictional_action_alias'))
+    assert U.is_retrospective_communication_question(prompt)
+    before = pending_rows(state)
+    events = actual_attempt(state, monkeypatch, mode, prompt, name, args)
+    (tmp_path / 'sibling-history-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'attempt': {'name': name, 'args': args},
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests,
+        'before': before, 'after': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native, 'early': state.early}, indent=2, default=str))
+    assert not state.executed and not state.source_calls and not state.native
+    assert pending_rows(state) == before
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+    assert not any(e['type'] == 'tool_call' and e.get('name') != 'get_tool_schemas' for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt,name', [
+    ('Did Mom email me?', 'view_emails'),
+    ('What did Mom email me?', 'view_emails'),
+    ('What did Alex text me yesterday?', 'view_messages'),
+])
+def test_actual_existing_sibling_history_retains_only_inherited_source_read(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, name):
+    from service.router.router import _domain_subset
+    state = pending_entrypoint
+    legacy = _domain_subset(prompt)
+    expected = bool(legacy and name in (legacy.tool_subset or ()))
+    events = actual_attempt(state, monkeypatch, mode, prompt, name, {})
+    (tmp_path / 'sibling-history-read-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'expected_existing_menu': expected,
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests,
+        'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert bool(state.executed) == expected and all(n == name for n, _ in state.executed)
+    assert not pending_rows(state) and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('owner', ['reminder', 'reply-body', 'reply-target',
+                                   'workflow-addressed', 'workflow-unaddressed'])
+def test_actual_existing_history_sibling_preserves_pending_rows_before_warming(
+        pending_entrypoint, monkeypatch, tmp_path, mode, owner):
+    state = pending_entrypoint
+    sid, _ = seed_pending(state, owner)
+    before = pending_rows(state)
+    prompt = '*What did Alex text me yesterday?'
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'send_message',
+                            {'to': '+15555550123', 'text': 'Unrequested synthetic action'}, sid=sid)
+    (tmp_path / 'pending-sibling-history-receipt.json').write_text(json.dumps({
+        'mode': mode, 'owner': owner, 'prompt': prompt, 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'before': before,
+        'after': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native, 'early': state.early}, indent=2, default=str))
+    assert pending_rows(state) == before
+    assert not state.source_calls and not state.executed and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('body', ['What did Alex text me yesterday?', '*Did I send yesterday?'])
+def test_actual_existing_history_sibling_is_literal_in_authored_body(
+        pending_entrypoint, monkeypatch, tmp_path, mode, body):
+    state = pending_entrypoint
+    prompt = 'Text +15555550123 saying "' + body + '"'
+    task = compile_task(prompt)
+    assert task and task.subject.value == body and task.original_request == prompt
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'send_message',
+                            {'to': '+15555550123', 'text': body})
+    (tmp_path / 'literal-sibling-history-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'task': task.to_dict(), 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    cards = [e for e in events if e['type'] == 'confirm' and e.get('tool') == 'send_message']
+    assert len(cards) == 1 and cards[0]['args']['text'] == body
+    assert cards[0]['args']['to'] == '+15555550123'
+    assert not state.executed and not state.source_calls and not state.native
+
+
+RELATIVE_HISTORY_QUESTIONS = [
+    'What messages did I send last week?',
+    'What emails did I send to Alex yesterday?',
+    '*What messages did I write last month?',
+    '**What emails did I send last year?**',
+    'What messages did I send to Alex Smith yesterday?',
+    'What messages did I send to Alex Lee Smith last week?',
+    'What emails did I send to fictional@example.invalid yesterday?',
+    'What messages did I send to +15555550123 yesterday?',
+]
+
+
+@pytest.mark.parametrize('prompt', RELATIVE_HISTORY_QUESTIONS)
+def test_finite_relative_history_preserves_no_effect_contract(prompt):
+    from service.router.router import routing_guard_contract
+    from service.tools.registry import REGISTRY
+    assert U.is_retrospective_communication_question(prompt)
+    assert not outbound_verb(prompt) and compile_new(prompt) is None
+    forbidden, bindings = routing_guard_contract(prompt)
+    assert set(REGISTRY) - {'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'} <= forbidden
+    assert not bindings
+
+
+@pytest.mark.parametrize('prompt', [
+    'What emails did I send to Alex and Send Mom a message?',
+    'What emails did I send to Alex Then Text Mom saying "Bring blue folder."',
+    'What emails did I send to Alex; Send Mom a message.',
+    'What messages did I send last week? Then Text Mom saying Bring version 3.14.',
+    'What messages did I send last week and Send Mom a message.',
+    'What messages did I send last week? Schedule a text to Mom tomorrow.',
+    'What messages did I send to Alex yesterday? Delete the Laundry reminder.',
+    'Text Mom saying What messages did I send last week?',
+    'Text Mom saying "What emails did I send to Alex yesterday?"',
+    'Remind me tomorrow to ask what messages did I send last week.',
+    'What messages did I send during the previous fortnight?',
+    'What emails did I send to Alex Smith Lee Jones yesterday?',
+])
+def test_finite_history_does_not_absorb_current_clauses_data_or_unknown_temporal_grammar(prompt):
+    assert not U.is_retrospective_communication_question(prompt)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt', RELATIVE_HISTORY_QUESTIONS[:2])
+@pytest.mark.parametrize('name,args', [
+    ('send_message', {'to': '+15555550123', 'text': 'Unrequested synthetic action'}),
+    ('send_email', {'to': 'fictional@example.invalid', 'subject': 'fictional', 'body': 'Unrequested synthetic action'}),
+    ('fictional_unknown_read_alias', {}),
+    ('run_applescript', {'script': 'fictional'}),
+])
+def test_actual_relative_history_rejects_outbound_alias_and_opaque_attempts(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, name, args):
+    from service.tools.registry import REGISTRY
+    state = pending_entrypoint
+    monkeypatch.setitem(REGISTRY, 'fictional_unknown_read_alias', replace(
+        REGISTRY['view_messages'], name='fictional_unknown_read_alias'))
+    events = actual_attempt(state, monkeypatch, mode, prompt, name, args)
+    (tmp_path / 'relative-history-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'attempt': {'name': name, 'args': args},
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests,
+        'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert not state.executed and not state.source_calls and not state.native
+    assert not pending_rows(state)
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+    assert not any(e['type'] == 'tool_call' and e.get('name') != 'get_tool_schemas' for e in events)
