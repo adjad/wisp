@@ -69,6 +69,19 @@ class SourceSyncContract(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Newer messages may be missing", row["warning"])
         self.assertNotIn("Current data", row["progress_detail"])
 
+    async def test_headers_ready_does_not_hide_ineligible_body_scan(self):
+        self.ready_core()
+        self.enterContext(patch.object(E, '_raw_mail_snapshot', None))
+        self.enterContext(patch.object(E, '_raw_snapshot_generation', 0))
+        E.cache_raw_emails('', {'accounts': [], 'failed_accounts': ['PRIVATE ACCOUNT'],
+            'complete': False, 'failure_diagnostics': [{'stage': 'body_scan', 'code': -1712}]})
+        row = S.source_status('email')
+        self.assertEqual(row['state'], 'ready')
+        self.assertFalse(row['body_scan']['eligible'])
+        self.assertEqual(row['body_scan']['failures'], [{'stage': 'body_scan', 'code': -1712}])
+        self.assertNotIn('PRIVATE', str(row['body_scan']))
+        self.publish.assert_not_awaited()
+
     async def test_successful_empty_local_read_clears_old_headers_and_history(self):
         E._headers = E._history = "1 | U | Test | Sender | Old cached email"
         await self.post_mail()

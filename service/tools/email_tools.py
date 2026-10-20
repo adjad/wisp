@@ -825,6 +825,30 @@ class RawEmailSnapshot:
     identity_complete: bool
     failure_reason: str
     raw_digest: str
+    scan_failures: tuple[tuple[str, int], ...] = ()
+
+
+def _scan_failure_diagnostics(value) -> tuple[tuple[str, int], ...]:
+    """Fixed diagnostic vocabulary only; never retain native error text/labels."""
+    stages = {'mail_closed', 'account_inventory', 'duplicate_account_labels',
+              'mail_closed_during_scan', 'body_scan'}
+    if not isinstance(value, (list, tuple)):
+        return ()
+    result = []
+    for item in value[:128]:
+        if not isinstance(item, dict):
+            continue
+        stage = item.get('stage')
+        if not isinstance(stage, str) or stage not in stages:
+            continue
+        code = item.get('code')
+        if type(code) is not int:
+            continue
+        # Apple Event/AppleScript errors are negative numeric codes. Keep
+        # bounded integers for diagnosis; free text and arbitrary large IDs
+        # never become part of this projection.
+        result.append((stage, code if -32768 <= code <= 0 else 0))
+    return tuple(dict.fromkeys(result))
 
 
 def _raw_snapshot_candidate(raw: str, coverage: dict | None, stamp: float) -> RawEmailSnapshot:
@@ -860,7 +884,8 @@ def _raw_snapshot_candidate(raw: str, coverage: dict | None, stamp: float) -> Ra
     return RawEmailSnapshot(0, stamp, tuple(MappingProxyType(dict(row)) for row in rows),
                             accounts, failures, complete, decode_complete, identity_complete,
                             str(scan.get("failure_reason") or ""),
-                            hashlib.sha256(raw.encode("utf-8")).hexdigest())
+                            hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+                            _scan_failure_diagnostics(scan.get('failure_diagnostics')))
 
 
 def provider_history_snapshot(provider, *, expected_receipt=None, required_refs=()):
@@ -916,6 +941,26 @@ def raw_email_snapshot(*, expected_generation: int | None = None,
         return snapshot
 
 
+def raw_email_scan_status() -> dict:
+    """Content-free metadata sampled with the same immutable admission decision.
+
+    Header readiness and retained display bytes cannot establish body coverage.
+    This getter does not refresh Mail or expose records, labels or identities.
+    """
+    with _raw_snapshot_lock:
+        snapshot = _raw_mail_snapshot
+        diagnostics = {}
+        raw_email_snapshot(diagnostics=diagnostics)
+        return {**diagnostics,
+                'generation': snapshot.generation if snapshot else None,
+                'received_at': snapshot.synced_at if snapshot else None,
+                'complete': snapshot.complete if snapshot else False,
+                'successful_accounts': len(snapshot.accounts) if snapshot else 0,
+                'failure_entries': len(snapshot.failed_accounts) if snapshot else 0,
+                'failures': [{'stage': stage, 'code': code}
+                             for stage, code in snapshot.scan_failures] if snapshot else []}
+
+
 @mutating
 def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
     global _raw_emails, _raw_emails_at, _raw_reference_scan
@@ -939,7 +984,7 @@ def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
         snapshot = RawEmailSnapshot(_raw_snapshot_generation, candidate.synced_at,
             candidate.rows, candidate.accounts, candidate.failed_accounts, candidate.complete,
             candidate.decode_complete, candidate.identity_complete, candidate.failure_reason,
-            candidate.raw_digest)
+            candidate.raw_digest, candidate.scan_failures)
         if scan.get("failed_accounts") and not scan.get("accounts"):
             _raw_reference_scan = {**scan, "synced_at": stamp, "complete": False}
             _raw_mail_snapshot = snapshot

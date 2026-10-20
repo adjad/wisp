@@ -172,6 +172,8 @@ final class Reader {
             return (which == "changed" ? "other@example.test" : "me@example.test", 0)
         }
         contentCalls += 1
+        if which == "body_timeout" { return (nil, -1712) }
+        if which == "body_missing" { return (nil, -1728) }
         if which == "body_failed" || (which == "partial" && script == "B") { return (nil, -1743) }
         if tag.hasPrefix("history") {
             if which == "walk_malformed" { return ("INVALID\nnot a batch", 0) }
@@ -226,7 +228,7 @@ final class Reader {
         }
         for lane in ["raw", "history"] {
             for which in ["success", "empty", "duplicate", "unavailable", "closed", "closed_mid", "closed_reopened",
-                          "closed_before_identity", "closed_between", "closed_batch", "body_failed", "partial", "two", "identity_failed",
+                          "closed_before_identity", "closed_between", "closed_batch", "body_failed", "body_timeout", "body_missing", "partial", "two", "identity_failed",
                           "identity_malformed", "identity_empty", "changed", "expanded", "bad_http", "bad_json", "transport",
                           "index", "index_superseded", "enumeration_superseded", "walk_malformed", "capped", "commit_superseded", "deferred"] {
                 if lane == "raw" && ["closed_batch", "index", "index_superseded", "enumeration_superseded", "walk_malformed", "capped", "commit_superseded", "deferred"].contains(which) { continue }
@@ -284,6 +286,22 @@ final class Reader {
                     }
                 }
                 save(lane + "_" + which, reader)
+                if lane == "raw", let raw = session.requests.compactMap({ $0["body"] as? [String: Any] }).first(where: { $0["raw"] != nil }) {
+                    let coverage = raw["raw_coverage"] as! [String: Any]
+                    let failures = coverage["failure_diagnostics"] as? [[String: Any]] ?? []
+                    let expectedStage = ["closed": "mail_closed", "unavailable": "account_inventory",
+                        "duplicate": "duplicate_account_labels", "body_failed": "body_scan", "body_timeout": "body_scan", "body_missing": "body_scan", "partial": "body_scan",
+                        "closed_between": "mail_closed_during_scan"][which]
+                    if let stage = expectedStage {
+                        precondition(failures.first?["stage"] as? String == stage)
+                        let expectedCode = ["unavailable": -1743, "body_failed": -1743, "partial": -1743,
+                                            "body_timeout": -1712, "body_missing": -1728][which] ?? 0
+                        precondition(failures.first?["code"] as? Int == expectedCode)
+                        precondition(Set(failures.first!.keys) == Set(["stage", "code"]))
+                        precondition(coverage["complete"] as? Bool == false)
+                    }
+                    if which == "success" || which == "empty" { precondition(failures.isEmpty) }
+                }
             }
         }
         // A corrupt ACK must never mutate accepted order, retire the actual
