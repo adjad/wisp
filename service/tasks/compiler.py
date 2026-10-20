@@ -575,6 +575,34 @@ def compile_task(text: str, *, now: datetime | None = None,
     # tomorrow"') must not become a real task: the model reads those.
     if deliberate(text) is not None:
         return None
+    from service.tasks.reminder_batch import compile_dated_reminders
+    if dated := compile_dated_reminders(text, now=now or datetime.now(), turn=turn):
+        return dated
+    # Explicit all-day modifiers are outer timing instructions, not part of
+    # the title. Quoted occurrences remain literal reminder content.
+    all_day_text = re.sub(
+        r'^(\s*(?:(?:please|can you|could you|would you)\s+)?'
+        r'(?:set|create|add|make|schedule)\s+(?:an?\s+)?)all[ -]day\s+(?=reminders?\b)',
+        r'\1', text, flags=re.I)
+    prefixed_all_day = all_day_text != text
+    if tail := re.search(r'\s+all[ -]day(?:\s+long)?[.!?\s]*$', all_day_text, re.I):
+        if not any(a <= tail.start() < b for a, b in quoted_spans(all_day_text)):
+            all_day_text = all_day_text[:tail.start()]
+    if all_day_text != text:
+        if all_day_plan := compile_reminder_create(all_day_text, now=now, turn=turn):
+            if not prefixed_all_day and not all_day_plan.temporal.absolute_iso:
+                return None
+            all_day_plan.original_request = text
+            all_day_plan.parameters['all_day'] = SlotValue(True, 'explicit', turn=turn)
+            if all_day_plan.temporal.absolute_iso:
+                if not all_day_plan.temporal.defaulted_part_of_day:
+                    all_day_plan.temporal.absolute_iso = ""
+                    all_day_plan.recompute_status()
+                    return all_day_plan  # Ask for one unambiguous date/mode.
+                all_day_plan.temporal.absolute_iso = datetime.fromisoformat(
+                    all_day_plan.temporal.absolute_iso).date().isoformat()
+            all_day_plan.recompute_status()
+            return all_day_plan
     if reply := compile_email_reply(text, now=now, turn=turn):
         return reply
     # An addressed literal-body command fixes the outer speech act. A

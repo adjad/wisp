@@ -7209,7 +7209,10 @@ async def _reminder_compound_boundary(text: str, request: _WebRequest) -> RouteD
     from service.tools.registry import REGISTRY
     decision = _mk("agent", reason="unresolved reminder task clauses -> clarify before effects")
     decision.tool_subset = []
-    decision.resolved_request = "Please clarify the separate reminder subject and other requested actions."
+    decision.resolved_request = (text + '\n\nNo reminder or other action has happened. '
+        'Ask a specific clarification about the reminder subjects, dates or additional actions '
+        'in the request above. Preserve every requested item. Historical memories do not '
+        'supply the subject, date or current status of this request.')
     decision.forbidden_tools = frozenset(REGISTRY)
     return _pin_web_decision(decision) if request.opted_out else decision
 

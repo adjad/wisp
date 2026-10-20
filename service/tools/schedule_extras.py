@@ -16,6 +16,8 @@ same question, and the two would drift the moment a sync lagged.
 """
 from __future__ import annotations
 
+from service.assistant.verified_reminders import expected_date_fields
+
 import datetime as dt
 import hashlib
 import json
@@ -463,7 +465,7 @@ async def complete_reminder(title: str, expected_id: str = "") -> str:
                 return "(error: exact Reminders identity is unavailable; nothing was marked done.)"
             result = await app_request("complete_reminder", {
                 "source_id": member["source_id"], "expected_title": member["title"],
-                "expected_due_ts": member["when_ts"]})
+                "expected_due_ts": member["when_ts"], **expected_date_fields(member)})
             if result.get("ok") is not True:
                 return f"(error: {result.get('error') or 'Native completion was not verified'}.)"
     ok = _store.set_status(row["id"], "done")

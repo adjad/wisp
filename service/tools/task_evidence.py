@@ -100,12 +100,12 @@ def _native_source(source: str, *, now: float, start: float, end: float, query: 
                 + sql + " ORDER BY c.when_ts DESC,c.source_id LIMIT 5000", params)]
             undated, view = [], {}
         else:
-            sql = ("FROM commitments c WHERE c.source IN ('reminders','manual') AND c.status='active' "
+            sql = ("FROM scheduled_commitments c WHERE c.source IN ('reminders','manual') AND c.status='active' "
                    "AND ((c.when_ts>=? AND c.when_ts<?) OR (? AND c.when_ts<?))")
             params = (start, end, include_overdue, now)
             total = db.execute("SELECT COUNT(*) " + sql, params).fetchone()[0]
             rows = [dict(row) for row in db.execute(
-                "SELECT c.id,c.source,c.source_id,c.title,c.context,c.account,c.when_ts "
+                "SELECT c.id,c.source,c.source_id,c.title,c.context,c.account,c.when_ts,c.all_day,c.due_date "
                 + sql + " ORDER BY c.when_ts DESC,c.source_id LIMIT 5000", params)]
             view, undated = assistant_store.undated_listing(query) if include_undated else ({}, [])
             # Overdue reminders the stale policy hides are not evidence of anything.

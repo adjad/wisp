@@ -88,10 +88,11 @@ async def delete(body: Answer, request: Request):
     from service.assistant.outbox import request as app_request
     # Undated: an explicit null due time. Overdue: the exact due time it was asked about,
     # so a reminder rescheduled since is refused natively instead of deleted.
+    from service.assistant.verified_reminders import expected_date_fields
     expected_due = None if row["reason"] == "undated" else row["when_ts"]
     result = await app_request("delete_reminder", {
         "source_id": row["source_id"], "expected_title": row["title"],
-        "expected_due_ts": expected_due})
+        "expected_due_ts": expected_due, **expected_date_fields(row)})
     if result.get("ok") is not True:
         # "unknown" means the app may have deleted it without confirming; say so rather
         # than offering a retry that could act on a different reminder.

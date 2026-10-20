@@ -8,6 +8,8 @@ fed by the app's CalendarReader (EventKit) plus manual additions.
 """
 from __future__ import annotations
 
+from service.assistant.verified_reminders import expected_date_fields
+
 import re
 import contextlib
 import contextvars
@@ -280,7 +282,7 @@ def _collapse_schedule_rows(items: list[dict]) -> list[dict]:
         if not title or when is None:
             key = ("unkeyed", id(item), 0)
         else:
-            key = (title, int(float(when) // 60))
+            key = (title, int(float(when) // 60), bool(item.get('all_day')))
         current = by_key.get(key)
         if current is None or rank.get(item.get("source"), 9) < rank.get(current.get("source"), 9):
             by_key[key] = item
@@ -586,6 +588,14 @@ def _reminder_due_time(when_iso: str) -> tuple[float, str]:
     from math import isfinite
     from service.tasks.temporal import unambiguous_local_time
 
+    # Preserve datetime.fromisoformat's clock formats (including a space
+    # separator), while refusing every date-only form it accepts as midnight.
+    try:
+        date.fromisoformat(when_iso)
+    except (TypeError, ValueError):
+        pass
+    else:
+        raise ValueError("timed reminders require an explicit clock; use all_day for a date")
     when = datetime.fromisoformat(when_iso)
     if when.tzinfo is None and not unambiguous_local_time(when):
         raise ValueError("invalid or ambiguous local reminder time")
@@ -607,7 +617,8 @@ def _reminder_due_time(when_iso: str) -> tuple[float, str]:
     "reminded of something, asks for an alarm/nudge, or to track a deadline. "
     "This creates a Wisp notification and requests an Apple Reminders mirror, "
     "not a ringing Clock alarm. A calendar appointment or saved memory is not "
-    "a reminder. Ask for the alert time if it wasn't specified.",
+    "a reminder. Use all_day=true with a YYYY-MM-DD date for an explicitly "
+    "all-day reminder; it has no timed alarm. Otherwise ask for an unspecified alert time.",
     {"type": "object",
      "properties": {
          "title": {"type": "string", "description": "what to remind about"},
@@ -616,26 +627,37 @@ def _reminder_due_time(when_iso: str) -> tuple[float, str]:
          "kind": {"type": "string",
                   "enum": ["reminder", "assignment", "exam", "meeting", "event"],
                   "description": "defaults to reminder"},
+         "all_day": {"type": "boolean", "description": "Explicit date-only reminder; when_iso must be YYYY-MM-DD. No clock alert."},
      },
      "required": ["title", "when_iso"]},
     category="assistant_write",
 )
-async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str:
+async def add_reminder(title: str, when_iso: str, kind: str = "reminder", all_day: bool = False) -> str:
+    from service.assistant.verified_reminders import valid_due_date, due_timestamp
+    if type(all_day) is not bool or (all_day and not valid_due_date(when_iso)):
+        return '(error: all-day reminders require an explicit YYYY-MM-DD date; nothing was added.)'
     try:
-        ts, when_str = _reminder_due_time(when_iso)
+        if all_day:
+            ts, when_str = due_timestamp({'all_day': True, 'due_date': when_iso}), ''
+        else:
+            ts, when_str = _reminder_due_time(when_iso)
     except (TypeError, ValueError, OverflowError, OSError):
         return (f"(bad when_iso {when_iso!r} — use a valid, unambiguous local ISO "
                 "time, e.g. 2026-07-13T16:00, or an explicit UTC offset; nothing was added.)")
-    if ts < time.time() - 60:
+    if ((datetime.fromisoformat(when_iso).date() < datetime.now().date()) if all_day
+            else ts < time.time() - 60):
         return f"({when_iso} is in the past — not added)"
-    clean_title = title.strip()
+    clean_title = title.strip() if isinstance(title, str) else ''
     if not clean_title:
         return "(error: a reminder title is required; nothing was added.)"
     if not isinstance(kind, str) or kind not in {"reminder", "assignment", "exam", "meeting", "event"}:
         return "(error: unsupported reminder kind; nothing was added.)"
     from service.assistant.outbox import app_connected, request as app_request
     from service.assistant.hub import hub
-    payload = {"title": clean_title, "due_ts": ts, "commitment_kind": kind}
+    if all_day:
+        when_str = datetime.fromisoformat(when_iso).strftime('%a %b %-d, %Y') + ' (all day; no timed alarm)'
+    payload = {"title": clean_title, "commitment_kind": kind,
+               **({'all_day': True, 'due_date': when_iso} if all_day else {'due_ts': ts})}
     if not await app_connected(via=hub):
         # Nothing is sent now, but an earlier attempt at this exact reminder
         # may already exist natively (unknown outcome or verified success). A
@@ -647,7 +669,8 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
                     "write for this reminder is unconfirmed or already exists; nothing was "
                     "added. Reopen Wisp to reconcile it.)")
         return await _add_local_reminder(
-            clean_title, ts, kind, when_str, "the Wisp app is not connected")
+            clean_title, ts, kind, when_str, "the Wisp app is not connected",
+            **({'all_day': True, 'due_date': when_iso} if all_day else {}))
     result = await app_request("create_reminder", payload)
     if result.get("ok") is not True:
         if result.get("status") == "failed":
@@ -656,16 +679,23 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
             # native item may exist, and a local twin would alert twice.
             return await _add_local_reminder(
                 clean_title, ts, kind, when_str,
-                str(result.get("error") or "Apple Reminders declined the write"))
+                str(result.get("error") or "Apple Reminders declined the write"),
+                **({'all_day': True, 'due_date': when_iso} if all_day else {}))
         return f"(error: {result.get('error') or 'Reminders creation was not verified'}; nothing was confirmed.)"
+    if all_day:
+        from service.assistant.verified_reminders import validate_result
+        try:
+            validate_result('create_reminder', payload, result)
+        except (KeyError, TypeError, ValueError):
+            return '(error: the all-day reminder date was not verified; check Reminders before retrying.)'
     await hub.publish({"type": "changed"})
     return f"Reminder set: “{clean_title}” — {when_str} in Apple Reminders and Wisp."
 
 
 async def _add_local_reminder(title: str, ts: float, kind: str, when_str: str,
-                              reason: str) -> str:
+                              reason: str, *, all_day: bool = False, due_date: str | None = None) -> str:
     from service.assistant.hub import hub
-    c = assistant_store.add_manual(title, ts, kind=kind)
+    c = assistant_store.add_manual(title, ts, kind=kind, **({'all_day': True, 'due_date': due_date} if all_day else {}))
     try:
         await hub.publish({"type": "changed"})
     except Exception:  # noqa: BLE001
@@ -740,8 +770,12 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
                                      c.get("updated_at") or 0.0,
                                      c.get("id") or ""))
 
+    from service.assistant.verified_reminders import valid_due_date, validate_result
+    date_only = bool(current.get('all_day')) and (not when_iso or valid_due_date(when_iso))
     old_when = float(current["when_ts"])
     if when_iso:
+        if valid_due_date(when_iso) and not date_only:
+            return '(error: a timed update requires a clock; nothing was changed.)'
         try:
             target = datetime.fromisoformat(when_iso)
         except ValueError:
@@ -753,7 +787,11 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
         target = target_day.replace(hour=old_local.hour, minute=old_local.minute)
 
     new_when = target.timestamp()
-    if new_when < time.time() - 60:
+    if date_only:
+        from service.assistant.verified_reminders import due_timestamp
+        new_when = due_timestamp({'all_day': True, 'due_date': target.date().isoformat()})
+        target = datetime.fromtimestamp(new_when)
+    if ((target.date() < datetime.now().date()) if date_only else new_when < time.time() - 60):
         return (f"(error: preserving the old time would put the reminder in the past "
                 f"({target:%a %b %-d at %-I:%M %p}); ask what time today to use. "
                 "The reminder was not changed.)")
@@ -762,6 +800,8 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
                          (assistant_store.get(cid)
                           for cid in current.get("duplicate_ids") or []) if row]
     final_title = new_title.strip() or current["title"]
+    when_label = target.strftime('%a %b %-d, %Y') + ' (all day; no timed alarm)' if date_only else target.strftime('%a %b %-d at %-I:%M %p')
+    date_flags = {'all_day': date_only, **({'due_date': target.date().isoformat()} if date_only else {})} if current.get('all_day') or date_only else {}
     reminder_rows = [row for row in group if row.get("source") == "reminders"]
     if not reminder_rows:
         # No native twin exists (a pre-A18 or Wisp-only reminder), so a local
@@ -769,11 +809,11 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
         manual_ids = [row["id"] for row in group if row.get("source") == "manual"]
         if not manual_ids:
             return "(error: this item is not a Wisp or Apple reminder; nothing was changed.)"
-        if assistant_store.update_schedule(manual_ids, new_when, final_title) < 1:
+        if assistant_store.update_schedule(manual_ids, new_when, final_title, **date_flags) < 1:
             return "(error: the reminder changed before it could be updated; try again.)"
         from service.assistant.hub import hub
         await hub.publish({"type": "changed"})
-        return f"Reminder updated: “{final_title}” — {target:%a %b %-d at %-I:%M %p} in Wisp."
+        return f"Reminder updated: “{final_title}” — {when_label} in Wisp."
     if len(reminder_rows) > 1:
         return "(error: several native reminders share this item; select an exact reminder before changing it.)"
     if any(not row.get("source_id") for row in reminder_rows):
@@ -781,18 +821,24 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
     from service.assistant.outbox import request as app_request
     from service.assistant.hub import hub
     for row in reminder_rows:
-        result = await app_request("update_reminder", {
+        payload = {
             "source_id": row["source_id"], "expected_title": row["title"],
-            "expected_due_ts": row["when_ts"], "title": final_title, "due_ts": new_when,
-        })
+            "expected_due_ts": row["when_ts"], **expected_date_fields(row), "title": final_title,
+            **({'all_day': True, 'due_date': target.date().isoformat()} if date_only else {'due_ts': new_when})}
+        result = await app_request("update_reminder", payload)
         if result.get("ok") is not True:
             return f"(error: {result.get('error') or 'Reminder update was not verified'}; check the exact reminder before another attempt.)"
+        if date_only:
+            try:
+                validate_result('update_reminder', payload, result)
+            except (KeyError, TypeError, ValueError):
+                return '(error: the updated all-day date was not verified; check Reminders before retrying.)'
     manual_ids = [row["id"] for row in group if row["source"] == "manual"]
     if manual_ids:
-        assistant_store.update_schedule(manual_ids, new_when, final_title)
+        assistant_store.update_schedule(manual_ids, new_when, final_title, **date_flags)
     await hub.publish({"type": "changed"})
 
-    return f"Reminder updated: “{final_title}” — {target:%a %b %-d at %-I:%M %p}."
+    return f"Reminder updated: “{final_title}” — {when_label}."
 
 
 @register(
@@ -1093,7 +1139,7 @@ async def _retire(c: dict) -> str | None:
                 return "Reminders identity is incomplete; cancellation was not confirmed."
             result = await app_request("delete_reminder", {
                 "source_id": row["source_id"], "expected_title": row["title"],
-                "expected_due_ts": row["when_ts"]})
+                "expected_due_ts": row["when_ts"], **expected_date_fields(row)})
             if result.get("ok") is not True:
                 return str(result.get("error") or "Reminders cancellation was not confirmed")
     for row in group:

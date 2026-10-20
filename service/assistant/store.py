@@ -146,14 +146,14 @@ CALENDAR_KINDS = frozenset({"create_calendar_event", "delete_calendar_event", "m
                             "cancel_calendar_event"})
 
 
-def _dedupe_key(row: dict) -> tuple[str, int] | None:
+def _dedupe_key(row: dict) -> tuple[str, int, bool] | None:
     """Identity of the underlying commitment, or None for rows that can't be
     compared (no title / no time) — those are always kept as-is."""
     title = " ".join((row.get("title") or "").split()).casefold()
     when = row.get("when_ts")
     if not title or when is None:
         return None
-    return (title, int(when // 60))
+    return (title, int(when // 60), bool(row.get('all_day')))
 
 
 def _dedupe_rank(row: dict) -> tuple:
@@ -197,6 +197,7 @@ CREATE TABLE IF NOT EXISTS commitments (
                                      -- case today)
     when_ts     REAL,               -- epoch seconds; start (events) or due (assignments)
     all_day     INTEGER DEFAULT 0,
+    due_date    TEXT,               -- floating reminder date; never an alert time
     location    TEXT,
     url         TEXT,
     status      TEXT DEFAULT 'active',   -- 'active' | 'done' | 'dismissed'
@@ -417,7 +418,7 @@ class AssistantStore:
                 )""")
                 self._migrate_unique_constraint()
                 cols = {r["name"] for r in self._db.execute("PRAGMA table_info(commitments)")}
-                for column in ("organizer", "account"):
+                for column in ("organizer", "account", "due_date"):
                     if column not in cols:
                         self._db.execute(f"ALTER TABLE commitments ADD COLUMN {column} TEXT")
                 if self._has_interrupted_migration():
@@ -467,6 +468,29 @@ class AssistantStore:
                 )""")
                 from service.discovery.store import migrate
                 migrate(self._db)
+                # Read-only projection keeps floating reminder dates in the
+                # current local civil day after travel, without rewriting user
+                # rows or changing timed indexes. UNION keeps the normal timed
+                # branch available to SQLite's existing range index.
+                from service.assistant.verified_reminders import due_timestamp, valid_due_date
+                def civil_index(raw, value, timezone=None):
+                    if not valid_due_date(value):
+                        return raw
+                    if timezone is None:
+                        return due_timestamp({'all_day': True, 'due_date': value})
+                    from datetime import datetime, timedelta
+                    from zoneinfo import ZoneInfo
+                    civil = datetime.fromisoformat(value).replace(tzinfo=ZoneInfo(timezone))
+                    return (civil + timedelta(days=1, minutes=-1)).timestamp()
+                self._db.create_function('wisp_civil_index', 2, civil_index)
+                self._db.create_function('wisp_civil_index', 3, civil_index)
+                columns = [row['name'] for row in self._db.execute('PRAGMA table_info(commitments)')]
+                self._schedule_columns = tuple(columns)
+                projected = ','.join('wisp_civil_index(when_ts,due_date) AS when_ts' if col == 'when_ts'
+                                     else '"' + col + '"' for col in columns)
+                self._db.execute('CREATE TEMP VIEW scheduled_commitments AS '
+                    'SELECT * FROM commitments WHERE all_day=0 OR due_date IS NULL '
+                    'UNION ALL SELECT ' + projected + ' FROM commitments WHERE all_day=1 AND due_date IS NOT NULL')
         except BaseException:
             self._db.close()
             raise
@@ -625,12 +649,12 @@ class AssistantStore:
         Older versions could commit the rename before failing the copy. Later
         startups may have added live rows. Keep those rows, accept identical
         copies, and roll back on conflicts rather than choosing which to lose.
-        Only the two known additive columns may default to NULL.
+        Only known nullable additive columns may default to NULL.
         """
         columns = [r["name"] for r in self._db.execute("PRAGMA table_info(commitments)")]
         old_columns = {r["name"] for r in self._db.execute(
             "PRAGMA table_info(commitments_old_migrating)")}
-        missing = set(columns) - old_columns - {"organizer", "account"}
+        missing = set(columns) - old_columns - {"organizer", "account", "due_date"}
         if missing or old_columns - set(columns):
             raise RuntimeError(recovery_guidance(
                 self.path, "the interrupted migration has unrecognized columns"))
@@ -1017,9 +1041,25 @@ class AssistantStore:
             return Witness.combine(head.authority.token(clock=LIVE_CLOCK,
                 expires_wall=min(metadata[:2])+1200, expires_monotonic=head.expires_monotonic))
 
+    def schedule_relation(self, timezone: str) -> str:
+        """Trusted SQL relation for an explicit display zone's floating dates.
+
+        Timed rows retain their stored epochs; calendar all-day occupancy also
+        keeps its existing interval contract. Only date-only reminders project.
+        """
+        from zoneinfo import ZoneInfo
+        ZoneInfo(timezone)
+        quoted_zone = "'" + timezone.replace("'", "''") + "'"
+        columns = self._schedule_columns
+        projected = ','.join(
+            f'wisp_civil_index(when_ts,due_date,{quoted_zone}) AS when_ts' if col == 'when_ts'
+            else '"' + col + '"' for col in columns)
+        return '(SELECT * FROM commitments WHERE all_day=0 OR due_date IS NULL UNION ALL SELECT ' + projected + ' FROM commitments WHERE all_day=1 AND due_date IS NOT NULL)'
+
     def today_snapshot(self, day: str, timezone: str) -> dict:
         from service.assistant.today import day_bounds
         lo, hi = day_bounds(day, timezone)
+        relation = self.schedule_relation(timezone)
         with self._lock, self._db:
             self._db.execute("BEGIN")  # coherent reads across other store connections
             tasks = [json.loads(r["payload"]) for r in self._db.execute(
@@ -1036,7 +1076,7 @@ class AssistantStore:
             # Rows with an unknown end stay in (even all-day ones that started
             # earlier) so the planner sees them and refuses to call that time free.
             commitments = [dict(r) for r in self._db.execute(
-                "SELECT c.*, e.end_ts FROM commitments c LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
+                f"SELECT c.*, e.end_ts FROM {relation} c LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
                 "WHERE status='active' AND when_ts < ? AND "
                 "((source='calendar' AND (end_ts > ? OR (end_ts=when_ts AND when_ts >= ?) OR end_ts IS NULL)) "
                 "OR (source IN ('reminders','manual') AND when_ts >= ?))",
@@ -1220,18 +1260,21 @@ class AssistantStore:
                 if not reminder_snapshot:
                     return None
                 member = next(iter(reminder_snapshot.values()))
+                if member.get('all_day'):
+                    return None  # A floating date never authorizes a clock alert.
                 identity = _dedupe_key(member)
                 if identity is None:
                     return None
                 current = self._db.execute(
-                    "SELECT id,title,when_ts FROM commitments WHERE status='active' AND when_ts >= ? AND when_ts < ?"
+                    "SELECT id,title,when_ts,all_day FROM scheduled_commitments WHERE status='active' AND when_ts >= ? AND when_ts < ?"
                     + _seed_clause(), (identity[1] * 60, (identity[1] + 1) * 60)).fetchall()
                 if {r["id"] for r in current if _dedupe_key(dict(r)) == identity} != set(reminder_snapshot):
                     return None
                 for cid, expected in reminder_snapshot.items():
                     row = self._db.execute(
-                        "SELECT title,kind,context,when_ts,status FROM commitments WHERE id=?", (cid,)).fetchone()
-                    if (row is None or {**dict(row), "generation": self.reminder_generation(cid)} != expected):
+                        "SELECT title,kind,context,when_ts,status,all_day FROM scheduled_commitments WHERE id=?", (cid,)).fetchone()
+                    if (row is None or {**dict(row), "generation": self.reminder_generation(cid)}
+                            != {**expected, 'all_day': bool(expected.get('all_day'))}):
                         return None
             if target and target.get("type") == "reminder":
                 for old in self._db.execute("SELECT * FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
@@ -1292,9 +1335,10 @@ class AssistantStore:
         semantic ID must then get a new generation, while an immediate retry
         of the still-current B result must reuse the recorded receipt.
         """
+        from service.assistant.verified_reminders import due_timestamp, expected_matches
         with self._lock:
             rows = self._db.execute(
-                "SELECT title,when_ts FROM commitments WHERE source='reminders' "
+                "SELECT title,when_ts,all_day FROM scheduled_commitments WHERE source='reminders' "
                 "AND source_id=? AND status='active'", (payload["source_id"],)
             ).fetchall()
         if len(rows) != 1:
@@ -1303,10 +1347,12 @@ class AssistantStore:
         if row["when_ts"] is None:
             return "other"
         if (row["title"] == payload["title"]
-                and int(row["when_ts"] // 60) == int(payload["due_ts"] // 60)):
+                and int(row["when_ts"] // 60) == int(due_timestamp(payload) // 60)
+                and bool(row['all_day']) == bool(payload.get('all_day'))):
             return "desired"
         if (row["title"] == payload["expected_title"]
-                and int(row["when_ts"] // 60) == int(payload["expected_due_ts"] // 60)):
+                and int(row["when_ts"] // 60) == int(payload["expected_due_ts"] // 60)
+                and expected_matches(row, payload)):
             return "expected"
         return "other"
 
@@ -1317,14 +1363,16 @@ class AssistantStore:
         identical new create needs a fresh action generation. Missing local
         state without such a receipt is ambiguous and must not be retried.
         """
+        from service.assistant.verified_reminders import due_timestamp, expected_matches
         source_id = previous["result"]["source_id"]
         with self._lock:
             rows = self._db.execute(
-                "SELECT title,when_ts,status FROM commitments WHERE source='reminders' AND source_id=?",
+                "SELECT title,when_ts,status,all_day FROM scheduled_commitments WHERE source='reminders' AND source_id=?",
                 (source_id,)).fetchall()
             if any(row["status"] == "active" and row["title"] == previous["payload"]["title"]
                    and row["when_ts"] is not None
-                   and int(row["when_ts"] // 60) == int(previous["payload"]["due_ts"] // 60)
+                   and int(row["when_ts"] // 60) == int(due_timestamp(previous['payload']) // 60)
+                   and bool(row['all_day']) == bool(previous['payload'].get('all_day'))
                    for row in rows):
                 return "present"
             if any(row["status"] == "active" for row in rows):
@@ -1346,6 +1394,7 @@ class AssistantStore:
 
     def reminder_terminal_retry_state(self, kind: str, payload: dict) -> str:
         """Classify the current occurrence, ignoring historical completed rows."""
+        from service.assistant.verified_reminders import expected_matches
         if kind == "delete_reminder" and payload.get("expected_due_ts") is None:
             # An undated reminder lives only in the undated list, never in commitments.
             with self._lock:
@@ -1360,7 +1409,7 @@ class AssistantStore:
             return "desired" if terminal and terminal["status"] == "dismissed" else "other"
         with self._lock:
             rows = self._db.execute(
-                "SELECT title,when_ts,status FROM commitments WHERE source='reminders' "
+                "SELECT title,when_ts,status,all_day FROM scheduled_commitments WHERE source='reminders' "
                 "AND source_id=?", (payload["source_id"],)).fetchall()
             terminal = self._db.execute(
                 "SELECT status FROM assistant_reminder_terminals WHERE source_id=?",
@@ -1368,7 +1417,8 @@ class AssistantStore:
         def matches(row) -> bool:
             return (row["title"] == payload["expected_title"]
                     and row["when_ts"] is not None
-                    and int(row["when_ts"] // 60) == int(payload["expected_due_ts"] // 60))
+                    and int(row["when_ts"] // 60) == int(payload["expected_due_ts"] // 60)
+                and expected_matches(row, payload))
         active = [row for row in rows if row["status"] == "active"]
         if active:
             return "expected" if len(active) == 1 and matches(active[0]) else "other"
@@ -1394,8 +1444,8 @@ class AssistantStore:
             return []
         ids = []
         for cid, expected in target.get("schedules", {}).items():
-            row = self._db.execute("SELECT title,when_ts,status FROM commitments WHERE id=?", (cid,)).fetchone()
-            if (row and row["status"] == "active" and row["when_ts"] == expected
+            row = self._db.execute("SELECT title,when_ts,status,all_day FROM scheduled_commitments WHERE id=?", (cid,)).fetchone()
+            if (row and not row['all_day'] and row["status"] == "active" and row["when_ts"] == expected
                     and row["when_ts"] is not None and int(row["when_ts"] // 60) == target["identity"][1]
                     and self.reminder_generation(cid) == target.get("generations", {}).get(cid, "")
                     and " ".join(row["title"].split()).casefold() == target["identity"][0]):
@@ -1481,12 +1531,12 @@ class AssistantStore:
         Calendar sync replaces the row wholesale anyway; this keeps the gap honest."""
         now = time.time()
         old = self._db.execute(
-            "SELECT * FROM commitments WHERE source='calendar' AND source_id=? AND when_ts=?",
+            "SELECT * FROM scheduled_commitments WHERE source='calendar' AND source_id=? AND when_ts=?",
             (payload["source_id"], payload["expected_start_ts"])).fetchone()
         if old is None:
             return
         taken = self._db.execute(
-            "SELECT id FROM commitments WHERE source='calendar' AND source_id=? AND when_ts=? AND id<>?",
+            "SELECT id FROM scheduled_commitments WHERE source='calendar' AND source_id=? AND when_ts=? AND id<>?",
             (payload["source_id"], result["when_ts"], old["id"])).fetchone()
         if taken is not None:
             # A sync already recorded the new start; retire the old occurrence's row.
@@ -1514,7 +1564,7 @@ class AssistantStore:
             row = self._db.execute(
                 "SELECT c.id,c.source_id,c.title,c.when_ts,i.invitee_count,i.organizer_is_user,"
                 "w.writable AS calendar_writable "
-                "FROM commitments c LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
+                "FROM scheduled_commitments c LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
                 "LEFT JOIN calendar_event_writable w ON w.commitment_id=c.id "
                 "WHERE c.source='calendar' AND c.status='active' AND c.source_id=? AND c.when_ts=?",
                 (source_id, start_ts)).fetchone()
@@ -1531,7 +1581,7 @@ class AssistantStore:
         this title: the check a confirmed move makes before it runs."""
         with self._lock:
             row = self._db.execute(
-                "SELECT title FROM commitments WHERE source='calendar' AND status='active' "
+                "SELECT title FROM scheduled_commitments WHERE source='calendar' AND status='active' "
                 "AND source_id=? AND when_ts=?", (source_id, start_ts)).fetchone()
         return row is not None and " ".join(row["title"].split()) == " ".join(str(title).split())
 
@@ -1552,7 +1602,7 @@ class AssistantStore:
         with self._lock:
             rows = [dict(r) for r in self._db.execute(
                 "SELECT c.id,c.source_id,c.title,c.when_ts,c.location,e.end_ts,"
-                "i.invitee_count,i.organizer_is_user,w.writable AS calendar_writable FROM commitments c "
+                "i.invitee_count,i.organizer_is_user,w.writable AS calendar_writable FROM scheduled_commitments c "
                 "LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
                 "LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
                 "LEFT JOIN calendar_event_writable w ON w.commitment_id=c.id "
@@ -1665,7 +1715,7 @@ class AssistantStore:
                         # The creation receipt only supplies an end for the row it inserted.
                         self._db.execute(
                             "INSERT INTO calendar_event_ends(commitment_id,end_ts) "
-                            "SELECT id,? FROM commitments WHERE source='calendar' AND source_id=? AND when_ts=?",
+                            "SELECT id,? FROM scheduled_commitments WHERE source='calendar' AND source_id=? AND when_ts=?",
                             (payload["when_ts"] + payload["duration_min"] * 60, source_id, payload["when_ts"]))
                 elif kind == "delete_calendar_event":
                     self._db.execute(
@@ -1680,16 +1730,17 @@ class AssistantStore:
                         "WHERE source='calendar' AND source_id=? AND when_ts=?",
                         (time.time(), payload["source_id"], payload["expected_start_ts"]))
                 elif kind == "create_reminder":
+                    from service.assistant.verified_reminders import due_timestamp, expected_matches
                     receipt_at = reminder_receipt_at
                     self._db.execute(
-                        "INSERT INTO commitments (id,source,source_id,kind,title,when_ts,status,"
-                        "confidence,created_at,updated_at) VALUES (?,?,?,?,?,?,'active',1,?,?) "
+                        "INSERT INTO commitments (id,source,source_id,kind,title,when_ts,all_day,due_date,status,"
+                        "confidence,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,'active',1,?,?) "
                         "ON CONFLICT(source,source_id,when_ts) DO UPDATE SET "
-                        "kind=excluded.kind,title=excluded.title,status='active',"
+                        "kind=excluded.kind,title=excluded.title,all_day=excluded.all_day,due_date=excluded.due_date,status='active',"
                         "updated_at=excluded.updated_at",
                         (uuid.uuid4().hex, "reminders", result["source_id"],
                          payload["commitment_kind"], payload["title"],
-                         result["due_ts"], receipt_at, receipt_at))
+                         due_timestamp(result), int(result.get('all_day') is True), result.get('due_date'), receipt_at, receipt_at))
                     self._db.execute(
                         "DELETE FROM assistant_reminder_terminals WHERE source_id=?",
                         (result["source_id"],))
@@ -1699,19 +1750,20 @@ class AssistantStore:
                         "action_id=excluded.action_id",
                         (result["source_id"], receipt_at, payload["action_id"]))
                 elif kind == "update_reminder":
+                    from service.assistant.verified_reminders import due_timestamp, expected_matches
                     receipt_at = reminder_receipt_at
                     minute_start = int(payload["expected_due_ts"] // 60) * 60
                     minute_end = minute_start + 60
                     native_ids = [item["id"] for item in self._db.execute(
-                        "SELECT id FROM commitments WHERE source='reminders' AND source_id=? "
-                        "AND title=? AND when_ts>=? AND when_ts<?",
-                        (payload["source_id"], payload["expected_title"],
-                         minute_start, minute_end)).fetchall()]
+                        "SELECT id FROM scheduled_commitments WHERE source='reminders' AND source_id=? "
+                        "AND title=? AND when_ts>=? AND when_ts<? AND all_day=? AND (due_date IS ? OR due_date=?)",
+                        (payload["source_id"], payload["expected_title"], minute_start, minute_end,
+                         int(bool(payload.get('expected_due_date'))), payload.get('expected_due_date'), payload.get('expected_due_date'))).fetchall()]
                     self._db.execute(
-                        "UPDATE commitments SET title=?,when_ts=?,updated_at=? "
-                        "WHERE source='reminders' AND source_id=? AND title=? AND when_ts>=? AND when_ts<?",
-                        (payload["title"], result["due_ts"], receipt_at, payload["source_id"],
-                         payload["expected_title"], minute_start, minute_end))
+                        "UPDATE commitments SET title=?,when_ts=?,all_day=?,due_date=?,updated_at=? "
+                        "WHERE source='reminders' AND source_id=? AND title=? AND id IN (" + ','.join('?' for _ in native_ids) + ")",
+                        (payload["title"], due_timestamp(result), int(result.get('all_day') is True), result.get('due_date'), receipt_at,
+                         payload["source_id"], payload["expected_title"], *native_ids))
                     for native_id in native_ids:
                         # A verified reschedule gives this item a new due stage.
                         # Keep the reset in the receipt transaction so an
@@ -1825,7 +1877,7 @@ class AssistantStore:
         normalized title, same minute) — the group `_collapse` would fold
         together, looked up from one member instead of from a result set."""
         row = self._db.execute(
-            "SELECT id, title, when_ts FROM commitments WHERE id=?", (cid,)).fetchone()
+            "SELECT id, title, when_ts, all_day FROM scheduled_commitments WHERE id=?", (cid,)).fetchone()
         if row is None:
             return []
         key = _dedupe_key(dict(row))
@@ -1833,7 +1885,7 @@ class AssistantStore:
             return []
         lo = key[1] * 60.0
         cands = self._db.execute(
-            "SELECT id, title, when_ts FROM commitments "
+            "SELECT id, title, when_ts, all_day FROM scheduled_commitments "
             "WHERE id <> ? AND when_ts >= ? AND when_ts < ?", (cid, lo, lo + 60.0)).fetchall()
         return [r["id"] for r in cands if _dedupe_key(dict(r)) == key]
 
@@ -1897,7 +1949,7 @@ class AssistantStore:
         due time cannot collide with the current native ID's unique key.
         """
         rows = self._db.execute(
-            "SELECT id,status FROM commitments WHERE source='reminders' AND source_id=?",
+            "SELECT id,status FROM scheduled_commitments WHERE source='reminders' AND source_id=?",
             (source_id,)).fetchall()
         for row in rows:
             cid = row["id"]
@@ -1955,7 +2007,7 @@ class AssistantStore:
                 # three back together, and the equal-timestamp retry is then valid again.
                 self._write_undated(undated, (diagnostics or {}).get("snapshot_started_at"), now)
             existing = self._db.execute(
-                "SELECT id, source_id, when_ts, status, updated_at FROM commitments WHERE source=?",
+                "SELECT id, source_id, when_ts, status, updated_at, all_day, due_date FROM commitments WHERE source=?",
                 (source,)).fetchall()
             existing_by_key = {(r["source_id"], r["when_ts"]): r["id"] for r in existing}
             existing_status = {r["id"]: r["status"] for r in existing}
@@ -2028,23 +2080,31 @@ class AssistantStore:
                     reopened_native_ids.add(sid)
                 reopened = sid in reopened_native_ids
                 when_ts = it.get("when_ts")
+                due_date = it.get('due_date') if source == 'reminders' and it.get('all_day') else None
+                from service.assistant.verified_reminders import valid_due_date
+                if due_date is not None and not valid_due_date(due_date):
+                    raise ValueError('invalid native floating date')
+                if due_date:
+                    same = [row for row in existing if row['source_id'] == sid and row['due_date'] == due_date and row['all_day']]
+                    if len(same) == 1:
+                        when_ts = same[0]['when_ts']
                 key = (sid, when_ts)
                 seen_keys.add(key)
                 cid = existing_by_key.get(key) or uuid.uuid4().hex
                 self._db.execute(
                     "INSERT INTO commitments "
                     "(id, source, source_id, kind, title, context, organizer, account, when_ts, "
-                    " all_day, location, url, status, confidence, created_at, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                    " all_day, due_date, location, url, status, confidence, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(source, source_id, when_ts) DO UPDATE SET "
                     "  kind=excluded.kind, title=excluded.title, context=excluded.context, "
                     "  organizer=excluded.organizer, account=excluded.account, "
-                    "  all_day=excluded.all_day, location=excluded.location, "
+                    "  all_day=excluded.all_day, due_date=excluded.due_date, location=excluded.location, "
                     "  url=excluded.url, updated_at=excluded.updated_at, "
                     "  status=CASE WHEN commitments.status='dismissed' THEN 'dismissed' ELSE 'active' END",
                     (cid, source, sid, it.get("kind", "event"), it.get("title", "(untitled)"),
                      it.get("context"), it.get("organizer"), it.get("account"), when_ts,
-                     int(bool(it.get("all_day"))),
+                     int(bool(it.get("all_day"))), due_date,
                      it.get("location"), it.get("url"), "active",
                      float(it.get("confidence", 1.0)), now, now))
                 existing_by_key[key] = cid
@@ -2124,7 +2184,7 @@ class AssistantStore:
             self._db.execute(
                 "DELETE FROM assistant_stale_reminder_decisions WHERE source_id NOT IN "
                 "(SELECT source_id FROM assistant_undated_reminders) AND source_id NOT IN "
-                "(SELECT source_id FROM commitments WHERE source='reminders' AND status='active')")
+                "(SELECT source_id FROM scheduled_commitments WHERE source='reminders' AND status='active')")
         self._db.execute(
             "INSERT INTO assistant_undated_state(id,snapshot_started_at,status,total,stored,recorded_at) "
             "VALUES (1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET snapshot_started_at=excluded.snapshot_started_at, "
@@ -2206,7 +2266,7 @@ class AssistantStore:
         now = time.time() if now is None else now
         with self._lock:
             rows = self._db.execute(
-                "SELECT c.id,c.source_id,c.title,c.context,c.when_ts,d.decision FROM commitments c "
+                "SELECT c.id,c.source_id,c.title,c.context,c.when_ts,c.all_day,c.due_date,d.decision FROM scheduled_commitments c "
                 "LEFT JOIN assistant_stale_reminder_decisions d ON d.source_id=c.source_id "
                 "WHERE c.source='reminders' AND c.status='active' AND c.when_ts IS NOT NULL "
                 "AND c.source_id=?", (source_id,)).fetchall()
@@ -2224,7 +2284,7 @@ class AssistantStore:
         now = time.time() if now is None else now
         with self._lock:
             rows = self._db.execute(
-                "SELECT c.id,c.source_id,c.title,c.context,c.when_ts,d.decision FROM commitments c "
+                "SELECT c.id,c.source_id,c.title,c.context,c.when_ts,c.all_day,d.decision FROM scheduled_commitments c "
                 "LEFT JOIN assistant_stale_reminder_decisions d ON d.source_id=c.source_id "
                 "WHERE c.source='reminders' AND c.status='active' AND c.when_ts IS NOT NULL "
                 "AND c.when_ts<=? ORDER BY c.when_ts, c.source_id", (now - ASK_AFTER_S,)).fetchall()
@@ -2249,7 +2309,7 @@ class AssistantStore:
             lo = min(k[1] for k in keys) * 60.0
             hi = (max(k[1] for k in keys) + 1) * 60.0
             for twin in self._db.execute(
-                    "SELECT id,title,when_ts FROM commitments WHERE status='active' "
+                    "SELECT id,title,when_ts,all_day FROM scheduled_commitments WHERE status='active' "
                     "AND source<>'reminders' AND when_ts>=? AND when_ts<?", (lo, hi)).fetchall():
                 if _dedupe_key(dict(twin)) in keys:
                     hidden.add(twin["id"])
@@ -2359,9 +2419,9 @@ class AssistantStore:
         with self.transaction(write=False) as db:
             receipt_row = db.execute("SELECT payload FROM today_source_sync WHERE source='reminders'").fetchone()
             receipt = json.loads(receipt_row["payload"]) if receipt_row else {}
-            dated_total = db.execute("SELECT COUNT(*) FROM commitments WHERE source='reminders' AND status='active'").fetchone()[0]
+            dated_total = db.execute("SELECT COUNT(*) FROM scheduled_commitments WHERE source='reminders' AND status='active'").fetchone()[0]
             dated = [dict(row) for row in db.execute(
-                "SELECT id,source_id,title,context,when_ts,status FROM commitments "
+                "SELECT id,source_id,title,context,when_ts,status FROM scheduled_commitments "
                 "WHERE source='reminders' AND status='active' ORDER BY when_ts,source_id LIMIT 5000").fetchall()]
             undated = self.undated_reminders()
             view = self.undated_view()
@@ -2412,16 +2472,19 @@ class AssistantStore:
                 "stale_hidden": hidden}
 
     def add_manual(self, title: str, when_ts: float, kind: str = "reminder",
-                   context: str | None = None, *, source: str = MANUAL_SOURCE) -> dict:
+                   context: str | None = None, *, source: str = MANUAL_SOURCE, all_day: bool = False, due_date: str | None = None) -> dict:
         assert_mutation_allowed()
+        from service.assistant.verified_reminders import valid_due_date
+        if all_day and not valid_due_date(due_date):
+            raise ValueError('all-day reminders require a floating date')
         cid = uuid.uuid4().hex
         now = time.time()
         with self._write_transaction():
             self._db.execute(
                 "INSERT INTO commitments (id, source, source_id, kind, title, context, "
-                "when_ts, status, confidence, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (cid, source, cid, kind, title, context, when_ts, "active", 1.0, now, now))
+                "when_ts, all_day, due_date, status, confidence, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (cid, source, cid, kind, title, context, when_ts, int(all_day), due_date if all_day else None, "active", 1.0, now, now))
         return self.get(cid)
 
     def delete(self, cid: str) -> bool:
@@ -2434,7 +2497,7 @@ class AssistantStore:
         return cur.rowcount > 0
 
     def update_schedule(self, ids: list[str], when_ts: float,
-                        title: str | None = None) -> int:
+                        title: str | None = None, *, all_day: bool | None = None, due_date: str | None = None) -> int:
         """Move one collapsed commitment group to a new time.
 
         A Wisp-created reminder can have both a ``manual`` row and a mirrored
@@ -2452,14 +2515,20 @@ class AssistantStore:
         version = uuid.uuid4().hex
         with self._write_transaction():
             for cid in unique_ids:
+                old = self._db.execute('SELECT all_day FROM commitments WHERE id=?', (cid,)).fetchone()
+                floating = bool(old and old['all_day']) if all_day is None else all_day
+                from service.assistant.verified_reminders import valid_due_date
+                if floating and not valid_due_date(due_date):
+                    raise ValueError('all-day updates require a floating date')
+                self._db.execute('UPDATE commitments SET due_date=? WHERE id=?', (due_date if floating else None, cid))
                 if title is None:
                     cur = self._db.execute(
-                        "UPDATE commitments SET when_ts=?, updated_at=? WHERE id=?",
-                        (float(when_ts), now, cid))
+                        "UPDATE commitments SET when_ts=?, all_day=COALESCE(?,all_day), updated_at=? WHERE id=?",
+                        (float(when_ts), int(all_day) if all_day is not None else None, now, cid))
                 else:
                     cur = self._db.execute(
-                        "UPDATE commitments SET title=?, when_ts=?, updated_at=? WHERE id=?",
-                        (title, float(when_ts), now, cid))
+                        "UPDATE commitments SET title=?, when_ts=?, all_day=COALESCE(?,all_day), updated_at=? WHERE id=?",
+                        (title, float(when_ts), int(all_day) if all_day is not None else None, now, cid))
                 changed += cur.rowcount
                 self._db.execute("INSERT INTO assistant_schedule_versions VALUES (?,?) "
                                  "ON CONFLICT(commitment_id) DO UPDATE SET version=excluded.version", (cid, version))
@@ -2509,7 +2578,7 @@ class AssistantStore:
 
     # --- reads ------------------------------------------------------------
     def get(self, cid: str) -> dict | None:
-        row = self._db.execute("SELECT * FROM commitments WHERE id=?", (cid,)).fetchone()
+        row = self._db.execute("SELECT * FROM scheduled_commitments WHERE id=?", (cid,)).fetchone()
         return dict(row) if row else None
 
     def next_active(self, now: float | None = None) -> dict | None:
@@ -2518,7 +2587,7 @@ class AssistantStore:
         # share when_ts, so SQLite's tie-break decides) — take a small window
         # and collapse it so the chip shows the same row the lists do.
         rows = self._db.execute(
-            "SELECT * FROM commitments WHERE status='active' AND when_ts >= ?"
+            "SELECT * FROM scheduled_commitments WHERE status='active' AND when_ts >= ?"
             + _seed_clause() +
             " ORDER BY when_ts ASC LIMIT 50", (now - 300,)).fetchall()  # 5-min grace
         items = self._collapse([dict(r) for r in rows])
@@ -2527,7 +2596,7 @@ class AssistantStore:
     def upcoming(self, now: float | None = None, days: int = 7) -> list[dict]:
         now = now if now is not None else time.time()
         rows = self._db.execute(
-            "SELECT * FROM commitments WHERE status='active' AND when_ts >= ? AND when_ts <= ?"
+            "SELECT * FROM scheduled_commitments WHERE status='active' AND when_ts >= ? AND when_ts <= ?"
             + _seed_clause() +
             " ORDER BY when_ts ASC", (now - 300, now + days * 86400)).fetchall()
         return self._collapse([dict(r) for r in rows])
@@ -2546,7 +2615,7 @@ class AssistantStore:
             raise ValueError("Calendar day bounds must be finite and increasing")
         with self._lock:
             rows = self._db.execute(
-                "SELECT c.*, e.end_ts FROM commitments c "
+                "SELECT c.*, e.end_ts FROM scheduled_commitments c "
                 "LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
                 "WHERE c.status='active' AND c.source='calendar' AND c.when_ts < ? "
                 "AND (c.when_ts >= ? OR e.end_ts > ?)" + _seed_clause() +
@@ -2568,7 +2637,7 @@ class AssistantStore:
         meant to surface, and its event date says nothing about that.
         """
         rows = self._db.execute(
-            "SELECT * FROM commitments WHERE status='active' AND created_at >= ?"
+            "SELECT * FROM scheduled_commitments WHERE status='active' AND created_at >= ?"
             + _seed_clause() +
             " ORDER BY created_at DESC LIMIT ?", (since_ts, limit)).fetchall()
         return self._hide_stale(self._collapse([dict(r) for r in rows]), None)
@@ -2591,7 +2660,7 @@ class AssistantStore:
             where.append("when_ts < ?")
             params.append(float(end_ts))
         rows = self._db.execute(
-            "SELECT * FROM commitments WHERE " + " AND ".join(where)
+            "SELECT * FROM scheduled_commitments WHERE " + " AND ".join(where)
             + _seed_clause() + " ORDER BY when_ts ASC", params).fetchall()
         items = self._collapse([dict(r) for r in rows])
         # ``include_stale`` is only for an explicit, confirmed removal the user asked for
@@ -2608,7 +2677,7 @@ class AssistantStore:
         stale reminder no matter how far back `days` reaches."""
         now = now if now is not None else time.time()
         rows = self._db.execute(
-            "SELECT * FROM commitments WHERE status='active' AND when_ts < ? AND when_ts >= ?"
+            "SELECT * FROM scheduled_commitments WHERE status='active' AND when_ts < ? AND when_ts >= ?"
             + _seed_clause() +
             " ORDER BY when_ts DESC", (now - 300, now - days * 86400)).fetchall()
         items = self._collapse([dict(r) for r in rows])
@@ -2623,12 +2692,12 @@ class AssistantStore:
         now = now if now is not None else time.time()
         with self._lock:
             rows = self._db.execute(
-                "SELECT commitments.*, COALESCE(v.version, '') AS generation FROM commitments "
+                "SELECT commitments.*, COALESCE(v.version, '') AS generation FROM scheduled_commitments commitments "
                 "LEFT JOIN assistant_schedule_versions v ON v.commitment_id=commitments.id "
                 "WHERE status='active' AND when_ts >= ? AND when_ts <= ?"
                 + _seed_clause() + " ORDER BY when_ts ASC",
                 (now - 300, now + horizon_days * 86400)).fetchall()
-        members = {r["id"]: {k: r[k] for k in ("title", "kind", "context", "when_ts", "status", "generation")}
+        members = {r["id"]: {k: r[k] for k in ("title", "kind", "context", "when_ts", "status", "generation", "all_day")}
                    for r in rows}
         candidates = self._collapse([dict(r) for r in rows])
         for c in candidates:
@@ -2647,7 +2716,7 @@ class AssistantStore:
         """
         now = now if now is not None else time.time()
         rows = self._db.execute(
-            "SELECT * FROM commitments WHERE status='active' AND when_ts >= ? AND when_ts <= ?"
+            "SELECT * FROM scheduled_commitments WHERE status='active' AND when_ts >= ? AND when_ts <= ?"
             + _seed_clause() +
             " ORDER BY when_ts ASC", (now - 300, now + horizon_days * 86400)).fetchall()
         return self._collapse([dict(r) for r in rows])
