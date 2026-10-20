@@ -19,6 +19,12 @@ struct AssistantTaskCorpusCase: Decodable, Identifiable {
     let setup: String
     let expected: Expected
     let risk: String
+    let mode: String?
+    let target: String?
+    let token: String?
+
+    var usesLiveData: Bool { mode == "live" }
+    var requestPrompt: String { usesLiveData ? conversation.last(where: { $0.role == "user" })?.content ?? "" : dryRunPrompt }
 
     /// The rubric and expected tools are intentionally omitted from model input.
     var dryRunPrompt: String {
@@ -42,36 +48,47 @@ struct AssistantTaskCorpusCase: Decodable, Identifiable {
 enum AssistantTaskCorpusCommand {
     enum Selection {
         case help
+        case profile
+        case live(selector: String)
         case cases(label: String, values: [AssistantTaskCorpusCase])
     }
 
     static let helpText = """
     Corpus runner commands:
-    /corpus smoke       Run the 12-case quick set.
-    /corpus regression  Run the 24-case regression set.
-    /corpus challenge   Run the 12-case challenge set.
-    /corpus ATC-001     Run one case by ID. /corpus all runs all 48.
+    /corpus smoke       Read one contact, conversation, and mail target.
+    /corpus contacts    Examine saved contacts in your local test profile.
+    /corpus messages    Examine recent conversations with those contacts.
+    /corpus mail        Examine mail matching your local email targets.
+    /corpus all         Run every live case. /corpus LIVE-001 runs one.
+    /corpus profile     Show the current local test targets.
+    /corpus synthetic smoke  Run the original synthetic routing dry run.
 
-    Each case runs through Wisp's live router/model in dry-run mode. Tool calls are shown but never executed. Compare the selected tool path and streamed response with each case's behavior rubric.
+    Live cases use the local agent model and bounded reads of real data. Each card shows completed model calls and expandable source results. Writes, sends, shell and web tools are blocked by the server. Review the answer against the source results; there is no fixed expected answer for your live data.
     """
 
     static func resolve(_ input: String) throws -> Selection? {
         let words = input.split(whereSeparator: \.isWhitespace).map(String.init)
         guard words.first?.lowercased() == "/corpus" else { return nil }
-        guard words.count <= 2 else { throw CommandError.usage }
+        guard words.count <= 3 else { throw CommandError.usage }
 
         let selector = words.dropFirst().first?.lowercased() ?? "smoke"
-        if selector == "help" { return .help }
+        if selector == "help" && words.count <= 2 { return .help }
+        if selector == "profile" && words.count <= 2 { return .profile }
+        if words.count <= 2 && (["smoke", "all", "contacts", "messages", "mail", "live"].contains(selector) || selector.range(of: #"^live-\d{3}$"#, options: .regularExpression) != nil) {
+            return .live(selector: selector)
+        }
+        let syntheticSelector = selector == "synthetic" ? (words.count == 3 ? words[2].lowercased() : "smoke") : selector
+        guard selector == "synthetic" || words.count <= 2 else { throw CommandError.usage }
 
         let cases = try load()
-        switch selector {
+        switch syntheticSelector {
         case "smoke", "regression", "challenge":
-            let matches = cases.filter { $0.split == selector }
-            return .cases(label: selector, values: matches)
+            let matches = cases.filter { $0.split == syntheticSelector }
+            return .cases(label: "synthetic \(syntheticSelector)", values: matches)
         case "all":
             return .cases(label: "all", values: cases)
         default:
-            let normalizedID = selector.uppercased()
+            let normalizedID = syntheticSelector.uppercased()
             guard normalizedID.range(of: #"^ATC-\d{3}$"#, options: .regularExpression) != nil,
                   let match = cases.first(where: { $0.id == normalizedID }) else {
                 throw CommandError.usage
@@ -108,7 +125,7 @@ enum AssistantTaskCorpusCommand {
 
         var errorDescription: String? {
             switch self {
-            case .usage: return "Use /corpus smoke, /corpus regression, /corpus challenge, /corpus all, /corpus ATC-001, or /corpus help."
+            case .usage: return "Use /corpus smoke, contacts, messages, mail, all, LIVE-001, profile, or help. For synthetic plans use /corpus synthetic smoke."
             case .resourceUnavailable: return "The bundled assistant task corpus could not be loaded."
             }
         }

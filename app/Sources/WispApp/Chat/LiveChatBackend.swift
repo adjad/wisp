@@ -64,6 +64,16 @@ final class LiveChatBackend: ChatBackend {
 
     func deleteChat(id: String) async -> Bool { await client.deleteChat(id: id) }
 
+    func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase] {
+        try await client.liveCorpusCases(selector: selector)
+    }
+
+    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
+        await client.runAgent(prompt: "", image: nil, corpusCaseID: id, corpusToken: token) { event in
+            onEvent(ChatEvent(type: event.type, payload: event.payload))
+        }
+    }
+
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
              testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async {

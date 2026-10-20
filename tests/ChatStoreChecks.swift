@@ -14,6 +14,8 @@ final class ScriptedBackend: ChatBackend {
     var approvals: [(actionId: String, approved: Bool, scope: String, requestId: String, session: String)] = []
     var deleted: [String] = []
     var runs: [(prompt: String, session: String)] = []
+    var liveCases: [AssistantTaskCorpusCase] = []
+    var liveRuns: [String] = []
     var fullAccessValue = false
     var loadDelayMs: UInt64 = 0
     var holdNextHistoryLoad = false
@@ -52,6 +54,11 @@ final class ScriptedBackend: ChatBackend {
         return history[id]
     }
     func deleteChat(id: String) async -> Bool { deleted.append(id); return true }
+    func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase] { liveCases }
+    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
+        liveRuns.append(id)
+        for event in script(id) { onEvent(event) }
+    }
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
              testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
@@ -86,6 +93,32 @@ struct ChatStoreChecks {
     }
 
     @MainActor static func run() async {
+        // Live cases use the isolated server corpus path, and only completed
+        // inference receipts may claim model use. Source results stay inspectable.
+        do {
+            let backend = ScriptedBackend()
+            let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"messages","difficulty":"basic","target":"Example Person","token":"t1","conversation":[{"role":"user","content":"Read my recent messages with Example Person."}],"setup":"local","expected":{"tools":["view_messages"],"behavior":["Verify the source quote."]},"risk":"read_only"}"#.utf8)
+            backend.liveCases = [try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)]
+            backend.script = { _ in [
+                ev("corpus_model", ["model": "agent-local", "started": 1, "completed": 0]),
+                ev("corpus_model", ["model": "agent-local", "started": 1, "completed": 1]),
+                ev("tool_call", ["id": "read1", "name": "view_messages", "decision": "allow"]),
+                ev("tool_result", ["id": "read1", "result": "Example Person: source quotation"]),
+                ev("text", ["text": "An answer grounded in the source."]), ev("done")
+            ] }
+            let store = ChatStore(backend: backend)
+            store.submit("/corpus smoke")
+            await settle(500)
+            let conversation = store.selected!
+            let reply = conversation.messages.first { $0.corpusEvaluation != nil }!
+            check(backend.runs.isEmpty && backend.liveRuns == ["LIVE-001"], "live cases bypass ordinary agent routing")
+            check(conversation.messages.contains { $0.text == "Read my recent messages with Example Person." }, "live request has no synthetic wrapper")
+            check(reply.corpusEvaluation?.modelCalls == 1, "actual inference receipt is visible")
+            check(reply.corpusEvaluation?.toolPathMatches == nil, "live data is reviewed, not falsely graded")
+            check(reply.tools.first?.result.contains("source quotation") == true, "real source output stays inspectable")
+            check(conversation.sessionId.isEmpty, "corpus does not reuse a saved session")
+            check(conversation.messages.last!.text.contains("1/1"), "summary counts verified model completions")
+        }
         // A full reply: session, route, tools, streamed text, done.
         do {
             let backend = ScriptedBackend()

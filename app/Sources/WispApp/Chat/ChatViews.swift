@@ -564,7 +564,7 @@ struct ChatMessageRow: View {
                     }
                 }
                 if let evaluation = message.corpusEvaluation {
-                    ChatCorpusEvaluationCard(evaluation: evaluation, failed: message.isError)
+                    ChatCorpusEvaluationCard(evaluation: evaluation, failed: message.isError, tools: message.tools)
                 }
                 if let approval = message.approval {
                     ChatApprovalCard(approval: approval) { approved, scope in
@@ -602,10 +602,12 @@ private struct ChatThinkingRow: View {
 private struct ChatCorpusEvaluationCard: View {
     let evaluation: ChatCorpusEvaluation
     let failed: Bool
+    let tools: [ChatToolRow]
 
     private var heading: String {
         if evaluation.stopped { return "Stopped · \(evaluation.caseID)" }
         if failed { return "Run failed · \(evaluation.caseID)" }
+        if evaluation.usesLiveData { return "\(evaluation.completed ? "Review live answer" : "Reading live data") · \(evaluation.caseID)" }
         guard let matches = evaluation.toolPathMatches else { return "Checking · \(evaluation.caseID)" }
         return matches ? "Tool path matched · \(evaluation.caseID)" : "Review tool path · \(evaluation.caseID)"
     }
@@ -627,7 +629,7 @@ private struct ChatCorpusEvaluationCard: View {
             .foregroundStyle(headingColor)
 
             HStack(alignment: .top, spacing: 8) {
-                Text("Expected").foregroundStyle(ChatTheme.text3)
+                Text(evaluation.usesLiveData ? "Relevant reads" : "Expected").foregroundStyle(ChatTheme.text3)
                 Text(toolList(evaluation.expectedTools)).foregroundStyle(ChatTheme.text2)
             }
             .font(.system(size: 11.5, design: .monospaced))
@@ -639,6 +641,20 @@ private struct ChatCorpusEvaluationCard: View {
                 .font(.system(size: 11.5, design: .monospaced))
             }
 
+            if evaluation.usesLiveData {
+                Text("Model: \(evaluation.modelName.isEmpty ? "awaiting inference" : evaluation.modelName) · \(evaluation.modelCalls) completed call\(evaluation.modelCalls == 1 ? "" : "s") / \(evaluation.modelAttempts) started")
+                    .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(ChatTheme.text2)
+                DisclosureGroup("Source results (\(tools.count))") {
+                    ForEach(tools) { tool in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(tool.name) · \(tool.decision)").font(.system(size: 11.5, weight: .medium))
+                            Text(tool.result.isEmpty ? "Awaiting source result" : tool.result)
+                                .font(.system(size: 11.5)).textSelection(.enabled)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+                    }
+                }.foregroundStyle(ChatTheme.text2)
+            }
+
             VStack(alignment: .leading, spacing: 4) {
                 Text("Behavior rubric · review the response")
                     .font(.system(size: 11.5, weight: .medium)).foregroundStyle(ChatTheme.text2)
@@ -647,7 +663,7 @@ private struct ChatCorpusEvaluationCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Text("Tool plan only · no action was executed")
+            Text(evaluation.usesLiveData ? "Real source reads · writes and sends blocked · review answers manually" : "Tool plan only · no action was executed")
                 .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(ChatTheme.text3)
         }
         .padding(11)

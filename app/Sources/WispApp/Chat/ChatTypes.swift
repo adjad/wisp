@@ -128,12 +128,16 @@ struct ChatCorpusEvaluation: Equatable {
     let category: String
     let expectedTools: [String]
     let behavior: [String]
+    var usesLiveData = false
+    var modelCalls = 0
+    var modelAttempts = 0
+    var modelName = ""
     var observedTools: [String] = []
     var completed = false
     var stopped = false
 
     var toolPathMatches: Bool? {
-        guard completed, !stopped else { return nil }
+        guard completed, !stopped, !usesLiveData else { return nil }
         return expectedTools == observedTools
     }
 }
@@ -230,6 +234,11 @@ enum ChatTurnReducer {
         var meta = msg.meta ?? ChatMeta()
         defer { msg.meta = meta }
         switch ev.type {
+        case "corpus_model":
+            msg.corpusEvaluation?.modelCalls = ev.payload["completed"] as? Int ?? 0
+            msg.corpusEvaluation?.modelAttempts = ev.payload["started"] as? Int ?? 0
+            msg.corpusEvaluation?.modelName = ev.str("model")
+            msg.phase = .working
         case "session":
             return .session(ev.str("id"))
         case "status":

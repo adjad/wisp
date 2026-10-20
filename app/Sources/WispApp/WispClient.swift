@@ -531,6 +531,17 @@ final class WispClient {
     }
 
     // POST /agent and yield decoded SSE events to `onEvent` (called on a background task).
+    func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase] {
+        var parts = URLComponents(url: Self.baseURL.appendingPathComponent("corpus/cases"), resolvingAgainstBaseURL: false)!
+        parts.queryItems = [URLQueryItem(name: "selector", value: selector)]
+        let (data, response) = try await URLSession.shared.data(from: parts.url!)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw NSError(domain: "WispCorpus", code: 1, userInfo: [NSLocalizedDescriptionKey: "The live corpus service is unavailable. Open a build that supports live cases and check the local profile."])
+        }
+        struct Envelope: Decodable { let cases: [AssistantTaskCorpusCase] }
+        return try JSONDecoder().decode(Envelope.self, from: data).cases
+    }
+
     // Pass `sessionId` to continue a conversation; the server loads & budgets the
     // history. Omit it (empty) to start a fresh chat — the new id arrives in the
     // first `session` event. `testMode` asks the service to run a stateless dry
@@ -538,8 +549,9 @@ final class WispClient {
     func runAgent(prompt: String, image: String?, sessionId: String = "",
                   debug: Bool = false,
                   testMode: Bool = false,
+                  corpusCaseID: String? = nil, corpusToken: String? = nil,
                   onEvent: @escaping @Sendable (Event) -> Void) async {
-        var req = URLRequest(url: Self.baseURL.appendingPathComponent("agent"))
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent(corpusCaseID == nil ? "agent" : "corpus/run"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         // Default URLRequest timeout is 60s of no data. Hard reasoning prompts can
@@ -554,6 +566,7 @@ final class WispClient {
         if testMode { body["test_mode"] = true }
         if !testMode && !sessionId.isEmpty { body["session_id"] = sessionId }
         if let image { body["image"] = image }
+        if let corpusCaseID { body = ["case_id": corpusCaseID, "token": corpusToken ?? ""] }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (bytes, response) = try await URLSession.shared.bytes(for: req)

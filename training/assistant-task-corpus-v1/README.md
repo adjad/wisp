@@ -1,45 +1,52 @@
-# Wisp assistant task corpus v1
+# Wisp assistant acceptance corpus
 
-This is a compact, human-readable acceptance corpus for testing Wisp with the kinds of requests people make in chat. It covers everyday reads, grounded answers, follow-up corrections, clarification, and actions that must stay behind a confirmation. All people, records, paths, and message contents in the fixtures are synthetic.
+The Ask runner now evaluates the local agent model using real, bounded source reads. Its test targets live in a private local profile. Answers and source results appear together in Wisp so the person running the test can examine them.
 
-The corpus contains 48 cases in JSON Lines format. The `smoke` split is a short product check, `regression` covers common multi-step and follow-up behavior, and `challenge` targets live-source grounding, ambiguity, unsupported requests, and safety boundaries. Each case includes a user conversation, setup notes, expected tool names where applicable, and behavior checks.
-
-## Use
-
-Run a case against an isolated Wisp test profile with fixture data loaded as described in `setup`. Intercept writes and outbound actions. Grade the response against `expected.behavior`; wording can vary. For an action marked `confirmation_required`, the test passes only if Wisp shows the exact proposed effect and waits for an explicit approval. Do not approve an outbound send or deletion in a live account.
-
-For a live, visible routing dry run in Wisp, enter one of these commands in the Ask tab:
+## Live cases in Ask
 
 ```text
 /corpus smoke
-/corpus regression
-/corpus challenge
-/corpus ATC-001
+/corpus contacts
+/corpus messages
+/corpus mail
 /corpus all
+/corpus LIVE-001
+/corpus profile
+/corpus help
 ```
 
-The Ask runner uses the live Wisp router and configured model, streams each planned tool call, and compares the observed tool names with `expected.tools`. It sends each case without chat history and uses Wisp's `/agent` test mode, which blocks tool execution. The synthetic `setup` is included as prompt context; the runner does not seed or simulate fixture data, so this mode checks routing and lets a person inspect the response against the behavior rubric, but does not verify fixture-backed answers or end-to-end actions. Use an isolated Wisp test profile and fixture harness for that deeper evaluation.
+`smoke` selects one contact, one Messages conversation, and one mail identifier when configured. `all` runs every local case. Contact cases show saved contact details; Messages cases read at most five recent messages for the selected conversation; Mail cases search at most three recent matching emails with strict matching. An incomplete email identifier remains an unverified search term. Missing access, syncing, cache coverage, ambiguity and no matches must be disclosed.
 
-Run the static corpus check with:
+Each live case bypasses deterministic workflow/router shortcuts and calls the local agent model to select the bounded read and synthesize the answer. Cards count completed inference responses, name the model, and expose expandable source results. A route event alone is not evidence that the model ran. Review answers against their actual source records and checklist; there is no fixed correct answer or automatic quality score for changing personal data.
+
+The backend exposes only the server-owned case IDs, binds requests to the current profile version, permits only scoped `lookup_contact`, `view_messages`, and `view_emails` calls, caps record counts, and rejects other tool calls before preparation and again at execution. It ignores Full access for purposes of widening the case scope. Sends, drafts, writes, shell, web, skills and tools for other people are unavailable. Private source results stay on the managed local inference endpoint; there is no remote fallback. A cancelled run cancels inference and releases its client.
+
+The profile is `assistant-corpus-profile.json` under Wisp's state folder (`~/.moe` by default, or `WISP_HOME`). It contains `contacts` and `mail_queries` arrays. It is configured locally and is not a repository asset. For example:
+
+```json
+{"contacts": ["Example Person"], "mail_queries": ["example@sender.invalid"]}
+```
+
+Live corpus runs do not create backend chat sessions or read saved chat history. Results stay in the current app conversation for inspection until the app closes. Existing source caches and local tool audit records may be refreshed or updated by ordinary source readers. Debug payload capture is disabled. Real source content and the local profile must not be committed or uploaded as test artifacts.
+
+## Original synthetic corpus
+
+The repository still contains 48 wholly synthetic JSONL cases: 12 smoke, 24 regression, and 12 challenge cases, with setup notes, preferred tools and behavior rubrics. These are evaluation data, not supervised training targets.
+
+```text
+/corpus synthetic smoke
+/corpus synthetic regression
+/corpus synthetic challenge
+/corpus synthetic all
+/corpus ATC-001
+```
+
+These commands retain the original routing-only dry run. They execute no tools, seed no fixtures, and deterministic routes can return without model inference. They cannot verify answers against real or seeded source data. For fixture-backed evaluation, use an isolated test profile/harness and intercept all writes and outbound actions.
+
+Validate the static synthetic rows and their app-bundled copy with:
 
 ```sh
 python3 training/assistant-task-corpus-v1/validate.py
 ```
 
-This is an evaluation corpus, not supervised training data: it has no target assistant completions. Keep it held out if building a model training set. It complements the much larger routing stress suite by keeping scenarios short and easy for a person to run; it does not replace route-level coverage or prove end-to-end behavior by itself.
-
-## Case format
-
-Each line in `cases.jsonl` has:
-
-- `id`, `split`, `category`, and `difficulty` for selection and reporting.
-- `conversation`, an ordered sequence of user and optional prior assistant turns.
-- `setup`, synthetic state to seed or simulate for the case.
-- `expected.tools`, the preferred registered tool path (`[]` means no tool is expected), and `expected.behavior`, evaluator guidance rather than model input.
-- `risk`, which tells the harness whether the case is read-only, an explicitly user-authorized local write, needs a confirmation, requires clarification, uses live facts, or checks an injection boundary.
-
-The rows intentionally avoid fixed ideal-answer strings. The expected behavior is the contract; exact phrasing is not.
-
-The app-bundled JSONL used by the Ask command is `app/Sources/WispApp/Resources/assistant-task-corpus-v1.jsonl`; `validate.py` checks that copy stays identical to this corpus.
-
-See `DATA_CARD.md` for provenance, limits, and safe-use notes.
+Focused implementation checks include `tests/test_live_corpus.py` and `scripts/test_chat_contract.sh`. The backend checks use synthetic sources and scripted inference; only an explicit live run reads the user's configured data.

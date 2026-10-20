@@ -8,6 +8,8 @@ protocol ChatBackend: AnyObject {
     func listChats() async -> [ChatSummary]?
     func loadChat(id: String) async -> [ChatMessage]?
     func deleteChat(id: String) async -> Bool
+    func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase]
+    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
              testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async
@@ -17,6 +19,15 @@ protocol ChatBackend: AnyObject {
     func fullAccess() async -> Bool?
     /// The flag the service confirmed after the change; nil when it can't be confirmed.
     func setFullAccess(_ on: Bool) async -> Bool?
+}
+
+extension ChatBackend {
+    func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase] {
+        throw AssistantTaskCorpusCommand.CommandError.resourceUnavailable
+    }
+    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
+        onEvent(ChatEvent(type: "error", payload: ["message": "This backend does not support live corpus evaluation."]))
+    }
 }
 
 /// One conversation in the sidebar and the window.
@@ -233,6 +244,22 @@ final class ChatStore: ObservableObject {
             switch selection {
             case .help:
                 appendLocalNotice(AssistantTaskCorpusCommand.helpText)
+            case .live(let selector):
+                Task {
+                    do {
+                        let cases = try await backend.liveCorpusCases(selector: selector)
+                        runCorpus(label: selector, cases: cases, command: text)
+                    } catch { appendLocalNotice("Could not load live cases: \(error.localizedDescription)") }
+                }
+            case .profile:
+                Task {
+                    do {
+                        let cases = try await backend.liveCorpusCases(selector: "all")
+                        let contacts = cases.filter { $0.category == "contacts" }.compactMap(\.target)
+                        let mail = cases.filter { $0.category == "mail" }.compactMap(\.target)
+                        appendLocalNotice("Local corpus targets\nContacts / Messages: \(contacts.joined(separator: ", "))\nMail identifiers: \(mail.joined(separator: ", "))\nMail identifiers are search terms; an incomplete address is not assumed to be deliverable.")
+                    } catch { appendLocalNotice("Could not load the local corpus profile: \(error.localizedDescription)") }
+                }
             case .cases(let label, let cases):
                 runCorpus(label: label, cases: cases, command: text)
             }
@@ -261,7 +288,8 @@ final class ChatStore: ObservableObject {
         if let corpusCase {
             reply.corpusEvaluation = ChatCorpusEvaluation(
                 caseID: corpusCase.id, split: corpusCase.split, category: corpusCase.category,
-                expectedTools: corpusCase.expected.tools, behavior: corpusCase.expected.behavior)
+                expectedTools: corpusCase.expected.tools, behavior: corpusCase.expected.behavior,
+                usesLiveData: corpusCase.usesLiveData)
         }
         conversation.messages.append(contentsOf: [user, reply])
         conversation.lastUsed = Date()
@@ -277,12 +305,17 @@ final class ChatStore: ObservableObject {
         let wantsDebug = false
         conversation.task = Task { [weak self, weak conversation] in
             guard let self else { return }
-            await self.backend.run(prompt: prompt, image: image, sessionId: sid, debug: wantsDebug,
-                                   testMode: testMode) { event in
+            let receive: @Sendable (ChatEvent) -> Void = { event in
                 Task { @MainActor in
                     guard let conversation else { return }
                     self.handle(event, in: conversation, replyID: replyID, runID: runID)
                 }
+            }
+            if let corpusCase, corpusCase.usesLiveData {
+                await self.backend.runLiveCorpusCase(id: corpusCase.id, token: corpusCase.token ?? "", onEvent: receive)
+            } else {
+                await self.backend.run(prompt: prompt, image: image, sessionId: sid, debug: wantsDebug,
+                                       testMode: testMode, onEvent: receive)
             }
         }
     }
@@ -295,9 +328,10 @@ final class ChatStore: ObservableObject {
         let conversation = newChat()
         conversation.title = "Assistant corpus · \(label)"
         conversation.messages.append(ChatMessage(role: .user, text: command))
-        let intro = """
-        Running \(cases.count) case\(cases.count == 1 ? "" : "s") through Wisp's live router and model in dry-run mode. Planned tools are visible below; no tool is executed and no case uses chat history. Compare each tool path and response with the behavior rubric.
-        """
+        let live = cases.allSatisfy(\.usesLiveData)
+        let intro = live
+            ? "Running \(cases.count) live cases with the local agent model and bounded reads of your real Wisp data. Expand source results and review each answer. Completed model calls are counted from inference responses. Writes and sends are blocked. Each case starts without chat history."
+            : "Running \(cases.count) synthetic routing plans. Tools are not executed; deterministic routes may skip the model. These plans do not evaluate real-data answers."
         conversation.messages.append(ChatMessage(role: .assistant, text: intro))
         conversation.corpusRunning = true
         conversation.lastUsed = Date()
@@ -306,9 +340,10 @@ final class ChatStore: ObservableObject {
             guard let self, let conversation else { return }
             var matched = 0
             var reviewed = 0
+            var modelCompleted = 0
             for corpusCase in cases {
                 guard !Task.isCancelled else { break }
-                self.send(corpusCase.dryRunPrompt, in: conversation, testMode: true, corpusCase: corpusCase)
+                self.send(corpusCase.requestPrompt, in: conversation, testMode: !live, corpusCase: corpusCase)
                 while conversation.busy && !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 100_000_000)
                 }
@@ -316,6 +351,7 @@ final class ChatStore: ObservableObject {
                 if let evaluation = conversation.messages.last(where: { $0.role == .assistant })?.corpusEvaluation,
                    evaluation.completed {
                     if evaluation.toolPathMatches == true { matched += 1 } else { reviewed += 1 }
+                    if evaluation.modelCalls > 0 { modelCompleted += 1 }
                 } else {
                     reviewed += 1
                 }
@@ -324,7 +360,8 @@ final class ChatStore: ObservableObject {
             conversation.corpusRunning = false
             conversation.corpusTask = nil
             if !wasCancelled {
-                let summary = """
+                let summary = live ? "Live corpus finished: \(modelCompleted)/\(cases.count) cases completed with verified model inference. Review the answers against each card's source results and checklist. Live answers are not automatically graded; a model call alone does not prove correctness."
+                : """
                 Corpus run finished: \(matched) tool path\(matched == 1 ? "" : "s") matched the expected list; \(reviewed) need review. This compares tool names only. Review the behavior rubric and Wisp's streamed response for each case.
                 """
                 conversation.messages.append(ChatMessage(role: .assistant, text: summary))
