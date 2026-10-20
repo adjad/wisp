@@ -5,6 +5,8 @@ confirmations and inert tools. They establish admission, not model quality.
 """
 import copy
 from dataclasses import replace
+from datetime import datetime, timedelta
+import json
 import socket
 import subprocess
 import time
@@ -153,3 +155,172 @@ def test_http_real_deletion_still_prepares_exact_selection_and_requires_confirma
     assert confirmations[0]['args'] == {'scope': 'all', 'expected_ids': [r['id'] for r in before]}
     assert any(e['type'] == 'task_plan' for e in events)
     assert state.reminders.active_between() == before and state.native == []
+
+
+@pytest.fixture
+def pending_entrypoint(knowledge_entrypoint, monkeypatch):
+    """Actual HTTP modes, direct source seams and every capability stay inert."""
+    from service import main
+    from service.config.endpoints import Endpoint, Target
+    from service.tasks.source_readers import MailReader
+    from service.tools.registry import REGISTRY
+    from tests import test_direct_dispatch_exec as clients
+    state = knowledge_entrypoint
+    state.source_calls, state.executed, state.requests, state.raw_sse = [], [], [], []
+    for name, tool in tuple(REGISTRY.items()):
+        def inert(_name=name, **args):
+            state.executed.append((_name, copy.deepcopy(args)))
+            return 'FICTIONAL inert capability result.'
+        inert.__module__ = tool.func.__module__
+        monkeypatch.setitem(REGISTRY, name, replace(tool, func=inert))
+    async def warm(*args, **kwargs):
+        state.source_calls.append(('ensure_reply_source', copy.deepcopy(kwargs)))
+    def reader(*args, **kwargs):
+        state.source_calls.append(('current_mail_reader', copy.deepcopy(kwargs)))
+        return MailReader([{'message_id': '<fictional@example.invalid>', 'account': 'Fictional',
+            'account_id': 'acct-fictional', 'sender': 'Alex <alex@example.invalid>',
+            'subject': 'Blue folder', 'body': 'FICTIONAL body', 'ts': time.time()}],
+            accounts=['Fictional'], synced_at=time.time())
+    async def preview(args):
+        state.source_calls.append(('prepare_reply_args', copy.deepcopy(args)))
+        return None, 'Synthetic native preview unavailable; no real compose.'
+    monkeypatch.setattr('service.tools.email_tools.ensure_reply_source', warm)
+    monkeypatch.setattr('service.tasks.source_readers.current_mail_reader', reader)
+    monkeypatch.setattr('service.tools.action_tools.prepare_reply_args', preview)
+    target = Target('agent', Endpoint('local', 'http://127.0.0.1:8000', 'local_omlx', True),
+                    'Ling-3.0-tiny-Wisp-V2-merged-oQ4e', context_window=32000)
+    monkeypatch.setattr(main, 'role_target', lambda role: target)
+    monkeypatch.setattr(main, '_model_led_preload', lambda prompt: [])
+    original = clients.ScriptedClient
+    stream = original.stream_events
+    async def close(self):
+        pass
+    async def capture(self, model, messages, **kwargs):
+        state.requests.append(copy.deepcopy({'model': model, 'messages': messages, **kwargs}))
+        async for event in stream(self, model, messages, **kwargs):
+            yield event
+    monkeypatch.setattr(original, 'managed', True, raising=False)
+    monkeypatch.setattr(original, 'base_url', target.endpoint.base_url, raising=False)
+    monkeypatch.setattr(original, 'endpoint_name', 'local', raising=False)
+    monkeypatch.setattr(original, 'aclose', close, raising=False)
+    monkeypatch.setattr(original, 'stream_events', capture)
+    monkeypatch.setattr(main, 'OMLXClient', lambda **kwargs: original(
+        getattr(state, 'owner_script', [{'content': 'Synthetic answer.'}])))
+    import httpx
+    original_post = httpx.AsyncClient.post
+    async def post(http, url, **kwargs):
+        response = await original_post(http, url, **kwargs)
+        if url == '/agent':
+            state.raw_sse.append(response.text)
+        return response
+    monkeypatch.setattr(httpx.AsyncClient, 'post', post)
+    return state
+
+
+def seed_pending(state, owner):
+    from service.tasks.models import SlotValue, TaskPlan, TemporalValue
+    from service.workflows.models import WorkflowPlan
+    if owner == 'reminder':
+        plan = TaskPlan(temporal=TemporalValue(absolute_iso=(
+            datetime.now() + timedelta(days=2)).isoformat(timespec='minutes')))
+    elif owner.startswith('reply'):
+        plan = TaskPlan(kind='task.email.reply', intent='email.reply',
+            channel=SlotValue('email', 'explicit'), target=SlotValue('email from Alex', 'explicit'),
+            parameters={'reply_all': SlotValue(False)})
+        if owner == 'reply-body':
+            plan.resolved_references = {'reply.target': {'fields': {
+                'message_id': '<fictional@example.invalid>', 'account': 'Fictional',
+                'account_id': 'acct-fictional'}}}
+        else:
+            plan.subject = SlotValue('Thanks.', 'explicit')
+    else:
+        plan = WorkflowPlan(sources=['email'], recipient='Fictional' if owner == 'workflow-addressed' else '',
+                            original_request='Send a summary of my unread email')
+    plan.recompute_status()
+    sid = state.sessions.create_session()
+    state.sessions.save_workflow(sid, plan.to_dict())
+    return sid, plan
+
+
+def pending_rows(state):
+    return [tuple(r) for r in state.sessions._db.execute(
+        'SELECT id,status,state_json,updated_at FROM workflows ORDER BY id')]
+
+
+def set_mode(monkeypatch, mode):
+    monkeypatch.setenv('WISP_MODEL_LED_ROUTING', '1' if mode == 'model-led' else '0')
+    monkeypatch.setenv('WISP_PLANNER', '1' if mode == 'planner' else '0')
+    monkeypatch.setenv('WISP_TYPED_REMINDERS_SHADOW_ONLY', '1' if mode == 'shadow' else '0')
+
+
+@pytest.mark.parametrize('owner', ['reminder', 'reply-body'])
+def test_direct_typed_owner_cannot_consume_complete_explanation(pending_entrypoint, owner):
+    from service.tasks.engine import prepare_task_turn
+    state = pending_entrypoint
+    sid, _ = seed_pending(state, owner)
+    before = pending_rows(state)
+    assert prepare_task_turn(state.sessions, sid, 'Define unread email.',
+                             assistant_store=state.reminders) is None
+    assert pending_rows(state) == before
+    assert not state.source_calls and not state.executed and not state.native
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('owner,prompt', [
+    ('reminder', 'Define unread email.'),
+    ('reminder', 'Help me understand what "delete all reminders" means.'),
+    ('reply-body', 'Define unread email.'),
+    ('reply-body', 'Explain what unread email means.'),
+    ('reply-target', 'Define unread email.'),
+    ('workflow-addressed', 'Define unread email.'),
+    ('workflow-unaddressed', 'What does unread email mean?'),
+])
+def test_actual_complete_explanation_preserves_pending_owner_before_source_or_effect(
+        pending_entrypoint, monkeypatch, tmp_path, mode, owner, prompt):
+    state = pending_entrypoint
+    sid, _ = seed_pending(state, owner)
+    before = pending_rows(state)
+    set_mode(monkeypatch, mode)
+    events = state.run(prompt, [{'content': 'Synthetic explanation.'}], sid=sid,
+                       approve=False, transport='asgi')
+    record = {'mode': mode, 'owner': owner, 'prompt': prompt, 'before': before,
+        'after': pending_rows(state), 'events': events, 'raw_sse': state.raw_sse,
+        'requests': state.requests, 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native, 'early': state.early}
+    # Model-led admission and shadow can bypass a legacy owner seam. Record
+    # actual early calls rather than claiming every mode invoked that seam.
+    (tmp_path / 'pending-receipt.json').write_text(json.dumps(record, indent=2, default=str))
+    assert record['after'] == before
+    assert state.source_calls == [] and state.executed == [] and state.native == []
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'tool_call', 'error'} for e in events)
+    assert events[-1]['type'] == 'done' and state.raw_sse
+    routed = next(e for e in events if e['type'] == 'routed')
+    if mode == 'model-led':
+        assert routed.get('route_source') == 'model_led_discovery'
+    if mode == 'planner':
+        assert 'planner' in routed.get('reason', '')
+
+
+@pytest.mark.parametrize('owner,prompt,expected', [
+    ('reminder', 'Bring blue folder.', 'add_reminder'),
+    ('reminder', '"Define unread email"', 'add_reminder'),
+    ('reply-body', 'Thanks for the update.', 'prepare_reply_args'),
+    ('reply-body', 'say "Define unread email"', 'prepare_reply_args'),
+    ('reply-target', 'try again', 'current_mail_reader'),
+    ('workflow-addressed', 'Messages', 'workflow'),
+])
+def test_genuine_pending_followups_keep_their_original_owner(
+        pending_entrypoint, monkeypatch, owner, prompt, expected):
+    state = pending_entrypoint
+    sid, plan = seed_pending(state, owner)
+    set_mode(monkeypatch, 'normal')
+    events = state.run(prompt, [{'content': 'Synthetic narration.'}], sid=sid,
+                       approve=False, transport='asgi')
+    rows = pending_rows(state)
+    assert len(rows) == 1 and rows[0][0] == plan.id
+    assert json.loads(rows[0][2])['revision'] > plan.revision
+    if expected == 'workflow':
+        assert any(e['type'] == 'workflow' and e['event'] == 'execution_started' for e in events)
+    else:
+        assert expected in [name for name, _ in state.executed + state.source_calls]
+    assert not state.native
