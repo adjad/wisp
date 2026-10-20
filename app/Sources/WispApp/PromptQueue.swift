@@ -19,9 +19,24 @@ struct PromptSubmissionState {
     private(set) var active: PromptDispatch?
     private var queued: [QueuedPrompt] = []
     private var nextID: UInt64 = 0
+    /// Queued prompts wait for the dropped one they followed: it is back in the
+    /// box, and they go after it, in order, once it is sent again (or Return is
+    /// pressed on an empty box).
+    private(set) var held = false
 
     var queuedCount: Int { queued.count }
     var isActive: Bool { active != nil }
+
+    /// What queued prompts are waiting on, for the line beside the box.
+    enum Waiting: Equatable { case reply, summary, research, resend }
+    var waiting: Waiting? {
+        guard !queued.isEmpty else { return nil }
+        switch active?.work {
+        case .dailySummary: return .summary
+        case .prompt(let prompt): return prompt.researchMode ? .research : .reply
+        case nil: return held ? .resend : nil
+        }
+    }
 
     func isCurrent(_ id: UInt64) -> Bool {
         active?.id == id
@@ -32,7 +47,15 @@ struct PromptSubmissionState {
             queued.append(prompt)
             return nil
         }
+        held = false
         return begin(.prompt(prompt))
+    }
+
+    /// Sends the held queue on: Return on an empty box after a drop.
+    mutating func resume() -> PromptDispatch? {
+        guard active == nil, !queued.isEmpty else { return nil }
+        held = false
+        return begin(.prompt(queued.removeFirst()))
     }
 
     mutating func beginDailySummary() -> PromptDispatch? {
@@ -43,18 +66,31 @@ struct PromptSubmissionState {
     mutating func complete(_ id: UInt64) -> PromptDispatch? {
         guard active?.id == id else { return nil }
         active = nil
-        guard !queued.isEmpty else { return nil }
+        // Held prompts wait for the dropped one, even past a summary run meanwhile.
+        guard !queued.isEmpty, !held else { return nil }
         return begin(.prompt(queued.removeFirst()))
     }
 
     mutating func dropForRetry(_ id: UInt64) -> QueuedPrompt? {
         guard active?.id == id, case .prompt(let prompt) = active?.work else { return nil }
         active = nil
+        held = !queued.isEmpty
         return prompt
+    }
+
+    /// The dropped prompt goes first in the held queue instead of back in the
+    /// box, when the box already holds something typed meanwhile.
+    mutating func dropToQueue(_ id: UInt64) -> Bool {
+        guard active?.id == id, case .prompt(let prompt) = active?.work else { return false }
+        active = nil
+        queued.insert(prompt, at: 0)
+        held = true
+        return true
     }
 
     mutating func reset() {
         active = nil
+        held = false
         queued.removeAll(keepingCapacity: false)
     }
 
