@@ -66,6 +66,13 @@ class PipelineTests(unittest.TestCase):
         corpus = bundle / "Contents/Resources/WispApp_WispApp.bundle/Contents/Resources/assistant-task-corpus-v1.jsonl"
         corpus.parent.mkdir(parents=True, exist_ok=True)
         corpus.write_bytes((ROOT / "training/assistant-task-corpus-v1/cases.jsonl").read_bytes())
+        resource_info = corpus.parents[1] / "Info.plist"
+        resource_info.write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": "app.WispApp.resources",
+            "CFBundleInfoDictionaryVersion": "6.0",
+            "CFBundleName": "WispApp_WispApp",
+            "CFBundlePackageType": "BNDL",
+        }))
         (bundle / "Contents/MacOS/Wisp").chmod(0o755)
         (bundle / "Contents/Resources/backend/.venv/bin/python3").chmod(0o755)
         (bundle / "Contents/Resources/backend/.venv/bin/python").symlink_to("python3")
