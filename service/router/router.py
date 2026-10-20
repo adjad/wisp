@@ -7736,9 +7736,9 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
 
 def _assistant_read_claim(text: str) -> RouteDecision | None:
     """Complete personal questions precede generic chat and current-web rules."""
-    if (compound := _priority_context_claim(text)) is not None:
-        return compound
     decision = _priority_read(text)
+    if decision is None and (compound := _priority_context_claim(text)) is not None:
+        return compound
     source, _ = _private_read_policy(text)
     if decision is None and _tomorrow_agenda_args(source) is not None:
         decision = _strict_private_read_decision(text)
@@ -7750,11 +7750,23 @@ def _assistant_read_claim(text: str) -> RouteDecision | None:
         public_reference=False, inherited=False, clarification=None))
 
 
+# Presence and complete acceptance are deliberately different. An unfamiliar
+# verb after a private-source declaration cannot make its text a public query.
+_CONTEXT_REPORT = r"(?:says?|said|reads?|states?|contains?|mentions?|describes?|reports?|refers?|shows?|indicates?|has|have)\b"
+_CONTEXT_HEAD = (r"(?:(?:the|my|our|this|that|an?)\s+" + _PRIVATE_SOURCE_NAME + r"\b|"
+                 + _PRIVATE_SOURCE_NAME + r"\s+(?=" + _CONTEXT_REPORT + r")|"
+                 r"(?:I|we)\b(?!\s+(?:(?:want|need)|would\s+like)\s+you\s+to\b)"
+                 r"(?=[^.!?;,\n]*\b" + _PRIVATE_SOURCE_NAME + r"\b))")
+_CONTEXT_PREFIX = r"(?:(?:and|then|also)\s+)*" + _CONTEXT_HEAD
+_CONTEXT_PRESENCE = r"(?:^|[.!?;,\n:()—–-]|\b(?:and|then|also|but|because|since)\b)\s*" + _CONTEXT_PREFIX
+
+
 def _supplied_context_clause(clause: str) -> bool:
     shape = _ROUTING_QUOTED_SPAN_RE.sub('QUOTED_CONTEXT', clause)
     return bool(re.fullmatch(
-        r"\s*(?:(?:the|my|this)\s+(?:e-?mail|message|note)\s+(?:says|said|reads)\s*[:,]?\s*QUOTED_CONTEXT|"
-        r"I\s+have\s+(?:an?\s+)?(?:e-?mail|message|note)(?:\s+(?:saying|that\s+says)\s+QUOTED_CONTEXT)?)"
+        r"\s*(?:(?:and|then|also)\s+)*(?:(?:(?:the|my|our|this|that|an?)\s+)?" + _PRIVATE_SOURCE_NAME +
+        r"\s+(?:says|say|said|reads|read)\s*[:,]?\s*QUOTED_CONTEXT|"
+        r"I\s+have\s+(?:an?\s+)?" + _PRIVATE_SOURCE_NAME + r"(?:\s+(?:saying|that\s+says)\s+QUOTED_CONTEXT)?)"
         r"[.!?;\s]*", shape, re.I))
 
 
@@ -7781,8 +7793,9 @@ def _priority_context_claim(text: str) -> RouteDecision | None:
     masked = _routing_quote_mask(source)
     boundaries = list(re.finditer(
         r"[.!?;\n]+(?:\s+|$)|\s+(?:and\s+then|and|then|also)\s+"
-        r"(?=(?:search\s+the\s+web|what\s+(?:should|is|are)|look\s+up)\b)|"
-        r",\s*(?=(?:the|my|this)\s+(?:e-?mail|message|note)\s+(?:says|said|reads)\b)", masked, re.I))
+        r"(?=(?:search\s+the\s+web|what\s+(?:should|is|are)|look\s+up)\b|" + _CONTEXT_PREFIX + r")|"
+        r"\s+(?:because|since)\s+(?=" + _CONTEXT_PREFIX + r")|"
+        r",\s*(?=" + _CONTEXT_PREFIX + r")", masked, re.I))
     clauses, start = [], 0
     for boundary in boundaries:
         # Retain sentence punctuation in the public query's original span.
@@ -7792,9 +7805,23 @@ def _priority_context_claim(text: str) -> RouteDecision | None:
         start = boundary.end()
     if clause := source[start:].strip():
         clauses.append(clause)
-    has_context = any(_supplied_context_clause(clause) for clause in clauses)
-    if not has_context and (len(clauses) < 2 or not any(_priority_read(clause) for clause in clauses)):
+    has_context = bool(re.search(_CONTEXT_PRESENCE, masked, re.I))
+    has_priority = any(_priority_read(clause) for clause in clauses)
+    if not has_context and (len(clauses) < 2 or not has_priority):
         return None
+    if has_context and not has_priority:
+        root_declaration = bool(_supplied_context_clause(clauses[0]) or re.match(
+                r'\s*(?:(?:I|we)\b(?!\s+(?:(?:want|need)|would\s+like)\s+you\s+to\b)|'
+                r'(?:the|my|our|this|that|an?)\s+' + _PRIVATE_SOURCE_NAME + r'\b(?=\s+\S)|'
+                + _PRIVATE_SOURCE_NAME + r'\s+(?=' + _CONTEXT_REPORT + r'))', masked, re.I))
+        # A coordinated noun list in an ordinary private read is not a new
+        # declaration: e.g. "Read my notes and reminders". Its existing owner
+        # still interprets it. The context boundary owns public compounds and
+        # actual supplied declarations, not every source noun after "and".
+        if not root_declaration:
+            requests = (_classify_web_request(clause) for clause in clauses)
+            if not any(request.allowed or request.explicit for request in requests):
+                return None
     priority = None
     public = []
     unresolved = False
@@ -7810,6 +7837,9 @@ def _priority_context_claim(text: str) -> RouteDecision | None:
                 or _NO_WEB_POLICY_CLAUSE_RE.fullmatch(probe)):
             continue
         if _supplied_context_clause(clause):
+            continue
+        if re.search(_CONTEXT_PRESENCE, authority, re.I):
+            unresolved = True
             continue
         if re.fullmatch(r"\s*(?:please\s+)?(?:don['’]?t|do\s+not|never)\s+"
                         r"(?:use|search|browse|access)\s+(?:the\s+)?(?:web|internet)[.!?;\s]*", authority, re.I):

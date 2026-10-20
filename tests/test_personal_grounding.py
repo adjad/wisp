@@ -111,6 +111,43 @@ def test_standalone_context_does_not_authorize_inbox_read():
     assert not reachable(route('My email says "read email".'))
 
 
+@pytest.mark.parametrize('separator', ['. ', '; ', ', ', ' and ', ', and ', '. And ', '\n',
+                                     ' - ', ' -- ', ' — ', '.', '-', '--', ' because ', ' since '])
+@pytest.mark.parametrize('context', ['I have an email saying "secret-project-abc".',
+                                   'My email says "read email".',
+                                   'The email states "secret-project-abc".',
+                                   'I have an email referring to "secret-project-abc".',
+                                   'I just received an email saying "secret-project-abc".',
+                                   'I was sent emails referring to "secret-project-abc".',
+                                   'Emails say "secret-project-abc".',
+                                   'The calendar says "secret-project-abc".',
+                                   'My messages say "read email".',
+                                   'My inbox says "read email".',
+                                   'My reminders say "read email".',
+                                   'I have an email saying "secret-project-abc" and disable Wi-Fi.'])
+def test_context_presence_and_full_consumption_are_distinct(separator, context):
+    d = route('Search the web for events' + separator + context)
+    assert not {'view_emails','summarize_emails','triage_inbox','scan_subscriptions','run_shell'} & reachable(d)
+    if 'web_search' in reachable(d):
+        query = d.tool_argument_bindings['web_search']['query']
+        assert 'email' not in query.lower() and 'secret-project' not in query and 'Wi-Fi' not in query
+        assert query.rstrip('.;') == 'Search the web for events'
+    else:
+        assert not d.needs_tools and not reachable(d)
+
+
+@pytest.mark.parametrize('context', ['I have an email referring to secret-project-abc.',
+                                   'I received an email saying secret-project-abc.',
+                                   'The email states secret-project-abc.',
+                                   'FYI: I have an email referring to secret-project-abc.',
+                                   'For context, I received an email saying secret-project-abc.',
+                                   'Please, I have an email referring to "secret-project-abc".'])
+def test_unquoted_context_first_is_not_an_authority_grant(context):
+    d = route(context + ' Search the web for events.')
+    assert not d.needs_tools and not reachable(d)
+    assert 'Clarify' in d.resolved_request
+
+
 @pytest.mark.parametrize('tail', ['I have an email referring to "secret-project-abc".',
                                 'The email says "secret-project-abc". Please take account of this.'])
 def test_unknown_compound_cannot_reopen_whole_prompt_web_egress(tail):
