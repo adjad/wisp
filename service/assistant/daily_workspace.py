@@ -375,9 +375,51 @@ def _names_event(title, events):
                                 for e in events)
 
 
+# The privacy layer (imessage_tools.redact_summary_codes) replaces a private
+# subject with a fixed stand-in that keeps only its priority class. As a block
+# title that reads as junk ("Review: Private details omitted."), so the block is
+# named by that class and the sender instead; the class itself is kept, because
+# hiding it would hide exactly the urgent mail the redaction keeps visible. A
+# credential's stand-in never reaches here: not_a_need drops that mail.
+_PLACEHOLDER_KINDS = (
+    (re.compile(r"security incident notice \(details omitted\)", re.I), "security"),
+    (re.compile(r"health or safety concern \(private details omitted\)", re.I), "a health or safety notice"),
+    (re.compile(r"(?:direct request|review the original request) with a stated deadline\b.*\(private details omitted\)", re.I),
+     "a request with a deadline"),
+    (re.compile(r"deadline notice \(private details omitted\)", re.I), "a deadline notice"),
+    (re.compile(r"schedule or logistics change \(private details omitted\)", re.I), "a schedule change"),
+    (re.compile(r"possible request context \(private details omitted", re.I), "a possible request"),
+    (re.compile(r"(?:direct request requires review|please review the original request)\.\s*private details omitted", re.I),
+     "a request"),
+    (re.compile(r"^\s*private details omitted\.?\s*$", re.I), "an email"),
+)
+
+
+def review_title(title, sender=""):
+    """A suggestion's title: "Review: <subject>", or, for a subject the privacy
+    layer withheld, its class and sender: "Review a deadline notice from Dr.
+    Patel". An unverified security notice is named, never phrased as something
+    to act on: "Check a security notice from Google (unverified)"."""
+    text = str(title or "")
+    # A partial stand-in keeps the subject's lead: "Canvas: Private details omitted."
+    tail = text.rpartition(": ")[2] if ": " in text else text
+    who = f" from {sender}" if sender else ""
+    for pattern, kind in _PLACEHOLDER_KINDS:
+        if pattern.search(tail):
+            if kind == "security":
+                return f"Check a security notice{who} (unverified)"
+            return f"Review {kind}{who}"
+    return "Review: " + text
+
+
 # Review blocks are for reading what people sent. Several at once share one
 # block: back-to-back 15-minute blocks are too short to read and stack up.
 _GROUPED_SOURCES = {"email": ("email", "emails"), "messages": ("message", "messages"), "notes": ("note", "notes")}
+
+
+def _member_title(item):
+    named = review_title(item["title"], item.get("sender") or "")
+    return item["title"] if named.startswith("Review: ") else named
 
 
 def _group_reviews(suggestions, by_id):
@@ -401,7 +443,8 @@ def _group_reviews(suggestions, by_id):
     group = dict(first, id="daily:reviews:" + key("group", sorted(s["id"] for s in picked)), title=title,
                  duration_minutes=min(45, max(20, 10 * len(picked))),
                  priority=min(s["priority"] for s in picked))
-    listed = [dict(title=by_id[s["evidence_id"]]["title"], evidence_id=s["evidence_id"],
+    # A withheld subject is listed by its class and sender, as its own block would be.
+    listed = [dict(title=_member_title(by_id[s["evidence_id"]]), evidence_id=s["evidence_id"],
                    sender=by_id[s["evidence_id"]].get("sender") or None) for s in picked]
     ids = {s["id"] for s in picked}
     out, placed = [], False
@@ -545,7 +588,8 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
         if item["source"] == "reminders" and item["due_ts"] is None:
             continue
         suggested_titles.add(title_key)
-        planned_title = item.get("planning_title") or ("Review: " + title if item["needs_review"] else title)
+        planned_title = item.get("planning_title") or (review_title(title, item.get("sender") or "")
+                                                       if item["needs_review"] else title)
         suggestions.append(dict(id="daily:" + item["id"], title=planned_title, day=day,
             timezone=timezone, kind=item.get("task_kind", "task"), duration_minutes=item["suggested_minutes"],
             priority=item["priority"], due_ts=item["due_ts"] if item["due_ts"] and item["due_ts"] > max(now, lo) else None,
