@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field, replace
 
 from service.authored_message import authored_message_intent
-from service.utterance_shape import is_mention, is_prohibition, mask_quoted
+from service.utterance_shape import is_mention, is_prohibition, mask_quoted, is_complete_explanation
 from service.config import (
     models_config,
     role_to_model,
@@ -6547,6 +6547,9 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
     from service.tools.registry import REGISTRY
     from service.router.model_led import family_for, registry_specs
 
+    if is_complete_explanation(text):
+        return frozenset(REGISTRY), {}
+
     # Authored/quoted text is data, never fresh authority or prohibitions.
     t = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
     _, policy_forbidden = _private_read_policy(t)
@@ -7919,6 +7922,13 @@ def _named_time_claim(text: str) -> RouteDecision | None:
 
 def _assistant_read_claim(text: str) -> RouteDecision | None:
     """Complete personal questions precede generic chat and current-web rules."""
+    if is_complete_explanation(text):
+        from service.tools.registry import REGISTRY
+        decision = _mk('general', reason='complete explanation, no source or action authority')
+        decision.tool_subset = []
+        decision.forbidden_tools = frozenset(REGISTRY)
+        decision.resolved_request = text
+        return decision
     if (named := _named_time_claim(text)) is not None:
         return named
     decision = _priority_read(text)

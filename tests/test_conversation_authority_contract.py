@@ -30,6 +30,10 @@ EXPLANATIONS = [
     'Define unread email.',
     'Explain what unread email means.',
     'What is the difference between an email and a message?',
+    'Help me understand what ‘delete all reminders’ means.',
+    'Hey Wisp, could you help me understand what "delete all reminders" means?',
+    'Explain the phrase "delete \\"all\\" reminders".',
+    'Could you please define unread email, please?',
 ]
 NON_OUTBOUND = [
     'How can I tell whether an email needs a reply?',
@@ -167,6 +171,12 @@ def pending_entrypoint(knowledge_entrypoint, monkeypatch):
     from tests import test_direct_dispatch_exec as clients
     state = knowledge_entrypoint
     state.source_calls, state.executed, state.requests, state.raw_sse = [], [], [], []
+    from service.agent import loop
+    from service.tools.registry import run_tool
+    async def execute(tool, args, **kwargs):
+        state.tools.append((tool.name, copy.deepcopy(args)))
+        return await run_tool(tool, args, **kwargs)
+    monkeypatch.setattr(loop, 'run_tool', execute)
     for name, tool in tuple(REGISTRY.items()):
         def inert(_name=name, **args):
             state.executed.append((_name, copy.deepcopy(args)))
@@ -206,6 +216,7 @@ def pending_entrypoint(knowledge_entrypoint, monkeypatch):
     monkeypatch.setattr(original, 'stream_events', capture)
     monkeypatch.setattr(main, 'OMLXClient', lambda **kwargs: original(
         getattr(state, 'owner_script', [{'content': 'Synthetic answer.'}])))
+    state.Client = original
     import httpx
     original_post = httpx.AsyncClient.post
     async def post(http, url, **kwargs):
@@ -263,6 +274,131 @@ def test_direct_typed_owner_cannot_consume_complete_explanation(pending_entrypoi
                              assistant_store=state.reminders) is None
     assert pending_rows(state) == before
     assert not state.source_calls and not state.executed and not state.native
+
+
+@pytest.mark.parametrize('prompt', EXPLANATIONS)
+def test_complete_explanation_has_no_mandatory_or_optional_capabilities(prompt, monkeypatch):
+    import asyncio
+    from service.router.router import route, routing_guard_contract
+    from service.tools.registry import REGISTRY
+    from service.workflows.reads import compile_read
+    from service.workflows.workflow20 import personal_read
+    # A new registration, including an alias to a private tool, must be denied
+    # by the current registry envelope without updating a noun/tool denylist.
+    monkeypatch.setitem(REGISTRY, 'fictional_private_alias', replace(
+        REGISTRY['view_emails'], name='fictional_private_alias'))
+    assert personal_read(prompt) is None and compile_read(prompt) is None
+    decision = asyncio.run(route(prompt))
+    assert not decision.needs_tools and decision.tool_subset == []
+    assert not decision.direct_calls and not decision.required_tool_groups
+    assert not decision.force_first_tool and not decision.expect_tool_first
+    assert not decision.tool_argument_bindings and decision.resolved_request == prompt
+    assert set(REGISTRY) <= decision.forbidden_tools
+    forbidden, bindings = routing_guard_contract(prompt)
+    assert set(REGISTRY) <= forbidden and bindings == {}
+
+
+def attempt(name, args):
+    return {'tool_calls': [{'id': 'fictional-attempt', 'type': 'function',
+                            'function': {'name': name, 'arguments': json.dumps(args)}}]}
+
+
+def actual_attempt(state, monkeypatch, mode, prompt, name, args, *, sid=None):
+    from service import main
+    set_mode(monkeypatch, mode)
+    script = [attempt(name, args), {'content': 'Synthetic answer; no claimed action.'}]
+    if mode == 'model-led':
+        from service.router.model_led import family_for, registry_specs
+        from service.tools.registry import REGISTRY
+        spec = next((t for t in registry_specs(REGISTRY) if t.name == name), None)
+        family = family_for(spec) if spec is not None else 'other'
+        script.insert(0, attempt('get_tool_schemas', {'families': [family], 'tools': [name]}))
+    if mode == 'planner':
+        script = [{'content': json.dumps({'thought': 'synthetic attempt', 'status': 'call_tools',
+                    'calls': [{'tool': name, 'arguments': args}]})},
+                  {'content': json.dumps({'thought': 'done', 'status': 'answer', 'calls': []})},
+                  {'content': 'Synthetic answer; no claimed action.'}]
+    monkeypatch.setattr(main, 'OMLXClient', lambda **kwargs: state.Client(script))
+    return state.run(prompt, script, sid=sid, approve=False, transport='asgi')
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt', EXPLANATIONS)
+@pytest.mark.parametrize('name,args', [
+    ('view_emails', {'unread': True}), ('summarize_emails', {'unread': True}),
+    ('view_messages', {}), ('get_upcoming', {}), ('search_reminders', {}),
+    ('daily_brief', {}), ('collect_task_evidence', {}),
+    ('run_shell', {'command': 'fictional'}), ('run_applescript', {'script': 'fictional'}),
+    ('send_message', {'to': 'Fictional', 'text': 'fictional'}),
+    ('send_email', {'to': 'fictional@example.invalid', 'subject': 'fictional', 'body': 'fictional'}),
+    ('clear_reminders', {'scope': 'all'}), ('http_request', {'url': 'https://fictional.invalid'}),
+    ('fictional_private_alias', {}),
+])
+def test_actual_modes_complete_explanation_rejects_private_and_effect_attempts(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, name, args):
+    from service.tools.registry import REGISTRY
+    state = pending_entrypoint
+    monkeypatch.setitem(REGISTRY, 'fictional_private_alias', replace(
+        REGISTRY['view_emails'], name='fictional_private_alias'))
+    state.reminders.add_manual('Fictional keep blue folder reminder', time.time() + 3600)
+    reminders = state.reminders.active_between()
+    before = pending_rows(state)
+    events = actual_attempt(state, monkeypatch, mode, prompt, name, args)
+    record = {'mode': mode, 'prompt': prompt, 'attempt': {'name': name, 'args': args},
+        'before': before, 'after': pending_rows(state), 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native, 'early': state.early}
+    (tmp_path / 'explanation-receipt.json').write_text(json.dumps(record, indent=2, default=str))
+    assert not state.executed and not state.source_calls and not state.native
+    assert pending_rows(state) == before and state.reminders.active_between() == reminders
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+    assert not any(e['type'] == 'tool_call' and e.get('name') != 'get_tool_schemas' for e in events)
+    assert events[-1]['type'] == 'done'
+    routed = next(e for e in events if e['type'] == 'routed')
+    assert not routed.get('required_tool_groups')
+    if mode == 'model-led':
+        assert routed.get('route_source') == 'model_led_discovery'
+    if mode == 'planner':
+        assert 'planner' in routed.get('reason', '')
+    for request in state.requests:
+        assert all(tool['function']['name'] == 'get_tool_schemas' for tool in request.get('tools') or [])
+    assert any(message.get('role') == 'user' and message.get('content') == prompt
+               for request in state.requests for message in request['messages'])
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('owner', ['reminder', 'reply-body', 'reply-target',
+                                   'workflow-addressed', 'workflow-unaddressed'])
+@pytest.mark.parametrize('name,args', [('view_emails', {'unread': True}),
+                                      ('clear_reminders', {'scope': 'all'})])
+def test_actual_attempts_cannot_reopen_a_pending_owner_on_complete_explanation(
+        pending_entrypoint, monkeypatch, tmp_path, mode, owner, name, args):
+    state = pending_entrypoint
+    sid, _ = seed_pending(state, owner)
+    before = pending_rows(state)
+    events = actual_attempt(state, monkeypatch, mode, 'Define unread email.', name, args, sid=sid)
+    record = {'mode': mode, 'owner': owner, 'attempt': name, 'before': before,
+        'after': pending_rows(state), 'events': events, 'requests': state.requests,
+        'raw_sse': state.raw_sse, 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native, 'early': state.early}
+    (tmp_path / 'pending-attempt-receipt.json').write_text(json.dumps(record, indent=2, default=str))
+    assert pending_rows(state) == before
+    assert not state.executed and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+    assert events[-1]['type'] == 'done'
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt', ['Explain my latest email.', 'Explain the email from Alex.'])
+def test_actual_specific_private_record_explanation_retains_its_read(
+        pending_entrypoint, monkeypatch, mode, prompt):
+    state = pending_entrypoint
+    assert not U.is_complete_explanation(prompt)
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'view_emails', {})
+    assert state.executed and {name for name, _ in state.executed} == {'view_emails'}
+    assert not state.native and pending_rows(state) == []
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+    assert events[-1]['type'] == 'done'
 
 
 @pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])

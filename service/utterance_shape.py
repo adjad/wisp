@@ -29,7 +29,9 @@ import re
 # count; a single-quoted span counts only at word edges so apostrophes ("don't",
 # "Sam's") never open one.
 _QUOTED = re.compile(
-    r'"[^"]*"|“[^”]*”|`[^`]*`|(?<![\w])\'[^\']{2,}\'(?![\w])')
+    r'"(?:\\.|[^"\\])*"|“[^”]*”|`[^`]*`|'
+    r"(?<!\w)'(?:\\.|[^'\\]|(?<=\w)'(?=\w)){2,}'(?!\w)|"
+    r"(?<!\w)‘(?:[^’]|(?<=\w)’(?=\w)){2,}’(?!\w)")
 
 _LEAD = r"^[\W_]*(?:(?:please|hey|ok(?:ay)?|wisp|and|but|also|actually|now|just)\b[\s,]*)*"
 
@@ -55,10 +57,10 @@ _RECIPIENT_AFTER_QUOTE = re.compile(r"\b(?:to|for)\s+(?!me\b|us\b|myself\b)[\w@.
 
 # A closed explanation is self-contained. Keep its quoted bytes opaque and
 # consume the entire outer grammar before granting the tool-free contract.
-_EXPLANATION_LEAD = (r"\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?"
+_EXPLANATION_LEAD = (_LEAD + r"(?:(?:can|could|would|will)\s+you\s+)?"
                      r"(?:please\s+)?")
 _TERM_LABEL = r"(?:(?:the|this|that)\s+)?(?:word|words|phrase|sentence|command|expression|term)\s*:?\s*"
-_EXPLANATION_FRAMES = tuple(re.compile(_EXPLANATION_LEAD + frame + r"[.!?\s]*", re.I) for frame in (
+_EXPLANATION_FRAMES = tuple(re.compile(_EXPLANATION_LEAD + frame + r"(?:,?\s+please)?[.!?\s]*", re.I) for frame in (
     r"(?:tell\s+me\s+)?what\s+(?:does|do)\s+(?P<term>.+?)\s+mean",
     r"what\s+is\s+(?:the\s+)?meaning\s+of\s+(?P<term>.+?)",
     r"(?:explain|help\s+me\s+understand)\s+what\s+(?P<term>.+?)\s+means?",
