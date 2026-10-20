@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from service.utterance_shape import deliberate
+from service.utterance_shape import deliberate, mask_quoted, is_complete_explanation
 from service.authored_message import authored_message_intent
 from service.config import role_to_model
 from service.reminder_intent import REMINDER_CREATE_RE
@@ -52,7 +52,13 @@ _ADDRESSEE_CUE = re.compile(r"\bto\b|@|\bme\b|\bmyself\b", re.I)
 
 
 def outbound_verb(text: str) -> bool:
-    """True when the text asks to deliver something, not merely names email."""
+    """Prove a current delivery verb in an outer command clause.
+
+    Communication nouns, reported speech and questions about past sends do
+    not create delivery authority. A later independent command still can.
+    """
+    if is_complete_explanation(text):
+        return False
     from service.workflows.workflow20 import personal_read
     if personal_read(text) is not None:
         return False
@@ -68,7 +74,17 @@ def outbound_verb(text: str) -> bool:
     masked = _EMAIL_NOUN_USE.sub(" ", text)
     if _LEADING_EMAIL_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
         masked = _LEADING_EMAIL_NOUN.sub(" ", masked, count=1)
-    return bool(_OUTBOUND.search(masked))
+    # Matching a word anywhere confuses "an email needs a reply", "without
+    # reading email" and "what messages did I send" with new deliveries.
+    # Require the verb at the head of a current request or independent clause.
+    return bool(re.search(
+        r"(?:^|[;.!?\n,]|\b(?:and|then|but|while)\b)\s*"
+        r"(?:(?:and|then|please|also|now|just|only)\s+)*"
+        r"(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?"
+        r"(?:(?:I\s+(?:want|need)\s+you\s+to|I'd\s+like\s+you\s+to)\s+)?"
+        r"(?:(?:schedule\s+)?(?:send|text|message|e-?mail|share|forward|draft|compose|write)\b|"
+        r"schedule\s+(?:an?\s+)?(?:e-?mail|message|text)\b)",
+        mask_quoted(masked), re.I))
 
 
 _SUMMARY = re.compile(

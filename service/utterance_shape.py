@@ -53,6 +53,53 @@ _WORDS_NOUN = re.compile(r"\b(?:the\s+)?(?:word|words|phrase|sentence|string|com
 # `Say "hi" to Mom` is a message to send, not a mention.
 _RECIPIENT_AFTER_QUOTE = re.compile(r"\b(?:to|for)\s+(?!me\b|us\b|myself\b)[\w@.-]+", re.I)
 
+# A closed explanation is self-contained. Keep its quoted bytes opaque and
+# consume the entire outer grammar before granting the tool-free contract.
+_EXPLANATION_LEAD = (r"\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?"
+                     r"(?:please\s+)?")
+_TERM_LABEL = r"(?:(?:the|this|that)\s+)?(?:word|words|phrase|sentence|command|expression|term)\s*:?\s*"
+_EXPLANATION_FRAMES = tuple(re.compile(_EXPLANATION_LEAD + frame + r"[.!?\s]*", re.I) for frame in (
+    r"(?:tell\s+me\s+)?what\s+(?:does|do)\s+(?P<term>.+?)\s+mean",
+    r"what\s+is\s+(?:the\s+)?meaning\s+of\s+(?P<term>.+?)",
+    r"(?:explain|help\s+me\s+understand)\s+what\s+(?P<term>.+?)\s+means?",
+    r"(?:explain|define|help\s+me\s+understand)\s+(?P<term>.+?)",
+    r"what\s+is\s+the\s+difference\s+between\s+(?P<left>.+?)\s+and\s+(?P<right>.+?)",
+))
+_PERSONAL_OR_OPEN_TERM = re.compile(
+    r"\b(?:my|our|your|his|her|their|mine|ours|yours|me|us|this|that|these|those|"
+    r"latest|last|recent|selected|current|first|previous|next|today|tomorrow|yesterday|"
+    r"from|to|with|by|in|on|at|where|when|who|whose|which|why|how|"
+    r"and|then|but|also|without|except|excluding|after|before|about|"
+    r"sent|received|said|says|saying|wrote|written|got|happened|"
+    r"did|does|do|has|have|had|was|were|is|are|can|could|would|will)\b|['’]s\b", re.I)
+
+
+def is_complete_explanation(text: str) -> bool:
+    """A fully consumed explanation of language or a generic term.
+
+    This is intentionally narrower than every request to explain something:
+    a selected/private record ("explain my latest email"), unknown punctuation
+    or another action clause keeps its ordinary source/action authority.
+    Callers must preserve the original request when applying this contract.
+    """
+    masked = _QUOTED.sub("__literal__", text or "")
+
+    def term(value: str) -> bool:
+        value = re.sub(r"^" + _TERM_LABEL, "", value.strip(), count=1, flags=re.I)
+        if value == "__literal__":
+            return True
+        value = re.sub(r"^(?:a|an|the)\s+", "", value, count=1, flags=re.I)
+        words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", value)
+        return bool(0 < len(words) <= 8
+                    and re.fullmatch(r"[A-Za-z]+(?:[-'][A-Za-z]+)*(?:\s+[A-Za-z]+(?:[-'][A-Za-z]+)*)*", value)
+                    and not _PERSONAL_OR_OPEN_TERM.search(value))
+
+    for frame in _EXPLANATION_FRAMES:
+        match = frame.fullmatch(masked)
+        if match and all(term(value) for value in match.groupdict().values()):
+            return True
+    return False
+
 
 def quoted_spans(text: str) -> list[tuple[int, int]]:
     return [m.span() for m in _QUOTED.finditer(text or "")]
@@ -91,11 +138,21 @@ def is_mention(text: str) -> bool:
     """The request talks about a word, phrase or command rather than asking for
     it to happen."""
     text = text or ""
+    if is_complete_explanation(text):
+        return True
     match = _MENTION_VERB.match(text)
     if not match:
         return False
     quoted = quoted_spans(text)
     if not quoted and not _WORDS_NOUN.search(text):
+        return False
+    # A later independent request is still an instruction. Quoted content
+    # cannot supply this clause's verb, recipient or source.
+    if re.search(r"(?:[;.!?\n,]|\b(?:and|then|but|while)\b)\s*"
+                 r"(?:(?:and|then|please|also)\s+)*"
+                 r"(?:send|text|message|e-?mail|share|forward|draft|compose|write|"
+                 r"show|list|read|check|delete|remove|clear|remind|create|update)\b",
+                 mask_quoted(text)[match.end():], re.I):
         return False
     if match.group(0).strip().lower().endswith("say"):
         # `Say "hi" to Mom` sends something; `Say "x".` only echoes.

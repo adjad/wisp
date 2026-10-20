@@ -397,7 +397,7 @@ def compile_reminder_delete(text: str, *, now: datetime | None = None,
     del now
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
-            or not _DELETE_REMINDER.search(text)):
+            or not _DELETE_REMINDER.search(_unquoted(text))):
         return None
     lowered = text.casefold()
     if re.search(r"\b(?:all|every)\b", lowered):
@@ -429,7 +429,7 @@ def compile_reminder_complete(text: str, *, now: datetime | None = None,
     del now
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
-            or not _COMPLETE_REMINDER.search(text)):
+            or not _COMPLETE_REMINDER.search(_unquoted(text))):
         return None
     target = _operation_target(
         text, r"complete|finish|mark|check(?:\s+off)?|cross(?:\s+off)?|tick(?:\s+off)?")
@@ -450,7 +450,7 @@ def compile_reminder_update(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
-            or not _UPDATE_REMINDER.search(text)):
+            or not _UPDATE_REMINDER.search(_unquoted(text))):
         return None
     target = _operation_target(text, "update|change|rename|reschedule|move")
     parameters: dict[str, SlotValue] = {}
