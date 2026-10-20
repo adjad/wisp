@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import AsyncIterator
 
 from service.inference.omlx_client import OMLXClient
@@ -84,23 +85,42 @@ def _global_picks(n_chunks: int, matched: list[int], *,
 
     return sorted(picks)
 
-# Documents keep their chunking + BM25 index between invocations, keyed the same
-# way as the vector cache so all three stay coherent.
-_docs: dict[str, tuple[list[Chunk], BM25]] = {}
+
+@dataclass(slots=True)
+class _Document:
+    chunks: list[Chunk]
+    bm25: BM25 | None = None
+
+
+# One count-bounded FIFO cache shares chunks across every tier. Literal-only
+# requests need no lexical index; public prewarm still builds it eagerly.
+_docs: dict[str, _Document] = {}
 _DOC_MAX = 200
+
+
+def _document(text: str) -> tuple[str, _Document]:
+    key = embedder.doc_key(text)
+    document = _docs.get(key)
+    if document is None:
+        document = _Document(chunk(text))
+        _docs[key] = document
+        while len(_docs) > _DOC_MAX:
+            _docs.pop(next(iter(_docs)))
+    return key, document
+
+
+def _lexical_index(document: _Document) -> BM25:
+    if document.bm25 is None:
+        # Publish only a complete index. A failed constructor leaves reusable
+        # chunks in the same bounded FIFO cache, ready for a later retry.
+        document.bm25 = BM25(document.chunks)
+    return document.bm25
 
 
 def extract_and_index(text: str) -> tuple[str, list[Chunk], BM25]:
     """Chunk + build the lexical index for `text`, memoized by content hash."""
-    key = embedder.doc_key(text)
-    cached = _docs.get(key)
-    if cached is None:
-        chunks = chunk(text)
-        cached = (chunks, BM25(chunks))
-        _docs[key] = cached
-        while len(_docs) > _DOC_MAX:
-            _docs.pop(next(iter(_docs)))
-    return key, cached[0], cached[1]
+    key, document = _document(text)
+    return key, document.chunks, _lexical_index(document)
 
 
 def _chunk_for_offset(chunks: list[Chunk], pos: int) -> int:
@@ -171,7 +191,9 @@ async def search_stream(client: OMLXClient, text: str, raw_query: str, *,
         yield {"event": "done", "ms": 0}
         return
 
-    key, chunks, bm25 = extract_and_index(text)
+    # Retain this record across yields even if another request evicts its key.
+    key, document = _document(text)
+    chunks = document.chunks
     if not chunks:
         yield {"event": "done", "ms": int((time.perf_counter() - t0) * 1000),
                "empty": True}
@@ -192,7 +214,7 @@ async def search_stream(client: OMLXClient, text: str, raw_query: str, *,
         return
 
     # ---- T1 lexical ------------------------------------------------------
-    lex = bm25.search(pq.clean, limit=30)
+    lex = _lexical_index(document).search(pq.clean, limit=30)
     lex = [h for h in lex if not _excluded(text, chunks, h.chunk_idx, pq.exclude)]
     yield {
         "event": "lexical",
