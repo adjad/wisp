@@ -381,6 +381,18 @@ def verify_evidence_narration(text: str, result: str) -> str:
     # Ignore the host coverage footer itself when this guard is called again.
     narration = text.split('Source coverage (bounded; absence not verified):', 1)[0]
     from service.utterance_shape import mask_quoted
+    # "Tomorrow's only task is ..." also claims exhaustive coverage. A bare
+    # category needs no second noun or inbox suffix to make that claim.
+    for clause in re.split(r'[.!?\n,;]+|\b(?:but|and|however)\b', mask_quoted(narration), flags=re.I):
+        for claim in re.finditer(
+                r"\b(?:only|sole)\s+(?:(?:personal|pending|upcoming|remaining|actionable|known|scheduled)\s+)?"
+                r"(?:tasks?|commitments?|obligations?|deadlines?|requests?)\b", clause, re.I):
+            if re.search(r"\b(?:not|isn['’]t|aren['’]t)(?:\s+be)?\s+(?:(?:the|your|my)\s+)?$",
+                         clause[:claim.start()], re.I):
+                continue
+            if re.match(r"\s+(?:shown|listed|visible|returned)\b", clause[claim.end():], re.I):
+                continue  # A count explicitly limited to the returned view.
+            return render_evidence_text(result)
     # A quoted source can say this; the assistant cannot infer it as current
     # reply status from selected excerpts with no conversation completeness.
     # A hedge qualifies only its own clause. "I can't verify ..., but no
