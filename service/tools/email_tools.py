@@ -1314,7 +1314,8 @@ def _parse_header_records(text: str, *, snapshot: str = "") -> list[dict]:
                       "sender": name or sender, "sender_address": _normalized_address(address),
                       "message_id": "", "native_id": "",
                       "subject": subject, "unread": unread, "_snapshot": snapshot}
-        account_key = (record["account_id"] or record["account"]).casefold()
+        # Native IDs are opaque and exact; only legacy display labels fold case.
+        account_key = record["account_id"] or record["account"].casefold()
         keys = []
         if account_key and record["message_id"]:
             keys.append(("message", account_key, record["message_id"].casefold()))
@@ -1343,7 +1344,7 @@ def _unique_records(rows: list[dict]) -> list[dict]:
     # Current read state wins over an older historical copy, even if that
     # historical header has an anomalous date. Restore date order afterwards.
     for row in sorted(rows, key=lambda r: (r.get("_snapshot") == "recent", r["ts"]), reverse=True):
-        account = (row["account_id"] or row["account"]).casefold()
+        account = row["account_id"] or row["account"].casefold()
         identities = []
         if account and row.get("message_id"):
             identities.append(("message", _account_group(row["account"], row["account_id"]),

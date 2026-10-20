@@ -546,3 +546,42 @@ def test_empty_v2_and_unique_legacy_remain_valid_but_ambiguous_legacy_is_blocked
     assert M._raw_snapshot_candidate(email_raw([mail()]), {'accounts': ['Work'], 'failed_accounts': [], 'complete': True}, STAMP).complete
     for labels in (['Google', 'Google'], ['Google', 'google']):
         assert not M._raw_snapshot_candidate('', {'accounts': labels, 'failed_accounts': [], 'complete': True}, STAMP).complete
+
+
+@pytest.mark.parametrize('message_id,native_id', [
+    ('<shared@synthetic.invalid>', ''), ('', 'mail:shared'),
+    ('<shared@synthetic.invalid>', 'mail:shared'),
+])
+@pytest.mark.parametrize('labels', [('Work', 'Work'), ('Work', 'work')])
+@pytest.mark.parametrize('pipeline', ['parse', 'unique'])
+def test_header_deduplication_preserves_case_distinct_native_account_ids(message_id, native_id, labels, pipeline):
+    def header(account_id, label, flag='U'):
+        return '\x01'.join(('H2', str(STAMP), flag, label, account_id, 'Sender',
+                            'sender@synthetic.invalid', message_id, 'Same subject', native_id))
+    upper = header('Native-A', labels[0])
+    lower = header('native-a', labels[1])
+    if pipeline == 'parse':
+        actual = M._parse_header_records(upper + '\n' + lower)
+    else:
+        # Parse independently so a parser defect cannot hide a second dedupe defect.
+        separate = M._parse_header_records(upper, snapshot='recent') + M._parse_header_records(lower, snapshot='history')
+        actual = M._unique_records(separate)
+    assert {item['account_id'] for item in actual} == {'Native-A', 'native-a'}
+    assert len(M._parse_header_records(upper + '\n' + upper)) == 1
+    same_exact_account = (M._parse_header_records(upper, snapshot='recent') +
+                          M._parse_header_records(header('Native-A', labels[0], flag='R'), snapshot='history'))
+    deduped = M._unique_records(same_exact_account)
+    assert len(deduped) == 1 and deduped[0]['unread'] is True
+
+
+@pytest.mark.parametrize('message_id,native_id', [
+    ('<shared@synthetic.invalid>', ''), ('', 'mail:shared'),
+    ('<shared@synthetic.invalid>', 'mail:shared'),
+])
+def test_header_deduplication_keeps_legacy_label_matching_case_insensitive(message_id, native_id):
+    def header(label):
+        return '\x01'.join(('H2', str(STAMP), 'U', label, '', 'Sender',
+                            'sender@synthetic.invalid', message_id, 'Same subject', native_id))
+    assert len(M._parse_header_records(header('Work') + '\n' + header('work'))) == 1
+    separate = M._parse_header_records(header('Work')) + M._parse_header_records(header('work'))
+    assert len(M._unique_records(separate)) == 1
