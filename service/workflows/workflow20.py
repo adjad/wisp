@@ -33,7 +33,7 @@ def _complete_unread(text: str):
     channel = r"(?:e-?mails?|mail|inbox|messages?|texts?|imessages?|mesages)"
     channels = rf"{channel}(?:\s+(?:and|across)\s+{channel})?"
     prefix = r"(?:(?:please|can you|could you)\s+)?"
-    verb = r"(?:show(?: me)?|check|read|list|summari[sz]e|catch me up on)"
+    verb = r"(?P<verb>show(?: me)?|check|read|list|summari[sz]e|catch me up on)"
     date = r"(?:\s+(?:from\s+)?(?P<day>today|yesterday))?"
     patterns = [
         rf"{prefix}{verb}\s+(?:(?:my|our|all|the|only)\s+)*unread\s+{channels}{date}",
@@ -42,7 +42,9 @@ def _complete_unread(text: str):
     ]
     for pattern in patterns:
         if match := re.fullmatch(pattern, text.strip(" .!?"), re.I):
-            return {"unread": True, **({"day": match["day"].casefold()} if match["day"] else {})}
+            args = {"unread": True, **({"day": match["day"].casefold()} if match["day"] else {})}
+            verb = (match.groupdict().get("verb") or "").casefold()
+            return args, verb in {"summarize", "summarise", "catch me up on"}
     return None
 
 
@@ -307,7 +309,12 @@ def personal_read(text: str) -> PersonalRead | None:
     # Named people, accounts, topics, exclusions, ranges and numeric dates keep
     # their full request and reach model/identity resolution.
     direct = ()
-    if unread and set(sources) <= {"email", "messages"} and (args := _complete_unread(text)):
-        direct = tuple(("view_emails" if name == "email" else "view_messages", dict(args)) for name in sources)
+    if unread and set(sources) <= {"email", "messages"} and (complete := _complete_unread(text)):
+        args, summary = complete
+        # Structured reads return tool output directly, without narration.
+        # Preserve the requested presentation instead of exposing raw bodies
+        # and identifiers when the user asked for a bounded digest.
+        prefix = "summarize" if summary else "view"
+        direct = tuple((f"{prefix}_{'emails' if name == 'email' else 'messages'}", dict(args)) for name in sources)
         bindings.update({tool: dict(args) for tool, _ in direct})
     return PersonalRead(sources, tools, tuple(frozenset(_TOOLS[name]) for name in sources), bindings, direct)
