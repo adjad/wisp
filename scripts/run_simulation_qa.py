@@ -228,6 +228,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Real ASGI modes over disposable pending owners and fully inert capabilities.
+    "tests/test_conversation_authority_contract.py",
     "tests/test_calendar_literal_entrypoint.py",
     # Pure named-time parsing, fictional stores and inert ASGI calls; no live sources.
     "tests/test_calendar_time_contract.py",

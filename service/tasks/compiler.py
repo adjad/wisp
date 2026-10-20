@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import re
 
-from service.utterance_shape import deliberate, quoted_spans
+from service.utterance_shape import deliberate, quoted_spans, explanation_remainder
 from service.reminder_intent import (
     CAPABILITY_INVENTORY_RE, REMINDER_CREATE_RE, has_unsupported_alert_clock,
     reminder_command_parts, reminder_temporal_text, reminder_subject_labelled, _NAMED_DATE,
@@ -392,12 +392,66 @@ def _operation_target(text: str, verbs: str) -> str:
     return _clean_target(match.group("body")) if match else ""
 
 
+def _complete_reminder_delete_clause(text: str, plan: TaskPlan) -> bool:
+    """Pure full-clause authority proof, shared by projected early/late owners."""
+    if plan.intent != 'reminder.delete' or plan.missing_slots:
+        return False
+    target = str(plan.target.value or '')
+    identity = re.escape(target)
+    literal = rf'''(?:{identity}|"{identity}"|“{identity}”|'{identity}'|‘{identity}’|`{identity}`)'''
+    body = (rf'(?:(?:the|my)\s+)?(?:{literal}\s+reminders?|'
+            rf'reminders?\s+(?:called|named|about)\s+{literal})') if target else (
+                r'(?:all|every)(?:\s+(?:of\s+)?(?:my|the))?\s+reminders?')
+    return bool(re.fullmatch(
+        r'\s*(?:please\s+)?(?:delete|remove|clear)\s+' + body + r'[.!?\s]*', text, re.I))
+
+
+def projected_task_capabilities(text: str, plan: TaskPlan) -> dict[str, dict] | None:
+    """Pure complete retained-clause proof shared before every projected owner.
+
+    Unsupported compound intents clarify; they cannot allocate or resolve an
+    early task before the later capability envelope sees the same proof.
+    """
+    if plan.missing_slots:
+        return None
+    if plan.intent == 'reminder.delete' and _complete_reminder_delete_clause(text, plan):
+        return {'clear_reminders': {'scope': plan.parameters['scope'].value,
+                                    'query': str(plan.target.value or '')}}
+    if plan.intent == 'reminder.create':
+        from service.tasks.planner import plan_task, InvalidTaskPlan
+        try:
+            steps = plan_task(TaskPlan.from_dict(plan.to_dict()))
+        except InvalidTaskPlan:
+            return None
+        if len({step.tool for step in steps}) != len(steps):
+            return None  # A single binding cannot represent several authored operands.
+        return {step.tool: dict(step.args) for step in steps}
+    if plan.intent in {'message.send', 'email.send'} and not plan.temporal.absolute_iso:
+        effect = 'send_message' if plan.intent == 'message.send' else 'send_email'
+        recipient = str(plan.recipient.value or '')
+        args = {'to': recipient, 'text' if effect == 'send_message' else 'body': plan.subject.value}
+        if effect == 'send_email':
+            args['subject'] = plan.parameters['email_subject'].value
+        bindings = {effect: args}
+        if not re.fullmatch(r'\+?[\d ()-]+|[^\s@]+@[^\s@]+', recipient):
+            bindings['lookup_contact'] = {'name': recipient}
+        return bindings
+    return None
+
+
 def compile_reminder_delete(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
+    if (remainder := explanation_remainder(text)) is not None:
+        plan = compile_reminder_delete(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     del now
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
-            or not _DELETE_REMINDER.search(text)):
+            or not _DELETE_REMINDER.search(_unquoted(text))):
         return None
     lowered = text.casefold()
     if re.search(r"\b(?:all|every)\b", lowered):
@@ -426,10 +480,17 @@ def compile_reminder_delete(text: str, *, now: datetime | None = None,
 
 def compile_reminder_complete(text: str, *, now: datetime | None = None,
                               turn: int = 0) -> TaskPlan | None:
+    if (remainder := explanation_remainder(text)) is not None:
+        plan = compile_reminder_complete(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     del now
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
-            or not _COMPLETE_REMINDER.search(text)):
+            or not _COMPLETE_REMINDER.search(_unquoted(text))):
         return None
     target = _operation_target(
         text, r"complete|finish|mark|check(?:\s+off)?|cross(?:\s+off)?|tick(?:\s+off)?")
@@ -448,9 +509,16 @@ def compile_reminder_complete(text: str, *, now: datetime | None = None,
 
 def compile_reminder_update(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
+    if (remainder := explanation_remainder(text)) is not None:
+        plan = compile_reminder_update(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
-            or not _UPDATE_REMINDER.search(text)):
+            or not _UPDATE_REMINDER.search(_unquoted(text))):
         return None
     target = _operation_target(text, "update|change|rename|reschedule|move")
     parameters: dict[str, SlotValue] = {}
@@ -585,6 +653,14 @@ def compile_email_send(text: str, *, now: datetime | None = None,
 def compile_task(text: str, *, now: datetime | None = None,
                  turn: int = 0) -> TaskPlan | None:
     """Compile one unambiguous reminder intent in guarded operation order."""
+    remainder = explanation_remainder(text)
+    if remainder is not None:
+        plan = compile_task(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     if reminder_subject_labelled(_reminder_parts(text)):
         # The complete labelled content is literal data. Batch 'for' and
         # trailing all-day preprocessing must not reinterpret its title words.
@@ -634,6 +710,7 @@ def compile_task(text: str, *, now: datetime | None = None,
                    or compile_email_send(text, now=now, turn=turn))
         if literal:
             return literal
+        return None  # A declined authored body cannot re-arm a reminder verb.
     unquoted = _unquoted(text)
     clauses = reminder_request_clauses(text)
     if (len(clauses) == 2 and _RECEIPT_REQUEST.fullmatch(clauses[1])

@@ -15,7 +15,11 @@ import re
 from dataclasses import dataclass, field, replace
 
 from service.authored_message import authored_message_intent
-from service.utterance_shape import is_mention, is_prohibition, mask_quoted
+from service.utterance_shape import (
+    is_mention, is_prohibition, mask_quoted, explanation_remainder,
+    quoted_spans, explanation_terms, is_retrospective_communication_question,
+    retrospective_communication_roles,
+)
 from service.config import (
     models_config,
     role_to_model,
@@ -1828,9 +1832,10 @@ def _said_by_known_person(text: str) -> bool:
     that settles it; an unknown name keeps the web reading.
     """
     m = _PERSON_SAID_RE.search(text)
-    if not m:
+    history = retrospective_communication_roles(text) if m is None else None
+    if m is None and history is None:
         return False
-    who = m.group("who").casefold().strip()
+    who = (m.group("who") if m is not None else history[1]).casefold().strip()
     if who.startswith("my ") or who in {
             'mom','mother','dad','father','sister','brother','wife','husband','partner','boss'}:
         return True
@@ -6539,6 +6544,67 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
 
 
 
+_HISTORY_READ_TOOLS = frozenset({'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'})
+
+
+def _inherited_history_reads(text: str, subset) -> list[str]:
+    """Keep an existing finite person-said read owner, never a generic menu."""
+    names = list(subset or ())
+    return names if names and set(names) <= _HISTORY_READ_TOOLS and _PERSON_SAID_RE.search(text) else []
+
+
+def _history_read_contract(text: str) -> list[str] | None:
+    """Subtract effects from an existing scoped menu for a whole history question.
+
+    No recursive routing, classifier or positive fallback: an unrecognized
+    scoped menu closes all capabilities. Registry categories and aliases do
+    not establish source authority.
+    """
+    roles = retrospective_communication_roles(text)
+    if roles is None or not (roles[0] or _said_by_known_person(text)):
+        return None
+    scoped = _domain_subset(text)
+    existing = scoped.tool_subset if scoped is not None else ()
+    return [name for name in (existing or ()) if name in _HISTORY_READ_TOOLS]
+
+
+def _explanation_clause_contract(text: str) -> tuple[list[str], dict[str, dict]] | None:
+    """Capabilities from independently authored clauses, never explained words.
+
+    Existing pure compilers must consume the remainder. Unknown compositions
+    clarify without capabilities; no source selection or native work occurs.
+    """
+    remainder = explanation_remainder(text)
+    if remainder is None:
+        return None
+    if not remainder:
+        # Generic public vocabulary/concepts keep the existing public owner.
+        # Only fully consumed language about private sources/actions closes
+        # every capability. This is never positive private-source authority.
+        if not (quoted_spans(text) or re.search(r'\b' + _PRIVATE_SOURCE_NAME + r'\b', text, re.I)
+                or has_write_intent(text) or _matched_device_tools(text)):
+            return None if explanation_terms(text) is not None else ([], {})
+        return [], {}
+    from service.workflows.reads import compile_read
+    read = compile_read(remainder)
+    if read is not None and read[0] and not read[1]:
+        return list(dict.fromkeys(name for name, _ in read[0])), dict(read[0])
+    if re.fullmatch(r'\s*(?:(?:please|can you|could you)\s+)?(?:read|show|check|list)\s+'
+                    r'(?:my\s+|the\s+)?inbox[.!?\s]*', remainder, re.I):
+        return ['view_emails'], {'view_emails': {}}
+    from service.tasks.compiler import compile_task, projected_task_capabilities
+    task = compile_task(remainder)
+    if task is not None:
+        bindings = projected_task_capabilities(remainder, task)
+        return (list(bindings), bindings) if bindings is not None else ([], {})
+    from service.workflows.compiler import compile_new, compile_decision, projected_workflow_supported
+    workflow = compile_new(remainder)
+    if workflow is not None and projected_workflow_supported(workflow):
+        decision = compile_decision(workflow)
+        return list(decision.tool_subset or ()), dict(decision.tool_argument_bindings)
+    return [], {}
+
+
 def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
     """Negative-only envelope for discovery, never a positive heuristic menu.
 
@@ -6546,6 +6612,28 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
     """
     from service.tools.registry import REGISTRY
     from service.router.model_led import family_for, registry_specs
+
+    if (history_reads := _history_read_contract(text)) is not None:
+        return frozenset(set(REGISTRY) - set(history_reads)), {}
+    unowned_history = is_retrospective_communication_question(text)
+
+    if (explanation := _explanation_clause_contract(text)) is not None:
+        allowed, bindings = explanation
+        remainder = explanation_remainder(text)
+        policy_forbidden, policy_bindings = routing_guard_contract(remainder) if remainder else (frozenset(), {})
+        allowed = set(allowed) - set(policy_forbidden)
+        bindings = {name: {**args, **policy_bindings.get(name, {})}
+                    for name, args in bindings.items() if name in allowed}
+        return frozenset((set(REGISTRY) - allowed) | set(policy_forbidden)), bindings
+
+    if explanation_remainder(text) == '':
+        # Public explanation menus remain optional and cannot acquire private
+        # reads, effects, opaque transports or newly registered aliases.
+        terms = explanation_terms(text)
+        return frozenset(set(REGISTRY) - {'web_search', 'wikipedia_summary'}), {
+            'web_search': {'query': text},
+            'wikipedia_summary': {'topic': ' and '.join(terms or ())},
+        }
 
     # Authored/quoted text is data, never fresh authority or prohibitions.
     t = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
@@ -6590,6 +6678,20 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
         if (web.opted_out or web.explicit or web.current
                 or re.search(r"\b(?:news|headlines?)\b", t, re.I)):
             forbidden.add("run_shell")
+    if unowned_history:
+        # Shape alone cannot grant private sources. Preserve only a public
+        # source the existing classifier independently proves, never a new
+        # fallback or a model-supplied query from private conversation history.
+        if web.allowed:
+            allowed = {'web_search'}
+        else:
+            # Preserve the established channel-less read owner only after
+            # the existing public classifier declined it. Its exact finite
+            # scoped read menu is evidence; a generic menu is not.
+            scoped = _domain_subset(text)
+            allowed = set(_inherited_history_reads(text, scoped.tool_subset if scoped else ()))
+        return frozenset((set(REGISTRY) - allowed) | forbidden), (
+            {'web_search': {'query': web.query}} if 'web_search' in allowed else {})
     if _calendar_is_excluded(t):
         forbidden.update(_CALENDAR_ROUTE_TOOLS)
     if _reminder_is_excluded(t) or "search_reminders" in forbidden:
@@ -7806,6 +7908,21 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
     aggregate or opaque tool cannot be an escape around the exclusion.
     """
     from service.knowledge_intent import knowledge_envelope
+    unowned_history = (is_retrospective_communication_question(text)
+                       and _history_read_contract(text) is None)
+    if unowned_history:
+        # The inherited public owner already classified and bound its query.
+        # Subtract everything else without classifying twice or constructing
+        # a positive fallback from an unscoped/generic decision.
+        from service.tools.registry import REGISTRY
+        public = (decision.tool_argument_bindings.get('web_search', {}).get('query')
+                  and 'web_search' in (decision.tool_subset or ())
+                  and 'web_search' not in decision.forbidden_tools)
+        allowed = ({'web_search'} if public else
+                   set(_inherited_history_reads(text, decision.tool_subset)))
+        forbidden, bindings = frozenset(set(REGISTRY) - allowed), {}
+    else:
+        forbidden = bindings = None
     # The shared grammar already confines these requests to knowledge tools
     # (or no tools for clarification). Their titles/bodies are literal data,
     # including unquoted source-policy words, just as at the main entry point.
@@ -7833,14 +7950,15 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
         return clarification
     # Detect the complete source-policy envelope without reclassifying ordinary
     # web requests. Keep these triggers aligned with routing_guard_contract.
-    if not (excluded or _calendar_is_excluded(policy_text) or _reminder_is_excluded(policy_text)
+    if not (unowned_history or explanation_remainder(text) == '' or excluded or _calendar_is_excluded(policy_text) or _reminder_is_excluded(policy_text)
             or _notes_todo_destination_is_excluded(policy_text)
             or re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b",
                          policy_text, re.I)):
         return decision
-    forbidden, bindings = routing_guard_contract(text)
+    if not unowned_history:
+        forbidden, bindings = routing_guard_contract(text)
     forbidden = set(forbidden)
-    if (decision.isolated_public_query and not _classify_web_request(text).opted_out
+    if (not unowned_history and decision.isolated_public_query and not _classify_web_request(text).opted_out
             and decision.tool_argument_bindings.get('web_search') == {'query':decision.isolated_public_query}
             and ('web_search', {'query':decision.isolated_public_query}) in decision.direct_calls):
         forbidden.discard('web_search')
@@ -7919,6 +8037,30 @@ def _named_time_claim(text: str) -> RouteDecision | None:
 
 def _assistant_read_claim(text: str) -> RouteDecision | None:
     """Complete personal questions precede generic chat and current-web rules."""
+    if (history_reads := _history_read_contract(text)) is not None:
+        from service.tools.registry import REGISTRY
+        decision = _mk('agent' if history_reads else 'general', tools=bool(history_reads),
+                       reason='whole retrospective communication question; existing reads only',
+                       expect_tool_first=False)
+        decision.tool_subset = history_reads
+        decision.forbidden_tools = frozenset(set(REGISTRY) - set(history_reads))
+        decision.resolved_request = text
+        return decision
+    if (explanation := _explanation_clause_contract(text)) is not None:
+        from service.tools.registry import REGISTRY
+        allowed, bindings = explanation
+        forbidden, bindings = routing_guard_contract(text)
+        allowed = [name for name in allowed if name not in forbidden]
+        decision = _mk('agent' if allowed else 'general', tools=bool(allowed),
+                       reason='complete explanation clauses; only independently authored capability')
+        decision.tool_subset = allowed
+        decision.tool_argument_bindings = bindings
+        decision.forbidden_tools = forbidden
+        decision.resolved_request = text
+        if not allowed and explanation_remainder(text):
+            decision.resolved_request += ('\nClarify the unsupported independent clause; '
+                'the explanation itself needs no source read or action. Nothing has been performed.')
+        return decision
     if (named := _named_time_claim(text)) is not None:
         return named
     decision = _priority_read(text)

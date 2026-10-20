@@ -11,6 +11,7 @@ from service.reminder_intent import (
     is_unsupported_time_answer,
 )
 from service.tasks.compiler import compile_task
+from service.utterance_shape import is_complete_explanation, explanation_remainder, is_retrospective_communication_question
 from service.tasks.models import (
     CHANNEL_FOR_INTENT, OUTBOUND_INTENTS, SlotValue, TaskPlan, TaskTurn,
     TemporalValue,
@@ -573,6 +574,10 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                       owner_only: bool = False,
                       owner_admission: OwnerContinuation | None = None) -> TaskTurn | None:
     """Create or advance one typed task without consulting a model."""
+    if is_complete_explanation(prompt) or is_retrospective_communication_question(prompt):
+        return None
+    if explanation_remainder(prompt) is not None and compile_task(prompt, now=now) is None:
+        return None
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
     if guard := prepare_batch_correction_guard(store, sid, prompt):
