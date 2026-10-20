@@ -73,6 +73,89 @@ def test_rendering_ignores_other_tools_results():
     assert T.render_evidence_text("") is None
 
 
+def test_empty_and_withheld_sources_do_not_establish_absence():
+    data = {'task_window': {'period':'tomorrow'}, 'excluded_sources':['email'], 'sources':{
+        'calendar':{'state':'unknown native current state; native rows withheld',
+                    'withheld_unverified':4, 'upstream_uninspected':3, 'records':[]},
+        'messages':{'state':'available', 'omitted':2, 'records':[]},
+        'notes':{'latest_available':False, 'records':[]}}}
+    text = T.render_evidence_text(json.dumps(data))
+    assert 'Nothing found' not in text
+    assert '4 withheld as unverified' in text and '3 not inspected upstream' in text
+    assert '2 omitted' in text and 'freshness unknown' in text
+    assert 'Mail: excluded; not read.' in text and 'Notes: unavailable or unverified' in text
+
+
+@pytest.mark.parametrize('source,expected', [
+    ({'state':'syncing', 'coverage':{'status':'unavailable','reason':'current_launch_sync_required'}},
+     ('unavailable or unverified', 'current launch sync required')),
+    ({'state':'ready', 'coverage':{'status':'partial','skipped':5,'truncated':7,'reached_row_limit':True}},
+     ('partial cached evidence', '5 skipped', '7 truncated', 'source row limit reached')),
+])
+def test_messages_carrier_limitations_are_not_flattened(source, expected):
+    text = T.render_coverage_text(json.dumps({'task_window':{},'sources':{'messages':source}}))
+    assert all(phrase in text for phrase in expected)
+
+
+@pytest.mark.parametrize('origin', ['none','restored','expired'])
+def test_notes_without_current_receipt_remain_unverified(origin):
+    text = T.render_coverage_text(json.dumps({'task_window':{},'sources':{
+        'notes':{'origin':origin,'latest_available':None,'records':[]}}}))
+    assert 'unavailable or unverified' in text and 'freshness unknown' in text
+
+
+@pytest.mark.parametrize('claim', ['There are no other tasks or commitments for that day.',
+                                 'No other actionable deadlines were found.',
+                                 'This is the only personal request in your email.',
+                                 "That's the only thing in the window.",
+                                 'No messages or other sources show requests.'])
+def test_exhaustive_absence_over_bounded_sources_is_rejected(claim):
+    answer = T.verify_evidence_narration(claim, payload())
+    assert claim not in answer
+    assert 'Source coverage (bounded; absence not verified):' in answer
+    assert '420615' not in answer
+
+
+def test_grounded_narration_is_not_rewritten():
+    text = 'Prioritize the review based on the returned email. Messages freshness is unknown.'
+    assert T.verify_evidence_narration(text, payload()) == text
+
+
+def test_overclaim_gets_one_correction_without_repeating_reads(evidence_tool):
+    class Correction(Client):
+        async def stream_events(self, model, messages, *, tools=None, **kwargs):
+            if self.calls == 0:
+                async for event in super().stream_events(model, messages, tools=tools, **kwargs):
+                    yield event
+            else:
+                self.calls += 1
+                if self.calls > 2:
+                    assert not tools and kwargs.get('tool_choice') == 'none'
+                yield {'kind':'final','message':{'role':'assistant','content':(
+                    "That's the only thing in the window." if self.calls == 2 else
+                    'The returned Calendar records show the meeting. Coverage is incomplete.')}}
+    client = Correction(False)
+    out = run(client)
+    assert client.calls == 3
+    assert 'returned Calendar records' in out and 'only thing' not in out
+    assert 'Source coverage (bounded; absence not verified):' in out
+
+
+def test_successful_narration_keeps_source_coverage(evidence_tool, monkeypatch):
+    class Narrator(Client):
+        async def stream_events(self, model, messages, *, tools=None, **kwargs):
+            if self.calls == 0:
+                async for event in super().stream_events(model, messages, tools=tools, **kwargs):
+                    yield event
+            else:
+                yield {'kind':'final', 'message':{'role':'assistant', 'content':'Prepare for the meeting.'}}
+    out = run(Narrator(False))
+    assert 'Prepare for the meeting.' in out
+    assert 'Source coverage (bounded; absence not verified):' in out
+    assert 'Messages:' in out and 'freshness unknown' in out
+    assert '420615' not in out
+
+
 class Approver:
     async def confirm(self, action):
         return True

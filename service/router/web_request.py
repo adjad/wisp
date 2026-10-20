@@ -707,6 +707,12 @@ def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, boo
     # Quotes mask commands for consent/effect parsing, not source ownership.
     # Searching a quoted private-source phrase still needs the privacy guard.
     t = _normalize(source)
+    # A compound's first-person decision remains private even when another
+    # sentence contains a temporal/public cue. Independent public clauses are
+    # extracted by their typed owner; an unresolved compound cannot export it.
+    if _matches(r"(?:^|[.!?;\n]\s*)(?:what|how|when|where|which)\s+"
+                r"(?:should|can|could|would|will|do|did|am|have)\s+(?:i|we)\b", _unquoted(t)):
+        return Provenance.PRIVATE, False
     # Explicit metalinguistic framing makes the quote a public title/topic,
     # not the referenced person's store. Only that framed span is masked;
     # independent ownership elsewhere in the source remains visible.
@@ -817,6 +823,11 @@ def _independent(text: str, *, fragment: bool = False) -> bool:
 
 def _current(text: str, scopes: tuple[TimeScope, ...]) -> bool:
     t = _root(text)
+    # First-person decisions are local questions. Context in a later sentence
+    # must not become an external subject for this question's temporal cue.
+    # Explicit public lookups retain their own separately composed contract.
+    if _matches(r"^(?:what|how|when|where|which)\s+(?:should|can|could|would|will|do|did|am|have)\s+(?:i|we)\b", t):
+        return False
     if (re.search(DATA_TOOL_QUESTION_PATTERN, t, re.I)
             and not _matches(r"\b(?:news|headlines?|articles?|markets?|economy|earnings)\b", t)):
         # Weather and quote questions have their own data tools; a

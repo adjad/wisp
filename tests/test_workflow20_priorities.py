@@ -108,6 +108,42 @@ def test_old_received_body_is_not_filtered_by_task_window():
     assert next(row for row in reminders if row["source_id"] == "undated")["when_ts"] is None
 
 
+def test_clock_and_source_dates_are_separate_and_absolute(monkeypatch):
+    publish_mail(mail('Submit on October 20, 2026.', ts=STAMP - 86400 * 5))
+    publish_messages(monkeypatch, {'text':'Send it tomorrow.', 'timestamp':'2026-10-11T12:00:00Z'},
+                     {'text':'Tomorrow has no known anchor.', 'timestamp':None})
+    data = dispatch(period='tomorrow')
+    assert data['reference_time']['epoch'] == STAMP
+    assert data['reference_time']['local_date'] == NOW.date().isoformat()
+    assert data['task_window']['start_date'] == (NOW.date() + dt.timedelta(days=1)).isoformat()
+    assert data['sources']['email']['records'][0]['received_at_local_iso'] == T._local_iso(STAMP - 86400 * 5)
+    rows = data['sources']['messages']['records']
+    assert dt.datetime.fromisoformat(rows[0]['original_timestamp']) == dt.datetime.fromisoformat('2026-10-11T12:00:00Z')
+    assert rows[0]['original_timestamp_local_iso'] == T._local_iso('2026-10-11T12:00:00Z')
+    assert rows[1]['original_timestamp_local_iso'] is None
+    assert all(source['coverage_summary']['absence_supported'] is False for source in data['sources'].values())
+
+
+@pytest.mark.parametrize('instant', ['2026-10-19T23:59:59-07:00',
+                                    '2026-10-20T00:00:01-07:00',
+                                    '2026-11-01T01:30:00-07:00',
+                                    '2026-11-01T01:30:00-08:00'])
+def test_reference_clock_is_one_capture_at_midnight_and_dst(monkeypatch, instant):
+    monkeypatch.setenv('TZ', 'America/Los_Angeles')
+    time.tzset()
+    try:
+        epoch = dt.datetime.fromisoformat(instant).timestamp()
+        clock = Mock(return_value=epoch)
+        monkeypatch.setattr(T.time, 'time', clock)
+        data = dispatch(period='tomorrow', include_calendar=False, include_reminders=False,
+                        include_email=False, include_messages=False, include_notes=False)
+        assert data['reference_time']['local_iso'] == instant
+        assert data['task_window']['start_date'] == (dt.date.fromisoformat(instant[:10]) + dt.timedelta(days=1)).isoformat()
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
 def test_same_headers_different_bodies_preserve_cancellation_and_source_ids():
     publish_mail(mail("Please submit the old form tomorrow.", mid="old"),
         mail("The old form is cancelled. Submit the new form next week.", mid="new", ts=STAMP - 1))

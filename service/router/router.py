@@ -2268,6 +2268,10 @@ class RouteDecision:
     # Per-tool execution limits for frozen strict private reads. Generic reads
     # leave this empty and retain their normal iterative behavior.
     strict_read_limits: dict[str, int] = field(default_factory=dict)
+    # Only the fully consumed personal/public clause owner may set this.
+    # Source exclusions can forbid private readers without deleting a separate
+    # public lookup whose complete query is already frozen in bindings.
+    isolated_public_query: str = ""
     # A clarification is legitimate; a calendar read is not reminder creation.
     reminder_action: str = ""  # create | clarify_time
     # NOTE on unscoped tool routes: a rule may leave `tool_subset` None when it
@@ -5527,7 +5531,7 @@ _ABSENCE_QUESTION_RE = re.compile(
     re.I,
 )
 _ROUTING_QUOTED_SPAN_RE = re.compile(
-    r'"(?:\\.|[^"\\])*"|“[^”]*”|'
+    r'"(?:\\.|[^"\\])*"|“[^”]*”|`[^`]*`|'
     r"(?<!\w)'(?:[^']|(?<=\w)'(?=\w))*'(?!\w)|"
     r"(?<!\w)‘(?:[^’]|(?<=\w)’(?=\w))*’(?!\w)")
 _NEGATED_STATE_FILTER_RE = re.compile(
@@ -7358,7 +7362,9 @@ def _priority_read(text: str) -> RouteDecision | None:
             "Promotions, newsletter invitations and list footers are not personal obligations. "
             "Keep outgoing promises and other people's responsibilities distinct. "
             "Cover every selected source or explicitly state its unavailable/omitted coverage; "
-            "an empty Messages result says nothing about Mail. Never invent urgency or claim an action was performed.")
+            "an empty Messages result says nothing about Mail. Use reference_time as today's captured clock, "
+            "not task_window or cache publication time. State absolute source dates; qualify relative deadlines "
+            "without an authenticated original timestamp. Never invent urgency or claim an action was performed.")
         return decision
     decision.resolved_request = (text + "\n\nUse the current source results to suggest priorities. "
         "Use collect_task_evidence once before narration. Its window describes task due dates and Calendar occurrences, "
@@ -7366,7 +7372,9 @@ def _priority_read(text: str) -> RouteDecision | None:
         "Use the requested upcoming window and separately labelled overdue and undated reminders. "
         "Notes are background evidence, not proof of current task status. "
         "Ground each suggestion in an exact source quote/ID, keep outgoing promises, other people's requests and cancellations distinct, "
-        "and qualify ownership/deadlines when unknown. Only real original timestamps can anchor relative dates. "
+        "and qualify ownership/deadlines when unknown. reference_time is today's captured clock; task_window is the target. "
+        "State absolute dates, retaining source local dates rather than relabelling them yesterday/today/tomorrow. "
+        "Only real original timestamps can anchor relative dates; Mail receipt time and Notes edits cannot. "
         "Preserve missing-data/omission limitations; never invent urgency or claim a task was scheduled.")
     return decision
 
@@ -7683,6 +7691,10 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
         return decision
     forbidden, bindings = routing_guard_contract(text)
     forbidden = set(forbidden)
+    if (decision.isolated_public_query and not _classify_web_request(text).opted_out
+            and decision.tool_argument_bindings.get('web_search') == {'query':decision.isolated_public_query}
+            and ('web_search', {'query':decision.isolated_public_query}) in decision.direct_calls):
+        forbidden.discard('web_search')
     source_tools = {"email": "view_emails", "messages": "view_messages",
                     "calendar": "get_upcoming", "notes": "search_notes", "reminders": "search_reminders"}
     for name, supported in (("collect_task_evidence", set(source_tools)),
@@ -7724,6 +7736,8 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
 
 def _assistant_read_claim(text: str) -> RouteDecision | None:
     """Complete personal questions precede generic chat and current-web rules."""
+    if (compound := _priority_context_claim(text)) is not None:
+        return compound
     decision = _priority_read(text)
     source, _ = _private_read_policy(text)
     if decision is None and _tomorrow_agenda_args(source) is not None:
@@ -7734,6 +7748,95 @@ def _assistant_read_claim(text: str) -> RouteDecision | None:
     return _finalize(decision, text, web_request=replace(
         request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
         public_reference=False, inherited=False, clarification=None))
+
+
+def _priority_context_claim(text: str) -> RouteDecision | None:
+    """Keep typed priority, supplied context and public lookup authority apart.
+
+    This consumes only complete, independent read clauses. Unknown operations
+    stay with the ordinary interpreter rather than disappearing into a plan.
+    Query bytes come from a public clause, never from the whole compound or
+    from quoted mail. Finalize each owner before combining its frozen reads.
+    """
+    source = text
+    _, policy_forbidden = _private_read_policy(_routing_quote_mask(text))
+    masked = _routing_quote_mask(source)
+    boundaries = list(re.finditer(
+        r"[.!?;\n]+(?:\s+|$)|\s+(?:and\s+then|and|then|also)\s+"
+        r"(?=(?:search\s+the\s+web|what\s+(?:should|is|are)|look\s+up)\b)|"
+        r",\s*(?=(?:the|my|this)\s+(?:e-?mail|message|note)\s+(?:says|said|reads)\b)", masked, re.I))
+    if not boundaries:
+        return None
+    clauses, start = [], 0
+    for boundary in boundaries:
+        # Retain sentence punctuation in the public query's original span.
+        end = boundary.end() if boundary.group()[0] in '.!?;\n' else boundary.start()
+        if clause := source[start:end].strip():
+            clauses.append(clause)
+        start = boundary.end()
+    if clause := source[start:].strip():
+        clauses.append(clause)
+    if len(clauses) < 2 or not any(_priority_read(clause) for clause in clauses):
+        return None
+    priority = None
+    public = []
+    for clause in clauses:
+        if decision := _priority_read(clause):
+            if priority is not None:
+                return None  # Two different task windows need interpretation.
+            priority = decision
+            continue
+        authority = _normalize_source_apostrophes(_routing_quote_mask(clause))
+        probe = authority.strip(' .!?;\n')
+        if (_PRIVATE_SOURCE_DENIAL_CLAUSE_RE.fullmatch(probe)
+                or _NO_WEB_POLICY_CLAUSE_RE.fullmatch(probe)):
+            continue
+        # Only a fully supplied quotation is context. Any trailing operation
+        # outside it must keep its own interpreter and cannot grant a read.
+        context = _ROUTING_QUOTED_SPAN_RE.sub('QUOTED_CONTEXT', clause)
+        if re.fullmatch(r"\s*(?:the|my|this)\s+(?:e-?mail|message|note)\s+"
+                        r"(?:says|said|reads)\s*[:,]?\s*QUOTED_CONTEXT[.!?;\s]*", context, re.I):
+            continue
+        if re.fullmatch(r"\s*I\s+have\s+(?:an?\s+)?(?:e-?mail|message|note)[.!?;\s]*", authority, re.I):
+            continue
+        if re.fullmatch(r"\s*(?:please\s+)?(?:don['’]?t|do\s+not|never)\s+"
+                        r"(?:use|search|browse|access)\s+(?:the\s+)?(?:web|internet)[.!?;\s]*", authority, re.I):
+            continue
+        request = _classify_web_request(clause)
+        if not request.allowed or request.write_intent or request.delivery or request.continuations:
+            return None
+        public.append(request)
+    if priority is None or len(public) > 1:
+        return None
+    # Apply actual source policies to the personal owner, not quoted context.
+    args = priority.tool_argument_bindings['collect_task_evidence']
+    for name, tool in {'email':'view_emails', 'messages':'view_messages',
+                       'calendar':'get_upcoming', 'reminders':'search_reminders',
+                       'notes':'search_notes'}.items():
+        if tool in policy_forbidden:
+            args[f'include_{name}'] = False
+    private_request = replace(_classify_web_request(source), provenance=_WebProvenance.PRIVATE,
+                              current=False, query=None, public_reference=False,
+                              inherited=False, clarification=None)
+    priority = _finalize(priority, 'Personal priority evidence', web_request=private_request)
+    # The original request remains narration context, never an execution query.
+    priority.resolved_request = text + '\n\n' + priority.resolved_request
+    names = {'collect_task_evidence'}
+    if public and not _classify_web_request(text).opted_out:
+        request = public[0]
+        priority.tool_subset = ['collect_task_evidence', 'web_search']
+        priority.direct_calls.append(('web_search', {'query':request.query}))
+        priority.tool_argument_bindings['web_search'] = {'query':request.query}
+        priority.isolated_public_query = request.query
+        priority.required_tool_groups += (frozenset({'web_search'}),)
+        priority.narration_after |= {'web_search'}
+        priority.strict_read_limits['web_search'] = 1
+        names.add('web_search')
+    from service.tools.registry import REGISTRY
+    priority.forbidden_tools = frozenset(set(REGISTRY) - names) | policy_forbidden
+    if 'web_search' in names:
+        _pin_web_decision(priority)
+    return priority
 
 
 async def route(text: str, *,
@@ -7764,6 +7867,21 @@ def _no_tool_claim(text: str, *, last_user: str | None, recent_users: list[str] 
     it" that opens a conversation. Claimed ahead of _route_impl (whose body is
     pinned) because their nouns otherwise decide the route — "compose a haiku"
     became a channel-ambiguous send with a forced Notes lookup."""
+    quoted = list(_ROUTING_QUOTED_SPAN_RE.finditer(text))
+    shape = _ROUTING_QUOTED_SPAN_RE.sub('QUOTED_PHRASE', text)
+    if len(quoted) == 1 and re.fullmatch(
+            r"\s*(?:(?:please|can\s+you|could\s+you)\s+)?"
+            r"(?:(?:explain|define|describe)\s+(?:the\s+phrase\s+)?QUOTED_PHRASE|"
+            r"what\s+does\s+(?:the\s+phrase\s+)?QUOTED_PHRASE\s+mean)"
+            r"(?:,?\s+please)?[.!?\s]*", shape, re.I):
+        # Full consumption is essential: a real second command must not be
+        # swallowed. Do not finalize on quoted action words and re-arm tools.
+        from service.tools.registry import REGISTRY
+        decision = _mk('general', reason='explanation of quoted words, no action')
+        decision.tool_subset = []
+        decision.forbidden_tools = frozenset(REGISTRY)
+        decision.resolved_request = text + '\nExplain the quoted phrase without performing it.'
+        return decision
     if re.fullmatch(
             r"\s*(?:please\s+)?(?:explain|describe|teach\s+me)\s+"
             r"(?:how\s+to|how\s+I\s+(?:can|should))\s+"
