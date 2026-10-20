@@ -5,6 +5,8 @@ The Ask runner now evaluates the local agent model using real, bounded source re
 ## Live cases in Ask
 
 ```text
+/corpus list
+/corpus batch-1
 /corpus smoke
 /corpus contacts
 /corpus messages
@@ -15,7 +17,9 @@ The Ask runner now evaluates the local agent model using real, bounded source re
 /corpus help
 ```
 
-`smoke` selects one contact, one Messages conversation, and one mail identifier when configured. `all` runs every local case. Contact cases show saved contact details; Messages cases read at most five recent messages for the selected conversation; Mail cases search at most three recent matching emails with strict matching. An incomplete email identifier remains an unverified search term. Missing access, syncing, cache coverage, ambiguity and no matches must be disclosed.
+The live catalog contains **100 requests**: 10 Contacts, 45 Messages, and 45 Mail cases. `/corpus list` displays every configured request and its provenance without inference or source reads. `/corpus batch-1` through `/corpus batch-10` run ten stable IDs at a time; `/corpus LIVE-100` runs one. A full run is sequential and can take substantial time. Stop cancels the current case and remaining queue.
+
+`smoke` selects one contact, one Messages conversation, and one mail identifier when configured. `all` runs all 100 when both contact and mail targets are configured. Missing target categories are omitted without renumbering IDs; a batch may therefore have fewer than ten cases. Contact cases show saved contact details; Messages cases read at most five matching messages for the selected conversation; Mail cases search at most three recent matching emails with strict matching. Today, yesterday, this-week and unread cases freeze those filters on the server before inference; the model cannot broaden them. Other cases use the latest bounded records. These excerpts cannot prove a complete day, week or conversation was examined. An incomplete email identifier remains an unverified search term. Missing access, syncing, cache coverage, ambiguity and no matches must be disclosed.
 
 Each live case bypasses deterministic workflow/router shortcuts and calls the local agent model to select the bounded read and synthesize the answer. Cards count completed inference responses, name the model, and expose expandable source results. A route event alone is not evidence that the model ran. Review answers against their actual source records and checklist; there is no fixed correct answer or automatic quality score for changing personal data.
 
@@ -28,6 +32,14 @@ The profile is `assistant-corpus-profile.json` under Wisp's state folder (`~/.mo
 ```
 
 Live corpus runs do not create backend chat sessions or read saved chat history. Results stay in the current app conversation for inspection until the app closes. Existing source caches and local tool audit records may be refreshed or updated by ordinary source readers. Debug payload capture is disabled. Real source content and the local profile must not be committed or uploaded as test artifacts.
+
+## Live case construction
+
+`service/corpus_cases.json` contains the versioned 100-case template catalog with stable `LIVE-001`–`LIVE-100` IDs, distinct intents, target slots, provenance and fixed date/unread filters. Targets come from the private local profile. Changing target lists can change a case's selected person; its token changes accordingly. The first eight IDs retain the original three-contact/two-mail mapping for that profile shape.
+
+Five request patterns were adapted from nine relevant user requests found in a bounded review of 60 recent saved Wisp chats. They cover checking mail, today's mail, unread mail, catching up on messages, and a text-only message draft. The other 95 requests are newly authored realistic requests. This is **not 100 verbatim historical conversations** or a representative sample of user traffic. No raw private chat transcript or source record is committed. Provenance appears in each case's setup and in `/corpus list`.
+
+Requests test summaries, exact quotations, sender attribution, dates, plans, action extraction, uncertainty, comparisons, visible coverage, and text-only reply drafts. These are single-turn evaluation requests with review rubrics; no assistant completion targets or model weight updates are included.
 
 ## Original synthetic corpus
 

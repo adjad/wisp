@@ -93,6 +93,14 @@ struct ChatStoreChecks {
     }
 
     @MainActor static func run() async {
+        for number in 1...10 {
+            if case .live(let selector)? = try! AssistantTaskCorpusCommand.resolve("/corpus batch-\(number)") {
+                check(selector == "batch-\(number)", "batch command reaches the live backend")
+            } else { check(false, "batch command must be live") }
+        }
+        if case .catalog? = try! AssistantTaskCorpusCommand.resolve("/corpus list") {
+            check(true, "catalog can be browsed without running inference")
+        } else { check(false, "list must resolve to browsing") }
         // Live cases use the isolated server corpus path, and only completed
         // inference receipts may claim model use. Source results stay inspectable.
         do {

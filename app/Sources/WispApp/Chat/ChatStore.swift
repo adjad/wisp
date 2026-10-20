@@ -251,12 +251,20 @@ final class ChatStore: ObservableObject {
                         runCorpus(label: selector, cases: cases, command: text)
                     } catch { appendLocalNotice("Could not load live cases: \(error.localizedDescription)") }
                 }
+            case .catalog:
+                Task {
+                    do {
+                        let cases = try await backend.liveCorpusCases(selector: "all")
+                        let rows = cases.map { "\($0.id) [\($0.category)] \($0.requestPrompt)\n\($0.setup)" }
+                        appendLocalNotice("Live corpus: \(cases.count) configured requests\n\n" + rows.joined(separator: "\n\n") + "\n\nRun /corpus batch-1 through batch-10, or select one case by ID.")
+                    } catch { appendLocalNotice("Could not load the live catalog: \(error.localizedDescription)") }
+                }
             case .profile:
                 Task {
                     do {
                         let cases = try await backend.liveCorpusCases(selector: "all")
-                        let contacts = cases.filter { $0.category == "contacts" }.compactMap(\.target)
-                        let mail = cases.filter { $0.category == "mail" }.compactMap(\.target)
+                        let contacts = cases.filter { $0.category == "contacts" }.compactMap(\.target).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+                        let mail = cases.filter { $0.category == "mail" }.compactMap(\.target).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
                         appendLocalNotice("Local corpus targets\nContacts / Messages: \(contacts.joined(separator: ", "))\nMail identifiers: \(mail.joined(separator: ", "))\nMail identifiers are search terms; an incomplete address is not assumed to be deliverable.")
                     } catch { appendLocalNotice("Could not load the local corpus profile: \(error.localizedDescription)") }
                 }

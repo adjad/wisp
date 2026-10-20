@@ -6,6 +6,7 @@ This dataset supports manual acceptance checks and isolated end-to-end evaluatio
 
 ## Contents
 
+- A separate 100-template live catalog in `service/corpus_cases.json`: 10 Contacts, 45 Messages and 45 Mail requests, with stable IDs, provenance and fixed read filters.
 - 48 synthetic scenarios in `cases.jsonl`.
 - 12 smoke, 24 regression, and 12 challenge cases.
 - Ten categories: calendar, mail, messages, memory, files, research, system, utilities, ambiguity, and safety.
@@ -14,13 +15,15 @@ This dataset supports manual acceptance checks and isolated end-to-end evaluatio
 
 ## Construction and provenance
 
-Prompts and rubrics were newly written from Wisp's documented capabilities and current tool descriptions in the repository. The existing demo prompt list and routing stress suite were used to avoid exact prompt duplication and to identify the need for a shorter acceptance set. No user conversation, mailbox, calendar, message, memory, file, telemetry, or private debug data was used. Names, addresses under `.invalid`, dates, record text, and file paths are synthetic.
+The original 48 synthetic prompts and rubrics were newly written from Wisp's documented capabilities and current tool descriptions in the repository. The existing demo prompt list and routing stress suite were used to avoid exact prompt duplication and to identify the need for a shorter acceptance set. No user conversation, mailbox, calendar, message, memory, file, telemetry, or private debug data was used for those 48 synthetic rows. Names, addresses under `.invalid`, dates, record text, and file paths are synthetic.
+
+The separate live catalog adapts five saved-request patterns and adds 95 newly authored requests. Nine relevant user requests were identified in a bounded review of 60 recent Wisp chats; this is not a representative sample or 100 historical transcripts. Templates replace personal targets with `{target}`; private names, identifiers, transcripts and source results are not committed. Each live case exposes its provenance in its setup.
 
 ## Intended use
 
 The default Ask commands now build a separate runtime corpus from the user's
-private local profile and current sources. Those case prompts, identifiers and
-source records are not part of this committed synthetic dataset. Live cases
+private local profile and current sources. Public prompt templates are committed separately; runtime personal identifiers and
+source records are not part of the repository. Live cases
 require actual local inference and permit only bounded Contacts, Messages and
 Mail reads. Their review cards expose the source results and completed model
 calls; human review determines answer quality. See `README.md` for commands,
@@ -38,6 +41,7 @@ There are no assistant completion targets. Do not use these rows as supervised f
 
 ## Versioning
 
-- Corpus version: `1.0.0`
+- Synthetic corpus version: `1.0.0`
+- Live catalog version: `2`, IDs `LIVE-001` through `LIVE-100`
 - Format: JSON Lines, UTF-8
 - Case IDs: `ATC-001` through `ATC-048`

@@ -24,7 +24,7 @@ def test_profile_stays_local_and_incomplete_addresses_are_preserved(tmp_path):
     path.write_text(json.dumps({"contacts": ["Example Person"], "mail_queries": ["example@gmail"]}))
     profile = corpus.load_profile(path)
     cases = corpus.live_cases(profile)
-    assert len(cases) == 3
+    assert len(cases) == 100
     assert cases[-1]["target"] == "example@gmail"
     assert "example@gmail.com" not in json.dumps(cases)
     assert "Synthetic fixture" not in cases[0]["conversation"][0]["content"]
@@ -32,6 +32,52 @@ def test_profile_stays_local_and_incomplete_addresses_are_preserved(tmp_path):
     assert len(cases[0]["token"]) == 64
     changed = corpus.live_cases({"contacts": ["Someone Else"], "mail_queries": []})
     assert changed[0]["token"] != cases[0]["token"]
+
+
+def test_catalog_has_100_distinct_stable_cases_and_ten_batches():
+    profile = {"contacts": ["Example One", "Example Two", "Example Three"],
+               "mail_queries": ["first@example.invalid", "second@example.invalid"]}
+    cases = corpus.live_cases(profile)
+    assert len(cases) == 100
+    assert [c["id"] for c in cases] == [f"LIVE-{i:03}" for i in range(1, 101)]
+    assert len({c["intent"] for c in cases}) == 100
+    assert len({c["conversation"][0]["content"] for c in cases}) == 100
+    assert {category: sum(c["category"] == category for c in cases)
+            for category in ("contacts", "messages", "mail")} == {"contacts": 10, "messages": 45, "mail": 45}
+    assert sum(c["provenance"] == "adapted_saved_request_pattern" for c in cases) == 5
+    batches = [corpus.selected_cases(f"batch-{n}", profile) for n in range(1, 11)]
+    assert all(len(batch) == 10 for batch in batches)
+    assert [c["id"] for batch in batches for c in batch] == [c["id"] for c in cases]
+    for selector in ("batch-0", "batch-11", "batch-abc"):
+        with pytest.raises(ValueError):
+            corpus.selected_cases(selector, profile)
+    assert len(corpus.selected_cases("smoke", profile)) == 3
+    assert [c["target"] for c in cases[:8]] == [*profile["contacts"], *profile["contacts"], *profile["mail_queries"]]
+    partial = corpus.live_cases({"contacts": [], "mail_queries": profile["mail_queries"]})
+    assert len(partial) == 45
+    assert [c["id"] for c in partial] == [c["id"] for c in cases if c["category"] == "mail"]
+    assert corpus.live_cases({"contacts": [], "mail_queries": []}) == []
+
+
+@pytest.mark.parametrize("category", ["messages", "mail"])
+@pytest.mark.parametrize("filters", [{"day": "today"}, {"day": "yesterday"}, {"period": "this week"},
+                                     {"unread": True}, {"day": "today", "unread": True}])
+def test_catalog_filters_are_frozen_at_dispatch(tools, category, filters):
+    case = {**example(category), "read_filters": filters}
+    _, guard = corpus.scope_guard(case)
+    name = "view_messages" if category == "messages" else "view_emails"
+    args = {}
+    assert guard(name, args) is None
+    assert all(args[k] == value for k, value in filters.items())
+    for key, value in filters.items():
+        assert guard(name, {key: False if value is True else "all time"})
+    assert guard(name, {"account": "other"})
+    if "unread" in filters:
+        assert guard(name, {"unread": 1})
+    if category == "messages":
+        args = {}
+        assert guard("lookup_contact", args) is None
+        assert args == {"name": "Example Person"}
 
 
 @pytest.mark.parametrize("profile", [{"contacts": "everyone"}, {"contacts": ["bad\nname"]}, {"mail_queries": [3]}])

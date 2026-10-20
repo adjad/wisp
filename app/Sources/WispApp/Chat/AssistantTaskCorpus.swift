@@ -49,17 +49,20 @@ enum AssistantTaskCorpusCommand {
     enum Selection {
         case help
         case profile
+        case catalog
         case live(selector: String)
         case cases(label: String, values: [AssistantTaskCorpusCase])
     }
 
     static let helpText = """
     Corpus runner commands:
+    /corpus list        Browse all live requests without running them.
     /corpus smoke       Read one contact, conversation, and mail target.
     /corpus contacts    Examine saved contacts in your local test profile.
     /corpus messages    Examine recent conversations with those contacts.
     /corpus mail        Examine mail matching your local email targets.
-    /corpus all         Run every live case. /corpus LIVE-001 runs one.
+    /corpus batch-1     Run the first ten cases; batches 1 through 10 are available.
+    /corpus all         Run all configured live cases (up to 100). /corpus LIVE-001 runs one.
     /corpus profile     Show the current local test targets.
     /corpus synthetic smoke  Run the original synthetic routing dry run.
 
@@ -73,8 +76,9 @@ enum AssistantTaskCorpusCommand {
 
         let selector = words.dropFirst().first?.lowercased() ?? "smoke"
         if selector == "help" && words.count <= 2 { return .help }
+        if selector == "list" && words.count <= 2 { return .catalog }
         if selector == "profile" && words.count <= 2 { return .profile }
-        if words.count <= 2 && (["smoke", "all", "contacts", "messages", "mail", "live"].contains(selector) || selector.range(of: #"^live-\d{3}$"#, options: .regularExpression) != nil) {
+        if words.count <= 2 && (["smoke", "all", "contacts", "messages", "mail", "live"].contains(selector) || selector.range(of: #"^(live-\d{3}|batch-([1-9]|10))$"#, options: .regularExpression) != nil) {
             return .live(selector: selector)
         }
         let syntheticSelector = selector == "synthetic" ? (words.count == 3 ? words[2].lowercased() : "smoke") : selector
@@ -125,7 +129,7 @@ enum AssistantTaskCorpusCommand {
 
         var errorDescription: String? {
             switch self {
-            case .usage: return "Use /corpus smoke, contacts, messages, mail, all, LIVE-001, profile, or help. For synthetic plans use /corpus synthetic smoke."
+            case .usage: return "Use /corpus smoke, contacts, messages, mail, all, batch-1 through batch-10, LIVE-001, list, profile, or help. For synthetic plans use /corpus synthetic smoke."
             case .resourceUnavailable: return "The bundled assistant task corpus could not be loaded."
             }
         }
