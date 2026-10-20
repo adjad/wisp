@@ -30,6 +30,13 @@ struct TodayTask: Decodable, Identifiable {
          "pinned_start": pin.map { $0.timeIntervalSince1970 as Any } ?? NSNull()]
     }
 }
+/// One email, message or note a grouped review suggestion covers.
+struct TodayBlockMember: Decodable {
+    let title: String
+    let evidence_id: String
+    let sender: String?
+}
+
 struct TodayBlock: Decodable, Identifiable {
     let id: String
     let title: String
@@ -41,6 +48,8 @@ struct TodayBlock: Decodable, Identifiable {
     let pattern_id: String?
     /// For a suggestion: the daily-workspace item it was made from.
     let evidence_id: String?
+    /// For a grouped review suggestion ("Review 3 emails"): the items it covers.
+    let members: [TodayBlockMember]?
 
     var evidenceLabel: String {
         switch kind {

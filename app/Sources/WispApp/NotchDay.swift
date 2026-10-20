@@ -52,6 +52,14 @@ struct DayBlockInput: Equatable {
     var taskID: String? = nil
     var patternID: String? = nil
     var evidenceID: String? = nil
+    /// For a grouped review suggestion ("Review 3 emails"): what it covers.
+    var members: [DayMember] = []
+}
+
+/// One item a grouped review suggestion covers: an email, message or note.
+struct DayMember: Equatable {
+    var title: String
+    var evidenceID: String
 }
 
 /// One "Needs you" item from the daily workspace.
@@ -92,6 +100,8 @@ struct DayItem: Identifiable, Equatable {
     var evidenceID: String? = nil
     /// "behavior_away" for a learned away window.
     var kind: String = ""
+    /// For a grouped review suggestion: the items one Keep plans together.
+    var members: [DayMember] = []
     /// Over before now, on today: drawn dim, inside the lane's two hours back.
     var past = false
 }
@@ -139,7 +149,9 @@ struct DayTimeline: Equatable {
                 detail = block.end == nil ? "From " + clock(block.start) : clock(block.start) + " – " + clock(end)
             case "suggestion":
                 style = .suggested
-                detail = "Suggested · about \(duration(minutes))"
+                detail = block.members.count > 1
+                    ? "Suggested · \(block.members.count) to read · about \(duration(minutes))"
+                    : "Suggested · about \(duration(minutes))"
             case "behavior":
                 style = .usual
                 detail = "Usually busy · not on your calendar"
@@ -153,7 +165,7 @@ struct DayTimeline: Equatable {
             items.append(DayItem(id: "block:" + block.id, title: block.title, detail: detail,
                                  start: block.start, end: end, style: style, blockID: block.id,
                                  taskID: block.taskID, patternID: block.patternID,
-                                 evidenceID: block.evidenceID, kind: block.kind))
+                                 evidenceID: block.evidenceID, kind: block.kind, members: block.members))
         }
 
         // A reminder that already has a suggested block is drawn once, as the suggestion.
@@ -200,10 +212,17 @@ struct DayTimeline: Equatable {
         return DayTimeline(from: from, to: to, items: arrange(items), allDay: allDay.filter { !isJunk($0) })
     }
 
-    /// Side by side where blocks overlap: each cluster of overlapping blocks
-    /// shares out columns, first free column first.
+    /// The shortest time a block is drawn as: the lane never draws one under 22
+    /// points at 44 points an hour, so a 15-minute block covers 30 minutes on
+    /// screen. Overlap is judged by that, or back-to-back short blocks would draw
+    /// on top of one another, their titles and borders running through each other.
+    static let minimumDrawn: Double = 30 * 60
+
+    /// Side by side where blocks overlap as drawn: each cluster of overlapping
+    /// blocks shares out columns, first free column first.
     static func arrange(_ input: [DayItem]) -> [DayItem] {
         var items = input.sorted { ($0.start, $0.end, $0.style, $0.id) < ($1.start, $1.end, $1.style, $1.id) }
+        let drawnEnd = { (item: DayItem) in max(item.end, item.start + minimumDrawn) }
         var cluster: [Int] = []
         var columnEnds: [Double] = []
         var clusterEnd = -Double.infinity
@@ -213,16 +232,17 @@ struct DayTimeline: Equatable {
             columnEnds = []
         }
         for index in items.indices {
+            let end = drawnEnd(items[index])
             if items[index].start >= clusterEnd { close() }
             if let free = columnEnds.firstIndex(where: { $0 <= items[index].start }) {
                 items[index].column = free
-                columnEnds[free] = items[index].end
+                columnEnds[free] = end
             } else {
                 items[index].column = columnEnds.count
-                columnEnds.append(items[index].end)
+                columnEnds.append(end)
             }
             cluster.append(index)
-            clusterEnd = max(clusterEnd, items[index].end)
+            clusterEnd = max(clusterEnd, end)
         }
         close()
         return items

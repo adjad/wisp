@@ -111,6 +111,51 @@ _COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied")
 
 _BULK_BODY = re.compile(r"\bunsubscribe\b|manage (?:your )?(?:email )?preferences|view (?:this email )?in (?:your )?browser",
                         re.I)
+# A machine-sent roll-up of notifications ("Recent Canvas Notifications", "Your
+# weekly digest"): each item it lists arrives, or is visible, on its own, so the
+# roll-up itself is never a review block.
+_DIGEST_SUBJECT = re.compile(r"\bnotifications\s*$|\bdigest\b|^\s*(?:daily|weekly) (?:summary|update)s?\b|"
+                             r"^\s*new (?:threads|posts|discussions) in\b", re.I)
+# Wisp's own stand-in for a sign-in, code or password email's subject, whole or in
+# part ("Sign in to Canvas: Authentication details omitted."): what it withheld is
+# a credential, never something to review, so such mail never becomes a block.
+_WITHHELD_AUTH_SUBJECT = re.compile(r"\bauthentication details omitted\b", re.I)
+# Signing up for a list is not something the list needs from you.
+_SUBSCRIBED_SUBJECT = re.compile(r"^\s*(?:you(?:'|\u2019)?re|you are) (?:now )?subscribed\b|"
+                                 r"^\s*(?:please )?confirm (?:your )?subscription\b|^\s*thanks for subscribing\b", re.I)
+
+
+def not_a_need(row):
+    """Mail that is never a need: not a Day review block, and not handed to the
+    behavior pass as possible work. Mass mail sent under any name
+    (email_tools.is_broadcast, the rule #299's inbox summary uses), newsletter
+    and social mail, a machine-sent notification digest (a forum's "New threads
+    in …" roll-up too), and a sign-in or code email whose subject Wisp withheld.
+    A course or school sender's own action mail ("PA 2 has been posted") and a
+    single forum post ("New in CSE 20 04: Homework error") still count. Only
+    positive signs count: digest_category's "news" is also its fallback for mail
+    it can't place, so it is no evidence on its own."""
+    from service.tools.email_tools import (_MARKETING_SUBJECT, _NEWSLETTER_RE, digest_category,
+                                           is_broadcast, is_machine_sender)
+    from service.tools.imessage_tools import redact_summary_codes
+    identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
+    subject = str(row.get("subject") or "")
+    # The withheld-credential check reads the subject as the Day would show it.
+    shown = redact_summary_codes(subject)
+    return (is_broadcast(row) or bool(_MARKETING_SUBJECT.search(subject)) or bool(_NEWSLETTER_RE.search(identity))
+            or bool(_SUBSCRIBED_SUBJECT.search(subject)) or bool(_WITHHELD_AUTH_SUBJECT.search(shown))
+            or digest_category(row) == "social"
+            or (is_machine_sender(identity) and bool(_DIGEST_SUBJECT.search(subject))))
+
+
+def mass_mail_filter(rows):
+    """not_a_need, extended to every copy of a flagged email: the same message
+    synced through two accounts can lack, in one copy, the Message-ID that marks
+    it as list mail. Copies match by sender address and subject."""
+    copy = lambda r: ((r.get("sender_address") or "").casefold(), str(r.get("subject") or "").strip().casefold())
+    flagged = {copy(r) for r in rows if not_a_need(r)}
+    flagged.discard(("", ""))
+    return lambda r: not_a_need(r) or copy(r) in flagged
 
 
 def important_email_rows(snapshot):
@@ -131,7 +176,11 @@ def important_email_rows(snapshot):
     from service.tools.email_tools import _MARKETING_SUBJECT, _NEWSLETTER_RE, digest_category
     from service.tools.imessage_tools import important_message_reason
     out = []
-    for row in sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]:
+    rows = sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]
+    skip = mass_mail_filter(rows)
+    for row in rows:
+        if skip(row):
+            continue
         body = _QUOTED_HISTORY.split(row.get("body", "") or "")[0]
         category = digest_category(row)
         identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
@@ -302,6 +351,69 @@ def _remaining(start, end, occupied):
     return parts
 
 
+_EVENT_PREFIX = re.compile(r"^\s*(?:review|re|fwd?|invitation|updated invitation|canceled(?: event)?|cancelled|"
+                           r"accepted|declined|tentatively accepted)\s*:\s*", re.I)
+
+
+def _event_key(title):
+    """A title as words only, for matching an email or note to a calendar event:
+    "Invitation: Office Hours @ Sat Oct 24, 2pm" and "Office Hours" match."""
+    text = str(title or "")
+    while (match := _EVENT_PREFIX.match(text)):
+        text = text[match.end():]
+    text = re.split(r"\s@\s", text, maxsplit=1)[0]
+    return " ".join(re.findall(r"\w+", text.casefold()))
+
+
+def _names_event(title, events):
+    """The item is about one of these calendar events: the same words, or one
+    title starting with the other (a subject cut short, an event with a suffix)."""
+    key = _event_key(title)
+    if not key:
+        return False
+    return key in events or any(len(min(key, e, key=len)) >= 12 and (key.startswith(e) or e.startswith(key))
+                                for e in events)
+
+
+# Review blocks are for reading what people sent. Several at once share one
+# block: back-to-back 15-minute blocks are too short to read and stack up.
+_GROUPED_SOURCES = {"email": ("email", "emails"), "messages": ("message", "messages"), "notes": ("note", "notes")}
+
+
+def _group_reviews(suggestions, by_id):
+    """(suggestions, members): undated communication reviews collapsed into one
+    "Review 3 emails" suggestion, its items as `members` for the block."""
+    picked = [s for s in suggestions if s["due_ts"] is None
+              and by_id.get(s["evidence_id"], {}).get("source") in _GROUPED_SOURCES]
+    if len(picked) < 2:
+        return suggestions, {}
+    sources = {by_id[s["evidence_id"]]["source"] for s in picked}
+    noun = _GROUPED_SOURCES[sources.pop()][1] if len(sources) == 1 else "items"
+    names = []
+    for s in picked:
+        name = by_id[s["evidence_id"]].get("sender") or ""
+        if name and name not in names:
+            names.append(name)
+    title = f"Review {len(picked)} {noun}"
+    if names:
+        title += " · " + ", ".join(names[:2]) + (f" +{len(names) - 2}" if len(names) > 2 else "")
+    first = picked[0]
+    group = dict(first, id="daily:reviews:" + key("group", sorted(s["id"] for s in picked)), title=title,
+                 duration_minutes=min(45, max(20, 10 * len(picked))),
+                 priority=min(s["priority"] for s in picked))
+    listed = [dict(title=by_id[s["evidence_id"]]["title"], evidence_id=s["evidence_id"],
+                   sender=by_id[s["evidence_id"]].get("sender") or None) for s in picked]
+    ids = {s["id"] for s in picked}
+    out, placed = [], False
+    for s in suggestions:
+        if s["id"] not in ids:
+            out.append(s)
+        elif not placed:
+            out.append(group)
+            placed = True
+    return out, {group["id"]: listed}
+
+
 def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=(), profile=None):
     """Return explainable attention items and a proposed itinerary, all transient.
 
@@ -410,6 +522,11 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     # title as an active authored task. Cross-source evidence is not otherwise
     # merged by title: two equally named source records can be different tasks.
     authored = {clean(t["title"]).casefold() for t in state["tasks"] if t["status"] == "active"}
+    # An invitation or a note about a calendar event is already on the day as that
+    # event, so it never also becomes a review block.
+    events = {_event_key(c.get("title")) for c in state["commitments"] if c.get("source") == "calendar"}
+    events |= {_event_key(r.get("title")) for r in (evidence.get("calendar", {}).get("records") or [])}
+    events.discard("")
     suggested_titles = set()
     for item in items:
         if item["source"] in {"calendar", "wisp"} or len(suggestions) >= MAX_SUGGESTIONS:
@@ -419,6 +536,8 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
         title = item["title"]
         title_key = title.casefold()
         if title_key in authored or (item["source"] != "reminders" and title_key in suggested_titles):
+            continue
+        if item["source"] != "reminders" and _names_event(title, events):
             continue
         # Undated reminders are useful attention evidence but not automatically
         # selected over obligations due today. Communications get review time,
@@ -431,6 +550,8 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
             timezone=timezone, kind=item.get("task_kind", "task"), duration_minutes=item["suggested_minutes"],
             priority=item["priority"], due_ts=item["due_ts"] if item["due_ts"] and item["due_ts"] > max(now, lo) else None,
             pinned_start=None, status="active", revision=0, evidence_id=item["id"]))
+
+    suggestions, members = _group_reviews(suggestions, {i["id"]: i for i in items})
 
     behavioral, ignored, behavior_detail = [], set(ignored_windows), "No current availability evidence; no behavioral time reserved."
     pinned_ids = {t["id"] for t in state["tasks"] if t.get("pinned_start") is not None}
@@ -508,6 +629,8 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
         elif block.get("task_id") in source_by_task:
             origin = source_by_task[block["task_id"]]
             block.update(task_id=None, kind="suggestion", evidence_id=origin["evidence_id"])
+            if origin["id"] in members:
+                block["members"] = members[origin["id"]]
             block["warnings"].append("Suggested time · duration is an estimate")
     proposal["tasks"] = state["tasks"]
     return dict(day=day, timezone=timezone, generated_at=now, attention=items[:MAX_ITEMS],
@@ -639,8 +762,9 @@ def collect_evidence(store, state, day, timezone, *, now):
             # headers rather than inventing source age from a ready flag.
             selected, header_eligible = fresh_header_rows(mail, now)
             header_count = len(selected)
+            skip = mass_mail_filter(selected[:200])
             for row in selected[:200]:
-                if digest_category(row) not in {"attention", "school"}:
+                if digest_category(row) not in {"attention", "school"} or skip(row):
                     continue
                 subject = redact_summary_codes(row["subject"])
                 records.append(dict(id=header_record_id(row, subject), title=subject, quote=subject,

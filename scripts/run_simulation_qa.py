@@ -110,6 +110,11 @@ PROFILE_TESTS = {
         "tests/test_source_sync_contract.py",
         "tests/test_sync_readiness.py",
         "tests/test_temporal_facts.py",
+        "tests/test_daily_workspace.py",
+        "tests/test_day_review_blocks.py",
+        "tests/test_mail_gists.py",
+        "tests/test_behavior_gmail_history.py",
+        "tests/test_behavior_availability.py",
     },
     "outbound": {
         "tests/test_action_tools_sanitize.py",
@@ -415,6 +420,7 @@ ADDITIONAL_FULL_TESTS = {
     # Daily workspace: pure source fixtures, private disposable SQLite, fixed
     # verified-self identity, fake policy/outbox and ASGI transport; no effects.
     "tests/test_daily_workspace.py",
+    "tests/test_day_review_blocks.py",
     # The user's profile (Getting to know you): JSON in a temp path, pure prompt/brief/
     # ranking helpers and an in-process TestClient; no model, listener or real ~/.moe.
     "tests/test_user_profile.py",
