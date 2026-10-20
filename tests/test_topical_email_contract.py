@@ -309,3 +309,87 @@ def test_unavailable_mail_clears_complete_obligations(monkeypatch):
     prompt = PREFIX + 'rent today?'
     d = asyncio.run(R.route(prompt))
     assert_clean_execution(d, prompt, permitted=False)
+
+
+# Syntax compatibility uses the established one-codepoint apostrophe mapping;
+# the same characters inside literal data must remain authored bytes.
+SMART_PREFIX_CASES = [
+    (apostrophe, tail, args)
+    for apostrophe in '‘’ʼ＇'
+    for tail, args in [
+        ('rent?', {'query': 'rent'}),
+        ('"receipts" today?', {'query': 'receipts', 'day': 'today'}),
+        (f'“Mom{apostrophe}s rent; securty, today!” last week?',
+         {'query': f'Mom{apostrophe}s rent; securty, today!', 'period': 'last week'}),
+    ]
+]
+
+
+def smart_prompt(apostrophe, tail):
+    return f'What{apostrophe}s in my email about ' + tail
+
+
+@pytest.mark.parametrize('apostrophe,tail,args', SMART_PREFIX_CASES)
+def test_smart_apostrophe_syntax_keeps_original_topic_offsets(apostrophe, tail, args):
+    prompt = smart_prompt(apostrophe, tail)
+    assert len(R._normalize_source_apostrophes(prompt)) == len(prompt)
+    contract = R._topical_mail_contract(prompt)
+    assert contract.state == 'complete'
+    assert contract.original == prompt
+    assert contract.arguments() == exact(args)
+    if contract.literal_span:
+        assert prompt[slice(*contract.literal_span)][1:-1] == args['query']
+
+
+@pytest.mark.parametrize('apostrophe,tail,args', SMART_PREFIX_CASES)
+def test_actual_smart_prefix_blocks_alternate_inbox_summary(mail_entrypoint, apostrophe, tail, args):
+    state = mail_entrypoint
+    prompt = smart_prompt(apostrophe, tail)
+    state.result = 'Email synthetic-mail-1\nBody: Verified ' + args['query'] + ' record.'
+    events = state.run(prompt, [{'tool_calls': [_tool_call('summarize_emails', {}, 'unscoped')]},
+                               {'content': 'Verified topic-bound Mail result.'}], transport='asgi')
+    assert state.executed == [('view_emails', exact(args))]
+    assert state.order[0] == ('execute', 'view_emails')
+    client = state.clients[-1]
+    assert len(client.calls) == 2 and client.choices == ['auto', 'auto']
+    assert all(set(t['function']['name'] for t in schemas) <= {'view_emails'}
+               for schemas in client.schemas)
+    assert any(e['type'] == 'tool_result' and 'summarize_emails' in str(e) for e in events)
+    assert any(m.get('role') == 'tool' and m.get('content') == state.result
+               for m in client.calls[0])
+    assert [m['content'] for m in client.calls[0] if m['role'] == 'user'] == [prompt]
+    assert_clean_execution(state.decisions[-1], prompt, complete=True)
+    assert state.decisions[-1].tool_argument_bindings == {'view_emails': exact(args)}
+    assert_safe_events(state, events)
+
+
+@pytest.mark.parametrize('apostrophe', '‘’ʼ＇')
+@pytest.mark.parametrize('quoted', [False, True])
+@pytest.mark.parametrize('attempt', ['view_emails', 'summarize_emails'])
+def test_actual_smart_prefix_and_outside_denial_block_all_mail(mail_entrypoint, apostrophe,
+                                                               quoted, attempt):
+    state = mail_entrypoint
+    topic = f'"Mom{apostrophe}s rent; securty, today!"' if quoted else 'rent'
+    prompt = smart_prompt(apostrophe, topic) + f'; don{apostrophe}t read my email?'
+    events = state.run(prompt, [{'tool_calls': [_tool_call(attempt, {}, 'denied')]},
+                               {'content': 'Email was excluded. Please clarify the permitted source.'}],
+                       transport='asgi')
+    assert state.executed == []
+    assert_clean_execution(state.decisions[-1], prompt, permitted=False)
+    assert state.decisions[-1]._topical_mail_owner.state == 'denied'
+    assert all(not schemas for schemas in state.clients[-1].schemas)
+    assert_safe_events(state, events)
+
+
+@pytest.mark.parametrize('apostrophe', '‘’ʼ＇')
+def test_actual_smart_prefix_keeps_unmodeled_filter_for_interpretation(mail_entrypoint, apostrophe):
+    state = mail_entrypoint
+    prompt = smart_prompt(apostrophe, 'rent excluding receipts?')
+    events = state.run(prompt, [{'content': 'Please clarify the Mail scope.'}], transport='asgi')
+    assert state.executed == []
+    client = state.clients[-1]
+    assert len(client.calls) == 1 and client.choices == ['auto']
+    assert [[t['function']['name'] for t in schemas] for schemas in client.schemas] == [['view_emails']]
+    assert [m['content'] for m in client.calls[0] if m['role'] == 'user'] == [prompt]
+    assert_clean_execution(state.decisions[-1], prompt)
+    assert_safe_events(state, events)

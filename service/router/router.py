@@ -1093,7 +1093,11 @@ def _topical_mail_contract(text: str) -> _TopicalMailContract:
             forbidden.update(_private_read_policy(probe)[1])
         else:
             bodies.append((left, original))
-    matches = [(offset, body, _TOPICAL_EMAIL_LOOKUP_RE.fullmatch(body.strip()))
+    # Established smart apostrophes are syntax-compatible with ASCII. This
+    # mapping replaces one codepoint with one codepoint, so match offsets still
+    # address the original body; only recognition sees the normalized copy.
+    matches = [(offset, body, _TOPICAL_EMAIL_LOOKUP_RE.fullmatch(
+                   _normalize_source_apostrophes(body.strip())))
                for offset, body in bodies]
     matches = [(offset, body, match) for offset, body, match in matches if match]
     if not matches:
@@ -1104,7 +1108,8 @@ def _topical_mail_contract(text: str) -> _TopicalMailContract:
     if len(matches) != 1 or len(bodies) != 1:
         return contract
     offset, body, match = matches[0]
-    tail = (match.group("query") or "").strip()
+    query_start, query_end = match.span("query")
+    tail = body.strip()[query_start:query_end].strip() if query_start >= 0 else ""
     quoted = _ROUTING_QUOTED_SPAN_RE.match(tail)
     receipt = None
     literal_span = None
