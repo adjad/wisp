@@ -424,7 +424,9 @@ def verify_evidence_narration(text: str, result: str) -> str:
             r"[^.!?\n]{0,100}\b(?:show|contain|have|need|require)\b|"
             r"\b(?:nothing|no(?:thing)?\s+else)\s+(?:needs|requires)\s+(?:your\s+|my\s+)?attention\b|"
             r"\b(?:e-?mail|messages?|inbox)\b[^.!?\n]{0,60}\b(?:have|has)\s+no\s+"
-            r"(?:unread\s+)?(?:personal\s+)?(?:items?|messages?|e-?mails?|requests?)\b", narration, re.I):
+            r"(?:unread\s+)?(?:personal\s+)?(?:items?|messages?|e-?mails?|requests?)\b", narration, re.I) or re.search(
+            r"\bno\s+other\s+(?:items?|messages?|e-?mails?)\s+(?:need|needs|require|requires)\s+"
+            r"(?:(?:your|my)\s+)?attention\b", mask_quoted(narration), re.I):
         return render_evidence_text(result)
     return text
 

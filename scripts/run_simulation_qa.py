@@ -497,6 +497,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_model_pilot.py",
     "tests/test_workflow20_pending_actions.py",
     "tests/test_workflow20_priorities.py",
+    "tests/test_honest_assistant_results.py",
+    "tests/test_task_plan_engine.py",
     "tests/test_workflow20_reminder_time.py",
     "tests/test_workflow20_routing.py",
     # Topical Mail ASGI over disposable stores; registered/native execution is inert.
