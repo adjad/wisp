@@ -107,6 +107,12 @@ struct ChatStoreChecks {
             let backend = ScriptedBackend()
             let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"messages","difficulty":"basic","target":"Example Person","token":"t1","conversation":[{"role":"user","content":"Read my recent messages with Example Person."}],"setup":"local","expected":{"tools":["view_messages"],"behavior":["Verify the source quote."]},"risk":"read_only"}"#.utf8)
             backend.liveCases = [try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)]
+            let catalogStore = ChatStore(backend: backend)
+            catalogStore.submit("/corpus list")
+            await settle(200)
+            check(catalogStore.selected?.messages.count == 3, "catalog uses separate header, case and command entries")
+            check(catalogStore.selected?.messages[1].text.contains("LIVE-001") == true, "catalog entry contains its runnable ID")
+            check(backend.liveRuns.isEmpty && backend.runs.isEmpty, "browsing cases never invokes inference")
             backend.script = { _ in [
                 ev("corpus_model", ["model": "agent-local", "started": 1, "completed": 0]),
                 ev("corpus_model", ["model": "agent-local", "started": 1, "completed": 1]),

@@ -256,7 +256,7 @@ final class ChatStore: ObservableObject {
                     do {
                         let cases = try await backend.liveCorpusCases(selector: "all")
                         let rows = cases.map { "\($0.id) [\($0.category)] \($0.requestPrompt)\n\($0.setup)" }
-                        appendLocalNotice("Live corpus: \(cases.count) configured requests\n\n" + rows.joined(separator: "\n\n") + "\n\nRun /corpus batch-1 through batch-10, or select one case by ID.")
+                        appendLocalNotices(["Live corpus: \(cases.count) configured requests"] + rows + ["Run /corpus batch-1 through batch-10, or select one case by ID."])
                     } catch { appendLocalNotice("Could not load the live catalog: \(error.localizedDescription)") }
                 }
             case .profile:
@@ -378,10 +378,14 @@ final class ChatStore: ObservableObject {
     }
 
     private func appendLocalNotice(_ text: String) {
+        appendLocalNotices([text])
+    }
+
+    private func appendLocalNotices(_ texts: [String]) {
         let conversation = selected ?? newChat()
         guard !conversation.busy, !conversation.corpusRunning else { return }
         if conversation.messages.isEmpty { conversation.title = "Corpus runner" }
-        conversation.messages.append(ChatMessage(role: .assistant, text: text))
+        conversation.messages.append(contentsOf: texts.map { ChatMessage(role: .assistant, text: $0) })
     }
 
     /// Stop the reply in flight. The text so far stays; a pending approval is denied.
