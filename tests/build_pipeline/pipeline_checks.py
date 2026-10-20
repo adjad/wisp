@@ -103,6 +103,15 @@ class PipelineTests(unittest.TestCase):
     def test_valid_bundle(self):
         p.validate_structure(self.fixture(), self.meta)
 
+    def test_valid_bundle_with_flat_swiftpm_resource_directory(self):
+        bundle = self.fixture()
+        swift_bundle = bundle / "Contents/Resources/WispApp_WispApp.bundle"
+        current = swift_bundle / "Contents/Resources/assistant-task-corpus-v1.jsonl"
+        alternate = swift_bundle / "Resources/assistant-task-corpus-v1.jsonl"
+        alternate.parent.mkdir()
+        current.replace(alternate)
+        p.validate_structure(bundle, self.meta)
+
     def test_engine_json_requires_all_engine_pieces(self):
         bundle = self.fixture()
         engine = self.engine_fixture(bundle)

@@ -515,10 +515,20 @@ def build_swift(runner: Runner) -> Path:
     if not binary.is_file():
         raise BuildError("Swift did not produce WispApp")
     resources = binary.parent / "WispApp_WispApp.bundle"
-    corpus = resources / "Contents/Resources/assistant-task-corpus-v1.jsonl"
-    if not corpus.is_file():
+    try:
+        swift_bundle_resource(resources, "assistant-task-corpus-v1.jsonl")
+    except BuildError:
         raise BuildError("Swift did not produce the bundled assistant task corpus")
     return binary
+
+
+def swift_bundle_resource(bundle: Path, name: str) -> Path:
+    if not bundle.is_dir():
+        raise BuildError(f"Missing SwiftPM resource bundle: {bundle}")
+    matches = list(bundle.rglob(name))
+    if len(matches) != 1 or matches[0].is_symlink() or not matches[0].is_file():
+        raise BuildError(f"Expected exactly one regular {name} inside {bundle}")
+    return matches[0]
 
 
 def plist(meta: dict) -> dict:
@@ -631,7 +641,6 @@ def is_macho(path):
 def validate_structure(bundle: Path, meta: dict):
     bundle = bundle.resolve()
     required = ["Contents/MacOS/Wisp", "Contents/Info.plist", "Contents/Resources/AppIcon.icns",
-                "Contents/Resources/WispApp_WispApp.bundle/Contents/Resources/assistant-task-corpus-v1.jsonl",
                 "Contents/Resources/build-info.json", "Contents/Resources/backend/.venv/bin/python",
                 "Contents/Resources/backend/service/main.py", "Contents/Resources/backend/service/config/models.yaml",
                 "Contents/Resources/backend/service/config/policy.yaml",
@@ -642,7 +651,8 @@ def validate_structure(bundle: Path, meta: dict):
     for name in required:
         if not (bundle / name).is_file():
             raise BuildError(f"Missing bundle resource: {name}")
-    bundled_corpus = bundle / "Contents/Resources/WispApp_WispApp.bundle/Contents/Resources/assistant-task-corpus-v1.jsonl"
+    resource_bundle = bundle / "Contents/Resources/WispApp_WispApp.bundle"
+    bundled_corpus = swift_bundle_resource(resource_bundle, "assistant-task-corpus-v1.jsonl")
     source_corpus = ROOT / "training/assistant-task-corpus-v1/cases.jsonl"
     if bundled_corpus.read_bytes() != source_corpus.read_bytes():
         raise BuildError("Packaged assistant task corpus differs from the repository corpus")
