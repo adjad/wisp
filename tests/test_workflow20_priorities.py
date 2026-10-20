@@ -305,7 +305,7 @@ def test_body_scan_status_is_safe_coherent_and_does_not_admit_failed_cache():
     failed = M.raw_email_scan_status()
     assert failed['generation'] == 2 and failed['received_at'] == STAMP
     assert not failed['eligible'] and not failed['complete']
-    assert failed['failed_accounts'] == 1
+    assert failed['failure_entries'] == 1
     assert failed['failures'] == [{'stage': 'body_scan', 'code': -1712}, {'stage': 'body_scan', 'code': 0}]
     assert M.raw_email_snapshot() is None
     assert 'PRIVATE' not in json.dumps(failed) and 'synthetic' not in json.dumps(failed)

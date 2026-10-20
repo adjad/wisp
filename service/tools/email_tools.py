@@ -956,7 +956,7 @@ def raw_email_scan_status() -> dict:
                 'received_at': snapshot.synced_at if snapshot else None,
                 'complete': snapshot.complete if snapshot else False,
                 'successful_accounts': len(snapshot.accounts) if snapshot else 0,
-                'failed_accounts': len(snapshot.failed_accounts) if snapshot else 0,
+                'failure_entries': len(snapshot.failed_accounts) if snapshot else 0,
                 'failures': [{'stage': stage, 'code': code}
                              for stage, code in snapshot.scan_failures] if snapshot else []}
 
