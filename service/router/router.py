@@ -15,7 +15,11 @@ import re
 from dataclasses import dataclass, field, replace
 
 from service.authored_message import authored_message_intent
-from service.utterance_shape import is_mention, is_prohibition, mask_quoted
+from service.utterance_shape import (
+    is_mention, is_prohibition, mask_quoted, explanation_remainder,
+    quoted_spans, explanation_terms, is_retrospective_communication_question,
+    retrospective_communication_roles,
+)
 from service.config import (
     models_config,
     role_to_model,
@@ -911,9 +915,9 @@ _PRIVATE_QUERY_PREFIX = (
 _TOPICAL_EMAIL_LOOKUP_RE = re.compile(
     r"^" + _PRIVATE_QUERY_PREFIX
     + r"(?:what(?:'s|\s+is)\s+(?:on|in)|is\s+there\s+anything\s+(?:on|in))\s+"
-    r"(?:my\s+|the\s+)?(?:e-?mails?|inbox)\s+(?:regarding|about|for)\s+"
-    r"(?P<query>.+?)[\s.!?]*$",
-    re.I,
+    r"(?:my\s+|the\s+)?(?:e-?mails?|inbox)\s+(?:regarding|about|for)"
+    r"(?:\s+(?P<query>.*?))?[\s.!?]*$",
+    re.I | re.S,
 )
 _WEEKLY_PERSONAL_TOPIC_RES = (
     re.compile(
@@ -937,11 +941,12 @@ _WEEKLY_PERSONAL_TOPIC_RES = (
         r"(?:that\s+)?i\s+should\s+know\s+about\s+(?P<topic>[^?;]{1,80}?)[\s.!?]*$",
         re.I),
 )
-_TOMORROW_WORD = r"(?:tomorrow|tommorow|tommorrow|tomorow|tmrw|tmrow)"
+_TOMORROW_WORD = r"(?:tomorrow|tommorow|tommorrow|tomorow|tommrow|tmrw|tmrow)"
 _TOMORROW_AGENDA_RE = re.compile(
     r"^" + _PRIVATE_QUERY_PREFIX
     + r"(?:what(?:'s|\s+is)\s+(?:up|on)|what\s+do\s+i\s+have|"
-    r"what\s+am\s+i\s+doing|what\s+are\s+my\s+plans|any\s+plans)\s+"
+    r"what\s+am\s+i\s+doing|what\s+are\s+my\s+plans|any\s+plans|"
+    r"what(?:'s|\s+is)\s+my\s+(?:plan|agenda|schedule)|show\s+me\s+my\s+plan)\s+"
     r"(?:for\s+)?" + _TOMORROW_WORD + r"[\s.!?]*$",
     re.I,
 )
@@ -960,10 +965,10 @@ _NO_WEB_POLICY_TEXT = (
 )
 _NO_WEB_POLICY_CLAUSE_RE = re.compile(
     r"^(?:please\s+)?" + _NO_WEB_POLICY_TEXT + r"$", re.I)
-_PRIVATE_SOURCE_NAME = r"(?:notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda)"
+_PRIVATE_SOURCE_NAME = r"(?:notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda|reminders?)"
 _PRIVATE_SOURCE_ACTION = r"(?:check(?:ing)?|search(?:ing)?|read(?:ing)?|use|using)"
 _PRIVATE_SOURCE_DENIAL_TEXT = (
-    r"(?:please\s+)?(?:do\s+not|don't|never|avoid)\s+"
+    r"(?:please\s+)?(?:do\s+not|don't|never|avoid|without)\s+"
     + _PRIVATE_SOURCE_ACTION + r"\s+(?:anything\s+(?:from|in)\s+)?(?:my\s+)?" + _PRIVATE_SOURCE_NAME
     + r"(?:\s+(?:or|and)\s+(?:my\s+)?" + _PRIVATE_SOURCE_NAME + r")*"
 )
@@ -991,6 +996,10 @@ def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
         r"^(" + _PRIVATE_SOURCE_DENIAL_TEXT + r")\s+(?:and|but)\s+"
         r"(?=(?:is|what|for|can|could|please)\b)",
         r"\1; ", normalized, flags=re.I)
+    normalized = re.sub(
+        r"\s+(?=without\s+" + _PRIVATE_SOURCE_ACTION + r"\s+"
+        r"(?:my\s+)?" + _PRIVATE_SOURCE_NAME + r"[.!?\s]*$)",
+        "; ", normalized, flags=re.I)
     clauses = [part.strip() for part in re.split(r"\s*[;,]\s*|(?<=[.!?])\s+", normalized)
                if part.strip()]
     body: list[str] = []
@@ -1002,7 +1011,7 @@ def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
             continue
         if _PRIVATE_SOURCE_DENIAL_CLAUSE_RE.fullmatch(probe):
             targets = re.findall(
-                r"\b(notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda)\b",
+                r"\b(notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda|reminders?)\b",
                 probe, re.I)
             if any(target.lower().startswith("note") for target in targets):
                 forbidden.add("search_notes")
@@ -1016,6 +1025,8 @@ def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
             if any(re.fullmatch(r"calendar|schedule|agenda", target, re.I)
                    for target in targets):
                 forbidden.add("get_upcoming")
+            if any(re.fullmatch(r"reminders?", target, re.I) for target in targets):
+                forbidden.add("search_reminders")
             continue
         body.append(probe)
     return " ".join(body).strip(), frozenset(forbidden)
@@ -1028,12 +1039,119 @@ def _canonical_private_topic(text: str) -> str:
     return re.sub(r"\s+", " ", topic).strip()
 
 
+@dataclass(frozen=True)
+class _TopicalMailContract:
+    """A topical envelope is owned even when its scope needs interpretation."""
+    state: str  # unrecognized | incomplete | complete | denied
+    original: str
+    query: str = ""
+    literal_span: tuple[int, int] | None = None
+    receipt_key: str = ""
+    receipt_value: str = ""
+    forbidden: frozenset[str] = frozenset()
+
+    def arguments(self) -> dict:
+        args = {"query": self.query, "count": 10, "strict_match": True}
+        if self.receipt_key:
+            args[self.receipt_key] = self.receipt_value
+        return args
+
+
+_TOPICAL_RECEIPT = r"(?:today|yesterday|(?:this|last)\s+(?:week|month))"
+_TOPICAL_RECEIPT_RE = re.compile(
+    r"(?:\s*(?:for|from|during|on)\s+)?(?P<receipt>" + _TOPICAL_RECEIPT + r")", re.I)
+
+
+def _topical_mail_contract(text: str) -> _TopicalMailContract:
+    # Discover clause boundaries on a length-preserving mask, then extract
+    # authored bytes from the original. Neither source-policy normalization nor
+    # typo correction is permitted inside the literal topic.
+    masked = _normalize_source_apostrophes(_routing_quote_mask(text))
+    boundaries = [(m.start(), m.end()) for m in re.finditer(r"[;,]|(?<=[.!?])\s+", masked)]
+    boundaries += [(m.start(), m.end()) for m in re.finditer(
+        r"\s+(?:and|but)\s+(?=" + _PRIVATE_POLICY_START + r")", masked, re.I)]
+    leading = re.match(r"^(" + _PRIVATE_SOURCE_DENIAL_TEXT + r")\s+(?:and|but)\s+"
+                       r"(?=(?:is|what|for|can|could|please)\b)", masked, re.I)
+    if leading:
+        boundaries.append((leading.end(1), leading.end()))
+    boundaries += [(m.start(), m.end()) for m in re.finditer(
+        r"\s+(?=without\s+" + _PRIVATE_SOURCE_ACTION + r"\s+(?:my\s+)?"
+        + _PRIVATE_SOURCE_NAME + r"[.!?\s]*$)", masked, re.I)]
+    bodies = []
+    forbidden = set()
+    start = 0
+    pieces = []
+    for left, right in sorted(set(boundaries)):
+        if left < start:
+            continue
+        pieces.append((start, left))
+        start = right
+    pieces.append((start, len(text)))
+    for left, right in pieces:
+        original = text[left:right]
+        probe = re.sub(r"^(?:and|but)\s+", "", masked[left:right].strip(" .!?\t\r\n"), flags=re.I)
+        if not original.strip():
+            continue
+        if (_NO_WEB_POLICY_CLAUSE_RE.fullmatch(probe)
+                or _PRIVATE_SOURCE_DENIAL_CLAUSE_RE.fullmatch(probe)):
+            forbidden.update(_private_read_policy(probe)[1])
+        else:
+            bodies.append((left, original))
+    # Established smart apostrophes are syntax-compatible with ASCII. This
+    # mapping replaces one codepoint with one codepoint, so match offsets still
+    # address the original body; only recognition sees the normalized copy.
+    matches = [(offset, body, _TOPICAL_EMAIL_LOOKUP_RE.fullmatch(
+                   _normalize_source_apostrophes(body.strip())))
+               for offset, body in bodies]
+    matches = [(offset, body, match) for offset, body, match in matches if match]
+    if not matches:
+        return _TopicalMailContract("unrecognized", text)
+    contract = _TopicalMailContract("incomplete", text, forbidden=frozenset(forbidden))
+    if "view_emails" in forbidden:
+        return replace(contract, state="denied")
+    if len(matches) != 1 or len(bodies) != 1:
+        return contract
+    offset, body, match = matches[0]
+    query_start, query_end = match.span("query")
+    tail = body.strip()[query_start:query_end].strip() if query_start >= 0 else ""
+    quoted = _ROUTING_QUOTED_SPAN_RE.match(tail)
+    receipt = None
+    literal_span = None
+    if quoted:
+        query = quoted.group()[1:-1]
+        outside = tail[quoted.end():]
+        residue = outside.strip()
+        if residue:
+            if not outside[0].isspace():
+                return contract
+            receipt = _TOPICAL_RECEIPT_RE.fullmatch(residue)
+            if receipt is None:
+                return contract
+        if not query.strip():
+            return contract
+        # Offsets refer to the original request, including outer delimiters.
+        left = offset + len(body) - len(body.lstrip()) + match.start("query")
+        literal_span = (left, left + quoted.end())
+    else:
+        # Normalize the existing unquoted "anything <topic>" form before
+        # separating a date; "anything today" still names the topic today.
+        plain = _canonical_private_topic(tail)
+        date = re.fullmatch(r"(?P<topic>.+?)\s+(?:(?:for|from|during|on)\s+)?"
+                            r"(?P<receipt>" + _TOPICAL_RECEIPT + r")", plain, re.I)
+        query = date.group("topic") if date else plain
+        # A structural lexical token, not a vocabulary of favored topics.
+        if not re.fullmatch(r"[^\W_]+(?:[-'’][^\W_]+)*", query):
+            return contract
+        receipt = date
+    value = re.sub(r"\s+", " ", receipt.group("receipt").lower()) if receipt else ""
+    key = ("day" if value in {"today", "yesterday"} else "period") if value else ""
+    return replace(contract, state="complete", query=query, literal_span=literal_span,
+                   receipt_key=key, receipt_value=value)
+
+
 def _topical_email_args(text: str) -> dict | None:
-    match = _TOPICAL_EMAIL_LOOKUP_RE.fullmatch(text.strip())
-    if not match:
-        return None
-    query = _canonical_private_topic(match.group("query"))
-    return {"query": query, "count": 10, "strict_match": True} if query else None
+    contract = _topical_mail_contract(text)
+    return contract.arguments() if contract.state == "complete" else None
 
 
 def _weekly_personal_topic_args(text: str) -> tuple[str, str] | None:
@@ -1052,7 +1170,7 @@ def _weekly_personal_topic_args(text: str) -> tuple[str, str] | None:
 def _tomorrow_agenda_args(text: str) -> dict | None:
     if not _TOMORROW_AGENDA_RE.fullmatch(text.strip()):
         return None
-    return {"period": "tomorrow", "calendar_only": True}
+    return {"period": "tomorrow", "calendar_only": not bool(re.search(r"\bmy\s+plan\b", text, re.I))}
 
 
 def _tomorrow_target_day() -> str:
@@ -1714,9 +1832,10 @@ def _said_by_known_person(text: str) -> bool:
     that settles it; an unknown name keeps the web reading.
     """
     m = _PERSON_SAID_RE.search(text)
-    if not m:
+    history = retrospective_communication_roles(text) if m is None else None
+    if m is None and history is None:
         return False
-    who = m.group("who").casefold().strip()
+    who = (m.group("who") if m is not None else history[1]).casefold().strip()
     if who.startswith("my ") or who in {
             'mom','mother','dad','father','sister','brother','wife','husband','partner','boss'}:
         return True
@@ -2261,8 +2380,16 @@ class RouteDecision:
     # Per-tool execution limits for frozen strict private reads. Generic reads
     # leave this empty and retain their normal iterative behavior.
     strict_read_limits: dict[str, int] = field(default_factory=dict)
+    # Only the fully consumed personal/public clause owner may set this.
+    # Source exclusions can forbid private readers without deleting a separate
+    # public lookup whose complete query is already frozen in bindings.
+    isolated_public_query: str = ""
     # A clarification is legitimate; a calendar read is not reminder creation.
     reminder_action: str = ""  # create | clarify_time
+    # Private ownership metadata, deliberately absent from as_dict(): the
+    # topical parser owns positive obligations, while finalization still checks
+    # routability and the outer source guard retains negative authority.
+    _topical_mail_owner: _TopicalMailContract | None = field(default=None, repr=False)
     # NOTE on unscoped tool routes: a rule may leave `tool_subset` None when it
     # knows a tool is wanted but not which domain. `route()` then fills it by
     # semantic retrieval — see the block after its `rule_route` call. That is a
@@ -2465,8 +2592,40 @@ def _verified_private_read(calls: list[tuple[str, dict]], reason: str,
     return decision
 
 
+def _topical_mail_decision(contract: _TopicalMailContract) -> RouteDecision:
+    """Own every positive execution field; literal data never enters inference
+    of obligations in the generic finalizer. The outer negative guard still
+    runs against the original request and can only restrict this capability.
+    """
+    from service.tools.registry import REGISTRY, is_tool_routable
+    permitted = ({"view_emails"} if contract.state != "denied"
+                 and "view_emails" not in contract.forbidden
+                 and is_tool_routable("view_emails") else set())
+    if contract.state == "complete" and permitted:
+        decision = _verified_private_read(
+            [("view_emails", contract.arguments())],
+            "complete topical Mail contract", contract.original)
+    else:
+        decision = _mk_scoped(sorted(permitted), "topical Mail scope needs clarification",
+                              expect=False, multi=True)
+        if not permitted:
+            decision.needs_tools = False
+            decision.reason = "topical Mail source excluded or unavailable; clarify without a read"
+        decision.verified_results_only = True
+    # Constructors create fresh decisions with no unrelated bindings, flags,
+    # groups or conditions. Cap registered calls as well as offered schemas.
+    decision.tool_subset = sorted(permitted)
+    decision.forbidden_tools = frozenset(set(REGISTRY) - permitted) | contract.forbidden
+    decision.resolved_request = contract.original
+    decision._topical_mail_owner = contract
+    return decision
+
+
 def _strict_private_read_decision(text: str, *, last_user: str | None = None,
                                   recent_users: list[str] | None = None) -> RouteDecision | None:
+    topical = _topical_mail_contract(text)
+    if topical.state != "unrecognized":
+        return _topical_mail_decision(topical)
     source, policy_forbidden = _private_read_policy(text)
     from service.router.web_request import tomorrow_study_request
     if study := tomorrow_study_request(source):
@@ -2498,20 +2657,6 @@ def _strict_private_read_decision(text: str, *, last_user: str | None = None,
             "Explain any missing-source or assumed-duration limitation. If offering "
             "a preparation reminder, include the candidate's absolute date; never claim creation.",
             extra_forbidden=forbidden | policy_forbidden,
-        )
-    if email_args := _topical_email_args(source):
-        if "view_emails" in policy_forbidden:
-            decision = _mk("fast", reason="strict email source explicitly denied")
-            decision.tool_subset = []
-            decision.forbidden_tools = _UNRELATED_PRIVATE_READ_TOOLS | policy_forbidden
-            decision.verified_results_only = True
-            decision.resolved_request = "Email was excluded, so no private source was searched."
-            return decision
-        return _verified_private_read(
-            [("view_emails", email_args)],
-            "topical inbox request -> strict bounded email search",
-            f"Search email for the named topic {email_args['query']!r} and summarize only matches.",
-            extra_forbidden=policy_forbidden,
         )
     if weekly := _weekly_personal_topic_args(source):
         topic, period = weekly
@@ -5520,7 +5665,7 @@ _ABSENCE_QUESTION_RE = re.compile(
     re.I,
 )
 _ROUTING_QUOTED_SPAN_RE = re.compile(
-    r'"(?:\\.|[^"\\])*"|“[^”]*”|'
+    r'"(?:\\.|[^"\\])*"|“[^”]*”|`[^`]*`|'
     r"(?<!\w)'(?:[^']|(?<=\w)'(?=\w))*'(?!\w)|"
     r"(?<!\w)‘(?:[^’]|(?<=\w)’(?=\w))*’(?!\w)")
 _NEGATED_STATE_FILTER_RE = re.compile(
@@ -6399,6 +6544,67 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
 
 
 
+_HISTORY_READ_TOOLS = frozenset({'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'})
+
+
+def _inherited_history_reads(text: str, subset) -> list[str]:
+    """Keep an existing finite person-said read owner, never a generic menu."""
+    names = list(subset or ())
+    return names if names and set(names) <= _HISTORY_READ_TOOLS and _PERSON_SAID_RE.search(text) else []
+
+
+def _history_read_contract(text: str) -> list[str] | None:
+    """Subtract effects from an existing scoped menu for a whole history question.
+
+    No recursive routing, classifier or positive fallback: an unrecognized
+    scoped menu closes all capabilities. Registry categories and aliases do
+    not establish source authority.
+    """
+    roles = retrospective_communication_roles(text)
+    if roles is None or not (roles[0] or _said_by_known_person(text)):
+        return None
+    scoped = _domain_subset(text)
+    existing = scoped.tool_subset if scoped is not None else ()
+    return [name for name in (existing or ()) if name in _HISTORY_READ_TOOLS]
+
+
+def _explanation_clause_contract(text: str) -> tuple[list[str], dict[str, dict]] | None:
+    """Capabilities from independently authored clauses, never explained words.
+
+    Existing pure compilers must consume the remainder. Unknown compositions
+    clarify without capabilities; no source selection or native work occurs.
+    """
+    remainder = explanation_remainder(text)
+    if remainder is None:
+        return None
+    if not remainder:
+        # Generic public vocabulary/concepts keep the existing public owner.
+        # Only fully consumed language about private sources/actions closes
+        # every capability. This is never positive private-source authority.
+        if not (quoted_spans(text) or re.search(r'\b' + _PRIVATE_SOURCE_NAME + r'\b', text, re.I)
+                or has_write_intent(text) or _matched_device_tools(text)):
+            return None if explanation_terms(text) is not None else ([], {})
+        return [], {}
+    from service.workflows.reads import compile_read
+    read = compile_read(remainder)
+    if read is not None and read[0] and not read[1]:
+        return list(dict.fromkeys(name for name, _ in read[0])), dict(read[0])
+    if re.fullmatch(r'\s*(?:(?:please|can you|could you)\s+)?(?:read|show|check|list)\s+'
+                    r'(?:my\s+|the\s+)?inbox[.!?\s]*', remainder, re.I):
+        return ['view_emails'], {'view_emails': {}}
+    from service.tasks.compiler import compile_task, projected_task_capabilities
+    task = compile_task(remainder)
+    if task is not None:
+        bindings = projected_task_capabilities(remainder, task)
+        return (list(bindings), bindings) if bindings is not None else ([], {})
+    from service.workflows.compiler import compile_new, compile_decision, projected_workflow_supported
+    workflow = compile_new(remainder)
+    if workflow is not None and projected_workflow_supported(workflow):
+        decision = compile_decision(workflow)
+        return list(decision.tool_subset or ()), dict(decision.tool_argument_bindings)
+    return [], {}
+
+
 def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
     """Negative-only envelope for discovery, never a positive heuristic menu.
 
@@ -6407,11 +6613,48 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
     from service.tools.registry import REGISTRY
     from service.router.model_led import family_for, registry_specs
 
+    if (history_reads := _history_read_contract(text)) is not None:
+        return frozenset(set(REGISTRY) - set(history_reads)), {}
+    unowned_history = is_retrospective_communication_question(text)
+
+    if (explanation := _explanation_clause_contract(text)) is not None:
+        allowed, bindings = explanation
+        remainder = explanation_remainder(text)
+        policy_forbidden, policy_bindings = routing_guard_contract(remainder) if remainder else (frozenset(), {})
+        allowed = set(allowed) - set(policy_forbidden)
+        bindings = {name: {**args, **policy_bindings.get(name, {})}
+                    for name, args in bindings.items() if name in allowed}
+        return frozenset((set(REGISTRY) - allowed) | set(policy_forbidden)), bindings
+
+    if explanation_remainder(text) == '':
+        # Public explanation menus remain optional and cannot acquire private
+        # reads, effects, opaque transports or newly registered aliases.
+        terms = explanation_terms(text)
+        return frozenset(set(REGISTRY) - {'web_search', 'wikipedia_summary'}), {
+            'web_search': {'query': text},
+            'wikipedia_summary': {'topic': ' and '.join(terms or ())},
+        }
+
     # Authored/quoted text is data, never fresh authority or prohibitions.
     t = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
     _, policy_forbidden = _private_read_policy(t)
     forbidden = set(policy_forbidden)
     bindings: dict[str, dict] = {}
+    from service.calendar_time_intent import named_calendar_time
+    named = named_calendar_time(text)
+    if named is not None:
+        allowed = set()
+        if named.supported and named.personal and not named.no_calendar:
+            allowed.add('get_upcoming')
+            bindings['get_upcoming'] = named.calendar_bindings()
+        elif named.supported and not named.personal and named.public_provenance and not named.no_web:
+            allowed.add('web_search')
+            bindings['web_search'] = {'query': named.query}
+        # This whole envelope already consumes every outside source policy.
+        # Reclassifying a denied source noun as private context would erase
+        # its independently authorized public lookup. Unknown envelopes have
+        # no capability; recognized ones have only their exact typed binding.
+        return frozenset(set(REGISTRY) - allowed), bindings
     if re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b", t, re.I):
         forbidden.update(_INBOX_READ_TOOLS)
     if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward)\b", t, re.I):
@@ -6435,9 +6678,23 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
         if (web.opted_out or web.explicit or web.current
                 or re.search(r"\b(?:news|headlines?)\b", t, re.I)):
             forbidden.add("run_shell")
+    if unowned_history:
+        # Shape alone cannot grant private sources. Preserve only a public
+        # source the existing classifier independently proves, never a new
+        # fallback or a model-supplied query from private conversation history.
+        if web.allowed:
+            allowed = {'web_search'}
+        else:
+            # Preserve the established channel-less read owner only after
+            # the existing public classifier declined it. Its exact finite
+            # scoped read menu is evidence; a generic menu is not.
+            scoped = _domain_subset(text)
+            allowed = set(_inherited_history_reads(text, scoped.tool_subset if scoped else ()))
+        return frozenset((set(REGISTRY) - allowed) | forbidden), (
+            {'web_search': {'query': web.query}} if 'web_search' in allowed else {})
     if _calendar_is_excluded(t):
         forbidden.update(_CALENDAR_ROUTE_TOOLS)
-    if _reminder_is_excluded(t):
+    if _reminder_is_excluded(t) or "search_reminders" in forbidden:
         forbidden.update(_REMINDER_ROUTE_TOOLS)
         bindings["get_upcoming"] = {"calendar_only": True}
     if _notes_todo_destination_is_excluded(t):
@@ -6463,6 +6720,11 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
         forbidden.update({"daily_brief", "get_recent_activity", "search_browser_history",
                           "run_shell", "run_applescript", "http_request", "create_tool", "use_skill"})
         for tool in registry_specs(REGISTRY):
+            # Calendar and Reminders share a discovery family, but this
+            # built-in reads only Reminders. A Calendar denial cannot erase it.
+            if (tool.name == "search_reminders" and "search_reminders" not in forbidden
+                    and not _reminder_is_excluded(t)):
+                continue
             family = family_for(tool)
             if (family in {"skills", "connected", "other", "files", "memory"}
                     or (family in source_families and tool.category.endswith("read"))):
@@ -6478,12 +6740,17 @@ def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | 
     # EXCEPTION: a light read route (tool_subset set) deliberately runs the summarizer on
     # a narrow, verified-reliable read-only toolset — don't force it to the agent model,
     # that would defeat keeping the big model asleep.
-    _apply_execution_contract(decision, text, web_request or _classify_web_request(text))
-    _apply_calendar_exclusion(decision, text)
-    _apply_notes_todo_exclusion(decision, text)
-    _apply_reminder_exclusion(decision, text)
-    _apply_strict_reminder_write_separation(decision, text)
-    _apply_explicit_write_read_compound(decision, text)
+    # A fully owned Mail contract has already set every execution field. Its
+    # quoted topic is opaque data, so generic positive/negative text heuristics
+    # cannot reinterpret it here. The public source guard still reads the
+    # original request after this housekeeping, with quote-aware policy masking.
+    if decision._topical_mail_owner is None:
+        _apply_execution_contract(decision, text, web_request or _classify_web_request(text))
+        _apply_calendar_exclusion(decision, text)
+        _apply_notes_todo_exclusion(decision, text)
+        _apply_reminder_exclusion(decision, text)
+        _apply_strict_reminder_write_separation(decision, text)
+        _apply_explicit_write_read_compound(decision, text)
     # Unavailable compatibility registrations can remain in required groups so
     # the agent loop can return their exact limitation before any model or
     # effect runs.  They must never appear in an offered schema, direct call,
@@ -7197,7 +7464,10 @@ async def _reminder_compound_boundary(text: str, request: _WebRequest) -> RouteD
     from service.tools.registry import REGISTRY
     decision = _mk("agent", reason="unresolved reminder task clauses -> clarify before effects")
     decision.tool_subset = []
-    decision.resolved_request = "Please clarify the separate reminder subject and other requested actions."
+    decision.resolved_request = (text + '\n\nNo reminder or other action has happened. '
+        'Ask a specific clarification about the reminder subjects, dates or additional actions '
+        'in the request above. Preserve every requested item. Historical memories do not '
+        'supply the subject, date or current status of this request.')
     decision.forbidden_tools = frozenset(REGISTRY)
     return _pin_web_decision(decision) if request.opted_out else decision
 
@@ -7290,6 +7560,7 @@ def _knowledge_request(text: str) -> RouteDecision | None:
     tools, bindings = list(envelope.tools), envelope.bindings
     decision = _mk_scoped(tools, 'explicit Wisp knowledge request', light=tools == ['read_knowledge'],
                           expect=False, multi=len(tools) > 1)
+    decision.needs_tools = bool(tools)
     from service.tools.registry import REGISTRY
     decision.forbidden_tools = frozenset(set(REGISTRY) - set(tools))
     decision.tool_argument_bindings = bindings
@@ -7313,24 +7584,48 @@ def _knowledge_request(text: str) -> RouteDecision | None:
 
 
 def _priority_read(text: str) -> RouteDecision | None:
-    from service.workflows.workflow20 import priority_read
-    read = priority_read(text)
+    from service.workflows.workflow20 import attention_read, priority_read
+    source, policy_forbidden = _private_read_policy(text)
+    attention = attention_read(source)
+    read = attention or priority_read(source)
     if read is None:
         return None
     tools = list(read.tools)
+    excluded = {"email": "view_emails", "messages": "view_messages",
+                "calendar": "get_upcoming", "notes": "search_notes", "reminders": "search_reminders"}
+    args = dict(read.bindings["collect_task_evidence"])
+    for name, tool in excluded.items():
+        if tool in policy_forbidden:
+            args[f"include_{name}"] = False
+    bindings = {"collect_task_evidence": args}
     decision = _mk_scoped(tools, "source-grounded personal priorities",
                           multi=True, after=frozenset(tools), light=False)
     decision.verified_results_only = True
     decision.required_tool_groups = read.groups
-    decision.tool_argument_bindings = read.bindings
-    decision.direct_calls = [(tool, read.bindings[tool]) for tool in tools]
+    decision.tool_argument_bindings = bindings
+    decision.direct_calls = [(tool, bindings[tool]) for tool in tools]
+    decision.forbidden_tools |= policy_forbidden
+    decision.strict_read_limits = {"collect_task_evidence": 1}
+    if attention:
+        decision.resolved_request = (text + "\n\nRead the selected current communication sources once. "
+            "Identify actual requests, unresolved decisions, deadlines and account/security alerts using exact source quotes/IDs. "
+            "Unread state and a human-looking sender name do not establish importance. "
+            "Promotions, newsletter invitations and list footers are not personal obligations. "
+            "Keep outgoing promises and other people's responsibilities distinct. "
+            "Cover every selected source or explicitly state its unavailable/omitted coverage; "
+            "an empty Messages result says nothing about Mail. Use reference_time as today's captured clock, "
+            "not task_window or cache publication time. State absolute source dates; qualify relative deadlines "
+            "without an authenticated original timestamp. Never invent urgency or claim an action was performed.")
+        return decision
     decision.resolved_request = (text + "\n\nUse the current source results to suggest priorities. "
         "Use collect_task_evidence once before narration. Its window describes task due dates and Calendar occurrences, "
         "not communication receipt dates. Preserve every excluded source. "
         "Use the requested upcoming window and separately labelled overdue and undated reminders. "
         "Notes are background evidence, not proof of current task status. "
         "Ground each suggestion in an exact source quote/ID, keep outgoing promises, other people's requests and cancellations distinct, "
-        "and qualify ownership/deadlines when unknown. Only real original timestamps can anchor relative dates. "
+        "and qualify ownership/deadlines when unknown. reference_time is today's captured clock; task_window is the target. "
+        "State absolute dates, retaining source local dates rather than relabelling them yesterday/today/tomorrow. "
+        "Only real original timestamps can anchor relative dates; Mail receipt time and Notes edits cannot. "
         "Preserve missing-data/omission limitations; never invent urgency or claim a task was scheduled.")
     return decision
 
@@ -7606,6 +7901,341 @@ def _behavior_request(text: str, last_tools: str | None = None) -> RouteDecision
     return decision
 
 
+def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision:
+    """An excluded source stays excluded after clause merging and retrieval.
+
+    A host-bound evidence read may retain other sources, but an unbound
+    aggregate or opaque tool cannot be an escape around the exclusion.
+    """
+    from service.knowledge_intent import knowledge_envelope
+    unowned_history = (is_retrospective_communication_question(text)
+                       and _history_read_contract(text) is None)
+    if unowned_history:
+        # The inherited public owner already classified and bound its query.
+        # Subtract everything else without classifying twice or constructing
+        # a positive fallback from an unscoped/generic decision.
+        from service.tools.registry import REGISTRY
+        public = (decision.tool_argument_bindings.get('web_search', {}).get('query')
+                  and 'web_search' in (decision.tool_subset or ())
+                  and 'web_search' not in decision.forbidden_tools)
+        allowed = ({'web_search'} if public else
+                   set(_inherited_history_reads(text, decision.tool_subset)))
+        forbidden, bindings = frozenset(set(REGISTRY) - allowed), {}
+    else:
+        forbidden = bindings = None
+    # The shared grammar already confines these requests to knowledge tools
+    # (or no tools for clarification). Their titles/bodies are literal data,
+    # including unquoted source-policy words, just as at the main entry point.
+    if knowledge_envelope(text) is not None:
+        return decision
+    policy_text = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
+    remainder, excluded = _private_read_policy(policy_text)
+    policy_prefix = re.match(r'^\s*' + _PRIVATE_SOURCE_DENIAL_TEXT + r'(?=$|[\s,;])', policy_text, re.I)
+    prefixed_knowledge = False
+    if policy_prefix:
+        tail = re.sub(r'^[\s,;]*', '', policy_text[policy_prefix.end():])
+        tail = re.sub(r'^(?:and|but)\s+', '', tail, flags=re.I)
+        prefixed_knowledge = knowledge_envelope(tail) is not None
+    if prefixed_knowledge or (excluded and knowledge_envelope(remainder) is not None):
+        # The whole-request knowledge grammar did not authorize this compound
+        # instruction. Do not let retrieval turn its source restriction into
+        # unrelated private reads or grant a partial knowledge action.
+        from service.tools.registry import REGISTRY
+        clarification = _mk('general', reason='clarify source policy and knowledge request')
+        clarification.tool_subset = []
+        clarification.forbidden_tools = frozenset(REGISTRY)
+        clarification.resolved_request = text + (
+            '\n\nNo action or private read has happened. Clarify the complete '
+            'knowledge instruction while preserving the source restriction.')
+        return clarification
+    # Detect the complete source-policy envelope without reclassifying ordinary
+    # web requests. Keep these triggers aligned with routing_guard_contract.
+    if not (unowned_history or explanation_remainder(text) == '' or excluded or _calendar_is_excluded(policy_text) or _reminder_is_excluded(policy_text)
+            or _notes_todo_destination_is_excluded(policy_text)
+            or re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b",
+                         policy_text, re.I)):
+        return decision
+    if not unowned_history:
+        forbidden, bindings = routing_guard_contract(text)
+    forbidden = set(forbidden)
+    if (not unowned_history and decision.isolated_public_query and not _classify_web_request(text).opted_out
+            and decision.tool_argument_bindings.get('web_search') == {'query':decision.isolated_public_query}
+            and ('web_search', {'query':decision.isolated_public_query}) in decision.direct_calls):
+        forbidden.discard('web_search')
+    source_tools = {"email": "view_emails", "messages": "view_messages",
+                    "calendar": "get_upcoming", "notes": "search_notes", "reminders": "search_reminders"}
+    for name, supported in (("collect_task_evidence", set(source_tools)),
+                            ("daily_brief", {"calendar", "reminders", "email", "messages"})):
+        # These built-ins honor per-source flags. Only trusted route bindings,
+        # never a model's proposed flags, can exempt an aggregate from the ban.
+        if name not in decision.tool_argument_bindings:
+            continue
+        aggregate = decision.tool_argument_bindings[name]
+        if all(aggregate.get(f"include_{source}") is False
+               for source, tool in source_tools.items() if source in supported and tool in forbidden):
+            forbidden.discard(name)
+    decision.forbidden_tools |= frozenset(forbidden)
+    blocked = decision.forbidden_tools
+    if decision.tool_subset is not None:
+        decision.tool_subset = [name for name in decision.tool_subset if name not in blocked]
+    elif decision.needs_tools:
+        from service.tools.registry import routable_tool_names
+        decision.tool_subset = sorted(routable_tool_names() - blocked)
+    decision.direct_calls = [(name, {**args, **bindings.get(name, {})})
+                             for name, args in decision.direct_calls if name not in blocked]
+    decision.required_tool_groups = tuple(group - blocked for group in decision.required_tool_groups
+                                          if group - blocked)
+    decision.narration_after -= blocked
+    decision.conditional_tools = tuple(item for item in decision.conditional_tools
+                                       if not blocked.intersection(item[:2]))
+    decision.tool_argument_bindings = {
+        name: {**decision.tool_argument_bindings.get(name, {}), **bindings.get(name, {})}
+        for name in set(decision.tool_argument_bindings) | set(bindings)
+        if name not in blocked and name in (decision.tool_subset or ())}
+    if decision.force_first_tool in blocked:
+        decision.force_first_tool = None
+        decision.expect_tool_first = bool(decision.required_tool_groups)
+    if decision.needs_tools and not decision.tool_subset:
+        decision.needs_tools = False
+        decision.expect_tool_first = False
+    return decision
+
+
+def _named_time_claim(text: str) -> RouteDecision | None:
+    from service.calendar_time_intent import named_calendar_time
+    from service.tools.registry import REGISTRY
+    intent = named_calendar_time(text)
+    if intent is None:
+        return None
+    if intent.supported and intent.personal and not intent.no_calendar:
+        decision = _verified_private_read([('get_upcoming', intent.calendar_args())],
+                                           'complete named Calendar time read', text)
+        decision.tool_argument_bindings['get_upcoming'] = intent.calendar_bindings()
+        decision.forbidden_tools = frozenset(set(REGISTRY) - {'get_upcoming'})
+        return decision
+    if intent.supported and not intent.personal and intent.public_provenance and not intent.no_web:
+        # A simple public noun phrase can still be a stable concept or need
+        # disambiguation. Offer the exact public lookup without forcing it.
+        decision = _mk('agent', tools=True, source='default',
+                       route_source='named_time_interpretation',
+                       reason='public named time interpretation', expect_tool_first=False)
+        decision.tool_subset = ['web_search']
+        decision.tool_argument_bindings = {'web_search': {'query': intent.query}}
+        decision.resolved_request = text
+        decision.isolated_public_query = intent.query
+        decision.verified_results_only = True
+        decision.strict_read_limits = {'web_search': 1}
+        decision.forbidden_tools = frozenset(set(REGISTRY) - {'web_search'})
+        return _pin_web_decision(decision)
+    decision = _mk('general', reason='clarify named event time and source')
+    decision.tool_subset = []
+    decision.forbidden_tools = frozenset(REGISTRY)
+    decision.resolved_request = text + ('\nClarify the event, Calendar source or supported date range. '
+        'No source has been read. Respect the source exclusions; do not infer a time.')
+    return decision
+
+
+def _assistant_read_claim(text: str) -> RouteDecision | None:
+    """Complete personal questions precede generic chat and current-web rules."""
+    if (history_reads := _history_read_contract(text)) is not None:
+        from service.tools.registry import REGISTRY
+        decision = _mk('agent' if history_reads else 'general', tools=bool(history_reads),
+                       reason='whole retrospective communication question; existing reads only',
+                       expect_tool_first=False)
+        decision.tool_subset = history_reads
+        decision.forbidden_tools = frozenset(set(REGISTRY) - set(history_reads))
+        decision.resolved_request = text
+        return decision
+    if (explanation := _explanation_clause_contract(text)) is not None:
+        from service.tools.registry import REGISTRY
+        allowed, bindings = explanation
+        forbidden, bindings = routing_guard_contract(text)
+        allowed = [name for name in allowed if name not in forbidden]
+        decision = _mk('agent' if allowed else 'general', tools=bool(allowed),
+                       reason='complete explanation clauses; only independently authored capability')
+        decision.tool_subset = allowed
+        decision.tool_argument_bindings = bindings
+        decision.forbidden_tools = forbidden
+        decision.resolved_request = text
+        if not allowed and explanation_remainder(text):
+            decision.resolved_request += ('\nClarify the unsupported independent clause; '
+                'the explanation itself needs no source read or action. Nothing has been performed.')
+        return decision
+    if (named := _named_time_claim(text)) is not None:
+        return named
+    decision = _priority_read(text)
+    if decision is None and (compound := _priority_context_claim(text)) is not None:
+        return compound
+    source, _ = _private_read_policy(text)
+    if decision is None and _tomorrow_agenda_args(source) is not None:
+        decision = _strict_private_read_decision(text)
+    if decision is None:
+        return None
+    request = _classify_web_request(text)
+    return _finalize(decision, text, web_request=replace(
+        request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
+        public_reference=False, inherited=False, clarification=None))
+
+
+# Presence and complete acceptance are deliberately different. An unfamiliar
+# verb after a private-source declaration cannot make its text a public query.
+_CONTEXT_REPORT = r"(?:says?|said|reads?|states?|contains?|mentions?|describes?|reports?|refers?|shows?|indicates?|has|have)\b"
+_CONTEXT_HEAD = (r"(?:(?:the|my|our|this|that|an?)\s+" + _PRIVATE_SOURCE_NAME + r"\b|"
+                 + _PRIVATE_SOURCE_NAME + r"\s*[:=|]|"
+                 + _PRIVATE_SOURCE_NAME + r"\s+(?=" + _CONTEXT_REPORT + r")|"
+                 r"(?:I|we)\b(?!\s+(?:(?:want|need)|would\s+like)\s+you\s+to\b)"
+                 r"(?=[^.!?;,\n]*\b" + _PRIVATE_SOURCE_NAME + r"\b))")
+_CONTEXT_PREFIX = r"(?:(?:and|then|also)\s+)*" + _CONTEXT_HEAD
+_CONTEXT_BOUNDARY = r"(?:^|[.!?;,\n:()—–|&-]|\b(?:and|then|also|but|because|since|or)\b)\s*"
+_CONTEXT_PRESENCE = _CONTEXT_BOUNDARY + _CONTEXT_PREFIX
+# Unquoted structured carriers remain data even without a clause delimiter.
+_STRUCTURED_CONTEXT = r'[\[{]'
+
+
+def _context_authority_mask(text: str) -> str:
+    # Markdown decoration is presentation, never a way to hide a source label.
+    return re.sub(r'[*_#>]', ' ', _routing_quote_mask(text))
+
+
+def _supplied_context_clause(clause: str) -> bool:
+    try:
+        if isinstance(json.loads(clause.strip()), (dict, list)):
+            return True  # A supplied data carrier grants no source/effect authority.
+    except ValueError:
+        pass
+    shape = _ROUTING_QUOTED_SPAN_RE.sub('QUOTED_CONTEXT', clause)
+    return bool(re.fullmatch(
+        r"\s*(?:(?:and|then|also)\s+)*(?:(?:(?:the|my|our|this|that|an?)\s+)?" + _PRIVATE_SOURCE_NAME +
+        r"(?:\s+(?:says|say|said|reads|read)\s*[:,]?\s*|\s*[:=|]\s*)QUOTED_CONTEXT|"
+        r"I\s+have\s+(?:an?\s+)?" + _PRIVATE_SOURCE_NAME + r"(?:\s+(?:saying|that\s+says)\s+QUOTED_CONTEXT)?)"
+        r"[.!?;\s]*", shape, re.I))
+
+
+def _context_text_only(text: str, *, clarify: bool = False) -> RouteDecision:
+    from service.tools.registry import REGISTRY
+    decision = _mk('general', reason='supplied context grants no tool authority')
+    decision.tool_subset = []
+    decision.forbidden_tools = frozenset(REGISTRY)
+    decision.resolved_request = text + ('\nClarify the separate requested actions; no source was read or action performed.'
+                                       if clarify else '\nRespond to the supplied context without reading sources or performing actions.')
+    return decision
+
+
+def _priority_context_claim(text: str) -> RouteDecision | None:
+    """Keep typed priority, supplied context and public lookup authority apart.
+
+    This consumes only complete, independent read clauses. Unresolved context
+    compounds clarify without tools rather than exporting the whole prompt.
+    Query bytes come from a public clause, never from the whole compound or
+    from quoted mail. Finalize each owner before combining its frozen reads.
+    """
+    source = text
+    _, policy_forbidden = _private_read_policy(_routing_quote_mask(text))
+    masked = _context_authority_mask(source)
+    boundaries = list(re.finditer(
+        r"[.!?;\n]+(?:\s+|$)|\s+(?:and\s+then|and|then|also)\s+"
+        r"(?=(?:search\s+the\s+web|what\s+(?:should|is|are)|look\s+up)\b|" + _CONTEXT_PREFIX + r")|"
+        r"\s+(?:because|since)\s+(?=" + _CONTEXT_PREFIX + r")|"
+        r",\s*(?=" + _CONTEXT_PREFIX + r")", masked, re.I))
+    clauses, start = [], 0
+    for boundary in boundaries:
+        # Retain sentence punctuation in the public query's original span.
+        end = boundary.end() if boundary.group()[0] in '.!?;\n' else boundary.start()
+        if clause := source[start:end].strip():
+            clauses.append(clause)
+        start = boundary.end()
+    if clause := source[start:].strip():
+        clauses.append(clause)
+    has_context = bool(re.search(_CONTEXT_PRESENCE, masked, re.I)
+                       or re.search(_STRUCTURED_CONTEXT, masked))
+    has_priority = any(_priority_read(clause) for clause in clauses)
+    if not has_context and (len(clauses) < 2 or not has_priority):
+        return None
+    if has_context and not has_priority:
+        root_declaration = bool(_supplied_context_clause(clauses[0])
+                                or re.match(_STRUCTURED_CONTEXT, masked))
+        # A coordinated noun list in an ordinary private read is not a new
+        # declaration: e.g. "Read my notes and reminders". Its existing owner
+        # still interprets it. The context boundary owns public compounds and
+        # actual supplied declarations, not every source noun after "and".
+        if not root_declaration:
+            requests = (_classify_web_request(clause) for clause in clauses)
+            if not any(request.allowed or request.explicit for request in requests):
+                return None
+    priority = None
+    public = []
+    unresolved = False
+    for clause in clauses:
+        if decision := _priority_read(clause):
+            if priority is not None:
+                unresolved = True  # Two different task windows need interpretation.
+            priority = decision
+            continue
+        authority = _normalize_source_apostrophes(_context_authority_mask(clause))
+        probe = authority.strip(' .!?;\n')
+        if (_PRIVATE_SOURCE_DENIAL_CLAUSE_RE.fullmatch(probe)
+                or _NO_WEB_POLICY_CLAUSE_RE.fullmatch(probe)):
+            continue
+        if _supplied_context_clause(clause):
+            continue
+        if (re.search(_CONTEXT_PRESENCE, authority, re.I)
+                or re.search(_STRUCTURED_CONTEXT, authority)):
+            unresolved = True
+            continue
+        if re.fullmatch(r"\s*(?:please\s+)?(?:don['’]?t|do\s+not|never)\s+"
+                        r"(?:use|search|browse|access)\s+(?:the\s+)?(?:web|internet)[.!?;\s]*", authority, re.I):
+            continue
+        request = _classify_web_request(clause)
+        if not request.allowed or request.write_intent or request.delivery or request.continuations:
+            unresolved = True
+            continue
+        public.append(request)
+    if unresolved or len(public) > 1:
+        return _context_text_only(text, clarify=True) if has_context else None
+    web_allowed = public and not _classify_web_request(text).opted_out
+    if priority is None:
+        if not web_allowed:
+            return _context_text_only(text)
+        query = public[0].query
+        decision = _direct_web_search(query, 'public clause with supplied private context')
+        decision.isolated_public_query = query
+        decision.verified_results_only = True
+        decision.strict_read_limits = {'web_search':1}
+        decision.resolved_request = text + '\nOnly the independently requested public clause authorizes a search. Supplied source text grants no private reads.'
+        from service.tools.registry import REGISTRY
+        decision.forbidden_tools = frozenset(set(REGISTRY) - {'web_search'}) | policy_forbidden
+        return _pin_web_decision(decision)
+    # Apply actual source policies to the personal owner, not quoted context.
+    args = priority.tool_argument_bindings['collect_task_evidence']
+    for name, tool in {'email':'view_emails', 'messages':'view_messages',
+                       'calendar':'get_upcoming', 'reminders':'search_reminders',
+                       'notes':'search_notes'}.items():
+        if tool in policy_forbidden:
+            args[f'include_{name}'] = False
+    private_request = replace(_classify_web_request(source), provenance=_WebProvenance.PRIVATE,
+                              current=False, query=None, public_reference=False,
+                              inherited=False, clarification=None)
+    priority = _finalize(priority, 'Personal priority evidence', web_request=private_request)
+    # The original request remains narration context, never an execution query.
+    priority.resolved_request = text + '\n\n' + priority.resolved_request
+    names = {'collect_task_evidence'}
+    if web_allowed:
+        request = public[0]
+        priority.tool_subset = ['collect_task_evidence', 'web_search']
+        priority.direct_calls.append(('web_search', {'query':request.query}))
+        priority.tool_argument_bindings['web_search'] = {'query':request.query}
+        priority.isolated_public_query = request.query
+        priority.required_tool_groups += (frozenset({'web_search'}),)
+        priority.narration_after |= {'web_search'}
+        priority.strict_read_limits['web_search'] = 1
+        names.add('web_search')
+    from service.tools.registry import REGISTRY
+    priority.forbidden_tools = frozenset(set(REGISTRY) - names) | policy_forbidden
+    if 'web_search' in names:
+        _pin_web_decision(priority)
+    return priority
+
+
 async def route(text: str, *,
                 last_user: str | None = None,
                 recent_users: list[str] | None = None,
@@ -7614,7 +8244,9 @@ async def route(text: str, *,
     original_text = text
     # Behavior-learning questions are claimed here, ahead of _route_impl (whose
     # body is pinned), only while behavior learning is on.
-    behavior = _behavior_route(text, last_user=last_user, recent_users=recent_users,
+    behavior = _assistant_read_claim(text)
+    if behavior is None:
+        behavior = _behavior_route(text, last_user=last_user, recent_users=recent_users,
                                last_assistant=last_assistant, last_tools=last_tools)
     if behavior is None:
         behavior = _no_tool_claim(text, last_user=last_user, recent_users=recent_users,
@@ -7623,7 +8255,7 @@ async def route(text: str, *,
         text, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)
     _clarify_unnamed_offer_channel(decision, text, last_assistant=last_assistant)
-    return _guard_scheduled_cancel(decision, original_text)
+    return _guard_explicit_sources(_guard_scheduled_cancel(decision, original_text), original_text)
 
 
 def _no_tool_claim(text: str, *, last_user: str | None, recent_users: list[str] | None,
@@ -7632,7 +8264,28 @@ def _no_tool_claim(text: str, *, last_user: str | None, recent_users: list[str] 
     it" that opens a conversation. Claimed ahead of _route_impl (whose body is
     pinned) because their nouns otherwise decide the route — "compose a haiku"
     became a channel-ambiguous send with a forced Notes lookup."""
-    if not (last_user or recent_users or last_assistant or last_tools) and _BARE_SEND_RE.match(text):
+    quoted = list(_ROUTING_QUOTED_SPAN_RE.finditer(text))
+    shape = _ROUTING_QUOTED_SPAN_RE.sub('QUOTED_PHRASE', text)
+    if len(quoted) == 1 and re.fullmatch(
+            r"\s*(?:(?:please|can\s+you|could\s+you)\s+)?"
+            r"(?:(?:explain|define|describe)\s+(?:the\s+phrase\s+)?QUOTED_PHRASE|"
+            r"what\s+does\s+(?:the\s+phrase\s+)?QUOTED_PHRASE\s+mean)"
+            r"(?:,?\s+please)?[.!?\s]*", shape, re.I):
+        # Full consumption is essential: a real second command must not be
+        # swallowed. Do not finalize on quoted action words and re-arm tools.
+        from service.tools.registry import REGISTRY
+        decision = _mk('general', reason='explanation of quoted words, no action')
+        decision.tool_subset = []
+        decision.forbidden_tools = frozenset(REGISTRY)
+        decision.resolved_request = text + '\nExplain the quoted phrase without performing it.'
+        return decision
+    if re.fullmatch(
+            r"\s*(?:please\s+)?(?:explain|describe|teach\s+me)\s+"
+            r"(?:how\s+to|how\s+I\s+(?:can|should))\s+"
+            r"(?:prioriti[sz]e|triage|organi[sz]e|manage|sort)\s+"
+            r"(?:my\s+|an?\s+|the\s+)?(?:e-?mails?|inbox|messages?|texts?)[.!?\s]*", text, re.I):
+        decision = _mk("general", reason="general communication advice, no private reads")
+    elif not (last_user or recent_users or last_assistant or last_tools) and _BARE_SEND_RE.match(text):
         # Nothing is drafted, so there is nothing to send. Offering the send
         # tools left the loop hunting for a message the user never wrote.
         decision = _mk("general", reason="bare send with nothing drafted -> ask what to send")

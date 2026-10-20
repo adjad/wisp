@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timedelta
 
 from service.tasks.temporal import DAYPART_HOURS as STANDARD_PART_OF_DAY_HOURS
+from service.utterance_shape import quoted_spans
 
 # "remind me what I had on last week" asks to be TOLD. With an infinitive or a
 # time it is still a reminder: "remind me who to call at 3pm", "remind me where
@@ -83,7 +84,7 @@ CAPABILITY_INVENTORY_RE = re.compile(
     re.I | re.S)
 _REQUEST_PREFIX = re.compile(
     r"^\s*(?:(?:hey|hi|ok|okay|please|can\s+you|could\s+you|would\s+you|"
-    r"i\s+need\s+you\s+to|go\s+ahead\s+and)[,\s]+)*", re.I)
+    r"i\s+need\s+you\s+to|i\s+want\s+you\s+to|go\s+ahead\s+and)[,\s]+)*", re.I)
 _HOUR_WORD = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
 _MINUTE_WORD = r"(?:ten|fifteen|twenty|thirty|forty|fifty)"
 _WORD_MINUTES = rf"(?:oh\s+(?:{_HOUR_WORD}|{_MINUTE_WORD})|{_MINUTE_WORD})"
@@ -105,8 +106,12 @@ _TRAILING_ALERT = re.compile(
     rf"at\s+{_CLOCK_PHRASE})\s*[.!?]*$", re.I)
 
 
+def reminder_subject_labelled(parts: tuple[str, str] | None) -> bool:
+    return bool(parts and re.search(r"\btitled\s*$", parts[0], re.I))
+
+
 def reminder_command_parts(text: str) -> tuple[str, str] | None:
-    """Separate an outer create command from its infinitive reminder content.
+    """Separate an outer create command from infinitive or labelled content.
 
     An operation merely quoting 'remind me' is not a creation command. A 'to'
     belonging to 'quarter to six' is clock syntax, not a subject introducer.
@@ -119,8 +124,11 @@ def reminder_command_parts(text: str) -> tuple[str, str] | None:
         introducer = re.search(r"\bto\s+", text[match.start():], re.I)
         start = match.start() + introducer.end()
         return text[:start], text[start:]
-    for introducer in re.finditer(r"\bto\s+", text[match.end():], re.I):
+    quotes = quoted_spans(text)
+    for introducer in re.finditer(r"\b(?:to|titled)\s+", text[match.end():], re.I):
         start = match.end() + introducer.start()
+        if any(left <= start < right for left, right in quotes):
+            continue
         if re.search(r"\bquarter\s+$", text[:start], re.I):
             continue
         # In "from 6pm to 7pm to study", the first "to" belongs to the
@@ -144,6 +152,10 @@ def reminder_temporal_text(text: str) -> str:
     if not parts or not parts[1]:
         return text
     command, subject = parts
+    if reminder_subject_labelled(parts):
+        # A labelled title is authored data. Dates and clocks inside it do not
+        # compete with the outer schedule, including unsupported clock words.
+        return command.rstrip()
     attempts = list(_ATTEMPTED_ALERT.finditer(subject))
     spans = []
     for attempt in attempts:
@@ -194,7 +206,9 @@ def has_unsupported_alert_clock(text: str, *, time_answer: bool = False) -> bool
     convention remain owned by the existing temporal resolvers. A known
     pending time answer validates every numeric clock, regardless of prefix.
     """
-    if _has_explicit_clock_range(text, time_answer=time_answer):
+    range_text = (reminder_temporal_text(text)
+                  if not time_answer and reminder_subject_labelled(reminder_command_parts(text)) else text)
+    if _has_explicit_clock_range(range_text, time_answer=time_answer):
         return True
     scoped = text if time_answer else reminder_temporal_text(text)
     return _has_unsupported_clock(

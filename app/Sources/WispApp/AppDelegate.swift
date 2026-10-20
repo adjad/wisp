@@ -731,15 +731,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
         model.onVerifiedReminderAction = { [weak self] kind, actionID, sourceID,
-            expectedTitle, expectedDueTs, title, dueTs, commitmentKind in
+            expectedTitle, expectedDueTs, title, dueTs, commitmentKind, dueDate, expectedDueDate in
             self?.remindersWriter?.performVerified(kind: kind, actionID: actionID,
                 sourceID: sourceID, expectedTitle: expectedTitle,
                 expectedDueTs: expectedDueTs, title: title, dueTs: dueTs,
-                commitmentKind: commitmentKind)
+                commitmentKind: commitmentKind, dueDate: dueDate, expectedDueDate: expectedDueDate)
                 ?? ["ok": false, "status": "failed", "error": "Reminders handler unavailable"]
         }
         model.onReconcileReminderAction = { [weak self] kind, actionID, sourceID,
-            title, dueTs, commitmentKind in
+            title, dueTs, commitmentKind, dueDate in
             guard let self else {
                 return ["ok": false, "status": "unknown", "error": "Reminders handler unavailable"]
             }
@@ -748,7 +748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return await writer.reconcileVerified(kind: kind, actionID: actionID,
                 sourceID: sourceID, title: title, dueTs: dueTs,
-                commitmentKind: commitmentKind)
+                commitmentKind: commitmentKind, dueDate: dueDate)
         }
         model.onOpenChat = { [weak self] sessionId in
             self?.open(.chat(sessionId: sessionId))

@@ -223,7 +223,7 @@ def test_invalid_tasks(values):
 def test_native_end_table_does_not_change_legacy_schema(store):
     columns = {r["name"] for r in store._db.execute("PRAGMA table_info(commitments)")}
     assert "end_ts" not in columns
-    assert len(columns) == 16
+    assert len(columns) == 17 and "due_date" in columns  # nullable floating reminder date
 
 
 def test_api_validation_and_conflicts(store, monkeypatch):

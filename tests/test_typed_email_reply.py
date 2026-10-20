@@ -564,3 +564,44 @@ def test_reply_planner_refuses_every_scheduling_marker(stores, marker):
         p.parameters["schedule_requested"] = SlotValue("tomorrow")
     with pytest.raises(InvalidTaskPlan):
         plan_task(p)
+
+
+@pytest.mark.parametrize('second_label', ['Work', 'work'])
+def test_stable_id_scope_rejects_ambiguous_label_before_subject_matches(second_label):
+    r = MailReader([row(account_id='acct-1')], accounts=['Work', second_label],
+        account_inventory=(('acct-1', 'Work'), ('acct-2', second_label)),
+        successful_account_ids=('acct-1', 'acct-2'), failed_account_ids=(), coverage_version=2,
+        synced_at=NOW.timestamp())
+    ambiguous = resolve(r, account='Work', topic='Dinner')
+    assert ambiguous.status != 'resolved' and 'Which one?' in ambiguous.question
+    chosen = resolve(r, account='acct-1', topic='Dinner')
+    assert chosen.status == 'resolved' and chosen.candidates[0].fields['account_id'] == 'acct-1'
+    assert resolve(r, account='acct-2', topic='Dinner').status != 'resolved'
+    assert resolve(r, account='absent', topic='Dinner').status != 'resolved'
+    assert resolve(r, topic='Dinner').status == 'resolved'
+
+
+def test_current_reader_uses_one_eligible_v2_snapshot_and_never_composed_display(monkeypatch):
+    from service.tools import email_tools as mail
+    from service.tasks.source_readers import current_mail_reader
+    from tests.fixtures.wire import email_raw
+    for name, value in {'_email_available': True, '_raw_mail_snapshot': None,
+                        '_raw_reference_scan': {}, '_raw_snapshot_generation': 0,
+                        '_external_accounts': {}, '_headers': '', '_history': ''}.items():
+        monkeypatch.setattr(mail, name, value)
+    monkeypatch.setattr(mail.time, 'time', lambda: NOW.timestamp())
+    monkeypatch.setattr(mail.cache_store, 'save', lambda *args: None)
+    def forbidden():
+        raise AssertionError('Composed display rows cannot replace snapshot provenance')
+    monkeypatch.setattr(mail, '_parse_raw', forbidden)
+    coverage = {'version': 2, 'account_inventory': [{'id': 'acct-1', 'label': 'Work'},
+                  {'id': 'acct-2', 'label': 'Work'}], 'successful_account_ids': ['acct-1', 'acct-2'],
+                'failed_account_ids': [], 'complete': True}
+    mail.cache_raw_emails(email_raw([row(account_id='acct-1', sender_name='Dan',
+        sender_addr='dan@synthetic.invalid', to=['self@synthetic.invalid'])]), coverage)
+    actual = current_mail_reader()
+    assert resolve(actual, account='Work').status == 'unavailable'
+    assert resolve(actual, account='acct-1').status == 'resolved'
+    assert actual.account_inventory == (('acct-1', 'Work'), ('acct-2', 'Work'))
+    mail.cache_raw_emails('malformed display', coverage)
+    assert resolve(current_mail_reader(), account='acct-1').status == 'unavailable'

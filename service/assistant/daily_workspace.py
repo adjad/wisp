@@ -468,6 +468,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
                              "Due in this day." if finite(due) else "No due date; choose whether to work on it today.",
                              due=due, priority=1 if overdue else 2,
                              reference=record.get("reference", ""))
+                if record.get('all_day') is True:
+                    item['all_day'] = True
+                    item['due_date'] = record.get('due_date')
                 if record.get("wisp_only"):
                     item.update(source="wisp", reason="Wisp-only reminder; Apple copy/status unverified. " + item["reason"])
             else:
@@ -640,6 +643,8 @@ def render(workspace, *, compact=False):
     rows = ["Needs my attention"]
     for item in workspace["attention"][:5 if compact else 12]:
         due = (" · " + datetime.fromtimestamp(item["due_ts"], zone).strftime("%b %-d, %-I:%M %p")) if item["due_ts"] is not None else ""
+        if item.get('all_day') and item['due_ts'] is not None:
+            due = ' · ' + (item.get('due_date') or datetime.fromtimestamp(item['due_ts'], zone).strftime('%b %-d')) + ' · All day'
         if item.get("deadline_precision") == "date" and item.get("due_range"):
             dates = [datetime.fromtimestamp(v, zone).strftime("%b %-d, %-I:%M %p") for v in item["due_range"]]
             due = " · source range [" + dates[0] + ", " + dates[1] + ")"
@@ -672,6 +677,7 @@ def collect_evidence(store, state, day, timezone, *, now):
     Each source failure is isolated and visible. Counts disclose bounded reads;
     an empty or omitted source is never presented as a complete all-source scan.
     """
+    schedule = store.schedule_relation(timezone) if hasattr(store, "schedule_relation") else "scheduled_commitments"
     from service.tools.everyday import _native_receipt_current
     lo, hi = day_bounds(day, timezone)
     result = {}
@@ -689,13 +695,13 @@ def collect_evidence(store, state, day, timezone, *, now):
             receipt_row = db.execute("SELECT payload FROM today_source_sync WHERE source='reminders'").fetchone()
             receipt = json.loads(receipt_row["payload"]) if receipt_row else {}
             # Undated items are included for attention but do not acquire a due date.
-            count = db.execute("SELECT COUNT(*) FROM commitments WHERE status='active' AND source='reminders' AND when_ts<? AND kind NOT IN ('event','meeting')", (hi,)).fetchone()[0]
+            count = db.execute(f"SELECT COUNT(*) FROM {schedule} WHERE status='active' AND source='reminders' AND when_ts<? AND kind NOT IN ('event','meeting')", (hi,)).fetchone()[0]
             rows = [dict(row) for row in db.execute(
-                "SELECT id,source,source_id,title,when_ts,kind FROM commitments "
+                f"SELECT id,source,source_id,title,when_ts,kind,all_day,due_date FROM {schedule} "
                 "WHERE status='active' AND source='reminders' AND when_ts<? "
                 "AND kind NOT IN ('event','meeting') ORDER BY CASE WHEN when_ts>=? THEN 0 ELSE 1 END,when_ts DESC,id LIMIT 500", (hi, lo))]
-            manual_count = db.execute("SELECT COUNT(*) FROM commitments WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<?", (now - 14 * 86400, hi)).fetchone()[0]
-            manual = [dict(row) for row in db.execute("SELECT id,title,when_ts FROM commitments WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<? ORDER BY when_ts DESC,id LIMIT 100", (now - 14 * 86400, hi))]
+            manual_count = db.execute(f"SELECT COUNT(*) FROM {schedule} WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<?", (now - 14 * 86400, hi)).fetchone()[0]
+            manual = [dict(row) for row in db.execute(f"SELECT id,title,when_ts,all_day,due_date FROM {schedule} WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<? ORDER BY when_ts DESC,id LIMIT 100", (now - 14 * 86400, hi))]
             view, undated = store.undated_listing()
             # Overdue reminders the stale policy hides (a week or more past due, not
             # kept) leave the plan and its counts, along with any Wisp twin of them.
@@ -705,10 +711,10 @@ def collect_evidence(store, state, day, timezone, *, now):
             rows = [r for r in rows if r["id"] not in hidden]
             manual = [r for r in manual if r["id"] not in hidden]
         current = _native_receipt_current(receipt, now)
-        selected = [dict(id=r["id"], title=r["title"], due_ts=r["when_ts"],
+        selected = [dict(id=r["id"], title=r["title"], due_ts=r["when_ts"], all_day=bool(r.get('all_day')), due_date=r.get('due_date'),
                          reference=r["source"] + ":" + str(r.get("source_id") or r["id"]))
                     for r in rows[:500] if r["source"] == "reminders" and current]
-        selected.extend(dict(id=r["id"], title=r["title"], due_ts=r["when_ts"], wisp_only=True,
+        selected.extend(dict(id=r["id"], title=r["title"], due_ts=r["when_ts"], all_day=bool(r.get('all_day')), due_date=r.get('due_date'), wisp_only=True,
                              reference="wisp-reminder:" + r["id"]) for r in manual)
         if current and view.get("freshness") == "current":
             selected.extend(dict(id="undated:" + str(r.get("source_id") or r.get("id")),

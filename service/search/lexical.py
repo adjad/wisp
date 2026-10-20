@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from service.search.chunker import Chunk
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
+_NONASCII_RE = re.compile(r"([^\x00-\x7f])")
 
 # Deliberately tiny and hand-picked. A big synonym table starts firing on the
 # wrong sense of a word and quietly poisons ranking; the embedder (T2) is the
@@ -51,6 +52,24 @@ def fold(text: str) -> str:
     NFD would expand 'é' into two code points and shift every offset after it,
     so combining marks are replaced in place rather than dropped.
     """
+    if text.isascii():
+        return text.lower()
+
+    # Ordinary documents often contain only a few accents or smart quotes.
+    # Count in C before allocating fragments; dense/short text keeps the
+    # original per-codepoint loop. ASCII encoding also safely ignores surrogates.
+    if len(text) >= 32 and len(text) - len(text.encode("ascii", "ignore")) <= len(text) // 32:
+        parts = _NONASCII_RE.split(text)
+        for i in range(0, len(parts), 2):
+            parts[i] = parts[i].lower()
+        for i in range(1, len(parts), 2):
+            ch = parts[i]
+            d = unicodedata.normalize("NFD", ch)
+            parts[i] = (d[0] if d else ch).lower()
+        # Lower Unicode codepoints separately: whole-string lower changes a
+        # final Greek sigma according to its neighbours (ΟΣ must stay οσ).
+        return "".join(parts)
+
     out = []
     for ch in text:
         d = unicodedata.normalize("NFD", ch)

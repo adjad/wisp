@@ -42,7 +42,7 @@ CASES = {
     "utc": {"when": "2026-11-02T17:15Z", "label": "9:15 AM PST-0800"},
     "nonlocal_offset": {"when": "2026-11-02T09:15+05:30",
                         "label": "Nov 1 at 7:45 PM PST-0800"},
-    "date_only": {"when": "2026-11-02"},
+    "date_only": {"when": "2026-11-02", "invalid": True},
     "space_seconds": {"when": "2026-11-02 09:15:42.125"},
     "offset_seconds": {"when": "2026-11-02T09:15:42.125-08:00"},
     "bad_iso": {"when": "tomorrow at nine", "invalid": True},

@@ -5,6 +5,7 @@ import Dispatch
 // The Python contract injects byte-for-byte production scan/capture/post bodies.
 // Every collaborator here is inert; URLSession is a recording fake, not Foundation's.
 enum Scan { case headers }
+struct AccountTarget { let id: String; let label: String }
 enum Enumeration: Equatable { case accounts([String: String]), unavailable, duplicateLabels }
 enum AccountLabelCache { static func learn(accounts: [String: String]) {} }
 enum WispClient { static let baseURL = URL(string: "http://127.0.0.1:8765")! }
@@ -95,11 +96,11 @@ final class Reader {
             if which == "identity_empty" { return ("", 0) }
             return ("me@example.test", 0)
         }
-        return which == "failed" || (which == "partial" && script == "B") ? (nil, -1743) : ("synthetic header", 0)
+        return which == "failed" || (which == "partial" && script == "two") ? (nil, -1743) : ("synthetic header", 0)
     }
-    func headerScript(account: String?, limit: Int) -> String { account ?? "unified" }
+    func headerScript(account: AccountTarget?, limit: Int) -> String { account?.id ?? "unified" }
     func setLastAccountNames(_ names: [String]?) {}
-    func incompleteMarker(account: String?, reason: String) -> String { "synthetic incomplete marker" }
+    func incompleteMarker(account: AccountTarget?, reason: String) -> String { "synthetic incomplete marker" }
     func mergeHeaderChunks(_ chunks: [String]) -> String { chunks.joined(separator: "\n") }
     func markHeadersCompleted() {}
 

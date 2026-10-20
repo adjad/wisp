@@ -4,10 +4,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import re
 
-from service.utterance_shape import deliberate, quoted_spans
+from service.utterance_shape import deliberate, quoted_spans, explanation_remainder
 from service.reminder_intent import (
     CAPABILITY_INVENTORY_RE, REMINDER_CREATE_RE, has_unsupported_alert_clock,
-    reminder_command_parts, reminder_temporal_text, _NAMED_DATE,
+    reminder_command_parts, reminder_temporal_text, reminder_subject_labelled, _NAMED_DATE,
 )
 from service.tasks.models import SlotValue, TaskPlan, TemporalValue
 from service.tasks.temporal import (
@@ -157,7 +157,7 @@ def _request_clauses(text: str) -> tuple[str, ...]:
         # A schedule BEFORE the infinitive scopes coordinated future content.
         # A later day/alert clause closes that content again. Without this
         # bracket, unquoted coordination is ambiguous (apart from noun lists).
-        if (header_alert and match.start() >= content_start
+        if (header_alert and not reminder_subject_labelled(parts) and match.start() >= content_start
                 and masked[match.start()].isspace()
                 and not _ALERT_DAY.search(masked[content_start:match.start()])
                 and not _IMMEDIATE_SCOPE.search(masked[match.end():])):
@@ -185,7 +185,7 @@ def _request_clauses(text: str) -> tuple[str, ...]:
             boundaries.append(match.span())
     # Also reject a temporal prefix followed by unexplained outer prose even
     # without a conjunction: '...medicine tonight mute my volume'.
-    if parts and parts[1]:
+    if parts and parts[1] and not reminder_subject_labelled(parts):
         temporal = re.compile(_TRAILING_TIME.pattern.replace(
             r"\s*[.!?]*$", r"(?![\w'’])"), re.I)
         # A separate companion owns its own clock/body grammar. Do not apply
@@ -220,7 +220,20 @@ def reminder_request_clauses(text: str) -> tuple[str, ...]:
     Literal addressed sends and named existing-item operations are not outer
     creation requests. A single future subject remains one reminder clause.
     """
-    if CAPABILITY_INVENTORY_RE.search(text) or deliberate(text) is not None:
+    labelled_parts = _reminder_parts(text)
+    if reminder_subject_labelled(labelled_parts):
+        value = labelled_parts[1].strip()
+        if value and value[0] in '\"“\'‘`':
+            spans = quoted_spans(value)
+            if (not spans or spans[0][0] != 0
+                    or value[spans[0][1]:].strip(' .!?\t\r\n')):
+                return ()  # Unexplained outer text is not part of the quote.
+        elif '\n' in value or '\r' in value:
+            return ()  # An unquoted title cannot swallow another command line.
+        if _CONDITIONAL_SCOPE.search(_unquoted(labelled_parts[1])):
+            return ()
+    if (CAPABILITY_INVENTORY_RE.search(text) and not reminder_subject_labelled(labelled_parts)
+            or deliberate(text) is not None):
         return (text,)
     addressed = _MESSAGE_SEND_INTRO.match(text) or _EMAIL_SEND_INTRO.match(text)
     if addressed and CAPABILITY_INVENTORY_RE.fullmatch(addressed.group("body")):
@@ -228,6 +241,9 @@ def reminder_request_clauses(text: str) -> tuple[str, ...]:
     clauses = _request_clauses(text)
     masked = _unquoted(text)
     creation = REMINDER_CREATE_RE.search(masked)
+    parts = _reminder_parts(text)
+    if reminder_subject_labelled(parts) and _CONDITIONAL_SCOPE.search(_unquoted(parts[1])):
+        return ()
     # Conditions and alternatives relate whole actions. Do not erase that
     # relationship by turning their fragments into independent obligations.
     if creation and (not clauses
@@ -259,7 +275,7 @@ def _reminder_header_consumed(command: str) -> bool:
     rest = normalized[match.end():].strip()
     if re.match(r"(?:remember|don'?t\s+forget)\b", match.group(), re.I):
         return True
-    rest = re.sub(r"\s*\bto\s*$", "", rest, flags=re.I).strip()
+    rest = re.sub(r"\s*\b(?:to|titled)\s*$", "", rest, flags=re.I).strip()
     rest = re.sub(r"^for\s+me\b\s*", "", rest, flags=re.I)
     if not rest:
         return True
@@ -376,12 +392,66 @@ def _operation_target(text: str, verbs: str) -> str:
     return _clean_target(match.group("body")) if match else ""
 
 
+def _complete_reminder_delete_clause(text: str, plan: TaskPlan) -> bool:
+    """Pure full-clause authority proof, shared by projected early/late owners."""
+    if plan.intent != 'reminder.delete' or plan.missing_slots:
+        return False
+    target = str(plan.target.value or '')
+    identity = re.escape(target)
+    literal = rf'''(?:{identity}|"{identity}"|“{identity}”|'{identity}'|‘{identity}’|`{identity}`)'''
+    body = (rf'(?:(?:the|my)\s+)?(?:{literal}\s+reminders?|'
+            rf'reminders?\s+(?:called|named|about)\s+{literal})') if target else (
+                r'(?:all|every)(?:\s+(?:of\s+)?(?:my|the))?\s+reminders?')
+    return bool(re.fullmatch(
+        r'\s*(?:please\s+)?(?:delete|remove|clear)\s+' + body + r'[.!?\s]*', text, re.I))
+
+
+def projected_task_capabilities(text: str, plan: TaskPlan) -> dict[str, dict] | None:
+    """Pure complete retained-clause proof shared before every projected owner.
+
+    Unsupported compound intents clarify; they cannot allocate or resolve an
+    early task before the later capability envelope sees the same proof.
+    """
+    if plan.missing_slots:
+        return None
+    if plan.intent == 'reminder.delete' and _complete_reminder_delete_clause(text, plan):
+        return {'clear_reminders': {'scope': plan.parameters['scope'].value,
+                                    'query': str(plan.target.value or '')}}
+    if plan.intent == 'reminder.create':
+        from service.tasks.planner import plan_task, InvalidTaskPlan
+        try:
+            steps = plan_task(TaskPlan.from_dict(plan.to_dict()))
+        except InvalidTaskPlan:
+            return None
+        if len({step.tool for step in steps}) != len(steps):
+            return None  # A single binding cannot represent several authored operands.
+        return {step.tool: dict(step.args) for step in steps}
+    if plan.intent in {'message.send', 'email.send'} and not plan.temporal.absolute_iso:
+        effect = 'send_message' if plan.intent == 'message.send' else 'send_email'
+        recipient = str(plan.recipient.value or '')
+        args = {'to': recipient, 'text' if effect == 'send_message' else 'body': plan.subject.value}
+        if effect == 'send_email':
+            args['subject'] = plan.parameters['email_subject'].value
+        bindings = {effect: args}
+        if not re.fullmatch(r'\+?[\d ()-]+|[^\s@]+@[^\s@]+', recipient):
+            bindings['lookup_contact'] = {'name': recipient}
+        return bindings
+    return None
+
+
 def compile_reminder_delete(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
+    if (remainder := explanation_remainder(text)) is not None:
+        plan = compile_reminder_delete(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     del now
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
-            or not _DELETE_REMINDER.search(text)):
+            or not _DELETE_REMINDER.search(_unquoted(text))):
         return None
     lowered = text.casefold()
     if re.search(r"\b(?:all|every)\b", lowered):
@@ -410,10 +480,17 @@ def compile_reminder_delete(text: str, *, now: datetime | None = None,
 
 def compile_reminder_complete(text: str, *, now: datetime | None = None,
                               turn: int = 0) -> TaskPlan | None:
+    if (remainder := explanation_remainder(text)) is not None:
+        plan = compile_reminder_complete(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     del now
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
-            or not _COMPLETE_REMINDER.search(text)):
+            or not _COMPLETE_REMINDER.search(_unquoted(text))):
         return None
     target = _operation_target(
         text, r"complete|finish|mark|check(?:\s+off)?|cross(?:\s+off)?|tick(?:\s+off)?")
@@ -432,9 +509,16 @@ def compile_reminder_complete(text: str, *, now: datetime | None = None,
 
 def compile_reminder_update(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
+    if (remainder := explanation_remainder(text)) is not None:
+        plan = compile_reminder_update(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
-            or not _UPDATE_REMINDER.search(text)):
+            or not _UPDATE_REMINDER.search(_unquoted(text))):
         return None
     target = _operation_target(text, "update|change|rename|reschedule|move")
     parameters: dict[str, SlotValue] = {}
@@ -569,12 +653,52 @@ def compile_email_send(text: str, *, now: datetime | None = None,
 def compile_task(text: str, *, now: datetime | None = None,
                  turn: int = 0) -> TaskPlan | None:
     """Compile one unambiguous reminder intent in guarded operation order."""
+    remainder = explanation_remainder(text)
+    if remainder is not None:
+        plan = compile_task(remainder, now=now, turn=turn) if remainder else None
+        if plan is not None and projected_task_capabilities(remainder, plan) is None:
+            return None
+        if plan is not None:
+            plan.original_request = text
+        return plan
+    if reminder_subject_labelled(_reminder_parts(text)):
+        # The complete labelled content is literal data. Batch 'for' and
+        # trailing all-day preprocessing must not reinterpret its title words.
+        return compile_reminder_create(text, now=now, turn=turn)
     if CAPABILITY_INVENTORY_RE.search(text):
         return None
     # A prohibition or a sentence about words ('Say "remind me to call Mom
     # tomorrow"') must not become a real task: the model reads those.
     if deliberate(text) is not None:
         return None
+    from service.tasks.reminder_batch import compile_dated_reminders
+    if dated := compile_dated_reminders(text, now=now or datetime.now(), turn=turn):
+        return dated
+    # Explicit all-day modifiers are outer timing instructions, not part of
+    # the title. Quoted occurrences remain literal reminder content.
+    all_day_text = re.sub(
+        r'^(\s*(?:(?:please|can you|could you|would you)\s+)?'
+        r'(?:set|create|add|make|schedule)\s+(?:an?\s+)?)all[ -]day\s+(?=reminders?\b)',
+        r'\1', text, flags=re.I)
+    prefixed_all_day = all_day_text != text
+    if tail := re.search(r'\s+all[ -]day(?:\s+long)?[.!?\s]*$', all_day_text, re.I):
+        if not any(a <= tail.start() < b for a, b in quoted_spans(all_day_text)):
+            all_day_text = all_day_text[:tail.start()]
+    if all_day_text != text:
+        if all_day_plan := compile_reminder_create(all_day_text, now=now, turn=turn):
+            if not prefixed_all_day and not all_day_plan.temporal.absolute_iso:
+                return None
+            all_day_plan.original_request = text
+            all_day_plan.parameters['all_day'] = SlotValue(True, 'explicit', turn=turn)
+            if all_day_plan.temporal.absolute_iso:
+                if not all_day_plan.temporal.defaulted_part_of_day:
+                    all_day_plan.temporal.absolute_iso = ""
+                    all_day_plan.recompute_status()
+                    return all_day_plan  # Ask for one unambiguous date/mode.
+                all_day_plan.temporal.absolute_iso = datetime.fromisoformat(
+                    all_day_plan.temporal.absolute_iso).date().isoformat()
+            all_day_plan.recompute_status()
+            return all_day_plan
     if reply := compile_email_reply(text, now=now, turn=turn):
         return reply
     # An addressed literal-body command fixes the outer speech act. A
@@ -586,6 +710,7 @@ def compile_task(text: str, *, now: datetime | None = None,
                    or compile_email_send(text, now=now, turn=turn))
         if literal:
             return literal
+        return None  # A declined authored body cannot re-arm a reminder verb.
     unquoted = _unquoted(text)
     clauses = reminder_request_clauses(text)
     if (len(clauses) == 2 and _RECEIPT_REQUEST.fullmatch(clauses[1])
@@ -671,6 +796,12 @@ def _clean_subject(value: str) -> str:
 
 def extract_reminder_subject(text: str) -> str:
     parts = _reminder_parts(text)
+    if reminder_subject_labelled(parts):
+        value = parts[1].strip().rstrip('.!?').strip()
+        spans = quoted_spans(value)
+        if spans and spans[0] == (0, len(value)):
+            return value[1:-1].strip()
+        return value.strip()
     if parts and parts[1]:
         return _clean_subject(parts[1])
     patterns = [
@@ -687,6 +818,8 @@ def extract_reminder_subject(text: str) -> str:
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
         if match:
+            if any(left < match.start('subject') < right for left, right in quoted_spans(text)):
+                continue  # A quoted 'to' is not an outer subject introducer.
             subject = match.group("subject")
             return _clean_subject(subject)
     return ""
@@ -702,6 +835,8 @@ def _reminder_temporal_evidence(text: str, *, parts: tuple[str, str] | None = No
     # Split before masking; the introducer's whitespace can otherwise consume
     # a fully masked title and erase the boundary before its trailing day.
     parts = parts or _reminder_parts(text)
+    if reminder_subject_labelled(parts):
+        return _unquoted(parts[0]).rstrip()
     if parts:
         parts = (_unquoted(parts[0]), _unquoted(parts[1]))
     named = None
@@ -772,14 +907,14 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
     parts = _reminder_parts(text)
     command = parts[0] if parts else text
-    if (not parts or CAPABILITY_INVENTORY_RE.search(text)
+    if (not parts or CAPABILITY_INVENTORY_RE.search(command if reminder_subject_labelled(parts) else text)
             or not REMINDER_CREATE_RE.search(text) or _NEGATED.search(command)
             or _OTHER_REMINDER_OPERATION.search(command)
             or len(reminder_request_clauses(text)) != 1):
         return None
 
     subject = extract_reminder_subject(text)
-    reference = extract_event_reference(text)
+    reference = extract_event_reference(command if reminder_subject_labelled(parts) else text)
     temporal_text = _reminder_temporal_evidence(text)
     unsupported_clock = has_unsupported_alert_clock(temporal_text)
     # A parser finding one valid date is not permission to choose it over

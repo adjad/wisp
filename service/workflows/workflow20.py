@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from service.utterance_shape import mask_quoted
+from service.utterance_shape import mask_quoted, is_complete_explanation, explanation_remainder
 
 
 _SOURCE = {
@@ -33,7 +33,7 @@ def _complete_unread(text: str):
     channel = r"(?:e-?mails?|mail|inbox|messages?|texts?|imessages?|mesages)"
     channels = rf"{channel}(?:\s+(?:and|across)\s+{channel})?"
     prefix = r"(?:(?:please|can you|could you)\s+)?"
-    verb = r"(?:show(?: me)?|check|read|list|summari[sz]e|catch me up on)"
+    verb = r"(?P<verb>show(?: me)?|check|read|list|summari[sz]e|catch me up on)"
     date = r"(?:\s+(?:from\s+)?(?P<day>today|yesterday))?"
     patterns = [
         rf"{prefix}{verb}\s+(?:(?:my|our|all|the|only)\s+)*unread\s+{channels}{date}",
@@ -42,7 +42,9 @@ def _complete_unread(text: str):
     ]
     for pattern in patterns:
         if match := re.fullmatch(pattern, text.strip(" .!?"), re.I):
-            return {"unread": True, **({"day": match["day"].casefold()} if match["day"] else {})}
+            args = {"unread": True, **({"day": match["day"].casefold()} if match["day"] else {})}
+            verb = (match.groupdict().get("verb") or "").casefold()
+            return args, verb in {"summarize", "summarise", "catch me up on"}
     return None
 
 
@@ -59,7 +61,7 @@ def _evidence_sources(included: str | None, excluded: str | None,
                       allowed: tuple[str, ...]) -> tuple[str, ...] | None:
     def parse(value):
         found = []
-        for part in re.split(r"\s*(?:,|\band\b|\bor\b)\s*", value, flags=re.I):
+        for part in re.split(r"\s*(?:,|/|\band\b|\bor\b)\s*", value, flags=re.I):
             part = re.sub(r"^(?:my|our|the)\s+", "", part.strip(), flags=re.I)
             names = [name for name in allowed if re.fullmatch(_SOURCE[name], part, re.I)]
             if len(names) != 1:
@@ -78,8 +80,9 @@ def priority_read(text: str) -> PersonalRead | None:
     match = re.fullmatch(
         r"\s*(?:(?:please|can you|could you)\s+)?(?:what\s+(?:should\s+I\s+"
         r"(?:work\s+on|focus\s+on|do|prioriti[sz]e|tackle)|do\s+I\s+need\s+to\s+do)|"
-        r"help\s+me\s+prioriti[sz]e(?:\s+my\s+(?:work|tasks))?)"
-        r"(?:\s+(?P<period>now|today|tomorrow|tmrow|tmrw|(?:this|next)\s+(?:week|month)))?"
+        r"help\s+me\s+prioriti[sz]e(?:\s+my\s+(?:work|tasks))?|"
+        r"what\s+are\s+my\s+priorities|what\s+needs\s+(?:me|my\s+attention))"
+        r"(?:\s+(?P<period>now|today|tomorrow|tommorow|tommorrow|tomorow|tommrow|tmrow|tmrw|(?:this|next)\s+(?:week|month)))?"
         r"(?:\s+(?:using|from)\s+(?P<include>[^.!?;\n]+?)(?:\s+only)?)?"
         r"(?:\s*,?\s*(?:without|excluding|skip)\s+(?P<exclude>[^.!?;\n]+))?[.!?\s]*", text, re.I)
     if not match:
@@ -88,8 +91,36 @@ def priority_read(text: str) -> PersonalRead | None:
     if sources is None:
         return None
     period = (match["period"] or "today").casefold()
-    period = {"now": "today", "tmrow": "tomorrow", "tmrw": "tomorrow"}.get(period, period)
+    period = {"now": "today", **dict.fromkeys(
+        ("tommorow", "tommorrow", "tomorow", "tommrow", "tmrow", "tmrw"), "tomorrow")}.get(period, period)
     args = {"period": period, "include_overdue": True, "include_undated": True,
+            **{f"include_{source}": source in sources for source in _SOURCE}}
+    return PersonalRead(sources, ("collect_task_evidence",), (frozenset({"collect_task_evidence"}),),
+                        {"collect_task_evidence": args})
+
+
+def attention_read(text: str) -> PersonalRead | None:
+    """Importance questions need current bodies, not an unread-header ranking.
+
+    Only complete read-only questions are consumed. A request to compose/send,
+    a source-specific date, or an additional clause keeps its existing owner.
+    """
+    prefix = r"\s*(?:(?:please|can you|could you)\s+)?"
+    patterns = (
+        r"what\s+(?:needs|requires)\s+(?:my\s+)?attention\s+(?:in|on|from|across)\s+(?P<sources>.+?)",
+        r"(?:which|what)\s+(?P<sources>.+?)\s+(?:are|is)\s+(?:important|urgent)",
+        r"which\s+(?P<sources>.+?)\s+should\s+I\s+(?:reply|respond)\s+to(?:\s+first)?",
+    )
+    sources = None
+    for pattern in patterns:
+        if match := re.fullmatch(prefix + pattern + r"[.!?\s]*", text, re.I):
+            sources = _evidence_sources(match["sources"], None, ("email", "messages"))
+            break
+    if re.fullmatch(prefix + r"what\s+should\s+I\s+(?:reply|respond)\s+to\s+first[.!?\s]*", text, re.I):
+        sources = ("email", "messages")
+    if not sources:
+        return None
+    args = {"period": "today", "include_overdue": False, "include_undated": False,
             **{f"include_{source}": source in sources for source in _SOURCE}}
     return PersonalRead(sources, ("collect_task_evidence",), (frozenset({"collect_task_evidence"}),),
                         {"collect_task_evidence": args})
@@ -117,23 +148,12 @@ def weather_read(text: str) -> PersonalRead | None:
 
 
 def calendar_question(text: str) -> PersonalRead | None:
-    """Extract one bounded named Calendar question, keeping identity and range."""
-    match = re.fullmatch(
-        r"\s*(?:please\s+)?(?:when\s+(?:is|does)|what\s+time\s+(?:is|does))\s+"
-        r"(?P<owned>my\s+|our\s+|the\s+)?(?P<title>[A-Za-z0-9][A-Za-z0-9 ’'/-]{0,100}?)"
-        r"(?:\s+(?:start|starts|begin|begins|happen|happens))?"
-        r"(?:\s+(?P<period>today|tomorrow|(?:this|next)\s+(?:week|month)))?[.!?\s]*", text, re.I)
-    if not match:
+    """Bind only complete, explicitly personal named-time requests."""
+    from service.calendar_time_intent import named_calendar_time
+    intent = named_calendar_time(text)
+    if intent is None or not intent.supported or not intent.personal or intent.no_calendar:
         return None
-    title = match["title"].strip()
-    if re.search(r"\b(?:and|then|also|without|except|not|public|web|news|email|messages?|notes?|reminders?|weather|send|remind|create|using|if|unless|from|on|in|at|next|last|this|today|tomorrow|yesterday)\b",title,re.I):
-        return None
-    kinds = r"\b(?:tests?|exams?|examinations?|assessments?|midterms?|finals?|quiz|quizzes|review|standup|dentist|appointment|meeting|event|class|lecture|workshop|interview)\b"
-    if not match["owned"] and not re.search(kinds,title,re.I):
-        return None
-    args = {"calendar_only":True,"query":title}
-    if match["period"]: args["period"] = match["period"].casefold()
-    else: args["days"] = 60
+    args = intent.calendar_args()
     return PersonalRead(("calendar",),("get_upcoming",),(frozenset({"get_upcoming"}),),
                         {"get_upcoming":args}, (("get_upcoming",args),))
 
@@ -212,7 +232,11 @@ def email_summary_excluding_messages(text: str) -> PersonalRead | None:
 
 
 def personal_read(text: str) -> PersonalRead | None:
-    if (typed := priority_read(text) or weather_read(text) or calendar_question(text) or conversation_read(text)
+    if is_complete_explanation(text):
+        return None
+    if (remainder := explanation_remainder(text)) is not None:
+        return personal_read(remainder) if remainder else None
+    if (typed := priority_read(text) or attention_read(text) or weather_read(text) or calendar_question(text) or conversation_read(text)
             or email_summary_excluding_messages(text)) is not None:
         return typed
     if (daily := daily_read(text)) is not None:
@@ -278,7 +302,12 @@ def personal_read(text: str) -> PersonalRead | None:
     # Named people, accounts, topics, exclusions, ranges and numeric dates keep
     # their full request and reach model/identity resolution.
     direct = ()
-    if unread and set(sources) <= {"email", "messages"} and (args := _complete_unread(text)):
-        direct = tuple(("view_emails" if name == "email" else "view_messages", dict(args)) for name in sources)
+    if unread and set(sources) <= {"email", "messages"} and (complete := _complete_unread(text)):
+        args, summary = complete
+        # Structured reads return tool output directly, without narration.
+        # Preserve the requested presentation instead of exposing raw bodies
+        # and identifiers when the user asked for a bounded digest.
+        prefix = "summarize" if summary else "view"
+        direct = tuple((f"{prefix}_{'emails' if name == 'email' else 'messages'}", dict(args)) for name in sources)
         bindings.update({tool: dict(args) for tool, _ in direct})
     return PersonalRead(sources, tools, tuple(frozenset(_TOOLS[name]) for name in sources), bindings, direct)

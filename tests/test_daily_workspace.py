@@ -233,6 +233,7 @@ def cached_sources(monkeypatch):
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
     db.executescript("CREATE TABLE today_source_sync(source TEXT,payload TEXT); CREATE TABLE commitments(id TEXT,source TEXT,source_id TEXT,title TEXT,when_ts REAL,kind TEXT,status TEXT);")
+    db.execute('CREATE TEMP VIEW scheduled_commitments AS SELECT *, 0 AS all_day, NULL AS due_date FROM commitments')
     db.execute("INSERT INTO today_source_sync VALUES('reminders',?)", (json.dumps(state()["sources"]["reminders"]),))
     class Store:
         view = dict(freshness="current", status="complete", total=0)

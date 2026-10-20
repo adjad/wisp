@@ -4,6 +4,18 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
 
 @main struct PolicyCheck {
     static func main() {
+        let due = RemindersWriter.allDayComponents("2026-10-20")!
+        precondition(due.year == 2026 && due.month == 10 && due.day == 20)
+        precondition(due.hour == nil && due.minute == nil && due.second == nil && due.timeZone == nil)
+        for invalid in ["2026-02-30", "2026-13-01", "2026-00-20", "2026-10-20T00:00", "0000-01-01"] {
+            precondition(RemindersWriter.allDayComponents(invalid) == nil)
+        }
+        precondition(RemindersWriter.exactTarget(kind: "update_reminder", expectedDueTs: 2e9,
+            expectedDueDate: "2026-10-20") == .allDay("2026-10-20"))
+        precondition(RemindersWriter.exactTarget(kind: "delete_reminder", expectedDueTs: 2e9,
+            expectedDueDate: "2026-02-30") == nil)
+        precondition(RemindersWriter.exactTarget(kind: "delete_reminder", expectedDueTs: nil,
+            expectedDueDate: "2026-10-20") == nil)
         let active: Set<String> = ["active-list"]
         precondition(RemindersWriter.eligibleForIncompleteSync(
             calendarID: "active-list", reminderCalendarIDs: active,

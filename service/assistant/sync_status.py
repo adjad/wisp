@@ -62,6 +62,7 @@ def source_status(source: str) -> dict:
                 "read_source": email._email_read_source,
                 "warning": email.email_freshness_warning(),
                 "accounts": email.email_source_details(),
+                "body_scan": email.raw_email_scan_status(),
                 "fresh": bool(email.email_source_details()) and all(
                     row["fresh"] for row in email.email_source_details())}
     if source == "messages":
