@@ -537,6 +537,36 @@ def _resolve_reference_time(plan: TaskPlan, assistant_store, *, now: datetime) -
     return ""
 
 
+def prepare_batch_correction_guard(store, sid: str, prompt: str) -> TaskTurn | None:
+    """A prior multi-item outcome grants no implicit single-item edit target.
+
+    Pure session reads only. The entrypoint runs this negative boundary before
+    model/planner/shadow routing; it must not depend on positive tool steering.
+    """
+    from service.tasks.reminder_batch import is_batch, batch_correction_reference
+    if not (batch_correction_reference(prompt) or _CONTEXT_DAY_CORRECTION.match(prompt)):
+        return None
+    raw = store.active_task(sid) or store.latest_task(sid)
+    if not raw:
+        return None
+    plan = TaskPlan.from_dict(raw)
+    items = plan.parameters.get('items')
+    if not is_batch(plan) or not isinstance(items.value, list) or len(items.value) < 2:
+        return None
+    # Do not steal a later calendar/read/send context from an old stored batch.
+    tools = store.last_assistant_tools(sid)
+    if tools:
+        if any(name.strip() != 'add_reminder' for name in tools.split(',')):
+            return None
+    else:
+        last = store.last_assistant_turn(sid)
+        if last and not last.startswith('Which reminder do you want to change?'):
+            return None
+    return _turn(plan, 'Which reminder do you want to change? Please name its subject '
+        'and the date or time to use. Nothing has been changed.',
+        'batch_item_clarification', started=time.perf_counter())
+
+
 def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                       persist: bool = True, now: datetime | None = None,
                       contacts_resolver=None, mail_reader=None,
@@ -545,6 +575,8 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     """Create or advance one typed task without consulting a model."""
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
+    if guard := prepare_batch_correction_guard(store, sid, prompt):
+        return guard
     started = time.perf_counter()
     now = now or datetime.now()
     contacts_resolver = contacts_resolver or _default_contacts_resolver

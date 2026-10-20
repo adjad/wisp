@@ -122,7 +122,42 @@ def test_grounded_narration_is_not_rewritten():
     assert T.verify_evidence_narration(text, payload()) == text
 
 
-def test_overclaim_gets_one_correction_without_repeating_reads(evidence_tool):
+@pytest.mark.parametrize('claim', ['No reply from you yet in the cache.',
+    'You have not replied to this message.', "You haven't responded yet.",
+    'You did not reply.', 'This request remains unanswered.',
+    'You still have not replied.', 'You have yet to respond.',
+    'The request is still awaiting your response.', 'No reply yet.',
+    'No one has replied to this request.',
+    "I can't verify whether you have replied, but you have not replied.",
+    'Whether you have replied is unclear; no reply from you was found.',
+    "I can't determine whether there is a reply from you, and there is no reply from you.",
+    'We may not know if you responded; this request remains unanswered.',
+    'No one responded to this request.', 'We have not seen you reply to the message.',
+    'The question is waiting on your response.',
+    "I can't verify whether you replied yet no response from you was recorded.",
+    "I can't confirm you replied because the request is still awaiting your response.",
+    "I can't tell whether you replied; however, the question is waiting on your response."])
+def test_partial_communications_do_not_establish_reply_absence(claim):
+    data = json.loads(payload())
+    data['sources']['messages']['coverage'] = {'status':'partial','skipped':576,'truncated':9870}
+    data['sources']['messages']['omitted'] = 1996
+    answer = T.verify_evidence_narration(claim, json.dumps(data))
+    assert claim not in answer and 'Source coverage' in answer
+
+
+@pytest.mark.parametrize('text', [
+    "I can't tell whether you have not replied from these partial excerpts.",
+    "If you haven't replied, consider responding.",
+    'The message says "You have not replied." Reply status cannot be verified.',
+    'An outgoing message from you appears after the request.',
+    'This message asks a question; check whether it still needs a reply.',
+])
+def test_reply_uncertainty_quotes_and_positive_records_are_preserved(text):
+    assert T.verify_evidence_narration(text, payload()) == text
+
+
+@pytest.mark.parametrize("claim", ["That's the only thing in the window.", "No reply from you yet in the cache."])
+def test_overclaim_gets_one_correction_without_repeating_reads(evidence_tool, claim):
     class Correction(Client):
         async def stream_events(self, model, messages, *, tools=None, **kwargs):
             if self.calls == 0:
@@ -133,7 +168,7 @@ def test_overclaim_gets_one_correction_without_repeating_reads(evidence_tool):
                 if self.calls > 2:
                     assert not tools and kwargs.get('tool_choice') == 'none'
                 yield {'kind':'final','message':{'role':'assistant','content':(
-                    "That's the only thing in the window." if self.calls == 2 else
+                    claim if self.calls == 2 else
                     'The returned Calendar records show the meeting. Coverage is incomplete.')}}
     client = Correction(False)
     out = run(client)

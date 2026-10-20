@@ -1607,6 +1607,21 @@ async def agent(body: dict[str, Any]):
             recent_users = store.recent_user_turns(sid) if sess else []
             last_tools = store.last_assistant_tools(sid) if sess else None
 
+            # A completed multi-reminder task does not identify which item an
+            # "it" correction means. End the turn before any inference or
+            # planner/shadow adaptation can reopen an implicit last-item write.
+            from service.tasks.engine import prepare_batch_correction_guard
+            batch_guard = (prepare_batch_correction_guard(store, sid, prompt)
+                           if sess and not literal_envelope else None)
+            if batch_guard:
+                await emit({"type": "task_plan", "event": batch_guard.event,
+                            "task": batch_guard.plan.to_dict(), "trace": batch_guard.trace})
+                await emit({"type": "text", "text": batch_guard.response})
+                await emit({"type": "done"})
+                persist_user_turn()
+                store.add_turn(sid, "assistant", batch_guard.response)
+                return
+
             # Decide ownership BEFORE any positive rule/typed compiler runs.
             # Model identity is the configured agent target, not a filename
             # allowlist that would silently exclude a renamed trained model.

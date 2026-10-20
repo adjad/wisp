@@ -2237,6 +2237,45 @@ async def run_agent(
         previews = {name for name, outcome in latest.items() if outcome.status == "preview"}
         return set(group or ()) - (attempted_tools - previews)
 
+    def _reminder_update_receipts() -> str | None:
+        """Project update-only effects; model prose is not an effect receipt."""
+        actions = [(name, outcome) for name, outcome in tool_outcomes
+                   if outcome.effect != "read"]
+        if not actions or any(name != "update_reminder" for name, _ in actions):
+            return None
+        if test_mode:
+            return ("Dry run only — planned update_reminder. No message, email, reminder, "
+                    "file, calendar item, or setting was changed.")
+        receipts = []
+        incomplete = _unmet_group() is not None
+        for _, outcome in actions:
+            if outcome.status == "succeeded" and outcome.text.startswith("Reminder updated:"):
+                receipts.append(outcome.text)
+            else:
+                incomplete = True
+                if (outcome.status in {"failed", "denied", "needs_input", "no_match", "unsupported"}
+                        and not outcome.facts.get("completion_uncertain")):
+                    receipts.append("Reminder change not completed: " + _user_facing_failure(outcome.text))
+                else:
+                    receipts.append("I couldn't verify the reminder change. Check the reminder before retrying.")
+        # A resolution-only lookup need not become a second answer. Explicitly
+        # required independent reads still get their deterministic readable view.
+        required_reads = set().union(*(group for group in required_tool_groups
+                                      if "update_reminder" not in group)) if required_tool_groups else set()
+        readable = [(name, result) for name, result in clean_results
+                    if name in required_reads and any(
+                        seen == name and outcome.effect == "read" and outcome.status == "succeeded"
+                        for seen, outcome in tool_outcomes)]
+        if readable:
+            receipts.append(_merge_results(_readable_results(readable)))
+        for name, outcome in tool_outcomes:
+            if name in required_reads and outcome.effect == "read" and outcome.status != "succeeded":
+                receipts.append(f"Required source result ({name}): " + _user_facing_failure(outcome.text))
+                incomplete = True
+        if incomplete:
+            receipts.append("I couldn't complete every requested step.")
+        return "\n".join(receipts)
+
     def _verified_final(text: str) -> str:
         uncertain = [outcome for name, outcome in tool_outcomes
                      if name in {"send_email", "send_message", "forward_email", "reply_to_email"}
@@ -2258,6 +2297,8 @@ async def run_agent(
             planned = ", ".join(dict.fromkeys(name for name, _ in actions))
             return (f"Dry run only — planned {planned}. No message, email, reminder, "
                     "file, calendar item, or setting was changed.")
+        if (updates := _reminder_update_receipts()) is not None:
+            return updates
         bad = [(name, outcome) for name, outcome in actions
                if outcome.status in {"denied", "failed", "needs_input", "unsupported"}]
         if bad and not any(outcome.status == "succeeded" for _, outcome in actions):
@@ -2501,7 +2542,8 @@ async def run_agent(
             if _direct_outcome.effect != "read":
                 if _name in _TERMINAL_OUTBOUND_DENIALS:
                     return await _finish_denied_outbound(emit)
-                response = "The requested action was not completed because approval was denied."
+                response = (_reminder_update_receipts() or
+                            "The requested action was not completed because approval was denied.")
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -2514,7 +2556,8 @@ async def run_agent(
         elif _direct_outcome.status in {"failed", "needs_input", "no_match", "unsupported"}:
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
-                response = "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result)
+                response = (_reminder_update_receipts() or
+                            "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result))
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -2562,6 +2605,7 @@ async def run_agent(
         else:
             response = (f"I couldn’t retrieve the required {name} source, so I "
                         "didn’t prepare or send a partial result.")
+        response = _reminder_update_receipts() or response
         await emit({"type": "text", "text": response})
         await emit({"type": "done"})
         return response
@@ -2592,9 +2636,10 @@ async def run_agent(
             and _unmet_group() is None
             and last_tier is Tier.ALLOW and last_tool_result.strip()
             and not is_tool_error(last_tool_result)):
-        await emit({"type": "text", "text": last_tool_result})
+        response = _reminder_update_receipts() or last_tool_result
+        await emit({"type": "text", "text": response})
         await emit({"type": "done"})
-        return last_tool_result
+        return response
 
     if public_web_synthesis:
         # The router has already executed the public reads on this Mac.  A
@@ -3342,8 +3387,8 @@ async def run_agent(
                 evidence_narration_retried = True
                 msgs.append({'role':'assistant', 'content':text})
                 msgs.append({'role':'user', 'content':(
-                    'Correct the unsupported exhaustive claim in your answer. These are bounded cached sources, '
-                    'so you cannot say no other tasks exist, only one thing matters, or that an unverified source '
+                    'Correct the unsupported absence or reply-status claim in your answer. These are bounded cached sources; they do not establish whether the user has replied. '
+                    'Do not say no other tasks exist, only one thing matters, or that an unverified source '
                     'has no requests. Keep useful facts and exact source dates from the results already returned. '
                     'Qualify coverage and any missing sources. Do not call tools again.')})
                 continue
@@ -4010,7 +4055,8 @@ async def run_agent(
                 if outcome.effect != "read":
                     if name in _TERMINAL_OUTBOUND_DENIALS:
                         return await _finish_denied_outbound(emit)
-                    response = "The requested action was not completed because approval was denied."
+                    response = (_reminder_update_receipts() or
+                                "The requested action was not completed because approval was denied.")
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response
@@ -4025,7 +4071,8 @@ async def run_agent(
                 if outcome.effect != "read":
                     # Retrying a write after an uncertain response can create
                     # duplicates; let the user correct the arguments first.
-                    response = "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result)
+                    response = (_reminder_update_receipts() or
+                                "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result))
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response
@@ -4136,9 +4183,10 @@ async def run_agent(
                 and not is_tool_error(last_tool_result)):
             if reasoning:
                 await emit({"type": "reasoning", "text": reasoning})
-            await emit({"type": "text", "text": last_tool_result})
+            response = _reminder_update_receipts() or last_tool_result
+            await emit({"type": "text", "text": response})
             await emit({"type": "done"})
-            return last_tool_result
+            return response
 
     # Step limit reached without the model ever producing a final answer.
     # Surface whatever the last tool actually returned instead of a bare,

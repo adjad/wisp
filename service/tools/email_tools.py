@@ -877,7 +877,8 @@ def provider_history_snapshot(provider, *, expected_receipt=None, required_refs=
     return provider.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
 
 
-def raw_email_snapshot(*, expected_generation: int | None = None) -> RawEmailSnapshot | None:
+def raw_email_snapshot(*, expected_generation: int | None = None,
+                       diagnostics: dict | None = None) -> RawEmailSnapshot | None:
     """Read once for coherent provenance, or None for ineligible evidence.
 
     Coverage describes the native recent body scan, not all mailbox history.
@@ -887,9 +888,30 @@ def raw_email_snapshot(*, expected_generation: int | None = None) -> RawEmailSna
     """
     with _raw_snapshot_lock:
         snapshot = _raw_mail_snapshot
-        if (snapshot is None or _email_available is not True or not snapshot.complete
-                or not 0 <= time.time() - snapshot.synced_at <= 20 * 60
-                or (expected_generation is not None and expected_generation != snapshot.generation)):
+        # Fixed, non-sensitive reasons sampled under the SAME admission lock.
+        # Never return account labels, bodies, identifiers or raw error strings.
+        reasons = []
+        if _email_available is not True:
+            reasons.append('availability_unknown' if _email_available is None else 'source_unavailable')
+        if snapshot is None:
+            reasons.append('missing_snapshot')
+        else:
+            if not snapshot.complete:
+                reasons.append('snapshot_incomplete')
+                if not snapshot.decode_complete:
+                    reasons.append('decode_incomplete')
+                if not snapshot.identity_complete:
+                    reasons.append('identity_incomplete')
+                if snapshot.failed_accounts:
+                    reasons.append('account_scan_failed')
+            age = time.time() - snapshot.synced_at
+            if not 0 <= age <= 20 * 60:
+                reasons.append('snapshot_stale' if age > 20 * 60 else 'snapshot_clock_invalid')
+            if expected_generation is not None and expected_generation != snapshot.generation:
+                reasons.append('generation_mismatch')
+        if diagnostics is not None:
+            diagnostics.update(eligible=not reasons, reason_codes=reasons)
+        if reasons:
             return None
         return snapshot
 

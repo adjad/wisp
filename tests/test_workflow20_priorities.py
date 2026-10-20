@@ -259,6 +259,36 @@ def test_ineligible_mail_snapshot_is_unknown_not_header_substitution(monkeypatch
     if problem == "unavailable": monkeypatch.setattr(M, "_email_available", False)
     result = dispatch()["sources"]["email"]
     assert result["records"] == [] and "unknown" in result["state"]
+    expected = {'stale':'snapshot_stale', 'missing':'missing_snapshot',
+                'partial':'snapshot_incomplete', 'unavailable':'source_unavailable'}[problem]
+    assert expected in result['eligibility_reason_codes']
+
+
+def test_mail_diagnostic_is_coherent_and_does_not_relax_identity_admission(monkeypatch):
+    publish_mail(mail('PRIVATE BODY', mid=''))
+    diagnostics = {}
+    assert M.raw_email_snapshot(diagnostics=diagnostics) is None
+    assert diagnostics['eligible'] is False
+    assert 'identity_incomplete' in diagnostics['reason_codes']
+    assert 'PRIVATE BODY' not in json.dumps(diagnostics)
+    assert 'Synthetic' not in json.dumps(diagnostics)
+    evidence = dispatch()['sources']['email']
+    assert not evidence['records'] and 'identity_incomplete' in evidence['eligibility_reason_codes']
+    rendered = T.render_coverage_text(json.dumps({'task_window':{},'sources':{'email':evidence}}))
+    assert 'some messages could not be verified' in rendered
+
+
+def test_mail_diagnostics_keep_original_generation_and_age_checks(monkeypatch):
+    publish_mail(mail())
+    snapshot = M.raw_email_snapshot()
+    diagnostics = {}
+    assert M.raw_email_snapshot(expected_generation=snapshot.generation, diagnostics=diagnostics) is snapshot
+    assert diagnostics == {'eligible':True, 'reason_codes':[]}
+    assert M.raw_email_snapshot(expected_generation=snapshot.generation + 1, diagnostics=diagnostics) is None
+    assert diagnostics['reason_codes'] == ['generation_mismatch']
+    monkeypatch.setattr(M, '_raw_mail_snapshot', replace(snapshot, synced_at=STAMP + 1))
+    assert M.raw_email_snapshot(diagnostics=diagnostics) is None
+    assert diagnostics['reason_codes'] == ['snapshot_clock_invalid']
 
 
 @pytest.mark.parametrize("source", ["calendar", "reminders", "email", "messages", "notes"])
@@ -291,7 +321,7 @@ def test_immutable_mail_generation_consumed_once_even_if_next_publish_lands(monk
     publish_mail(mail("Original exact evidence."))
     original = M.raw_email_snapshot
     snapshot = original()
-    def read():
+    def read(**kwargs):
         publish_mail(mail("Replacement body.", mid="replacement"))
         return snapshot
     accessor = Mock(side_effect=read)
