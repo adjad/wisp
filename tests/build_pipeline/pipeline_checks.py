@@ -63,16 +63,8 @@ class PipelineTests(unittest.TestCase):
             path = bundle / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture")
-        corpus = bundle / "Contents/Resources/WispApp_WispApp.bundle/Contents/Resources/assistant-task-corpus-v1.jsonl"
-        corpus.parent.mkdir(parents=True, exist_ok=True)
+        corpus = bundle / "Contents/Resources/assistant-task-corpus-v1.jsonl"
         corpus.write_bytes((ROOT / "training/assistant-task-corpus-v1/cases.jsonl").read_bytes())
-        resource_info = corpus.parents[1] / "Info.plist"
-        resource_info.write_bytes(plistlib.dumps({
-            "CFBundleIdentifier": "app.WispApp.resources",
-            "CFBundleInfoDictionaryVersion": "6.0",
-            "CFBundleName": "WispApp_WispApp",
-            "CFBundlePackageType": "BNDL",
-        }))
         (bundle / "Contents/MacOS/Wisp").chmod(0o755)
         (bundle / "Contents/Resources/backend/.venv/bin/python3").chmod(0o755)
         (bundle / "Contents/Resources/backend/.venv/bin/python").symlink_to("python3")
@@ -103,14 +95,12 @@ class PipelineTests(unittest.TestCase):
     def test_valid_bundle(self):
         p.validate_structure(self.fixture(), self.meta)
 
-    def test_valid_bundle_with_flat_swiftpm_resource_directory(self):
+    def test_bundle_rejects_corpus_that_differs_from_training_rows(self):
         bundle = self.fixture()
-        swift_bundle = bundle / "Contents/Resources/WispApp_WispApp.bundle"
-        current = swift_bundle / "Contents/Resources/assistant-task-corpus-v1.jsonl"
-        alternate = swift_bundle / "Resources/assistant-task-corpus-v1.jsonl"
-        alternate.parent.mkdir()
-        current.replace(alternate)
-        p.validate_structure(bundle, self.meta)
+        corpus = bundle / "Contents/Resources/assistant-task-corpus-v1.jsonl"
+        corpus.write_bytes(corpus.read_bytes() + b"\n")
+        with self.assertRaisesRegex(p.BuildError, "Packaged assistant task corpus differs"):
+            p.validate_structure(bundle, self.meta)
 
     def test_engine_json_requires_all_engine_pieces(self):
         bundle = self.fixture()

@@ -81,12 +81,18 @@ enum AssistantTaskCorpusCommand {
     }
 
     private static func load() throws -> [AssistantTaskCorpusCase] {
-#if SWIFT_PACKAGE
-        let resourceBundle = Bundle.module
-#else
-        let resourceBundle = Bundle.main
+        var candidates: [URL] = []
+        if let resourceURL = Bundle.main.resourceURL {
+            candidates.append(resourceURL.appendingPathComponent("assistant-task-corpus-v1.jsonl"))
+        }
+#if DEBUG && SWIFT_PACKAGE
+        let packageResource = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources/assistant-task-corpus-v1.jsonl")
+        candidates.append(packageResource)
 #endif
-        guard let url = resourceBundle.url(forResource: "assistant-task-corpus-v1", withExtension: "jsonl"),
+        guard let url = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
               let contents = try? String(contentsOf: url, encoding: .utf8) else {
             throw CommandError.resourceUnavailable
         }
