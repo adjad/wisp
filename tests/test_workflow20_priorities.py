@@ -182,12 +182,11 @@ def test_exact_account_chat_and_content_filters_do_not_broaden(monkeypatch):
     assert "unknown" in result["sources"]["email"]["state"]
 
 
-def test_case_colliding_account_labels_select_one_exact_identity():
+def test_legacy_case_colliding_account_labels_fail_closed():
     publish_mail(mail("Upper account body", mid="upper", account="Work"),
                  mail("Lower account body", mid="lower", account="work"))
     result = dispatch(email_account="Work")["sources"]["email"]
-    assert [row["message_id"] for row in result["records"]] == ["upper"]
-    assert [row["account_id"] for row in result["records"]] == ["native.Work"]
+    assert not result["records"] and "unknown" in result["state"]
     result = dispatch(email_account="WORK")["sources"]["email"]
     assert not result["records"] and "unknown" in result["state"]
 
@@ -443,3 +442,107 @@ def test_period_word_passed_as_query_is_not_a_content_filter(isolated):
 def test_records_carry_local_times_so_the_model_never_converts_epochs(isolated):
     row = dispatch(include_email=False, include_messages=False, include_notes=False)["sources"]["calendar"]["records"][0]
     assert row["when_local"] and row["end_local"] and not row["when_local"].isdigit()
+
+
+def v2_coverage(*inventory):
+    return {'version': 2, 'account_inventory': [{'id': key, 'label': label} for key, label in inventory],
+            'successful_account_ids': [key for key, _ in inventory], 'failed_account_ids': [], 'complete': True}
+
+
+def test_stable_ids_admit_duplicate_labels_and_empty_inventory_accounts():
+    row = {**mail(account='Google'), 'account_id': 'native-A'}
+    coverage = v2_coverage(('native-A', 'Google'), ('native-B', 'Google'))
+    candidate = M._raw_snapshot_candidate(email_raw([row]), coverage, STAMP)
+    assert candidate.complete
+    assert candidate.account_inventory == (('native-A', 'Google'), ('native-B', 'Google'))
+
+
+@pytest.mark.parametrize('label', ['Google', 'google'])
+def test_v2_scopes_use_full_inventory_before_message_matches(monkeypatch, label):
+    monkeypatch.setattr(M, '_headers', '')
+    monkeypatch.setattr(M, '_swift_headers', '')
+    monkeypatch.setattr(M, '_external_accounts', {})
+    raw = email_raw([{**mail(account='Google'), 'account_id': 'native-A'}])
+    M.cache_raw_emails(raw, v2_coverage(('native-A', 'Google'), ('native-B', label)))
+    assert len(M.raw_email_snapshot().rows) == 1
+    assert len(dispatch()['sources']['email']['records']) == 1
+    ambiguous = dispatch(email_account='Google')['sources']['email']
+    assert not ambiguous['records'] and 'Which one?' in ambiguous['state']
+    assert len(dispatch(email_account='native-A')['sources']['email']['records']) == 1
+    assert not dispatch(email_account='native-B')['sources']['email']['records']
+    assert not dispatch(email_account='native-C')['sources']['email']['records']
+    assert not M._raw_account_scope(M._parse_raw(), 'native-B')[0]
+    assert 'Which one?' in M._raw_account_scope(M._parse_raw(), 'Google')[1]
+    assert 'several email accounts' in asyncio.run(M.summarize_inbox_recent(account='Google')).lower()
+    assert len(M.native_email_accounts()) == 2
+
+
+@pytest.mark.parametrize('change', [
+    {'version': 1}, {'version': 3}, {'version': '2'}, {'version': True}, {'version': None},
+    {'account_inventory': {}}, {'account_inventory': [None]},
+    {'account_inventory': [{'id': 'native-A', 'label': 'Google'}, {'id': 'native-A', 'label': 'Google'}]},
+    {'account_inventory': [{'id': '', 'label': 'Google'}]},
+    {'account_inventory': [{'id': 'native-A', 'label': 'Google\nunsafe'}]},
+    {'account_inventory': [{'id': 'native-A\x02unsafe', 'label': 'Google'}]},
+    {'account_inventory': [{'id': 'native-A', 'label': 'Other'}]},
+    {'successful_account_ids': []}, {'successful_account_ids': ['native-A', 'native-A']},
+    {'successful_account_ids': ['native-A', 'unknown']},
+    {'failed_account_ids': ['native-A']}, {'failed_account_ids': ['unknown']},
+    {'successful_account_ids': [], 'failed_account_ids': ['native-A']},
+    {'decode_complete': False}, {'complete': False},
+])
+def test_v2_rejects_malformed_or_incomplete_coverage_without_legacy_fallback(change):
+    raw = email_raw([{**mail(account='Google'), 'account_id': 'native-A'}])
+    envelope = {**v2_coverage(('native-A', 'Google')), **change,
+                'accounts': ['Google'], 'failed_accounts': []}
+    assert not M._raw_snapshot_candidate(raw, envelope, STAMP).complete
+
+
+def test_v2_rows_require_native_identity_and_complete_decoding():
+    first = {**mail(account='Google', mid='shared'), 'account_id': 'native-A'}
+    second = {**first, 'account_id': 'native-B'}
+    coverage = v2_coverage(('native-A', 'Google'), ('native-B', 'Google'))
+    assert M._raw_snapshot_candidate(email_raw([first, second]), coverage, STAMP).complete
+    for rows in ([first, {**first, 'body': 'conflict'}], [{**first, 'account_id': 'unknown'}],
+                 [{**first, 'message_id': ''}], [{**first, 'account_id': ''}]):
+        assert not M._raw_snapshot_candidate(email_raw(rows), coverage, STAMP).complete
+    assert not M._raw_snapshot_candidate(email_raw([first]) + 'malformed', coverage, STAMP).complete
+
+
+def test_v2_metadata_is_owned_immutable_and_failure_revokes_publication(monkeypatch):
+    raw = email_raw([{**mail(account='Google'), 'account_id': 'native-A'}])
+    coverage = v2_coverage(('native-A', 'Google'), ('native-B', 'Google'))
+    M.cache_raw_emails(raw, coverage)
+    snapshot = M.raw_email_snapshot()
+    M.set_email_availability(True)
+    witness = M.prepare_publication_witness(snapshot)
+    assert witness is not None
+    coverage['account_inventory'][0]['label'] = 'Changed'
+    coverage['account_inventory'].append({'id': 'unknown', 'label': 'Injected'})
+    coverage['successful_account_ids'].clear()
+    assert M.raw_email_snapshot() is snapshot
+    assert M.raw_reference_metadata()['account_inventory'] == (('native-A', 'Google'), ('native-B', 'Google'))
+    with pytest.raises(TypeError):
+        snapshot.rows[0]['account_id'] = 'other'
+    assert M.prepare_publication_witness(replace(snapshot)) is None
+    M.cache_raw_emails(raw, {**v2_coverage(('native-A', 'Google')), 'failed_account_ids': ['native-A']})
+    assert M.raw_email_snapshot() is None
+    assert M.prepare_publication_witness(snapshot) is None
+    # Restart restores display bytes only: process-local inventory cannot be reused.
+    monkeypatch.setattr(M, '_raw_mail_snapshot', None)
+    monkeypatch.setattr(M, '_raw_reference_scan', {})
+    assert M.raw_email_snapshot() is None
+    assert not M.raw_reference_metadata()['complete']
+    markers = 'C2\x01Google\x01native-A\x010\x010\x010\nC2\x01Google\x01native-B\x010\x010\x010\n'
+    monkeypatch.setattr(M, '_headers', markers)
+    monkeypatch.setattr(M, '_swift_headers', markers)
+    monkeypatch.setattr(M, '_external_accounts', {})
+    assert 'Which one?' in M._raw_account_scope(list(snapshot.rows), 'Google')[1]
+
+
+def test_empty_v2_and_unique_legacy_remain_valid_but_ambiguous_legacy_is_blocked():
+    assert M._raw_snapshot_candidate('', v2_coverage(), STAMP).complete
+    assert M._raw_snapshot_candidate('', v2_coverage(('native-A', 'Google'), ('native-B', 'Google')), STAMP).complete
+    assert M._raw_snapshot_candidate(email_raw([mail()]), {'accounts': ['Work'], 'failed_accounts': [], 'complete': True}, STAMP).complete
+    for labels in (['Google', 'Google'], ['Google', 'google']):
+        assert not M._raw_snapshot_candidate('', {'accounts': labels, 'failed_accounts': [], 'complete': True}, STAMP).complete

@@ -867,7 +867,7 @@ def test_all_native_observers_revoke_or_preserve_through_real_cache_and_admissio
     h = observer_replay
     flow = native_observer_flows[case]
     native_case = case.split("_", 1)[1]
-    blocked = native_case in {"empty", "duplicate", "unavailable", "closed", "closed_mid", "closed_reopened",
+    blocked = native_case in {"empty", "unavailable", "closed", "closed_mid", "closed_reopened",
         "closed_before_identity", "closed_between", "closed_batch", "identity_failed", "identity_malformed", "identity_empty", "changed", "expanded"}
     for request in flow["requests"]:
         h.replay(request)
@@ -879,13 +879,14 @@ def test_all_native_observers_revoke_or_preserve_through_real_cache_and_admissio
         assert h.email._history == h.cache.load("email_history") == ""
         assert h.email._raw_emails == h.cache.load("email_raw") == ""
         assert h.email._raw_reference_scan["complete"] is True
-    if case in {"raw_closed", "raw_duplicate", "raw_unavailable", "raw_body_failed"}:
+    if case in {"raw_closed", "raw_unavailable", "raw_body_failed"}:
         assert h.email._raw_emails == h.cache.load("email_raw") == "original body"
         assert h.email._raw_reference_scan["complete"] is False
     if case == "raw_partial":
         assert flow["content_calls"] == 2 and h.email._raw_reference_scan["accounts"] == ["A"]
         assert h.email._raw_reference_scan["failed_accounts"] == ["B"] and h.email._raw_reference_scan["complete"] is False
-        assert h.email._raw_emails == h.cache.load("email_raw") == "synthetic body"
+        assert h.email._raw_emails == h.cache.load("email_raw")
+        assert h.email._parse_raw()[0]['account_id'] == 'one'
     expected_history = {
         "history_body_failed": "C3\x01A\x01one\x01failed\n",
         "history_partial": "C3\x01B\x01two\x01failed\n",
@@ -1138,3 +1139,72 @@ def test_unicode_scalar_boundary_matches_backend_with_one_native_grapheme(native
     for request in flow["requests"]:
         h.replay(request)
     assert h.due() == "submitted" and len(h.calls) == 1
+
+
+def test_actual_native_scan_builders_compile_by_stable_identity(tmp_path):
+    """Compile production Swift generators and AppleScript, without executing Mail."""
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    source = (root / 'app/Sources/WispApp/MailReader.swift').read_text()
+    builders = source[source.index('    private func esc('):source.index('    // Enabled accounts, one native-ID/name pair')]
+    target = source[source.index('    private struct AccountTarget {'):source.index('    /// Current enabled IDs')]
+    # The native account target and every generator below come from production.
+    generated = tmp_path / 'ScanCompile.swift'
+    generated.write_text('import Foundation\n@main struct ScanCompile {\n' + target + builders + r'''
+        static func main() {
+            let generator = ScanCompile()
+            for target in [AccountTarget(id: "native-A", label: "Google"),
+                           AccountTarget(id: "native-B", label: "Google"),
+                           AccountTarget(id: "native-quote\"\\", label: "gOOgle \"\\")] {
+                let selector = generator.inboxSource(target)
+                precondition(selector.contains("every account whose id is"))
+                precondition(selector.contains("of scanAccount"))
+                precondition(selector.contains("enabled of scanAccount"))
+                precondition(!selector.contains("of account \""))
+                let sources = [generator.headerScript(account: target, limit: 2),
+                               generator.rawScript(account: target, limit: 2),
+                               generator.historyBatchScript(account: target, start: 1, count: 2),
+                               generator.historyBatchScript(account: target, start: 2, count: 2, cutoff: 1700000000)]
+                for source in sources {
+                    precondition(source.contains("Message account identity changed."))
+                    var error: NSDictionary?
+                    precondition(NSAppleScript(source: source)!.compileAndReturnError(&error), "Compilation: \(error ?? [:])")
+                }
+            }
+            print("Production stable-ID scan generators compiled; no Mail scripts executed.")
+        }
+    }
+    ''')
+    binary = tmp_path / 'scan-compile'
+    result = subprocess.run(['swiftc', '-parse-as-library', '-swift-version', '5',
+        '-module-cache-path', str(tmp_path / 'module-cache'), str(generated),
+        str(root / 'app/Sources/WispApp/MailHistoryMerge.swift'), '-o', str(binary)],
+        capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stderr
+    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert 'no Mail scripts executed' in result.stdout
+
+
+def test_native_v2_bridge_admits_same_label_ids_including_empty_second_account(native_observer_flows, observer_replay):
+    h = observer_replay
+    for request in native_observer_flows['raw_duplicate_empty']['requests']:
+        h.replay(request)
+    snapshot = h.email.raw_email_snapshot()
+    assert snapshot is not None and snapshot.complete
+    assert snapshot.account_inventory == (('one', 'A'), ('two', 'A'))
+    assert snapshot.successful_account_ids == ('one', 'two')
+    assert {row['account_id'] for row in snapshot.rows} == {'one'}
+    assert 'Which one?' in h.email._raw_account_scope(list(snapshot.rows), 'A')[1]
+    assert not h.email._raw_account_scope(list(snapshot.rows), 'two')[0]
+
+
+@pytest.mark.parametrize('case', ['duplicate_id', 'malformed_inventory'])
+def test_native_inventory_failure_cannot_publish_body_evidence(native_observer_flows, observer_replay, case):
+    h = observer_replay
+    for request in native_observer_flows['raw_' + case]['requests']:
+        h.replay(request)
+    assert h.email.raw_email_snapshot() is None
+    assert native_observer_flows['raw_' + case]['content_calls'] == 0
+    assert h.email.raw_email_scan_status()['failures'] == [{'stage': 'account_inventory', 'code': 0}]

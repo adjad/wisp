@@ -234,8 +234,12 @@ enum MailDBReaderRegression {
             precondition(AccountLabelCache.enumeration(malformed) == .unavailable,
                          "Blank, malformed, or duplicate-ID output cannot clear accounts")
         }
-        precondition(AccountLabelCache.enumeration("id-1\u{01}Work\nid-2\u{01}work\n") == .duplicateLabels,
-                     "Ambiguous labels remain distinct from completed empty enumeration")
+        precondition(AccountLabelCache.enumeration("id-1\u{01}Work\nid-2\u{01}work\n") == .accounts(["id-1": "Work", "id-2": "work"]),
+                     "Stable IDs preserve case-colliding labels")
+        let sharedLabels = ["fixture-account": "Work", "other-account": "Work"]
+        AccountLabelCache.learn(accounts: sharedLabels)
+        precondition(reader.readHistory()!.isTrusted(forAccounts: sharedLabels),
+                     "Same-label index trust still requires each exact native ID association")
         AccountLabelCache.learn(accounts: reversed)
         precondition(reader.readHistory()!.isTrusted(forAccounts: workHome))
         precondition(!reader.readHistory()!.isTrusted(forAccounts:
@@ -244,7 +248,8 @@ enum MailDBReaderRegression {
             ["new-account": "Work", "other-account": "Home"]), "Unknown native IDs must fall back")
         for unsafe in ["\u{01}Work\n", "fixture-account\u{01}\n",
                        "fixture-account\u{01}Work\nfixture-account\u{01}Home\n",
-                       "fixture-account\u{01}Work\nother-account\u{01}work\n",
+                       "fixture-account\u{01}Work\n\nother-account\u{01}Home\n",
+                       " \u{01}Work\n", "id\u{01} \n", "id\u{01}Work\u{02}unsafe\n",
                        "fixture-account\u{01}Bad\rname\n", "id\u{01}Work\u{01}Extra\n"] {
             precondition(AccountLabelCache.parse(unsafe) == nil, "Unsafe or ambiguous metadata must fail")
         }
@@ -301,13 +306,13 @@ enum MailDBReaderRegression {
                      "A known empty inventory removes previously learned account labels")
         AccountLabelCache.learn(accounts: workHome)
         let unavailableOutputs: [String?] = [nil, "\n", "id\u{01}Work\nid\u{01}Home\n",
-                                            "id-1\u{01}Work\nid-2\u{01}work\n"]
+                                            "id-1\u{01}Work\nid-2\u{01}\n"]
         for output in unavailableOutputs {
             if case .accounts(let accounts) = AccountLabelCache.enumeration(output) {
                 AccountLabelCache.learn(accounts: accounts)
             }
             precondition(AccountLabelCache.stored() == workHome,
-                         "Failed, malformed, or ambiguous enumeration preserves learned labels")
+                         "Failed or malformed enumeration preserves learned labels")
         }
         // Gmail over IMAP: the INBOX mailbox holds no messages; Inbox membership is a
         // `labels` row on a message that lives in All Mail. The primary history read
