@@ -28,6 +28,24 @@ def test_unquoted_calendar_typo_controls(prompt):
     assert compile_read(prompt) == ([('get_upcoming', {'period': 'tomorrow'})], '')
 
 
+def test_quoted_time_word_does_not_supply_the_requested_date_range():
+    from service.workflows.reads import compile_read
+    assert compile_read('Show calendar events named "tmrw"') == ([('get_upcoming', {
+        'days': 7, 'query': 'tmrw', 'calendar_only': True})], '')
+
+
+@pytest.mark.parametrize('prompt', [
+    'Explain the phrase "Show calender events named tmrw tomorrow"',
+    'Do not show calendar events named "tmrw" tomorrow',
+    'Show calendar events named "tmrw" tomorrow and email Mom',
+    'Show calendar events named "tmrw" tomorrow from my work account',
+    'Show calendar events named "tmrw" tomorrow and summarize my messages',
+])
+def test_literal_preservation_does_not_broaden_shortcut_admission(prompt):
+    from service.workflows.reads import compile_read
+    assert compile_read(prompt) is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('opening,closing', QUOTES)
 async def test_calendar_stream_executes_exact_quoted_query(tmp_path, monkeypatch, opening, closing):
