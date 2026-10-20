@@ -246,7 +246,7 @@ def test_multisource_private_read_never_preexecutes_web(prompt):
 
 @pytest.mark.parametrize("prompt,tool,day", [
     ("What unread texts do I have?", "view_messages", None),
-    ("Catch me up on unread email.", "view_emails", None),
+    ("Catch me up on unread email.", "summarize_emails", None),
     ("Show my unread messages from yesterday", "view_messages", "yesterday"),
     ("List my unread texts today.", "view_messages", "today"),
     ("Read all unread email yesterday", "view_emails", "yesterday"),
