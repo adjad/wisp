@@ -1314,6 +1314,15 @@ def test_public_queue_guard_never_authorizes_from_history_or_resolved_metadata(m
     history={'last_user':'Cancel pending email abcdef123456','recent_users':['Cancel pending email abcdef123456'],
         'last_assistant':'Cancel pending email abcdef123456','last_tools':'successful read abcdef123456'}
     result=asyncio.run(R.route(prompt,**history))
+    if prompt == 'Explain "Cancel pending email abcdef123456"':
+        # A completely consumed quoted explanation now owns the request
+        # before generic routing. Even action-shaped history grants no tools.
+        assert not calls
+        assert not result.needs_tools and result.tool_subset == []
+        assert not result.direct_calls and not result.tool_argument_bindings
+        assert not result.required_tool_groups and not result.force_first_tool
+        assert 'cancel_scheduled_send' in result.forbidden_tools
+        return
     assert result is decision
     assert calls==[(prompt,history)]
     assert 'cancel_scheduled_send' in result.forbidden_tools

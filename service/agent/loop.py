@@ -2314,6 +2314,17 @@ async def run_agent(
                 return "I couldn't create the reminder. No reminder was added."
             if _unmet_group() is None and all(name == "add_reminder" for name, _ in actions):
                 return created[-1].text
+        # Priority evidence is bounded even when narration sounds exhaustive.
+        # Keep selected/unavailable/excluded sources visible on the successful
+        # path as well as the empty-model fallback. Never quote raw bodies.
+        from service.tools.task_evidence import render_coverage_text, verify_evidence_narration
+        for name, result in clean_results:
+            if name == 'collect_task_evidence':
+                text = verify_evidence_narration(text, result)
+        coverage = [render_coverage_text(result) for name, result in clean_results
+                    if name == 'collect_task_evidence']
+        if coverage and coverage[-1] and coverage[-1] not in text:
+            text = text.rstrip() + '\n\n' + coverage[-1]
         return text
 
     def _prior_requirements_met(tool_name: str) -> bool:
@@ -2886,6 +2897,7 @@ async def run_agent(
             answer = {**answer, "content": text or _EMPTY_MESSAGE}
         return answer, plan.thought or reasoning_text, streamed
 
+    evidence_narration_retried = False
     for _step in range(max_steps):
         if restricted[0] is not None and restricted_ran[0]:
             restricted[0] = None  # the forced lookup ran; the turn is free again
@@ -2920,6 +2932,9 @@ async def run_agent(
         else:
             step_schemas = schemas
         choice = "required" if (forcing_first_step or expecting_tool) else "auto"
+        if evidence_narration_retried and _unmet_group() is None:
+            choice = 'none'
+            step_schemas = []
         # STALLED ON REFUSED REPEATS: last step the model only asked for what it
         # already has, and no required group is still unmet, so this step may
         # not call anything — it must answer from the results in context.
@@ -3242,6 +3257,14 @@ async def run_agent(
                          "from memory and do NOT say you can't.")
             msgs.append({"role": "user", "content": nudge})
         tool_calls = msg.get("tool_calls")
+        if tool_calls and evidence_narration_retried and _unmet_group() is None:
+            # Reject before discovery, argument preparation or native getters:
+            # even a forbidden call can otherwise enter an early read binder.
+            from service.tools.task_evidence import render_evidence_text
+            evidence = next((result for name, result in reversed(clean_results)
+                             if name == 'collect_task_evidence'), '')
+            msg = {**msg, 'tool_calls':None, 'content':render_evidence_text(evidence) or _STUCK_MESSAGE}
+            tool_calls = None
         prev_step_calls = len(tool_calls or [])
 
         # Correct a specific failure mode: oMLX can return content AND
@@ -3329,6 +3352,23 @@ async def run_agent(
                 if content_streamed:
                     await emit({"type": "clear_answer"})
                 text = _EMPTY_MESSAGE
+            # One bounded correction over the SAME evidence, without another
+            # read. If it still overclaims, _verified_final uses the safe view.
+            from service.tools.task_evidence import verify_evidence_narration
+            evidence_results = [result for name, result in clean_results
+                                if name == 'collect_task_evidence']
+            if (evidence_results and not evidence_narration_retried and unmet is None
+                    and _step < max_steps - 1
+                    and all(outcome.effect == 'read' for _, outcome in tool_outcomes)
+                    and verify_evidence_narration(text, evidence_results[-1]) != text):
+                evidence_narration_retried = True
+                msgs.append({'role':'assistant', 'content':text})
+                msgs.append({'role':'user', 'content':(
+                    'Correct the unsupported exhaustive claim in your answer. These are bounded cached sources, '
+                    'so you cannot say no other tasks exist, only one thing matters, or that an unverified source '
+                    'has no requests. Keep useful facts and exact source dates from the results already returned. '
+                    'Qualify coverage and any missing sources. Do not call tools again.')})
+                continue
             # Publish once, after checking receipts and obligations.
             verified = _verified_final(text)
             if verified != text:

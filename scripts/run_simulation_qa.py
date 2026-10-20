@@ -193,6 +193,8 @@ PROFILE_TESTS = {
         "tests/test_compound_claims.py",
         "tests/test_compound_task_routing.py",
         "tests/test_current_web_routing.py",
+        # Route metadata over synthetic prompts; mocked retrieval, no tool execution.
+        "tests/test_personal_grounding.py",
         "tests/test_web_response_followup.py",
         "tests/test_direct_dispatch.py",
         "tests/test_direct_dispatch_exec.py",
