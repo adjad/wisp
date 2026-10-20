@@ -7,7 +7,7 @@ import re
 from service.utterance_shape import deliberate, quoted_spans
 from service.reminder_intent import (
     CAPABILITY_INVENTORY_RE, REMINDER_CREATE_RE, has_unsupported_alert_clock,
-    reminder_command_parts, reminder_temporal_text, _NAMED_DATE,
+    reminder_command_parts, reminder_temporal_text, reminder_subject_labelled, _NAMED_DATE,
 )
 from service.tasks.models import SlotValue, TaskPlan, TemporalValue
 from service.tasks.temporal import (
@@ -157,7 +157,7 @@ def _request_clauses(text: str) -> tuple[str, ...]:
         # A schedule BEFORE the infinitive scopes coordinated future content.
         # A later day/alert clause closes that content again. Without this
         # bracket, unquoted coordination is ambiguous (apart from noun lists).
-        if (header_alert and match.start() >= content_start
+        if (header_alert and not reminder_subject_labelled(parts) and match.start() >= content_start
                 and masked[match.start()].isspace()
                 and not _ALERT_DAY.search(masked[content_start:match.start()])
                 and not _IMMEDIATE_SCOPE.search(masked[match.end():])):
@@ -185,7 +185,7 @@ def _request_clauses(text: str) -> tuple[str, ...]:
             boundaries.append(match.span())
     # Also reject a temporal prefix followed by unexplained outer prose even
     # without a conjunction: '...medicine tonight mute my volume'.
-    if parts and parts[1]:
+    if parts and parts[1] and not reminder_subject_labelled(parts):
         temporal = re.compile(_TRAILING_TIME.pattern.replace(
             r"\s*[.!?]*$", r"(?![\w'’])"), re.I)
         # A separate companion owns its own clock/body grammar. Do not apply
@@ -220,7 +220,20 @@ def reminder_request_clauses(text: str) -> tuple[str, ...]:
     Literal addressed sends and named existing-item operations are not outer
     creation requests. A single future subject remains one reminder clause.
     """
-    if CAPABILITY_INVENTORY_RE.search(text) or deliberate(text) is not None:
+    labelled_parts = _reminder_parts(text)
+    if reminder_subject_labelled(labelled_parts):
+        value = labelled_parts[1].strip()
+        if value and value[0] in '\"“\'‘`':
+            spans = quoted_spans(value)
+            if (not spans or spans[0][0] != 0
+                    or value[spans[0][1]:].strip(' .!?\t\r\n')):
+                return ()  # Unexplained outer text is not part of the quote.
+        elif '\n' in value or '\r' in value:
+            return ()  # An unquoted title cannot swallow another command line.
+        if _CONDITIONAL_SCOPE.search(_unquoted(labelled_parts[1])):
+            return ()
+    if (CAPABILITY_INVENTORY_RE.search(text) and not reminder_subject_labelled(labelled_parts)
+            or deliberate(text) is not None):
         return (text,)
     addressed = _MESSAGE_SEND_INTRO.match(text) or _EMAIL_SEND_INTRO.match(text)
     if addressed and CAPABILITY_INVENTORY_RE.fullmatch(addressed.group("body")):
@@ -228,6 +241,9 @@ def reminder_request_clauses(text: str) -> tuple[str, ...]:
     clauses = _request_clauses(text)
     masked = _unquoted(text)
     creation = REMINDER_CREATE_RE.search(masked)
+    parts = _reminder_parts(text)
+    if reminder_subject_labelled(parts) and _CONDITIONAL_SCOPE.search(_unquoted(parts[1])):
+        return ()
     # Conditions and alternatives relate whole actions. Do not erase that
     # relationship by turning their fragments into independent obligations.
     if creation and (not clauses
@@ -259,7 +275,7 @@ def _reminder_header_consumed(command: str) -> bool:
     rest = normalized[match.end():].strip()
     if re.match(r"(?:remember|don'?t\s+forget)\b", match.group(), re.I):
         return True
-    rest = re.sub(r"\s*\bto\s*$", "", rest, flags=re.I).strip()
+    rest = re.sub(r"\s*\b(?:to|titled)\s*$", "", rest, flags=re.I).strip()
     rest = re.sub(r"^for\s+me\b\s*", "", rest, flags=re.I)
     if not rest:
         return True
@@ -569,6 +585,10 @@ def compile_email_send(text: str, *, now: datetime | None = None,
 def compile_task(text: str, *, now: datetime | None = None,
                  turn: int = 0) -> TaskPlan | None:
     """Compile one unambiguous reminder intent in guarded operation order."""
+    if reminder_subject_labelled(_reminder_parts(text)):
+        # The complete labelled content is literal data. Batch 'for' and
+        # trailing all-day preprocessing must not reinterpret its title words.
+        return compile_reminder_create(text, now=now, turn=turn)
     if CAPABILITY_INVENTORY_RE.search(text):
         return None
     # A prohibition or a sentence about words ('Say "remind me to call Mom
@@ -699,6 +719,12 @@ def _clean_subject(value: str) -> str:
 
 def extract_reminder_subject(text: str) -> str:
     parts = _reminder_parts(text)
+    if reminder_subject_labelled(parts):
+        value = parts[1].strip().rstrip('.!?').strip()
+        spans = quoted_spans(value)
+        if spans and spans[0] == (0, len(value)):
+            return value[1:-1].strip()
+        return value.strip()
     if parts and parts[1]:
         return _clean_subject(parts[1])
     patterns = [
@@ -715,6 +741,8 @@ def extract_reminder_subject(text: str) -> str:
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
         if match:
+            if any(left < match.start('subject') < right for left, right in quoted_spans(text)):
+                continue  # A quoted 'to' is not an outer subject introducer.
             subject = match.group("subject")
             return _clean_subject(subject)
     return ""
@@ -730,6 +758,8 @@ def _reminder_temporal_evidence(text: str, *, parts: tuple[str, str] | None = No
     # Split before masking; the introducer's whitespace can otherwise consume
     # a fully masked title and erase the boundary before its trailing day.
     parts = parts or _reminder_parts(text)
+    if reminder_subject_labelled(parts):
+        return _unquoted(parts[0]).rstrip()
     if parts:
         parts = (_unquoted(parts[0]), _unquoted(parts[1]))
     named = None
@@ -800,14 +830,14 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
     parts = _reminder_parts(text)
     command = parts[0] if parts else text
-    if (not parts or CAPABILITY_INVENTORY_RE.search(text)
+    if (not parts or CAPABILITY_INVENTORY_RE.search(command if reminder_subject_labelled(parts) else text)
             or not REMINDER_CREATE_RE.search(text) or _NEGATED.search(command)
             or _OTHER_REMINDER_OPERATION.search(command)
             or len(reminder_request_clauses(text)) != 1):
         return None
 
     subject = extract_reminder_subject(text)
-    reference = extract_event_reference(text)
+    reference = extract_event_reference(command if reminder_subject_labelled(parts) else text)
     temporal_text = _reminder_temporal_evidence(text)
     unsupported_clock = has_unsupported_alert_clock(temporal_text)
     # A parser finding one valid date is not permission to choose it over

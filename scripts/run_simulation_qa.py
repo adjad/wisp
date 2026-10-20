@@ -206,6 +206,8 @@ PROFILE_TESTS = {
         "tests/test_router_roster_models.py",
         "tests/test_fast_path_intent.py",
         "tests/test_reminder_compound_allowance.py",
+        # Pure labelled-title compiler/planner fixtures; never executes tools.
+        "tests/test_reminder_labelled_title.py",
         "tests/test_routing_contract_regressions.py",
         "tests/test_routing_quality_fixes.py",
         "tests/test_routing_quality_corpus.py",
