@@ -291,6 +291,39 @@ def test_mail_diagnostics_keep_original_generation_and_age_checks(monkeypatch):
     assert diagnostics['reason_codes'] == ['snapshot_clock_invalid']
 
 
+def test_body_scan_status_is_safe_coherent_and_does_not_admit_failed_cache():
+    publish_mail(mail('PRIVATE BODY'))
+    first = M.raw_email_scan_status()
+    assert first['eligible'] and first['generation'] == 1
+    failures = [{'stage': 'body_scan', 'code': -1712, 'account': 'PRIVATE ACCOUNT', 'error': 'PRIVATE ERROR'},
+                {'stage': 'PRIVATE BODY', 'code': -1743}, {'stage': 'body_scan', 'code': 'PRIVATE TOKEN'},
+                {'stage': 'body_scan', 'code': -999999}, {'stage': 'body_scan', 'code': True},
+                {'stage': ['PRIVATE'], 'code': -1743}, ['PRIVATE'], None]
+    M.cache_raw_emails('', {'accounts': [], 'failed_accounts': ['PRIVATE ACCOUNT'],
+        'complete': False, 'failure_diagnostics': failures})
+    failures[0]['code'] = -1743
+    failed = M.raw_email_scan_status()
+    assert failed['generation'] == 2 and failed['received_at'] == STAMP
+    assert not failed['eligible'] and not failed['complete']
+    assert failed['failed_accounts'] == 1
+    assert failed['failures'] == [{'stage': 'body_scan', 'code': -1712}, {'stage': 'body_scan', 'code': 0}]
+    assert M.raw_email_snapshot() is None
+    assert 'PRIVATE' not in json.dumps(failed) and 'synthetic' not in json.dumps(failed)
+    publish_mail(mail('NEXT PRIVATE BODY'))
+    recovered = M.raw_email_scan_status()
+    assert recovered['eligible'] and recovered['generation'] == 3 and recovered['failures'] == []
+    assert first['generation'] == 1 and failed['generation'] == 2
+
+
+def test_body_scan_status_missing_and_stale_are_unverified(monkeypatch):
+    assert M.raw_email_scan_status()['generation'] is None
+    assert not M.raw_email_scan_status()['eligible']
+    publish_mail(mail())
+    monkeypatch.setattr(M, '_raw_mail_snapshot', replace(M._raw_mail_snapshot, synced_at=STAMP - 1201))
+    assert M.raw_email_scan_status()['reason_codes'] == ['snapshot_stale']
+    assert not M.raw_email_scan_status()['eligible']
+
+
 @pytest.mark.parametrize("source", ["calendar", "reminders", "email", "messages", "notes"])
 def test_excluded_source_is_never_accessed(monkeypatch, isolated, source):
     target, name = {"calendar": (E, "_daily_calendar"), "reminders": (E, "_daily_reminders"),

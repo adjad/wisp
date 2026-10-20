@@ -617,7 +617,11 @@ final class MailReader {
     /// must fail closed with an actionable diagnostic rather than quietly
     /// treating the ambiguity as a generic enumeration failure.
     private func accountNames() -> AccountEnumeration {
-        let (text, _) = run(accountsScript, tag: "accounts")
+        accountInventory().0
+    }
+
+    private func accountInventory() -> (AccountEnumeration, Int) {
+        let (text, code) = run(accountsScript, tag: "accounts")
         let enumeration = AccountLabelCache.enumeration(text)
         if case .accounts(let accounts) = enumeration {
             historyState.observe(accounts)
@@ -625,7 +629,7 @@ final class MailReader {
         } else {
             historyState.observe(nil)
         }
-        return enumeration
+        return (enumeration, code)
     }
 
     /// Leading epoch-seconds field of a scan line. AppleScript emits these in
@@ -954,22 +958,25 @@ final class MailReader {
                 defer { self.syncIdentity(capture: capture, readAccounts: identityMayRead, knownEmpty: identityKnownEmpty) }
                 guard self.isMailRunning() else {
                     self.post(raw: "", coverage: ["accounts": [String](),
-                              "failed_accounts": ["Mail unavailable"], "complete": false])
+                              "failed_accounts": ["Mail unavailable"], "complete": false,
+                              "failure_diagnostics": [["stage": "mail_closed", "code": 0]]])
                     return
                 }
-                let enumeration = self.accountNames()
+                let (enumeration, enumerationCode) = self.accountInventory()
                 let names: [String]
                 switch enumeration {
                 case .accounts(let accounts):
                     names = accounts.values.sorted()
                 case .unavailable:
                     self.post(raw: "", coverage: ["accounts": [String](),
-                              "failed_accounts": ["account enumeration"], "complete": false])
+                              "failed_accounts": ["account enumeration"], "complete": false,
+                              "failure_diagnostics": [["stage": "account_inventory", "code": enumerationCode]]])
                     return
                 case .duplicateLabels:
                     self.post(raw: "", coverage: ["accounts": [String](),
                               "failed_accounts": ["duplicate account labels"],
-                              "failure_reason": "duplicate_account_labels", "complete": false])
+                              "failure_reason": "duplicate_account_labels", "complete": false,
+                              "failure_diagnostics": [["stage": "duplicate_account_labels", "code": 0]]])
                     return
                 }
                 if names.isEmpty {
@@ -990,6 +997,7 @@ final class MailReader {
                 var chunks: [String] = []
                 var succeeded: [String] = []
                 var failed: [String] = []
+                var failures: [[String: Any]] = []
                 for target in targets {
                     // Re-checked per account — same relaunch race as sync()'s loop.
                     guard self.isMailRunning() else {
@@ -997,13 +1005,15 @@ final class MailReader {
                         failed = names
                         succeeded.removeAll()
                         chunks.removeAll()
+                        failures = [["stage": "mail_closed_during_scan", "code": 0]]
                         break
                     }
                     // Mail not running or Automation not granted — skip this
                     // account rather than the whole sync.
-                    let (text, _) = self.run(self.rawScript(account: target, limit: limit), tag: "raw")
+                    let (text, code) = self.run(self.rawScript(account: target, limit: limit), tag: "raw")
                     guard let text else {
                         failed.append(target ?? "unknown account")
+                        failures.append(["stage": "body_scan", "code": code])
                         continue
                     }
                     chunks.append(text)
@@ -1012,6 +1022,7 @@ final class MailReader {
                 self.post(raw: self.mergeRawChunks(chunks), coverage: [
                     "accounts": succeeded, "failed_accounts": failed,
                     "complete": !names.isEmpty && failed.isEmpty,
+                    "failure_diagnostics": failures,
                 ])
             }
         }

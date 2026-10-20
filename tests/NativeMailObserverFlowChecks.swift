@@ -284,6 +284,20 @@ final class Reader {
                     }
                 }
                 save(lane + "_" + which, reader)
+                if lane == "raw", let raw = session.requests.compactMap({ $0["body"] as? [String: Any] }).first(where: { $0["raw"] != nil }) {
+                    let coverage = raw["raw_coverage"] as! [String: Any]
+                    let failures = coverage["failure_diagnostics"] as? [[String: Any]] ?? []
+                    let expectedStage = ["closed": "mail_closed", "unavailable": "account_inventory",
+                        "duplicate": "duplicate_account_labels", "body_failed": "body_scan", "partial": "body_scan",
+                        "closed_between": "mail_closed_during_scan"][which]
+                    if let stage = expectedStage {
+                        precondition(failures.first?["stage"] as? String == stage)
+                        precondition(failures.first?["code"] as? Int == (["unavailable", "body_failed", "partial"].contains(which) ? -1743 : 0))
+                        precondition(Set(failures.first!.keys) == Set(["stage", "code"]))
+                        precondition(coverage["complete"] as? Bool == false)
+                    }
+                    if which == "success" || which == "empty" { precondition(failures.isEmpty) }
+                }
             }
         }
         // A corrupt ACK must never mutate accepted order, retire the actual
