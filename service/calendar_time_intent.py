@@ -83,12 +83,15 @@ def named_calendar_time(text: str) -> CalendarTimeIntent | None:
     if match := re.search(r'\s+(?P<period>' + _PERIOD + r')$', subject, re.I):
         period = match['period'].casefold()
         subject = subject[:match.start()]
+    source_cue = bool(re.search(r'\b(?:on|in|from)\s+(?:my|our|the)\s+calendar\b|\bcalendar\s+event\s+(?:named|titled|called)\b', subject, re.I))
     explicit_source = False
     if match := re.search(r'\s+(?:on|in|from)\s+(?:my|our|the)\s+calendar$', subject, re.I):
         explicit_source = True
         subject = subject[:match.start()]
     boundary = 'start'
+    has_relation = False
     if match := re.search(r'\s+(?P<boundary>starts?|begins?|happens?|ends?|finish(?:es)?|over|done)$', subject, re.I):
+        has_relation = True
         boundary = 'end' if re.fullmatch(r'ends?|finish(?:es)?|over|done', match['boundary'], re.I) else 'start'
         subject = subject[:match.start()]
     elif re.search(r'\bdoes\s*$', head.group(), re.I):
@@ -116,6 +119,22 @@ def named_calendar_time(text: str) -> CalendarTimeIntent | None:
         supported &= not bool(re.search(r'QUOTEDTITLE\d+TOKEN', title))
     if not title:
         supported = False
+    # Admission precedes completeness: a generic when-clause is not an
+    # incomplete Calendar request. Indefinite conceptual subjects and arbitrary
+    # owned domains keep their original science/coding/conversation owners.
+    # A relevant personal/source envelope still owns unknown constraints so it
+    # cannot partially execute; an unowned "does" question needs an actual
+    # terminal event relation rather than an arbitrary predicate.
+    has_kind = bool(_KIND.search(title))
+    if not (source_cue or explicit_source):
+        if re.match(r'(?:a|an)\s+', title, re.I):
+            return None
+        if personal and not has_kind:
+            return None
+        if re.search(r'\bdoes\s*$', head.group(), re.I) and not has_relation and not personal:
+            return None
+        if not supported and not (personal or has_kind or owned or has_relation):
+            return None
     # Possessive alone cannot identify an arbitrary private domain as Calendar.
     if personal and not explicit_source and not _KIND.search(title):
         supported = False

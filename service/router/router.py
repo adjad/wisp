@@ -7896,7 +7896,14 @@ def _named_time_claim(text: str) -> RouteDecision | None:
         decision.forbidden_tools = frozenset(set(REGISTRY) - {'get_upcoming'})
         return decision
     if intent.supported and not intent.personal and not intent.no_web:
-        decision = _direct_web_search(intent.query, 'public named event time lookup')
+        # A simple public noun phrase can still be a stable concept or need
+        # disambiguation. Offer the exact public lookup without forcing it.
+        decision = _mk('agent', tools=True, source='default',
+                       route_source='named_time_interpretation',
+                       reason='public named time interpretation', expect_tool_first=False)
+        decision.tool_subset = ['web_search']
+        decision.tool_argument_bindings = {'web_search': {'query': intent.query}}
+        decision.resolved_request = text
         decision.isolated_public_query = intent.query
         decision.verified_results_only = True
         decision.strict_read_limits = {'web_search': 1}

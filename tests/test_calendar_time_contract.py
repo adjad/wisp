@@ -9,7 +9,7 @@ import pytest
 from tests.test_workflow20_knowledge import knowledge_entrypoint, storage
 
 
-PUBLIC = ['What time is the presidential debate?', 'When is the solar eclipse?',
+PUBLIC = ['What time is the presidential debate?', 'When is the solar eclipse?', 'When is solar eclipse?',
           'What time is the game?', 'When is Physics Midterm?',
           'What time is Budget review this week?', 'When does physics quiz two start?']
 
@@ -62,7 +62,7 @@ def test_complete_personal_source_time_and_literal_identity(prompt, title, perio
 
 
 @pytest.mark.parametrize('prompt', [
-    'When is my class end tonight?', 'When is my alarm?', 'When is my laptop?',
+    'When is my class end tonight?',
     'When is my class tomorrow from my work account?',
     'When does my class end and email Mom?',
     'When does my class end? Do not use the web unless needed.',
@@ -85,7 +85,7 @@ def test_unsupported_or_denied_envelope_cannot_partially_execute(prompt):
 @pytest.mark.parametrize('prompt', [
     'When is it?', 'When does that end?', 'Explain "When does my class end?".',
     'Remind me to ask "When is the game?" tomorrow',
-    'Email Mom: When does my class end?',
+    'Email Mom: When does my class end?', 'When is my alarm?', 'When is my laptop?',
 ])
 def test_other_owners_are_not_named_time_questions(prompt):
     from service.calendar_time_intent import named_calendar_time
@@ -192,8 +192,8 @@ def test_actual_modes_public_question_caps_private_and_effect_escapes(
     record = run_capture(inert_entrypoint, monkeypatch, mode,
                          'When is the solar eclipse?', name, args)
     assert {c['name'] for c in record['executed']} <= {'web_search'}
-    if mode in {'normal', 'shadow'}:
-        assert record['executed'] == [{'name': 'web_search', 'args': {'query': 'When is the solar eclipse?'}}]
+    assert all(c == {'name': 'web_search', 'args': {'query': 'When is the solar eclipse?'}}
+               for c in record['executed'])
     if mode == 'model-led':
         assert any(e.get('source') == 'model_led' or e.get('route_source') == 'model_led_discovery'
                    for e in record['events'] if e['type'] == 'routed')
@@ -490,3 +490,47 @@ def test_zero_duration_event_keeps_its_recorded_scheduled_end(projection):
     result = asyncio.run(projection.A.get_upcoming(calendar_only=True, query='Physics class', boundary='end'))
     assert 'scheduled to end 2030-01-02 3:00 AM PST-0800' in result
     assert 'unknown' not in result
+
+
+UNRELATED_WHEN = ['When does water boil?', 'When does a function return None?',
+                  'When does a variable count as global?', 'When is an email a message?']
+
+
+@pytest.mark.parametrize('prompt', UNRELATED_WHEN)
+def test_unrelated_when_questions_keep_their_original_owner(prompt):
+    from service.calendar_time_intent import named_calendar_time
+    assert named_calendar_time(prompt) is None
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt', UNRELATED_WHEN)
+def test_actual_unrelated_when_questions_do_not_get_calendar_clarification(
+        inert_entrypoint, monkeypatch, prompt, mode):
+    from service import main
+    state = inert_entrypoint
+    monkeypatch.setenv('WISP_MODEL_LED_ROUTING', '1' if mode == 'model-led' else '0')
+    monkeypatch.setenv('WISP_PLANNER', '1' if mode == 'planner' else '0')
+    monkeypatch.setenv('WISP_TYPED_REMINDERS_SHADOW_ONLY', '1' if mode == 'shadow' else '0')
+    script = [{'content': 'Fictional stable-concept explanation.'}]
+    if mode == 'planner':
+        script.insert(0, {'content': json.dumps({'thought': 'stable concept', 'status': 'answer', 'calls': []})})
+    monkeypatch.setattr(main, 'OMLXClient', lambda **kwargs: state.Client(script))
+    events = state.run(prompt, script, transport='asgi')
+    record = {'mode': mode, 'prompt': prompt, 'raw_sse': state.raw_sse, 'events': events,
+              'inference': state.requests, 'executed': state.executed, 'native_calls': len(state.native)}
+    (state.receipt_dir / 'unrelated-receipt.json').write_text(json.dumps(record, indent=2, default=str))
+    assert not any('named' in e.get('reason', '').casefold() and 'time' in e.get('reason', '').casefold()
+                   for e in events if e['type'] == 'routed')
+    assert not any(c['name'] == 'get_upcoming' for c in state.executed)
+    assert not state.native and not any(e['type'] in {'error', 'confirm'} for e in events)
+
+
+@pytest.mark.parametrize('prompt', ['When is water ready?', 'When is cold too cold?',
+                                    'When is solar eclipse?', 'When does the game end?'])
+def test_public_time_interpretation_never_forces_a_public_lookup(prompt):
+    from service.router.router import route
+    decision = asyncio.run(route(prompt))
+    assert not decision.direct_calls and not decision.force_first_tool
+    assert not decision.expect_tool_first and not decision.required_tool_groups
+    assert decision.tool_subset == ['web_search']
+    assert decision.tool_argument_bindings['web_search'] == {'query': prompt}
