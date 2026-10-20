@@ -1520,3 +1520,88 @@ def actual_public_history_attempt(state, monkeypatch, mode, prompt, name, args, 
     script = [attempt(name, args), {'content': 'Synthetic public answer.'}]
     monkeypatch.setattr(main, 'OMLXClient', lambda **kwargs: state.Client(script))
     return state.run(prompt, script, sid=sid, approve=False, transport='asgi')
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt,name,expected', [
+    ("what did Sarah's email say", 'view_emails', {'view_emails', 'summarize_emails'}),
+    ('What did Alex’s messages say?', 'view_messages', {'view_messages', 'summarize_messages'}),
+])
+def test_actual_possessive_communication_speaker_keeps_existing_source_read(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, name, expected):
+    from service.router.router import routing_guard_contract
+    from service.tools.registry import REGISTRY
+    state = pending_entrypoint
+    forbidden, bindings = routing_guard_contract(prompt)
+    events = actual_attempt(state, monkeypatch, mode, prompt, name, {})
+    (tmp_path / 'possessive-history-read-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'forbidden': sorted(forbidden), 'bindings': bindings,
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests,
+        'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert set(REGISTRY) - set(forbidden) == expected and not bindings
+    assert state.executed and all(n == name for n, _ in state.executed)
+    assert not pending_rows(state) and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('speaker', ["Sarah's email", 'Sarah’s e-mail', "Alex's message",
+                                    'Alex’s messages', "Alex's text", 'Alex’s texts', "Alex's iMessage"])
+def test_possessive_communication_source_is_a_role_in_the_consumed_speaker(speaker):
+    prompt = 'What did ' + speaker + ' say?'
+    assert U.retrospective_communication_roles(prompt) == (True, speaker)
+    assert not U.is_retrospective_communication_question('Text Mom saying "' + prompt + '"')
+    assert not U.is_retrospective_communication_question(prompt + ' Then delete the Laundry reminder.')
+    assert not U.is_retrospective_communication_question('Explain the phrase "' + prompt + '".')
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt,cross_source,send,args', [
+    ("what did Sarah's email say", 'view_messages', 'send_email',
+     {'to': 'fictional@example.invalid', 'subject': 'fictional', 'body': 'Unrequested synthetic action'}),
+    ('What did Alex’s messages say?', 'view_emails', 'send_message',
+     {'to': '+15555550123', 'text': 'Unrequested synthetic action'}),
+])
+@pytest.mark.parametrize('kind', ['other-source', 'send', 'alias', 'opaque'])
+def test_actual_possessive_communication_source_never_grants_other_sources_or_effects(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, cross_source, send, args, kind):
+    from service.tools.registry import REGISTRY
+    state = pending_entrypoint
+    monkeypatch.setitem(REGISTRY, 'fictional_unknown_read_alias', replace(
+        REGISTRY['view_emails'], name='fictional_unknown_read_alias'))
+    name, attempted = {'other-source': (cross_source, {}), 'send': (send, args),
+        'alias': ('fictional_unknown_read_alias', {}),
+        'opaque': ('run_shell', {'command': 'fictional'})}[kind]
+    events = actual_attempt(state, monkeypatch, mode, prompt, name, attempted)
+    (tmp_path / 'possessive-history-negative-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'attempt': {'name': name, 'args': attempted},
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests,
+        'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert not state.executed and not state.source_calls and not state.native and not pending_rows(state)
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+def test_actual_possessive_history_words_remain_exact_current_message_body(
+        pending_entrypoint, monkeypatch, tmp_path, mode):
+    state = pending_entrypoint
+    body = "What did Sarah's email say?"
+    prompt = 'Text +15555550123 saying "' + body + '"'
+    task = compile_task(prompt)
+    assert task and task.subject.value == body and task.original_request == prompt
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'send_message',
+                            {'to': '+15555550123', 'text': body})
+    (tmp_path / 'possessive-history-literal-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'task': task.to_dict(), 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    cards = [e for e in events if e['type'] == 'confirm' and e.get('tool') == 'send_message']
+    assert len(cards) == 1 and cards[0]['args'] == {'to': '+15555550123', 'text': body}
+    assert not state.executed and not state.source_calls and not state.native
+
+
+@pytest.mark.parametrize('speaker', ["Trump's speech", 'Sarah’s report'])
+def test_possessive_noun_alone_does_not_prove_a_private_communication_source(speaker):
+    prompt = 'What did ' + speaker + ' say today?'
+    assert U.retrospective_communication_roles(prompt) == (False, speaker)

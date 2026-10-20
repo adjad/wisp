@@ -141,6 +141,7 @@ def retrospective_communication_roles(text: str) -> tuple[bool, str] | None:
     speaker = match.group('speaker')
     private = (speaker.casefold() in {'i', 'we', 'me', 'us'}
                or speaker.casefold().startswith(('my ', 'our '))
+               or re.search(r"['’]s\s+(?:e-?mails?|messages?|texts?|imessages?)$", speaker, re.I) is not None
                or re.fullmatch(r'text(?:ed)?|e-?mail(?:ed)?|message[ds]?', match.group('verb'), re.I) is not None
                or re.search(r'\bme\b', match.group('tail'), re.I) is not None)
     return private, speaker
