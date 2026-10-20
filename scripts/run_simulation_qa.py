@@ -830,6 +830,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
+    agent_send = str(build_dir / "agent-send")
     notch_command = str(build_dir / "notch-command")
     notch_tab = str(build_dir / "notch-tab")
     know_you = str(build_dir / "know-you")
@@ -900,7 +901,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             "native/source-sync-label-compile",
             [
                 TRUSTED_SWIFTC, "-module-cache-path", module_cache,
-                "app/Sources/WispApp/WispClient.swift",
+                "app/Sources/WispApp/WispClient.swift", "app/Sources/WispApp/AgentSend.swift",
                 "tests/SourceSyncLabelRegression.swift", "-o", sync_label,
             ],
         ),
@@ -910,11 +911,22 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             [
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
                 "-module-cache-path", module_cache,
-                "app/Sources/WispApp/PromptQueue.swift",
+                "app/Sources/WispApp/PromptQueue.swift", "app/Sources/WispApp/AgentSend.swift",
                 "tests/PromptQueueChecks.swift", "-o", prompt_queue,
             ],
         ),
         ("native/prompt-queue-contract", [prompt_queue]),
+        (
+            "native/agent-send-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/WispClient.swift", "app/Sources/WispApp/AgentSend.swift",
+                "tests/AgentSendChecks.swift", "-o", agent_send,
+            ],
+        ),
+        # A stub URLProtocol answers every request in-process; nothing reaches a socket.
+        ("native/agent-send-contract", [agent_send]),
         (
             "native/notch-command-compile",
             [

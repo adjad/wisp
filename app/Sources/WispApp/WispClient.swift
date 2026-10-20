@@ -552,14 +552,38 @@ final class WispClient {
         if !sessionId.isEmpty { body["session_id"] = sessionId }
         if let image { body["image"] = image }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        do {
-            let (bytes, response) = try await URLSession.shared.bytes(for: req)
-            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                onEvent(Event(type: "error",
-                              payload: ["message": "Server returned \(http.statusCode).",
-                                        "dropped": true]))
+        // The request goes out at most twice, and the second time only when the
+        // server provably never ran the turn (AgentSend.retryable): no
+        // connection, a connection lost before any response, or a 5xx before
+        // the stream began. Never once a 200 stream has started, since a tool
+        // may already have run, and never after the turn was cancelled.
+        var bytes: URLSession.AsyncBytes?
+        for attempt in 0..<2 {
+            do {
+                let (stream, response) = try await URLSession.shared.bytes(for: req)
+                if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                    if attempt == 0, !Task.isCancelled, AgentSend.retryable(status: http.statusCode) {
+                        try? await Task.sleep(nanoseconds: AgentSend.retryDelay)
+                        if Task.isCancelled { return }
+                        continue
+                    }
+                    onEvent(Event(type: "error", payload: AgentSend.unsent(status: http.statusCode)))
+                    return
+                }
+                bytes = stream
+                break
+            } catch {
+                if attempt == 0, !Task.isCancelled, AgentSend.retryable(error: error) {
+                    try? await Task.sleep(nanoseconds: AgentSend.retryDelay)
+                    if Task.isCancelled { return }
+                    continue
+                }
+                onEvent(Event(type: "error", payload: AgentSend.unsent(error: error)))
                 return
             }
+        }
+        guard let bytes else { return }
+        do {
             var sawTerminal = false
             for try await line in bytes.lines {
                 guard line.hasPrefix("data: ") else { continue }
@@ -573,10 +597,9 @@ final class WispClient {
                 // the connection hung until the 10-min timeout.
                 if type == "done" || type == "error" { sawTerminal = true; break }
             }
-            // The stream can close cleanly with no terminal event — most often a
-            // stale keep-alive socket from URLSession's pool that yields immediate
-            // EOF. Without this, the UI sat in "routing…" forever and the user had
-            // to retype. Emit a terminal so the model can recover (see handle()).
+            // The stream can close cleanly with no terminal event. Emit a terminal
+            // so the model can recover (see handle()). The server may have run the
+            // turn, so this is never resent automatically.
             if !sawTerminal {
                 onEvent(Event(type: "error",
                               payload: ["message": "The assistant didn't respond.",

@@ -428,8 +428,8 @@ struct OverlayView: View {
                 Label(name, systemImage: "paperclip")
                     .font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1).frame(maxWidth: 84)
             }
-            if model.queuedPromptCount > 0 {
-                Text("\(model.queuedPromptCount) queued")
+            if !model.queueLabel.isEmpty {
+                Text(model.queueLabel)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Theme.textMuted)
             }

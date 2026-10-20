@@ -13,6 +13,7 @@ if [[ ! -x "$test_python" ]]; then test_python=python3; fi
 swiftc -parse-as-library -swift-version 5 \
     -module-cache-path "$library_scratch/module-cache" \
     "$project_root/app/Sources/WispApp/WispClient.swift" \
+    "$project_root/app/Sources/WispApp/AgentSend.swift" \
     "$project_root/app/Sources/WispApp/ResearchModel.swift" \
     "$project_root/app/Sources/WispApp/ResearchLibraryModel.swift" \
     "$project_root/app/Sources/WispApp/ResearchLibraryView.swift" \
