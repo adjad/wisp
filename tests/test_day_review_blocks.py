@@ -195,3 +195,63 @@ def test_the_screenshot_leaves_one_review_block_beside_the_task():
     # Nothing on the plan overlaps anything else.
     timed = sorted((b["start"], b["end"], b["title"]) for b in blocks if b.get("end") is not None)
     assert all(a[1] <= b[0] for a, b in zip(timed, timed[1:])), timed
+
+
+# Every stand-in imessage_tools.redact_summary_codes emits for a withheld subject.
+# A credential's goes (not_a_need); every other keeps its class as a need, named
+# by class and sender, never "Review: Private details omitted."
+from service.assistant.daily_workspace import review_title
+
+PLACEHOLDER_TITLES = {
+    "Private details omitted.": "Review an email from Dr. Patel",
+    "Possible request context (private details omitted; review original message).":
+        "Review a possible request from Dr. Patel",
+    "Health or safety concern (private details omitted).": "Review a health or safety notice from Dr. Patel",
+    "Deadline notice (private details omitted).": "Review a deadline notice from Dr. Patel",
+    "Schedule or logistics change (private details omitted).": "Review a schedule change from Dr. Patel",
+    "Direct request with a stated deadline (private details omitted).":
+        "Review a request with a deadline from Dr. Patel",
+    "Please review the original request with a stated deadline by Friday (private details omitted).":
+        "Review a request with a deadline from Dr. Patel",
+    "Direct request requires review. Private details omitted.": "Review a request from Dr. Patel",
+    "Please review the original request. Private details omitted.": "Review a request from Dr. Patel",
+    "Unverified security incident notice (details omitted).": "Check a security notice from Dr. Patel (unverified)",
+}
+CREDENTIAL_TITLES = (
+    "Authentication details omitted.",
+    "Direct request requires review. Authentication details omitted.",
+    "Please review the original request. Authentication details omitted.",
+)
+
+
+def test_every_withheld_subject_is_titled_by_its_class_and_sender():
+    for stand_in, expected in PLACEHOLDER_TITLES.items():
+        assert review_title(stand_in, "Dr. Patel") == expected, stand_in
+        # A partial stand-in keeps the same class.
+        assert review_title("Canvas: " + stand_in, "Dr. Patel") == expected, stand_in
+    assert review_title("Private details omitted.") == "Review an email"
+    assert review_title("Week 4 attendance question", "Devarsh") == "Review: Week 4 attendance question"
+
+
+def test_withheld_needs_stay_needs_and_credentials_go():
+    for stand_in in PLACEHOLDER_TITLES:
+        assert not not_a_need(mail(stand_in, "Dr. Patel", "patel@ucsc.edu")), stand_in
+    for stand_in in CREDENTIAL_TITLES:
+        assert not_a_need(mail(stand_in, "Dr. Patel", "patel@ucsc.edu")), stand_in
+
+
+def test_a_security_notice_is_named_never_an_instruction():
+    title = review_title("Unverified security incident notice (details omitted).", "Google")
+    assert title == "Check a security notice from Google (unverified)"
+    assert not any(word in title.lower() for word in ("reset", "sign in", "click", "verify your", "act now"))
+
+
+def test_withheld_subjects_read_plainly_on_the_day():
+    blocks = suggestions(run([email("a", "Deadline notice (private details omitted).", "Dr. Patel")]))
+    assert [b["title"] for b in blocks] == ["Review a deadline notice from Dr. Patel"]
+    grouped = suggestions(run([email("a", "Private details omitted.", "Dr. Patel"),
+                               email("b", "Week 4 attendance question", "Devarsh Patel")]))
+    assert len(grouped) == 1
+    titles = sorted(m["title"] for m in grouped[0]["members"])
+    assert titles == ["Review an email from Dr. Patel", "Week 4 attendance question"]
+    assert not any("details omitted" in b["title"].lower() for b in grouped)
