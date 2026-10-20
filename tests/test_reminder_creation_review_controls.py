@@ -156,3 +156,110 @@ def test_fully_quoted_conjunction_is_literal_reminder_content(title):
     assert len(steps) == 1
     assert steps[0].tool == "add_reminder"
     assert steps[0].args["title"] == title
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('receipt', [
+    'Reminder updated: “Synthetic alpha” — Fri Oct 23 at 4:00 PM.',
+    'Reminder updated: “Synthetic alpha” — Fri Oct 23 (all day).',
+    'Nothing active matches that reminder.',
+    '(error: synthetic native failure)',
+    'Unrecognized completion text',
+])
+@pytest.mark.parametrize('dispatch', ['model', 'direct'])
+async def test_update_answer_uses_actual_receipt_not_model_invention(monkeypatch, receipt, dispatch):
+    from service.agent import loop
+    from service.tools.registry import REGISTRY, Tool
+    calls, events = [], []
+
+    def upcoming():
+        calls.append('read')
+        return 'Synthetic alpha on Fri Oct 23; Synthetic beta on Sat Oct 24.'
+
+    def update(**kwargs):
+        calls.append('update')
+        return receipt
+
+    monkeypatch.setitem(REGISTRY, 'get_upcoming', Tool('get_upcoming', 'synthetic read',
+        {'type':'object','properties':{}}, 'system_read', upcoming))
+    monkeypatch.setitem(REGISTRY, 'update_reminder', Tool('update_reminder', 'synthetic update',
+        {'type':'object','properties':{}}, 'system_write', update))
+
+    class Client:
+        calls = 0
+        async def ensure_only(self, *args, **kwargs):
+            pass
+        async def stream_events(self, *args, **kwargs):
+            self.calls += 1
+            if dispatch == 'model' and self.calls <= 2:
+                name = 'get_upcoming' if self.calls == 1 else 'update_reminder'
+                message = {'role':'assistant', 'content':'', 'tool_calls':[{
+                    'id':str(self.calls), 'function':{'name':name,'arguments':'{}'}}]}
+            else:
+                message = {'role':'assistant','content':'Updated Synthetic beta to Sat Oct 24 at 4 PM.'}
+            yield {'kind':'final','message':message}
+
+    async def emit(event):
+        events.append(event)
+    client = Client()
+    result = await loop.run_agent(client, 'Agents-A1-4B-oQe6',
+        [{'role':'user','content':'Change the reminder time.'}], emit,
+        SimpleNamespace(confirm=AsyncMock(return_value=True)), tools=['get_upcoming','update_reminder'],
+        direct_calls=[('get_upcoming',{}),('update_reminder',{})] if dispatch == 'direct' else None,
+        multi_round=True, max_steps=5)
+    assert calls == ['read','update']
+    assert 'Updated Synthetic beta' not in result and 'Sat Oct 24 at 4 PM' not in result
+    if receipt.startswith('Reminder updated:'):
+        assert result == receipt
+    elif receipt == 'Unrecognized completion text':
+        assert 'couldn\'t verify' in result and receipt not in result
+    else:
+        assert 'not completed' in result or 'not return a verified success' in result
+    assert events[-1]['type'] == 'done'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('dry_run,missing_read,second_failure', [
+    (True,False,False), (False,True,False), (False,False,True), (False,False,False),
+])
+async def test_update_receipts_preserve_partial_work_reads_and_dry_runs(
+    monkeypatch, dry_run, missing_read, second_failure,
+):
+    from service.agent import loop
+    from service.tools.registry import REGISTRY, Tool
+    calls = []
+    good = 'Reminder updated: “Synthetic alpha” — Fri Oct 23 (all day).'
+    def update(**kwargs):
+        calls.append('update')
+        return '(error: synthetic failure)' if second_failure and len(calls) > 1 else good
+    monkeypatch.setitem(REGISTRY, 'update_reminder', Tool('update_reminder', 'synthetic update',
+        {'type':'object','properties':{'title':{'type':'string'}}}, 'system_write', update))
+    monkeypatch.setitem(REGISTRY, 'get_battery_status', Tool('get_battery_status', 'synthetic read',
+        {'type':'object','properties':{}}, 'system_read', lambda:'charge: 80%'))
+    class Client:
+        async def ensure_only(self, *args, **kwargs):
+            pass
+        async def stream_events(self, *args, **kwargs):
+            yield {'kind':'final','message':{'role':'assistant','content':'All done, beta changed.'}}
+    async def emit(event):
+        pass
+    direct = [('update_reminder',{'title':'alpha'})]
+    if second_failure:
+        direct.append(('update_reminder',{'title':'beta'}))
+    elif not missing_read:
+        direct.append(('get_battery_status',{}))
+    result = await loop.run_agent(Client(), 'Agents-A1-4B-oQe6',
+        [{'role':'user','content':'Change the reminder and check battery.'}], emit,
+        SimpleNamespace(confirm=AsyncMock(return_value=True)),
+        tools=['update_reminder','get_battery_status'], direct_calls=direct,
+        required_tool_groups=(frozenset({'update_reminder'}),frozenset({'get_battery_status'})),
+        multi_round=True, max_steps=2, test_mode=dry_run)
+    assert 'beta changed' not in result
+    if dry_run:
+        assert not calls and 'Dry run only' in result and 'was changed' in result
+    else:
+        assert good in result and len(calls) == (2 if second_failure else 1)
+        if missing_read or second_failure:
+            assert "couldn't complete every requested step" in result
+        else:
+            assert 'charge: 80%' in result
