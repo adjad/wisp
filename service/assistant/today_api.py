@@ -81,6 +81,15 @@ def snapshot(day, timezone, *, debug=False):
             # The original revisioned planner remains usable when an optional
             # source or private workspace settings are unavailable.
             result["workspace_error"] = "Daily source evidence could not be refreshed; your saved day plan is shown."
+        # Calendar blocks carry what the Day timeline's Cancel and Move need (the
+        # check-in card's rules, service/assistant/checkin.py). New lists, so the
+        # planner's own output (and the replay below) stays as built.
+        from service.assistant import checkin
+        for key in ("blocks", "all_day"):
+            result[key] = checkin.annotate_calendar_blocks(assistant_store, result[key], state["commitments"])
+            proposed = result.get("workspace", {}).get("proposed_plan")
+            if isinstance(proposed, dict) and isinstance(proposed.get(key), list):
+                proposed[key] = checkin.annotate_calendar_blocks(assistant_store, proposed[key], state["commitments"])
         if "workspace" in result:
             try:
                 # One-line gists of important emails for the Brief's MAIL row,

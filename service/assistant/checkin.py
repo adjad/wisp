@@ -158,6 +158,43 @@ def move_block_reason(row: dict) -> str:
     return ""
 
 
+def occurrence_fields(store, source_id, when_ts) -> dict:
+    """What a one-tap Cancel or a Move needs to know about one synced occurrence: the
+    invitee count to state ("its N invitees will be notified") and send back, who
+    organizes it, whether its calendar can be written, and why Cancel or Move isn't
+    offered, if it isn't ("" when it is). The same facts for the check-in card's rows
+    and the Day timeline's Calendar blocks (annotate_calendar_blocks), so both surfaces
+    follow one rule. Unknown fields are None; an occurrence the store doesn't hold
+    blocks both with "Not in your synced Calendar."."""
+    found = (store.calendar_occurrence(source_id, when_ts)
+             if source_id and when_ts is not None and hasattr(store, "calendar_occurrence") else None)
+    return {"invitee_count": found["invitee_count"] if found else None,
+            "organizer_is_user": found["organizer_is_user"] if found else None,
+            "calendar_writable": found.get("calendar_writable") if found else None,
+            "cancel_blocked": cancel_block_reason(found) if found else "Not in your synced Calendar.",
+            "move_blocked": move_block_reason(found) if found else "Not in your synced Calendar."}
+
+
+def annotate_calendar_blocks(store, blocks: list[dict], commitments: list[dict]) -> list[dict]:
+    """Copies of a plan's `blocks` (service/assistant/today.py build_plan) where each
+    Calendar block also carries its occurrence's source_id, all_day flag and
+    occurrence_fields, looked up through the commitment the block was built from. The
+    Day timeline's ⋯ menu offers Cancel and Move from these, under the check-in card's
+    rules. Blocks of any other kind, and a Calendar block whose commitment is gone, are
+    returned unchanged; the planner's own output is never mutated."""
+    by_id = {c.get("id"): c for c in commitments if c.get("source") == "calendar"}
+    annotated = []
+    for block in blocks:
+        commitment = by_id.get(block.get("id")) if block.get("kind") == "calendar" else None
+        if commitment is None:
+            annotated.append(block)
+            continue
+        row = dict(block, source_id=commitment.get("source_id"), all_day=bool(commitment.get("all_day")))
+        row.update(occurrence_fields(store, commitment.get("source_id"), commitment.get("when_ts")))
+        annotated.append(row)
+    return annotated
+
+
 def _event_rows(store, day: str, timezone: str) -> list[dict]:
     from service.assistant.today import day_bounds
     lo, hi = day_bounds(day, timezone)
@@ -168,16 +205,7 @@ def _event_rows(store, day: str, timezone: str) -> list[dict]:
         row = {"id": event.get("id"), "title": event.get("title") or "Untitled event",
                "when_ts": event.get("when_ts"), "end_ts": event.get("end_ts"),
                "all_day": bool(event.get("all_day")), "source_id": event.get("source_id")}
-        # What a one-tap Cancel needs: the invitee count to state ("its N invitees will be
-        # notified") and send back, and why Cancel isn't offered, if it isn't.
-        found = (store.calendar_occurrence(row["source_id"], row["when_ts"])
-                 if row["source_id"] and row["when_ts"] is not None
-                 and hasattr(store, "calendar_occurrence") else None)
-        row["invitee_count"] = found["invitee_count"] if found else None
-        row["organizer_is_user"] = found["organizer_is_user"] if found else None
-        row["calendar_writable"] = found.get("calendar_writable") if found else None
-        row["cancel_blocked"] = cancel_block_reason(found) if found else "Not in your synced Calendar."
-        row["move_blocked"] = move_block_reason(found) if found else "Not in your synced Calendar."
+        row.update(occurrence_fields(store, row["source_id"], row["when_ts"]))
         rows.append(row)
     rows.sort(key=lambda r: (r["when_ts"] is None, r["when_ts"] or 0))
     return rows[:MAX_EVENTS]
