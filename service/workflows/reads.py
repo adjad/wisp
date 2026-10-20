@@ -5,7 +5,7 @@ import re
 from datetime import date, datetime, timedelta
 
 from service.router.router import calendar_is_excluded
-from service.utterance_shape import deliberate
+from service.utterance_shape import deliberate, quoted_spans
 from service.safety.policy import Tier, decide
 from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome
 from service.tasks.models import TaskExecution
@@ -297,6 +297,17 @@ def _sender_phrase(raw: str) -> str | None:
     return candidate
 
 
+def _normalize_calendar_request(text: str) -> str:
+    """Correct request syntax without changing a quoted event's identity."""
+    parts = []
+    cursor = 0
+    for start, end in quoted_spans(text):
+        parts.extend((_normalize(text[cursor:start]), text[start:end]))
+        cursor = end
+    parts.append(_normalize(text[cursor:]))
+    return "".join(parts)
+
+
 def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                  last_stock_response: str = ""):
     if deliberate(prompt) is not None:
@@ -309,7 +320,7 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
         return None
     # A fully consumed Calendar read can explicitly exclude Reminders. Check
     # that complete grammar before counting excluded nouns as another source.
-    calendar_text = _normalize(prompt).strip(" *_.?!")
+    calendar_text = _normalize_calendar_request(prompt).strip(" *_.?!")
     calendar_args = _calendar_read_args(calendar_text, _date_range(calendar_text))
     if calendar_args is not None:
         return [("get_upcoming", calendar_args)], ""
