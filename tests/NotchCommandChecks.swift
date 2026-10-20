@@ -35,6 +35,13 @@ struct NotchCommandChecks {
         check(NotchCommand.match("/tødåy") == nil, "non-ASCII letters are not commands")
         check(NotchCommand.match("") == nil, "empty input is nothing")
 
+        check(NotchCommand.match("/cor") == .corpus, "unique corpus prefix opens the runner")
+        check(NotchCommand.isCorpusRequest("/corpus all"), "corpus arguments use dedicated dispatch")
+        check(NotchCommand.isCorpusRequest(" /CORPUS LIVE-100 "), "case IDs and whitespace are accepted")
+        check(NotchCommand.isCorpusRequest("/corpus bad-selector"), "bad selectors stay out of normal inference")
+        check(!NotchCommand.isCorpusRequest("/corpus/file.txt"), "paths stay ordinary prompts")
+        check(!NotchCommand.isCorpusRequest("please /corpus all"), "embedded text is not a corpus command")
+
         // Suggestions appear only while typing a command.
         check(NotchCommand.suggestions(for: "/") == NotchCommand.allCases, "a bare slash lists every command")
         check(NotchCommand.suggestions(for: "/re") == [.research, .report], "a prefix narrows the list in order")

@@ -33,6 +33,14 @@ The profile is `assistant-corpus-profile.json` under Wisp's state folder (`~/.mo
 
 Live corpus runs do not create backend chat sessions or read saved chat history. Results stay in the current app conversation for inspection until the app closes. Existing source caches and local tool audit records may be refreshed or updated by ordinary source readers. Debug payload capture is disabled. Real source content and the local profile must not be committed or uploaded as test artifacts.
 
+## Run from the notch
+
+In the notch's **Ask** field, use the same `/corpus list`, `/corpus smoke`, `/corpus batch-1`, `/corpus all`, or individual case commands. `/corpus` is also in the slash-command suggestions and opens the catalog. The corpus surface shows finished/total counts, verified model-inference counts, Stop, streamed answers, review cards, and expandable source results. It shares the window runner and its server scope limits.
+
+**Open in window** hands off the same in-memory conversation, including a running case, without restarting inference. Switching chats in the window does not change the notch's selected run. Collapsing the notch keeps the run going; Stop cancels current inference and the remaining queue. Stop during catalog loading, New Chat, and dismissing the notch invalidate late catalog responses so they cannot start inference later. New Chat and dismissal retain partial results in the window store until app exit.
+
+The notch holds normal questions and brief refreshes while its corpus is busy. Starting a corpus while a normal notch request, brief, or research dispatch is active asks the person to wait. Live source results remain local and transient as described above; they are not persisted as saved chat sessions.
+
 ## Live case construction
 
 `service/corpus_cases.json` contains the versioned 100-case template catalog with stable `LIVE-001`–`LIVE-100` IDs, distinct intents, target slots, provenance and fixed date/unread filters. Targets come from the private local profile. Changing target lists can change a case's selected person; its token changes accordingly. The first eight IDs retain the original three-contact/two-mail mapping for that profile shape.

@@ -126,10 +126,12 @@ enum AssistantTaskCorpusCommand {
     enum CommandError: LocalizedError {
         case usage
         case resourceUnavailable
+        case busy
 
         var errorDescription: String? {
             switch self {
             case .usage: return "Use /corpus smoke, contacts, messages, mail, all, batch-1 through batch-10, LIVE-001, list, profile, or help. For synthetic plans use /corpus synthetic smoke."
+            case .busy: return "Stop the current corpus run before starting another."
             case .resourceUnavailable: return "The bundled assistant task corpus could not be loaded."
             }
         }

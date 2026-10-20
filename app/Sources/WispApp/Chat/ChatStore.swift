@@ -44,6 +44,7 @@ final class ChatConversation: ObservableObject, Identifiable {
     @Published var loading = false
     @Published var busy = false
     @Published fileprivate(set) var corpusRunning = false
+    @Published fileprivate(set) var corpusTotal = 0
     /// Text to put back in the composer after a dropped request.
     @Published var restoredInput: String?
 
@@ -64,6 +65,12 @@ final class ChatConversation: ObservableObject, Identifiable {
         self.lastUsed = lastUsed; self.loaded = loaded
     }
 
+    var corpusFinishedCount: Int {
+        messages.filter { $0.corpusEvaluation != nil && ($0.corpusEvaluation?.completed == true || $0.isError) }.count
+    }
+    var corpusVerifiedCount: Int {
+        messages.filter { $0.corpusEvaluation?.completed == true && ($0.corpusEvaluation?.modelCalls ?? 0) > 0 }.count
+    }
     var isEmpty: Bool { messages.isEmpty }
     var latestAssistant: ChatMessage? { messages.last(where: { $0.role == .assistant }) }
 }
@@ -241,38 +248,57 @@ final class ChatStore: ObservableObject {
                 appendLocalNotice("Remove the image attachment before starting the corpus runner.")
                 return
             }
-            switch selection {
-            case .help:
-                appendLocalNotice(AssistantTaskCorpusCommand.helpText)
-            case .live(let selector):
-                Task {
-                    do {
-                        let cases = try await backend.liveCorpusCases(selector: selector)
-                        runCorpus(label: selector, cases: cases, command: text)
-                    } catch { appendLocalNotice("Could not load live cases: \(error.localizedDescription)") }
-                }
-            case .catalog:
-                Task {
-                    do {
-                        let cases = try await backend.liveCorpusCases(selector: "all")
-                        let rows = cases.map { "\($0.id) [\($0.category)] \($0.requestPrompt)\n\($0.setup)" }
-                        appendLocalNotices(["Live corpus: \(cases.count) configured requests"] + rows + ["Run /corpus batch-1 through batch-10, or select one case by ID."])
-                    } catch { appendLocalNotice("Could not load the live catalog: \(error.localizedDescription)") }
-                }
-            case .profile:
-                Task {
-                    do {
-                        let cases = try await backend.liveCorpusCases(selector: "all")
-                        let contacts = cases.filter { $0.category == "contacts" }.compactMap(\.target).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
-                        let mail = cases.filter { $0.category == "mail" }.compactMap(\.target).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
-                        appendLocalNotice("Local corpus targets\nContacts / Messages: \(contacts.joined(separator: ", "))\nMail identifiers: \(mail.joined(separator: ", "))\nMail identifiers are search terms; an incomplete address is not assumed to be deliverable.")
-                    } catch { appendLocalNotice("Could not load the local corpus profile: \(error.localizedDescription)") }
-                }
-            case .cases(let label, let cases):
-                runCorpus(label: label, cases: cases, command: text)
+            Task {
+                do { _ = try await performCorpus(selection, command: text) }
+                catch is CancellationError { }
+                catch { appendLocalNotice("Could not load corpus: \(error.localizedDescription)") }
             }
         } catch {
             appendLocalNotice(error.localizedDescription)
+        }
+    }
+
+    private var loadingCorpus = false
+
+    /// Shared by the window and notch. Caller cancellation must survive a
+    /// transport that returns late, before any case can start.
+    @discardableResult
+    func submitCorpusCommand(_ text: String) async throws -> ChatConversation {
+        guard let selection = try AssistantTaskCorpusCommand.resolve(text) else {
+            throw AssistantTaskCorpusCommand.CommandError.usage
+        }
+        return try await performCorpus(selection, command: text)
+    }
+
+    private func performCorpus(_ selection: AssistantTaskCorpusCommand.Selection,
+                               command: String) async throws -> ChatConversation {
+        guard !loadingCorpus, !conversations.contains(where: { $0.corpusRunning }) else {
+            throw AssistantTaskCorpusCommand.CommandError.busy
+        }
+        loadingCorpus = true
+        defer { loadingCorpus = false }
+        try Task.checkCancellation()
+        switch selection {
+        case .help:
+            _ = newChat()
+            return appendLocalNotice(AssistantTaskCorpusCommand.helpText)
+        case .live(let selector):
+            let cases = try await backend.liveCorpusCases(selector: selector)
+            try Task.checkCancellation()
+            return runCorpus(label: selector, cases: cases, command: command)
+        case .catalog, .profile:
+            let cases = try await backend.liveCorpusCases(selector: "all")
+            try Task.checkCancellation()
+            _ = newChat()
+            if case .catalog = selection {
+                let rows = cases.map { "\($0.id) [\($0.category)] \($0.requestPrompt)\n\($0.setup)" }
+                return appendLocalNotices(["Live corpus: \(cases.count) configured requests"] + rows + ["Run /corpus batch-1 through batch-10, or select one case by ID."])
+            }
+            let contacts = cases.filter { $0.category == "contacts" }.compactMap(\.target).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            let mail = cases.filter { $0.category == "mail" }.compactMap(\.target).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            return appendLocalNotice("Local corpus targets\nContacts / Messages: \(contacts.joined(separator: ", "))\nMail identifiers: \(mail.joined(separator: ", "))\nMail identifiers are search terms; an incomplete address is not assumed to be deliverable.")
+        case .cases(let label, let cases):
+            return runCorpus(label: label, cases: cases, command: command)
         }
     }
 
@@ -328,10 +354,10 @@ final class ChatStore: ObservableObject {
         }
     }
 
-    private func runCorpus(label: String, cases: [AssistantTaskCorpusCase], command: String) {
+    private func runCorpus(label: String, cases: [AssistantTaskCorpusCase], command: String) -> ChatConversation {
         guard !cases.isEmpty else {
-            appendLocalNotice("No corpus cases were found for `\(label)`. Check the bundled corpus and try again.")
-            return
+            _ = newChat()
+            return appendLocalNotice("No corpus cases were found for `\(label)`. Check the bundled corpus and try again.")
         }
         let conversation = newChat()
         conversation.title = "Assistant corpus · \(label)"
@@ -341,6 +367,7 @@ final class ChatStore: ObservableObject {
             ? "Running \(cases.count) live cases with the local agent model and bounded reads of your real Wisp data. Expand source results and review each answer. Completed model calls are counted from inference responses. Writes and sends are blocked. Each case starts without chat history."
             : "Running \(cases.count) synthetic routing plans. Tools are not executed; deterministic routes may skip the model. These plans do not evaluate real-data answers."
         conversation.messages.append(ChatMessage(role: .assistant, text: intro))
+        conversation.corpusTotal = cases.count
         conversation.corpusRunning = true
         conversation.lastUsed = Date()
 
@@ -375,17 +402,21 @@ final class ChatStore: ObservableObject {
                 conversation.messages.append(ChatMessage(role: .assistant, text: summary))
             }
         }
+        return conversation
     }
 
-    private func appendLocalNotice(_ text: String) {
+    @discardableResult
+    private func appendLocalNotice(_ text: String) -> ChatConversation {
         appendLocalNotices([text])
     }
 
-    private func appendLocalNotices(_ texts: [String]) {
+    @discardableResult
+    private func appendLocalNotices(_ texts: [String]) -> ChatConversation {
         let conversation = selected ?? newChat()
-        guard !conversation.busy, !conversation.corpusRunning else { return }
+        guard !conversation.busy, !conversation.corpusRunning else { return conversation }
         if conversation.messages.isEmpty { conversation.title = "Corpus runner" }
         conversation.messages.append(contentsOf: texts.map { ChatMessage(role: .assistant, text: $0) })
+        return conversation
     }
 
     /// Stop the reply in flight. The text so far stays; a pending approval is denied.
@@ -439,6 +470,8 @@ final class ChatStore: ObservableObject {
         guard let i = conversation.messages.firstIndex(where: { $0.id == replyID }) else { return }
         var message = conversation.messages[i]
         let outcome = ChatTurnReducer.apply(event, to: &message)
+        // Corpus replies are text and read evidence, never actionable drafts.
+        if message.corpusEvaluation != nil { message.draft = nil }
         if let start = conversation.streamStart, message.meta != nil {
             let rate = ChatTurnReducer.tokensPerSecond(chars: conversation.streamChars, since: start)
             if rate > 0 { message.meta?.tokensPerSecond = rate }
@@ -531,6 +564,7 @@ final class ChatStore: ObservableObject {
 
     func sendDraft(_ conversation: ChatConversation, messageID: UUID) {
         guard let i = conversation.messages.firstIndex(where: { $0.id == messageID }),
+              conversation.messages[i].corpusEvaluation == nil,
               let draft = conversation.messages[i].draft, !draft.isSending, !draft.sent, !draft.discarded else { return }
         guard !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             updateDraft(conversation, messageID: messageID) { $0.status = "The message is empty." }

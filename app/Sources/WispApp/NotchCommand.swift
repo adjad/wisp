@@ -7,12 +7,13 @@ import Foundation
 ///
 /// Pure logic, checked by tests/NotchCommandChecks.swift without the app.
 enum NotchCommand: String, CaseIterable, Equatable {
-    case today, memory, research, settings, report, window, new, about
+    case today, memory, research, settings, report, window, new, about, corpus
 
     var title: String { "/" + rawValue }
 
     var summary: String {
         switch self {
+        case .corpus: return "Browse or run assistant test cases"
         case .today: return "Open your day"
         case .memory: return "Open Memory"
         case .about: return "Tell Wisp about yourself"
@@ -38,6 +39,12 @@ enum NotchCommand: String, CaseIterable, Equatable {
         if let exact = NotchCommand(rawValue: word) { return exact }
         let candidates = allCases.filter { $0.rawValue.hasPrefix(word) }
         return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    /// Corpus selectors contain spaces and IDs; recognize only the whole
+    /// command word so a file path or ordinary prompt never enters the runner.
+    static func isCorpusRequest(_ input: String) -> Bool {
+        input.split(whereSeparator: \.isWhitespace).first?.lowercased() == "/corpus"
     }
 
     /// The lowercased letters after a leading "/", when that is all the input is.

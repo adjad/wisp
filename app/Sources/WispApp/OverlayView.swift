@@ -3,6 +3,7 @@ import AppKit
 
 struct OverlayView: View {
     @StateObject var model: OverlayModel
+    @ObservedObject var corpus: NotchCorpusController
     @ObservedObject var researchModel: ResearchModel
     // Shared with the Wisp window's planner, so both show the same day.
     @ObservedObject var todayModel: TodayModel
@@ -71,8 +72,12 @@ struct OverlayView: View {
                     MemoryReviewNotice()
                     NudgeStack(model: model)
                     promptArea
-                    content
-                    statusRow.padding(.top, 10)
+                    if model.showingCorpus {
+                        NotchCorpusView(controller: corpus, openWindow: model.openTabInWindow)
+                    } else {
+                        content
+                        statusRow.padding(.top, 10)
+                    }
                 }
             case .brief:
                 NotchBriefView(model: model, today: todayModel).padding(.top, 12)
@@ -255,7 +260,7 @@ struct OverlayView: View {
 
     private var windowControls: some View {
         HStack(spacing: 6) {
-            if model.tab == .ask && !model.turns.isEmpty {
+            if model.tab == .ask && (!model.turns.isEmpty || model.showingCorpus) {
                 ctrl("square.and.pencil", "New chat (⌘N)", { model.newChat() })
             }
             ctrl("gearshape", model.showingQuickSettings ? "Close quick settings" : "Quick settings",
@@ -265,7 +270,7 @@ struct OverlayView: View {
             // The window opens on what this tab shows. For Ask it reads the saved
             // history, which the service writes only at the end of a turn, so
             // that hand-off waits for the turn to finish.
-            ctrl("macwindow", windowHelp, enabled: model.tab != .ask || model.conversationSettled,
+            ctrl("macwindow", windowHelp, enabled: model.tab != .ask || model.showingCorpus || model.conversationSettled,
                  { model.openTabInWindow() })
             ctrl("chevron.up", "Collapse", { model.requestCollapse() })
             ctrl("xmark", "Close (stays in menu bar; frees memory)", onDismiss)

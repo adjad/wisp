@@ -945,6 +945,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 "app/Sources/WispApp/Chat/ChatTypes.swift",
                 "app/Sources/WispApp/Chat/AssistantTaskCorpus.swift",
                 "app/Sources/WispApp/Chat/ChatStore.swift",
+                "app/Sources/WispApp/Chat/NotchCorpusController.swift",
                 "tests/ChatStoreChecks.swift", "-o", chat_store,
             ],
         ),

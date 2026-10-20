@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var searchCaptureID: UUID?
     private var searchReady = false
     private var capturedSearchPage: PageText?
+    private lazy var notchCorpus = NotchCorpusController(store: wispWindow.store)
     private let model = OverlayModel()
     private let client = WispClient()
     private let backend = BackendManager()
@@ -690,8 +691,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func createPanelIfNeeded() {
         guard panel == nil else { return }
         model.todayReport = todayModel.report
+        notchCorpus.canStart = { [weak self] in self?.model.canStartCorpusCommand() ?? false }
+        notchCorpus.onStateChanged = { [weak self] busy, presented in
+            self?.model.corpusBusy = busy
+            self?.model.showingCorpus = presented
+            self?.model.onResize()
+        }
+        model.onCorpusCommand = { [weak self] command in self?.notchCorpus.submit(command) }
+        model.onHideCorpus = { [weak self] in self?.notchCorpus.hide() }
+        model.onResetCorpus = { [weak self] in self?.notchCorpus.stopAndHide() }
+        model.onOpenCorpus = { [weak self] in
+            guard let self else { return }
+            self.notchCorpus.selectInWindow()
+            self.wispWindow.show()
+        }
         panel = OverlayPanel {
-            OverlayView(model: self.model, researchModel: self.researchModel, todayModel: self.todayModel,
+            OverlayView(model: self.model, corpus: self.notchCorpus, researchModel: self.researchModel, todayModel: self.todayModel,
                         settings: self.settingsLoader, setup: self.setupModel,
                         onClose: { [weak self] in self?.collapse() },
                         onDismiss: { [weak self] in self?.dismissToMenuBar() })
