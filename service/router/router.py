@@ -6552,6 +6552,21 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
     _, policy_forbidden = _private_read_policy(t)
     forbidden = set(policy_forbidden)
     bindings: dict[str, dict] = {}
+    from service.calendar_time_intent import named_calendar_time
+    named = named_calendar_time(text)
+    if named is not None:
+        allowed = set()
+        if named.supported and named.personal and not named.no_calendar:
+            allowed.add('get_upcoming')
+            bindings['get_upcoming'] = named.calendar_bindings()
+        elif named.supported and not named.personal and named.public_provenance and not named.no_web:
+            allowed.add('web_search')
+            bindings['web_search'] = {'query': named.query}
+        # This whole envelope already consumes every outside source policy.
+        # Reclassifying a denied source noun as private context would erase
+        # its independently authorized public lookup. Unknown envelopes have
+        # no capability; recognized ones have only their exact typed binding.
+        return frozenset(set(REGISTRY) - allowed), bindings
     if re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b", t, re.I):
         forbidden.update(_INBOX_READ_TOOLS)
     if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward)\b", t, re.I):
@@ -7868,8 +7883,44 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
     return decision
 
 
+def _named_time_claim(text: str) -> RouteDecision | None:
+    from service.calendar_time_intent import named_calendar_time
+    from service.tools.registry import REGISTRY
+    intent = named_calendar_time(text)
+    if intent is None:
+        return None
+    if intent.supported and intent.personal and not intent.no_calendar:
+        decision = _verified_private_read([('get_upcoming', intent.calendar_args())],
+                                           'complete named Calendar time read', text)
+        decision.tool_argument_bindings['get_upcoming'] = intent.calendar_bindings()
+        decision.forbidden_tools = frozenset(set(REGISTRY) - {'get_upcoming'})
+        return decision
+    if intent.supported and not intent.personal and intent.public_provenance and not intent.no_web:
+        # A simple public noun phrase can still be a stable concept or need
+        # disambiguation. Offer the exact public lookup without forcing it.
+        decision = _mk('agent', tools=True, source='default',
+                       route_source='named_time_interpretation',
+                       reason='public named time interpretation', expect_tool_first=False)
+        decision.tool_subset = ['web_search']
+        decision.tool_argument_bindings = {'web_search': {'query': intent.query}}
+        decision.resolved_request = text
+        decision.isolated_public_query = intent.query
+        decision.verified_results_only = True
+        decision.strict_read_limits = {'web_search': 1}
+        decision.forbidden_tools = frozenset(set(REGISTRY) - {'web_search'})
+        return _pin_web_decision(decision)
+    decision = _mk('general', reason='clarify named event time and source')
+    decision.tool_subset = []
+    decision.forbidden_tools = frozenset(REGISTRY)
+    decision.resolved_request = text + ('\nClarify the event, Calendar source or supported date range. '
+        'No source has been read. Respect the source exclusions; do not infer a time.')
+    return decision
+
+
 def _assistant_read_claim(text: str) -> RouteDecision | None:
     """Complete personal questions precede generic chat and current-web rules."""
+    if (named := _named_time_claim(text)) is not None:
+        return named
     decision = _priority_read(text)
     if decision is None and (compound := _priority_context_claim(text)) is not None:
         return compound

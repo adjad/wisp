@@ -408,6 +408,29 @@ def _match_schedule_query(rows: list[dict], query: str) -> list[dict]:
     return results
 
 
+def _format_calendar_end_times(items: list[dict], *, window_label: str) -> str:
+    """Project scheduled endpoints without changing the normal agenda renderer."""
+    lines = [f"Scheduled Calendar end times ({window_label}); these do not verify actual completion."]
+    if len(items) > 1:
+        lines.append("Multiple matching events; each scheduled end is listed separately.")
+    for item in items:
+        title = item.get('title') or 'Untitled'
+        start = datetime.fromtimestamp(float(item['when_ts']), tz=timezone.utc).astimezone()
+        identity = start.strftime('%Y-%m-%d %-I:%M %p %Z%z')
+        end_ts = item.get('end_ts')
+        if end_ts is None or float(end_ts) < float(item['when_ts']):
+            end = 'scheduled end unknown (no valid end recorded)'
+        else:
+            endpoint = datetime.fromtimestamp(float(end_ts), tz=timezone.utc).astimezone()
+            if item.get('all_day'):
+                end = ('all-day event; exclusive scheduled end boundary ' +
+                       endpoint.strftime('%Y-%m-%d %-I:%M %p %Z%z') + '; no timed finish recorded')
+            else:
+                end = 'scheduled to end ' + endpoint.strftime('%Y-%m-%d %-I:%M %p %Z%z')
+        lines.append(f'- {title} (starts {identity}): {end}.')
+    return '\n'.join(lines)
+
+
 @register(
     "get_upcoming",
     "Read the user's upcoming schedule — calendar events, meetings, Canvas "
@@ -422,6 +445,7 @@ def _match_schedule_query(rows: list[dict], query: str) -> list[dict]:
                   "description": "how many days ahead to look (default 7, max 60)"},
          "period": {"type": "string", "description": "Exact calendar range, e.g. tomorrow, this week, this month. Overrides days."},
          "calendar_only": {"type": "boolean", "description": "Only actual calendar events, not preparation reminders."},
+         "boundary": {"type": "string", "enum": ["start", "end"], "description": "Named Calendar time question: end returns scheduled end timestamps, never actual completion. Requires calendar_only and query. Default start preserves the agenda."},
          "query": {"type": "string", "description": "Filter titles within the requested range; bounded subject typos and test/exam synonyms are supported. Multiple matches remain distinct; ask which instead of selecting one."},
          "account": {"type": "string",
                      "description": "only include this linked calendar account (only useful when more than one is linked)"},
@@ -432,10 +456,18 @@ def _match_schedule_query(rows: list[dict], query: str) -> list[dict]:
 )
 async def get_upcoming(days: int = 7, account: str | None = None,
                        include_holidays: bool = False, period: str = "",
-                       calendar_only: bool = False, query: str = "") -> str:
+                       calendar_only: bool = False, query: str = "",
+                       boundary: str = "start") -> str:
+    if boundary not in {"start", "end"} or (boundary == "end" and (not calendar_only or not query)):
+        return "(error: scheduled end projection requires a named Calendar-only query)"
     from service.assistant.sync_status import ensure_sources
     readiness = await ensure_sources(("calendar",) if calendar_only else
                                      ("calendar", "reminders"))
+    if boundary == "end":
+        calendar_sources = [source for source in readiness.get('sources', ())
+                            if source.get('id') == 'calendar']
+        if not calendar_sources or any(source.get('state') != 'ready' for source in calendar_sources):
+            return "Wisp could not verify Calendar readiness; no scheduled end time has been checked."
     # A Reminders round trip that has not posted back yet must not hide a
     # current Calendar answer. Its native rows are withheld (never shown from
     # the previous snapshot) and the answer says so.
@@ -515,12 +547,14 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     items = _collapse_schedule_rows(
         [item for item in items
          if float(item.get("when_ts") or 0) >= now
-         or (period and item.get("source") == "calendar")])
+         or ((period or boundary == "end") and item.get("source") == "calendar")])
     if not items:
         if notice or reminder_note:
             return (notice + "No scheduled items were found in the sources that could be checked."
                     + reminder_note)
         return f"Today is {today_str}. Nothing scheduled in {window_label}."
+    if boundary == "end":
+        return notice + _format_calendar_end_times(items, window_label=window_label)
     return notice + _format_forward_agenda(
         items, now=now, window_label=window_label,
         apple_reminders_checked="reminders" not in withheld,

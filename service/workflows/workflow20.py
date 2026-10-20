@@ -148,23 +148,12 @@ def weather_read(text: str) -> PersonalRead | None:
 
 
 def calendar_question(text: str) -> PersonalRead | None:
-    """Extract one bounded named Calendar question, keeping identity and range."""
-    match = re.fullmatch(
-        r"\s*(?:please\s+)?(?:when\s+(?:is|does)|what\s+time\s+(?:is|does))\s+"
-        r"(?P<owned>my\s+|our\s+|the\s+)?(?P<title>[A-Za-z0-9][A-Za-z0-9 ’'/-]{0,100}?)"
-        r"(?:\s+(?:start|starts|begin|begins|happen|happens))?"
-        r"(?:\s+(?P<period>today|tomorrow|(?:this|next)\s+(?:week|month)))?[.!?\s]*", text, re.I)
-    if not match:
+    """Bind only complete, explicitly personal named-time requests."""
+    from service.calendar_time_intent import named_calendar_time
+    intent = named_calendar_time(text)
+    if intent is None or not intent.supported or not intent.personal or intent.no_calendar:
         return None
-    title = match["title"].strip()
-    if re.search(r"\b(?:and|then|also|without|except|not|public|web|news|email|messages?|notes?|reminders?|weather|send|remind|create|using|if|unless|from|on|in|at|next|last|this|today|tomorrow|yesterday)\b",title,re.I):
-        return None
-    kinds = r"\b(?:tests?|exams?|examinations?|assessments?|midterms?|finals?|quiz|quizzes|review|standup|dentist|appointment|meeting|event|class|lecture|workshop|interview)\b"
-    if not match["owned"] and not re.search(kinds,title,re.I):
-        return None
-    args = {"calendar_only":True,"query":title}
-    if match["period"]: args["period"] = match["period"].casefold()
-    else: args["days"] = 60
+    args = intent.calendar_args()
     return PersonalRead(("calendar",),("get_upcoming",),(frozenset({"get_upcoming"}),),
                         {"get_upcoming":args}, (("get_upcoming",args),))
 
