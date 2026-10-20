@@ -7754,18 +7754,32 @@ def _assistant_read_claim(text: str) -> RouteDecision | None:
 # verb after a private-source declaration cannot make its text a public query.
 _CONTEXT_REPORT = r"(?:says?|said|reads?|states?|contains?|mentions?|describes?|reports?|refers?|shows?|indicates?|has|have)\b"
 _CONTEXT_HEAD = (r"(?:(?:the|my|our|this|that|an?)\s+" + _PRIVATE_SOURCE_NAME + r"\b|"
+                 + _PRIVATE_SOURCE_NAME + r"\s*[:=|]|"
                  + _PRIVATE_SOURCE_NAME + r"\s+(?=" + _CONTEXT_REPORT + r")|"
                  r"(?:I|we)\b(?!\s+(?:(?:want|need)|would\s+like)\s+you\s+to\b)"
                  r"(?=[^.!?;,\n]*\b" + _PRIVATE_SOURCE_NAME + r"\b))")
 _CONTEXT_PREFIX = r"(?:(?:and|then|also)\s+)*" + _CONTEXT_HEAD
-_CONTEXT_PRESENCE = r"(?:^|[.!?;,\n:()—–-]|\b(?:and|then|also|but|because|since)\b)\s*" + _CONTEXT_PREFIX
+_CONTEXT_BOUNDARY = r"(?:^|[.!?;,\n:()—–|&-]|\b(?:and|then|also|but|because|since|or)\b)\s*"
+_CONTEXT_PRESENCE = _CONTEXT_BOUNDARY + _CONTEXT_PREFIX
+# Unquoted structured carriers remain data even without a clause delimiter.
+_STRUCTURED_CONTEXT = r'[\[{]'
+
+
+def _context_authority_mask(text: str) -> str:
+    # Markdown decoration is presentation, never a way to hide a source label.
+    return re.sub(r'[*_#>]', ' ', _routing_quote_mask(text))
 
 
 def _supplied_context_clause(clause: str) -> bool:
+    try:
+        if isinstance(json.loads(clause.strip()), (dict, list)):
+            return True  # A supplied data carrier grants no source/effect authority.
+    except ValueError:
+        pass
     shape = _ROUTING_QUOTED_SPAN_RE.sub('QUOTED_CONTEXT', clause)
     return bool(re.fullmatch(
         r"\s*(?:(?:and|then|also)\s+)*(?:(?:(?:the|my|our|this|that|an?)\s+)?" + _PRIVATE_SOURCE_NAME +
-        r"\s+(?:says|say|said|reads|read)\s*[:,]?\s*QUOTED_CONTEXT|"
+        r"(?:\s+(?:says|say|said|reads|read)\s*[:,]?\s*|\s*[:=|]\s*)QUOTED_CONTEXT|"
         r"I\s+have\s+(?:an?\s+)?" + _PRIVATE_SOURCE_NAME + r"(?:\s+(?:saying|that\s+says)\s+QUOTED_CONTEXT)?)"
         r"[.!?;\s]*", shape, re.I))
 
@@ -7790,7 +7804,7 @@ def _priority_context_claim(text: str) -> RouteDecision | None:
     """
     source = text
     _, policy_forbidden = _private_read_policy(_routing_quote_mask(text))
-    masked = _routing_quote_mask(source)
+    masked = _context_authority_mask(source)
     boundaries = list(re.finditer(
         r"[.!?;\n]+(?:\s+|$)|\s+(?:and\s+then|and|then|also)\s+"
         r"(?=(?:search\s+the\s+web|what\s+(?:should|is|are)|look\s+up)\b|" + _CONTEXT_PREFIX + r")|"
@@ -7805,15 +7819,14 @@ def _priority_context_claim(text: str) -> RouteDecision | None:
         start = boundary.end()
     if clause := source[start:].strip():
         clauses.append(clause)
-    has_context = bool(re.search(_CONTEXT_PRESENCE, masked, re.I))
+    has_context = bool(re.search(_CONTEXT_PRESENCE, masked, re.I)
+                       or re.search(_STRUCTURED_CONTEXT, masked))
     has_priority = any(_priority_read(clause) for clause in clauses)
     if not has_context and (len(clauses) < 2 or not has_priority):
         return None
     if has_context and not has_priority:
-        root_declaration = bool(_supplied_context_clause(clauses[0]) or re.match(
-                r'\s*(?:(?:I|we)\b(?!\s+(?:(?:want|need)|would\s+like)\s+you\s+to\b)|'
-                r'(?:the|my|our|this|that|an?)\s+' + _PRIVATE_SOURCE_NAME + r'\b(?=\s+\S)|'
-                + _PRIVATE_SOURCE_NAME + r'\s+(?=' + _CONTEXT_REPORT + r'))', masked, re.I))
+        root_declaration = bool(_supplied_context_clause(clauses[0])
+                                or re.match(_STRUCTURED_CONTEXT, masked))
         # A coordinated noun list in an ordinary private read is not a new
         # declaration: e.g. "Read my notes and reminders". Its existing owner
         # still interprets it. The context boundary owns public compounds and
@@ -7831,14 +7844,15 @@ def _priority_context_claim(text: str) -> RouteDecision | None:
                 unresolved = True  # Two different task windows need interpretation.
             priority = decision
             continue
-        authority = _normalize_source_apostrophes(_routing_quote_mask(clause))
+        authority = _normalize_source_apostrophes(_context_authority_mask(clause))
         probe = authority.strip(' .!?;\n')
         if (_PRIVATE_SOURCE_DENIAL_CLAUSE_RE.fullmatch(probe)
                 or _NO_WEB_POLICY_CLAUSE_RE.fullmatch(probe)):
             continue
         if _supplied_context_clause(clause):
             continue
-        if re.search(_CONTEXT_PRESENCE, authority, re.I):
+        if (re.search(_CONTEXT_PRESENCE, authority, re.I)
+                or re.search(_STRUCTURED_CONTEXT, authority)):
             unresolved = True
             continue
         if re.fullmatch(r"\s*(?:please\s+)?(?:don['’]?t|do\s+not|never)\s+"

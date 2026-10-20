@@ -148,6 +148,36 @@ def test_unquoted_context_first_is_not_an_authority_grant(context):
     assert 'Clarify' in d.resolved_request
 
 
+@pytest.mark.parametrize('context', ['Notes: "secret-project-abc".', 'Email: "secret-project-abc".',
+                                   'Mail = "secret-project-abc".', '**Notes:** "secret-project-abc".',
+                                   'Notes | "secret-project-abc".',
+                                   '{"email":"secret-project-abc"}', '[{"messages":"secret-project-abc"}]'])
+@pytest.mark.parametrize('context_first', [False, True])
+def test_supplied_source_labels_and_structured_carriers_never_become_queries(context, context_first):
+    public = 'Search the web for events.'
+    d = route(context + ' ' + public if context_first else public + ' ' + context)
+    assert not {'view_emails','search_notes','view_messages','run_shell'} & reachable(d)
+    if d.needs_tools:
+        assert reachable(d) == {'web_search'}
+        assert d.tool_argument_bindings == {'web_search':{'query':public}}
+    else:
+        assert not reachable(d)
+
+
+def test_source_label_inside_public_phrase_is_still_a_literal_search_topic():
+    prompt = 'Search the web for the phrase "Notes: secret-project-abc"'
+    d = route(prompt)
+    assert d.direct_calls == [('web_search', {'query':prompt})]
+
+
+@pytest.mark.parametrize('separator', [' - ', '--', ' and ', ' — ', ' & ', ' or ', ' ', ' / ', ''])
+@pytest.mark.parametrize('carrier', ['{"email":"secret-project-abc"}', '[{"messages":"secret-project-abc"}]'])
+def test_structured_carrier_uses_same_boundary_envelope(separator, carrier):
+    d = route('Search the web for events' + separator + carrier)
+    assert not d.needs_tools and not reachable(d)
+    assert 'Clarify' in d.resolved_request
+
+
 @pytest.mark.parametrize('tail', ['I have an email referring to "secret-project-abc".',
                                 'The email says "secret-project-abc". Please take account of this.'])
 def test_unknown_compound_cannot_reopen_whole_prompt_web_egress(tail):
@@ -183,3 +213,11 @@ def test_unknown_second_action_keeps_ordinary_interpreter():
     d = route('What should I do tomorrow? Set volume to 20.')
     assert 'collect_task_evidence' not in d.tool_argument_bindings
     assert 'web_search' not in reachable(d)
+
+
+@pytest.mark.parametrize('prompt', [
+    "i need to put my flight on the calendar, it's sunday at 6am",
+    'i think i saved the gate code somewhere in notes',
+])
+def test_ordinary_private_request_keeps_existing_owner(prompt):
+    assert R._priority_context_claim(prompt) is None
