@@ -109,7 +109,12 @@ def test_notes_without_current_receipt_remain_unverified(origin):
                                  'This is the only personal request in your email.',
                                  "That's the only thing in the window.",
                                  'No messages or other sources show requests.',
-                                 'Both email and Messages have no unread personal items today. Nothing needs attention.'])
+                                 'Both email and Messages have no unread personal items today. Nothing needs attention.',
+                                 "Tomorrow's only task is the synthetic review at 6:30 AM.",
+                                 'Your sole commitment tomorrow is the meeting.',
+                                 'The only upcoming deadline is the report.',
+                                 'That is your only request.',
+])
 def test_exhaustive_absence_over_bounded_sources_is_rejected(claim):
     answer = T.verify_evidence_narration(claim, payload())
     assert claim not in answer
@@ -156,7 +161,8 @@ def test_reply_uncertainty_quotes_and_positive_records_are_preserved(text):
     assert T.verify_evidence_narration(text, payload()) == text
 
 
-@pytest.mark.parametrize("claim", ["That's the only thing in the window.", "No reply from you yet in the cache."])
+@pytest.mark.parametrize("claim", ["That's the only thing in the window.", "No reply from you yet in the cache.",
+    "Tomorrow's only task is the synthetic review at 6:30 AM."])
 def test_overclaim_gets_one_correction_without_repeating_reads(evidence_tool, claim):
     class Correction(Client):
         async def stream_events(self, model, messages, *, tools=None, **kwargs):
@@ -292,3 +298,32 @@ def test_calendar_fallback_keeps_different_end_date(pacific, end):
     text = T.render_evidence_text(json.dumps({"task_window":{"period":"tomorrow"},
                                              "sources":{"calendar":{"records":[row]}}}))
     assert f"{row['when_local']} to {row['end_local']}" in text
+
+
+@pytest.mark.parametrize('text', [
+    'The source says "Your only task is to bring the folder." Coverage is incomplete.',
+    'The meeting may not be your only task.',
+    'This is not your only commitment.',
+    'The only task shown in the returned Calendar rows is the meeting; other sources are unavailable.',
+])
+def test_quoted_negative_and_explicitly_bounded_only_category_controls(text):
+    assert T.verify_evidence_narration(text, payload()) == text
+
+
+def test_persistent_only_task_claim_falls_back_without_repeating_source_reads(evidence_tool):
+    class Stubborn(Client):
+        async def stream_events(self, model, messages, *, tools=None, **kwargs):
+            if self.calls == 0:
+                async for event in super().stream_events(model, messages, tools=tools, **kwargs):
+                    yield event
+            else:
+                self.calls += 1
+                if self.calls > 2:
+                    assert tools == [] and kwargs['tool_choice'] == 'none'
+                yield {'kind':'final','message':{'role':'assistant',
+                    'content':"Tomorrow's only task is the synthetic review at 6:30 AM."}}
+    client = Stubborn(False)
+    out = run(client)
+    assert client.calls == 3 and "Tomorrow's only task" not in out
+    assert 'Vercel Ship SF' in out and 'Source coverage' in out
+    assert '420615' not in out and 'task_window' not in out
