@@ -63,6 +63,8 @@ struct TodayDeadline: Decodable, Identifiable {
     let title: String
     let due_ts: Double
     let source: String
+    let all_day: Bool?
+    let due_date: String?
 }
 struct TodayUnscheduled: Decodable, Identifiable {
     let task_id: String
@@ -102,6 +104,29 @@ struct TodayPlan: Decodable {
     var displayWarnings: [String] { workspace?.proposed_plan.warnings ?? warnings }
 }
 
+/// A composed Daily Summary the service kept (`/assistant/daily_summary/latest`),
+/// read again after a relaunch, when the live event and Refresh are gone.
+struct StoredBrief: Equatable {
+    let text: String
+    let composedAt: Date
+    /// The day it was asked for, "yyyy-MM-dd".
+    let day: String
+
+    static func parse(_ obj: [String: Any], day: String) -> StoredBrief? {
+        guard let text = obj["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let at = (obj["composed_at"] as? NSNumber)?.doubleValue, at.isFinite, at > 0 else { return nil }
+        return StoredBrief(text: text, composedAt: Date(timeIntervalSince1970: at), day: day)
+    }
+
+    /// The newer of the brief this launch received and the stored one, among
+    /// those from `day` (per `sameDay`); nil when neither is.
+    static func newest(live: (text: String, at: Date)?, stored: StoredBrief?,
+                       sameDay: (Date) -> Bool) -> (text: String, at: Date)? {
+        let candidates = [live, stored.map { (text: $0.text, at: $0.composedAt) }].compactMap { $0 }.filter { sameDay($0.at) }
+        return candidates.max { $0.at < $1.at }
+    }
+}
+
 @MainActor
 final class TodayModel: ObservableObject {
     // The one problem report about Today, shared by the notch's Day tab and
@@ -112,6 +137,12 @@ final class TodayModel: ObservableObject {
     /// reminders) for the notch Brief's SOON row, read with UpcomingItem.parseList.
     /// Nil until it has been read once.
     @Published private(set) var upcomingReply: [String: Any]?
+    /// The day's latest composed Daily Summary as the service kept it
+    /// (`/assistant/daily_summary/latest`), so the Brief shows it again after a
+    /// relaunch. Nil until read, or when none was composed that day.
+    @Published private(set) var storedBrief: StoredBrief?
+    /// The kept summary has been asked for at least once, so its absence is known.
+    @Published private(set) var storedBriefChecked = false
     @Published var error = ""
     @Published var busy = false
     /// When the plan last loaded, so Brief and Day can skip a refresh right after one.
@@ -301,6 +332,24 @@ final class TodayModel: ObservableObject {
               let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               reply["commitments"] is [[String: Any]] else { return }
         upcomingReply = reply
+    }
+
+    /// Reads today's latest composed brief. A 404 means none was composed today;
+    /// any other failure keeps what was read before.
+    func refreshStoredBrief() async {
+        let day = Self.dayString(nowProvider(), in: timezone)
+        do {
+            let data = try await request("/assistant/daily_summary/latest?day=\(day)")
+            guard let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let brief = StoredBrief.parse(reply, day: day) else { return }
+            storedBrief = brief
+            storedBriefChecked = true
+        } catch {
+            let failure = error as NSError
+            if failure.domain == "Today", failure.code == 404 { storedBrief = nil }
+            // Any answer settles it: a service that can't say still shows the note.
+            storedBriefChecked = true
+        }
     }
 
     func diagnosticSnapshot() -> (metadata: [String: Any], details: [String: Any]?) {
@@ -546,7 +595,7 @@ struct TodayView: View {
                             GroupBox("Deadlines · these do not reserve time") {
                                 VStack(alignment: .leading, spacing: 8) {
                                     ForEach(plan.deadlines) { item in
-                                        Text("\(model.clock(item.due_ts))  ·  \(item.title)  (\(item.source))")
+                                        Text("\((item.all_day == true ? "All day" : model.clock(item.due_ts)))  ·  \(item.title)  (\(item.source))")
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 }.padding(6)

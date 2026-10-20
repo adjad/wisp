@@ -10,7 +10,7 @@ from service.workflows.compiler import (
     extract_recipient, extract_stock_symbols,
     is_assent, is_cancel, extract_sources,
     plain_reference_request, explicit_delivery, extract_delivery_time, CONTENT_QUESTION,
-    outbound_verb,
+    outbound_verb, projected_workflow_supported,
 )
 from service.workflows.models import WorkflowPlan, WorkflowTurn
 
@@ -110,6 +110,13 @@ def prepare_news_selector_guard(store, sid: str, prompt: str) -> WorkflowTurn | 
 def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True,
                  owner_only: bool = False) -> WorkflowTurn | None:
     """Compile a new task or advance the current task with this reply."""
+    from service.utterance_shape import is_complete_explanation, explanation_remainder, is_retrospective_communication_question
+    if is_complete_explanation(prompt) or is_retrospective_communication_question(prompt):
+        return None  # Preserve pending owners; this is not a slot correction.
+    if explanation_remainder(prompt) is not None:
+        projected = compile_new(prompt)
+        if projected is None or not projected_workflow_supported(projected):
+            return None
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
     prior_display = store.display_artifact(sid, immediate=True) if persist else None

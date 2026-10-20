@@ -104,7 +104,8 @@ async def _request(event_type: str, payload: dict,
 
     Returns {"ok": bool, "error": str, ...}. Cancellation propagates.
     """
-    calendar = event_type in {"create_calendar_event", "delete_calendar_event"}
+    calendar = event_type in {"create_calendar_event", "delete_calendar_event", "move_calendar_event",
+                               "cancel_calendar_event"}
     reminder = event_type in {"create_reminder", "update_reminder", "complete_reminder", "delete_reminder"}
     native = calendar or reminder
     outbound = event_type in {"send_email", "send_message", "forward_email", "reply_to_email"}

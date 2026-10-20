@@ -160,7 +160,9 @@ final class Reader {
         if tag == "accounts" {
             if which == "unavailable" { return (nil, -1743) }
             if which == "empty" { return ("", 0) }
-            if which == "duplicate" { return ("one\u{01}A\ntwo\u{01}A", 0) }
+            if ["duplicate", "duplicate_empty"].contains(which) { return ("one\u{01}A\ntwo\u{01}A", 0) }
+            if which == "duplicate_id" { return ("one\u{01}A\none\u{01}A", 0) }
+            if which == "malformed_inventory" { return ("\u{01}A", 0) }
             if ["partial", "two", "closed_between"].contains(which) { return ("one\u{01}A\ntwo\u{01}B", 0) }
             return ("one\u{01}A", 0)
         }
@@ -172,21 +174,27 @@ final class Reader {
             return (which == "changed" ? "other@example.test" : "me@example.test", 0)
         }
         contentCalls += 1
-        if which == "body_failed" || (which == "partial" && script == "B") { return (nil, -1743) }
+        if which == "body_timeout" { return (nil, -1712) }
+        if which == "body_missing" { return (nil, -1728) }
+        if which == "body_failed" || (which == "partial" && script == "two") { return (nil, -1743) }
         if tag.hasPrefix("history") {
             if which == "walk_malformed" { return ("INVALID\nnot a batch", 0) }
             if which == "commit_superseded" { historyState.observe(["replacement": "Other"]) }
             return (["capped", "closed_batch"].contains(which) ? "CONTINUE\n" : "DONE\n", 0)
         }
-        return (tag == "headers" ? "synthetic header" : "synthetic body", 0)
+        if tag == "headers" { return ("synthetic header", 0) }
+        if which == "duplicate_empty" && script == "two" { return ("", 0) }
+        let label = ["duplicate", "duplicate_empty"].contains(which) || script == "one" ? "A" : "B"
+        return (["1791800000", "U", label, script, "sender@synthetic.invalid", "self@synthetic.invalid",
+                 "Synthetic subject", "<same@synthetic.invalid>", "Synthetic body"].joined(separator: "\u{01}") + "\u{02}", 0)
     }
     func rawLimit(accountCount: Int) -> Int { 2 }
-    func rawScript(account: String?, limit: Int) -> String { account ?? "unified" }
-    func headerScript(account: String?, limit: Int) -> String { account ?? "unified" }
-    func historyBatchScript(account: String?, start: Int, count: Int, cutoff: Double?) -> String { account ?? "unified" }
-    func mergeRawChunks(_ chunks: [String]) -> String { chunks.joined(separator: "\n") }
+    private func rawScript(account: AccountTarget?, limit: Int) -> String { account?.id ?? "unified" }
+    private func headerScript(account: AccountTarget?, limit: Int) -> String { account?.id ?? "unified" }
+    private func historyBatchScript(account: AccountTarget?, start: Int, count: Int, cutoff: Double?) -> String { account?.id ?? "unified" }
+    func mergeRawChunks(_ chunks: [String]) -> String { chunks.joined() }
     func mergeHeaderChunks(_ chunks: [String]) -> String { chunks.joined(separator: "\n") }
-    func incompleteMarker(account: String?, reason: String) -> String { "incomplete" }
+    private func incompleteMarker(account: AccountTarget?, reason: String) -> String { "incomplete" }
     func scheduleHistoryRetry() { retries += 1 }
     func start(_ lane: String) {
         runningChecks = 0; contentCalls = 0
@@ -225,8 +233,8 @@ final class Reader {
                             "retries": reader.retries, "content_calls": reader.contentCalls])
         }
         for lane in ["raw", "history"] {
-            for which in ["success", "empty", "duplicate", "unavailable", "closed", "closed_mid", "closed_reopened",
-                          "closed_before_identity", "closed_between", "closed_batch", "body_failed", "partial", "two", "identity_failed",
+            for which in ["success", "empty", "duplicate", "duplicate_empty", "duplicate_id", "malformed_inventory", "unavailable", "closed", "closed_mid", "closed_reopened",
+                          "closed_before_identity", "closed_between", "closed_batch", "body_failed", "body_timeout", "body_missing", "partial", "two", "identity_failed",
                           "identity_malformed", "identity_empty", "changed", "expanded", "bad_http", "bad_json", "transport",
                           "index", "index_superseded", "enumeration_superseded", "walk_malformed", "capped", "commit_superseded", "deferred"] {
                 if lane == "raw" && ["closed_batch", "index", "index_superseded", "enumeration_superseded", "walk_malformed", "capped", "commit_superseded", "deferred"].contains(which) { continue }
@@ -249,7 +257,7 @@ final class Reader {
                 } else {
                     precondition(terminals.count == 1)
                     let body = terminals[0]["body"] as! [String: Any]
-                    let blocked = ["duplicate", "unavailable", "closed", "closed_mid", "closed_reopened", "closed_before_identity", "closed_between", "closed_batch", "identity_failed", "identity_malformed"].contains(which)
+                    let blocked = ["duplicate_id", "malformed_inventory", "unavailable", "closed", "closed_mid", "closed_reopened", "closed_before_identity", "closed_between", "closed_batch", "identity_failed", "identity_malformed"].contains(which)
                     precondition(body["complete"] as! Bool == !blocked, "Wrong completeness: \(lane) \(which)")
                     let expected = blocked || ["empty", "identity_empty"].contains(which) ? [] : (which == "expanded" ? ["me@example.test", "other@example.test"] : [which == "changed" ? "other@example.test" : "me@example.test"])
                     precondition(body["addresses"] as! [String] == expected)
@@ -267,7 +275,7 @@ final class Reader {
                         if lane == "raw" {
                             let raw = session.requests.compactMap { $0["body"] as? [String: Any] }.first { $0["raw"] != nil }!
                             let coverage = raw["raw_coverage"] as! [String: Any]
-                            precondition(coverage["accounts"] as! [String] == ["A"] && coverage["failed_accounts"] as! [String] == ["B"])
+                            precondition(coverage["successful_account_ids"] as! [String] == ["one"] && coverage["failed_account_ids"] as! [String] == ["two"])
                             precondition(coverage["complete"] as! Bool == false)
                         }
                     }
@@ -284,6 +292,23 @@ final class Reader {
                     }
                 }
                 save(lane + "_" + which, reader)
+                if lane == "raw", let raw = session.requests.compactMap({ $0["body"] as? [String: Any] }).first(where: { $0["raw"] != nil }) {
+                    let coverage = raw["raw_coverage"] as! [String: Any]
+                    let failures = coverage["failure_diagnostics"] as? [[String: Any]] ?? []
+                    let expectedStage = ["closed": "mail_closed", "unavailable": "account_inventory",
+                        "duplicate_id": "account_inventory", "malformed_inventory": "account_inventory",
+                        "body_failed": "body_scan", "body_timeout": "body_scan", "body_missing": "body_scan", "partial": "body_scan",
+                        "closed_between": "mail_closed_during_scan"][which]
+                    if let stage = expectedStage {
+                        precondition(failures.first?["stage"] as? String == stage)
+                        let expectedCode = ["unavailable": -1743, "body_failed": -1743, "partial": -1743,
+                                            "body_timeout": -1712, "body_missing": -1728][which] ?? 0
+                        precondition(failures.first?["code"] as? Int == expectedCode)
+                        precondition(Set(failures.first!.keys) == Set(["stage", "code"]))
+                        precondition(coverage["complete"] as? Bool == false)
+                    }
+                    if which == "success" || which == "empty" { precondition(failures.isEmpty) }
+                }
             }
         }
         // A corrupt ACK must never mutate accepted order, retire the actual

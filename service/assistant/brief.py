@@ -2199,6 +2199,11 @@ async def run_scheduled_brief(part_of_day: str, day: str | None = None,
         return None
     from service.assistant.hub import hub
     from service import diagnostics
+    try:
+        from service.assistant import brief_latest
+        brief_latest.record(sections["FULL"], part_of_day, trace_id=diagnostics.current_id(), day=day)
+    except Exception:  # noqa: BLE001 — keeping a copy never stops the brief
+        traceback.print_exc()
     await hub.publish({
         "trace_id": diagnostics.current_id(),
         "type": "daily_brief",

@@ -7,6 +7,8 @@ struct DailyAttentionItem: Decodable, Identifiable {
     let reason: String
     let quote: String
     let due_ts: Double?
+    let all_day: Bool?
+    let due_date: String?
     let priority: Int
     let reference: String
     let suggested_minutes: Int
@@ -14,12 +16,10 @@ struct DailyAttentionItem: Decodable, Identifiable {
     let task_kind: String?
     let ownership: String?
     /// Email and Messages only: who it's from, whether that looks like a
-    /// person, when it came, a model-written gist of an email, and whether
-    /// you've texted that conversation since.
+    /// person, when it came, and whether you've texted that conversation since.
     let sender: String?
     let person: Bool?
     let received_ts: Double?
-    let gist: String?
     let replied: Bool?
 }
 
@@ -47,6 +47,18 @@ struct DailyWorkspace: Decodable {
     let behavior_detail: String
     let proposed_plan: DailyProposal
     let explanation: String
+    /// The Brief's one-line MAIL and TEXTS overviews (service/assistant/mail_gists.py);
+    /// absent from an older service, or for a source that couldn't be read.
+    var mail_overview: DailyOverview? = nil
+    var texts_overview: DailyOverview? = nil
+    /// The written inbox summary under MAIL: a model's paragraph, or prose built without one.
+    var mail_summary: DailyOverview? = nil
+}
+
+struct DailyOverview: Decodable, Equatable {
+    let text: String
+    /// "model" for a gist, "summary" for the sentence built without one.
+    let source: String
 }
 
 struct DailyAttentionView: View {
@@ -93,8 +105,13 @@ struct DailyAttentionView: View {
                                         .font(.caption).frame(maxWidth: 330)
                                 }
                                 if let due = item.due_ts {
-                                    Text(Date(timeIntervalSince1970: due), format: .dateTime.month().day().hour().minute().timeZone())
-                                        .font(.caption).foregroundStyle(.secondary)
+                                    if item.all_day == true {
+                                        Text("All day · " + (item.due_date ?? Date(timeIntervalSince1970: due).formatted(.dateTime.month().day())))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        Text(Date(timeIntervalSince1970: due), format: .dateTime.month().day().hour().minute().timeZone())
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
                                 }
                                 DisclosureGroup("Source evidence") {
                                     VStack(alignment: .leading, spacing: 6) {

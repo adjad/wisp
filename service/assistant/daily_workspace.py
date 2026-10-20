@@ -109,23 +109,65 @@ _QUOTED_HISTORY = re.compile(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]
 _COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied")
 
 
+_BULK_BODY = re.compile(r"\bunsubscribe\b|manage (?:your )?(?:email )?preferences|view (?:this email )?in (?:your )?browser",
+                        re.I)
+
+
 def important_email_rows(snapshot):
     """(row, current_lines) for each snapshot email that counts as attention.
 
-    The one selection rule, shared by the day's evidence and the mail gists:
+    The one selection rule, shared by the day's evidence and the Brief:
     an attention or school category, or a current-body line that reads as a
     request. Newest first, bounded to the 200 newest rows.
+
+    A request line in bulk mail is a call to action, not a request: social
+    updates, mail whose subject or sender reads as marketing or a newsletter,
+    and mail whose own text (not quoted history) offers an unsubscribe link
+    need their category to count. Without this, "RSVP" and "register now"
+    lines put event promos among the emails that need the user. An automated
+    sender that is none of those (a clinic, a landlord's office) still counts
+    by a request line.
     """
-    from service.tools.email_tools import digest_category
+    from service.tools.email_tools import _MARKETING_SUBJECT, _NEWSLETTER_RE, digest_category
     from service.tools.imessage_tools import important_message_reason
     out = []
     for row in sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]:
-        body = _QUOTED_HISTORY.split(row.get("body", ""))[0]
-        current_lines = [line for line in body.splitlines() if important_message_reason("Sender: " + line)]
-        if digest_category(row) not in {"attention", "school"} and not current_lines:
+        body = _QUOTED_HISTORY.split(row.get("body", "") or "")[0]
+        category = digest_category(row)
+        identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
+        bulk = (category == "social" or bool(_MARKETING_SUBJECT.search(row.get("subject", "") or ""))
+                or bool(_NEWSLETTER_RE.search(identity)) or bool(_BULK_BODY.search(body)))
+        current_lines = [] if bulk else [line for line in body.splitlines() if important_message_reason("Sender: " + line)]
+        if category not in {"attention", "school"} and not current_lines:
             continue
         out.append((row, current_lines))
     return out
+
+
+def fresh_header_rows(mail, now):
+    """(rows, eligible): cached inbox headers from accounts whose own read is
+    fresh (within 20 minutes, no error), when there is no complete snapshot.
+    Read twice around the rows so a sync landing mid-read is not mixed in."""
+    details = mail.email_source_details(part="headers")
+    rows = mail.header_rows()
+    after = mail.email_source_details(part="headers")
+    signature = lambda values: sorted((d.get("account"), d.get("source"), d.get("fresh"),
+        d.get("last_success"), d.get("error")) for d in values)
+    if signature(details) != signature(after):
+        return [], False
+    fresh = {d["account"] for d in details if d.get("fresh") is True and not d.get("error")
+             and finite(d.get("last_success")) and 0 <= now - d["last_success"] <= 20 * 60
+             and all(other.get("fresh") is True and not other.get("error") for other in details if other.get("account") == d["account"])}
+    selected = [r for r in rows if r.get("account") in fresh and finite(r.get("ts")) and r["ts"] <= now]
+    return selected, bool(fresh)
+
+
+def _header_identity(row, subject):
+    return (row.get("account_id"), row.get("account"), row.get("message_id"), row["ts"], subject)
+
+
+def header_record_id(row, subject):
+    return key("email", _header_identity(row, subject))
 
 
 def email_record_id(row):
@@ -324,6 +366,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
                              "Due in this day." if finite(due) else "No due date; choose whether to work on it today.",
                              due=due, priority=1 if overdue else 2,
                              reference=record.get("reference", ""))
+                if record.get('all_day') is True:
+                    item['all_day'] = True
+                    item['due_date'] = record.get('due_date')
                 if record.get("wisp_only"):
                     item.update(source="wisp", reason="Wisp-only reminder; Apple copy/status unverified. " + item["reason"])
             else:
@@ -485,6 +530,8 @@ def render(workspace, *, compact=False):
     rows = ["Needs my attention"]
     for item in workspace["attention"][:5 if compact else 12]:
         due = (" · " + datetime.fromtimestamp(item["due_ts"], zone).strftime("%b %-d, %-I:%M %p")) if item["due_ts"] is not None else ""
+        if item.get('all_day') and item['due_ts'] is not None:
+            due = ' · ' + (item.get('due_date') or datetime.fromtimestamp(item['due_ts'], zone).strftime('%b %-d')) + ' · All day'
         if item.get("deadline_precision") == "date" and item.get("due_range"):
             dates = [datetime.fromtimestamp(v, zone).strftime("%b %-d, %-I:%M %p") for v in item["due_range"]]
             due = " · source range [" + dates[0] + ", " + dates[1] + ")"
@@ -517,6 +564,7 @@ def collect_evidence(store, state, day, timezone, *, now):
     Each source failure is isolated and visible. Counts disclose bounded reads;
     an empty or omitted source is never presented as a complete all-source scan.
     """
+    schedule = store.schedule_relation(timezone) if hasattr(store, "schedule_relation") else "scheduled_commitments"
     from service.tools.everyday import _native_receipt_current
     lo, hi = day_bounds(day, timezone)
     result = {}
@@ -534,13 +582,13 @@ def collect_evidence(store, state, day, timezone, *, now):
             receipt_row = db.execute("SELECT payload FROM today_source_sync WHERE source='reminders'").fetchone()
             receipt = json.loads(receipt_row["payload"]) if receipt_row else {}
             # Undated items are included for attention but do not acquire a due date.
-            count = db.execute("SELECT COUNT(*) FROM commitments WHERE status='active' AND source='reminders' AND when_ts<? AND kind NOT IN ('event','meeting')", (hi,)).fetchone()[0]
+            count = db.execute(f"SELECT COUNT(*) FROM {schedule} WHERE status='active' AND source='reminders' AND when_ts<? AND kind NOT IN ('event','meeting')", (hi,)).fetchone()[0]
             rows = [dict(row) for row in db.execute(
-                "SELECT id,source,source_id,title,when_ts,kind FROM commitments "
+                f"SELECT id,source,source_id,title,when_ts,kind,all_day,due_date FROM {schedule} "
                 "WHERE status='active' AND source='reminders' AND when_ts<? "
                 "AND kind NOT IN ('event','meeting') ORDER BY CASE WHEN when_ts>=? THEN 0 ELSE 1 END,when_ts DESC,id LIMIT 500", (hi, lo))]
-            manual_count = db.execute("SELECT COUNT(*) FROM commitments WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<?", (now - 14 * 86400, hi)).fetchone()[0]
-            manual = [dict(row) for row in db.execute("SELECT id,title,when_ts FROM commitments WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<? ORDER BY when_ts DESC,id LIMIT 100", (now - 14 * 86400, hi))]
+            manual_count = db.execute(f"SELECT COUNT(*) FROM {schedule} WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<?", (now - 14 * 86400, hi)).fetchone()[0]
+            manual = [dict(row) for row in db.execute(f"SELECT id,title,when_ts,all_day,due_date FROM {schedule} WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<? ORDER BY when_ts DESC,id LIMIT 100", (now - 14 * 86400, hi))]
             view, undated = store.undated_listing()
             # Overdue reminders the stale policy hides (a week or more past due, not
             # kept) leave the plan and its counts, along with any Wisp twin of them.
@@ -550,10 +598,10 @@ def collect_evidence(store, state, day, timezone, *, now):
             rows = [r for r in rows if r["id"] not in hidden]
             manual = [r for r in manual if r["id"] not in hidden]
         current = _native_receipt_current(receipt, now)
-        selected = [dict(id=r["id"], title=r["title"], due_ts=r["when_ts"],
+        selected = [dict(id=r["id"], title=r["title"], due_ts=r["when_ts"], all_day=bool(r.get('all_day')), due_date=r.get('due_date'),
                          reference=r["source"] + ":" + str(r.get("source_id") or r["id"]))
                     for r in rows[:500] if r["source"] == "reminders" and current]
-        selected.extend(dict(id=r["id"], title=r["title"], due_ts=r["when_ts"], wisp_only=True,
+        selected.extend(dict(id=r["id"], title=r["title"], due_ts=r["when_ts"], all_day=bool(r.get('all_day')), due_date=r.get('due_date'), wisp_only=True,
                              reference="wisp-reminder:" + r["id"]) for r in manual)
         if current and view.get("freshness") == "current":
             selected.extend(dict(id="undated:" + str(r.get("source_id") or r.get("id")),
@@ -589,26 +637,16 @@ def collect_evidence(store, state, day, timezone, *, now):
             # The independently owned direct-mail integration exports this
             # per-account freshness contract. Older builds without it withhold
             # headers rather than inventing source age from a ready flag.
-            details = mail.email_source_details(part="headers")
-            rows = mail.header_rows()
-            after = mail.email_source_details(part="headers")
-            signature = lambda values: sorted((d.get("account"), d.get("source"), d.get("fresh"),
-                d.get("last_success"), d.get("error")) for d in values)
-            if signature(details) == signature(after):
-                fresh = {d["account"] for d in details if d.get("fresh") is True and not d.get("error")
-                         and finite(d.get("last_success")) and 0 <= now - d["last_success"] <= 20 * 60
-                         and all(other.get("fresh") is True and not other.get("error") for other in details if other.get("account") == d["account"])}
-                selected = [r for r in rows if r.get("account") in fresh and finite(r.get("ts")) and r["ts"] <= now]
-                header_count, header_eligible = len(selected), bool(fresh)
-                for row in selected[:200]:
-                    if digest_category(row) not in {"attention", "school"}:
-                        continue
-                    subject = redact_summary_codes(row["subject"])
-                    identity = (row.get("account_id"), row.get("account"), row.get("message_id"), row["ts"], subject)
-                    records.append(dict(id=key("email", identity), title=subject, quote=subject,
-                        reference="email-header-cache:" + key("item", identity),
-                        review_reason="Header-only review suggestion; read the original email. Body, ownership, reply status and deadlines are unverified.",
-                        **_sender_fields(row)))
+            selected, header_eligible = fresh_header_rows(mail, now)
+            header_count = len(selected)
+            for row in selected[:200]:
+                if digest_category(row) not in {"attention", "school"}:
+                    continue
+                subject = redact_summary_codes(row["subject"])
+                records.append(dict(id=header_record_id(row, subject), title=subject, quote=subject,
+                    reference="email-header-cache:" + key("item", _header_identity(row, subject)),
+                    review_reason="Header-only review suggestion; read the original email. Body, ownership, reply status and deadlines are unverified.",
+                    **_sender_fields(row)))
         result["email"] = dict(ready=snapshot is not None or header_eligible, records=records,
             inspected=min(200, len(snapshot.rows)) if snapshot else min(200, header_count),
             omitted=max(0, len(snapshot.rows) - 200) if snapshot else max(0, header_count - 200),

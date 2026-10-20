@@ -456,9 +456,11 @@ enum AccountLabelCache {
 
     static func valid(_ accounts: [String: String]) -> Bool {
         !accounts.isEmpty && accounts.allSatisfy { id, name in
-            !id.isEmpty && !name.isEmpty && !id.contains("\u{01}") && !name.contains("\u{01}") &&
+            !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                !id.contains("\u{02}") && !name.contains("\u{02}") && !id.contains("\u{01}") && !name.contains("\u{01}") &&
                 !id.contains("\n") && !name.contains("\n") && !id.contains("\r") && !name.contains("\r")
-        } && Set(accounts.values.map { $0.lowercased() }).count == accounts.count
+        }
     }
 
     static func parse(_ text: String) -> [String: String]? {
@@ -467,7 +469,9 @@ enum AccountLabelCache {
         // and an unavailable script must never authenticate an empty inventory.
         if text.isEmpty { return [:] }
         var accounts: [String: String] = [:]
-        for line in text.split(separator: "\n") {
+        var lines = text.components(separatedBy: "\n")
+        if lines.last == "" { lines.removeLast() }
+        for line in lines {
             let fields = line.components(separatedBy: "\u{01}")
             guard fields.count == 2, accounts[fields[0]] == nil else { return nil }
             accounts[fields[0]] = fields[1]
@@ -477,11 +481,6 @@ enum AccountLabelCache {
 
     static func enumeration(_ text: String?) -> Enumeration {
         guard let text else { return .unavailable }
-        let labels = text.split(separator: "\n").compactMap { line -> String? in
-            let fields = line.components(separatedBy: "\u{01}")
-            return fields.count == 2 ? fields[1] : nil
-        }
-        guard Set(labels.map { $0.lowercased() }).count == labels.count else { return .duplicateLabels }
         guard let accounts = parse(text) else { return .unavailable }
         return .accounts(accounts)
     }

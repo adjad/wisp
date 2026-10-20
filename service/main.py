@@ -14,6 +14,8 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 """
 from __future__ import annotations
 
+from service.assistant.verified_reminders import expected_date_fields
+
 import asyncio
 import dataclasses
 from service.inference.remote_policy import (remote_only_profile,
@@ -1605,6 +1607,21 @@ async def agent(body: dict[str, Any]):
             recent_users = store.recent_user_turns(sid) if sess else []
             last_tools = store.last_assistant_tools(sid) if sess else None
 
+            # A completed multi-reminder task does not identify which item an
+            # "it" correction means. End the turn before any inference or
+            # planner/shadow adaptation can reopen an implicit last-item write.
+            from service.tasks.engine import prepare_batch_correction_guard
+            batch_guard = (prepare_batch_correction_guard(store, sid, prompt)
+                           if sess and not literal_envelope else None)
+            if batch_guard:
+                await emit({"type": "task_plan", "event": batch_guard.event,
+                            "task": batch_guard.plan.to_dict(), "trace": batch_guard.trace})
+                await emit({"type": "text", "text": batch_guard.response})
+                await emit({"type": "done"})
+                persist_user_turn()
+                store.add_turn(sid, "assistant", batch_guard.response)
+                return
+
             # Decide ownership BEFORE any positive rule/typed compiler runs.
             # Model identity is the configured agent target, not a filename
             # allowlist that would silently exclude a renamed trained model.
@@ -2722,6 +2739,16 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
             "end_ts": e.get("end_ts"),
             "all_day": bool(e.get("all_day")),
             "location": e.get("location"),
+            # Who organizes it and how many invitees it has: a move of an event with
+            # invitees is allowed only for its organizer, who sends them the new time.
+            "invitee_count": (e["invitee_count"] if type(e.get("invitee_count")) is int
+                              and 0 <= e["invitee_count"] <= 100000 else None),
+            "organizer_is_user": (e["organizer_is_user"] if type(e.get("organizer_is_user")) is bool
+                                  else None),
+            # Whether its calendar accepts changes from this Mac (EventKit's
+            # allowsContentModifications); False for subscribed and read-only calendars.
+            "calendar_writable": (e["calendar_writable"] if type(e.get("calendar_writable")) is bool
+                                  else None),
             "confidence": 1.0,
         })
     from service.assistant.today import RevisionConflict
@@ -2841,9 +2868,28 @@ async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[st
             sid = store.create_session()
         store.add_turn(sid, "user", "Daily summary")
         store.add_turn(sid, "assistant", text)
+        try:
+            from service.assistant import brief_latest
+            brief_latest.record(text, part)
+        except Exception:  # noqa: BLE001 — keeping a copy never fails the button
+            import traceback
+            traceback.print_exc()
     return {"ok": ok, "text": text, "part_of_day": part,
             "session_id": sid, "summary_sync": snapshot,
             **({} if ok else {"error": "sources syncing"})}
+
+
+@app.get("/assistant/daily_summary/latest")
+async def assistant_daily_summary_latest(day: str | None = None, timezone: str | None = None) -> dict[str, Any]:
+    """The day's latest composed Daily Summary, {text, composed_at, part_of_day},
+    so the app shows it again after a relaunch; 404 when none was composed.
+    `day` defaults to today's local date. `timezone` is accepted for clients
+    that send it; days are the Mac's local dates, as the scheduler names them."""
+    from service.assistant import brief_latest
+    entry = brief_latest.latest(day or brief_latest.today())
+    if entry is None:
+        raise HTTPException(status_code=404, detail="no composed summary for that day")
+    return entry
 
 
 def _summary_schedule() -> dict[str, Any]:
@@ -3062,7 +3108,7 @@ async def assistant_delete(cid: str) -> dict[str, Any]:
             return {"ok": False, "error": "Reminders identity is incomplete; nothing changed"}
         result = await app_request("delete_reminder", {
             "source_id": c["source_id"], "expected_title": c["title"],
-            "expected_due_ts": c["when_ts"]})
+            "expected_due_ts": c["when_ts"], **expected_date_fields(c)})
         if result.get("ok") is not True:
             return result
     else:

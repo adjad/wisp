@@ -761,20 +761,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                               durationMin: dur, location: loc)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
+        model.showCalendarEventURL = { [weak self] identifier, startTs in
+            self?.calendarReader?.showInCalendarURL(identifier: identifier, at: startTs)
+        }
         model.onDeleteCalendarEvent = { [weak self] identifier, occurrenceTs in
             self?.calendarReader?.deleteEvent(identifier: identifier, occurrenceTs: occurrenceTs)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
+        model.onCancelCalendarEvent = { [weak self] identifier, title, expected, invitees in
+            self?.calendarReader?.cancelEvent(identifier: identifier, expectedTitle: title,
+                                              expectedStart: expected, expectedInvitees: invitees)
+                ?? ["ok": false, "error": "Calendar handler unavailable"]
+        }
+        model.onMoveCalendarEvent = { [weak self] identifier, title, expected, start, duration, invitees in
+            self?.calendarReader?.moveEvent(identifier: identifier, expectedTitle: title,
+                                            expectedStart: expected, newStart: start, durationMin: duration,
+                                            expectedInvitees: invitees)
+                ?? ["ok": false, "error": "Calendar handler unavailable"]
+        }
         model.onVerifiedReminderAction = { [weak self] kind, actionID, sourceID,
-            expectedTitle, expectedDueTs, title, dueTs, commitmentKind in
+            expectedTitle, expectedDueTs, title, dueTs, commitmentKind, dueDate, expectedDueDate in
             self?.remindersWriter?.performVerified(kind: kind, actionID: actionID,
                 sourceID: sourceID, expectedTitle: expectedTitle,
                 expectedDueTs: expectedDueTs, title: title, dueTs: dueTs,
-                commitmentKind: commitmentKind)
+                commitmentKind: commitmentKind, dueDate: dueDate, expectedDueDate: expectedDueDate)
                 ?? ["ok": false, "status": "failed", "error": "Reminders handler unavailable"]
         }
         model.onReconcileReminderAction = { [weak self] kind, actionID, sourceID,
-            title, dueTs, commitmentKind in
+            title, dueTs, commitmentKind, dueDate in
             guard let self else {
                 return ["ok": false, "status": "unknown", "error": "Reminders handler unavailable"]
             }
@@ -783,7 +797,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return await writer.reconcileVerified(kind: kind, actionID: actionID,
                 sourceID: sourceID, title: title, dueTs: dueTs,
-                commitmentKind: commitmentKind)
+                commitmentKind: commitmentKind, dueDate: dueDate)
         }
         model.onOpenChat = { [weak self] sessionId in
             self?.open(.chat(sessionId: sessionId))

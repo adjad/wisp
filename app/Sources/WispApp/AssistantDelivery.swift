@@ -31,13 +31,42 @@ final class AssistantDelivery {
         return value.doubleValue
     }
 
+    static func validReminderDate(_ value: Any?) -> Bool {
+        guard let value = value as? String,
+              value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", options: .regularExpression) != nil else { return false }
+        let parts = value.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3, parts[0] > 0 else { return false }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let components = DateComponents(year: parts[0], month: parts[1], day: parts[2])
+        guard let date = calendar.date(from: components) else { return false }
+        let readback = calendar.dateComponents([.year, .month, .day], from: date)
+        return readback.year == parts[0] && readback.month == parts[1] && readback.day == parts[2]
+    }
+
     static func calendarPayload(_ value: [String: Any], kind: String) -> [String: Any]? {
         if ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(kind) {
             var keys: Set<String> = ["type", "action_id"]
-            if kind == "create_reminder" { keys.formUnion(["title", "due_ts", "commitment_kind"]) }
+            if kind == "create_reminder" {
+                keys.formUnion(["title", "commitment_kind"])
+                if value["all_day"] != nil {
+                    guard jsonBoolean(value["all_day"]) == true, validReminderDate(value["due_date"]) else { return nil }
+                    keys.formUnion(["all_day", "due_date"])
+                } else { keys.insert("due_ts") }
+            }
             else {
                 keys.formUnion(["source_id", "expected_title", "expected_due_ts"])
-                if kind == "update_reminder" { keys.formUnion(["title", "due_ts"]) }
+                if value["expected_due_date"] != nil {
+                    guard validReminderDate(value["expected_due_date"]), number(value["expected_due_ts"]) != nil else { return nil }
+                    keys.insert("expected_due_date")
+                }
+                if kind == "update_reminder" {
+                    keys.insert("title")
+                    if value["all_day"] != nil {
+                        guard jsonBoolean(value["all_day"]) == true, validReminderDate(value["due_date"]) else { return nil }
+                        keys.formUnion(["all_day", "due_date"])
+                    } else { keys.insert("due_ts") }
+                }
             }
             guard Set(value.keys) == keys, value["type"] as? String == kind,
                   text(value["action_id"]) != nil else { return nil }
@@ -58,6 +87,47 @@ final class AssistantDelivery {
                 }
                 guard let ts = number(value[field]), ts > 0 else { return nil }
                 result[field] = ts
+            }
+            return result
+        }
+        if kind == "cancel_calendar_event" {
+            // One exact occurrence (identifier + start + title + the invitee count the
+            // card stated), removed with .thisEvent only.
+            let keys: Set<String> = ["type", "action_id", "source_id", "expected_title",
+                                     "expected_start_ts", "invitee_count"]
+            guard Set(value.keys) == keys, value["type"] as? String == kind,
+                  text(value["action_id"]) != nil, text(value["source_id"]) != nil,
+                  text(value["expected_title"]) != nil,
+                  let expected = number(value["expected_start_ts"]), expected > 0,
+                  let invitees = number(value["invitee_count"]), invitees >= 0, invitees <= 100000,
+                  invitees.rounded() == invitees else { return nil }
+            var result = value
+            result["expected_start_ts"] = expected
+            result["invitee_count"] = Int(invitees)
+            return result
+        }
+        if kind == "move_calendar_event" {
+            // One exact occurrence (identifier + current start + title) to a new start;
+            // duration_min null keeps the event's own length.
+            let keys: Set<String> = ["type", "action_id", "source_id", "expected_title",
+                                     "expected_start_ts", "when_ts", "duration_min", "invitee_count"]
+            guard Set(value.keys) == keys, value["type"] as? String == kind,
+                  text(value["action_id"]) != nil, text(value["source_id"]) != nil,
+                  text(value["expected_title"]) != nil,
+                  let when = number(value["when_ts"]), when > 0,
+                  let expected = number(value["expected_start_ts"]), expected > 0 else { return nil }
+            guard let invitees = number(value["invitee_count"]), invitees >= 0, invitees <= 100000,
+                  invitees.rounded() == invitees else { return nil }
+            var result = value
+            result["when_ts"] = when
+            result["expected_start_ts"] = expected
+            result["invitee_count"] = Int(invitees)
+            if value["duration_min"] is NSNull {
+                result["duration_min"] = NSNull()
+            } else {
+                guard let duration = number(value["duration_min"]), (1...10080).contains(duration),
+                      duration.rounded() == duration else { return nil }
+                result["duration_min"] = Int(duration)
             }
             return result
         }
@@ -94,10 +164,27 @@ final class AssistantDelivery {
         let reminder = ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(kind)
         var allowed: Set<String> = kind == "create_calendar_event"
             ? ["ok", "status", "error", "source_id"] : ["ok", "status", "error"]
+        if kind == "cancel_calendar_event" && ok {
+            // A verified cancel says the occurrence reads back as gone, and nothing else.
+            allowed.insert("is_absent")
+            guard Set(value.keys) == allowed, jsonBoolean(value["is_absent"]) == true else { return nil }
+        }
+        if kind == "move_calendar_event" && ok {
+            // A verified move carries the start and end it read back, and nothing else.
+            allowed.formUnion(["when_ts", "end_ts"])
+            guard Set(value.keys) == allowed, let start = number(value["when_ts"]), start > 0,
+                  let end = number(value["end_ts"]), end >= start else { return nil }
+            value["when_ts"] = start
+            value["end_ts"] = end
+        }
         if reminder && ok {
             allowed.insert("source_id")
             if kind == "create_reminder" || kind == "update_reminder" {
-                allowed.formUnion(["title", "due_ts"])
+                allowed.insert("title")
+                if value["all_day"] != nil {
+                    guard jsonBoolean(value["all_day"]) == true, validReminderDate(value["due_date"]) else { return nil }
+                    allowed.formUnion(["all_day", "due_date"])
+                } else { allowed.insert("due_ts") }
             } else { allowed.insert(kind == "complete_reminder" ? "is_completed" : "is_absent") }
         }
         guard Set(value.keys).isSubset(of: allowed),
@@ -110,8 +197,11 @@ final class AssistantDelivery {
         if reminder && ok {
             guard Set(value.keys) == allowed else { return nil }
             if kind == "create_reminder" || kind == "update_reminder" {
-                guard text(value["title"]) != nil, let due = number(value["due_ts"]), due > 0 else { return nil }
-                value["due_ts"] = due
+                guard text(value["title"]) != nil else { return nil }
+                if value["all_day"] == nil {
+                    guard let due = number(value["due_ts"]), due > 0 else { return nil }
+                    value["due_ts"] = due
+                }
             } else {
                 let field = kind == "complete_reminder" ? "is_completed" : "is_absent"
                 guard jsonBoolean(value[field]) == true else { return nil }
@@ -182,8 +272,10 @@ final class AssistantDelivery {
         inFlight.insert(id)
         defer { inFlight.remove(id) }
         if let receipt = receipts[id], receipt["kind"] as? String != event.type { return false }
-        let isCalendar = ["create_calendar_event", "delete_calendar_event", "create_reminder",
-                          "update_reminder", "complete_reminder", "delete_reminder"].contains(event.type)
+        let isCalendar = ["create_calendar_event", "delete_calendar_event", "move_calendar_event",
+                          "cancel_calendar_event",
+                          "create_reminder", "update_reminder", "complete_reminder",
+                          "delete_reminder"].contains(event.type)
         let isReminder = ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(event.type)
         if isCalendar {
             var raw = event.payload

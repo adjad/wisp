@@ -104,6 +104,7 @@ PROFILE_TESTS = {
         "tests/test_sandbox_wire.py",
         "tests/test_schedule_presentation.py",
         "tests/test_tomorrow_planning.py",
+        "tests/test_assistant_read_regressions.py",
         "tests/test_tomorrow_study_slot.py",
         "tests/test_reminder_source_truth.py",
         "tests/test_source_sync_contract.py",
@@ -112,6 +113,7 @@ PROFILE_TESTS = {
     },
     "outbound": {
         "tests/test_action_tools_sanitize.py",
+        "tests/test_event_move.py",
         "tests/test_outbound_content_provenance.py",
         "tests/test_outbound_language_clarification.py",
         "tests/test_outbound_payload_presentation.py",
@@ -122,6 +124,11 @@ PROFILE_TESTS = {
         "tests/test_typed_message_send.py",
         "tests/test_typed_reminder_operations.py",
         "tests/test_typed_task_engine.py",
+        "tests/test_reminder_batch_creation.py",
+        "tests/test_reminder_creation_review_controls.py",
+        "tests/test_reminder_civil_date_controls.py",
+        "tests/test_reminder_entrypoint.py",
+        "tests/test_reminder_date_updates.py",
     },
     "safety": {
         "tests/test_always_confirm_grants.py",
@@ -185,9 +192,13 @@ PROFILE_TESTS = {
         "tests/test_compound_claims.py",
         "tests/test_compound_task_routing.py",
         "tests/test_current_web_routing.py",
+        # Route metadata over synthetic prompts; mocked retrieval, no tool execution.
+        "tests/test_personal_grounding.py",
         "tests/test_web_response_followup.py",
         "tests/test_direct_dispatch.py",
         "tests/test_direct_dispatch_exec.py",
+        # Actual ASGI with inert registry, fake inference and blocked sockets/processes.
+        "tests/test_topical_email_contract.py",
         "tests/test_historical_routing_regressions.py",
         "tests/test_router_adversarial_cases.py",
         "tests/test_router_execution_contract.py",
@@ -197,6 +208,8 @@ PROFILE_TESTS = {
         "tests/test_router_roster_models.py",
         "tests/test_fast_path_intent.py",
         "tests/test_reminder_compound_allowance.py",
+        # Pure labelled-title compiler/planner fixtures; never executes tools.
+        "tests/test_reminder_labelled_title.py",
         "tests/test_routing_contract_regressions.py",
         "tests/test_routing_quality_fixes.py",
         "tests/test_routing_quality_corpus.py",
@@ -216,6 +229,11 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Real ASGI modes over disposable pending owners and fully inert capabilities.
+    "tests/test_conversation_authority_contract.py",
+    "tests/test_calendar_literal_entrypoint.py",
+    # Pure named-time parsing, fictional stores and inert ASGI calls; no live sources.
+    "tests/test_calendar_time_contract.py",
     # Scorer self-test on synthetic fixtures; tmp_path files only, no model or network.
     "tests/test_memory_eval_scorer.py",
     # Toolbench matchers/scorer/report on hand-built trajectories and fake-world
@@ -316,6 +334,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_brief_summary_contract.py",
     # Mail gists with a fake model and an isolated cache; nothing is read or sent.
     "tests/test_mail_gists.py",
+    # The kept Daily Summary with an isolated file and a stand-in hub; nothing is composed, read or sent.
+    "tests/test_brief_latest.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
     "tests/test_backend_identity_and_sandbox_isolation.py",
     # Environment-variable echo only; no server, socket or process.
@@ -477,6 +497,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_priorities.py",
     "tests/test_workflow20_reminder_time.py",
     "tests/test_workflow20_routing.py",
+    # Topical Mail ASGI over disposable stores; registered/native execution is inert.
+    "tests/test_topical_email_contract.py",
+    # Actual unread stream with temporary stores and synthetic read tools only.
+    "tests/test_unread_summary_entrypoint.py",
     "tests/test_workflow20_schedule_time.py",
     "tests/test_workflow20_snapshot.py",
     "tests/test_workflow20_travel.py",
@@ -523,6 +547,8 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/port-guard-contract": "native/port-guard-compile",
     "native/backend-trust-contract": "native/backend-trust-compile",
     "native/reminders-policy-contract": "native/reminders-policy-compile",
+    "native/calendar-move-contract": "native/calendar-move-compile",
+    "native/checkin-cancel-contract": "native/checkin-cancel-compile",
     "native/chat-logic-contract": "native/chat-logic-compile",
     "native/chat-store-contract": "native/chat-store-compile",
     "native/notch-command-contract": "native/notch-command-compile",
@@ -808,6 +834,8 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
     reminders_policy = str(build_dir / "reminders-policy")
+    calendar_move = str(build_dir / "calendar-move")
+    checkin_cancel = str(build_dir / "checkin-cancel")
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
     backend_trust = str(build_dir / "backend-trust")
@@ -824,6 +852,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/today-contract",
             [TRUSTED_BASH, "scripts/test_today_contract.sh"],
+        ),
+        (
+            "native/markdown-contract",
+            [TRUSTED_BASH, "scripts/test_markdown_contract.sh"],
         ),
         (
             "native/research-library-contract",
@@ -971,6 +1003,26 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/reminders-policy-contract", [reminders_policy]),
+        (
+            "native/calendar-move-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/CalendarMove.swift",
+                "tests/CalendarMoveChecks.swift", "-o", calendar_move,
+            ],
+        ),
+        ("native/calendar-move-contract", [calendar_move]),
+        (
+            "native/checkin-cancel-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/CheckInCancel.swift",
+                "tests/CheckInCancelChecks.swift", "-o", checkin_cancel,
+            ],
+        ),
+        ("native/checkin-cancel-contract", [checkin_cancel]),
         (
             "native/settings-response-compile",
             [

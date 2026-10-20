@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 
 _TYPOS: tuple[tuple[str, str], ...] = (
-    (r"tmrw|tmr|tmrow|tmw|tommorow|tomorow|tommorrow|tomorrw|2moro|2morrow", "tomorrow"),
+    (r"tmrw|tmr|tmrow|tmw|tommorow|tomorow|tommorrow|tommrow|tomorrw|2moro|2morrow", "tomorrow"),
     (r"tdy|2day", "today"),
     (r"calender|calandar|calander|calendr", "calendar"),
     (r"schedual|scedule|shedule|schedul", "schedule"),

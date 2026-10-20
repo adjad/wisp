@@ -62,6 +62,13 @@ struct NotchDayView: View {
                 CheckInSection(model: checkIn, day: today.day, timezone: today.timezone,
                                clock: today.clock,
                                onAsk: { model.askAbout($0) },
+                               onOpenEvent: { event in
+                                   // The exact occurrence when Calendar still has it; else Calendar itself.
+                                   let url = event.sourceId.flatMap { id in
+                                       event.whenTs.flatMap { model.showCalendarEventURL?(id, $0) }
+                                   } ?? URL(string: "ical://")!
+                                   NSWorkspace.shared.open(url)
+                               },
                                onChanged: { Task { await today.refresh(); model.onResize() } })
                 GoalPulseSection(model: checkIn)
             }

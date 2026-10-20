@@ -69,18 +69,28 @@ struct NotchBriefView: View {
             // The week ahead changes slowly; SOON reads it while the Brief is open.
             while !Task.isCancelled {
                 await today.refreshUpcoming()
+                // The composed summary the service kept: after a relaunch the
+                // live event and Refresh are gone, and the next run may be hours off.
+                await today.refreshStoredBrief()
                 do { try await Task.sleep(for: .seconds(120)) } catch { break }
             }
         }
     }
 
-    /// Today's composed Daily Summary, when one arrived today and the Brief shows today.
-    private var composedToday: ComposedBrief? {
+    /// Today's composed Daily Summary, when the Brief shows today: the newer of
+    /// the one this launch received (the live event or Refresh) and the one the
+    /// service kept, which survives a relaunch.
+    private var composedBrief: (text: String, at: Date)? {
+        guard today.isShowingCurrentDay else { return nil }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = today.timezone
-        guard let brief = model.brief, today.isShowingCurrentDay,
-              calendar.isDate(brief.receivedAt, inSameDayAs: today.now) else { return nil }
-        return ComposedBrief.parse(brief.text)
+        let now = today.now
+        return StoredBrief.newest(live: model.brief.map { (text: $0.text, at: $0.receivedAt) }, stored: today.storedBrief,
+                                  sameDay: { calendar.isDate($0, inSameDayAs: now) })
+    }
+
+    private var composedToday: ComposedBrief? {
+        composedBrief.map { ComposedBrief.parse($0.text) }
     }
 
     /// The cut-down Daily Summary: what Wisp keeps in mind, then today's events.
@@ -136,9 +146,10 @@ struct NotchBriefView: View {
                         Text(line.leading).font(.system(size: 12.5)).foregroundStyle(Theme.textMuted).monospacedDigit()
                             .frame(width: Self.timeWidth(detail.lines), alignment: .leading)
                     }
-                    Text(line.text).font(.system(size: 13.5))
-                        .foregroundStyle(line.muted ? Theme.textMuted : Theme.textSecondary)
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    Text(line.text).font(.system(size: line.paragraph ? 14 : 13.5))
+                        .foregroundStyle(line.muted ? Theme.textMuted : line.paragraph ? Theme.textPrimary : Theme.textSecondary)
+                        .lineLimit(line.paragraph ? nil : 2).fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, line.paragraph ? 3 : 0)
                 }
             }
             Button {
@@ -184,9 +195,8 @@ struct NotchBriefView: View {
     /// The newer of the composed brief and the day's plan.
     private var updatedAt: Date? {
         let planned = plan.map { Date(timeIntervalSince1970: $0.generated_at) }
-        guard let brief = model.brief, today.isShowingCurrentDay,
-              Calendar.current.isDateInToday(brief.receivedAt) else { return planned }
-        return max(brief.receivedAt, planned ?? brief.receivedAt)
+        guard let brief = composedBrief else { return planned }
+        return max(brief.at, planned ?? brief.at)
     }
 
     private func lineRow(_ line: DayTimeline.BriefLine, isOpen: Bool) -> some View {
@@ -254,7 +264,7 @@ struct BriefContent {
             plan.workspace?.source_coverage.first { $0.source == source }
         }
         func need(_ item: DailyAttentionItem) -> BriefNeed {
-            BriefNeed(title: item.title, sender: item.sender ?? "", gist: item.gist ?? "", person: item.person ?? false,
+            BriefNeed(title: item.title, sender: item.sender ?? "", person: item.person ?? false,
                       received: item.received_ts, replied: item.replied ?? false)
         }
         let mailNeeds = needs.filter { $0.source == "email" }.map(need)
@@ -274,7 +284,7 @@ struct BriefContent {
                 ?? (weekRead ? .nothing : .unknown)
         } else if let need = needs.filter({ ($0.due_ts ?? 0) > dayEnd }).min(by: { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }) {
             // Before the week has been read, a dated need after today still counts.
-            soon = .item(title: need.title, when: NotchChrome.dayClock(need.due_ts ?? 0, zone: zone, locale: today.clockLocale), source: need.source)
+            soon = .item(title: need.title, when: need.all_day == true ? "All day" : NotchChrome.dayClock(need.due_ts ?? 0, zone: zone, locale: today.clockLocale), source: need.source)
         } else {
             soon = .unknown
         }
@@ -283,17 +293,28 @@ struct BriefContent {
             mail: coverage("email").map { (ready: $0.ready, needing: mailNeeds) },
             texts: coverage("messages").map { (ready: $0.ready, needing: textNeeds) },
             textsNeedAccess: coverage("messages")?.blocked == "full_disk_access",
+            mailOverview: plan.workspace?.mail_overview?.text, textsOverview: plan.workspace?.texts_overview?.text,
             soon: soon)
 
+        // Today's section of the composed summary; nil (the dropdown says none
+        // came yet) only once the kept summary has been checked, so a relaunch
+        // doesn't flash the note before it loads.
+        func summarySection(_ kind: ComposedBrief.Kind) -> [String]? {
+            guard isToday else { return [] }
+            if let composed { return composed.lines(kind) }
+            return today.storedBriefChecked ? nil : []
+        }
         let events = calendarBlocks.map { (title: $0.title, start: $0.start, end: $0.end) }
         let allDay = plan.all_day.map(\.title)
         let calendarDetail = BriefDetail.calendar(allDay: allDay, events: events, unsynced: !calendarKnown, clock: today.clock)
         details = [
             "CAL": calendarDetail,
-            "MAIL": BriefDetail.mail(needing: mailNeeds, ready: coverage("email")?.ready == true),
+            "MAIL": BriefDetail.mail(needing: mailNeeds, ready: coverage("email")?.ready == true,
+                                     summary: summarySection(.mail), prose: isToday ? plan.workspace?.mail_summary?.text : nil),
             "TEXTS": BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
                                        needsAccess: coverage("messages")?.blocked == "full_disk_access",
-                                       when: { $0 >= dayStart ? today.clock($0) : NotchChrome.dayClock($0, zone: zone) }),
+                                       summary: summarySection(.messages),
+                                       age: { BriefTexts.age($0, now: now) }),
             "SOON": BriefDetail.soon(upcoming.flatMap { $0.isEmpty && !weekRead ? nil : $0 }, when: when),
         ]
 
