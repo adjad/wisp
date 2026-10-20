@@ -1605,3 +1605,145 @@ def test_actual_possessive_history_words_remain_exact_current_message_body(
 def test_possessive_noun_alone_does_not_prove_a_private_communication_source(speaker):
     prompt = 'What did ' + speaker + ' say today?'
     assert U.retrospective_communication_roles(prompt) == (False, speaker)
+
+
+GENERIC_ADVICE = [
+    'How can I tell whether an email needs a reply?',
+    '**How can I tell whether an email needs a reply?',
+    '*How do I tell if a message requires a response?',
+    '**How do I decide whether a text warrants a reply?**',
+]
+
+
+@pytest.mark.parametrize('head', ['How can I tell', 'How do I tell', 'How do I decide', 'How can I decide'])
+@pytest.mark.parametrize('junction', ['whether', 'if'])
+@pytest.mark.parametrize('noun', ['an email', 'an e-mail', 'a message', 'a text'])
+@pytest.mark.parametrize('predicate,response', [('needs', 'reply'), ('requires', 'response'), ('warrants', 'reply')])
+@pytest.mark.parametrize('marker', ['', '*', '**'])
+def test_finite_generic_advice_frame_is_compositional_and_fully_consumed(head, junction, noun, predicate, response, marker):
+    prompt = f'{marker}{head} {junction} {noun} {predicate} a {response}?'
+    assert U.is_complete_explanation(prompt) and U.explanation_remainder(prompt) == ''
+    assert not outbound_verb(prompt) and compile_new(prompt) is None and compile_task(prompt) is None
+
+
+@pytest.mark.parametrize('prompt', [
+    "How can I tell whether Sarah's email needs a reply?",
+    'How can I tell whether this email needs a reply?',
+    'How can I tell whether my email needs a reply?',
+    'How do I decide if the message warrants a response?',
+    'How can I tell whether an email from Alex needs a reply?',
+    'How can I tell whether an email received today needs a reply?',
+    'How can I tell whether an email needs a reply without reading Mail?',
+    'How can I tell whether an email needs a reply? Then text Mom saying Thanks.',
+    'Text Mom saying "How can I tell whether an email needs a reply?"',
+    'say "How can I tell whether an email needs a reply?"',
+    '"How can I tell whether an email needs a reply?"',
+])
+def test_generic_advice_abstains_on_actual_sources_literals_and_independent_actions(prompt):
+    assert not U.is_complete_explanation(prompt)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('owner', ['reminder', 'reply-body', 'reply-target', 'workflow-addressed', 'workflow-unaddressed'])
+@pytest.mark.parametrize('prompt', GENERIC_ADVICE)
+def test_actual_generic_advice_preserves_all_pending_rows_before_source_or_preparation(
+        pending_entrypoint, monkeypatch, tmp_path, mode, owner, prompt):
+    from service.tools.registry import REGISTRY
+    state = pending_entrypoint
+    sid, _ = seed_pending(state, owner)
+    for other in ['reminder', 'reply-body', 'reply-target', 'workflow-addressed', 'workflow-unaddressed']:
+        seed_pending(state, other)
+    before = pending_rows(state)
+    monkeypatch.setitem(REGISTRY, 'fictional_advice_alias', replace(REGISTRY['view_emails'], name='fictional_advice_alias'))
+    events = actual_public_history_attempt(state, monkeypatch, mode, prompt, 'fictional_advice_alias', {}, sid=sid)
+    (tmp_path / 'advice-pending-receipt.json').write_text(json.dumps({
+        'mode': mode, 'owner': owner, 'prompt': prompt, 'before': before, 'after': pending_rows(state),
+        'protocol': 'empty-menu compatibility tool events with WISP_PLANNER=1; model-led discovery when selected',
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests, 'early': state.early,
+        'source_calls': state.source_calls, 'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert pending_rows(state) == before
+    assert not state.source_calls and not state.executed and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+    assert any(m.get('role') == 'user' and m.get('content') == prompt
+               for request in state.requests for m in request['messages'])
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('private_context', [False, True])
+@pytest.mark.parametrize('name,args', [
+    ('view_emails', {'unread': True}),
+    ('send_message', {'to': '+15555550123', 'text': 'Unrequested synthetic action'}),
+    ('clear_reminders', {'scope': 'all'}), ('run_shell', {'command': 'fictional'}),
+    ('web_search', {'query': 'fictional private history'}),
+])
+def test_actual_complete_generic_advice_has_no_private_effect_or_egress_capabilities(
+        pending_entrypoint, monkeypatch, tmp_path, mode, private_context, name, args):
+    state = pending_entrypoint
+    sid = state.sessions.create_session()
+    if private_context:
+        state.sessions.add_turn(sid, 'user', 'Fictional private history: secret-project-abc.')
+        state.sessions.add_turn(sid, 'assistant', 'Fictional private history acknowledged.')
+    prompt = '**How can I tell whether an email needs a reply?'
+    events = actual_public_history_attempt(state, monkeypatch, mode, prompt, name, args, sid=sid)
+    (tmp_path / 'advice-capability-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'private_context': private_context, 'attempt': {'name': name, 'args': args},
+        'protocol': 'empty-menu compatibility tool events with WISP_PLANNER=1; model-led discovery when selected',
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests, 'plans': pending_rows(state),
+        'source_calls': state.source_calls, 'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert not pending_rows(state) and not state.source_calls and not state.executed and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('compound', [False, True])
+def test_actual_generic_advice_literal_and_independent_send_preserve_original_body(
+        pending_entrypoint, monkeypatch, tmp_path, mode, compound):
+    state = pending_entrypoint
+    body = '**How can I tell whether an email needs a reply?'
+    authored = 'Text +15555550123 saying "' + body + '"'
+    prompt = (GENERIC_ADVICE[0] + '; ' if compound else '') + authored
+    task = compile_task(prompt)
+    assert task and task.subject.value == body and task.original_request == prompt
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'send_message', {'to': '+15555550123', 'text': body})
+    (tmp_path / 'advice-send-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'task': task.to_dict(), 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    cards = [e for e in events if e['type'] == 'confirm' and e.get('tool') == 'send_message']
+    assert len(cards) == 1 and cards[0]['args'] == {'to': '+15555550123', 'text': body}
+    assert not state.executed and not state.native
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+def test_actual_generic_advice_independent_read_preserves_supported_mail_owner(
+        pending_entrypoint, monkeypatch, tmp_path, mode):
+    state = pending_entrypoint
+    prompt = GENERIC_ADVICE[0] + '; Show my unread email.'
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'view_emails', {'unread': True})
+    (tmp_path / 'advice-read-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'events': events, 'raw_sse': state.raw_sse,
+        'requests': state.requests, 'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert state.executed and all(name == 'view_emails' and args.get('unread') is True for name, args in state.executed)
+    assert not pending_rows(state) and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+def test_actual_generic_advice_unsupported_independent_action_clarifies_without_preparation(
+        pending_entrypoint, monkeypatch, tmp_path, mode):
+    state = pending_entrypoint
+    state.reminders.add_manual('Laundry', time.time() + 3600)
+    reminders = state.reminders.active_between()
+    sid, _ = seed_pending(state, 'reply-target')
+    before = pending_rows(state)
+    prompt = GENERIC_ADVICE[0] + '; Delete the Laundry reminder from the Work account.'
+    assert not U.is_complete_explanation(prompt)
+    events = actual_public_history_attempt(state, monkeypatch, mode, prompt, 'clear_reminders', {'scope': 'all'}, sid=sid)
+    (tmp_path / 'advice-unsupported-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'before': before, 'after': pending_rows(state),
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests, 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert pending_rows(state) == before and state.reminders.active_between() == reminders
+    assert not state.source_calls and not state.executed and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
