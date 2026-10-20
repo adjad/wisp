@@ -255,8 +255,7 @@ final class CheckInModel: ObservableObject {
     private func reconcilePendingCancels() {
         for (id, pending) in pendingCancels where isCardCancel(id) {
             let row = card.events.first { $0.id == id }
-            let same = row.map { $0.canCancel && $0.sourceId == pending.event.sourceId
-                && $0.whenTs == pending.event.whenTs && $0.inviteeCount == pending.event.inviteeCount } ?? false
+            let same = row.map { $0.canCancel && Self.sameOccurrence($0, pending.event) } ?? false
             if same { continue }
             undoCancel(pending.event)
             let title = CheckInSection.plainTitle(pending.event.title)
@@ -272,8 +271,7 @@ final class CheckInModel: ObservableObject {
     func reconcileTimelineCancels(_ events: [CheckInEvent]) {
         for (id, pending) in pendingCancels where !isCardCancel(id) {
             let row = events.first { $0.id == id }
-            let same = row.map { $0.canCancel && $0.sourceId == pending.event.sourceId
-                && $0.whenTs == pending.event.whenTs && $0.inviteeCount == pending.event.inviteeCount } ?? false
+            let same = row.map { $0.canCancel && Self.sameOccurrence($0, pending.event) } ?? false
             if same { continue }
             undoCancel(pending.event)
             let title = CheckInSection.plainTitle(pending.event.title)
@@ -282,6 +280,12 @@ final class CheckInModel: ObservableObject {
                 ? CheckInCancel.Failure(outcome: "changed", message: "“\(title)” is no longer on the timeline; nothing was cancelled.")
                 : CheckInCancel.changed(title: title))
         }
+    }
+
+    /// The same occurrence as the one a tap bound: same id, calendar id, start and
+    /// invitee count (what the cancel request states).
+    static func sameOccurrence(_ a: CheckInEvent, _ b: CheckInEvent) -> Bool {
+        a.id == b.id && a.sourceId == b.sourceId && a.whenTs == b.whenTs && a.inviteeCount == b.inviteeCount
     }
 
     // MARK: Cancel with Undo

@@ -81,15 +81,21 @@ def snapshot(day, timezone, *, debug=False):
             # The original revisioned planner remains usable when an optional
             # source or private workspace settings are unavailable.
             result["workspace_error"] = "Daily source evidence could not be refreshed; your saved day plan is shown."
-        # Calendar blocks carry what the Day timeline's Cancel and Move need (the
-        # check-in card's rules, service/assistant/checkin.py). New lists, so the
-        # planner's own output (and the replay below) stays as built.
-        from service.assistant import checkin
-        for key in ("blocks", "all_day"):
-            result[key] = checkin.annotate_calendar_blocks(assistant_store, result[key], state["commitments"])
+        # Timed Calendar blocks carry what the Day timeline's Cancel and Move need
+        # (the check-in card's rules, service/assistant/checkin.py). New lists, so
+        # the planner's own output (and the replay below) stays as built; the
+        # all-day strip shows titles only, so those lists are left alone. Never
+        # fatal: without the facts the app offers only "Open in Calendar".
+        try:
+            from service.assistant import checkin
+            seen: dict = {}
+            result["blocks"] = checkin.annotate_calendar_blocks(assistant_store, result["blocks"], state["commitments"], seen)
             proposed = result.get("workspace", {}).get("proposed_plan")
-            if isinstance(proposed, dict) and isinstance(proposed.get(key), list):
-                proposed[key] = checkin.annotate_calendar_blocks(assistant_store, proposed[key], state["commitments"])
+            if isinstance(proposed, dict) and isinstance(proposed.get("blocks"), list):
+                proposed["blocks"] = checkin.annotate_calendar_blocks(assistant_store, proposed["blocks"],
+                                                                      state["commitments"], seen)
+        except Exception:  # noqa: BLE001
+            pass
         if "workspace" in result:
             try:
                 # One-line gists of important emails for the Brief's MAIL row,

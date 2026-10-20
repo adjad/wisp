@@ -175,23 +175,26 @@ def occurrence_fields(store, source_id, when_ts) -> dict:
             "move_blocked": move_block_reason(found) if found else "Not in your synced Calendar."}
 
 
-def annotate_calendar_blocks(store, blocks: list[dict], commitments: list[dict]) -> list[dict]:
+def annotate_calendar_blocks(store, blocks: list[dict], commitments: list[dict], cache: dict | None = None) -> list[dict]:
     """Copies of a plan's `blocks` (service/assistant/today.py build_plan) where each
     Calendar block also carries its occurrence's source_id, all_day flag and
     occurrence_fields, looked up through the commitment the block was built from. The
     Day timeline's ⋯ menu offers Cancel and Move from these, under the check-in card's
     rules. Blocks of any other kind, and a Calendar block whose commitment is gone, are
-    returned unchanged; the planner's own output is never mutated."""
+    returned unchanged; the planner's own output is never mutated. `cache` (by source_id
+    and start) is shared across the lists of one snapshot, so each occurrence is read once."""
     by_id = {c.get("id"): c for c in commitments if c.get("source") == "calendar"}
+    cache = {} if cache is None else cache
     annotated = []
     for block in blocks:
         commitment = by_id.get(block.get("id")) if block.get("kind") == "calendar" else None
         if commitment is None:
             annotated.append(block)
             continue
-        row = dict(block, source_id=commitment.get("source_id"), all_day=bool(commitment.get("all_day")))
-        row.update(occurrence_fields(store, commitment.get("source_id"), commitment.get("when_ts")))
-        annotated.append(row)
+        key = (commitment.get("source_id"), commitment.get("when_ts"))
+        if key not in cache:
+            cache[key] = occurrence_fields(store, *key)
+        annotated.append(dict(block, source_id=key[0], all_day=bool(commitment.get("all_day")), **cache[key]))
     return annotated
 
 

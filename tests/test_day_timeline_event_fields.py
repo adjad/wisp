@@ -23,6 +23,8 @@ HOUR = 3600.0
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
+    # The snapshot's optional workspace reads its own files under MOE_DIR: a temp one.
+    monkeypatch.setenv("MOE_DIR", str(tmp_path))
     s = AssistantStore(tmp_path / "assistant.db")
     monkeypatch.setattr(today_api, "assistant_store", s)
     yield s
@@ -77,8 +79,10 @@ def test_calendar_blocks_are_annotated_and_the_planner_output_is_not(store):
     state = store.today_snapshot(day, "UTC")
     plan = build_plan(day, "UTC", state["tasks"], state["commitments"], state["preferences"], state["sources"],
                       now=start - 5 * HOUR)
-    blocks = checkin.annotate_calendar_blocks(store, plan["blocks"], state["commitments"])
-    all_day = checkin.annotate_calendar_blocks(store, plan["all_day"], state["commitments"])
+    seen: dict = {}
+    blocks = checkin.annotate_calendar_blocks(store, plan["blocks"], state["commitments"], seen)
+    all_day = checkin.annotate_calendar_blocks(store, plan["all_day"], state["commitments"], seen)
+    assert set(seen) == {("ek-mine", start), ("ek-allday", start - 10 * HOUR)}, "one lookup per occurrence"
     mine = next(b for b in blocks if b["title"] == "Design review")
     assert mine["kind"] == "calendar" and mine["source_id"] == "ek-mine" and mine["all_day"] is False
     assert (mine["invitee_count"], mine["organizer_is_user"], mine["calendar_writable"]) == (2, True, True)
@@ -116,8 +120,23 @@ def test_today_snapshot_serves_the_fields_on_saved_and_proposed_plans(store):
     assert by_title["Design review"]["invitee_count"] == 3
     assert by_title["Design review"]["cancel_blocked"] == "" and by_title["Design review"]["move_blocked"] == ""
     assert all("source_id" not in b for b in result["replay"]["expected_plan"]["blocks"])
+    assert all("source_id" not in b for b in result["all_day"]), "the all-day strip shows titles only"
     proposed = result.get("workspace", {}).get("proposed_plan")
     if proposed:   # the workspace is optional (private settings, sources); when it is there, it matches
         proposed_titles = {b["title"]: b for b in proposed["blocks"] if b["kind"] == "calendar"}
         assert proposed_titles["Design review"]["invitee_count"] == 3
         assert proposed_titles["STAT 5 lecture"]["cancel_blocked"] == checkin.READ_ONLY_CALENDAR
+
+
+def test_an_annotation_failure_never_breaks_the_plan(store, monkeypatch):
+    """A store error while reading an occurrence leaves the plan unannotated (the app then
+    offers only Open in Calendar) instead of failing GET /assistant/today."""
+    start = _start()
+    store.sync_source("calendar", [_event("ek-mine", "Design review", start, calendar_writable=True)])
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(type(store), "calendar_occurrence", boom)
+    result = today_api.snapshot(_day_of(start), "UTC")
+    block = next(b for b in result["blocks"] if b["title"] == "Design review")
+    assert block["kind"] == "calendar" and "cancel_blocked" not in block and "source_id" not in block

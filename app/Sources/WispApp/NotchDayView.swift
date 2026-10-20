@@ -79,12 +79,15 @@ struct NotchDayView: View {
             guard due, today.isShowingCurrentDay else { return }
             Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
         }
-        // A fresh plan: a timeline cancel whose block changed or left is dropped
-        // before it is sent, and a Move panel for a block that left is closed.
+        // A fresh plan for the shown day: a timeline cancel whose block changed or
+        // left is dropped before it is sent, and a Move panel for such a block is
+        // closed. No plan (a failed refresh, a day change) proves nothing and
+        // changes nothing.
         .onChange(of: plan?.generated_at) { _, _ in
-            let events = plan?.displayBlocks.compactMap(\.calendarEvent) ?? []
+            guard let plan else { return }
+            let events = plan.displayBlocks.compactMap(\.calendarEvent)
             checkIn.reconcileTimelineCancels(events)
-            if let movingEvent, !events.contains(where: { $0.id == movingEvent.id }) { closeMove() }
+            if let movingEvent, !events.contains(where: { CheckInModel.sameOccurrence($0, movingEvent) }) { closeMove() }
         }
         // A cancel the service answered: the plan is read again, so a cancelled
         // block goes and a refused one shows the fresh facts the service now has.
@@ -533,6 +536,7 @@ struct NotchDayView: View {
             switch entry {
             case .cancel:
                 Button(failure?.canRetry == true ? "Try cancelling again" : "Cancel event") {
+                    if movingEvent?.id == event.id { closeMove() }   // not moving what is being cancelled
                     checkIn.beginCancel(event, timezone: today.timezone.identifier, fromCard: false)
                 }
                 .help("Removes it from your Calendar after a 5-second Undo; Calendar tells its invitees")
