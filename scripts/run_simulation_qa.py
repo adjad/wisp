@@ -197,6 +197,8 @@ PROFILE_TESTS = {
         "tests/test_web_response_followup.py",
         "tests/test_direct_dispatch.py",
         "tests/test_direct_dispatch_exec.py",
+        # Actual ASGI with inert registry, fake inference and blocked sockets/processes.
+        "tests/test_topical_email_contract.py",
         "tests/test_historical_routing_regressions.py",
         "tests/test_router_adversarial_cases.py",
         "tests/test_router_execution_contract.py",
@@ -487,6 +489,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_priorities.py",
     "tests/test_workflow20_reminder_time.py",
     "tests/test_workflow20_routing.py",
+    # Topical Mail ASGI over disposable stores; registered/native execution is inert.
+    "tests/test_topical_email_contract.py",
     # Actual unread stream with temporary stores and synthetic read tools only.
     "tests/test_unread_summary_entrypoint.py",
     "tests/test_workflow20_schedule_time.py",

@@ -911,9 +911,9 @@ _PRIVATE_QUERY_PREFIX = (
 _TOPICAL_EMAIL_LOOKUP_RE = re.compile(
     r"^" + _PRIVATE_QUERY_PREFIX
     + r"(?:what(?:'s|\s+is)\s+(?:on|in)|is\s+there\s+anything\s+(?:on|in))\s+"
-    r"(?:my\s+|the\s+)?(?:e-?mails?|inbox)\s+(?:regarding|about|for)\s+"
-    r"(?P<query>.+?)[\s.!?]*$",
-    re.I,
+    r"(?:my\s+|the\s+)?(?:e-?mails?|inbox)\s+(?:regarding|about|for)"
+    r"(?:\s+(?P<query>.*?))?[\s.!?]*$",
+    re.I | re.S,
 )
 _WEEKLY_PERSONAL_TOPIC_RES = (
     re.compile(
@@ -1035,12 +1035,119 @@ def _canonical_private_topic(text: str) -> str:
     return re.sub(r"\s+", " ", topic).strip()
 
 
+@dataclass(frozen=True)
+class _TopicalMailContract:
+    """A topical envelope is owned even when its scope needs interpretation."""
+    state: str  # unrecognized | incomplete | complete | denied
+    original: str
+    query: str = ""
+    literal_span: tuple[int, int] | None = None
+    receipt_key: str = ""
+    receipt_value: str = ""
+    forbidden: frozenset[str] = frozenset()
+
+    def arguments(self) -> dict:
+        args = {"query": self.query, "count": 10, "strict_match": True}
+        if self.receipt_key:
+            args[self.receipt_key] = self.receipt_value
+        return args
+
+
+_TOPICAL_RECEIPT = r"(?:today|yesterday|(?:this|last)\s+(?:week|month))"
+_TOPICAL_RECEIPT_RE = re.compile(
+    r"(?:\s*(?:for|from|during|on)\s+)?(?P<receipt>" + _TOPICAL_RECEIPT + r")", re.I)
+
+
+def _topical_mail_contract(text: str) -> _TopicalMailContract:
+    # Discover clause boundaries on a length-preserving mask, then extract
+    # authored bytes from the original. Neither source-policy normalization nor
+    # typo correction is permitted inside the literal topic.
+    masked = _normalize_source_apostrophes(_routing_quote_mask(text))
+    boundaries = [(m.start(), m.end()) for m in re.finditer(r"[;,]|(?<=[.!?])\s+", masked)]
+    boundaries += [(m.start(), m.end()) for m in re.finditer(
+        r"\s+(?:and|but)\s+(?=" + _PRIVATE_POLICY_START + r")", masked, re.I)]
+    leading = re.match(r"^(" + _PRIVATE_SOURCE_DENIAL_TEXT + r")\s+(?:and|but)\s+"
+                       r"(?=(?:is|what|for|can|could|please)\b)", masked, re.I)
+    if leading:
+        boundaries.append((leading.end(1), leading.end()))
+    boundaries += [(m.start(), m.end()) for m in re.finditer(
+        r"\s+(?=without\s+" + _PRIVATE_SOURCE_ACTION + r"\s+(?:my\s+)?"
+        + _PRIVATE_SOURCE_NAME + r"[.!?\s]*$)", masked, re.I)]
+    bodies = []
+    forbidden = set()
+    start = 0
+    pieces = []
+    for left, right in sorted(set(boundaries)):
+        if left < start:
+            continue
+        pieces.append((start, left))
+        start = right
+    pieces.append((start, len(text)))
+    for left, right in pieces:
+        original = text[left:right]
+        probe = re.sub(r"^(?:and|but)\s+", "", masked[left:right].strip(" .!?\t\r\n"), flags=re.I)
+        if not original.strip():
+            continue
+        if (_NO_WEB_POLICY_CLAUSE_RE.fullmatch(probe)
+                or _PRIVATE_SOURCE_DENIAL_CLAUSE_RE.fullmatch(probe)):
+            forbidden.update(_private_read_policy(probe)[1])
+        else:
+            bodies.append((left, original))
+    # Established smart apostrophes are syntax-compatible with ASCII. This
+    # mapping replaces one codepoint with one codepoint, so match offsets still
+    # address the original body; only recognition sees the normalized copy.
+    matches = [(offset, body, _TOPICAL_EMAIL_LOOKUP_RE.fullmatch(
+                   _normalize_source_apostrophes(body.strip())))
+               for offset, body in bodies]
+    matches = [(offset, body, match) for offset, body, match in matches if match]
+    if not matches:
+        return _TopicalMailContract("unrecognized", text)
+    contract = _TopicalMailContract("incomplete", text, forbidden=frozenset(forbidden))
+    if "view_emails" in forbidden:
+        return replace(contract, state="denied")
+    if len(matches) != 1 or len(bodies) != 1:
+        return contract
+    offset, body, match = matches[0]
+    query_start, query_end = match.span("query")
+    tail = body.strip()[query_start:query_end].strip() if query_start >= 0 else ""
+    quoted = _ROUTING_QUOTED_SPAN_RE.match(tail)
+    receipt = None
+    literal_span = None
+    if quoted:
+        query = quoted.group()[1:-1]
+        outside = tail[quoted.end():]
+        residue = outside.strip()
+        if residue:
+            if not outside[0].isspace():
+                return contract
+            receipt = _TOPICAL_RECEIPT_RE.fullmatch(residue)
+            if receipt is None:
+                return contract
+        if not query.strip():
+            return contract
+        # Offsets refer to the original request, including outer delimiters.
+        left = offset + len(body) - len(body.lstrip()) + match.start("query")
+        literal_span = (left, left + quoted.end())
+    else:
+        # Normalize the existing unquoted "anything <topic>" form before
+        # separating a date; "anything today" still names the topic today.
+        plain = _canonical_private_topic(tail)
+        date = re.fullmatch(r"(?P<topic>.+?)\s+(?:(?:for|from|during|on)\s+)?"
+                            r"(?P<receipt>" + _TOPICAL_RECEIPT + r")", plain, re.I)
+        query = date.group("topic") if date else plain
+        # A structural lexical token, not a vocabulary of favored topics.
+        if not re.fullmatch(r"[^\W_]+(?:[-'’][^\W_]+)*", query):
+            return contract
+        receipt = date
+    value = re.sub(r"\s+", " ", receipt.group("receipt").lower()) if receipt else ""
+    key = ("day" if value in {"today", "yesterday"} else "period") if value else ""
+    return replace(contract, state="complete", query=query, literal_span=literal_span,
+                   receipt_key=key, receipt_value=value)
+
+
 def _topical_email_args(text: str) -> dict | None:
-    match = _TOPICAL_EMAIL_LOOKUP_RE.fullmatch(text.strip())
-    if not match:
-        return None
-    query = _canonical_private_topic(match.group("query"))
-    return {"query": query, "count": 10, "strict_match": True} if query else None
+    contract = _topical_mail_contract(text)
+    return contract.arguments() if contract.state == "complete" else None
 
 
 def _weekly_personal_topic_args(text: str) -> tuple[str, str] | None:
@@ -2274,6 +2381,10 @@ class RouteDecision:
     isolated_public_query: str = ""
     # A clarification is legitimate; a calendar read is not reminder creation.
     reminder_action: str = ""  # create | clarify_time
+    # Private ownership metadata, deliberately absent from as_dict(): the
+    # topical parser owns positive obligations, while finalization still checks
+    # routability and the outer source guard retains negative authority.
+    _topical_mail_owner: _TopicalMailContract | None = field(default=None, repr=False)
     # NOTE on unscoped tool routes: a rule may leave `tool_subset` None when it
     # knows a tool is wanted but not which domain. `route()` then fills it by
     # semantic retrieval — see the block after its `rule_route` call. That is a
@@ -2476,8 +2587,40 @@ def _verified_private_read(calls: list[tuple[str, dict]], reason: str,
     return decision
 
 
+def _topical_mail_decision(contract: _TopicalMailContract) -> RouteDecision:
+    """Own every positive execution field; literal data never enters inference
+    of obligations in the generic finalizer. The outer negative guard still
+    runs against the original request and can only restrict this capability.
+    """
+    from service.tools.registry import REGISTRY, is_tool_routable
+    permitted = ({"view_emails"} if contract.state != "denied"
+                 and "view_emails" not in contract.forbidden
+                 and is_tool_routable("view_emails") else set())
+    if contract.state == "complete" and permitted:
+        decision = _verified_private_read(
+            [("view_emails", contract.arguments())],
+            "complete topical Mail contract", contract.original)
+    else:
+        decision = _mk_scoped(sorted(permitted), "topical Mail scope needs clarification",
+                              expect=False, multi=True)
+        if not permitted:
+            decision.needs_tools = False
+            decision.reason = "topical Mail source excluded or unavailable; clarify without a read"
+        decision.verified_results_only = True
+    # Constructors create fresh decisions with no unrelated bindings, flags,
+    # groups or conditions. Cap registered calls as well as offered schemas.
+    decision.tool_subset = sorted(permitted)
+    decision.forbidden_tools = frozenset(set(REGISTRY) - permitted) | contract.forbidden
+    decision.resolved_request = contract.original
+    decision._topical_mail_owner = contract
+    return decision
+
+
 def _strict_private_read_decision(text: str, *, last_user: str | None = None,
                                   recent_users: list[str] | None = None) -> RouteDecision | None:
+    topical = _topical_mail_contract(text)
+    if topical.state != "unrecognized":
+        return _topical_mail_decision(topical)
     source, policy_forbidden = _private_read_policy(text)
     from service.router.web_request import tomorrow_study_request
     if study := tomorrow_study_request(source):
@@ -2509,20 +2652,6 @@ def _strict_private_read_decision(text: str, *, last_user: str | None = None,
             "Explain any missing-source or assumed-duration limitation. If offering "
             "a preparation reminder, include the candidate's absolute date; never claim creation.",
             extra_forbidden=forbidden | policy_forbidden,
-        )
-    if email_args := _topical_email_args(source):
-        if "view_emails" in policy_forbidden:
-            decision = _mk("fast", reason="strict email source explicitly denied")
-            decision.tool_subset = []
-            decision.forbidden_tools = _UNRELATED_PRIVATE_READ_TOOLS | policy_forbidden
-            decision.verified_results_only = True
-            decision.resolved_request = "Email was excluded, so no private source was searched."
-            return decision
-        return _verified_private_read(
-            [("view_emails", email_args)],
-            "topical inbox request -> strict bounded email search",
-            f"Search email for the named topic {email_args['query']!r} and summarize only matches.",
-            extra_forbidden=policy_forbidden,
         )
     if weekly := _weekly_personal_topic_args(source):
         topic, period = weekly
@@ -6494,12 +6623,17 @@ def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | 
     # EXCEPTION: a light read route (tool_subset set) deliberately runs the summarizer on
     # a narrow, verified-reliable read-only toolset — don't force it to the agent model,
     # that would defeat keeping the big model asleep.
-    _apply_execution_contract(decision, text, web_request or _classify_web_request(text))
-    _apply_calendar_exclusion(decision, text)
-    _apply_notes_todo_exclusion(decision, text)
-    _apply_reminder_exclusion(decision, text)
-    _apply_strict_reminder_write_separation(decision, text)
-    _apply_explicit_write_read_compound(decision, text)
+    # A fully owned Mail contract has already set every execution field. Its
+    # quoted topic is opaque data, so generic positive/negative text heuristics
+    # cannot reinterpret it here. The public source guard still reads the
+    # original request after this housekeeping, with quote-aware policy masking.
+    if decision._topical_mail_owner is None:
+        _apply_execution_contract(decision, text, web_request or _classify_web_request(text))
+        _apply_calendar_exclusion(decision, text)
+        _apply_notes_todo_exclusion(decision, text)
+        _apply_reminder_exclusion(decision, text)
+        _apply_strict_reminder_write_separation(decision, text)
+        _apply_explicit_write_read_compound(decision, text)
     # Unavailable compatibility registrations can remain in required groups so
     # the agent loop can return their exact limitation before any model or
     # effect runs.  They must never appear in an offered schema, direct call,
