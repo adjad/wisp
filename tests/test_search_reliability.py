@@ -13,11 +13,70 @@ import httpx
 
 from service.search import embedder, engine, synth
 from service.search.chunker import chunk
+from service.search.lexical import BM25, fold, literal_hits, tokenize
 from service.config.endpoints import Endpoint, Target
 
 DOCUMENT = "The launch code is violet. The review starts on Thursday."
 QUERY = "What is the launch code?"
 HTTP_CLIENT = httpx.AsyncClient
+
+
+class LexicalFoldTests(unittest.TestCase):
+    def test_all_ascii_codepoints_fold_to_lower_without_changing_length(self):
+        text = "".join(chr(codepoint) for codepoint in range(128))
+        folded = fold(text)
+        self.assertEqual(folded, text.lower())
+        self.assertEqual(len(folded), len(text))
+        self.assertTrue(folded.isascii())
+
+    def test_empty_and_ascii_punctuation_whitespace_and_controls(self):
+        self.assertEqual(fold(""), "")
+        text = "\x00\t VIOLET!!\nA_b-9\r"
+        self.assertEqual(fold(text), "\x00\t violet!!\na_b-9\r")
+        self.assertEqual(len(fold(text)), len(text))
+
+    def test_unicode_folding_keeps_the_existing_fallback_results(self):
+        samples = {
+            "Café": "cafe",
+            "e\u0301": "e\u0301",
+            "İ": "i",
+            "ß": "ß",
+            "👩🏽‍💻": "👩🏽‍💻",
+            "ÉΣß": "eσß",
+        }
+        for text, expected in samples.items():
+            with self.subTest(text=text):
+                self.assertEqual(fold(text), expected)
+
+    def test_literal_hits_keep_original_spans_order_and_limit(self):
+        text = "VIOLET, violet. Violet"
+        hits = literal_hits(text, "  violet  ")
+        self.assertEqual([(hit.start, hit.end) for hit in hits], [(0, 6), (8, 14), (16, 22)])
+        self.assertEqual([(hit.start, hit.end) for hit in literal_hits(text, "violet", limit=2)],
+                         [(0, 6), (8, 14)])
+        self.assertEqual(literal_hits(text, "violet", limit=0), [])
+        self.assertEqual(literal_hits(text, "absent"), [])
+        self.assertEqual(literal_hits(text, "  \t  "), [])
+
+        accented = "Café; cafe"
+        self.assertEqual([(hit.start, hit.end) for hit in literal_hits(accented, "cafe")],
+                         [(0, 4), (6, 10)])
+
+    def test_tokenizer_and_bm25_results_remain_stable(self):
+        self.assertEqual(tokenize("Project VIOLET, café e\u0301!"),
+                         ["project", "violet", "cafe", "e"])
+        texts = [
+            "Project violet finds the colour guide.",
+            "The violet code and its price are confidential.",
+            "A puppy watches the launch code.",
+        ]
+        chunks = [piece for text in texts for piece in chunk(text)]
+        bm25 = BM25(chunks)
+        hits = bm25.search("launch code")
+        self.assertEqual(
+            [(hit.chunk_idx, round(hit.score, 6), hit.start, hit.end, hit.kind) for hit in hits],
+            [(2, 1.512717, 0, 32, "lexical"), (1, 0.434457, 0, 47, "lexical")],
+        )
 
 
 class SearchCase(unittest.IsolatedAsyncioTestCase):

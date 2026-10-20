@@ -51,6 +51,9 @@ def fold(text: str) -> str:
     NFD would expand 'é' into two code points and shift every offset after it,
     so combining marks are replaced in place rather than dropped.
     """
+    if text.isascii():
+        return text.lower()
+
     out = []
     for ch in text:
         d = unicodedata.normalize("NFD", ch)
