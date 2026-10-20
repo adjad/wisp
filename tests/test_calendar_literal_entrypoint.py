@@ -75,6 +75,80 @@ def test_source_denial_inside_a_title_is_only_literal_text():
         [('get_upcoming', {'period': 'tomorrow', 'query': 'tmrw; do not use Reminders'})], '')
 
 
+@pytest.mark.parametrize('source,calendar_only', [
+    ('schedule', False), ('calendar', False), ('calendar events', True), ('cal events', True),
+])
+def test_literal_source_words_cannot_narrow_the_explicit_source(source, calendar_only):
+    from service.workflows.reads import compile_read
+    args = {'period': 'tomorrow', 'query': 'calendar events'}
+    if calendar_only:
+        args['calendar_only'] = True
+    assert compile_read(f'Show my {source} named "calendar events" tomorrow') == (
+        [('get_upcoming', args)], '')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source,suffix,expected_sources,reminder_count', [
+    ('schedule', '', ('calendar', 'reminders'), 1),
+    ('calendar events', '', ('calendar',), 0),
+    ('schedule', '; do not use reminders', ('calendar',), 0),
+])
+async def test_stream_literal_source_words_reach_actual_source_boundary(
+        tmp_path, monkeypatch, source, suffix, expected_sources, reminder_count):
+    from datetime import datetime, timedelta
+    import importlib
+    import socket
+    import subprocess
+    from service import main
+    from service.memory.store import SessionStore
+    from service.assistant.store import AssistantStore
+    from service.assistant.hub import hub
+    from service.tools import assistant_tools
+    from service.workflows import reads
+    from service.safety.policy import Decision, Tier
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('No native process, network, source dispatch or model permitted')
+
+    sessions = SessionStore(tmp_path / 'sessions.sqlite')
+    assistant = AssistantStore(tmp_path / 'assistant.sqlite')
+    tomorrow = (datetime.now() + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0).timestamp()
+    assistant.sync_source('calendar', [{'source_id': 'fixture-calendar', 'title': 'calendar events',
+        'kind': 'event', 'when_ts': tomorrow, 'end_ts': tomorrow + 1800}])
+    assistant.sync_source('reminders', [{'source_id': 'fixture-reminder', 'title': 'calendar events',
+        'kind': 'reminder', 'when_ts': tomorrow + 3600}])
+    monkeypatch.setattr(main, 'store', sessions)
+    monkeypatch.setattr(main, 'assistant_store', assistant)
+    monkeypatch.setattr(assistant_tools, 'assistant_store', assistant)
+    monkeypatch.delenv('WISP_MODEL_LED_ROUTING', raising=False)
+    monkeypatch.setattr(main, 'ensure_omlx', AsyncMock(side_effect=forbidden))
+    monkeypatch.setattr(main, 'route', AsyncMock(side_effect=forbidden))
+    monkeypatch.setattr(reads, 'decide', lambda *a, **k: Decision(Tier.ALLOW, 'synthetic read'))
+    readiness = AsyncMock(return_value={'sources': [], 'reminders_fresh': True})
+    monkeypatch.setattr('service.assistant.sync_status.ensure_sources', readiness)
+    monkeypatch.setattr(hub, 'publish', AsyncMock(side_effect=forbidden))
+    monkeypatch.setattr(importlib.import_module('service.assistant.outbox'), 'request', AsyncMock(side_effect=forbidden))
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket.socket, 'connect_ex', forbidden)
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    try:
+        response = await main.agent({'prompt': f'Show my {source} named "calendar events" tomorrow{suffix}', 'debug': False})
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        events = [json.loads(line[6:]) for line in ''.join(chunks).splitlines() if line.startswith('data: ')]
+        answer = ''.join(e.get('text', '') for e in events if e['type'] == 'text')
+        assert 'calendar events' in answer
+        assert f'Wisp/Apple reminders: {reminder_count}' in answer
+        readiness.assert_awaited_once_with(expected_sources)
+        main.route.assert_not_awaited()
+        main.ensure_omlx.assert_not_awaited()
+        assert events[-1]['type'] == 'done'
+    finally:
+        sessions._db.close()
+        assistant._db.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('opening,closing', QUOTES)
 @pytest.mark.parametrize('suffix', ['', '; do not browse', '; do not use the web',

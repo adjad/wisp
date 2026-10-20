@@ -226,7 +226,7 @@ def _calendar_read_args(text: str, period: str, today: date | None = None,
         r"(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:"
         r"what(?:[’']s|\s+is|\s+are)\s+(?:on|in)\s+|is\s+there\s+anything\s+(?:on|in)\s+|"
         r"(?:show(?:\s+me)?|check|list)\s+|(?:why\s+)?are\s+there\s+no\s+)"
-        r"(?:my\s+|the\s+)?(?:cal(?:endar)?(?:\s+events)?|schedule)\b(?P<tail>.*)",
+        r"(?:my\s+|the\s+)?(?P<source>cal(?:endar)?(?:\s+events)?|schedule)\b(?P<tail>.*)",
         text.strip(" .!?"), re.I)
     if not match:
         return None
@@ -287,7 +287,7 @@ def _calendar_read_args(text: str, period: str, today: date | None = None,
         return None
     if query:
         args["query"] = query
-    if reminders_excluded or re.search(r"\bcalendar\s+events\b", text, re.I):
+    if reminders_excluded or re.fullmatch(r"cal(?:endar)?\s+events", match["source"], re.I):
         args = {**args, "calendar_only": True}
     return args
 
