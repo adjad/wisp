@@ -284,7 +284,7 @@ struct BriefContent {
                 ?? (weekRead ? .nothing : .unknown)
         } else if let need = needs.filter({ ($0.due_ts ?? 0) > dayEnd }).min(by: { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }) {
             // Before the week has been read, a dated need after today still counts.
-            soon = .item(title: need.title, when: NotchChrome.dayClock(need.due_ts ?? 0, zone: zone), source: need.source)
+            soon = .item(title: need.title, when: need.all_day == true ? "All day" : NotchChrome.dayClock(need.due_ts ?? 0, zone: zone), source: need.source)
         } else {
             soon = .unknown
         }

@@ -14,6 +14,8 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 """
 from __future__ import annotations
 
+from service.assistant.verified_reminders import expected_date_fields
+
 import asyncio
 import dataclasses
 from service.inference.remote_policy import (remote_only_profile,
@@ -1605,6 +1607,21 @@ async def agent(body: dict[str, Any]):
             recent_users = store.recent_user_turns(sid) if sess else []
             last_tools = store.last_assistant_tools(sid) if sess else None
 
+            # A completed multi-reminder task does not identify which item an
+            # "it" correction means. End the turn before any inference or
+            # planner/shadow adaptation can reopen an implicit last-item write.
+            from service.tasks.engine import prepare_batch_correction_guard
+            batch_guard = (prepare_batch_correction_guard(store, sid, prompt)
+                           if sess and not literal_envelope else None)
+            if batch_guard:
+                await emit({"type": "task_plan", "event": batch_guard.event,
+                            "task": batch_guard.plan.to_dict(), "trace": batch_guard.trace})
+                await emit({"type": "text", "text": batch_guard.response})
+                await emit({"type": "done"})
+                persist_user_turn()
+                store.add_turn(sid, "assistant", batch_guard.response)
+                return
+
             # Decide ownership BEFORE any positive rule/typed compiler runs.
             # Model identity is the configured agent target, not a filename
             # allowlist that would silently exclude a renamed trained model.
@@ -3091,7 +3108,7 @@ async def assistant_delete(cid: str) -> dict[str, Any]:
             return {"ok": False, "error": "Reminders identity is incomplete; nothing changed"}
         result = await app_request("delete_reminder", {
             "source_id": c["source_id"], "expected_title": c["title"],
-            "expected_due_ts": c["when_ts"]})
+            "expected_due_ts": c["when_ts"], **expected_date_fields(c)})
         if result.get("ok") is not True:
             return result
     else:

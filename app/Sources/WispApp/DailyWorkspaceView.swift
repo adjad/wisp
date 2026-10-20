@@ -7,6 +7,8 @@ struct DailyAttentionItem: Decodable, Identifiable {
     let reason: String
     let quote: String
     let due_ts: Double?
+    let all_day: Bool?
+    let due_date: String?
     let priority: Int
     let reference: String
     let suggested_minutes: Int
@@ -103,8 +105,13 @@ struct DailyAttentionView: View {
                                         .font(.caption).frame(maxWidth: 330)
                                 }
                                 if let due = item.due_ts {
-                                    Text(Date(timeIntervalSince1970: due), format: .dateTime.month().day().hour().minute().timeZone())
-                                        .font(.caption).foregroundStyle(.secondary)
+                                    if item.all_day == true {
+                                        Text("All day · " + (item.due_date ?? Date(timeIntervalSince1970: due).formatted(.dateTime.month().day())))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        Text(Date(timeIntervalSince1970: due), format: .dateTime.month().day().hour().minute().timeZone())
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
                                 }
                                 DisclosureGroup("Source evidence") {
                                     VStack(alignment: .leading, spacing: 6) {

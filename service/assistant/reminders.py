@@ -42,6 +42,8 @@ def due_reminders(store, now: float | None = None) -> list[dict]:
     now = now if now is not None else time.time()
     out: list[dict] = []
     for c in store.reminder_snapshot(now):
+        if c.get('all_day'):
+            continue  # A date-only due date supplies no notification clock.
         snapshot = c["reminder_snapshot"]
         when = c.get("when_ts")
         if when is None:

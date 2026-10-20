@@ -1418,10 +1418,10 @@ final class OverlayModel: ObservableObject {
     var onVerifiedReminderAction: ((_ kind: String, _ actionID: String, _ sourceID: String,
                                     _ expectedTitle: String, _ expectedDueTs: Double?,
                                     _ title: String, _ dueTs: Double,
-                                    _ commitmentKind: String) -> [String: Any])?
+                                    _ commitmentKind: String, _ dueDate: String, _ expectedDueDate: String) -> [String: Any])?
     var onReconcileReminderAction: ((_ kind: String, _ actionID: String, _ sourceID: String,
                                      _ title: String, _ dueTs: Double,
-                                     _ commitmentKind: String) async -> [String: Any])?
+                                     _ commitmentKind: String, _ dueDate: String) async -> [String: Any])?
     var onStartResearch: ((_ prompt: String) -> Void)?
     /// Opens this conversation in the Chat window. Called with the service
     /// session id, which is empty until the first reply of a new chat.
@@ -1449,7 +1449,7 @@ final class OverlayModel: ObservableObject {
             return action(ev.type, ev.str("action_id"), ev.str("source_id"),
                           ev.str("expected_title"), expectedDue,
                           ev.str("title"), ev.payload["due_ts"] as? Double ?? 0,
-                          ev.str("commitment_kind"))
+                          ev.str("commitment_kind"), ev.str("due_date"), ev.str("expected_due_date"))
         }
         if ev.type == "cancel_calendar_event" {
             guard !ev.str("source_id").isEmpty, !ev.str("expected_title").isEmpty,
@@ -1501,7 +1501,7 @@ final class OverlayModel: ObservableObject {
         }
         return await reconcile(ev.type, ev.str("action_id"), ev.str("source_id"),
                                ev.str("title"), ev.payload["due_ts"] as? Double ?? 0,
-                               ev.str("commitment_kind"))
+                               ev.str("commitment_kind"), ev.str("due_date"))
     }
 
     private func handleAssistantEvent(_ ev: WispClient.Event) async -> Bool {

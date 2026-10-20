@@ -84,6 +84,24 @@ final class ReceiptServer {
 @main
 struct AssistantDeliveryChecks {
     @MainActor static func main() async throws {
+        let datePayload: [String: Any] = ["type": "create_reminder", "action_id": "all-day-fixture",
+            "title": "Review report", "commitment_kind": "reminder", "all_day": true, "due_date": "2026-10-20"]
+        precondition(AssistantDelivery.calendarPayload(datePayload, kind: "create_reminder") != nil)
+        for bad in ["2026-02-30", "2026-10-20T00:00"] {
+            precondition(AssistantDelivery.calendarPayload(datePayload.merging(["due_date": bad]) { _, b in b }, kind: "create_reminder") == nil)
+        }
+        precondition(AssistantDelivery.calendarPayload(datePayload.merging(["all_day": 1]) { _, b in b }, kind: "create_reminder") == nil)
+        precondition(AssistantDelivery.calendarPayload(datePayload.merging(["due_ts": 123.0]) { _, b in b }, kind: "create_reminder") == nil)
+        let dateReceipt: [String: Any] = ["ok": true, "status": "succeeded", "error": "", "source_id": "fixture:date",
+            "title": "Review report", "all_day": true, "due_date": "2026-10-20"]
+        precondition(AssistantDelivery.terminalResult(dateReceipt, kind: "create_reminder") != nil)
+        precondition(AssistantDelivery.terminalResult(dateReceipt.merging(["all_day": 1]) { _, b in b }, kind: "create_reminder") == nil)
+        let dateTarget: [String: Any] = ["type": "delete_reminder", "action_id": "date-target",
+            "source_id": "fixture:date", "expected_title": "Review report", "expected_due_ts": 2e9,
+            "expected_due_date": "2026-10-20"]
+        precondition(AssistantDelivery.calendarPayload(dateTarget, kind: "delete_reminder") != nil)
+        precondition(AssistantDelivery.calendarPayload(dateTarget.merging(["expected_due_date": "2026-02-30"]) { _, b in b }, kind: "delete_reminder") == nil)
+        precondition(AssistantDelivery.calendarPayload(dateTarget.merging(["expected_due_ts": NSNull()]) { _, b in b }, kind: "delete_reminder") == nil)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
