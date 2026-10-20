@@ -327,6 +327,12 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                  last_stock_response: str = ""):
     if deliberate(prompt) is not None:
         return None
+    from service.calendar_time_intent import named_calendar_time
+    intent = named_calendar_time(prompt)
+    if intent is not None:
+        if intent.supported and intent.personal and not intent.no_calendar:
+            return [("get_upcoming", intent.calendar_args())], ""
+        return None
     from service.workflows.workflow20 import mentioned_sources, personal_read
     read = personal_read(prompt)
     if read is not None and read.direct_calls:

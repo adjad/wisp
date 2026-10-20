@@ -681,7 +681,7 @@ def test_route_diagnostic_freezes_synthetic_clock_and_restores_environment():
     "Email Maya my calendar", "Schedule a meeting from my messages",
     "Compare Apple Mail and Calendar features", "Search the web for email and calendar apps",
     "Read my email without messages", "What is email?",
-    "When is my dentist appointment on my calendar?", "What did my Mom say in messages?",
+    "What did my Mom say in messages?",
     "Read my email and tell Mom my calendar", "Read my messages and put this on my calendar",
     "Read my calendar and email Mom the summary", "Read my email and text Mom the summary",
     "Read my messages and schedule a meeting", "Show unread email and all messages today",
@@ -792,9 +792,10 @@ def test_city_weather_uses_verified_provider_without_general_web(prompt,args):
 
 
 @pytest.mark.parametrize("prompt,args", [
-    ("What time is Budget review this week?", {"calendar_only":True,"query":"Budget review","period":"this week"}),
-    ("When does physics quiz two start?", {"calendar_only":True,"query":"physics quiz two","days":60}),
+    ("What time is my Budget review this week?", {"calendar_only":True,"query":"Budget review","period":"this week"}),
+    ("When does our physics quiz two start?", {"calendar_only":True,"query":"physics quiz two","days":60}),
     ("When is my phsyics midterm?", {"calendar_only":True,"query":"phsyics midterm","days":60}),
+    ("When is my dentist appointment on my calendar?", {"calendar_only":True,"query":"dentist appointment","days":60}),
 ])
 def test_named_event_question_preserves_title_identity_and_bounded_horizon(prompt,args):
     from service.workflows.reads import compile_read

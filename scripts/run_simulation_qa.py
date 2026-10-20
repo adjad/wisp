@@ -229,6 +229,8 @@ PROFILE_TESTS = {
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
     "tests/test_calendar_literal_entrypoint.py",
+    # Pure named-time parsing, fictional stores and inert ASGI calls; no live sources.
+    "tests/test_calendar_time_contract.py",
     # Scorer self-test on synthetic fixtures; tmp_path files only, no model or network.
     "tests/test_memory_eval_scorer.py",
     # Toolbench matchers/scorer/report on hand-built trajectories and fake-world

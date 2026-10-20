@@ -202,6 +202,16 @@ def build_menu(text: str, *, last_assistant: str | None = None,
                 and _admissible(name, masked, context_open=context_open, hinted=fam in hinted)):
             menu.append(name)
 
+    # The shared named-time grammar supplies a missing capability hint, not
+    # execution authority. Keep availability, source exclusions and the cap.
+    from service.calendar_time_intent import named_calendar_time
+    named = named_calendar_time(text)
+    if named is not None and named.supported:
+        if named.personal and not named.no_calendar:
+            add('get_upcoming', 'calendar')
+        elif not named.personal and not named.no_web:
+            add('web_search', 'public_web')
+
     # Interleave so every touched family keeps its first core tools even when
     # the cap bites: core heads first, then retrieval, then the rest of cores.
     for fam in families:
