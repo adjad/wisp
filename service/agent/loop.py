@@ -2268,6 +2268,10 @@ async def run_agent(
                         for seen, outcome in tool_outcomes)]
         if readable:
             receipts.append(_merge_results(_readable_results(readable)))
+        for name, outcome in tool_outcomes:
+            if name in required_reads and outcome.effect == "read" and outcome.status != "succeeded":
+                receipts.append(f"Required source result ({name}): " + _user_facing_failure(outcome.text))
+                incomplete = True
         if incomplete:
             receipts.append("I couldn't complete every requested step.")
         return "\n".join(receipts)
@@ -2601,6 +2605,7 @@ async def run_agent(
         else:
             response = (f"I couldn’t retrieve the required {name} source, so I "
                         "didn’t prepare or send a partial result.")
+        response = _reminder_update_receipts() or response
         await emit({"type": "text", "text": response})
         await emit({"type": "done"})
         return response
@@ -2631,9 +2636,10 @@ async def run_agent(
             and _unmet_group() is None
             and last_tier is Tier.ALLOW and last_tool_result.strip()
             and not is_tool_error(last_tool_result)):
-        await emit({"type": "text", "text": last_tool_result})
+        response = _reminder_update_receipts() or last_tool_result
+        await emit({"type": "text", "text": response})
         await emit({"type": "done"})
-        return last_tool_result
+        return response
 
     if public_web_synthesis:
         # The router has already executed the public reads on this Mac.  A
@@ -4177,9 +4183,10 @@ async def run_agent(
                 and not is_tool_error(last_tool_result)):
             if reasoning:
                 await emit({"type": "reasoning", "text": reasoning})
-            await emit({"type": "text", "text": last_tool_result})
+            response = _reminder_update_receipts() or last_tool_result
+            await emit({"type": "text", "text": response})
             await emit({"type": "done"})
-            return last_tool_result
+            return response
 
     # Step limit reached without the model ever producing a final answer.
     # Surface whatever the last tool actually returned instead of a bare,

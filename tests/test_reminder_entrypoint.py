@@ -65,7 +65,9 @@ async def test_two_reminders_reach_the_typed_entrypoint_without_model_or_native_
     'Set it for 4 PM.', 'Move it to 25pm.', 'Could you change it to 4 PM?', 'Make both 4 PM.',
     'Push it to 4 PM.', 'Shift it to 4 PM.', 'Delay it by an hour.',
     'Move that reminder to 4 PM.', 'Set this reminder for 4 PM.',
-    'Could you move it to 4 p.m.?', 'Move it to 4:7 PM.'])
+    'Could you move it to 4 p.m.?', 'Move it to 4:7 PM.',
+    'Actually, make it four PM.', 'Move the reminder to 4 PM.',
+    "Make it 4 o'clock.", 'Move it to the 28th.'])
 async def test_completed_batch_correction_cannot_fall_through_to_model_writes(tmp_path, monkeypatch, mode, correction):
     from service import main
     from service.assistant.store import AssistantStore

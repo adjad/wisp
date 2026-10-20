@@ -263,3 +263,74 @@ async def test_update_receipts_preserve_partial_work_reads_and_dry_runs(
             assert "couldn't complete every requested step" in result
         else:
             assert 'charge: 80%' in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('read_result', [
+    '(error: synthetic read unavailable)', 'Nothing active matches that battery read.',
+])
+async def test_required_read_failure_preserves_completed_reminder_change(monkeypatch, read_result):
+    from service.agent import loop
+    from service.tools.registry import REGISTRY, Tool
+    calls = []
+    receipt = 'Reminder updated: “Synthetic alpha” — Fri Oct 23 at 4 PM.'
+    def update():
+        calls.append('update')
+        return receipt
+    def read():
+        calls.append('read')
+        return read_result
+    monkeypatch.setitem(REGISTRY, 'update_reminder', Tool('update_reminder', 'synthetic update',
+        {'type':'object','properties':{}}, 'system_write', update))
+    monkeypatch.setitem(REGISTRY, 'get_battery_status', Tool('get_battery_status', 'synthetic read',
+        {'type':'object','properties':{}}, 'system_read', read))
+    class NoModel:
+        async def ensure_only(self, *args, **kwargs):
+            raise AssertionError('terminal source failure must not invoke model')
+    async def emit(event):
+        pass
+    result = await loop.run_agent(NoModel(), 'Agents-A1-4B-oQe6',
+        [{'role':'user','content':'Change the reminder and check battery.'}], emit,
+        SimpleNamespace(confirm=AsyncMock(return_value=True)),
+        tools=['update_reminder','get_battery_status'],
+        direct_calls=[('update_reminder',{}),('get_battery_status',{})],
+        required_tool_groups=(frozenset({'update_reminder'}),frozenset({'get_battery_status'})),
+        multi_round=True)
+    assert calls == ['update','read']
+    assert receipt in result and 'Required source result (get_battery_status)' in result
+    assert "couldn't complete every requested step" in result
+    assert 'didn’t prepare or send' not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('dispatch', ['direct','model'])
+@pytest.mark.parametrize('receipt', ['Reminder updated: “Synthetic alpha” — Fri Oct 23 (all day).',
+                                    'Unrecognized completion text'])
+async def test_single_call_update_shortcut_uses_same_receipt_verifier(monkeypatch, dispatch, receipt):
+    from service.agent import loop
+    from service.tools.registry import REGISTRY, Tool
+    calls = []
+    def update():
+        calls.append('update')
+        return receipt
+    monkeypatch.setitem(REGISTRY,'update_reminder',Tool('update_reminder','synthetic update',
+        {'type':'object','properties':{}},'system_read',update))
+    class Client:
+        calls = 0
+        async def ensure_only(self,*args,**kwargs):
+            pass
+        async def stream_events(self,*args,**kwargs):
+            self.calls += 1
+            assert dispatch == 'model' and self.calls == 1
+            yield {'kind':'final','message':{'role':'assistant','content':'','tool_calls':[
+                {'id':'u','function':{'name':'update_reminder','arguments':'{}'}}]}}
+    async def emit(event):
+        pass
+    client = Client()
+    result = await loop.run_agent(client,'Agents-A1-4B-oQe6',
+        [{'role':'user','content':'Change reminder.'}],emit,
+        SimpleNamespace(confirm=AsyncMock(return_value=True)),tools=['update_reminder'],
+        direct_calls=[('update_reminder',{})] if dispatch == 'direct' else None,
+        short_circuit_tools={'update_reminder'})
+    assert calls == ['update'] and client.calls == (1 if dispatch == 'model' else 0)
+    assert result == receipt if receipt.startswith('Reminder updated:') else "couldn't verify" in result

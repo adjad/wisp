@@ -53,7 +53,7 @@ def batch_correction_reference(text: str) -> bool:
     reference = re.match(
         r'^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)?'
         r'(?P<verb>make|set|move|push|shift|bump|change|update|edit|reschedule|postpone|delay)\s+'
-        r'(?:it|that(?:\s+one)?|this(?:\s+one)?|them|both|the\s+(?:first|second|last)\s+one)'
+        r'(?:it|that(?:\s+one)?|this(?:\s+one)?|them|both|the\s+(?:reminders?|items?|(?:first|second|last)\s+one))'
         r'(?:\s+(?:reminders?|items?))?\b',
         value, re.I)
     if not reference:
@@ -67,7 +67,8 @@ def batch_correction_reference(text: str) -> bool:
     # ambiguous. A digit somewhere in a file/device request is not a time.
     return bool(re.match(
         rf'(?:{_DAY}\b|\d{{1,2}}(?::\d{{1,2}})?\s*[ap]\.?m\.?(?=\W|$)|\d{{1,2}}:\d|'
-        r'\d{1,2}[.!?\s]*$|(?:\d+|an?|one|two)\s+(?:minutes?|hours?|days?|weeks?)\b|'
+        r'(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s*(?:[ap]\.?m\.?|o[\'’]?clock)(?=\W|$)|'
+        r'(?:the\s+)?\d{1,2}(?:st|nd|rd|th)\b|\d{1,2}[.!?\s]*$|(?:\d+|an?|one|two)\s+(?:minutes?|hours?|days?|weeks?)\b|'
         r'(?:next|this)\s+(?:week|month|morning|afternoon|evening)\b|'
         r'(?:noon|midnight|morning|afternoon|evening|later|earlier|all[ -]day)\b)', rest, re.I))
 
