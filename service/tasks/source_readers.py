@@ -31,32 +31,53 @@ class MailReader:
     def __init__(self, rows: list[dict], *, synced_at: float = 0,
                  accounts: list[str] | None = None, failed_accounts: list[str] | None = None,
                  failure_reason: str = "", available: bool = True, complete: bool = True,
-                 deep_rows: list[dict] | None = None):
+                 deep_rows: list[dict] | None = None,
+                 account_inventory: tuple[tuple[str, str], ...] = (),
+                 successful_account_ids: tuple[str, ...] = (),
+                 failed_account_ids: tuple[str, ...] = (), coverage_version: int = 1):
         self.rows, self.synced_at = rows, synced_at
         self.accounts, self.failed_accounts = accounts or [], failed_accounts or []
         self.failure_reason = failure_reason
         self.available, self.complete = available, complete
         self.deep_rows = deep_rows or []
+        self.account_inventory = tuple(tuple(pair) for pair in account_inventory)
+        self.coverage_version = coverage_version
+        self.successful_account_ids = tuple(successful_account_ids)
+        self.failed_account_ids = tuple(failed_account_ids)
 
     def candidates(self, ref: SourceRef, *, now: datetime) -> SourceBatch:
         hints = ref.hints
         account = hints.get("account", "")
         scope = "the recent synced inbox messages" + (f" in {account}" if account else " across synced accounts")
         complete = self.complete
+        selected_id, account_problem = None, ""
         if account:
-            complete = any(a.casefold() == account.casefold() for a in self.accounts) and not any(
-                a.casefold() == account.casefold() for a in self.failed_accounts)
+            from service.tools.email_tools import resolve_mail_account
+            inventory = self.account_inventory or tuple(dict.fromkeys(
+                (str(row.get("account_id") or ""), str(row.get("account") or "")) for row in self.rows))
+            selected_id, account_problem = resolve_mail_account(inventory, account, accounts=self.accounts)
+            if self.coverage_version == 2:
+                complete = (complete and not account_problem and selected_id in self.successful_account_ids
+                            and selected_id not in self.failed_account_ids)
+            else:
+                complete = not account_problem and any(a.casefold() == account.casefold() for a in self.accounts) and not any(
+                    a.casefold() == account.casefold() for a in self.failed_accounts)
         batch = SourceBatch(available=self.available, complete=complete,
                             scope=scope, synced_at=self.synced_at,
                             reason=_MAIL_FAILURE_REASONS.get(
                                 self.failure_reason,
                                 "Mail’s recent-message cache is unavailable, stale or only partly synced. "
                                 "Nothing was sent. Refresh Mail and try again."))
+        if account_problem:
+            batch.reason = account_problem + " Nothing was sent."
         if not self.available or not complete:
             return batch
         def matches(row):
-            if account and str(row.get("account", "")).casefold() != account.casefold():
-                return False
+            if account:
+                if selected_id and str(row.get("account_id") or "") != selected_id:
+                    return False
+                if not selected_id and str(row.get("account", "")).casefold() != account.casefold():
+                    return False
             if hints.get("sender") and not _contains(str(row.get("sender", "")), hints["sender"]):
                 return False
             query = hints.get("topic", ref.query)
@@ -96,7 +117,14 @@ def current_mail_reader() -> MailReader:
     deep = mail.header_rows()
     deep += [{"ts": ts, "account": account, "sender": sender, "subject": subject}
              for ts, account, sender, subject, _read in mail._parse_history()]
-    return MailReader(mail._parse_raw(), deep_rows=deep, **meta)
+    snapshot = mail.raw_email_snapshot()
+    if snapshot is not None:
+        return MailReader([dict(row) for row in snapshot.rows], deep_rows=deep,
+            synced_at=snapshot.synced_at, accounts=list(snapshot.accounts), failed_accounts=list(snapshot.failed_accounts),
+            available=True, complete=snapshot.complete, failure_reason=snapshot.failure_reason,
+            coverage_version=snapshot.coverage_version, account_inventory=snapshot.account_inventory,
+            successful_account_ids=snapshot.successful_account_ids, failed_account_ids=snapshot.failed_account_ids)
+    return MailReader([], deep_rows=deep, **{**meta, "available": False, "complete": False})
 
 
 class CalendarReader:

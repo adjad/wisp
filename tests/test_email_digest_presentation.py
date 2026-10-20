@@ -757,6 +757,8 @@ def interactive_digest_isolation(monkeypatch, tmp_path):
     from service.assistant import brief as B
     from service.tools import cache_store
 
+    from service.publication_authority import Authority
+
     attempts = {name: 0 for name in ("body", "network", "native", "model")}
 
     def guard(name):
@@ -768,6 +770,17 @@ def interactive_digest_isolation(monkeypatch, tmp_path):
     monkeypatch.setattr(E, "_headers", "")
     monkeypatch.setattr(E, "_history", "")
     monkeypatch.setattr(E, "_raw_emails", "")
+    # cache_emails publishes both composed and Swift-owned bytes. Own its
+    # inventory and receipt cells so later fixtures cannot inherit a second
+    # synthetic account with the same display label. Persistence can also
+    # purge retained raw state; it must only see this fixture's empty source.
+    for name, value in {"_swift_headers": "", "_external_accounts": {},
+                        "_native_headers_at": 0., "_native_source": "",
+                        "_swift_raw": "", "_native_raw_at": 0., "_raw_emails_at": 0.,
+                        "_raw_mail_snapshot": None, "_raw_reference_scan": {}}.items():
+        monkeypatch.setattr(E, name, value)
+    monkeypatch.setattr(E, "_raw_availability", Authority("synthetic-digest-availability"))
+    monkeypatch.setattr(E, "_raw_publication", Authority("synthetic-digest-body"))
     monkeypatch.setattr(E, "_headers_at", 0)
     monkeypatch.setattr(E, "_headers_sync_generation", 0)
     monkeypatch.setattr(E, "_email_available", None)

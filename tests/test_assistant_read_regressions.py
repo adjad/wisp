@@ -206,9 +206,13 @@ async def test_personal_priorities_do_not_become_current_web_search():
 @pytest.mark.asyncio
 async def test_empty_messages_does_not_skip_requested_mail_bodies(monkeypatch):
     from service.tools import task_evidence as T, imessage_tools as I
-    header = {**row(), 'to': ['self@synthetic.invalid'], 'body': 'Please review the contract.'}
-    snapshot = SimpleNamespace(generation=1, rows=(header,), accounts=('Synthetic',),
-                               synced_at=100, raw_digest='synthetic')
+    from types import MappingProxyType
+    header = {**row(), 'to': 'self@synthetic.invalid', 'body': 'Please review the contract.'}
+    snapshot = E.RawEmailSnapshot(generation=1, rows=(MappingProxyType(header),),
+        accounts=('Synthetic',), failed_accounts=(), synced_at=100, raw_digest='synthetic',
+        complete=True, decode_complete=True, identity_complete=True, failure_reason='',
+        coverage_version=2, account_inventory=((header['account_id'], header['account']),),
+        successful_account_ids=(header['account_id'],), failed_account_ids=(), inventory_complete=True)
     mail = Mock(return_value=snapshot)
     messages = Mock(return_value={'state': 'synthetic bounded snapshot', 'records': [], 'coverage': {}})
     monkeypatch.setattr(E, 'raw_email_snapshot', mail)
