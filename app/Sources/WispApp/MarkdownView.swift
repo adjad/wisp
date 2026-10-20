@@ -40,7 +40,7 @@ struct MarkdownView: View {
     let text: String
     @Environment(\.markdownPalette) private var palette
 
-    private enum Kind { case code, table, list, paragraph }
+    enum Kind { case code, table, list, paragraph }
 
     // NOT Identifiable via UUID on purpose: during streaming, `text` grows on
     // every token and `blocks()` re-parses the WHOLE thing from scratch each
@@ -54,7 +54,7 @@ struct MarkdownView: View {
     // that lets SwiftUI diff a block's Text content in place like any normal
     // growing string, the same trick already used for table rows/list items
     // below (`id: \.offset`).
-    private struct Block {
+    struct Block {
         let kind: Kind
         let lang: String = ""
         var body: String = ""          // code / paragraph
@@ -188,7 +188,7 @@ struct MarkdownView: View {
         re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
     }
 
-    private func blocks() -> [Block] {
+    func blocks() -> [Block] {
         var out: [Block] = []
         let segs = text.components(separatedBy: "```")
         for (i, seg) in segs.enumerated() {
@@ -232,7 +232,12 @@ struct MarkdownView: View {
             para.removeAll()
         }
         func flushTable() {
-            guard tableLines.count >= 2 else { tableLines.removeAll(); return }
+            guard tableLines.count >= 2, matches(Self.tableSepRE, tableLines[1]) else {
+                para.append(contentsOf: tableLines)
+                tableLines.removeAll()
+                flushPara()
+                return
+            }
             let rows = tableLines.enumerated().compactMap { idx, line -> [String]? in
                 if idx == 1 && matches(Self.tableSepRE, line) { return nil }  // drop the |---|---| rule
                 var trimmed = line.trimmingCharacters(in: .whitespaces)
