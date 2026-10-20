@@ -116,15 +116,34 @@ _HISTORICAL_RECIPIENT = (
 _RETROSPECTIVE_COMMUNICATION = re.compile(
     r"\s*\**[ \t]*(?:"
     # Existing whole-question family, shared with every admission boundary.
-    r"(?:what\s+(?:did|has|had)|did)\s+(?:my\s+)?"
-    r"[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2}\s+"
-    r"(?:text(?:ed)?|e-?mail(?:ed)?|message[ds]?|send|sent|write|wrote|say|said|tell|told)"
-    r"(?:\s+(?:me|to\s+me|back|earlier|today|yesterday|last\s+night|this\s+morning|recently|lately))*"
-    r"|what\s+(?:(?:messages?|texts?|iMessages?|e-?mails?)\s+)?"
+    r"(?:what\s+(?:did|has|had)|did)\s+"
+    r"(?P<speaker>(?:my\s+)?[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2})\s+"
+    r"(?P<verb>text(?:ed)?|e-?mail(?:ed)?|message[ds]?|send|sent|write|wrote|say|said|tell|told)"
+    r"(?P<tail>(?:\s+(?:me|to\s+me|back|earlier|today|yesterday|last\s+night|this\s+morning|recently|lately))*)"
+    r"|(?P<first_person>what\s+(?:(?:messages?|texts?|iMessages?|e-?mails?)\s+)?"
     r"did\s+I\s+(?:send|write)"
     r"(?:\s+to\s+" + _HISTORICAL_RECIPIENT + r")?"
     r"(?:\s+(?:yesterday|today|last\s+(?:night|week|month|year)|this\s+morning|earlier|recently|lately))?"
-    r")[.!?\s]*\**[ \t]*", re.I)
+    r"))[.!?\s]*\**[ \t]*", re.I)
+
+
+def retrospective_communication_roles(text: str) -> tuple[bool, str] | None:
+    """Whole history shape, explicit private role and historical speaker.
+
+    A person's words alone prove neither a private source nor a public lookup.
+    Cached contact/relation evidence belongs to the router, not this grammar.
+    """
+    match = _RETROSPECTIVE_COMMUNICATION.fullmatch(text or "")
+    if match is None:
+        return None
+    if match.group('first_person') is not None:
+        return True, 'I'
+    speaker = match.group('speaker')
+    private = (speaker.casefold() in {'i', 'we', 'me', 'us'}
+               or speaker.casefold().startswith(('my ', 'our '))
+               or re.fullmatch(r'text(?:ed)?|e-?mail(?:ed)?|message[ds]?', match.group('verb'), re.I) is not None
+               or re.search(r'\bme\b', match.group('tail'), re.I) is not None)
+    return private, speaker
 
 
 def is_retrospective_communication_question(text: str) -> bool:
@@ -135,7 +154,7 @@ def is_retrospective_communication_question(text: str) -> bool:
     body, unsupported qualifier or independent clause does not match and
     retains its existing owner and source policy.
     """
-    return _RETROSPECTIVE_COMMUNICATION.fullmatch(text or "") is not None
+    return retrospective_communication_roles(text) is not None
 
 
 _CLAUSE_COMMAND = (r"(?:(?:please|and|then|also|but)\s+)*(?:(?:can|could|would|will)\s+you\s+)?"

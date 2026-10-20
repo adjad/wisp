@@ -18,6 +18,7 @@ from service.authored_message import authored_message_intent
 from service.utterance_shape import (
     is_mention, is_prohibition, mask_quoted, explanation_remainder,
     quoted_spans, explanation_terms, is_retrospective_communication_question,
+    retrospective_communication_roles,
 )
 from service.config import (
     models_config,
@@ -1831,9 +1832,10 @@ def _said_by_known_person(text: str) -> bool:
     that settles it; an unknown name keeps the web reading.
     """
     m = _PERSON_SAID_RE.search(text)
-    if not m:
+    history = retrospective_communication_roles(text) if m is None else None
+    if m is None and history is None:
         return False
-    who = m.group("who").casefold().strip()
+    who = (m.group("who") if m is not None else history[1]).casefold().strip()
     if who.startswith("my ") or who in {
             'mom','mother','dad','father','sister','brother','wife','husband','partner','boss'}:
         return True
@@ -6542,6 +6544,15 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
 
 
 
+_HISTORY_READ_TOOLS = frozenset({'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'})
+
+
+def _inherited_history_reads(text: str, subset) -> list[str]:
+    """Keep an existing finite person-said read owner, never a generic menu."""
+    names = list(subset or ())
+    return names if names and set(names) <= _HISTORY_READ_TOOLS and _PERSON_SAID_RE.search(text) else []
+
+
 def _history_read_contract(text: str) -> list[str] | None:
     """Subtract effects from an existing scoped menu for a whole history question.
 
@@ -6549,12 +6560,12 @@ def _history_read_contract(text: str) -> list[str] | None:
     scoped menu closes all capabilities. Registry categories and aliases do
     not establish source authority.
     """
-    if not is_retrospective_communication_question(text):
+    roles = retrospective_communication_roles(text)
+    if roles is None or not (roles[0] or _said_by_known_person(text)):
         return None
     scoped = _domain_subset(text)
     existing = scoped.tool_subset if scoped is not None else ()
-    reads = {'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'}
-    return [name for name in (existing or ()) if name in reads]
+    return [name for name in (existing or ()) if name in _HISTORY_READ_TOOLS]
 
 
 def _explanation_clause_contract(text: str) -> tuple[list[str], dict[str, dict]] | None:
@@ -6604,6 +6615,7 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
 
     if (history_reads := _history_read_contract(text)) is not None:
         return frozenset(set(REGISTRY) - set(history_reads)), {}
+    unowned_history = is_retrospective_communication_question(text)
 
     if (explanation := _explanation_clause_contract(text)) is not None:
         allowed, bindings = explanation
@@ -6666,6 +6678,20 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
         if (web.opted_out or web.explicit or web.current
                 or re.search(r"\b(?:news|headlines?)\b", t, re.I)):
             forbidden.add("run_shell")
+    if unowned_history:
+        # Shape alone cannot grant private sources. Preserve only a public
+        # source the existing classifier independently proves, never a new
+        # fallback or a model-supplied query from private conversation history.
+        if web.allowed:
+            allowed = {'web_search'}
+        else:
+            # Preserve the established channel-less read owner only after
+            # the existing public classifier declined it. Its exact finite
+            # scoped read menu is evidence; a generic menu is not.
+            scoped = _domain_subset(text)
+            allowed = set(_inherited_history_reads(text, scoped.tool_subset if scoped else ()))
+        return frozenset((set(REGISTRY) - allowed) | forbidden), (
+            {'web_search': {'query': web.query}} if 'web_search' in allowed else {})
     if _calendar_is_excluded(t):
         forbidden.update(_CALENDAR_ROUTE_TOOLS)
     if _reminder_is_excluded(t) or "search_reminders" in forbidden:
@@ -7882,6 +7908,21 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
     aggregate or opaque tool cannot be an escape around the exclusion.
     """
     from service.knowledge_intent import knowledge_envelope
+    unowned_history = (is_retrospective_communication_question(text)
+                       and _history_read_contract(text) is None)
+    if unowned_history:
+        # The inherited public owner already classified and bound its query.
+        # Subtract everything else without classifying twice or constructing
+        # a positive fallback from an unscoped/generic decision.
+        from service.tools.registry import REGISTRY
+        public = (decision.tool_argument_bindings.get('web_search', {}).get('query')
+                  and 'web_search' in (decision.tool_subset or ())
+                  and 'web_search' not in decision.forbidden_tools)
+        allowed = ({'web_search'} if public else
+                   set(_inherited_history_reads(text, decision.tool_subset)))
+        forbidden, bindings = frozenset(set(REGISTRY) - allowed), {}
+    else:
+        forbidden = bindings = None
     # The shared grammar already confines these requests to knowledge tools
     # (or no tools for clarification). Their titles/bodies are literal data,
     # including unquoted source-policy words, just as at the main entry point.
@@ -7909,14 +7950,15 @@ def _guard_explicit_sources(decision: RouteDecision, text: str) -> RouteDecision
         return clarification
     # Detect the complete source-policy envelope without reclassifying ordinary
     # web requests. Keep these triggers aligned with routing_guard_contract.
-    if not (explanation_remainder(text) == '' or excluded or _calendar_is_excluded(policy_text) or _reminder_is_excluded(policy_text)
+    if not (unowned_history or explanation_remainder(text) == '' or excluded or _calendar_is_excluded(policy_text) or _reminder_is_excluded(policy_text)
             or _notes_todo_destination_is_excluded(policy_text)
             or re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b",
                          policy_text, re.I)):
         return decision
-    forbidden, bindings = routing_guard_contract(text)
+    if not unowned_history:
+        forbidden, bindings = routing_guard_contract(text)
     forbidden = set(forbidden)
-    if (decision.isolated_public_query and not _classify_web_request(text).opted_out
+    if (not unowned_history and decision.isolated_public_query and not _classify_web_request(text).opted_out
             and decision.tool_argument_bindings.get('web_search') == {'query':decision.isolated_public_query}
             and ('web_search', {'query':decision.isolated_public_query}) in decision.direct_calls):
         forbidden.discard('web_search')

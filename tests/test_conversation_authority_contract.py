@@ -1317,3 +1317,206 @@ def test_actual_relative_history_rejects_outbound_alias_and_opaque_attempts(
     assert not pending_rows(state)
     assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
     assert not any(e['type'] == 'tool_call' and e.get('name') != 'get_tool_schemas' for e in events)
+
+
+@pytest.mark.parametrize('prompt,private,speaker', [
+    ('what did I say today', True, 'I'),
+    ('What messages did I send last week?', True, 'I'),
+    ('What did Inez say today?', False, 'Inez'),
+    ('what did Trump say today', False, 'Trump'),
+    ('What did Alex text yesterday?', True, 'Alex'),
+    ('What did Alex email me yesterday?', True, 'Alex'),
+    ('What did Alex say to me yesterday?', True, 'Alex'),
+    ('What did my doctor say yesterday?', True, 'my doctor'),
+])
+def test_historical_shape_exposes_roles_without_inventing_private_source(prompt, private, speaker):
+    assert U.retrospective_communication_roles(prompt) == (private, speaker)
+    assert U.is_retrospective_communication_question(prompt)
+
+
+@pytest.mark.parametrize('prompt', ['what did Trump say today', '*What did Avery Cole say yesterday?'])
+def test_unowned_history_preserves_inherited_positive_owner_and_classifier_count(
+        pending_entrypoint, monkeypatch, tmp_path, prompt):
+    import asyncio
+    from service.router import router
+    from service.tools import imessage_tools
+    monkeypatch.setattr(imessage_tools, '_contacts', {'+15550001': 'Trisha Jain', '+15550002': 'Dan Smith'})
+    original = router._classify_web_request
+    calls = []
+    def classify(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(router, '_classify_web_request', classify)
+    with monkeypatch.context() as inherited:
+        # Component comparison isolates the new history overlay. The full
+        # inherited route body/classifier stays unchanged and never executes.
+        inherited.setattr(router, '_history_read_contract', lambda text: None)
+        inherited.setattr(router, 'is_retrospective_communication_question', lambda text: False)
+        baseline = asyncio.run(router.route(prompt))
+    baseline_count = len(calls)
+    calls.clear()
+    current = asyncio.run(router.route(prompt))
+    assert len(calls) == baseline_count
+    assert current.tool_subset == baseline.tool_subset
+    if prompt == 'what did Trump say today':
+        assert current.tool_subset == ['web_search']
+    for field in ('direct_calls', 'tool_argument_bindings', 'required_tool_groups',
+                  'force_first_tool', 'expect_tool_first', 'resolved_request',
+                  'isolated_public_query', 'verified_results_only', 'strict_read_limits'):
+        assert getattr(current, field) == getattr(baseline, field), field
+    assert {'send_message', 'send_email'} <= current.forbidden_tools
+    if 'web_search' in current.tool_subset:
+        assert {'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'} <= current.forbidden_tools
+    (tmp_path / 'public-history-owner-component.json').write_text(json.dumps({
+        'prompt': prompt, 'baseline': baseline.as_dict(), 'current': current.as_dict(),
+        'baseline_classifier_count': baseline_count, 'current_classifier_count': len(calls),
+        'evidence': 'component inherited-owner comparison; no HTTP or capability execution'}, indent=2, default=str))
+
+
+@pytest.mark.parametrize('prompt', [
+    'what did trishe say', 'what did my mom say yesterday',
+    'what did trishe say yesterday', 'what did Dan say today',
+    'Did Dan say today?', 'What did Trump say to me today?',
+    'What messages did I send last week?',
+])
+def test_private_or_inherited_untimed_history_keeps_only_existing_private_reads(
+        pending_entrypoint, monkeypatch, prompt):
+    import asyncio
+    from service.router import router
+    from service.tools import imessage_tools
+    from service.tools.registry import REGISTRY
+    monkeypatch.setattr(imessage_tools, '_contacts', {'+15550001': 'Trisha Jain', '+15550002': 'Dan Smith'})
+    decision = asyncio.run(router.route(prompt))
+    expected = {'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'}
+    # A known contact cannot invent a missing source owner: e.g. the existing
+    # scoped menu for "Did Dan say today?" is absent, so it clarifies closed.
+    assert set(decision.tool_subset or ()) <= expected
+    assert 'web_search' in decision.forbidden_tools
+    forbidden, bindings = router.routing_guard_contract(prompt)
+    assert set(REGISTRY) - set(forbidden) <= expected and not bindings
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('name,args', [
+    ('send_message', {'to': '+15555550123', 'text': 'Unrequested synthetic action'}),
+    ('send_email', {'to': 'fictional@example.invalid', 'subject': 'fictional', 'body': 'Unrequested synthetic action'}),
+    ('view_messages', {}), ('view_emails', {}),
+    ('fictional_unknown_read_alias', {}), ('run_shell', {'command': 'fictional'}),
+])
+def test_actual_unknown_public_historical_speaker_cannot_acquire_private_or_effect_capability(
+        pending_entrypoint, monkeypatch, tmp_path, mode, name, args):
+    from service.tools import imessage_tools
+    from service.tools.registry import REGISTRY
+    state = pending_entrypoint
+    monkeypatch.setattr(imessage_tools, '_contacts', {'+15550001': 'Trisha Jain', '+15550002': 'Dan Smith'})
+    monkeypatch.setitem(REGISTRY, 'fictional_unknown_read_alias', replace(
+        REGISTRY['view_messages'], name='fictional_unknown_read_alias'))
+    prompt = 'what did Trump say today'
+    events = actual_public_history_attempt(state, monkeypatch, mode, prompt, name, args)
+    (tmp_path / 'public-history-negative-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'attempt': {'name': name, 'args': args},
+        'protocol': 'public web compatibility tool calls (including WISP_PLANNER=1); model-led discovery when selected',
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests,
+        'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert all(n == 'web_search' and a == {'query': prompt} for n, a in state.executed)
+    assert not pending_rows(state) and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('private_context', [False, True])
+def test_actual_unknown_public_history_web_uses_existing_current_query_not_private_history(
+        pending_entrypoint, monkeypatch, tmp_path, mode, private_context):
+    from service.tools import imessage_tools
+    state = pending_entrypoint
+    monkeypatch.setattr(imessage_tools, '_contacts', {'+15550001': 'Trisha Jain', '+15550002': 'Dan Smith'})
+    sid = state.sessions.create_session()
+    if private_context:
+        state.sessions.add_turn(sid, 'user', 'Fictional private history: secret-project-abc.')
+        state.sessions.add_turn(sid, 'assistant', 'Fictional private history acknowledged.')
+    prompt = 'what did Trump say today'
+    events = actual_public_history_attempt(state, monkeypatch, mode, prompt, 'web_search',
+                            {'query': 'Fictional private history secret-project-abc' if private_context else prompt}, sid=sid)
+    (tmp_path / 'public-history-web-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'private_context': private_context,
+        'protocol': 'public web compatibility tool calls (including WISP_PLANNER=1); model-led discovery when selected',
+        'events': events, 'raw_sse': state.raw_sse, 'requests': state.requests,
+        'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert all(n == 'web_search' and args == {'query': prompt} for n, args in state.executed)
+    # Optional discovery remains subject to the inherited private-context
+    # egress guard. No attempted/denied read is claimed as an executed one.
+    if mode == 'planner':
+        # The inherited planner menu omits public_web for this wording. Its
+        # empty safe intersection denies the attempt; do not fabricate a
+        # successful read or expand menu ownership to make a control pass.
+        assert not state.executed
+        assert all(tool['function']['name'] != 'web_search'
+                   for request in state.requests for tool in request.get('tools') or [])
+        assert any(e['type'] == 'tool_result' and 'not available' in e.get('result', '') for e in events)
+    elif not private_context:
+        assert state.executed
+    assert not pending_rows(state) and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt,name', [
+    ('what did trishe say', 'view_messages'),
+    ('what did Dan say today', 'view_messages'),
+    ('what did trishe say yesterday', 'view_messages'),
+    ('What did Trump say to me today?', 'view_messages'),
+])
+def test_actual_untimed_known_and_explicit_private_history_preserves_read_owner(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, name):
+    from service.tools import imessage_tools
+    state = pending_entrypoint
+    monkeypatch.setattr(imessage_tools, '_contacts', {'+15550001': 'Trisha Jain', '+15550002': 'Dan Smith'})
+    events = actual_attempt(state, monkeypatch, mode, prompt, name, {})
+    (tmp_path / 'private-history-read-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'events': events, 'raw_sse': state.raw_sse,
+        'requests': state.requests, 'plans': pending_rows(state), 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native}, indent=2, default=str))
+    assert state.executed and all(n == name for n, _ in state.executed)
+    assert not pending_rows(state) and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('prompt,contacts,expected', [
+    ('what did trishe say', {}, {'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'}),
+    ('what did trishe say yesterday', {'+15550001': 'Trisha Jain'},
+     {'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'}),
+    ('what did Dan say today', {'+15550002': 'Dan Smith'},
+     {'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'}),
+    ('what did Trump say today', {}, {'web_search'}),
+    ('what did Trump say today', {'+15550001': 'Trisha Jain', '+15550002': 'Dan Smith'}, {'web_search'}),
+])
+def test_existing_historical_source_owner_uses_contact_and_public_evidence_not_name_special_case(
+        pending_entrypoint, monkeypatch, prompt, contacts, expected):
+    import asyncio
+    from service.router import router
+    from service.tools import imessage_tools
+    from service.tools.registry import REGISTRY
+    monkeypatch.setattr(imessage_tools, '_contacts', contacts)
+    decision = asyncio.run(router.route(prompt))
+    assert set(decision.tool_subset) == expected
+    forbidden, bindings = router.routing_guard_contract(prompt)
+    assert set(REGISTRY) - set(forbidden) == expected
+    assert bindings == ({'web_search': {'query': prompt}} if 'web_search' in expected else {})
+
+
+def actual_public_history_attempt(state, monkeypatch, mode, prompt, name, args, *, sid=None):
+    """Public-web compatibility uses tool events even with planner enabled.
+
+    This is an actual HTTP planner-menu/compatibility-loop observation, not
+    evidence that the structured planner engine executed the public read.
+    Other modes keep the ordinary schema-discovery/agent protocol.
+    """
+    if mode != 'planner':
+        return actual_attempt(state, monkeypatch, mode, prompt, name, args, sid=sid)
+    from service import main
+    set_mode(monkeypatch, mode)
+    script = [attempt(name, args), {'content': 'Synthetic public answer.'}]
+    monkeypatch.setattr(main, 'OMLXClient', lambda **kwargs: state.Client(script))
+    return state.run(prompt, script, sid=sid, approve=False, transport='asgi')
