@@ -68,7 +68,7 @@ struct CheckInEvent: Identifiable, Equatable {
     }
 
     /// A Calendar block of the Day timeline as the card sees an event
-    /// (TodayBlock.calendarEvent): the same fields, from the same service rule.
+    /// (TodayBlock.calendarEvent below): the same fields, from the same service rule.
     init(id: String, title: String, whenTs: Double?, endTs: Double?, allDay: Bool, sourceId: String?,
          inviteeCount: Int?, organizerIsUser: Bool?, calendarWritable: Bool?, cancelBlocked: String, moveBlocked: String) {
         self.id = id
@@ -678,6 +678,19 @@ struct CheckInSection: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+extension TodayBlock {
+    /// The block as the check-in card sees an event, for the timeline's ⋯ menu;
+    /// nil unless it is a Calendar block the service described (cancel_blocked
+    /// present), so an older service never reads as "allowed".
+    var calendarEvent: CheckInEvent? {
+        guard kind == "calendar", let cancel_blocked else { return nil }
+        return CheckInEvent(id: id, title: title, whenTs: start, endTs: end, allDay: all_day ?? false,
+                            sourceId: source_id, inviteeCount: invitee_count, organizerIsUser: organizer_is_user,
+                            calendarWritable: calendar_writable, cancelBlocked: cancel_blocked,
+                            moveBlocked: move_blocked ?? cancel_blocked)
     }
 }
 

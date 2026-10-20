@@ -61,17 +61,8 @@ struct TodayBlock: Decodable, Identifiable {
     let calendar_writable: Bool?
     let cancel_blocked: String?
     let move_blocked: String?
-
-    /// The block as the check-in card sees an event, for the timeline's ⋯ menu;
-    /// nil unless it is a Calendar block the service described (cancel_blocked
-    /// present), so an older service never reads as "allowed".
-    var calendarEvent: CheckInEvent? {
-        guard kind == "calendar", let cancel_blocked else { return nil }
-        return CheckInEvent(id: id, title: title, whenTs: start, endTs: end, allDay: all_day ?? false,
-                            sourceId: source_id, inviteeCount: invitee_count, organizerIsUser: organizer_is_user,
-                            calendarWritable: calendar_writable, cancelBlocked: cancel_blocked,
-                            moveBlocked: move_blocked ?? cancel_blocked)
-    }
+    // TodayBlock.calendarEvent (CheckInView.swift) turns these into a CheckInEvent;
+    // it lives there because scripts/test_today_contract.sh compiles this file alone.
 
     var evidenceLabel: String {
         switch kind {
