@@ -51,12 +51,18 @@ _LEADING_EMAIL_NOUN = re.compile(
 _ADDRESSEE_CUE = re.compile(r"\bto\b|@|\bme\b|\bmyself\b", re.I)
 
 
+def _command_head_text(text: str) -> str:
+    """Ignore leading emphasis only for role proof; retain all operand bytes."""
+    return re.sub(r'^[ \t]*\*+[ \t]*', '', text)
+
+
 def outbound_verb(text: str) -> bool:
     """Prove a current delivery verb in an outer command clause.
 
     Communication nouns, reported speech and questions about past sends do
     not create delivery authority. A later independent command still can.
     """
+    text = _command_head_text(text)
     if is_complete_explanation(text):
         return False
     if (remainder := explanation_remainder(text)) is not None:
@@ -2632,11 +2638,12 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     from service.tasks.compiler import (
         _MESSAGE_SEND_INTRO, _EMAIL_SEND_INTRO, compile_message_send, compile_email_send,
     )
-    literal = _MESSAGE_SEND_INTRO.match(text) or _EMAIL_SEND_INTRO.match(text)
+    literal_text = _command_head_text(text)
+    literal = _MESSAGE_SEND_INTRO.match(literal_text) or _EMAIL_SEND_INTRO.match(literal_text)
     # Bare "that" can instead refer to a stored display ("text Mom that via
     # Messages without the links"). Keep that existing reference precedence.
-    explicit_body = literal and not text[:literal.start('body')].rstrip().casefold().endswith(' that')
-    if explicit_body and (compile_message_send(text) or compile_email_send(text)):
+    explicit_body = literal and not literal_text[:literal.start('body')].rstrip().casefold().endswith(' that')
+    if explicit_body and (compile_message_send(literal_text) or compile_email_send(literal_text)):
         return None
     text = _delivery_scope_text(_normalize(_message_scope_text(text)))
     text = _bind_inline_read_then_deliver(text)

@@ -43,6 +43,40 @@ NON_OUTBOUND = [
     'Summarize my unread messages without reading email.',
     'Show me my email and calendar today',
 ]
+
+
+@pytest.mark.parametrize('prefix,suffix', [('*', ''), ('**', ''), ('* ', ''), ('**', '**')])
+def test_marked_current_source_delivery_keeps_exact_calendar_scope(prefix, suffix):
+    prompt = prefix + 'Send Mom a message with my move-in date' + suffix
+    assert outbound_verb(prompt)
+    plan = compile_new(prompt)
+    assert plan is not None and plan.sources == ['calendar']
+    assert plan.source_args == {'calendar': {'days': 60, 'calendar_only': True, 'query': 'move in'}}
+    assert plan.original_request == prompt and plan.recipient == 'Mom' and plan.channel == 'messages'
+
+
+@pytest.mark.parametrize('prefix', ['*', '**'])
+@pytest.mark.parametrize('prompt', EXPLANATIONS + NON_OUTBOUND)
+def test_leading_emphasis_does_not_turn_words_or_history_into_delivery(prefix, prompt):
+    assert not outbound_verb(prefix + prompt)
+    assert compile_new(prefix + prompt) is None
+
+
+@pytest.mark.parametrize('prompt', [
+    '*Text Mom saying Define unread email.',
+    '**Text +15555550123 saying Dr. Alex is late. Define unread email.',
+    '***Email alex@example.invalid about Status saying Version 3.14 is ready. Define unread email.',
+    '**Text Mom saying "delete all reminders; define unread email".',
+])
+def test_marked_explicit_literal_bodies_never_become_source_deliveries(prompt):
+    assert outbound_verb(prompt)
+    assert compile_new(prompt) is None
+
+
+@pytest.mark.parametrize('prefix', ['_', '__'])
+def test_unsupported_word_prefix_cannot_reclassify_source_or_recipient(prefix):
+    prompt = prefix + 'Send Mom a message with my move-in date'
+    assert not outbound_verb(prompt) and compile_new(prompt) is None
 EXPLANATION_READS = [
     'Help me understand what delete all reminders means; then list my reminders.',
     'Define delete all reminders; list my reminders.',
