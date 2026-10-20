@@ -108,6 +108,23 @@ def is_complete_explanation(text: str) -> bool:
     return explanation_terms(text) is not None
 
 
+_RETROSPECTIVE_COMMUNICATION = re.compile(
+    r"[ \t]*\**[ \t]*what\s+(?:(?:messages?|texts?|iMessages?|e-?mails?)\s+)?"
+    r"did\s+I\s+(?:send|write)"
+    r"(?:\s+(?:yesterday|today|last\s+night|this\s+morning|earlier|recently|lately))?"
+    r"[?! .]*\**[ \t]*", re.I)
+
+
+def is_retrospective_communication_question(text: str) -> bool:
+    """A whole past-send question, never current delivery or authored data.
+
+    This finite grammar consumes every byte, including optional leading
+    emphasis. A quoted body, recipient, qualifier or independent clause does
+    not match and retains its existing owner and source policy.
+    """
+    return _RETROSPECTIVE_COMMUNICATION.fullmatch(text or "") is not None
+
+
 _CLAUSE_COMMAND = (r"(?:(?:please|and|then|also|but)\s+)*(?:(?:can|could|would|will)\s+you\s+)?"
                    r"(?:explain|define|help|what|show|list|check|read|search|find|send|"
                    r"text|message|e-?mail|share|forward|draft|compose|write|delete|remove|"

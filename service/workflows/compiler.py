@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from service.utterance_shape import deliberate, mask_quoted, is_complete_explanation, explanation_remainder
+from service.utterance_shape import deliberate, mask_quoted, is_complete_explanation, explanation_remainder, is_retrospective_communication_question
 from service.authored_message import authored_message_intent
 from service.config import role_to_model
 from service.reminder_intent import REMINDER_CREATE_RE
@@ -63,7 +63,7 @@ def outbound_verb(text: str) -> bool:
     not create delivery authority. A later independent command still can.
     """
     text = _command_head_text(text)
-    if is_complete_explanation(text):
+    if is_complete_explanation(text) or is_retrospective_communication_question(text):
         return False
     if (remainder := explanation_remainder(text)) is not None:
         return outbound_verb(remainder) if remainder else False

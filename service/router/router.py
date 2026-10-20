@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, replace
 from service.authored_message import authored_message_intent
 from service.utterance_shape import (
     is_mention, is_prohibition, mask_quoted, explanation_remainder,
-    quoted_spans, explanation_terms,
+    quoted_spans, explanation_terms, is_retrospective_communication_question,
 )
 from service.config import (
     models_config,
@@ -6542,6 +6542,21 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
 
 
 
+def _history_read_contract(text: str) -> list[str] | None:
+    """Subtract effects from an existing scoped menu for a whole history question.
+
+    No recursive routing, classifier or positive fallback: an unrecognized
+    scoped menu closes all capabilities. Registry categories and aliases do
+    not establish source authority.
+    """
+    if not is_retrospective_communication_question(text):
+        return None
+    scoped = _domain_subset(text)
+    existing = scoped.tool_subset if scoped is not None else ()
+    reads = {'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'}
+    return [name for name in (existing or ()) if name in reads]
+
+
 def _explanation_clause_contract(text: str) -> tuple[list[str], dict[str, dict]] | None:
     """Capabilities from independently authored clauses, never explained words.
 
@@ -6586,6 +6601,9 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
     """
     from service.tools.registry import REGISTRY
     from service.router.model_led import family_for, registry_specs
+
+    if (history_reads := _history_read_contract(text)) is not None:
+        return frozenset(set(REGISTRY) - set(history_reads)), {}
 
     if (explanation := _explanation_clause_contract(text)) is not None:
         allowed, bindings = explanation
@@ -7977,6 +7995,15 @@ def _named_time_claim(text: str) -> RouteDecision | None:
 
 def _assistant_read_claim(text: str) -> RouteDecision | None:
     """Complete personal questions precede generic chat and current-web rules."""
+    if (history_reads := _history_read_contract(text)) is not None:
+        from service.tools.registry import REGISTRY
+        decision = _mk('agent' if history_reads else 'general', tools=bool(history_reads),
+                       reason='whole retrospective communication question; existing reads only',
+                       expect_tool_first=False)
+        decision.tool_subset = history_reads
+        decision.forbidden_tools = frozenset(set(REGISTRY) - set(history_reads))
+        decision.resolved_request = text
+        return decision
     if (explanation := _explanation_clause_contract(text)) is not None:
         from service.tools.registry import REGISTRY
         allowed, bindings = explanation

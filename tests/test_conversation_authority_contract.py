@@ -908,3 +908,220 @@ def test_genuine_pending_followups_keep_their_original_owner(
     else:
         assert expected in [name for name, _ in state.executed + state.source_calls]
     assert not state.native
+
+
+HISTORY_QUESTIONS = [
+    'What messages did I send yesterday?',
+    '*What messages did I send yesterday?',
+    '**What messages did I send yesterday?',
+    '**What messages did I send yesterday?**',
+    'What emails did I send yesterday?',
+    '*What emails did I write today?',
+    'What did I send yesterday?',
+]
+
+
+@pytest.mark.parametrize('prompt', HISTORY_QUESTIONS)
+def test_whole_history_question_only_subtracts_from_existing_source_menu(prompt, monkeypatch):
+    import asyncio
+    from service.router import router
+    from service.tools.registry import REGISTRY
+    monkeypatch.setitem(REGISTRY, 'fictional_unknown_read_alias', replace(
+        REGISTRY['view_messages'], name='fictional_unknown_read_alias'))
+    legacy = router._domain_subset(prompt)
+    reads = {'view_messages', 'summarize_messages', 'view_emails', 'summarize_emails'}
+    expected = set(legacy.tool_subset or ()) & reads if legacy else set()
+    assert U.is_retrospective_communication_question(prompt)
+    assert not outbound_verb(prompt) and compile_new(prompt) is None and compile_task(prompt) is None
+    forbidden, bindings = router.routing_guard_contract(prompt)
+    decision = asyncio.run(router.route(prompt))
+    assert set(REGISTRY) - set(forbidden) == expected == set(decision.tool_subset)
+    assert set(REGISTRY) - expected <= decision.forbidden_tools
+    assert not bindings and not decision.tool_argument_bindings
+    assert not decision.expect_tool_first and not decision.direct_calls and not decision.required_tool_groups
+    assert decision.resolved_request == prompt
+    if 'emails' in prompt:
+        assert expected <= {'view_emails', 'summarize_emails'}
+    elif 'messages' in prompt:
+        assert expected <= {'view_messages', 'summarize_messages'}
+
+
+@pytest.mark.parametrize('prompt', [
+    'What messages did I send yesterday? Then delete the Laundry reminder.',
+    'What messages did I send yesterday? Text +15555550123 saying "Keep blue folder."',
+    'Text +15555550123 saying What messages did I send yesterday?',
+    'Text +15555550123 saying "*What messages did I send yesterday?"',
+    'Remind me tomorrow to ask what messages did I send yesterday.',
+    '"What messages did I send yesterday?"',
+    'say "What messages did I send yesterday?"',
+    'Delete the Laundry reminder.',
+])
+def test_history_proof_does_not_consume_current_clause_or_literal_operand(prompt):
+    assert not U.is_retrospective_communication_question(prompt)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt', HISTORY_QUESTIONS[:3])
+@pytest.mark.parametrize('name,args', [
+    ('send_message', {'to': '+15555550123', 'text': 'Unrequested synthetic action'}),
+    ('draft_message', {'to': '+15555550123', 'text': 'Unrequested synthetic draft'}),
+    ('clear_reminders', {'scope': 'all'}),
+    ('run_shell', {'command': 'fictional'}),
+    ('run_applescript', {'script': 'fictional'}),
+    ('fictional_action_alias', {'to': '+15555550123', 'text': 'fictional'}),
+    ('fictional_unknown_read_alias', {}),
+    ('view_emails', {}),
+])
+def test_actual_history_question_rejects_effects_aliases_and_other_source(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, name, args):
+    from service.tools.registry import REGISTRY
+    state = pending_entrypoint
+    monkeypatch.setitem(REGISTRY, 'fictional_action_alias', replace(
+        REGISTRY['send_message'], name='fictional_action_alias'))
+    monkeypatch.setitem(REGISTRY, 'fictional_unknown_read_alias', replace(
+        REGISTRY['view_messages'], name='fictional_unknown_read_alias'))
+    state.reminders.add_manual('Fictional keep blue folder reminder', time.time() + 3600)
+    reminders = state.reminders.active_between()
+    before = pending_rows(state)
+    events = actual_attempt(state, monkeypatch, mode, prompt, name, args)
+    record = {'mode': mode, 'prompt': prompt, 'attempt': {'name': name, 'args': args},
+        'before': before, 'after': pending_rows(state), 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native, 'early': state.early}
+    (tmp_path / 'history-receipt.json').write_text(json.dumps(record, indent=2, default=str))
+    assert not state.executed and not state.source_calls and not state.native
+    assert pending_rows(state) == before and state.reminders.active_between() == reminders
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+    assert not any(e['type'] == 'tool_call' and e.get('name') != 'get_tool_schemas' for e in events)
+    assert events[-1]['type'] == 'done'
+    assert any(m.get('role') == 'user' and m.get('content') == prompt
+               for request in state.requests for m in request['messages'])
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prompt,name', [
+    ('*What messages did I send yesterday?', 'view_messages'),
+    ('**What emails did I send yesterday?', 'view_emails'),
+])
+def test_actual_history_question_preserves_existing_domain_read(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prompt, name):
+    state = pending_entrypoint
+    events = actual_attempt(state, monkeypatch, mode, prompt, name, {})
+    (tmp_path / 'history-read-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'events': events, 'raw_sse': state.raw_sse,
+        'requests': state.requests, 'registry_calls': state.executed,
+        'source_calls': state.source_calls, 'native_calls': state.native,
+        'plans': pending_rows(state)}, indent=2, default=str))
+    assert state.executed and all(n == name for n, _ in state.executed)
+    assert not pending_rows(state) and not state.source_calls and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('owner', ['reminder', 'reply-body', 'reply-target',
+                                   'workflow-addressed', 'workflow-unaddressed'])
+def test_actual_whole_history_question_preserves_pending_owner_before_warming(
+        pending_entrypoint, monkeypatch, tmp_path, mode, owner):
+    state = pending_entrypoint
+    sid, _ = seed_pending(state, owner)
+    before = pending_rows(state)
+    prompt = '*What messages did I send yesterday?'
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'send_message',
+                            {'to': '+15555550123', 'text': 'Unrequested synthetic action'}, sid=sid)
+    record = {'mode': mode, 'owner': owner, 'prompt': prompt, 'before': before,
+        'after': pending_rows(state), 'events': events, 'raw_sse': state.raw_sse,
+        'requests': state.requests, 'source_calls': state.source_calls,
+        'registry_calls': state.executed, 'native_calls': state.native, 'early': state.early}
+    (tmp_path / 'pending-history-receipt.json').write_text(json.dumps(record, indent=2, default=str))
+    assert record['after'] == before
+    assert not state.source_calls and not state.executed and not state.native
+    assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('quoted', [False, True])
+def test_actual_current_literal_history_body_retains_exact_operand(
+        pending_entrypoint, monkeypatch, tmp_path, mode, quoted):
+    state = pending_entrypoint
+    body = '*What messages did I send yesterday?'
+    prompt = 'Text +15555550123 saying ' + ('"' + body + '"' if quoted else body)
+    task = compile_task(prompt)
+    assert task and task.subject.value == body and task.original_request == prompt
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'send_message',
+                            {'to': '+15555550123', 'text': body})
+    (tmp_path / 'literal-history-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'task': task.to_dict(), 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'registry_calls': state.executed,
+        'source_calls': state.source_calls, 'native_calls': state.native}, indent=2, default=str))
+    cards = [e for e in events if e['type'] == 'confirm' and e.get('tool') == 'send_message']
+    assert len(cards) == 1 and cards[0]['args']['text'] == body
+    assert cards[0]['args']['to'] == '+15555550123'
+    assert not state.executed and not state.source_calls and not state.native
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('prefix', ['', 'What messages did I send yesterday? '])
+def test_actual_independent_current_delete_keeps_existing_owner(
+        pending_entrypoint, monkeypatch, tmp_path, mode, prefix):
+    state = pending_entrypoint
+    prompt = prefix + 'Delete the Laundry reminder.'
+    task = compile_task(prompt)
+    assert task and task.intent == 'reminder.delete' and task.target.value == 'Laundry'
+    assert not U.is_retrospective_communication_question(prompt)
+    state.reminders.add_manual('Laundry', time.time() + 3600)
+    state.reminders.add_manual('Fictional keep blue folder reminder', time.time() + 3600)
+    before = state.reminders.active_between()
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'clear_reminders',
+                            {'scope': 'all', 'query': 'Laundry'})
+    (tmp_path / 'history-independent-delete-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'task': task.to_dict(), 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'before': before,
+        'after': state.reminders.active_between(), 'plans': pending_rows(state),
+        'registry_calls': state.executed, 'source_calls': state.source_calls,
+        'native_calls': state.native}, indent=2, default=str))
+    cards = [e for e in events if e['type'] == 'confirm' and e.get('tool') == 'clear_reminders']
+    if mode == 'shadow' and prefix:
+        # Existing compound routing requires the historical read first. A
+        # script that skips it may retain the exact typed owner but cannot
+        # preview the delete. This is also observed on immutable b415.
+        tasks = [e['task'] for e in events if e['type'] == 'task_plan']
+        assert tasks and tasks[0]['target']['value'] == 'Laundry'
+        assert not cards
+        assert any(e['type'] == 'tool_result' and 'required source steps' in e.get('result', '')
+                   for e in events)
+    else:
+        assert len(cards) == 1 and 'Laundry' in cards[0].get('preview', '')
+        assert 'Fictional keep' not in cards[0].get('preview', '')
+    assert state.reminders.active_between() == before
+    assert not state.executed and not state.source_calls and not state.native
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
+@pytest.mark.parametrize('marker', ['*', '**'])
+def test_actual_marked_direct_phone_source_delivery_keeps_exact_existing_bindings(
+        pending_entrypoint, monkeypatch, tmp_path, mode, marker):
+    from service.workflows.compiler import compile_decision
+    state = pending_entrypoint
+    prompt = marker + 'Send +15555550123 a message with my move-in date'
+    expected = {'days': 60, 'calendar_only': True, 'query': 'move in'}
+    plan = compile_new(prompt)
+    assert plan and plan.recipient == '+15555550123'
+    assert plan.source_args == {'calendar': expected} and plan.original_request == prompt
+    decision = compile_decision(plan)
+    assert decision.tool_argument_bindings['get_upcoming'] == expected
+    assert decision.tool_argument_bindings['send_message'] == {'to': '+15555550123'}
+    events = actual_attempt(state, monkeypatch, mode, prompt, 'get_upcoming', expected)
+    (tmp_path / 'marked-phone-source-receipt.json').write_text(json.dumps({
+        'mode': mode, 'prompt': prompt, 'plan': plan.to_dict(), 'events': events,
+        'raw_sse': state.raw_sse, 'requests': state.requests, 'plans': pending_rows(state),
+        'registry_calls': state.executed, 'source_calls': state.source_calls,
+        'native_calls': state.native}, indent=2, default=str))
+    assert state.executed and all(n == 'get_upcoming' and args == expected for n, args in state.executed)
+    assert not state.source_calls and not state.native
+    assert not any(e['type'] == 'error' for e in events)
+    for event in events:
+        if event['type'] == 'workflow' and 'workflow' in event:
+            assert event['workflow']['source_args'] == {'calendar': expected}
+            assert event['workflow']['recipient'] == '+15555550123'
+        if event['type'] == 'confirm':
+            assert event['tool'] == 'send_message' and event['args']['to'] == '+15555550123'

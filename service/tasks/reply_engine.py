@@ -357,8 +357,8 @@ async def prepare_task_turn_async(store, sid: str, prompt: str, *, assistant_sto
                                   mail_reader=None, reply_preparer=None, allow_native: bool = True,
                                   contacts_resolver=None, owner_only: bool = False,
                                   owner_admission=None):
-    from service.utterance_shape import is_complete_explanation, explanation_remainder
-    if is_complete_explanation(prompt):
+    from service.utterance_shape import is_complete_explanation, explanation_remainder, is_retrospective_communication_question
+    if is_complete_explanation(prompt) or is_retrospective_communication_question(prompt):
         return None  # A language question cannot warm or revise an old reply.
     from service.tasks.compiler import compile_task
     from service.tasks.engine import prepare_task_turn
