@@ -124,6 +124,11 @@ PROFILE_TESTS = {
         "tests/test_typed_message_send.py",
         "tests/test_typed_reminder_operations.py",
         "tests/test_typed_task_engine.py",
+        "tests/test_reminder_batch_creation.py",
+        "tests/test_reminder_creation_review_controls.py",
+        "tests/test_reminder_civil_date_controls.py",
+        "tests/test_reminder_entrypoint.py",
+        "tests/test_reminder_date_updates.py",
     },
     "safety": {
         "tests/test_always_confirm_grants.py",

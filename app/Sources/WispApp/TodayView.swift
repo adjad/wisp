@@ -63,6 +63,8 @@ struct TodayDeadline: Decodable, Identifiable {
     let title: String
     let due_ts: Double
     let source: String
+    let all_day: Bool?
+    let due_date: String?
 }
 struct TodayUnscheduled: Decodable, Identifiable {
     let task_id: String
@@ -590,7 +592,7 @@ struct TodayView: View {
                             GroupBox("Deadlines · these do not reserve time") {
                                 VStack(alignment: .leading, spacing: 8) {
                                     ForEach(plan.deadlines) { item in
-                                        Text("\(model.clock(item.due_ts))  ·  \(item.title)  (\(item.source))")
+                                        Text("\((item.all_day == true ? "All day" : model.clock(item.due_ts)))  ·  \(item.title)  (\(item.source))")
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 }.padding(6)

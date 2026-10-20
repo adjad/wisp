@@ -14,6 +14,8 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 """
 from __future__ import annotations
 
+from service.assistant.verified_reminders import expected_date_fields
+
 import asyncio
 import dataclasses
 from service.inference.remote_policy import (remote_only_profile,
@@ -3091,7 +3093,7 @@ async def assistant_delete(cid: str) -> dict[str, Any]:
             return {"ok": False, "error": "Reminders identity is incomplete; nothing changed"}
         result = await app_request("delete_reminder", {
             "source_id": c["source_id"], "expected_title": c["title"],
-            "expected_due_ts": c["when_ts"]})
+            "expected_due_ts": c["when_ts"], **expected_date_fields(c)})
         if result.get("ok") is not True:
             return result
     else:

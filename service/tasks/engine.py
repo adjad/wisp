@@ -365,6 +365,8 @@ def _question(plan: TaskPlan) -> str:
         reference = re.sub(r"^my\b", "your", plan.temporal.reference, flags=re.I)
         return ("I haven’t created a reminder yet. How long before "
                 f"{reference} should I remind you?")
+    if plan.parameters.get('all_day') and plan.parameters['all_day'].value is True:
+        return 'Which day should this all-day reminder be due? No reminder has been created yet.'
     return "I haven’t created a reminder yet. When should I remind you?"
 
 
@@ -404,6 +406,7 @@ def _snapshot(row: dict) -> dict:
         "title": str(row.get("title") or ""),
         "when_ts": float(row.get("when_ts") or 0),
         "source": str(row.get("source") or ""),
+        **({'all_day': True, 'due_date': row.get('due_date')} if row.get('all_day') else {}),
     }
 
 
@@ -455,7 +458,7 @@ def _resolve_operation_targets(plan: TaskPlan, assistant_store, *,
             old = datetime.fromtimestamp(float(rows[0].get("when_ts") or 0))
             proposed = now.replace(hour=old.hour, minute=old.minute,
                                    second=0, microsecond=0)
-            if proposed.timestamp() < now.timestamp() - 60:
+            if not rows[0].get('all_day') and proposed.timestamp() < now.timestamp() - 60:
                 plan.parameters["requested_day"] = SlotValue(
                     "today", day.source, day.turn, day.confidence, day.original)
                 del plan.parameters["day"]
@@ -560,6 +563,33 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                 or (_candidate_rows(active) and _pick_recipient(active, prompt.strip(" .")))):
             return None
     new_plan = None if owner_only else compile_task(prompt, now=now)
+    from service.tasks.reminder_batch import is_batch, all_day_answer, batch_time_answer
+    if active and is_batch(active) and active.claimed_calls:
+        same_request = (new_plan is not None and is_batch(new_plan)
+            and new_plan.parameters['items'].value == active.parameters['items'].value)
+        if _CANCEL.match(prompt):
+            old_status = active.status
+            active.status = 'cancelled'
+            if persist and not store.transition_task(sid, active.to_dict(), from_status=old_status):
+                return _turn(active, 'The reminder request changed while cancellation was being recorded. '
+                    'Check the attempted items; I will not retry them automatically.', 'stale_cancellation', started=started)
+            return _turn(active, 'I stopped the remaining reminders. Already attempted reminders '
+                'may exist and were not undone. Check their receipts before retrying.', 'cancelled', started=started)
+        if same_request or _RETRY.match(prompt) or batch_time_answer(prompt):
+            return _turn(active, 'This reminder request was already attempted. Check the individual '
+                'results before requesting any remaining reminder; I will not replay the batch.',
+                'duplicate_blocked', started=started)
+    if active and is_batch(active) and new_plan is None and (
+            _CONTEXT_DAY_CORRECTION.match(prompt) or batch_time_answer(prompt)):
+        return _turn(active, 'Which reminder do you want to change? Please name its subject '
+            'and the date or time to use. Nothing has been changed.', 'batch_item_clarification', started=started)
+    if active is None and persist and new_plan is None and (
+            _CONTEXT_DAY_CORRECTION.match(prompt) or batch_time_answer(prompt)):
+        latest_raw = store.latest_task(sid)
+        latest = TaskPlan.from_dict(latest_raw) if latest_raw else None
+        if latest and is_batch(latest):
+            return _turn(latest, 'Which reminder do you want to change? Please name its subject '
+                'and the date or time to use. Nothing has been changed.', 'batch_item_clarification', started=started)
     if ((new_plan and new_plan.intent == "email.reply")
             or (new_plan is None and active and active.intent == "email.reply")):
         from service.tasks.reply_engine import prepare_reply_turn
@@ -703,6 +733,9 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                          "clock_clarification", started=started)
 
         changed = False
+        if plan.intent == 'reminder.create' and all_day_answer(prompt):
+            plan.parameters['all_day'] = SlotValue(True, 'followup', original=prompt)
+            changed = True
         channel_corrected = False
         if plan.intent in OUTBOUND_INTENTS:
             reply = prompt.strip(" .")
@@ -797,6 +830,11 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
             resolved, defaulted = resolve_named_time(prompt, now=now)
             lead = parse_lead_seconds(prompt) if plan.temporal.reference else None
             if resolved is not None:
+                # A new explicit clock supersedes the earlier all-day mode.
+                # Date-only answers retain it; never strip a user's clock.
+                if (not defaulted and plan.intent == 'reminder.create'
+                        and plan.parameters.get('all_day')):
+                    plan.parameters['all_day'] = SlotValue(False, 'followup', original=prompt)
                 plan.temporal.absolute_iso = resolved.isoformat(timespec="minutes")
                 plan.temporal.reference = ""
                 plan.temporal.reference_id = ""
@@ -820,8 +858,25 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
         plan.recompute_status()
         event = "task_updated"
 
+    if is_batch(plan):
+        from service.tasks.reminder_batch import validated_items
+        try:
+            validated_items(plan, now=now)
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            plan.status = 'waiting_for_input'
+            plan.missing_slots = ['reminders.items']
+            plan.steps = []
+            if persist:
+                _save(store, sid, plan, 'batch_clarification', {'error': str(exc)})
+            return _turn(plan, 'I have not created any reminders. Please restate each reminder '
+                'with a valid future date and time, or explicitly say all-day.', 'batch_clarification', started=started)
+    single_all_day = (plan.intent == 'reminder.create' and not is_batch(plan)
+        and plan.parameters.get('all_day') and plan.parameters['all_day'].value is True)
+    if single_all_day and plan.temporal.absolute_iso:
+        plan.temporal.absolute_iso = datetime.fromisoformat(plan.temporal.absolute_iso).date().isoformat()
     if (plan.intent == "reminder.create" and plan.temporal.absolute_iso
-            and datetime.fromisoformat(plan.temporal.absolute_iso).timestamp() <= now.timestamp()):
+            and (datetime.fromisoformat(plan.temporal.absolute_iso).date() < now.date()
+                 if single_all_day else datetime.fromisoformat(plan.temporal.absolute_iso).timestamp() <= now.timestamp())):
         plan.temporal.absolute_iso = ""
         plan.recompute_status()
         if persist:

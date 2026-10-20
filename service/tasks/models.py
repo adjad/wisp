@@ -105,9 +105,17 @@ class TaskPlan:
     def recompute_status(self) -> str:
         missing: list[str] = []
         if self.intent == "reminder.create":
-            if not str(self.subject.value or "").strip():
+            if 'all_day' in self.parameters and type(self.parameters['all_day'].value) is not bool:
+                missing.append('reminder.all_day')
+            if 'items' in self.parameters:
+                from service.tasks.reminder_batch import validated_items
+                try:
+                    validated_items(self)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    missing.append('reminders.items')
+            elif not str(self.subject.value or "").strip():
                 missing.append("subject")
-            if not self.temporal.absolute_iso:
+            if 'items' not in self.parameters and not self.temporal.absolute_iso:
                 if self.temporal.reference and self.temporal.lead_seconds is None:
                     missing.append("temporal.lead_time")
                 elif not self.temporal.reference:
