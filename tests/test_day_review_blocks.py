@@ -152,3 +152,46 @@ def test_an_invitation_email_is_not_also_a_review_block():
     assert [b["title"] for b in suggestions(result)] == ["Review: Week 4 attendance question"]
     # It still shows as something that needs you; only the duplicate block goes.
     assert any(i["title"].startswith("Dublin Community") for i in result["attention"])
+
+
+# The 2026-10-20 screenshot: under "Wisp live reminder test 2102", six "Review: …"
+# blocks stacked again. A sign-in email (its subject withheld as "Authentication
+# details omitted.") and the Canvas digest go; the course mail that is left shares
+# one block beside the task.
+CANVAS, ED = "notifications@instructure.com", "notification@edstem.org"
+SCREENSHOT = [
+    mail("Alcohol Edu Part 2 : Alcohol Edu Survey Part 2", "Canvas", CANVAS),
+    mail("Recent Canvas Notifications", "Canvas", CANVAS),
+    mail("New in 26 Fall-STAT 5 02: Section Notes (Updated Regularly)", "Ed Discussion", ED),
+    mail("New assignments have been posted // PA 2 grades have been posted", "Canvas", CANVAS),
+    mail("New in CSE 20 04: Homework error", "Ed Discussion", ED),
+    mail("Your verification code is 482913", "Google", "no-reply@accounts.google.com"),
+]
+
+
+def test_withheld_sign_in_mail_is_never_a_need():
+    assert not_a_need(SCREENSHOT[5])
+    assert not_a_need(mail("Sign in to Canvas: 123456 is your code", "Canvas", CANVAS))
+    # A forum's roll-up is a digest; a single post in it is not.
+    assert not_a_need(mail("New threads in 26 Fall-STAT 5 02", "Ed Discussion", ED))
+    assert not not_a_need(SCREENSHOT[4])
+
+
+def test_the_screenshot_leaves_one_review_block_beside_the_task():
+    skip = mass_mail_filter(SCREENSHOT)
+    kept = [row for row in SCREENSHOT if not skip(row)]
+    assert [r["subject"] for r in kept] == [SCREENSHOT[i]["subject"] for i in (0, 2, 3, 4)]
+    records = [email(f"e{i}", r["subject"], r["sender"].split(" <")[0]) for i, r in enumerate(kept)]
+    s = state()
+    s["tasks"] = [dict(id="t2102", title="Wisp live reminder test 2102", day=DAY, kind="task",
+                       duration_minutes=30, priority=2, status="active", due_ts=None,
+                       pinned_start=at(12), revision=1)]
+    evidence = dict(email=dict(ready=True, records=records, detail="Synthetic bounded source"))
+    blocks = assess(DAY, ZONE, s, evidence, now=NOW)["proposed_plan"]["blocks"]
+    reviews = [b for b in blocks if b["kind"] == "suggestion"]
+    assert len(reviews) == 1, [b["title"] for b in reviews]
+    assert reviews[0]["title"].startswith("Review 4 emails · ")
+    assert sorted(m["title"] for m in reviews[0]["members"]) == sorted(r["subject"] for r in kept)
+    # Nothing on the plan overlaps anything else.
+    timed = sorted((b["start"], b["end"], b["title"]) for b in blocks if b.get("end") is not None)
+    assert all(a[1] <= b[0] for a, b in zip(timed, timed[1:])), timed

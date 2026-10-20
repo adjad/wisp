@@ -114,7 +114,12 @@ _BULK_BODY = re.compile(r"\bunsubscribe\b|manage (?:your )?(?:email )?preference
 # A machine-sent roll-up of notifications ("Recent Canvas Notifications", "Your
 # weekly digest"): each item it lists arrives, or is visible, on its own, so the
 # roll-up itself is never a review block.
-_DIGEST_SUBJECT = re.compile(r"\bnotifications\s*$|\bdigest\b|^\s*(?:daily|weekly) (?:summary|update)s?\b", re.I)
+_DIGEST_SUBJECT = re.compile(r"\bnotifications\s*$|\bdigest\b|^\s*(?:daily|weekly) (?:summary|update)s?\b|"
+                             r"^\s*new (?:threads|posts|discussions) in\b", re.I)
+# Wisp's own stand-in for a sign-in, code or password email's subject, whole or in
+# part ("Sign in to Canvas: Authentication details omitted."): what it withheld is
+# a credential, never something to review, so such mail never becomes a block.
+_WITHHELD_AUTH_SUBJECT = re.compile(r"\bauthentication details omitted\b", re.I)
 # Signing up for a list is not something the list needs from you.
 _SUBSCRIBED_SUBJECT = re.compile(r"^\s*(?:you(?:'|\u2019)?re|you are) (?:now )?subscribed\b|"
                                  r"^\s*(?:please )?confirm (?:your )?subscription\b|^\s*thanks for subscribing\b", re.I)
@@ -124,16 +129,21 @@ def not_a_need(row):
     """Mail that is never a need: not a Day review block, and not handed to the
     behavior pass as possible work. Mass mail sent under any name
     (email_tools.is_broadcast, the rule #299's inbox summary uses), newsletter
-    and social mail, and a machine-sent notification digest. A course or school
-    sender's own action mail ("PA 2 has been posted") still counts. Only
+    and social mail, a machine-sent notification digest (a forum's "New threads
+    in …" roll-up too), and a sign-in or code email whose subject Wisp withheld.
+    A course or school sender's own action mail ("PA 2 has been posted") and a
+    single forum post ("New in CSE 20 04: Homework error") still count. Only
     positive signs count: digest_category's "news" is also its fallback for mail
     it can't place, so it is no evidence on its own."""
     from service.tools.email_tools import (_MARKETING_SUBJECT, _NEWSLETTER_RE, digest_category,
                                            is_broadcast, is_machine_sender)
+    from service.tools.imessage_tools import redact_summary_codes
     identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
     subject = str(row.get("subject") or "")
+    # The withheld-credential check reads the subject as the Day would show it.
+    shown = redact_summary_codes(subject)
     return (is_broadcast(row) or bool(_MARKETING_SUBJECT.search(subject)) or bool(_NEWSLETTER_RE.search(identity))
-            or bool(_SUBSCRIBED_SUBJECT.search(subject))
+            or bool(_SUBSCRIBED_SUBJECT.search(subject)) or bool(_WITHHELD_AUTH_SUBJECT.search(shown))
             or digest_category(row) == "social"
             or (is_machine_sender(identity) and bool(_DIGEST_SUBJECT.search(subject))))
 
