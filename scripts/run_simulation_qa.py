@@ -842,6 +842,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             [TRUSTED_BASH, "scripts/test_today_contract.sh"],
         ),
         (
+            "native/markdown-contract",
+            [TRUSTED_BASH, "scripts/test_markdown_contract.sh"],
+        ),
+        (
             "native/research-library-contract",
             [TRUSTED_BASH, "scripts/test_research_library_contract.sh"],
         ),
