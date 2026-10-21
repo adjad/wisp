@@ -37,6 +37,9 @@ final class OverlayPanel: NSPanel {
     private var stage: NSView?
     private var revealMask: CALayer?
     private var revealGeneration: UInt64 = 0
+    // A shrink waits for the content's own animation (a Brief row closing) to
+    // finish before the window follows; see resizeToFit.
+    private var pendingShrink: DispatchWorkItem?
     private(set) var isRevealing = false
     // Injectable for the isolated native fixture; production follows macOS.
     var reduceMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -89,6 +92,7 @@ final class OverlayPanel: NSPanel {
         // rectangular window, which reads as a stark black rectangle outline
         // during the grow/shrink instead of matching the panel's own shape.
         mask.maskedCorners = layout.maskedCorners
+        mask.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
         container.layer?.mask = mask
         self.revealMask = mask
 
@@ -152,13 +156,56 @@ final class OverlayPanel: NSPanel {
         }
     }
 
-    // Instant grow/shrink to fit streaming content.
+    /// How long a shrink waits for SwiftUI to finish animating the content
+    /// down (Brief rows close in 0.18 s) before the window follows.
+    static let shrinkSettle: TimeInterval = 0.24
+
+    /// Fit the window to the content.
+    ///
+    /// Rules:
+    /// - Growing applies at once, before the content animates into the room,
+    ///   so a growing panel is never clipped at the window's bottom edge.
+    /// - Shrinking waits `shrinkSettle`, so content still animating out (a row
+    ///   closing) is never cut off by the window snapping smaller under it. The
+    ///   area it leaves is transparent until then.
+    /// - Calls coalesce: each one measures afresh, a newer shrink replaces a
+    ///   pending one, and a grow cancels it, so rapid toggles never stack.
+    /// - With Reduce Motion nothing animates, so a shrink applies at once.
     func resizeToFit() {
         guard isVisible, !isRevealing, !isCompact(), let f = frame(compact: false) else { return }
-        guard abs(f.height - frame.height) > 1 || abs(f.width - frame.width) > 1
-              || abs(f.origin.x - frame.origin.x) > 1 else { return }
+        guard differs(f) else { cancelPendingShrink(); return }
+        let shrinkingOnly = f.height < frame.height && abs(f.width - frame.width) <= 1
+            && abs(f.origin.x - frame.origin.x) <= 1
+        if shrinkingOnly && !reduceMotion() {
+            cancelPendingShrink()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.pendingShrink = nil
+                guard self.isVisible, !self.isRevealing, !self.isCompact(),
+                      let latest = self.frame(compact: false), self.differs(latest) else { return }
+                self.setFrame(latest, display: true)
+                self.fillMask()
+            }
+            pendingShrink = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.shrinkSettle, execute: work)
+            return
+        }
+        cancelPendingShrink()
         setFrame(f, display: true)
         fillMask()
+    }
+
+    /// Whether a shrink is waiting for the content to finish animating.
+    var hasPendingShrink: Bool { pendingShrink != nil }
+
+    private func differs(_ f: NSRect) -> Bool {
+        abs(f.height - frame.height) > 1 || abs(f.width - frame.width) > 1
+            || abs(f.origin.x - frame.origin.x) > 1
+    }
+
+    private func cancelPendingShrink() {
+        pendingShrink?.cancel()
+        pendingShrink = nil
     }
 
     func present() {
@@ -184,6 +231,7 @@ final class OverlayPanel: NSPanel {
         if disableActions {
             CATransaction.begin(); CATransaction.setDisableActions(true)
         }
+        matchBackingScale(mask)
         mask.bounds = CGRect(origin: .zero, size: frame.size)
         mask.position = CGPoint(x: frame.width / 2, y: frame.height)
         mask.cornerRadius = isCompact() ? barCornerRadius : panelCornerRadius
@@ -196,6 +244,14 @@ final class OverlayPanel: NSPanel {
     // top edge never moves, so content grows out of the notch without bounce.
     private static let revealCurve = CAMediaTimingFunction(controlPoints: 0.22, 0.75, 0.25, 1)
 
+    /// The mask's rounded edge is rasterized at the layer's scale; left at the
+    /// default 1x it can step visibly on a Retina screen while it animates.
+    private func matchBackingScale(_ mask: CALayer) {
+        let scale = backingScaleFactor
+        if mask.contentsScale != scale { mask.contentsScale = scale }
+        mask.allowsEdgeAntialiasing = true
+    }
+
     private func cancelReveal() {
         revealGeneration &+= 1
         isRevealing = false
@@ -204,6 +260,7 @@ final class OverlayPanel: NSPanel {
 
     override func orderOut(_ sender: Any?) {
         cancelReveal()
+        cancelPendingShrink()
         super.orderOut(sender)
     }
 
@@ -235,6 +292,7 @@ final class OverlayPanel: NSPanel {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        matchBackingScale(mask)
         mask.position = CGPoint(x: rects.full.midX, y: rects.full.maxY)
         mask.bounds = CGRect(origin: .zero, size: endSize)
         mask.cornerRadius = endRadius
@@ -258,7 +316,9 @@ final class OverlayPanel: NSPanel {
         radius.toValue = endRadius
         let group = CAAnimationGroup()
         group.animations = [size, radius]
-        group.duration = opening ? 0.38 : 0.30
+        // Closing is a touch quicker than opening; the content has already
+        // faded (OverlayModel.closing), so the shape alone retracts.
+        group.duration = opening ? 0.38 : 0.28
         size.duration = group.duration
         radius.duration = group.duration
         group.timingFunction = Self.revealCurve
