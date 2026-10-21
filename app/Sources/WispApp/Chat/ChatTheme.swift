@@ -75,7 +75,6 @@ enum ChatTheme {
 struct ChatOrb: View {
     var size: CGFloat = 22
     var thinking = false
-    @State private var breathe = false
     @State private var mounted = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 #if WISP_ORB_QA
@@ -92,20 +91,46 @@ struct ChatOrb: View {
     }
 
     var body: some View {
+        ZStack {
+            if animates {
+                ChatOrbBreathing(size: size)
+            } else {
+                ChatOrbArtwork(size: size)
+            }
+        }
+        .frame(width: size, height: size)
+        .onAppear { mounted = true }
+        .onDisappear { mounted = false }
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ChatOrbArtwork: View {
+    var size: CGFloat
+
+    var body: some View {
         Circle()
             .fill(RadialGradient(colors: ChatTheme.orbStops, center: UnitPoint(x: 0.34, y: 0.30),
                                  startRadius: 0, endRadius: size * 0.78))
             .frame(width: size, height: size)
             .shadow(color: ChatTheme.orbGlow, radius: size * 0.45)
+    }
+}
+
+/// Removing this child disposes its repeating animation. A nil animation on
+/// an existing scale does not reliably stop SwiftUI's repeatForever clock.
+private struct ChatOrbBreathing: View {
+    var size: CGFloat
+    @State private var breathe = false
+
+    var body: some View {
+        ChatOrbArtwork(size: size)
             .scaleEffect(breathe ? 1.08 : 1.0)
-            // Replacing the animation as well as its value cancels an
-            // in-flight repeat when the answer settles or motion is reduced.
-            .animation(animates ? .easeInOut(duration: 1.3).repeatForever(autoreverses: true) : nil,
-                       value: breathe)
-            .onAppear { mounted = true }
-            .onChange(of: animates) { _, active in breathe = active }
-            .onDisappear { mounted = false; breathe = false }
-            .accessibilityHidden(true)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true)) {
+                    breathe = true
+                }
+            }
     }
 }
 
