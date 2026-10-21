@@ -50,6 +50,19 @@ struct TodayBlock: Decodable, Identifiable {
     let evidence_id: String?
     /// For a grouped review suggestion ("Review 3 emails"): the items it covers.
     let members: [TodayBlockMember]?
+    /// For a Calendar block: which synced occurrence it is and what the Day
+    /// timeline's Cancel and Move need, the same facts as the check-in card's
+    /// rows (service/assistant/checkin.py annotate_calendar_blocks). All absent
+    /// from an older service, which then offers neither.
+    let source_id: String?
+    let all_day: Bool?
+    let invitee_count: Int?
+    let organizer_is_user: Bool?
+    let calendar_writable: Bool?
+    let cancel_blocked: String?
+    let move_blocked: String?
+    // TodayBlock.calendarEvent (CheckInView.swift) turns these into a CheckInEvent;
+    // it lives there because scripts/test_today_contract.sh compiles this file alone.
 
     var evidenceLabel: String {
         switch kind {

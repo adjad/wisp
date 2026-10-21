@@ -112,6 +112,7 @@ PROFILE_TESTS = {
         "tests/test_temporal_facts.py",
         "tests/test_daily_workspace.py",
         "tests/test_day_review_blocks.py",
+        "tests/test_day_timeline_event_fields.py",
         "tests/test_mail_gists.py",
         "tests/test_behavior_gmail_history.py",
         "tests/test_behavior_availability.py",
@@ -421,6 +422,9 @@ ADDITIONAL_FULL_TESTS = {
     # verified-self identity, fake policy/outbox and ASGI transport; no effects.
     "tests/test_daily_workspace.py",
     "tests/test_day_review_blocks.py",
+    # Day timeline Cancel/Move fields: disposable AssistantStore, the planner and
+    # today_api.snapshot in process; no model, app, hub or real ~/.moe.
+    "tests/test_day_timeline_event_fields.py",
     # The user's profile (Getting to know you): JSON in a temp path, pure prompt/brief/
     # ranking helpers and an in-process TestClient; no model, listener or real ~/.moe.
     "tests/test_user_profile.py",
