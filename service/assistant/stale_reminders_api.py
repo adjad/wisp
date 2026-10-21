@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from service.assistant import stale_reminders
@@ -25,6 +25,17 @@ router = APIRouter(prefix="/assistant/stale_reminders", tags=["reminders"])
 class Answer(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_id: str = Field(min_length=1, max_length=200)
+
+
+def _native_only(request: Request) -> None:
+    """Keep and Delete are the app's own JSON requests, never a browser page's: any Origin
+    header (a page, including "null") is refused, and so is a non-JSON body, which a
+    browser could send without a preflight. Native URLSession requests carry no Origin."""
+    if "origin" in request.headers:
+        raise HTTPException(403, "Answer this from Wisp's Day tab.")
+    media = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if media != "application/json":
+        raise HTTPException(415, "Content-Type must be application/json.")
 
 
 def _store():
@@ -59,7 +70,8 @@ def asks():
 
 
 @router.post("/keep")
-async def keep(body: Answer):
+async def keep(body: Answer, request: Request):
+    _native_only(request)
     row = _target(body.source_id)
     _store().keep_stale_reminder(row["source_id"], row["title"])
     await _changed()
@@ -67,7 +79,8 @@ async def keep(body: Answer):
 
 
 @router.post("/delete")
-async def delete(body: Answer):
+async def delete(body: Answer, request: Request):
+    _native_only(request)
     store = _store()
     if store.undated_view()["freshness"] != "current":
         raise HTTPException(409, "Reminders hasn't synced recently; nothing was deleted.")
@@ -75,10 +88,11 @@ async def delete(body: Answer):
     from service.assistant.outbox import request as app_request
     # Undated: an explicit null due time. Overdue: the exact due time it was asked about,
     # so a reminder rescheduled since is refused natively instead of deleted.
+    from service.assistant.verified_reminders import expected_date_fields
     expected_due = None if row["reason"] == "undated" else row["when_ts"]
     result = await app_request("delete_reminder", {
         "source_id": row["source_id"], "expected_title": row["title"],
-        "expected_due_ts": expected_due})
+        "expected_due_ts": expected_due, **expected_date_fields(row)})
     if result.get("ok") is not True:
         # "unknown" means the app may have deleted it without confirming; say so rather
         # than offering a retry that could act on a different reminder.

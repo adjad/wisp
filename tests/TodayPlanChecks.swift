@@ -188,6 +188,18 @@ struct TodayPlanChecks {
               && StoredBrief.newest(live: (text: "old", at: Date(timeIntervalSince1970: now - 2 * hour)), stored: kept, sameDay: sameDay)?.text == kept?.text
               && StoredBrief.newest(live: (text: "yesterday", at: Date(timeIntervalSince1970: now - 20 * hour)), stored: nil, sameDay: sameDay) == nil,
               "the newest of today's live and kept summaries")
+        // "Ask about this" continues the live brief's chat only when that brief
+        // is the one on screen: a newer kept brief, or yesterday's live one,
+        // must not be continued in place of what is shown.
+        let liveNow = (text: "live", at: Date(timeIntervalSince1970: now))
+        let yesterday = (text: "yesterday", at: Date(timeIntervalSince1970: now - 20 * hour))
+        let stale = (text: "old", at: Date(timeIntervalSince1970: now - 2 * hour))
+        check(StoredBrief.shownIsLive(shown: StoredBrief.newest(live: liveNow, stored: kept, sameDay: sameDay), live: liveNow)
+              && !StoredBrief.shownIsLive(shown: StoredBrief.newest(live: stale, stored: kept, sameDay: sameDay), live: stale)
+              && !StoredBrief.shownIsLive(shown: StoredBrief.newest(live: yesterday, stored: kept, sameDay: sameDay), live: yesterday)
+              && !StoredBrief.shownIsLive(shown: nil, live: liveNow)
+              && !StoredBrief.shownIsLive(shown: (text: "live", at: liveNow.at.addingTimeInterval(1)), live: liveNow),
+              "Ask about this follows the brief on screen")
         var status = 200
         var asked: [String] = []
         let zone = TimeZone(identifier: "America/Los_Angeles")!

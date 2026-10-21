@@ -47,6 +47,8 @@ final class MessagesReader {
     private var timer: Timer?
     private var inFlight = false
     private let dbPath: String
+    /// Why the last `readRecentMessages` returned nil, from the error itself.
+    private(set) var lastFailure: MessagesReadFailure?
 
     init(dbPath: String = (NSHomeDirectory() as NSString)
         .appendingPathComponent("Library/Messages/chat.db")) {
@@ -82,8 +84,9 @@ final class MessagesReader {
             defer { self?.inFlight = false }
             guard let self else { return }
             guard let scan = self.readRecentMessages() else {
-                self.post(lines: "", diagnostics: ["available": false,
-                                                    "reason": "chat.db not readable (Full Disk Access?)"])
+                let failure = self.lastFailure ?? MessagesReadFailure.classify(
+                    systemErrno: 0, sqliteCode: SQLITE_ERROR, sqliteMessage: "")
+                self.post(lines: "", diagnostics: failure.diagnostics)
                 return
             }
             let coverage: [String: Any] = [
@@ -117,8 +120,10 @@ final class MessagesReader {
     // so a year's rows costs milliseconds, not the minutes Mail's scan does.
     func readRecentMessages(days: Int = 365, limit: Int = 20000) -> MessageScan? {
         var db: OpaquePointer?
+        lastFailure = nil
         // SQLITE_OPEN_READONLY: never write to a database Messages.app owns.
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            lastFailure = MessagesReadFailure.from(db, path: dbPath)
             sqlite3_close(db)
             return nil
         }
@@ -163,7 +168,10 @@ final class MessagesReader {
         let participants = readParticipants(db)
 
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            lastFailure = MessagesReadFailure.from(db, path: dbPath)
+            return nil
+        }
         defer { sqlite3_finalize(stmt) }
 
         var out: [String] = []
@@ -259,9 +267,12 @@ final class MessagesReader {
                 truncated += 1
             }
         }
-        return step == SQLITE_DONE ? MessageScan(lines: out, structured: structured,
-                                                attempted: attempted, skipped: skipped,
-                                                truncated: truncated) : nil
+        guard step == SQLITE_DONE else {
+            lastFailure = MessagesReadFailure.from(db, path: dbPath)
+            return nil
+        }
+        return MessageScan(lines: out, structured: structured, attempted: attempted,
+                           skipped: skipped, truncated: truncated)
     }
 
     private func hasColumn(_ db: OpaquePointer?, table: String, name: String) -> Bool {
@@ -567,5 +578,55 @@ final class MessagesReader {
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["lines": lines,
                                                                     "diagnostics": diagnostics])
         URLSession.shared.dataTask(with: req).resume()
+    }
+}
+
+/// Why chat.db couldn't be read, taken from the error itself, and what the user
+/// is told.
+///
+/// Rules:
+/// - IMPORTANT: Full Disk Access only when the error says so: macOS refused the
+///   file (EPERM, its privacy denial) or SQLite reports "authorization denied".
+///   Any other failure keeps its own reason, so the user is never sent to the
+///   wrong setting.
+/// - `reason_kind` tells the service and the Brief which case this is; they key
+///   the Full Disk Access button on it, never on the wording.
+struct MessagesReadFailure: Equatable {
+    enum Kind: String { case fullDiskAccess = "full_disk_access", missing, unreadable }
+
+    static let fullDiskAccessReason = "Wisp needs Full Disk Access to read Messages. Open System Settings "
+        + "\u{2192} Privacy & Security \u{2192} Full Disk Access and turn on Wisp."
+
+    let kind: Kind
+    let reason: String
+
+    var diagnostics: [String: Any] { ["available": false, "reason": reason, "reason_kind": kind.rawValue] }
+
+    static func from(_ db: OpaquePointer?, path: String) -> MessagesReadFailure {
+        let message = db.flatMap { sqlite3_errmsg($0) }.map { String(cString: $0) } ?? ""
+        let code = db.map { sqlite3_extended_errcode($0) } ?? SQLITE_CANTOPEN
+        // SQLite's own errno after a failed open is not reliable (it reports a
+        // later syscall), so a file SQLite can't open is opened once more here:
+        // that errno is the real reason (EPERM for a privacy denial).
+        var systemErrno: Int32 = 0
+        if code & 0xff == SQLITE_CANTOPEN {
+            let fd = open(path, O_RDONLY)
+            if fd >= 0 { close(fd) } else { systemErrno = errno }
+        }
+        return classify(systemErrno: systemErrno, sqliteCode: code, sqliteMessage: message)
+    }
+
+    static func classify(systemErrno: Int32, sqliteCode: Int32, sqliteMessage: String) -> MessagesReadFailure {
+        if systemErrno == EPERM || sqliteCode & 0xff == SQLITE_AUTH
+            || sqliteMessage.lowercased().contains("authorization denied") {
+            return MessagesReadFailure(kind: .fullDiskAccess, reason: fullDiskAccessReason)
+        }
+        if systemErrno == ENOENT {
+            return MessagesReadFailure(kind: .missing,
+                                       reason: "No Messages history was found on this Mac (chat.db is missing).")
+        }
+        let detail = !sqliteMessage.isEmpty ? sqliteMessage
+            : systemErrno != 0 ? String(cString: strerror(systemErrno)) : "unknown error"
+        return MessagesReadFailure(kind: .unreadable, reason: "Couldn't read Messages: \(detail).")
     }
 }

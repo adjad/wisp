@@ -38,20 +38,39 @@ struct NotchBriefView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
+                if let needsYou = brief.needsYou {
+                    Text(needsYou)
+                        .font(.system(size: 13.5)).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
                 if !brief.summary.isEmpty || !brief.agenda.isEmpty { summary(brief) }
                 VStack(alignment: .leading, spacing: 9) {
                     ForEach(brief.lines) { line in
-                        lineRow(line, isOpen: open == line.tag)
-                        if open == line.tag, let detail = brief.details[line.tag] {
-                            detailView(detail)
-                                .transition(reduceMotion ? .identity : .opacity.combined(with: .move(edge: .top)))
+                        // Each row and its detail clip together, so the detail is
+                        // uncovered and covered by the group's own edge while the
+                        // rows below glide; nothing draws over a neighbouring row.
+                        VStack(alignment: .leading, spacing: 9) {
+                            lineRow(line, isOpen: open == line.tag)
+                            if open == line.tag, let detail = brief.details[line.tag] {
+                                detailView(detail)
+                                    .transition(reduceMotion ? .identity : .opacity)
+                            }
                         }
+                        .clipped()
                     }
                 }
                 HStack(spacing: 8) {
                     NotchChrome.chip("Ask about this", icon: "bubble.left", help: "Continue from this in Ask") {
-                        if let brief = model.brief, !brief.sessionId.isEmpty { model.askAboutBrief() }
-                        else { model.askAbout(BriefContent(plan: plan, today: today, composed: composedToday).lede, reference: "") }
+                        // Continue the brief's saved chat only when that brief is the
+                        // one on screen; otherwise ask about what is shown.
+                        if let brief = model.brief, !brief.sessionId.isEmpty,
+                           StoredBrief.shownIsLive(shown: composedBrief, live: (text: brief.text, at: brief.receivedAt)) {
+                            model.askAboutBrief()
+                        } else {
+                            model.askAbout(BriefContent(plan: plan, today: today, composed: composedToday).lede, reference: "")
+                        }
                     }
                     .disabled(!model.conversationSettled)
                     Spacer()
@@ -121,21 +140,27 @@ struct NotchBriefView: View {
         lines.contains { $0.leading.contains("–") } ? 118 : 64
     }
 
-    /// Opening grows the panel first so the details fade into room; closing
-    /// shrinks it once they have gone, so it never jumps under them.
+    /// Opening grows the panel as the details start to fade in, so they never
+    /// render clipped; closing leaves the window as it is until they have gone
+    /// (OverlayPanel.resizeToFit holds a shrink for the animation), so it never
+    /// snaps smaller under them. Rapid toggles coalesce in the panel.
     private func toggle(_ tag: String) {
         let next = open == tag ? nil : tag
-        let growing = next != nil
         if reduceMotion {
             open = next
-            DispatchQueue.main.async { model.onResize() }
+            model.onResizeNow()
+            model.onResize()
             return
         }
-        if growing { DispatchQueue.main.async { model.onResize() } }
-        withAnimation(.easeOut(duration: 0.18)) { open = next } completion: {
-            if !growing { model.onResize() }
-        }
+        withAnimation(.easeOut(duration: Self.rowAnimation)) { open = next }
+        // Measure in this run-loop turn, before the first animated frame, and
+        // again once SwiftUI has laid the change out.
+        model.onResizeNow()
+        model.onResize()
     }
+
+    /// Brief row open/close. Kept under OverlayPanel.shrinkSettle.
+    static let rowAnimation: TimeInterval = 0.18
 
     private func detailView(_ detail: BriefDetail) -> some View {
         let timed = detail.lines.contains { !$0.leading.isEmpty }
@@ -229,6 +254,8 @@ struct NotchBriefView: View {
 @MainActor
 struct BriefContent {
     let lede: String
+    /// "Needs you today: …" under the lede, on today only; nil when nothing does.
+    let needsYou: String?
     /// The composed Daily Summary's short version; empty without one from today.
     let summary: [String]
     /// The rest of today's events under the summary; empty without a composed brief.
@@ -257,8 +284,15 @@ struct BriefContent {
         let next = calendarBlocks.first { $0.start > reference }.map { (title: $0.title, time: today.clock($0.start)) }
         let weekday = today.selectedDate.formatted(Date.FormatStyle(timeZone: zone).weekday(.wide))
         let calendarKnown = !(plan.sources["calendar"]?.ready == false && calendarBlocks.isEmpty && plan.all_day.isEmpty)
+        // The service's pick from the same attention items as the Day tab's Needs you.
+        let needsLine = isToday ? plan.workspace?.needs_you.flatMap { picked in
+            DayTimeline.needsYou(picked.items.map { NeedsYouInput(kind: $0.kind, text: $0.text, due: $0.due_ts,
+                                                                  allDay: $0.all_day ?? false) },
+                                 more: picked.more, clock: today.clock)
+        } : nil
+        needsYou = needsLine
         lede = DayTimeline.lede(weekday: weekday, isToday: isToday, load: calendarKnown ? load.verdict : nil,
-                                dueToday: dueToday, overdue: overdue, next: next)
+                                dueToday: dueToday, overdue: overdue, next: next, othersNeedYou: needsLine != nil)
 
         func coverage(_ source: String) -> DailySourceCoverage? {
             plan.workspace?.source_coverage.first { $0.source == source }
@@ -284,7 +318,7 @@ struct BriefContent {
                 ?? (weekRead ? .nothing : .unknown)
         } else if let need = needs.filter({ ($0.due_ts ?? 0) > dayEnd }).min(by: { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }) {
             // Before the week has been read, a dated need after today still counts.
-            soon = .item(title: need.title, when: NotchChrome.dayClock(need.due_ts ?? 0, zone: zone), source: need.source)
+            soon = .item(title: need.title, when: need.all_day == true ? "All day" : NotchChrome.dayClock(need.due_ts ?? 0, zone: zone), source: need.source)
         } else {
             soon = .unknown
         }

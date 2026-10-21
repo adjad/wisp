@@ -14,6 +14,8 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 """
 from __future__ import annotations
 
+from service.assistant.verified_reminders import expected_date_fields
+
 import asyncio
 import dataclasses
 from service.inference.remote_policy import (remote_only_profile,
@@ -1605,6 +1607,21 @@ async def agent(body: dict[str, Any]):
             recent_users = store.recent_user_turns(sid) if sess else []
             last_tools = store.last_assistant_tools(sid) if sess else None
 
+            # A completed multi-reminder task does not identify which item an
+            # "it" correction means. End the turn before any inference or
+            # planner/shadow adaptation can reopen an implicit last-item write.
+            from service.tasks.engine import prepare_batch_correction_guard
+            batch_guard = (prepare_batch_correction_guard(store, sid, prompt)
+                           if sess and not literal_envelope else None)
+            if batch_guard:
+                await emit({"type": "task_plan", "event": batch_guard.event,
+                            "task": batch_guard.plan.to_dict(), "trace": batch_guard.trace})
+                await emit({"type": "text", "text": batch_guard.response})
+                await emit({"type": "done"})
+                persist_user_turn()
+                store.add_turn(sid, "assistant", batch_guard.response)
+                return
+
             # Decide ownership BEFORE any positive rule/typed compiler runs.
             # Model identity is the configured agent target, not a filename
             # allowlist that would silently exclude a renamed trained model.
@@ -2131,7 +2148,16 @@ async def agent(body: dict[str, Any]):
             def finish_model_action(claim, verified):
                 return store.finish_model_effect(sid, claim, verified=verified)
 
-            if test_mode and not decision.needs_tools:
+            if decision._reminder_clarification:
+                # This host boundary ran no action and admitted no tools.
+                # Publishing model prose here could still claim "Reminder
+                # set" despite the missing subject/time/whole-clause proof.
+                await emit({"type": "text", "text": (
+                    "I haven’t created a reminder or taken any other action. "
+                    "Please give one reminder’s title and alert time, and "
+                    "request any additional actions separately.")})
+                await emit({"type": "done"})
+            elif test_mode and not decision.needs_tools:
                 # No tool would be offered at all — reasoning/general/fast/
                 # coding all generate a REAL answer, which test mode must
                 # never do (see the endpoint docstring). Report the plan
@@ -2408,7 +2434,8 @@ async def agent(body: dict[str, Any]):
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.
-            if not test_mode and remote_only_profile() is None:
+            if (not test_mode and remote_only_profile() is None
+                    and not decision._reminder_clarification):
                 summary_target = role_target("fast")
 
                 async def prepare_local_summary() -> None:
@@ -2727,6 +2754,10 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
             "invitee_count": (e["invitee_count"] if type(e.get("invitee_count")) is int
                               and 0 <= e["invitee_count"] <= 100000 else None),
             "organizer_is_user": (e["organizer_is_user"] if type(e.get("organizer_is_user")) is bool
+                                  else None),
+            # Whether its calendar accepts changes from this Mac (EventKit's
+            # allowsContentModifications); False for subscribed and read-only calendars.
+            "calendar_writable": (e["calendar_writable"] if type(e.get("calendar_writable")) is bool
                                   else None),
             "confidence": 1.0,
         })
@@ -3061,7 +3092,8 @@ async def assistant_sync_messages(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "applied": applied, **contacts_privacy_status()}
     cache_messages(str(body.get("lines") or ""),
                    available=bool(diag.get("available")),
-                   reason=str(diag.get("reason") or ""))
+                   reason=str(diag.get("reason") or ""),
+                   kind=str(diag.get("reason_kind") or ""))
     return {"ok": True}
 
 
@@ -3087,7 +3119,7 @@ async def assistant_delete(cid: str) -> dict[str, Any]:
             return {"ok": False, "error": "Reminders identity is incomplete; nothing changed"}
         result = await app_request("delete_reminder", {
             "source_id": c["source_id"], "expected_title": c["title"],
-            "expected_due_ts": c["when_ts"]})
+            "expected_due_ts": c["when_ts"], **expected_date_fields(c)})
         if result.get("ok") is not True:
             return result
     else:

@@ -191,14 +191,18 @@ final class RemindersWriter {
     /// means "a reminder with no due date", which only a delete may target; any other value
     /// must be a real time. Nothing stands in for null, so a bad or missing number can never
     /// turn a dated target into an undated one.
-    enum ExactTarget: Equatable { case dated(Double), undated }
+    enum ExactTarget: Equatable { case dated(Double), allDay(String), undated }
 
-    static func exactTarget(kind: String, expectedDueTs: Double?) -> ExactTarget? {
+    static func exactTarget(kind: String, expectedDueTs: Double?, expectedDueDate: String = "") -> ExactTarget? {
         guard ["update_reminder", "complete_reminder", "delete_reminder"].contains(kind) else { return nil }
-        guard let due = expectedDueTs else { return kind == "delete_reminder" ? .undated : nil }
+        guard let due = expectedDueTs else { return kind == "delete_reminder" && expectedDueDate.isEmpty ? .undated : nil }
         // Same bound as the backend's verified_reminders._timestamp (before year 10000), so
         // `Int(due / 60)` can never trap on a huge finite value.
-        return due.isFinite && due > 0 && due < 253402300800 ? .dated(due) : nil
+        guard due.isFinite && due > 0 && due < 253402300800 else { return nil }
+        if !expectedDueDate.isEmpty {
+            return allDayComponents(expectedDueDate) != nil ? .allDay(expectedDueDate) : nil
+        }
+        return .dated(due)
     }
 
     /// One undated entry as it travels. `created_ts` is EventKit's creationDate when it
@@ -258,6 +262,28 @@ final class RemindersWriter {
         return Int(date.timeIntervalSince1970 / 60)
     }
 
+    static func allDayComponents(_ value: String) -> DateComponents? {
+        guard value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", options: .regularExpression) != nil else { return nil }
+        let parts = value.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3, parts[0] > 0 else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let fields = DateComponents(year: parts[0], month: parts[1], day: parts[2])
+        guard let date = calendar.date(from: fields) else { return nil }
+        let roundtrip = calendar.dateComponents([.year, .month, .day], from: date)
+        guard roundtrip.year == parts[0], roundtrip.month == parts[1], roundtrip.day == parts[2] else { return nil }
+        // No hour, timezone or absolute alarm: this is a floating calendar date.
+        return DateComponents(calendar: Calendar(identifier: .gregorian),
+                              year: parts[0], month: parts[1], day: parts[2])
+    }
+
+    private func allDayDate(_ reminder: EKReminder) -> String? {
+        guard let due = reminder.dueDateComponents, due.hour == nil, due.minute == nil,
+              due.second == nil, let year = due.year, let month = due.month, let day = due.day else { return nil }
+        let value = String(format: "%04d-%02d-%02d", year, month, day)
+        return Self.allDayComponents(value) == nil ? nil : value
+    }
+
     private func failure(_ message: String, uncertain: Bool = false) -> [String: Any] {
         ["ok": false, "status": uncertain ? "unknown" : "failed", "error": message]
     }
@@ -267,7 +293,7 @@ final class RemindersWriter {
     func performVerified(kind: String, actionID: String, sourceID: String = "",
                          expectedTitle: String = "", expectedDueTs: Double? = nil,
                          title: String = "", dueTs: Double = 0,
-                         commitmentKind: String = "reminder") -> [String: Any] {
+                         commitmentKind: String = "reminder", dueDate: String = "", expectedDueDate: String = "") -> [String: Any] {
         guard isAuthorized else { return failure("Reminders access is unavailable") }
         guard !actionID.isEmpty, actionID.count <= 128,
               actionID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "._:-".contains($0)) })
@@ -275,7 +301,7 @@ final class RemindersWriter {
 
         if kind == "create_reminder" {
             guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  dueTs.isFinite, dueTs > 0,
+                  (dueDate.isEmpty ? (dueTs.isFinite && dueTs > 0) : Self.allDayComponents(dueDate) != nil),
                   ["reminder", "assignment", "exam", "meeting", "event"].contains(commitmentKind),
                   let list = store.defaultCalendarForNewReminders() else {
                 return failure("Reminder title, due date, or destination is unavailable")
@@ -284,17 +310,26 @@ final class RemindersWriter {
             item.title = title
             item.calendar = list
             item.notes = marker(actionID, kind: commitmentKind)
-            let due = Date(timeIntervalSince1970: dueTs)
-            item.dueDateComponents = Calendar.current.dateComponents(
-                [.year, .month, .day, .hour, .minute], from: due)
-            item.addAlarm(EKAlarm(absoluteDate: due))
+            if let components = Self.allDayComponents(dueDate) {
+                item.dueDateComponents = components
+            } else {
+                let due = Date(timeIntervalSince1970: dueTs)
+                item.dueDateComponents = Calendar.current.dateComponents(
+                    [.year, .month, .day, .hour, .minute], from: due)
+                item.addAlarm(EKAlarm(absoluteDate: due))
+            }
             do { try store.save(item, commit: true) }
             catch { return failure("Native reminder creation outcome is unknown", uncertain: true) }
             let id = item.calendarItemIdentifier
             guard !id.isEmpty, let readback = store.calendarItem(withIdentifier: id) as? EKReminder,
                   readback.notes == marker(actionID, kind: commitmentKind), readback.title == title,
-                  dueMinute(readback) == Int(dueTs / 60) else {
+                  (dueDate.isEmpty ? (dueMinute(readback) == Int(dueTs / 60) && allDayDate(readback) == nil)
+                                   : (allDayDate(readback) == dueDate && (readback.alarms ?? []).isEmpty)) else {
                 return failure("Created reminder could not be read back", uncertain: true)
+            }
+            if !dueDate.isEmpty {
+                return ["ok": true, "status": "succeeded", "error": "", "source_id": id,
+                        "title": readback.title ?? "", "all_day": true, "due_date": allDayDate(readback)!]
             }
             return ["ok": true, "status": "succeeded", "error": "", "source_id": id,
                     "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
@@ -303,7 +338,7 @@ final class RemindersWriter {
         // An undated target (expected due time null) is allowed only for delete_reminder and
         // only while the reminder still has no due date and is still incomplete. Its title is
         // compared in the normalised form the undated sync sent (undatedTitle).
-        guard let target = Self.exactTarget(kind: kind, expectedDueTs: expectedDueTs),
+        guard let target = Self.exactTarget(kind: kind, expectedDueTs: expectedDueTs, expectedDueDate: expectedDueDate),
               !sourceID.isEmpty, !expectedTitle.isEmpty
         else { return failure("Invalid exact reminder target") }
         guard let item = store.calendarItem(withIdentifier: sourceID) as? EKReminder else {
@@ -315,8 +350,13 @@ final class RemindersWriter {
                   !item.isCompleted else {
                 return failure("Reminder changed since selection; nothing changed")
             }
+        case .allDay(let expectedDate):
+            guard item.title == expectedTitle, allDayDate(item) == expectedDate else {
+                return failure("Reminder date or mode changed since selection; nothing changed")
+            }
         case .dated(let expectedDue):
-            guard item.title == expectedTitle, dueMinute(item) == Int(expectedDue / 60) else {
+            guard item.title == expectedTitle, allDayDate(item) == nil,
+                  dueMinute(item) == Int(expectedDue / 60) else {
                 return failure("Reminder changed since selection; nothing changed")
             }
         }
@@ -326,19 +366,29 @@ final class RemindersWriter {
                 return failure("Reminder was completed since selection; nothing changed")
             }
             guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  dueTs.isFinite, dueTs > 0 else { return failure("Invalid reminder update") }
+                  (dueDate.isEmpty ? (dueTs.isFinite && dueTs > 0) : Self.allDayComponents(dueDate) != nil)
+            else { return failure("Invalid reminder update") }
             item.title = title
-            let due = Date(timeIntervalSince1970: dueTs)
-            item.dueDateComponents = Calendar.current.dateComponents(
-                [.year, .month, .day, .hour, .minute], from: due)
             for alarm in item.alarms ?? [] { item.removeAlarm(alarm) }
-            item.addAlarm(EKAlarm(absoluteDate: due))
+            if let components = Self.allDayComponents(dueDate) {
+                item.dueDateComponents = components
+            } else {
+                let due = Date(timeIntervalSince1970: dueTs)
+                item.dueDateComponents = Calendar.current.dateComponents(
+                    [.year, .month, .day, .hour, .minute], from: due)
+                item.addAlarm(EKAlarm(absoluteDate: due))
+            }
             do { try store.save(item, commit: true) }
             catch { return failure("Native reminder update outcome is unknown", uncertain: true) }
             guard let readback = store.calendarItem(withIdentifier: sourceID) as? EKReminder,
                   !readback.isCompleted, readback.title == title,
-                  dueMinute(readback) == Int(dueTs / 60) else {
+                  (dueDate.isEmpty ? (dueMinute(readback) == Int(dueTs / 60) && allDayDate(readback) == nil)
+                                   : (allDayDate(readback) == dueDate && (readback.alarms ?? []).isEmpty)) else {
                 return failure("Updated reminder could not be read back", uncertain: true)
+            }
+            if !dueDate.isEmpty {
+                return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
+                        "title": readback.title ?? "", "all_day": true, "due_date": allDayDate(readback)!]
             }
             return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
                     "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
@@ -370,7 +420,7 @@ final class RemindersWriter {
     /// the exact EventKit ID. No negative search result authorizes a retry.
     func reconcileVerified(kind: String, actionID: String, sourceID: String = "",
                            title: String = "", dueTs: Double = 0,
-                           commitmentKind expectedKind: String = "reminder") async -> [String: Any] {
+                           commitmentKind expectedKind: String = "reminder", dueDate: String = "") async -> [String: Any] {
         guard isAuthorized else { return failure("Reminders access is unavailable", uncertain: true) }
         if kind == "create_reminder" {
             let found: [EKReminder]? = await withCheckedContinuation { continuation in
@@ -380,10 +430,16 @@ final class RemindersWriter {
             guard let found else { return failure("Reminder reconciliation read failed", uncertain: true) }
             let matches = found.filter { hasMarker($0.notes, actionID: actionID) }
             guard matches.count == 1, let item = matches.first,
-                  item.title == title, dueMinute(item) == Int(dueTs / 60),
+                  item.title == title,
+                  (dueDate.isEmpty ? (dueMinute(item) == Int(dueTs / 60) && allDayDate(item) == nil)
+                                   : (allDayDate(item) == dueDate && (item.alarms ?? []).isEmpty)),
                   commitmentKind(item) == expectedKind,
                   !item.calendarItemIdentifier.isEmpty else {
                 return failure("Reminder creation remains uncertain", uncertain: true)
+            }
+            if !dueDate.isEmpty {
+                return ["ok": true, "status": "succeeded", "error": "", "source_id": item.calendarItemIdentifier,
+                        "title": item.title ?? "", "all_day": true, "due_date": allDayDate(item)!]
             }
             return ["ok": true, "status": "succeeded", "error": "",
                     "source_id": item.calendarItemIdentifier, "title": title,
@@ -403,8 +459,13 @@ final class RemindersWriter {
                     "is_completed": true]
         }
         guard kind == "update_reminder", !item.isCompleted, item.title == title,
-              dueMinute(item) == Int(dueTs / 60) else {
+              (dueDate.isEmpty ? (dueMinute(item) == Int(dueTs / 60) && allDayDate(item) == nil)
+                               : (allDayDate(item) == dueDate && (item.alarms ?? []).isEmpty)) else {
             return failure("Reminder update remains uncertain", uncertain: true)
+        }
+        if !dueDate.isEmpty {
+            return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
+                    "title": item.title ?? "", "all_day": true, "due_date": allDayDate(item)!]
         }
         return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
                 "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
@@ -531,8 +592,11 @@ final class RemindersWriter {
                     "kind": self.commitmentKind(r),
                     "title": r.title ?? "(untitled)",
                     "context": calendar.title,
-                    "when_ts": date.timeIntervalSince1970,
-                    "all_day": false,
+                    "when_ts": (self.allDayDate(r) != nil
+                        ? (Calendar.current.date(byAdding: .day, value: 1, to: date)?.addingTimeInterval(-60) ?? date)
+                        : date).timeIntervalSince1970,
+                    "all_day": self.allDayDate(r) != nil,
+                    "due_date": self.allDayDate(r) as Any? ?? NSNull(),
                     "location": "",
                 ]
             }

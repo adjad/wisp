@@ -28,6 +28,8 @@ struct NotchDayView: View {
     // Evening check-in and weekly goal pulse (CheckInView.swift): one tap per
     // task at the end of the day, so tomorrow's plan starts honest.
     @ObservedObject private var checkIn = CheckInModel.shared
+    /// The Calendar block whose Move sub-panel is open from the timeline's ⋯ menu.
+    @State private var movingEvent: CheckInEvent?
     // Old undated reminders to keep or delete (StaleReminders.swift).
     @ObservedObject private var staleReminders = DayCards.staleReminders
 
@@ -53,6 +55,7 @@ struct NotchDayView: View {
                 CheckInSection(model: checkIn, day: today.day, timezone: today.timezone,
                                clock: today.clock,
                                onAsk: { model.askAbout($0) },
+                               onOpenEvent: openInCalendar,
                                onChanged: { Task { await today.refresh(); model.onResize() } })
                 GoalPulseSection(model: checkIn)
             }
@@ -76,6 +79,48 @@ struct NotchDayView: View {
             guard due, today.isShowingCurrentDay else { return }
             Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
         }
+        // A fresh plan for the shown day: a timeline cancel whose block changed or
+        // left is dropped before it is sent, and a Move panel for such a block is
+        // closed. No plan (a failed refresh, a day change) proves nothing and
+        // changes nothing.
+        .onChange(of: plan?.generated_at) { _, _ in
+            guard let plan else { return }
+            let events = plan.displayBlocks.compactMap(\.calendarEvent)
+            checkIn.reconcileTimelineCancels(events)
+            if let movingEvent, !events.contains(where: { CheckInModel.sameOccurrence($0, movingEvent) }) { closeMove() }
+        }
+        // A cancel the service answered: the plan is read again, so a cancelled
+        // block goes and a refused one shows the fresh facts the service now has.
+        .onChange(of: checkIn.cancelling) { before, now in
+            guard !before.isSubset(of: now) else { return }
+            Task { await today.refresh(afterMutation: true); model.onResize() }
+        }
+    }
+
+    /// The exact occurrence when Calendar still has it; else Calendar itself.
+    private func openInCalendar(_ event: CheckInEvent) {
+        let url = event.sourceId.flatMap { id in
+            event.whenTs.flatMap { model.showCalendarEventURL?(id, $0) }
+        } ?? URL(string: "ical://")!
+        NSWorkspace.shared.open(url)
+    }
+
+    /// The Calendar block behind a timeline item, as the check-in card sees an
+    /// event; nil for other blocks and when the service didn't describe it.
+    private func calendarEvent(for item: DayItem) -> CheckInEvent? {
+        guard item.style == .calendar, let id = item.blockID else { return nil }
+        return plan?.displayBlocks.first { $0.id == id }?.calendarEvent
+    }
+
+    private func openMove(_ event: CheckInEvent) {
+        movingEvent = event
+        model.onResize()
+    }
+
+    private func closeMove() {
+        guard movingEvent != nil else { return }
+        movingEvent = nil
+        model.onResize()
     }
 
     /// Old undated reminders: keep or delete, one quiet row each. Delete runs only
@@ -141,6 +186,18 @@ struct NotchDayView: View {
             Text(warning).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
                 .lineLimit(2).fixedSize(horizontal: false, vertical: true)
         }
+        if let movingEvent {
+            // The check-in card's Move sub-panel, for a block picked on the timeline.
+            CheckInMovePanel(model: checkIn, event: movingEvent, day: today.day, timezone: today.timezone,
+                             clock: today.clock, backHelp: "Back to the timeline (Esc)",
+                             onAsk: { model.askAbout($0) }, onClose: closeMove)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
+                .onExitCommand { closeMove() }
+                .transaction { $0.animation = nil }
+        }
         lane(timeline)
         if !timeline.styles.isEmpty { legend(timeline.styles) }
         if today.isShowingCurrentDay && !staleReminders.asks.isEmpty {
@@ -161,7 +218,8 @@ struct NotchDayView: View {
         let dayStart = bounds.start.timeIntervalSince1970
         let blocks = plan.displayBlocks.map {
             DayBlockInput(id: $0.id, title: $0.title, start: $0.start, end: $0.end, kind: $0.kind,
-                          taskID: $0.task_id, patternID: $0.pattern_id, evidenceID: $0.evidence_id)
+                          taskID: $0.task_id, patternID: $0.pattern_id, evidenceID: $0.evidence_id,
+                          members: ($0.members ?? []).map { DayMember(title: $0.title, evidenceID: $0.evidence_id) })
         }
         let caught = attention.items.filter { !ignoredCaught.contains($0.source_id) }.map {
             DayCaughtInput(id: $0.source_id, title: $0.title ?? "", when: $0.event_ts ?? $0.due_ts, state: $0.state)
@@ -254,7 +312,9 @@ struct NotchDayView: View {
     private func positioned(_ item: DayItem, _ timeline: DayTimeline, width: CGFloat) -> some View {
         let column: CGFloat = (width - 10) / CGFloat(item.columns)
         let top: CGFloat = y(item.start, timeline)
-        let tall: CGFloat = max(22, y(item.end, timeline) - top - 3)
+        // The same shortest size DayTimeline.arrange lays blocks out by, less the gap.
+        let shortest = CGFloat(DayTimeline.minimumDrawn / DayTimeline.hour) * hourHeight
+        let tall: CGFloat = max(shortest, y(item.end, timeline) - top - 3)
         let wide: CGFloat = max(40, column - 4)
         let left: CGFloat = 8 + CGFloat(item.column) * column
         return blockView(item, compact: tall < 32).frame(width: wide, height: tall).offset(x: left, y: top)
@@ -306,17 +366,20 @@ struct NotchDayView: View {
     /// A short block keeps only its title; its detail is in the VoiceOver label.
     private func blockView(_ item: DayItem, compact: Bool) -> some View {
         HStack(alignment: compact ? .center : .top, spacing: 6) {
+            let status = cancelStatus(item)
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title).font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(item.style == .usual ? Theme.textSecondary : Theme.textPrimary)
                     .lineLimit(1)
+                    .strikethrough(status != nil && !status!.failed)
                 if !compact {
-                    Text(detail(item)).font(.system(size: 10.5)).foregroundStyle(DayInk.detail(item.style)).lineLimit(1)
+                    Text(detail(item)).font(.system(size: 10.5))
+                        .foregroundStyle(status?.failed == true ? Theme.bad : DayInk.detail(item.style)).lineLimit(1)
                 }
             }
             Spacer(minLength: 2)
             // What's over has nothing left to act on.
-            if !item.past { actions(item) }
+            if !item.past { trailing(item) }
         }
         .padding(.horizontal, 8).padding(.vertical, compact ? 1 : 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -326,11 +389,28 @@ struct NotchDayView: View {
         .opacity(item.past ? 0.45 : 1)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(item.title), \(detail(item)), \(today.clock(item.start)) to \(today.clock(item.end))"
+                            + (item.members.count > 1 ? ", covers " + item.members.map(\.title).joined(separator: "; ") : "")
                             + (item.past ? ", already over" : ""))
+    }
+
+    /// Where a timeline cancel of this block stands, for the detail line: the
+    /// Undo bar's words while it can be undone, then what the service said.
+    private func cancelStatus(_ item: DayItem) -> (text: String, failed: Bool)? {
+        guard let event = calendarEvent(for: item) else { return nil }
+        if let pending = checkIn.pendingCancels[event.id] {
+            return (CheckInCancel.undoLabel(inviteeCount: pending.event.inviteeCount ?? 0), false)
+        }
+        if checkIn.cancelling.contains(event.id) { return ("Cancelling…", false) }
+        if let done = checkIn.cancelled[event.id] { return (done, false) }
+        if let failed = checkIn.cancelFailures[event.id] {
+            return (failed.failure.isUncertain ? "Check Calendar: " + failed.failure.message : failed.failure.message, true)
+        }
+        return nil
     }
 
     /// A block's detail, with its planner warning in plain words when it has one.
     private func detail(_ item: DayItem) -> String {
+        if let status = cancelStatus(item) { return status.text }
         guard let id = item.blockID,
               let block = plan?.displayBlocks.first(where: { $0.id == id }),
               let warning = block.warnings.lazy.compactMap(DayTimeline.plainWarning).first else { return item.detail }
@@ -338,6 +418,23 @@ struct NotchDayView: View {
     }
 
     // MARK: Actions
+
+    /// The block's actions, or where its timeline cancel stands: Undo while it
+    /// can still be undone, a spinner while the service works, nothing once it
+    /// is cancelled (the block leaves with the next plan).
+    @ViewBuilder private func trailing(_ item: DayItem) -> some View {
+        if let event = calendarEvent(for: item), let pending = checkIn.pendingCancels[event.id] {
+            NotchChrome.small("Undo") { checkIn.undoCancel(pending.event) }
+                .help("Keeps the event; nothing has been sent yet")
+                .accessibilityLabel("Undo cancelling “\(CheckInSection.plainTitle(event.title))”; 5 seconds")
+        } else if let event = calendarEvent(for: item), checkIn.cancelling.contains(event.id) {
+            ProgressView().controlSize(.small)
+        } else if let event = calendarEvent(for: item), checkIn.cancelled[event.id] != nil {
+            EmptyView()
+        } else {
+            actions(item)
+        }
+    }
 
     /// The block's main action as a button, and everything else in one ⋯ menu.
     @ViewBuilder private func actions(_ item: DayItem) -> some View {
@@ -373,6 +470,18 @@ struct NotchDayView: View {
                     .filter { item.end + Double($0.0 * 60) <= today.dayInterval.end.timeIntervalSince1970 }, id: \.0) { later in
                     Button(later.1) { keep(item, laterBy: later.0) }
                 }
+                // A grouped review: what it covers, each one askable on its own.
+                if item.members.count > 1 {
+                    Section("In this block") {
+                        ForEach(Array(item.members.enumerated()), id: \.offset) { _, member in
+                            Button(member.title) {
+                                let reference = plan?.workspace?.attention.first { $0.id == member.evidenceID }?.reference ?? ""
+                                model.askAbout(member.title, reference: reference)
+                            }
+                            .help("Ask Wisp about this one")
+                        }
+                    }
+                }
             case .task:
                 if let task = task(for: item) {
                     Button("15 minutes shorter") {
@@ -389,7 +498,11 @@ struct NotchDayView: View {
                 }
                 Button("Ignore") { ignore(item) }
             case .calendar:
-                Button("Open Calendar") { NotchChrome.open(.calendar) }
+                if let event = calendarEvent(for: item) {
+                    eventEntries(item, event)
+                } else {
+                    Button("Open Calendar") { NotchChrome.open(.calendar) }
+                }
             case .needsYou, .overdue:
                 if let need = need(for: item), need.source == "reminders" {
                     Button("Open Reminders") { NotchChrome.open(.reminders) }
@@ -406,6 +519,39 @@ struct NotchDayView: View {
         .disabled(today.busy)
         .help("More")
         .accessibilityLabel("More actions for \(item.title)")
+    }
+
+    /// Cancel, Move and their stand-ins for a Calendar block, by the check-in
+    /// card's rules (CheckInCancel.menuEntries). Cancel starts the same 5-second
+    /// Undo on the shared queue; Undo is on the block itself. After a cancel
+    /// the service couldn't confirm, nothing here may send another: only Open.
+    @ViewBuilder private func eventEntries(_ item: DayItem, _ event: CheckInEvent) -> some View {
+        let failure = checkIn.cancelFailures[event.id]?.failure
+        let entries: [CheckInCancel.MenuEntry] = failure?.isUncertain == true
+            ? [.reason(failure!.message), .open]
+            : CheckInCancel.menuEntries(described: true, canCancel: event.canCancel, canMove: event.canMove,
+                                        calendarWritable: event.calendarWritable, organizerIsUser: event.organizerIsUser,
+                                        cancelReason: event.cancelBlocked, isPast: item.past)
+        ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+            switch entry {
+            case .cancel:
+                Button(failure?.canRetry == true ? "Try cancelling again" : "Cancel event") {
+                    if movingEvent?.id == event.id { closeMove() }   // not moving what is being cancelled
+                    checkIn.beginCancel(event, timezone: today.timezone.identifier, fromCard: false)
+                }
+                .help("Removes it from your Calendar after a 5-second Undo; Calendar tells its invitees")
+            case .move:
+                Button("Move…") { openMove(event) }
+                    .help("Pick another time; Wisp finds free ones")
+            case .reason(let text):
+                Text(text)
+            case .decline:
+                Button("Decline in Calendar ↗") { openInCalendar(event) }
+                    .help(event.cancelReason)
+            case .open:
+                Button("Open in Calendar ↗") { openInCalendar(event) }
+            }
+        }
     }
 
     private func task(for item: DayItem) -> TodayTask? {

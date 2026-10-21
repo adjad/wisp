@@ -173,8 +173,8 @@ async def cancel_event(body: CancelEvent, request: Request):
             _refuse(409, "unknown", "Wisp couldn't confirm whether it was cancelled. Check Calendar before trying again.")
         if "changed since" in error or "no longer at the time" in error:
             _refuse(409, "not_current", error)
-        if "Only the organizer" in error or "who organizes" in error:
-            _refuse(403, "not_allowed", error)
+        if "Only the organizer" in error or "who organizes" in error or "can't be changed" in error:
+            _refuse(403, "not_allowed", error)   # the app's own refusal: permanent, never retried
         if "not connected" in error:
             _refuse(503, "unavailable", error)
         _refuse(502, "failed", error)

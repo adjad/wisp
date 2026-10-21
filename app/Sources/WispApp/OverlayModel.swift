@@ -187,6 +187,11 @@ final class OverlayModel: ObservableObject {
         // Rows that show the report read it through this model, so redraw with it.
         reportObserver = report.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
+    /// True while the panel retracts into the bar: the content fades out at
+    /// the start of the close so the shrinking shape never slices live text.
+    /// Cleared when the bar takes over or the panel opens again.
+    @Published var closing = false
+
     @Published var collapsed = false {
         didSet {
             if collapsed && !oldValue {
@@ -204,6 +209,8 @@ final class OverlayModel: ObservableObject {
     @Published var dailySyncLabel = ""
     @Published var sourceSyncStatuses: [WispClient.SourceSyncStatus] = []
     @Published private(set) var queuedPromptCount = 0
+    /// The line beside the box while prompts wait: what they wait on, never silent.
+    @Published private(set) var queueLabel = ""
     private var sourceSyncTask: Task<Void, Never>?
     private var sourceSyncID = UUID()
     private var trackedSyncSources: [String] = []
@@ -262,6 +269,10 @@ final class OverlayModel: ObservableObject {
     // re-subscribed after any drop, so the same brief can arrive twice.
 
     var onResize: () -> Void = {}
+    /// Fit the window now, in this run-loop turn (onResize waits one turn).
+    /// For a change whose animation starts on the next frame, so a grow lands
+    /// before the first frame instead of after it.
+    var onResizeNow: () -> Void = {}
     // Collapse/expand resizes animate; streaming resizes (onResize) are instant.
     var onCollapsedChanged: () -> Void = {}
     // Set by the app delegate: expand / collapse WITH the drop animation.
@@ -383,6 +394,10 @@ final class OverlayModel: ObservableObject {
     // Debug metadata for the turn currently in flight — folded into a Turn
     // record on "done"/"error" (see handle()). Reset in submit().
     private var lastDroppedReport: [String: Any]?
+    /// Dropped prompts the server may have started on (their stream had begun),
+    /// set aside because the user had typed something else meanwhile. Never
+    /// sent by itself: Return on an empty box only puts the latest back in the box.
+    private var setAside = SetAsidePrompts()
     private var lastDroppedReportKey: String?
     private var turnTraceID: String?
     private var turnStartedAt: Date?
@@ -445,7 +460,17 @@ final class OverlayModel: ObservableObject {
 
     func submit() {
         let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else { return }
+        guard !prompt.isEmpty else {
+            // Return on an empty box first brings back a prompt set aside after
+            // a drop (to read, not to send), then sends on prompts held behind it.
+            if let back = setAside.restore() {
+                input = back.text
+                attachedImage = back.image
+                attachedImageName = back.imageName
+                researchMode = back.researchMode
+            } else if let next = submissionState.resume() { syncQueue(); start(next) }
+            return
+        }
         if let command = NotchCommand.match(prompt) {
             input = ""
             run(command)
@@ -460,8 +485,28 @@ final class OverlayModel: ObservableObject {
         attachedImage = nil
         attachedImageName = nil
         let dispatch = submissionState.submit(submission)
+        syncQueue()
+        if let dispatch { start(dispatch) } else {
+            // Queued behind something slow: say so, rather than a silent "1 queued".
+            switch submissionState.held ? nil : submissionState.waiting {
+            case .summary: showTransientNotice("Waiting for the daily summary to finish. Your message sends right after it.", duration: 6)
+            case .research: showTransientNotice("Research is open. Your message sends when you go back to chat.", duration: 6)
+            default: break
+            }
+            onResize()
+        }
+    }
+
+    private func syncQueue() {
         queuedPromptCount = submissionState.queuedCount
-        if let dispatch { start(dispatch) } else { onResize() }
+        let count = submissionState.queuedCount
+        switch submissionState.waiting {
+        case .summary: queueLabel = "\(count) waiting for the summary"
+        case .research: queueLabel = "\(count) waiting for research"
+        case .resend: queueLabel = "\(count) waiting for your message"
+        case .reply: queueLabel = "\(count) queued"
+        case nil: queueLabel = ""
+        }
     }
 
     private func start(_ dispatch: PromptDispatch) {
@@ -745,8 +790,9 @@ final class OverlayModel: ObservableObject {
         dailySummaryRunning = false
         briefComposing = false
         submissionState.reset()
+        setAside.reset()
         researchDispatchID = nil
-        queuedPromptCount = 0
+        syncQueue()
         stopSyncProgress()
         input = ""; answer = ""; reasoning = ""; activity = []
         routeSource = ""; statusText = ""
@@ -1073,11 +1119,11 @@ final class OverlayModel: ObservableObject {
             answer += ev.str("text"); phase = .streaming
         case "error":
             // A "dropped" error that arrived before ANY reply content (no route,
-            // no tokens, no tool activity) is almost always a stale-socket close,
-            // not a real failure. Silently restore the prompt and remove the dead
-            // user bubble so a single Return re-sends it — instead of leaving an
-            // orphan question and forcing a retype. We do NOT auto-resend, since a
-            // tool command ("delete …") may already have run server-side.
+            // no tokens, no tool activity): put the prompt back and remove the
+            // dead user bubble so a single Return re-sends it, and say so. Only
+            // runAgent resends by itself, and only a prompt the server provably
+            // never ran ("unsent"); a tool command ("delete …") may already have
+            // run when the stream had begun.
             flushPendingDelta()
             let gotNothing = answer.isEmpty && activity.isEmpty && role.isEmpty
             if ev.bool("dropped") && gotNothing {
@@ -1085,16 +1131,34 @@ final class OverlayModel: ObservableObject {
                 if let id = turnTraceID { lastDroppedReport?["trace_id"] = id }
                 // One key per dropped turn, so reopening its report keeps the note.
                 lastDroppedReportKey = "chat:dropped:" + (turnTraceID ?? UUID().uuidString)
-                if let retry = submissionState.dropForRetry(dispatchID) {
+                // Text typed meanwhile stays in the box. A prompt the server never
+                // ran then waits first in line; one whose stream had begun (a tool
+                // may have run) is only set aside, never queued to send again.
+                let typed = !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let unsent = ev.bool("unsent")
+                var place = AgentSend.Place.box
+                if typed && unsent {
+                    _ = submissionState.dropToQueue(dispatchID)
+                    place = .queued
+                } else if typed {
+                    setAside.push(submissionState.dropForRetry(dispatchID))
+                    place = .setAside
+                } else if let retry = submissionState.dropForRetry(dispatchID) {
                     input = retry.text
                     attachedImage = retry.image
                     attachedImageName = retry.imageName
                     researchMode = retry.researchMode
                 }
+                syncQueue()
                 if turns.last?.role == "user" {
                     turns.removeLast()
                 }
                 phase = .idle
+                // Never silent: say what happened and how to send it again.
+                showTransientNotice(AgentSend.notice(message: ev.str("message"), unsent: unsent,
+                                                     queued: submissionState.queuedCount, place: place,
+                                                     setAside: setAside.count),
+                                    duration: 12)
             } else {
                 let msg = ev.str("message").isEmpty ? "Something went wrong." : ev.str("message")
                 phase = .error
@@ -1138,7 +1202,7 @@ final class OverlayModel: ObservableObject {
 
     private func completeSubmission(_ dispatchID: UInt64) {
         let next = submissionState.complete(dispatchID)
-        queuedPromptCount = submissionState.queuedCount
+        syncQueue()
         if let next { start(next) } else { refreshRecentChats() }
     }
 
@@ -1351,6 +1415,9 @@ final class OverlayModel: ObservableObject {
     var onCreateCalendarEvent: ((_ title: String, _ startTs: Double,
                                  _ durationMin: Int, _ location: String) -> [String: Any])?
     var onDeleteCalendarEvent: ((_ identifier: String, _ occurrenceTs: Double?) -> [String: Any])?
+    /// Calendar's deep link to one synced occurrence, for the check-in card's
+    /// "Decline in Calendar" / "Open in Calendar"; nil when it is gone.
+    var showCalendarEventURL: ((_ identifier: String, _ startTs: Double) -> URL?)?
     /// Verified cancel of one occurrence (CalendarReader.cancelEvent).
     var onCancelCalendarEvent: ((_ identifier: String, _ expectedTitle: String, _ expectedStart: Double,
                                  _ expectedInvitees: Int) -> [String: Any])?
@@ -1360,10 +1427,10 @@ final class OverlayModel: ObservableObject {
     var onVerifiedReminderAction: ((_ kind: String, _ actionID: String, _ sourceID: String,
                                     _ expectedTitle: String, _ expectedDueTs: Double?,
                                     _ title: String, _ dueTs: Double,
-                                    _ commitmentKind: String) -> [String: Any])?
+                                    _ commitmentKind: String, _ dueDate: String, _ expectedDueDate: String) -> [String: Any])?
     var onReconcileReminderAction: ((_ kind: String, _ actionID: String, _ sourceID: String,
                                      _ title: String, _ dueTs: Double,
-                                     _ commitmentKind: String) async -> [String: Any])?
+                                     _ commitmentKind: String, _ dueDate: String) async -> [String: Any])?
     var onStartResearch: ((_ prompt: String) -> Void)?
     /// Opens this conversation in the Chat window. Called with the service
     /// session id, which is empty until the first reply of a new chat.
@@ -1391,7 +1458,7 @@ final class OverlayModel: ObservableObject {
             return action(ev.type, ev.str("action_id"), ev.str("source_id"),
                           ev.str("expected_title"), expectedDue,
                           ev.str("title"), ev.payload["due_ts"] as? Double ?? 0,
-                          ev.str("commitment_kind"))
+                          ev.str("commitment_kind"), ev.str("due_date"), ev.str("expected_due_date"))
         }
         if ev.type == "cancel_calendar_event" {
             guard !ev.str("source_id").isEmpty, !ev.str("expected_title").isEmpty,
@@ -1443,7 +1510,7 @@ final class OverlayModel: ObservableObject {
         }
         return await reconcile(ev.type, ev.str("action_id"), ev.str("source_id"),
                                ev.str("title"), ev.payload["due_ts"] as? Double ?? 0,
-                               ev.str("commitment_kind"))
+                               ev.str("commitment_kind"), ev.str("due_date"))
     }
 
     private func handleAssistantEvent(_ ev: WispClient.Event) async -> Bool {

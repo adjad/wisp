@@ -233,6 +233,7 @@ def cached_sources(monkeypatch):
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
     db.executescript("CREATE TABLE today_source_sync(source TEXT,payload TEXT); CREATE TABLE commitments(id TEXT,source TEXT,source_id TEXT,title TEXT,when_ts REAL,kind TEXT,status TEXT);")
+    db.execute('CREATE TEMP VIEW scheduled_commitments AS SELECT *, 0 AS all_day, NULL AS due_date FROM commitments')
     db.execute("INSERT INTO today_source_sync VALUES('reminders',?)", (json.dumps(state()["sources"]["reminders"]),))
     class Store:
         view = dict(freshness="current", status="complete", total=0)
@@ -383,14 +384,18 @@ def test_senders_show_a_display_name_never_an_address_in_brackets(sender, addres
 def test_messages_without_full_disk_access_say_so(cached_sources, monkeypatch):
     from service.assistant.daily_workspace import collect_evidence
     store, _, _, messages, _ = cached_sources
-    monkeypatch.setattr(messages, "messages_unavailable_reason", lambda: "chat.db not readable (Full Disk Access?)")
+    monkeypatch.setattr(messages, "messages_unavailable_kind", lambda: "full_disk_access")
     evidence = collect_evidence(store, state(), DAY, ZONE, now=NOW)["messages"]
     assert evidence["blocked"] == "full_disk_access" and evidence["detail"] == "Messages need Full Disk Access."
     coverage = {c["source"]: c for c in run(e={"messages": evidence})["source_coverage"]}
     assert coverage["messages"]["blocked"] == "full_disk_access" and not coverage["messages"]["ready"]
-    monkeypatch.setattr(messages, "messages_unavailable_reason", lambda: "chat.db not readable")
-    other = collect_evidence(store, state(), DAY, ZONE, now=NOW)["messages"]
-    assert "blocked" not in other and "blocked" not in {c["source"]: c for c in run(e={"messages": other})["source_coverage"]}["messages"]
+    # Another failure, or a reason that only mentions Full Disk Access, never
+    # sends the user to that setting: only the reader's classified kind does.
+    for kind in ("missing", "unreadable", ""):
+        monkeypatch.setattr(messages, "messages_unavailable_kind", lambda kind=kind: kind)
+        monkeypatch.setattr(messages, "messages_unavailable_reason", lambda: "chat.db not readable (Full Disk Access?)")
+        other = collect_evidence(store, state(), DAY, ZONE, now=NOW)["messages"]
+        assert "blocked" not in other and "blocked" not in {c["source"]: c for c in run(e={"messages": other})["source_coverage"]}["messages"]
 
 
 @pytest.mark.parametrize("title,quote", [("Study for the quiz", "Quiz on October 14 at 5pm"),

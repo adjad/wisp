@@ -64,6 +64,7 @@ enum MailReplyScriptChecks {
             "{" + MailReplyScript.fields.map { MailReplyScript.literal(value[$0]!)! }.joined(separator: ", ") + "}"
         }
         func compare(_ actual: String, _ approved: String, matches: Bool) {
+            if CommandLine.arguments.contains("--compile-only") { return }
             let source = MailReplyScript.exactValueHandler
                 + "\nreturn my exactReplyValue(\(actual), \(approved))"
             require(!source.contains("tell application"), "Comparator probe can contact an application")
@@ -108,14 +109,33 @@ enum MailReplyScriptChecks {
             let end = reader[start...].range(of: "\"\"\"")!.lowerBound
             return String(reader[start..<end])
         }
-        let inbox = template(after: "let n = esc(account)")
-            .replacingOccurrences(of: "\\(n)", with: "Work")
+        let inbox = template(after: "let capturedLabel = esc(account.label)")
+            .replacingOccurrences(of: "\\(nativeID)", with: "native-source-id")
+            .replacingOccurrences(of: "\\(capturedLabel)", with: "Work")
         let accounts = template(after: "private let accountsScript")
-        let raw = template(after: "private func rawScript")
-            .replacingOccurrences(of: "\\(refDateSetup)", with: template(after: "private let refDateSetup"))
-            .replacingOccurrences(of: "\\(inboxSource(account))", with: inbox)
-            .replacingOccurrences(of: "\\(acctNameFragment(account))", with: "set acctName to \"Work\"")
-            .replacingOccurrences(of: "\\(limit)", with: "2")
+        func scanTemplate(_ marker: String) -> String {
+            template(after: marker)
+                .replacingOccurrences(of: "\\(refDateSetup)", with: template(after: "private let refDateSetup"))
+                .replacingOccurrences(of: "\\(inboxSource(account))", with: inbox)
+                .replacingOccurrences(of: "\\(acctNameFragment(account))", with: "set acctName to \"Work\"")
+                .replacingOccurrences(of: "\\(esc(account?.id ?? \"\"))", with: "native-source-id")
+                .replacingOccurrences(of: "\\(esc(account?.id ?? \"*\"))", with: "native-source-id")
+                .replacingOccurrences(of: "\\(esc(account?.label ?? \"Mail\"))", with: "Work")
+                .replacingOccurrences(of: "\\(capName)", with: "Work")
+                .replacingOccurrences(of: "\\(HistoryMerge.appleScriptCutoff(cutoff))", with: "1")
+                .replacingOccurrences(of: "\\(start)", with: "1")
+                .replacingOccurrences(of: "\\(count)", with: "2")
+                .replacingOccurrences(of: "\\(limit)", with: "2")
+        }
+        let raw = scanTemplate("private func rawScript")
+        let header = scanTemplate("private func headerScript")
+        let history = scanTemplate("private func historyBatchScript")
+        require(inbox.contains("every account whose id is") && inbox.contains("count of matches"),
+                "Native scans must select exactly one stable account ID")
+        require(inbox.contains("enabled of scanAccount") && inbox.contains("name of scanAccount"),
+                "Native scans must reject changed or disabled inventory targets")
+        require(!inbox.contains("of account \"Work\"") && !reader.contains("accounts.first { $0.value == label }"),
+                "Native scan identity must not be inferred from a display label")
         require(raw.contains("fieldText contains FS") && raw.contains("fieldText contains RS"),
                 "Raw fields may corrupt record boundaries")
         require(raw.contains("acctID") && raw.contains("item 9 of rowFields"), "Raw account identity missing")
@@ -124,7 +144,7 @@ enum MailReplyScriptChecks {
                 "Duplicate account labels need a distinct raw-coverage failure code")
         require(reader.contains("rename one of the duplicate account labels"),
                 "Duplicate account labels need an actionable diagnostic")
-        for source in [accounts, raw, "tell application \"Mail\"\n" + inbox + "\nend tell"] {
+        for source in [accounts, raw, header, history, "tell application \"Mail\"\n" + inbox + "\nend tell"] {
             var error: NSDictionary?
             require(NSAppleScript(source: source)!.compileAndReturnError(&error),
                     "Mail reader script failed to compile: \(error ?? [:])")

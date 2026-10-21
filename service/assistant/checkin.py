@@ -119,11 +119,17 @@ def _task_row(task: dict) -> dict:
                                       "priority", "due_ts", "day", "carried_from", "origin_ts")}
 
 
+READ_ONLY_CALENDAR = "On a read-only calendar; Wisp can't change it from this Mac."
+
+
 def cancel_block_reason(row: dict) -> str:
     """Why a one-tap Cancel of this synced occurrence is not allowed, or "" when it is.
-    The same organizer rules as a move (CalendarMove.cancelRefusal checks them again on the
-    live event): invitees mean only the organizer may cancel, and unknown is refused."""
+    The same rules as the app's CalendarMove.cancelRefusal, which checks them again on the
+    live event: a read-only (subscribed) calendar is never changed, invitees mean only the
+    organizer may cancel, and an unknown organizer is refused."""
     invitees, organizer = row.get("invitee_count"), row.get("organizer_is_user")
+    if row.get("calendar_writable") is False:
+        return READ_ONLY_CALENDAR
     if invitees is None:
         return "Wisp hasn't synced this event's invitees yet; cancel it in Calendar."
     # Someone else's event is never cancelled, whatever its invitee count: an invitation
@@ -133,6 +139,63 @@ def cancel_block_reason(row: dict) -> str:
     if invitees and organizer is None:
         return "Calendar doesn't say who organizes this event; cancel it in Calendar."
     return ""
+
+
+def move_block_reason(row: dict) -> str:
+    """Why the card offers no Move for this synced occurrence, or "" when it may. Mirrors
+    CalendarMove.refusal so the card never offers a move the app would refuse: a read-only
+    calendar, someone else's event (only its organizer moves it), or an unknown organizer
+    with invitees. All-day events are the card's own rule (no time to move to)."""
+    invitees, organizer = row.get("invitee_count"), row.get("organizer_is_user")
+    if row.get("calendar_writable") is False:
+        return READ_ONLY_CALENDAR
+    if invitees is None:
+        return "Wisp hasn't synced this event's invitees yet; move it in Calendar."
+    if organizer is False:
+        return f"Only the organizer can move “{row.get('title', 'this event')}”; propose a new time in Calendar instead."
+    if invitees and organizer is None:
+        return "Calendar doesn't say who organizes this event; move it in Calendar."
+    return ""
+
+
+def occurrence_fields(store, source_id, when_ts) -> dict:
+    """What a one-tap Cancel or a Move needs to know about one synced occurrence: the
+    invitee count to state ("its N invitees will be notified") and send back, who
+    organizes it, whether its calendar can be written, and why Cancel or Move isn't
+    offered, if it isn't ("" when it is). The same facts for the check-in card's rows
+    and the Day timeline's Calendar blocks (annotate_calendar_blocks), so both surfaces
+    follow one rule. Unknown fields are None; an occurrence the store doesn't hold
+    blocks both with "Not in your synced Calendar."."""
+    found = (store.calendar_occurrence(source_id, when_ts)
+             if source_id and when_ts is not None and hasattr(store, "calendar_occurrence") else None)
+    return {"invitee_count": found["invitee_count"] if found else None,
+            "organizer_is_user": found["organizer_is_user"] if found else None,
+            "calendar_writable": found.get("calendar_writable") if found else None,
+            "cancel_blocked": cancel_block_reason(found) if found else "Not in your synced Calendar.",
+            "move_blocked": move_block_reason(found) if found else "Not in your synced Calendar."}
+
+
+def annotate_calendar_blocks(store, blocks: list[dict], commitments: list[dict], cache: dict | None = None) -> list[dict]:
+    """Copies of a plan's `blocks` (service/assistant/today.py build_plan) where each
+    Calendar block also carries its occurrence's source_id, all_day flag and
+    occurrence_fields, looked up through the commitment the block was built from. The
+    Day timeline's ⋯ menu offers Cancel and Move from these, under the check-in card's
+    rules. Blocks of any other kind, and a Calendar block whose commitment is gone, are
+    returned unchanged; the planner's own output is never mutated. `cache` (by source_id
+    and start) is shared across the lists of one snapshot, so each occurrence is read once."""
+    by_id = {c.get("id"): c for c in commitments if c.get("source") == "calendar"}
+    cache = {} if cache is None else cache
+    annotated = []
+    for block in blocks:
+        commitment = by_id.get(block.get("id")) if block.get("kind") == "calendar" else None
+        if commitment is None:
+            annotated.append(block)
+            continue
+        key = (commitment.get("source_id"), commitment.get("when_ts"))
+        if key not in cache:
+            cache[key] = occurrence_fields(store, *key)
+        annotated.append(dict(block, source_id=key[0], all_day=bool(commitment.get("all_day")), **cache[key]))
+    return annotated
 
 
 def _event_rows(store, day: str, timezone: str) -> list[dict]:
@@ -145,14 +208,7 @@ def _event_rows(store, day: str, timezone: str) -> list[dict]:
         row = {"id": event.get("id"), "title": event.get("title") or "Untitled event",
                "when_ts": event.get("when_ts"), "end_ts": event.get("end_ts"),
                "all_day": bool(event.get("all_day")), "source_id": event.get("source_id")}
-        # What a one-tap Cancel needs: the invitee count to state ("its N invitees will be
-        # notified") and send back, and why Cancel isn't offered, if it isn't.
-        found = (store.calendar_occurrence(row["source_id"], row["when_ts"])
-                 if row["source_id"] and row["when_ts"] is not None
-                 and hasattr(store, "calendar_occurrence") else None)
-        row["invitee_count"] = found["invitee_count"] if found else None
-        row["organizer_is_user"] = found["organizer_is_user"] if found else None
-        row["cancel_blocked"] = cancel_block_reason(found) if found else "Not in your synced Calendar."
+        row.update(occurrence_fields(store, row["source_id"], row["when_ts"]))
         rows.append(row)
     rows.sort(key=lambda r: (r["when_ts"] is None, r["when_ts"] or 0))
     return rows[:MAX_EVENTS]

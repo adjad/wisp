@@ -68,6 +68,9 @@ def fixture_rows(columns):
 
 def insert_rows(db, table, rows):
     for row in rows:
+        # Historical fixture tables predate the new nullable civil-date field.
+        if row.get('due_date') is None and 'due_date' not in {r[1] for r in db.execute(f'PRAGMA table_info({table})')}:
+            row = {k: v for k, v in row.items() if k != 'due_date'}
         columns = ", ".join(row)
         placeholders = ", ".join("?" for _ in row)
         db.execute(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", tuple(row.values()))
@@ -88,7 +91,7 @@ def create_fixture(path, layout, *, current_unique=False):
             (row["id"], stage, NOW - i - 1)
             for i, row in enumerate(rows) for stage in ("due", "T-30m")])
     db.close()
-    return [{**row, "organizer": row.get("organizer"), "account": row.get("account")}
+    return [{**row, "organizer": row.get("organizer"), "account": row.get("account"), "due_date": row.get("due_date")}
             for row in rows]
 
 

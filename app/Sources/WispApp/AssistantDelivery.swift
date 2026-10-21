@@ -31,13 +31,42 @@ final class AssistantDelivery {
         return value.doubleValue
     }
 
+    static func validReminderDate(_ value: Any?) -> Bool {
+        guard let value = value as? String,
+              value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", options: .regularExpression) != nil else { return false }
+        let parts = value.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3, parts[0] > 0 else { return false }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let components = DateComponents(year: parts[0], month: parts[1], day: parts[2])
+        guard let date = calendar.date(from: components) else { return false }
+        let readback = calendar.dateComponents([.year, .month, .day], from: date)
+        return readback.year == parts[0] && readback.month == parts[1] && readback.day == parts[2]
+    }
+
     static func calendarPayload(_ value: [String: Any], kind: String) -> [String: Any]? {
         if ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(kind) {
             var keys: Set<String> = ["type", "action_id"]
-            if kind == "create_reminder" { keys.formUnion(["title", "due_ts", "commitment_kind"]) }
+            if kind == "create_reminder" {
+                keys.formUnion(["title", "commitment_kind"])
+                if value["all_day"] != nil {
+                    guard jsonBoolean(value["all_day"]) == true, validReminderDate(value["due_date"]) else { return nil }
+                    keys.formUnion(["all_day", "due_date"])
+                } else { keys.insert("due_ts") }
+            }
             else {
                 keys.formUnion(["source_id", "expected_title", "expected_due_ts"])
-                if kind == "update_reminder" { keys.formUnion(["title", "due_ts"]) }
+                if value["expected_due_date"] != nil {
+                    guard validReminderDate(value["expected_due_date"]), number(value["expected_due_ts"]) != nil else { return nil }
+                    keys.insert("expected_due_date")
+                }
+                if kind == "update_reminder" {
+                    keys.insert("title")
+                    if value["all_day"] != nil {
+                        guard jsonBoolean(value["all_day"]) == true, validReminderDate(value["due_date"]) else { return nil }
+                        keys.formUnion(["all_day", "due_date"])
+                    } else { keys.insert("due_ts") }
+                }
             }
             guard Set(value.keys) == keys, value["type"] as? String == kind,
                   text(value["action_id"]) != nil else { return nil }
@@ -151,7 +180,11 @@ final class AssistantDelivery {
         if reminder && ok {
             allowed.insert("source_id")
             if kind == "create_reminder" || kind == "update_reminder" {
-                allowed.formUnion(["title", "due_ts"])
+                allowed.insert("title")
+                if value["all_day"] != nil {
+                    guard jsonBoolean(value["all_day"]) == true, validReminderDate(value["due_date"]) else { return nil }
+                    allowed.formUnion(["all_day", "due_date"])
+                } else { allowed.insert("due_ts") }
             } else { allowed.insert(kind == "complete_reminder" ? "is_completed" : "is_absent") }
         }
         guard Set(value.keys).isSubset(of: allowed),
@@ -164,8 +197,11 @@ final class AssistantDelivery {
         if reminder && ok {
             guard Set(value.keys) == allowed else { return nil }
             if kind == "create_reminder" || kind == "update_reminder" {
-                guard text(value["title"]) != nil, let due = number(value["due_ts"]), due > 0 else { return nil }
-                value["due_ts"] = due
+                guard text(value["title"]) != nil else { return nil }
+                if value["all_day"] == nil {
+                    guard let due = number(value["due_ts"]), due > 0 else { return nil }
+                    value["due_ts"] = due
+                }
             } else {
                 let field = kind == "complete_reminder" ? "is_completed" : "is_absent"
                 guard jsonBoolean(value[field]) == true else { return nil }
@@ -203,7 +239,9 @@ final class AssistantDelivery {
         var next = receipts
         next[id] = receipt
         do {
-            let data = try JSONSerialization.data(withJSONObject: next, options: [.sortedKeys])
+            // Receipt-file key order is not part of the delivery protocol. Keep
+            // canonical sorting in fingerprint(), where payload identity needs it.
+            let data = try JSONSerialization.data(withJSONObject: next)
             try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: path, options: [.atomic])
             receipts = next
@@ -372,7 +410,14 @@ final class AssistantDelivery {
             let receipt = receipts[id] ?? [:]
             let done = Set(receipt.keys) == ["kind", "done"] && Self.jsonBoolean(receipt["done"]) == true
             if !done {
-                guard await perform(event), save(id, ["kind": event.type, "done": true]) else { return false }
+                guard await perform(event) else { return false }
+                // A changed event only invalidates UI data. Repeating that
+                // refresh after a lost ACK is safe; persisting every refresh
+                // rewrites an ever-growing receipt file on the main actor.
+                // Preserve existing receipts and durable handling for effects.
+                if event.type != "changed" {
+                    guard save(id, ["kind": event.type, "done": true]) else { return false }
+                }
             }
         }
         let response = await client.assistantDeliveryPost("assistant/events/\(id)/ack",

@@ -229,6 +229,7 @@ final class SearchModel: ObservableObject {
             upgradingModel = ev.str("model")
         case "answer":
             answering = false; upgradingModel = ""
+            errorText = ""
             answerScope = ev.str("scope")
             answer = ev.str("text")
             citations = (ev.payload["citations"] as? [[String: Any]] ?? []).map {
@@ -246,13 +247,14 @@ final class SearchModel: ObservableObject {
             canWiden = ev.payload["can_widen"] as? Bool ?? false
         case "answer_error":
             answering = false; upgradingModel = ""
-            errorText = "Couldn't generate an answer. Try another question."
+            errorText = "Couldn't generate an answer."
         case "done":
             finishProgress()
             elapsedMs = ev.payload["ms"] as? Int ?? elapsedMs
         case "error":
             finishProgress()
             errorText = ev.str("message")
+            if errorText.isEmpty { errorText = "Search couldn't finish." }
         default:
             break
         }

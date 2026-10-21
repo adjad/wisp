@@ -130,6 +130,46 @@ struct OverlayTransitionChecks {
         check(!panel.isRevealing, "Open must release animation ownership")
         check(panel.frame.height == 320, "Deferred content height must apply after opening")
         check(mask.bounds.size == panel.frame.size, "Open mask fits panel")
+        check(mask.contentsScale == panel.backingScaleFactor, "Mask rasterizes at the screen's scale")
+
+        // A shrink waits for the content's own animation; a grow never does.
+        fixture.height = 240
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        check(panel.frame.height == 320 && panel.hasPendingShrink, "A shrink waits for the content to animate out")
+        await waitUntil { panel.frame.height == 240 }
+        check(!panel.hasPendingShrink && mask.bounds.size == panel.frame.size, "The held shrink lands and the mask follows")
+        // Rapid toggles: a shrink, then a grow before it lands, then a shrink.
+        fixture.height = 200
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        fixture.height = 360
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        check(panel.frame.height == 360 && !panel.hasPendingShrink, "A grow applies at once and cancels a held shrink")
+        fixture.height = 260
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        panel.resizeToFit()
+        try? await Task.sleep(for: .milliseconds(Int(OverlayPanel.shrinkSettle * 1000) + 120))
+        check(panel.frame.height == 260 && !panel.hasPendingShrink, "Coalesced resizes settle on the newest height")
+        panel.reduceMotion = { true }
+        fixture.height = 220
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        check(panel.frame.height == 220 && !panel.hasPendingShrink, "Reduce Motion shrinks at once")
+        panel.reduceMotion = { false }
+        fixture.height = 320
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        check(panel.frame.height == 320, "Back to the opened height")
+        // The host never follows the content: resized inside a SwiftUI
+        // animation, it would centre the animating content and jolt it.
+        let stage = panel.contentView!
+        stage.layoutSubtreeIfNeeded()
+        let slide = stage.subviews[0]
+        check(slide.frame.height == OverlayPanel.hostHeight && slide.frame.maxY == stage.bounds.maxY,
+              "The content host keeps a fixed height, pinned to the top")
 
         var stale = 0
         var closed = false

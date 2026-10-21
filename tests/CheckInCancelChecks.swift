@@ -23,6 +23,52 @@ import Foundation
         precondition(CheckInCancel.blockedReason("Only the organizer can cancel it.") == "Only the organizer can cancel it.")
         precondition(CheckInCancel.blockedReason("").contains("Calendar"), "an older service gives no reason")
 
+        // What replaces Cancel: a read-only calendar is final even if the service allowed it;
+        // someone else's event is declined in Calendar; other blocks open the event there.
+        precondition(CheckInCancel.blockedControl(canCancel: true, calendarWritable: true, organizerIsUser: nil) == .cancel)
+        precondition(CheckInCancel.blockedControl(canCancel: true, calendarWritable: nil, organizerIsUser: true) == .cancel,
+                     "an older app that didn't say is not read-only")
+        precondition(CheckInCancel.blockedControl(canCancel: true, calendarWritable: false, organizerIsUser: nil) == .readOnly,
+                     "a subscribed calendar never gets a Cancel, whatever the service row said")
+        precondition(CheckInCancel.blockedControl(canCancel: false, calendarWritable: false, organizerIsUser: false) == .readOnly)
+        precondition(CheckInCancel.blockedControl(canCancel: false, calendarWritable: true, organizerIsUser: false) == .decline,
+                     "an invitation is declined in Calendar")
+        precondition(CheckInCancel.blockedControl(canCancel: false, calendarWritable: true, organizerIsUser: nil) == .open)
+        precondition(CheckInCancel.blockedControl(canCancel: false, calendarWritable: nil, organizerIsUser: true) == .open)
+
+        // The Day timeline's ⋯ menu for a Calendar block: the card's rules, in menu form.
+        typealias Entry = CheckInCancel.MenuEntry
+        func menu(described: Bool = true, canCancel: Bool, canMove: Bool, writable: Bool?, organizer: Bool?,
+                  reason: String = "", past: Bool = false) -> [Entry] {
+            CheckInCancel.menuEntries(described: described, canCancel: canCancel, canMove: canMove,
+                                      calendarWritable: writable, organizerIsUser: organizer,
+                                      cancelReason: reason, isPast: past)
+        }
+        precondition(menu(canCancel: true, canMove: true, writable: true, organizer: true) == [.cancel, .move, .open],
+                     "the user's own timed event on a writable calendar: Cancel, Move, Open")
+        precondition(menu(canCancel: true, canMove: true, writable: nil, organizer: nil) == [.cancel, .move, .open],
+                     "an app that didn't say whether the calendar is writable is not read-only")
+        precondition(menu(canCancel: true, canMove: false, writable: true, organizer: true) == [.cancel, .open],
+                     "an all-day event: Cancel but no Move (no time to move to)")
+        precondition(menu(canCancel: true, canMove: true, writable: false, organizer: true)
+                     == [.reason("On a read-only calendar"), .open],
+                     "a read-only calendar: neither, the reason on a disabled line, whatever the service row said")
+        precondition(menu(canCancel: false, canMove: false, writable: false, organizer: false)
+                     == [.reason("On a read-only calendar"), .open])
+        precondition(menu(canCancel: false, canMove: false, writable: true, organizer: false) == [.decline],
+                     "someone else's event: Decline in Calendar")
+        let unsynced = "Wisp hasn't synced this event's invitees yet; cancel it in Calendar."
+        precondition(menu(canCancel: false, canMove: false, writable: true, organizer: nil, reason: unsynced)
+                     == [.reason(unsynced), .open], "another block on Cancel: the service's reason, then Open")
+        precondition(menu(canCancel: false, canMove: false, writable: nil, organizer: true, reason: "")
+                     == [.reason(CheckInCancel.blockedReason("")), .open], "no reason given: the older-service line")
+        precondition(menu(canCancel: true, canMove: true, writable: true, organizer: true, past: true) == [.open],
+                     "an event that is over can't be cancelled or moved from here")
+        precondition(menu(described: false, canCancel: true, canMove: true, writable: true, organizer: true) == [.open],
+                     "a service that sent no Cancel/Move facts never gets Cancel or Move")
+        precondition(menu(described: false, canCancel: false, canMove: false, writable: false, organizer: false) == [.open],
+                     "and is not called read-only either")
+
         // The request: exactly the three fields the service accepts, from the row.
         let body = CheckInCancel.requestBody(sourceId: "abc", startTs: 1_900_000_000, inviteeCount: 2)
         precondition(body?.count == 3)

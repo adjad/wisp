@@ -111,6 +111,51 @@ _COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied")
 
 _BULK_BODY = re.compile(r"\bunsubscribe\b|manage (?:your )?(?:email )?preferences|view (?:this email )?in (?:your )?browser",
                         re.I)
+# A machine-sent roll-up of notifications ("Recent Canvas Notifications", "Your
+# weekly digest"): each item it lists arrives, or is visible, on its own, so the
+# roll-up itself is never a review block.
+_DIGEST_SUBJECT = re.compile(r"\bnotifications\s*$|\bdigest\b|^\s*(?:daily|weekly) (?:summary|update)s?\b|"
+                             r"^\s*new (?:threads|posts|discussions) in\b", re.I)
+# Wisp's own stand-in for a sign-in, code or password email's subject, whole or in
+# part ("Sign in to Canvas: Authentication details omitted."): what it withheld is
+# a credential, never something to review, so such mail never becomes a block.
+_WITHHELD_AUTH_SUBJECT = re.compile(r"\bauthentication details omitted\b", re.I)
+# Signing up for a list is not something the list needs from you.
+_SUBSCRIBED_SUBJECT = re.compile(r"^\s*(?:you(?:'|\u2019)?re|you are) (?:now )?subscribed\b|"
+                                 r"^\s*(?:please )?confirm (?:your )?subscription\b|^\s*thanks for subscribing\b", re.I)
+
+
+def not_a_need(row):
+    """Mail that is never a need: not a Day review block, and not handed to the
+    behavior pass as possible work. Mass mail sent under any name
+    (email_tools.is_broadcast, the rule #299's inbox summary uses), newsletter
+    and social mail, a machine-sent notification digest (a forum's "New threads
+    in …" roll-up too), and a sign-in or code email whose subject Wisp withheld.
+    A course or school sender's own action mail ("PA 2 has been posted") and a
+    single forum post ("New in CSE 20 04: Homework error") still count. Only
+    positive signs count: digest_category's "news" is also its fallback for mail
+    it can't place, so it is no evidence on its own."""
+    from service.tools.email_tools import (_MARKETING_SUBJECT, _NEWSLETTER_RE, digest_category,
+                                           is_broadcast, is_machine_sender)
+    from service.tools.imessage_tools import redact_summary_codes
+    identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
+    subject = str(row.get("subject") or "")
+    # The withheld-credential check reads the subject as the Day would show it.
+    shown = redact_summary_codes(subject)
+    return (is_broadcast(row) or bool(_MARKETING_SUBJECT.search(subject)) or bool(_NEWSLETTER_RE.search(identity))
+            or bool(_SUBSCRIBED_SUBJECT.search(subject)) or bool(_WITHHELD_AUTH_SUBJECT.search(shown))
+            or digest_category(row) == "social"
+            or (is_machine_sender(identity) and bool(_DIGEST_SUBJECT.search(subject))))
+
+
+def mass_mail_filter(rows):
+    """not_a_need, extended to every copy of a flagged email: the same message
+    synced through two accounts can lack, in one copy, the Message-ID that marks
+    it as list mail. Copies match by sender address and subject."""
+    copy = lambda r: ((r.get("sender_address") or "").casefold(), str(r.get("subject") or "").strip().casefold())
+    flagged = {copy(r) for r in rows if not_a_need(r)}
+    flagged.discard(("", ""))
+    return lambda r: not_a_need(r) or copy(r) in flagged
 
 
 def important_email_rows(snapshot):
@@ -131,7 +176,11 @@ def important_email_rows(snapshot):
     from service.tools.email_tools import _MARKETING_SUBJECT, _NEWSLETTER_RE, digest_category
     from service.tools.imessage_tools import important_message_reason
     out = []
-    for row in sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]:
+    rows = sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]
+    skip = mass_mail_filter(rows)
+    for row in rows:
+        if skip(row):
+            continue
         body = _QUOTED_HISTORY.split(row.get("body", "") or "")[0]
         category = digest_category(row)
         identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
@@ -302,6 +351,197 @@ def _remaining(start, end, occupied):
     return parts
 
 
+_EVENT_PREFIX = re.compile(r"^\s*(?:review|re|fwd?|invitation|updated invitation|canceled(?: event)?|cancelled|"
+                           r"accepted|declined|tentatively accepted)\s*:\s*", re.I)
+
+
+def _event_key(title):
+    """A title as words only, for matching an email or note to a calendar event:
+    "Invitation: Office Hours @ Sat Oct 24, 2pm" and "Office Hours" match."""
+    text = str(title or "")
+    while (match := _EVENT_PREFIX.match(text)):
+        text = text[match.end():]
+    text = re.split(r"\s@\s", text, maxsplit=1)[0]
+    return " ".join(re.findall(r"\w+", text.casefold()))
+
+
+def _names_event(title, events):
+    """The item is about one of these calendar events: the same words, or one
+    title starting with the other (a subject cut short, an event with a suffix)."""
+    key = _event_key(title)
+    if not key:
+        return False
+    return key in events or any(len(min(key, e, key=len)) >= 12 and (key.startswith(e) or e.startswith(key))
+                                for e in events)
+
+
+# The privacy layer (imessage_tools.redact_summary_codes) replaces a private
+# subject with a fixed stand-in that keeps only its priority class. As a block
+# title that reads as junk ("Review: Private details omitted."), so the block is
+# named by that class and the sender instead; the class itself is kept, because
+# hiding it would hide exactly the urgent mail the redaction keeps visible. A
+# credential's stand-in never reaches here: not_a_need drops that mail.
+_PLACEHOLDER_KINDS = (
+    (re.compile(r"security incident notice \(details omitted\)", re.I), "security"),
+    (re.compile(r"health or safety concern \(private details omitted\)", re.I), "a health or safety notice"),
+    (re.compile(r"(?:direct request|review the original request) with a stated deadline\b.*\(private details omitted\)", re.I),
+     "a request with a deadline"),
+    (re.compile(r"deadline notice \(private details omitted\)", re.I), "a deadline notice"),
+    (re.compile(r"schedule or logistics change \(private details omitted\)", re.I), "a schedule change"),
+    (re.compile(r"possible request context \(private details omitted", re.I), "a possible request"),
+    (re.compile(r"(?:direct request requires review|please review the original request)\.\s*private details omitted", re.I),
+     "a request"),
+    (re.compile(r"^\s*private details omitted\.?\s*$", re.I), "an email"),
+)
+
+
+def review_title(title, sender=""):
+    """A suggestion's title: "Review: <subject>", or, for a subject the privacy
+    layer withheld, its class and sender: "Review a deadline notice from Dr.
+    Patel". An unverified security notice is named, never phrased as something
+    to act on: "Check a security notice from Google (unverified)"."""
+    text = str(title or "")
+    # A partial stand-in keeps the subject's lead: "Canvas: Private details omitted."
+    tail = text.rpartition(": ")[2] if ": " in text else text
+    who = f" from {sender}" if sender else ""
+    for pattern, kind in _PLACEHOLDER_KINDS:
+        if pattern.search(tail):
+            if kind == "security":
+                return f"Check a security notice{who} (unverified)"
+            return f"Review {kind}{who}"
+    return "Review: " + text
+
+
+# Review blocks are for reading what people sent. Several at once share one
+# block: back-to-back 15-minute blocks are too short to read and stack up.
+_GROUPED_SOURCES = {"email": ("email", "emails"), "messages": ("message", "messages"), "notes": ("note", "notes")}
+
+
+def _member_title(item):
+    named = review_title(item["title"], item.get("sender") or "")
+    return item["title"] if named.startswith("Review: ") else named
+
+
+def _group_reviews(suggestions, by_id):
+    """(suggestions, members): undated communication reviews collapsed into one
+    "Review 3 emails" suggestion, its items as `members` for the block."""
+    picked = [s for s in suggestions if s["due_ts"] is None
+              and by_id.get(s["evidence_id"], {}).get("source") in _GROUPED_SOURCES]
+    if len(picked) < 2:
+        return suggestions, {}
+    sources = {by_id[s["evidence_id"]]["source"] for s in picked}
+    noun = _GROUPED_SOURCES[sources.pop()][1] if len(sources) == 1 else "items"
+    names = []
+    for s in picked:
+        name = by_id[s["evidence_id"]].get("sender") or ""
+        if name and name not in names:
+            names.append(name)
+    title = f"Review {len(picked)} {noun}"
+    if names:
+        title += " · " + ", ".join(names[:2]) + (f" +{len(names) - 2}" if len(names) > 2 else "")
+    first = picked[0]
+    group = dict(first, id="daily:reviews:" + key("group", sorted(s["id"] for s in picked)), title=title,
+                 duration_minutes=min(45, max(20, 10 * len(picked))),
+                 priority=min(s["priority"] for s in picked))
+    # A withheld subject is listed by its class and sender, as its own block would be.
+    listed = [dict(title=_member_title(by_id[s["evidence_id"]]), evidence_id=s["evidence_id"],
+                   sender=by_id[s["evidence_id"]].get("sender") or None) for s in picked]
+    ids = {s["id"] for s in picked}
+    out, placed = [], False
+    for s in suggestions:
+        if s["id"] not in ids:
+            out.append(s)
+        elif not placed:
+            out.append(group)
+            placed = True
+    return out, {group["id"]: listed}
+
+
+# Titles that aren't a thing to do, as the notch's DayTimeline.isJunk reads them.
+_JUNK_TITLES = {"nothing", "none", "n/a", "na", "null", "nil", "no", "yes", "ok", "okay", "untitled",
+                "new reminder", "tbd", "todo", "to do", "asdf", "idk", "nothing really", "nothing much",
+                "not sure", "no plans"}
+NEEDS_YOU_SHOWN = 4
+
+
+def _junk(title):
+    text = str(title or "").strip().strip(".,;:!?\"'()[]-–—…").strip().casefold()
+    return (not any(c.isalpha() for c in text) or (len(text) < 2 and text.isascii())
+            or text in _JUNK_TITLES)
+
+
+def needs_you(attention, *, now, day_end):
+    """The Brief's "Needs you today" line: the day's attention items that are
+    work for the user today, as short grounded phrases, in this order:
+
+    - reminders past due ("overdue"), then reminders due today by their time
+      ("due"), then active tasks on the day plan with no due time ("plan");
+    - email from a person ("mail"): its subject, or for a subject the privacy
+      layer withheld, its class and sender ("a deadline notice from Dr. Patel");
+    - people whose texts you haven't answered ("text"), one entry per person,
+      never what they wrote.
+
+    Drawn only from ``attention`` (the list the Day tab's Needs you reads), so
+    the tabs can't disagree; collection already left out mass mail
+    (mass_mail_filter). Undated reminders, notes, calendar events, mail from
+    automated senders and withheld-credential mail are never listed.
+    Returns ``dict(items=[...], more=N)``: at most NEEDS_YOU_SHOWN items, and
+    how many more were selected."""
+    overdue, due, plan, mail, texts = [], [], [], [], {}
+    seen = set()
+    for item in attention:
+        source, title = item.get("source"), clean(item.get("title"))
+        if _junk(title) or _WITHHELD_AUTH_SUBJECT.search(title):
+            continue
+        stamp = item.get("due_ts")
+        dated = finite(stamp)
+        if source in {"reminders", "wisp"} and (dated or str(item.get("reason", "")).endswith("On your day plan.")):
+            # A Day task twin of a reminder is the same thing to do.
+            name = title.removeprefix("Review: ").casefold()
+            if name in seen or (dated and stamp >= day_end):
+                continue
+            seen.add(name)
+            entry = dict(id=item["id"], kind="overdue" if dated and stamp < now else "due" if dated else "plan",
+                         text=title, due_ts=stamp if dated else None, all_day=item.get("all_day") is True)
+            (overdue if entry["kind"] == "overdue" else due if dated else plan).append(entry)
+        elif source == "email" and item.get("person") is True:
+            sender = clean(item.get("sender"), 80)
+            named = review_title(title, sender)
+            if named.startswith("Review: "):
+                subject = title if len(title) <= 60 else title[:59].rstrip() + "…"
+                text = f"“{subject}” from {sender}" if sender else f"“{subject}”"
+            elif named.startswith("Review "):
+                text = named[len("Review "):]
+            else:
+                text = "a security notice" + (f" from {sender}" if sender else "") + " (unverified)"
+            # A review the user already kept on the day plan is listed there, once.
+            planned = {title.casefold(), named.casefold().removeprefix("review: ")}
+            mail.append(dict(id=item["id"], kind="mail", text=text, due_ts=None, all_day=False,
+                             received_ts=item.get("received_ts"), planned=planned))
+        elif source == "messages" and item.get("replied") is not True:
+            sender = clean(item.get("sender"), 80)
+            if not sender or sender == "Me":
+                continue
+            entry = texts.setdefault(sender, dict(id=item["id"], kind="text", count=0, due_ts=None,
+                                                  all_day=False, received_ts=item.get("received_ts")))
+            entry["count"] += 1
+            if finite(item.get("received_ts")) and (not finite(entry["received_ts"])
+                                                     or item["received_ts"] > entry["received_ts"]):
+                entry["received_ts"] = item["received_ts"]
+    newest = lambda e: -(e["received_ts"] if finite(e.get("received_ts")) else float("-inf"))
+    people = []
+    for sender, entry in sorted(texts.items(), key=lambda kv: newest(kv[1])):
+        count = entry.pop("count")
+        people.append(dict(entry, text=(f"{count} texts from {sender}" if count > 1 else f"a text from {sender}")))
+    overdue.sort(key=lambda e: e["due_ts"])
+    due.sort(key=lambda e: e["due_ts"])
+    mail = [e for e in sorted(mail, key=newest) if not e.pop("planned") & seen]
+    picked = overdue + due + plan + mail + people
+    for entry in picked:
+        entry.pop("received_ts", None)
+    return dict(items=picked[:NEEDS_YOU_SHOWN], more=max(0, len(picked) - NEEDS_YOU_SHOWN))
+
+
 def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=(), profile=None):
     """Return explainable attention items and a proposed itinerary, all transient.
 
@@ -366,6 +606,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
                              "Due in this day." if finite(due) else "No due date; choose whether to work on it today.",
                              due=due, priority=1 if overdue else 2,
                              reference=record.get("reference", ""))
+                if record.get('all_day') is True:
+                    item['all_day'] = True
+                    item['due_date'] = record.get('due_date')
                 if record.get("wisp_only"):
                     item.update(source="wisp", reason="Wisp-only reminder; Apple copy/status unverified. " + item["reason"])
             else:
@@ -407,6 +650,11 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     # title as an active authored task. Cross-source evidence is not otherwise
     # merged by title: two equally named source records can be different tasks.
     authored = {clean(t["title"]).casefold() for t in state["tasks"] if t["status"] == "active"}
+    # An invitation or a note about a calendar event is already on the day as that
+    # event, so it never also becomes a review block.
+    events = {_event_key(c.get("title")) for c in state["commitments"] if c.get("source") == "calendar"}
+    events |= {_event_key(r.get("title")) for r in (evidence.get("calendar", {}).get("records") or [])}
+    events.discard("")
     suggested_titles = set()
     for item in items:
         if item["source"] in {"calendar", "wisp"} or len(suggestions) >= MAX_SUGGESTIONS:
@@ -417,17 +665,22 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
         title_key = title.casefold()
         if title_key in authored or (item["source"] != "reminders" and title_key in suggested_titles):
             continue
+        if item["source"] != "reminders" and _names_event(title, events):
+            continue
         # Undated reminders are useful attention evidence but not automatically
         # selected over obligations due today. Communications get review time,
         # not an invented assignment or a fabricated deadline.
         if item["source"] == "reminders" and item["due_ts"] is None:
             continue
         suggested_titles.add(title_key)
-        planned_title = item.get("planning_title") or ("Review: " + title if item["needs_review"] else title)
+        planned_title = item.get("planning_title") or (review_title(title, item.get("sender") or "")
+                                                       if item["needs_review"] else title)
         suggestions.append(dict(id="daily:" + item["id"], title=planned_title, day=day,
             timezone=timezone, kind=item.get("task_kind", "task"), duration_minutes=item["suggested_minutes"],
             priority=item["priority"], due_ts=item["due_ts"] if item["due_ts"] and item["due_ts"] > max(now, lo) else None,
             pinned_start=None, status="active", revision=0, evidence_id=item["id"]))
+
+    suggestions, members = _group_reviews(suggestions, {i["id"]: i for i in items})
 
     behavioral, ignored, behavior_detail = [], set(ignored_windows), "No current availability evidence; no behavioral time reserved."
     pinned_ids = {t["id"] for t in state["tasks"] if t.get("pinned_start") is not None}
@@ -505,9 +758,12 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
         elif block.get("task_id") in source_by_task:
             origin = source_by_task[block["task_id"]]
             block.update(task_id=None, kind="suggestion", evidence_id=origin["evidence_id"])
+            if origin["id"] in members:
+                block["members"] = members[origin["id"]]
             block["warnings"].append("Suggested time · duration is an estimate")
     proposal["tasks"] = state["tasks"]
     return dict(day=day, timezone=timezone, generated_at=now, attention=items[:MAX_ITEMS],
+                needs_you=needs_you(items[:MAX_ITEMS], now=now, day_end=hi),
                 attention_omitted=max(0, len(items) - MAX_ITEMS), source_coverage=coverage,
                 behavior_detail=behavior_detail,
                 behavior_context=(dict(ready=True, generated_at=behavior["generated_at"],
@@ -527,6 +783,8 @@ def render(workspace, *, compact=False):
     rows = ["Needs my attention"]
     for item in workspace["attention"][:5 if compact else 12]:
         due = (" · " + datetime.fromtimestamp(item["due_ts"], zone).strftime("%b %-d, %-I:%M %p")) if item["due_ts"] is not None else ""
+        if item.get('all_day') and item['due_ts'] is not None:
+            due = ' · ' + (item.get('due_date') or datetime.fromtimestamp(item['due_ts'], zone).strftime('%b %-d')) + ' · All day'
         if item.get("deadline_precision") == "date" and item.get("due_range"):
             dates = [datetime.fromtimestamp(v, zone).strftime("%b %-d, %-I:%M %p") for v in item["due_range"]]
             due = " · source range [" + dates[0] + ", " + dates[1] + ")"
@@ -559,6 +817,7 @@ def collect_evidence(store, state, day, timezone, *, now):
     Each source failure is isolated and visible. Counts disclose bounded reads;
     an empty or omitted source is never presented as a complete all-source scan.
     """
+    schedule = store.schedule_relation(timezone) if hasattr(store, "schedule_relation") else "scheduled_commitments"
     from service.tools.everyday import _native_receipt_current
     lo, hi = day_bounds(day, timezone)
     result = {}
@@ -576,13 +835,13 @@ def collect_evidence(store, state, day, timezone, *, now):
             receipt_row = db.execute("SELECT payload FROM today_source_sync WHERE source='reminders'").fetchone()
             receipt = json.loads(receipt_row["payload"]) if receipt_row else {}
             # Undated items are included for attention but do not acquire a due date.
-            count = db.execute("SELECT COUNT(*) FROM commitments WHERE status='active' AND source='reminders' AND when_ts<? AND kind NOT IN ('event','meeting')", (hi,)).fetchone()[0]
+            count = db.execute(f"SELECT COUNT(*) FROM {schedule} WHERE status='active' AND source='reminders' AND when_ts<? AND kind NOT IN ('event','meeting')", (hi,)).fetchone()[0]
             rows = [dict(row) for row in db.execute(
-                "SELECT id,source,source_id,title,when_ts,kind FROM commitments "
+                f"SELECT id,source,source_id,title,when_ts,kind,all_day,due_date FROM {schedule} "
                 "WHERE status='active' AND source='reminders' AND when_ts<? "
                 "AND kind NOT IN ('event','meeting') ORDER BY CASE WHEN when_ts>=? THEN 0 ELSE 1 END,when_ts DESC,id LIMIT 500", (hi, lo))]
-            manual_count = db.execute("SELECT COUNT(*) FROM commitments WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<?", (now - 14 * 86400, hi)).fetchone()[0]
-            manual = [dict(row) for row in db.execute("SELECT id,title,when_ts FROM commitments WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<? ORDER BY when_ts DESC,id LIMIT 100", (now - 14 * 86400, hi))]
+            manual_count = db.execute(f"SELECT COUNT(*) FROM {schedule} WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<?", (now - 14 * 86400, hi)).fetchone()[0]
+            manual = [dict(row) for row in db.execute(f"SELECT id,title,when_ts,all_day,due_date FROM {schedule} WHERE status='active' AND source='manual' AND kind NOT IN ('event','meeting') AND when_ts>=? AND when_ts<? ORDER BY when_ts DESC,id LIMIT 100", (now - 14 * 86400, hi))]
             view, undated = store.undated_listing()
             # Overdue reminders the stale policy hides (a week or more past due, not
             # kept) leave the plan and its counts, along with any Wisp twin of them.
@@ -592,10 +851,10 @@ def collect_evidence(store, state, day, timezone, *, now):
             rows = [r for r in rows if r["id"] not in hidden]
             manual = [r for r in manual if r["id"] not in hidden]
         current = _native_receipt_current(receipt, now)
-        selected = [dict(id=r["id"], title=r["title"], due_ts=r["when_ts"],
+        selected = [dict(id=r["id"], title=r["title"], due_ts=r["when_ts"], all_day=bool(r.get('all_day')), due_date=r.get('due_date'),
                          reference=r["source"] + ":" + str(r.get("source_id") or r["id"]))
                     for r in rows[:500] if r["source"] == "reminders" and current]
-        selected.extend(dict(id=r["id"], title=r["title"], due_ts=r["when_ts"], wisp_only=True,
+        selected.extend(dict(id=r["id"], title=r["title"], due_ts=r["when_ts"], all_day=bool(r.get('all_day')), due_date=r.get('due_date'), wisp_only=True,
                              reference="wisp-reminder:" + r["id"]) for r in manual)
         if current and view.get("freshness") == "current":
             selected.extend(dict(id="undated:" + str(r.get("source_id") or r.get("id")),
@@ -633,8 +892,9 @@ def collect_evidence(store, state, day, timezone, *, now):
             # headers rather than inventing source age from a ready flag.
             selected, header_eligible = fresh_header_rows(mail, now)
             header_count = len(selected)
+            skip = mass_mail_filter(selected[:200])
             for row in selected[:200]:
-                if digest_category(row) not in {"attention", "school"}:
+                if digest_category(row) not in {"attention", "school"} or skip(row):
                     continue
                 subject = redact_summary_codes(row["subject"])
                 records.append(dict(id=header_record_id(row, subject), title=subject, quote=subject,
@@ -690,13 +950,14 @@ def collect_evidence(store, state, day, timezone, *, now):
             records.append(record)
         message_coverage = structured.get("coverage") or {}
         # Messages without Full Disk Access: say so, with what to grant, rather than
-        # reading as "still syncing" (MessagesReader: "chat.db not readable").
+        # reading as "still syncing".
         blocked = None
         if not ready and messages_sync_state() == "unavailable":
-            from service.tools.imessage_tools import messages_unavailable_reason
-            # Only the reader's Full Disk Access wording: another chat.db failure
-            # (a missing file) must not send the user to the wrong setting.
-            if "full disk access" in messages_unavailable_reason().casefold():
+            from service.tools.imessage_tools import messages_unavailable_kind
+            # Only when the reader classified the error as a Full Disk Access
+            # denial: another chat.db failure (a missing file) must not send the
+            # user to the wrong setting.
+            if messages_unavailable_kind() == "full_disk_access":
                 blocked = "full_disk_access"
         skipped = message_coverage.get("skipped", 0)
         result["messages"] = dict(ready=ready, records=records, inspected=min(100, len(rows)),

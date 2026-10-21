@@ -84,6 +84,24 @@ final class ReceiptServer {
 @main
 struct AssistantDeliveryChecks {
     @MainActor static func main() async throws {
+        let datePayload: [String: Any] = ["type": "create_reminder", "action_id": "all-day-fixture",
+            "title": "Review report", "commitment_kind": "reminder", "all_day": true, "due_date": "2026-10-20"]
+        precondition(AssistantDelivery.calendarPayload(datePayload, kind: "create_reminder") != nil)
+        for bad in ["2026-02-30", "2026-10-20T00:00"] {
+            precondition(AssistantDelivery.calendarPayload(datePayload.merging(["due_date": bad]) { _, b in b }, kind: "create_reminder") == nil)
+        }
+        precondition(AssistantDelivery.calendarPayload(datePayload.merging(["all_day": 1]) { _, b in b }, kind: "create_reminder") == nil)
+        precondition(AssistantDelivery.calendarPayload(datePayload.merging(["due_ts": 123.0]) { _, b in b }, kind: "create_reminder") == nil)
+        let dateReceipt: [String: Any] = ["ok": true, "status": "succeeded", "error": "", "source_id": "fixture:date",
+            "title": "Review report", "all_day": true, "due_date": "2026-10-20"]
+        precondition(AssistantDelivery.terminalResult(dateReceipt, kind: "create_reminder") != nil)
+        precondition(AssistantDelivery.terminalResult(dateReceipt.merging(["all_day": 1]) { _, b in b }, kind: "create_reminder") == nil)
+        let dateTarget: [String: Any] = ["type": "delete_reminder", "action_id": "date-target",
+            "source_id": "fixture:date", "expected_title": "Review report", "expected_due_ts": 2e9,
+            "expected_due_date": "2026-10-20"]
+        precondition(AssistantDelivery.calendarPayload(dateTarget, kind: "delete_reminder") != nil)
+        precondition(AssistantDelivery.calendarPayload(dateTarget.merging(["expected_due_date": "2026-02-30"]) { _, b in b }, kind: "delete_reminder") == nil)
+        precondition(AssistantDelivery.calendarPayload(dateTarget.merging(["expected_due_ts": NSNull()]) { _, b in b }, kind: "delete_reminder") == nil)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -111,6 +129,63 @@ struct AssistantDeliveryChecks {
         }
         precondition(WispClient.Event.decodeAssistantLine("data: {\"type\":\"changed\",\"event_id\":\"fixture\"}")?.type == "changed")
         scenarios += 1
+        // Refresh invalidations can repeat after a lost ACK or restart. They
+        // never create a receipt or rewrite existing native-action receipts.
+        do {
+            let event = WispClient.Event(type: "changed", payload: ["type": "changed", "event_id": "refresh-1"])
+            let server = ReceiptServer(event), file = path()
+            DeliveryMock.handler = server.respond
+            var performed = 0
+            var delivery = AssistantDelivery(path: file)
+            let fresh = await delivery.handle(event, client: client,
+                perform: { _ in performed += 1; return true }, calendar: { _ in fatalError() })
+            precondition(fresh && performed == 1 && server.ackPosts == 1)
+            precondition(!FileManager.default.fileExists(atPath: file.path))
+            try write(file, ["native-existing": ["kind": "create_reminder", "action_id": "native-action",
+                "claim_token": "native-claim", "started": true]])
+            let before = try Data(contentsOf: file)
+            delivery = AssistantDelivery(path: file)
+            server.badAck = .disconnected
+            let lost = await delivery.handle(event, client: client,
+                perform: { _ in performed += 1; return true }, calendar: { _ in fatalError() })
+            precondition(!lost && performed == 2 && server.ackPosts == 2)
+            let afterLost = try Data(contentsOf: file)
+            precondition(afterLost == before)
+            delivery = AssistantDelivery(path: file)
+            server.badAck = nil
+            let replayed = await delivery.handle(event, client: client,
+                perform: { _ in performed += 1; return true }, calendar: { _ in fatalError() })
+            precondition(replayed && performed == 3 && server.ackPosts == 3)
+            let afterReplay = try Data(contentsOf: file)
+            precondition(afterReplay == before)
+            scenarios += 1
+        }
+        // Failed refresh handling must not ACK. A completed legacy receipt
+        // can still skip handling, and an event-kind collision still refuses.
+        do {
+            let event = WispClient.Event(type: "changed", payload: ["type": "changed", "event_id": "refresh-2"])
+            let server = ReceiptServer(event), file = path()
+            DeliveryMock.handler = server.respond
+            let failed = await AssistantDelivery(path: file).handle(event, client: client,
+                perform: { _ in false }, calendar: { _ in fatalError() })
+            precondition(!failed && server.ackPosts == 0 && !FileManager.default.fileExists(atPath: file.path))
+            try write(file, ["refresh-2": ["kind": "changed", "done": true]])
+            let before = try Data(contentsOf: file)
+            let legacy = await AssistantDelivery(path: file).handle(event, client: client,
+                perform: { _ in fatalError() }, calendar: { _ in fatalError() })
+            precondition(legacy && server.ackPosts == 1)
+            let afterLegacy = try Data(contentsOf: file)
+            precondition(afterLegacy == before)
+            try write(file, ["refresh-2": ["kind": "reminder", "done": true]])
+            let collision = await AssistantDelivery(path: file).handle(event, client: client,
+                perform: { _ in fatalError() }, calendar: { _ in fatalError() })
+            precondition(!collision && server.ackPosts == 1)
+            try Data("corrupt receipts".utf8).write(to: file)
+            let corrupt = await AssistantDelivery(path: file).handle(event, client: client,
+                perform: { _ in fatalError() }, calendar: { _ in fatalError() })
+            precondition(!corrupt && server.ackPosts == 1)
+            scenarios += 1
+        }
         // Failed handling and failed ACK must leave retryable state; restart
         // after successful handling never repeats the notification effect.
         do {

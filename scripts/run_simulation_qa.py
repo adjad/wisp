@@ -104,11 +104,19 @@ PROFILE_TESTS = {
         "tests/test_sandbox_wire.py",
         "tests/test_schedule_presentation.py",
         "tests/test_tomorrow_planning.py",
+        "tests/test_assistant_read_regressions.py",
         "tests/test_tomorrow_study_slot.py",
         "tests/test_reminder_source_truth.py",
         "tests/test_source_sync_contract.py",
         "tests/test_sync_readiness.py",
         "tests/test_temporal_facts.py",
+        "tests/test_daily_workspace.py",
+        "tests/test_day_review_blocks.py",
+        "tests/test_brief_needs_you.py",
+        "tests/test_day_timeline_event_fields.py",
+        "tests/test_mail_gists.py",
+        "tests/test_behavior_gmail_history.py",
+        "tests/test_behavior_availability.py",
     },
     "outbound": {
         "tests/test_action_tools_sanitize.py",
@@ -123,6 +131,11 @@ PROFILE_TESTS = {
         "tests/test_typed_message_send.py",
         "tests/test_typed_reminder_operations.py",
         "tests/test_typed_task_engine.py",
+        "tests/test_reminder_batch_creation.py",
+        "tests/test_reminder_creation_review_controls.py",
+        "tests/test_reminder_civil_date_controls.py",
+        "tests/test_reminder_entrypoint.py",
+        "tests/test_reminder_date_updates.py",
     },
     "safety": {
         "tests/test_always_confirm_grants.py",
@@ -186,9 +199,13 @@ PROFILE_TESTS = {
         "tests/test_compound_claims.py",
         "tests/test_compound_task_routing.py",
         "tests/test_current_web_routing.py",
+        # Route metadata over synthetic prompts; mocked retrieval, no tool execution.
+        "tests/test_personal_grounding.py",
         "tests/test_web_response_followup.py",
         "tests/test_direct_dispatch.py",
         "tests/test_direct_dispatch_exec.py",
+        # Actual ASGI with inert registry, fake inference and blocked sockets/processes.
+        "tests/test_topical_email_contract.py",
         "tests/test_historical_routing_regressions.py",
         "tests/test_router_adversarial_cases.py",
         "tests/test_router_execution_contract.py",
@@ -198,6 +215,8 @@ PROFILE_TESTS = {
         "tests/test_router_roster_models.py",
         "tests/test_fast_path_intent.py",
         "tests/test_reminder_compound_allowance.py",
+        # Pure labelled-title compiler/planner fixtures; never executes tools.
+        "tests/test_reminder_labelled_title.py",
         "tests/test_routing_contract_regressions.py",
         "tests/test_routing_quality_fixes.py",
         "tests/test_routing_quality_corpus.py",
@@ -216,6 +235,13 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
+    "tests/test_messages_read_failure.py",
+    # Real ASGI modes over disposable pending owners and fully inert capabilities.
+    "tests/test_conversation_authority_contract.py",
+    "tests/test_calendar_literal_entrypoint.py",
+    # Pure named-time parsing, fictional stores and inert ASGI calls; no live sources.
+    "tests/test_calendar_time_contract.py",
     # Scorer self-test on synthetic fixtures; tmp_path files only, no model or network.
     "tests/test_memory_eval_scorer.py",
     # Toolbench matchers/scorer/report on hand-built trajectories and fake-world
@@ -392,6 +418,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_replay_failure_fixes.py",
     # Synthetic benchmark evidence, owned loopback receivers and owned child process groups only.
     "tests/test_release_performance.py",
+    # Local-install re-sign (scripts/resign_local_install.py): fake codesign/security/ditto
+    # over a tiny fake bundle in a temp dir; no signing, keychain or /Applications.
+    "tests/test_resign_local_install.py",
     "tests/test_simulation_qa_runner.py",
     "tests/test_think_leak.py",
     "tests/test_timeranges.py",
@@ -399,6 +428,12 @@ ADDITIONAL_FULL_TESTS = {
     # Daily workspace: pure source fixtures, private disposable SQLite, fixed
     # verified-self identity, fake policy/outbox and ASGI transport; no effects.
     "tests/test_daily_workspace.py",
+    "tests/test_day_review_blocks.py",
+    # The Brief's "Needs you today" selection over synthetic attention items.
+    "tests/test_brief_needs_you.py",
+    # Day timeline Cancel/Move fields: disposable AssistantStore, the planner and
+    # today_api.snapshot in process; no model, app, hub or real ~/.moe.
+    "tests/test_day_timeline_event_fields.py",
     # The user's profile (Getting to know you): JSON in a temp path, pure prompt/brief/
     # ranking helpers and an in-process TestClient; no model, listener or real ~/.moe.
     "tests/test_user_profile.py",
@@ -441,6 +476,8 @@ ADDITIONAL_FULL_TESTS = {
     # Compiles actual Swift sources, then exercises pure mapping/transport
     # guards only; no EventKit store, native app, model or personal data access.
     "tests/test_behavior_native_history.py",
+    # Owned disposable process groups and synthetic pipes only; no native stores.
+    "tests/test_native_fixture_cleanup.py",
     "tests/test_behavior_persona.py",
     "tests/test_behavior_phraser.py",
     "tests/test_behavior_predict_nudges.py",
@@ -475,8 +512,14 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_model_pilot.py",
     "tests/test_workflow20_pending_actions.py",
     "tests/test_workflow20_priorities.py",
+    "tests/test_honest_assistant_results.py",
+    "tests/test_task_plan_engine.py",
     "tests/test_workflow20_reminder_time.py",
     "tests/test_workflow20_routing.py",
+    # Topical Mail ASGI over disposable stores; registered/native execution is inert.
+    "tests/test_topical_email_contract.py",
+    # Actual unread stream with temporary stores and synthetic read tools only.
+    "tests/test_unread_summary_entrypoint.py",
     "tests/test_workflow20_schedule_time.py",
     "tests/test_workflow20_snapshot.py",
     "tests/test_workflow20_travel.py",
@@ -804,6 +847,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
+    agent_send = str(build_dir / "agent-send")
     notch_command = str(build_dir / "notch-command")
     notch_tab = str(build_dir / "notch-tab")
     know_you = str(build_dir / "know-you")
@@ -828,6 +872,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/today-contract",
             [TRUSTED_BASH, "scripts/test_today_contract.sh"],
+        ),
+        (
+            "native/markdown-contract",
+            [TRUSTED_BASH, "scripts/test_markdown_contract.sh"],
         ),
         (
             "native/research-library-contract",
@@ -870,7 +918,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             "native/source-sync-label-compile",
             [
                 TRUSTED_SWIFTC, "-module-cache-path", module_cache,
-                "app/Sources/WispApp/WispClient.swift",
+                "app/Sources/WispApp/WispClient.swift", "app/Sources/WispApp/AgentSend.swift",
                 "tests/SourceSyncLabelRegression.swift", "-o", sync_label,
             ],
         ),
@@ -880,11 +928,22 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             [
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
                 "-module-cache-path", module_cache,
-                "app/Sources/WispApp/PromptQueue.swift",
+                "app/Sources/WispApp/PromptQueue.swift", "app/Sources/WispApp/AgentSend.swift",
                 "tests/PromptQueueChecks.swift", "-o", prompt_queue,
             ],
         ),
         ("native/prompt-queue-contract", [prompt_queue]),
+        (
+            "native/agent-send-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/WispClient.swift", "app/Sources/WispApp/AgentSend.swift",
+                "tests/AgentSendChecks.swift", "-o", agent_send,
+            ],
+        ),
+        # A stub URLProtocol answers every request in-process; nothing reaches a socket.
+        ("native/agent-send-contract", [agent_send]),
         (
             "native/notch-command-compile",
             [

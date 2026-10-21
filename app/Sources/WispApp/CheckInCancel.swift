@@ -39,6 +39,49 @@ enum CheckInCancel {
         serviceReason.isEmpty ? "Wisp hasn't synced this event's details yet; cancel it in Calendar." : serviceReason
     }
 
+    /// What the row shows in Cancel's place when a one-tap Cancel isn't offered.
+    enum BlockedControl: Equatable {
+        case cancel        // offered
+        case readOnly      // a subscribed/read-only calendar: nothing can be done from here
+        case decline       // someone else's event: "Decline in Calendar"
+        case open          // not synced / organizer unknown: "Open in Calendar"
+    }
+
+    /// A read-only calendar wins over everything (even the service's reason), then an
+    /// invitation gets Decline; anything else that blocks Cancel opens the event.
+    static func blockedControl(canCancel: Bool, calendarWritable: Bool?, organizerIsUser: Bool?) -> BlockedControl {
+        if calendarWritable == false { return .readOnly }
+        if canCancel { return .cancel }
+        return organizerIsUser == false ? .decline : .open
+    }
+
+    /// One entry of the Day timeline's ⋯ menu for a Calendar block (NotchDayView.swift).
+    enum MenuEntry: Equatable {
+        case cancel            // "Cancel event": the 5-second Undo, then the verified cancel
+        case move              // "Move…": the check-in card's Move sub-panel
+        case reason(String)    // a disabled line: why neither is offered
+        case decline           // "Decline in Calendar ↗": someone else's event
+        case open              // "Open in Calendar ↗": the exact occurrence
+    }
+
+    /// What the timeline's ⋯ menu offers for one Calendar block, in order: the
+    /// check-in card's rules (blockedControl, CheckInEvent.canMove), and two of
+    /// its own. An event that is already over gets nothing to change, only
+    /// Open; and `described` is false when the service didn't send the block's
+    /// Cancel/Move facts (an older service), which must never read as allowed.
+    /// A read-only calendar says so on a disabled line; any other block on
+    /// Cancel gives the service's reason the same way.
+    static func menuEntries(described: Bool, canCancel: Bool, canMove: Bool, calendarWritable: Bool?,
+                            organizerIsUser: Bool?, cancelReason: String, isPast: Bool) -> [MenuEntry] {
+        guard described, !isPast else { return [.open] }
+        switch blockedControl(canCancel: canCancel, calendarWritable: calendarWritable, organizerIsUser: organizerIsUser) {
+        case .cancel: return [.cancel] + (canMove ? [.move] : []) + [.open]
+        case .readOnly: return [.reason("On a read-only calendar"), .open]
+        case .decline: return [.decline]
+        case .open: return [.reason(blockedReason(cancelReason)), .open]
+        }
+    }
+
     /// The body of POST /assistant/checkin/cancel_event, or nil when the row lacks
     /// what the service rejects without: the calendar id, the start the card
     /// showed, and a synced invitee count (null means not synced).

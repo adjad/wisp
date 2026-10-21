@@ -30,6 +30,13 @@ struct TodayTask: Decodable, Identifiable {
          "pinned_start": pin.map { $0.timeIntervalSince1970 as Any } ?? NSNull()]
     }
 }
+/// One email, message or note a grouped review suggestion covers.
+struct TodayBlockMember: Decodable {
+    let title: String
+    let evidence_id: String
+    let sender: String?
+}
+
 struct TodayBlock: Decodable, Identifiable {
     let id: String
     let title: String
@@ -41,6 +48,21 @@ struct TodayBlock: Decodable, Identifiable {
     let pattern_id: String?
     /// For a suggestion: the daily-workspace item it was made from.
     let evidence_id: String?
+    /// For a grouped review suggestion ("Review 3 emails"): the items it covers.
+    let members: [TodayBlockMember]?
+    /// For a Calendar block: which synced occurrence it is and what the Day
+    /// timeline's Cancel and Move need, the same facts as the check-in card's
+    /// rows (service/assistant/checkin.py annotate_calendar_blocks). All absent
+    /// from an older service, which then offers neither.
+    let source_id: String?
+    let all_day: Bool?
+    let invitee_count: Int?
+    let organizer_is_user: Bool?
+    let calendar_writable: Bool?
+    let cancel_blocked: String?
+    let move_blocked: String?
+    // TodayBlock.calendarEvent (CheckInView.swift) turns these into a CheckInEvent;
+    // it lives there because scripts/test_today_contract.sh compiles this file alone.
 
     var evidenceLabel: String {
         switch kind {
@@ -63,6 +85,8 @@ struct TodayDeadline: Decodable, Identifiable {
     let title: String
     let due_ts: Double
     let source: String
+    let all_day: Bool?
+    let due_date: String?
 }
 struct TodayUnscheduled: Decodable, Identifiable {
     let task_id: String
@@ -122,6 +146,15 @@ struct StoredBrief: Equatable {
                        sameDay: (Date) -> Bool) -> (text: String, at: Date)? {
         let candidates = [live, stored.map { (text: $0.text, at: $0.composedAt) }].compactMap { $0 }.filter { sameDay($0.at) }
         return candidates.max { $0.at < $1.at }
+    }
+
+    /// Whether the brief on screen is the one this launch received, so "Ask
+    /// about this" may continue its saved chat. When the Brief shows the stored
+    /// brief instead (newer, or the only one from today), the live one is a
+    /// different brief, and continuing it would answer about the wrong one.
+    static func shownIsLive(shown: (text: String, at: Date)?, live: (text: String, at: Date)?) -> Bool {
+        guard let shown, let live else { return false }
+        return shown.text == live.text && shown.at == live.at
     }
 }
 
@@ -590,7 +623,7 @@ struct TodayView: View {
                             GroupBox("Deadlines · these do not reserve time") {
                                 VStack(alignment: .leading, spacing: 8) {
                                     ForEach(plan.deadlines) { item in
-                                        Text("\(model.clock(item.due_ts))  ·  \(item.title)  (\(item.source))")
+                                        Text("\((item.all_day == true ? "All day" : model.clock(item.due_ts)))  ·  \(item.title)  (\(item.source))")
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 }.padding(6)

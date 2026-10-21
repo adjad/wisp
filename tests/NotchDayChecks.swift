@@ -107,15 +107,39 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(item("block:pa2")?.columns == 2 && item("block:club")?.columns == 2
           && item("block:pa2")?.column == 0 && item("block:club")?.column == 1, "overlapping blocks sit side by side")
     check(item("block:task:t1")?.columns == 1, "a block on its own takes the full width")
+    let minute = 60.0
     let stacked = DayTimeline.arrange([
-        DayItem(id: "a", title: "a", detail: "", start: 0, end: 30, style: .calendar),
-        DayItem(id: "b", title: "b", detail: "", start: 10, end: 40, style: .calendar),
-        DayItem(id: "c", title: "c", detail: "", start: 20, end: 50, style: .calendar),
-        DayItem(id: "d", title: "d", detail: "", start: 35, end: 60, style: .calendar),
-        DayItem(id: "e", title: "e", detail: "", start: 70, end: 80, style: .calendar),
+        DayItem(id: "a", title: "a", detail: "", start: 0, end: 30 * minute, style: .calendar),
+        DayItem(id: "b", title: "b", detail: "", start: 10 * minute, end: 40 * minute, style: .calendar),
+        DayItem(id: "c", title: "c", detail: "", start: 20 * minute, end: 50 * minute, style: .calendar),
+        DayItem(id: "d", title: "d", detail: "", start: 35 * minute, end: 60 * minute, style: .calendar),
+        DayItem(id: "e", title: "e", detail: "", start: 70 * minute, end: 80 * minute, style: .calendar),
     ])
     check(stacked.map(\.column) == [0, 1, 2, 0, 0] && stacked.map(\.columns) == [3, 3, 3, 3, 1],
           "columns are reused within a cluster and reset after it: \(stacked.map(\.column)) \(stacked.map(\.columns))")
+    // Back-to-back 15-minute blocks are drawn 30 minutes tall, so they overlap on
+    // screen and must sit side by side, never on top of one another (the
+    // 2026-10-19 stack of seven "Review: …" blocks at noon).
+    let slivers = DayTimeline.arrange((0..<3).map {
+        DayItem(id: "r\($0)", title: "Review \($0)", detail: "", start: Double($0) * 15 * minute,
+                end: Double($0 + 1) * 15 * minute, style: .suggested)
+    })
+    // The first two overlap as drawn, so they share the width; the third starts
+    // where the first's drawn 30 minutes end, so it reuses the first column.
+    check(slivers.map(\.column) == [0, 1, 0] && slivers.allSatisfy { $0.columns == 2 },
+          "short back-to-back blocks sit side by side: \(slivers.map(\.column)) \(slivers.map(\.columns))")
+    let apart = DayTimeline.arrange([
+        DayItem(id: "x", title: "x", detail: "", start: 0, end: 15 * minute, style: .suggested),
+        DayItem(id: "y", title: "y", detail: "", start: 30 * minute, end: 45 * minute, style: .suggested),
+    ])
+    check(apart.allSatisfy { $0.columns == 1 }, "short blocks a drawn height apart keep the full width")
+    let grouped = window([DayBlockInput(id: "reviews", title: "Review 3 emails · Devarsh, Maya +1", start: at(14),
+                                        end: at(14.5), kind: "suggestion", evidenceID: "e1",
+                                        members: [DayMember(title: "Week 4", evidenceID: "e1"),
+                                                  DayMember(title: "Lab", evidenceID: "e2"),
+                                                  DayMember(title: "Budget", evidenceID: "e3")])], now: now)
+    check(grouped.items.first?.members.count == 3 && grouped.items.first?.detail == "Suggested · 3 to read · about 30 min",
+          "a grouped review says how many it covers: \(grouped.items.first?.detail ?? "none")")
 
     // Another day: the lane starts at working hours, and nothing is overdue.
     let other = DayTimeline.build(blocks: blocks, allDay: [], needs: needs, caught: [], now: dayStart - 30 * hour,
@@ -172,6 +196,28 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.lede(weekday: "Tuesday", isToday: true, load: .steady, dueToday: [], overdue: [],
                            next: (title: "Club", time: "3 PM"))
           == "A steady Tuesday. Next up: Club at 3 PM.", "lede with only the next event")
+    check(DayTimeline.lede(weekday: "Sunday", isToday: true, load: .free, dueToday: [], overdue: [], next: nil,
+                           othersNeedYou: true) == "A free Sunday.",
+          "lede never says nothing needs you while the Needs you line lists something")
+
+    // The Brief's Needs you line under the lede (daily_workspace.needs_you picks the items).
+    let picked = [
+        NeedsYouInput(kind: "overdue", text: "Pay rent", due: dayStart - 5 * hour),
+        NeedsYouInput(kind: "due", text: "PA 2", due: at(23.5)),
+        NeedsYouInput(kind: "due", text: "Library book", due: at(0), allDay: true),
+        NeedsYouInput(kind: "mail", text: "a deadline notice from Dr. Patel"),
+    ]
+    check(DayTimeline.needsYou(picked, more: 2, clock: clock)
+          == "Needs you today: Pay rent (overdue), PA 2 (due 23:30), Library book (due today), a deadline notice from Dr. Patel and 2 more.",
+          "needs-you line lists items with their due words and the rest as a count")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "text", text: "a text from Mom")], more: 0, clock: clock)
+          == "Needs you today: a text from Mom.", "needs-you line with one item")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "plan", text: "Finish slides"), NeedsYouInput(kind: "mail", text: "“Lab feedback” from Dr. Patel")],
+                               more: 0, clock: clock)
+          == "Needs you today: Finish slides and “Lab feedback” from Dr. Patel.", "needs-you line joins two with and")
+    check(DayTimeline.needsYou([], more: 0, clock: clock) == nil, "nothing to list: no line, not an empty header")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "due", text: "nothing", due: at(15))], more: 0, clock: clock) == nil,
+          "a junk title alone makes no line")
 
     // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!

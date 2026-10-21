@@ -48,6 +48,57 @@ def _notes_eligible(snapshot, now):
             and receipt.get("received_at") == snapshot.body_received_at)
 
 
+def _native_filter(rows):
+    """Whether a native Mail row is mass mail or a digest: never possible work."""
+    try:
+        from service.assistant.daily_workspace import mass_mail_filter
+        skip = mass_mail_filter(list(rows))
+    except Exception:  # noqa: BLE001 — unclassifiable: keep the evidence
+        return lambda row: False
+
+    def guarded(row):
+        try:
+            return skip(row)
+        except Exception:  # noqa: BLE001
+            return False
+    return guarded
+
+
+def _not_a_need_ids():
+    """Message-IDs, normalized, of cached inbox headers that are mass mail or a
+    digest (daily_workspace.not_a_need). Gmail history bodies carry no sender, so
+    their headers are found here by Message-ID."""
+    try:
+        from service.assistant.daily_workspace import mass_mail_filter
+        from service.tools.email_tools import header_rows
+        rows = header_rows()
+        skip = mass_mail_filter(rows)
+        return {_message_key(r.get("message_id")) for r in rows if r.get("message_id") and skip(r)}
+    except Exception:  # noqa: BLE001 — no headers: only the body and Message-ID checks apply
+        return set()
+
+
+def _message_key(value):
+    return str(value or "").strip().strip("<>").casefold()
+
+
+def _gmail_not_a_need(record, flagged):
+    """A Gmail history record that is mass mail: its header says so, its
+    Message-ID was minted by a bulk-mail service, or its own text carries a
+    list footer ("unsubscribe", "manage preferences"). Never raises: an odd
+    record must not cost the publication its other evidence."""
+    try:
+        from service.assistant.daily_workspace import _BULK_BODY, _QUOTED_HISTORY
+        from service.tools.email_tools import is_broadcast
+        message_id = str(getattr(record, "rfc_message_id", "") or "")
+        if message_id and (_message_key(message_id) in flagged or is_broadcast({"message_id": message_id})):
+            return True
+        body = _QUOTED_HISTORY.split(str(getattr(record.body, "text", "") or ""))[0]
+        return bool(_BULK_BODY.search(body))
+    except Exception:  # noqa: BLE001 — unclassifiable: keep the evidence
+        return False
+
+
 def _gmail_records(publications):
     """Adapt already permitted source-owned caches, never acquire history here.
 
@@ -61,6 +112,7 @@ def _gmail_records(publications):
         getters = publications() if callable(publications) else ()
         if not isinstance(getters, (tuple, list)):
             return rows, checks, stamps, omitted, witnesses
+        flagged = None
         for getter in getters:
             if not callable(getter):
                 continue
@@ -68,7 +120,11 @@ def _gmail_records(publications):
                 snapshot = getter()
                 if not isinstance(snapshot, HistorySnapshot):
                     continue
-                selected = tuple(r for r in snapshot.records if r.body.eligible)
+                # Mass mail is never possible work for the behavior pass, so it is
+                # left out before the receipt, like an ineligible body.
+                flagged = _not_a_need_ids() if flagged is None else flagged
+                selected = tuple(r for r in snapshot.records
+                                 if r.body.eligible and not _gmail_not_a_need(r, flagged))
                 omitted += len(snapshot.records)-len(selected)
                 if not selected:
                     continue
@@ -203,7 +259,10 @@ def capture(settings, getters=None, *, retained=(), now=None, gmail_history_gett
         receipts.append(check)
         rows = snapshot.rows if source == "email" else snapshot["records"]
         source_records = []
+        skip = _native_filter(rows) if source == "email" else None
         for r in rows:
+            if skip is not None and skip(r):
+                continue
             if source == "email":
                 identity = f"{r['account_id']}:{r['message_id']}"
                 text = f"Subject: {r['subject']}\n{r['body']}"
