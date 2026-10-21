@@ -106,6 +106,18 @@ and tap-only, the way a chief of staff actually works:
   notification when the card becomes due and the app is listening; "Skip tonight" or
   "Done for today" completes it. Decisions are recorded in `~/.moe/checkins.json`
   (60 days), which also answers "how many evenings has this been moved".
+- **The Day timeline's ⋯ menu.** Every Calendar block the user can change offers the
+  same Cancel and Move, under the card's rules: `GET /assistant/today` annotates each
+  Calendar block with `source_id`, `all_day` and the card rows' facts (`invitee_count`,
+  `organizer_is_user`, `calendar_writable`, `cancel_blocked`, `move_blocked`; one helper,
+  `checkin.occurrence_fields`). "Cancel event" starts the same 5-second Undo on the one
+  shared queue (`CheckInModel.shared`), with Undo and the outcome on the block itself;
+  "Move…" opens the same sub-panel (`CheckInMovePanel`) above the lane. A read-only
+  calendar gets a disabled "On a read-only calendar" line and "Open in Calendar ↗";
+  someone else's event gets "Decline in Calendar ↗"; any other block on Cancel shows the
+  service's reason and Open. Events that are over, and blocks an older service didn't
+  describe, get only Open (`CheckInCancel.menuEntries`). Each surface shows and
+  reconciles only the cancels it started, so a timeline cancel never pops the card.
 - **Morning.** `carry_forward` moves every still-active task from an earlier day onto
   today (scheduler tick and the first Today load, idempotent), unless it has aged out:
   a task keeps an `origin_ts` from the first day it was planned (never later than a

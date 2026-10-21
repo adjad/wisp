@@ -67,6 +67,23 @@ struct CheckInEvent: Identifiable, Equatable {
         moveBlocked = row["move_blocked"] as? String ?? (row["cancel_blocked"] as? String ?? "")
     }
 
+    /// A Calendar block of the Day timeline as the card sees an event
+    /// (TodayBlock.calendarEvent below): the same fields, from the same service rule.
+    init(id: String, title: String, whenTs: Double?, endTs: Double?, allDay: Bool, sourceId: String?,
+         inviteeCount: Int?, organizerIsUser: Bool?, calendarWritable: Bool?, cancelBlocked: String, moveBlocked: String) {
+        self.id = id
+        self.title = title
+        self.whenTs = whenTs
+        self.endTs = endTs
+        self.allDay = allDay
+        self.sourceId = sourceId
+        self.inviteeCount = inviteeCount
+        self.organizerIsUser = organizerIsUser
+        self.calendarWritable = calendarWritable
+        self.cancelBlocked = cancelBlocked
+        self.moveBlocked = moveBlocked
+    }
+
     /// Move is offered only when the app would carry it out (CalendarMove.refusal):
     /// a timed event, on a writable calendar, the user's own or without invitees.
     var canMove: Bool { !allDay && moveBlocked.isEmpty && calendarWritable != false }
@@ -185,6 +202,11 @@ final class CheckInModel: ObservableObject {
     @Published private(set) var cancelled: [String: String] = [:]
     @Published private(set) var cancelFailures: [String: CancelFailure] = [:]
     private var cancelDetails: [String: PendingCancel] = [:]
+    /// Where each cancel was tapped, by event id: the card (true) or the Day
+    /// timeline's ⋯ menu (false). One queue serves both, so no cancel is hurried
+    /// or dropped by a tab switch; but each surface shows, keeps itself up for,
+    /// and reconciles only its own.
+    @Published private(set) var cancelFromCard: [String: Bool] = [:]
     private lazy var cancelQueue = CheckInCancelQueue { [weak self] id in await self?.sendCancel(id) }
 
     init() {
@@ -195,6 +217,20 @@ final class CheckInModel: ObservableObject {
     /// person can see Undo and the outcome.
     var hasCancelActivity: Bool { !pendingCancels.isEmpty || !cancelling.isEmpty }
     var hasCancelOutcomes: Bool { !cancelled.isEmpty || !cancelFailures.isEmpty }
+    /// The card's own cancels (an unknown origin is the card's, as before the timeline had any).
+    func isCardCancel(_ id: String) -> Bool { cancelFromCard[id] ?? true }
+    var hasCardCancelActivity: Bool {
+        pendingCancels.keys.contains(where: isCardCancel) || cancelling.contains(where: isCardCancel)
+    }
+    var hasCardCancelOutcomes: Bool {
+        cancelled.keys.contains(where: isCardCancel) || cancelFailures.keys.contains(where: isCardCancel)
+    }
+    /// Origins of cancels that are over and whose outcome has been cleared.
+    private func forgetSettledOrigins() {
+        cancelFromCard = cancelFromCard.filter {
+            pendingCancels[$0.key] != nil || cancelling.contains($0.key) || cancelled[$0.key] != nil || cancelFailures[$0.key] != nil
+        }
+    }
 
     func load(day: String, timezone: String) async {
         var components = URLComponents(url: WispClient.baseURL.appendingPathComponent("assistant/checkin"), resolvingAgainstBaseURL: false)!
@@ -206,7 +242,7 @@ final class CheckInModel: ObservableObject {
               (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false,
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let next = CheckInCard(json: object) else { return }
-        if next.day != card.day { kept = []; goalAnswered = false; cancelled = [:]; cancelFailures = [:] }
+        if next.day != card.day { kept = []; goalAnswered = false; cancelled = [:]; cancelFailures = [:]; forgetSettledOrigins() }
         card = next
         error = ""
         reconcilePendingCancels()
@@ -217,10 +253,9 @@ final class CheckInModel: ObservableObject {
     /// before it is sent and the card says so; the service would refuse it
     /// anyway (404 or not_current), but the person shouldn't wait to learn that.
     private func reconcilePendingCancels() {
-        for (id, pending) in pendingCancels {
+        for (id, pending) in pendingCancels where isCardCancel(id) {
             let row = card.events.first { $0.id == id }
-            let same = row.map { $0.canCancel && $0.sourceId == pending.event.sourceId
-                && $0.whenTs == pending.event.whenTs && $0.inviteeCount == pending.event.inviteeCount } ?? false
+            let same = row.map { $0.canCancel && Self.sameOccurrence($0, pending.event) } ?? false
             if same { continue }
             undoCancel(pending.event)
             let title = CheckInSection.plainTitle(pending.event.title)
@@ -230,18 +265,43 @@ final class CheckInModel: ObservableObject {
         }
     }
 
+    /// The Day timeline's counterpart of reconcilePendingCancels, with the Calendar
+    /// blocks the Day tab shows now (TodayBlock.calendarEvent): a block that changed
+    /// under a pending cancel, or left the plan, drops that cancel before it is sent.
+    func reconcileTimelineCancels(_ events: [CheckInEvent]) {
+        for (id, pending) in pendingCancels where !isCardCancel(id) {
+            let row = events.first { $0.id == id }
+            let same = row.map { $0.canCancel && Self.sameOccurrence($0, pending.event) } ?? false
+            if same { continue }
+            undoCancel(pending.event)
+            let title = CheckInSection.plainTitle(pending.event.title)
+            cancelFromCard[id] = false
+            cancelFailures[id] = CancelFailure(title: title, failure: row == nil
+                ? CheckInCancel.Failure(outcome: "changed", message: "“\(title)” is no longer on the timeline; nothing was cancelled.")
+                : CheckInCancel.changed(title: title))
+        }
+    }
+
+    /// The same occurrence as the one a tap bound: same id, calendar id, start and
+    /// invitee count (what the cancel request states).
+    static func sameOccurrence(_ a: CheckInEvent, _ b: CheckInEvent) -> Bool {
+        a.id == b.id && a.sourceId == b.sourceId && a.whenTs == b.whenTs && a.inviteeCount == b.inviteeCount
+    }
+
     // MARK: Cancel with Undo
 
     /// Starts the Undo window. The cancel is sent only when it runs out untouched.
-    func beginCancel(_ event: CheckInEvent, timezone: String) {
+    /// `fromCard` is false for the Day timeline's ⋯ menu (same queue, own surface).
+    func beginCancel(_ event: CheckInEvent, timezone: String, fromCard: Bool = true) {
         guard event.canCancel, !cancelQueue.isActive(event.id) else { return }
         cancelFailures[event.id] = nil
+        cancelFromCard[event.id] = fromCard
         cancelDetails[event.id] = PendingCancel(event: event, startedAt: Date(), timezone: timezone)
         cancelQueue.begin(event.id, now: cancelDetails[event.id]!.startedAt)
     }
 
     func undoCancel(_ event: CheckInEvent) {
-        if cancelQueue.undo(event.id) { cancelDetails[event.id] = nil }
+        if cancelQueue.undo(event.id) { cancelDetails[event.id] = nil; cancelFromCard[event.id] = nil }
     }
 
     private func syncCancelState() {
@@ -298,7 +358,12 @@ final class CheckInModel: ObservableObject {
 
     func complete(day: String, timezone: String) async {
         await post("assistant/checkin/complete", ["day": day, "timezone": timezone])
-        if error.isEmpty { cancelled = [:]; cancelFailures = [:] }
+        if error.isEmpty {
+            // The card's outcomes have been read; the timeline's stay on their blocks.
+            cancelled = cancelled.filter { !isCardCancel($0.key) }
+            cancelFailures = cancelFailures.filter { !isCardCancel($0.key) }
+            forgetSettledOrigins()
+        }
     }
 
     func keep(_ event: CheckInEvent) { kept.insert(event.id) }
@@ -374,10 +439,6 @@ struct CheckInSection: View {
 
     /// The event whose Move sub-panel is open, if any.
     @State private var moving: CheckInEvent?
-    @State private var slots: [MoveSlot] = []
-    @State private var loadingSlots = false
-    @State private var choosingOther = false
-    @State private var otherDate = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -385,8 +446,8 @@ struct CheckInSection: View {
         // only today's card is ever shown or tapped.
         // A cancel in its window or in flight, or an outcome not yet read,
         // keeps the card up: the person must be able to see Undo and the result.
-        if model.card.day == day, model.card.showsCheckIn || model.hasCancelActivity
-            || (model.hasCancelOutcomes && model.card.due && !model.card.completed) {
+        if model.card.day == day, model.card.showsCheckIn || model.hasCardCancelActivity
+            || (model.hasCardCancelOutcomes && model.card.due && !model.card.completed) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 6) {
                     Text("Evening check-in").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
@@ -395,7 +456,10 @@ struct CheckInSection: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
                 if let moving, model.card.tasksSettled {
-                    movePanel(moving)
+                    CheckInMovePanel(model: model, event: moving,
+                                     day: model.card.tomorrowDay.isEmpty ? day : model.card.tomorrowDay,
+                                     timezone: timezone, clock: clock, backHelp: "Back to tomorrow's events (Esc)",
+                                     onAsk: onAsk, onClose: closeMove)
                 } else if !model.card.tasksSettled {
                     ForEach(model.card.tasks) { task in taskRow(task) }
                 } else if !model.card.events.isEmpty {
@@ -421,8 +485,8 @@ struct CheckInSection: View {
                         .background(Capsule().fill(Theme.chipFill))
                         .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                         // Closing the card would hide Undo and the outcome.
-                        .disabled(model.busy || model.hasCancelActivity)
-                        .help(model.hasCancelActivity ? "Wait for the cancel to finish first" : "Closes tonight's check-in")
+                        .disabled(model.busy || model.hasCardCancelActivity)
+                        .help(model.hasCardCancelActivity ? "Wait for the cancel to finish first" : "Closes tonight's check-in")
                     }
                 }
             }
@@ -458,7 +522,7 @@ struct CheckInSection: View {
     }
 
     private var footerLine: String {
-        if model.hasCancelActivity { return "A cancel is under way. Undo is on its row." }
+        if model.hasCardCancelActivity { return "A cancel is under way. Undo is on its row." }
         return model.card.tasksSettled ? "That's the day. Carried tasks are on tomorrow's plan."
             : "One tap each. Tomorrow carries it; Drop forgets it."
     }
@@ -466,10 +530,11 @@ struct CheckInSection: View {
     private struct OutcomeLine: Identifiable { let id: String; let text: String; let failed: Bool }
 
     private var outcomeLines: [OutcomeLine] {
+        // The card's own cancels only; a timeline cancel's outcome stays on its block.
         let shown = Set(model.card.events.map(\.id))
-        let done = model.cancelled.filter { !shown.contains($0.key) }.sorted { $0.key < $1.key }
+        let done = model.cancelled.filter { !shown.contains($0.key) && model.isCardCancel($0.key) }.sorted { $0.key < $1.key }
             .map { OutcomeLine(id: $0.key, text: $0.value, failed: false) }
-        let failed = model.cancelFailures.filter { !shown.contains($0.key) }.sorted { $0.key < $1.key }
+        let failed = model.cancelFailures.filter { !shown.contains($0.key) && model.isCardCancel($0.key) }.sorted { $0.key < $1.key }
             .map { OutcomeLine(id: $0.key, text: "“\($0.value.title)”: \($0.value.failure.message)", failed: true) }
         return done + failed
     }
@@ -518,8 +583,8 @@ struct CheckInSection: View {
                         chip("Keep", primary: true) { model.keep(event) }
                         if event.canMove {               // never for all-day, read-only or someone else's events
                             chip("Move") { openMove(event) }
-                                .help(model.hasCancelActivity ? "Wait for the cancel to finish first" : "Pick another time; Wisp finds free ones")
-                                .disabled(model.hasCancelActivity)   // the panel would hide the Undo bar
+                                .help(model.hasCardCancelActivity ? "Wait for the cancel to finish first" : "Pick another time; Wisp finds free ones")
+                                .disabled(model.hasCardCancelActivity)   // the panel would hide the Undo bar
                         }
                         cancelControl(event)
                     }
@@ -592,22 +657,6 @@ struct CheckInSection: View {
         .accessibilityHidden(true)       // the Undo button's label carries the window
     }
 
-    // MARK: Move hands off to Ask
-
-    /// The event, named precisely enough for the agent's calendar tools and
-    /// unambiguous to a reader: title, day and time, and the calendar id. The
-    /// title came from a calendar invite, so it is flattened to one short line
-    /// and the instruction never depends on it.
-    private func describe(_ event: CheckInEvent) -> String {
-        var text = "“\(Self.plainTitle(event.title))”"
-        if let when = event.whenTs {
-            text += event.allDay ? " on \(dayLabel(when)) (all day)" : " on \(dayLabel(when)) at \(clock(when))"
-        }
-        let ref = event.sourceId ?? event.id
-        if !ref.isEmpty { text += " [calendar event \(ref)]" }
-        return text
-    }
-
     static func plainTitle(_ raw: String) -> String {
         let flat = raw.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
             .replacingOccurrences(of: "“", with: "'").replacingOccurrences(of: "”", with: "'")
@@ -615,46 +664,64 @@ struct CheckInSection: View {
         return flat.count > 80 ? String(flat.prefix(79)) + "…" : flat
     }
 
-    private func moveRequest(_ event: CheckInEvent, to start: Double) -> String {
-        "Move this calendar event to \(dayLabel(start)) at \(clock(start)), keeping it \(event.durationMinutes) minutes: \(describe(event))"
-    }
+    private func openMove(_ event: CheckInEvent) { moving = event }
 
-    private func dayLabel(_ ts: Double) -> String {
-        Date(timeIntervalSince1970: ts).formatted(Date.FormatStyle(timeZone: timezone).weekday(.wide).month(.abbreviated).day())
-    }
+    private func closeMove() { moving = nil }
 
-    private func openMove(_ event: CheckInEvent) {
-        moving = event
-        slots = []
-        choosingOther = false
-        otherDate = Date(timeIntervalSince1970: (event.whenTs ?? Date().timeIntervalSince1970) + 86400)
-        loadingSlots = true
-        Task {
-            let found = await model.moveSuggestions(for: event, day: model.card.tomorrowDay.isEmpty ? day : model.card.tomorrowDay,
-                                                    timezone: timezone.identifier)
-            if moving?.id == event.id {
-                slots = found
-                loadingSlots = false
-                choosingOther = found.isEmpty
-            }
+    private func chip(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(primary ? Color.black : Theme.textSecondary)
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background(Capsule().fill(primary ? Color.white : Theme.chipFill))
+                .overlay(Capsule().stroke(primary ? Color.clear : Theme.chipStroke, lineWidth: 1))
+                .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
     }
+}
 
-    private func closeMove() {
-        moving = nil
-        slots = []
-        choosingOther = false
+extension TodayBlock {
+    /// The block as the check-in card sees an event, for the timeline's ⋯ menu;
+    /// nil unless it is a Calendar block the service described (cancel_blocked
+    /// present), so an older service never reads as "allowed".
+    var calendarEvent: CheckInEvent? {
+        guard kind == "calendar", let cancel_blocked else { return nil }
+        return CheckInEvent(id: id, title: title, whenTs: start, endTs: end, allDay: all_day ?? false,
+                            sourceId: source_id, inviteeCount: invitee_count, organizerIsUser: organizer_is_user,
+                            calendarWritable: calendar_writable, cancelBlocked: cancel_blocked,
+                            moveBlocked: move_blocked ?? cancel_blocked)
     }
+}
 
-    /// "Move to…": Wisp's suggested times, then another day and time of your own.
-    private func movePanel(_ event: CheckInEvent) -> some View {
+/// "Move to…": Wisp's suggested times, then another day and time of your own.
+/// Shared by the check-in card and the Day timeline's ⋯ menu (NotchDayView.swift).
+/// Picking a time hands the request to Ask; the agent's confirmation card
+/// ("its N invitees will be notified") gates the native, verified move.
+struct CheckInMovePanel: View {
+    @ObservedObject var model: CheckInModel
+    let event: CheckInEvent
+    /// The day the free times are looked for from: the event's own day.
+    let day: String
+    let timezone: TimeZone
+    var clock: (Double) -> String
+    var backHelp: String
+    var onAsk: (String) -> Void
+    var onClose: () -> Void
+
+    @State private var slots: [MoveSlot] = []
+    @State private var loadingSlots = true
+    @State private var choosingOther = false
+    @State private var otherDate = Date()
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Button { closeMove() } label: {
+                Button { onClose() } label: {
                     Label("Back", systemImage: "chevron.left").labelStyle(.titleAndIcon)
                         .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
                 }
-                .buttonStyle(.plain).help("Back to tomorrow's events (Esc)")
+                .buttonStyle(.plain).help(backHelp)
                 Text("Move “\(event.title)” to…").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                 Spacer()
                 if let when = event.whenTs {
@@ -667,34 +734,65 @@ struct CheckInSection: View {
                 Text("Nothing free fits in the next few days' working hours. Pick a time yourself.")
                     .font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
             } else {
-                ForEach(slots) { slot in slotRow(event, slot) }
+                ForEach(slots) { slot in slotRow(slot) }
             }
             if choosingOther {
-                otherTimeRow(event)
+                otherTimeRow
             } else {
                 chip("Other time…") { choosingOther = true }
                     .help("Choose a day and time yourself")
             }
             Text("Picking a time opens Ask with the request. Wisp confirms before the calendar changes.")
                 .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
-            Text("Moving events arrives in the next update; until then Wisp will say so.")
-                .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Move \(event.title)")
+        .task(id: event.id) {
+            slots = []
+            choosingOther = false
+            loadingSlots = true
+            otherDate = Date(timeIntervalSince1970: (event.whenTs ?? Date().timeIntervalSince1970) + 86400)
+            let found = await model.moveSuggestions(for: event, day: day, timezone: timezone.identifier)
+            guard !Task.isCancelled else { return }
+            slots = found
+            loadingSlots = false
+            choosingOther = found.isEmpty
+        }
     }
 
-    private func slotRow(_ event: CheckInEvent, _ slot: MoveSlot) -> some View {
+    /// The event, named precisely enough for the agent's calendar tools and
+    /// unambiguous to a reader: title, day and time, and the calendar id. The
+    /// title came from a calendar invite, so it is flattened to one short line
+    /// and the instruction never depends on it.
+    private func describe() -> String {
+        var text = "“\(CheckInSection.plainTitle(event.title))”"
+        if let when = event.whenTs {
+            text += event.allDay ? " on \(dayLabel(when)) (all day)" : " on \(dayLabel(when)) at \(clock(when))"
+        }
+        let ref = event.sourceId ?? event.id
+        if !ref.isEmpty { text += " [calendar event \(ref)]" }
+        return text
+    }
+
+    private func moveRequest(to start: Double) -> String {
+        "Move this calendar event to \(dayLabel(start)) at \(clock(start)), keeping it \(event.durationMinutes) minutes: \(describe())"
+    }
+
+    private func dayLabel(_ ts: Double) -> String {
+        Date(timeIntervalSince1970: ts).formatted(Date.FormatStyle(timeZone: timezone).weekday(.wide).month(.abbreviated).day())
+    }
+
+    private func slotRow(_ slot: MoveSlot) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(slot.label).font(.system(size: 12.5, weight: .medium).monospacedDigit()).foregroundStyle(Theme.textPrimary)
                 .frame(width: 150, alignment: .leading)
             Text(slot.reason).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
             Spacer(minLength: 8)
-            chip("Move here", primary: true) { onAsk(moveRequest(event, to: slot.startTs)); closeMove() }
+            chip("Move here", primary: true) { onAsk(moveRequest(to: slot.startTs)); onClose() }
         }
     }
 
-    private func otherTimeRow(_ event: CheckInEvent) -> some View {
+    private var otherTimeRow: some View {
         HStack(spacing: 8) {
             DatePicker("Day", selection: $otherDate, in: Date()..., displayedComponents: .date)
                 .datePickerStyle(.stepperField).labelsHidden()
@@ -705,7 +803,7 @@ struct CheckInSection: View {
                 .environment(\.timeZone, timezone)
                 .font(.system(size: 11.5))
             Spacer(minLength: 8)
-            chip("Move here", primary: true) { onAsk(moveRequest(event, to: otherDate.timeIntervalSince1970)); closeMove() }
+            chip("Move here", primary: true) { onAsk(moveRequest(to: otherDate.timeIntervalSince1970)); onClose() }
                 .disabled(event.whenTs.map { abs(otherDate.timeIntervalSince1970 - $0) < 60 } ?? false)
         }
         .accessibilityLabel("Another day and time")
