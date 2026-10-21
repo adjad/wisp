@@ -467,6 +467,8 @@ ADDITIONAL_FULL_TESTS = {
     # Compiles actual Swift sources, then exercises pure mapping/transport
     # guards only; no EventKit store, native app, model or personal data access.
     "tests/test_behavior_native_history.py",
+    # Owned disposable process groups and synthetic pipes only; no native stores.
+    "tests/test_native_fixture_cleanup.py",
     "tests/test_behavior_persona.py",
     "tests/test_behavior_phraser.py",
     "tests/test_behavior_predict_nudges.py",
