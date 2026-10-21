@@ -15,6 +15,7 @@ the artifact's cdhash next to the installed one.
 from __future__ import annotations
 
 import json
+import os
 import plistlib
 import shutil
 import sys
@@ -184,6 +185,7 @@ def test_sign_command_touches_only_the_outer_bundle_and_keeps_the_pipelines_meta
     assert "requirements" not in kept, "the ad-hoc cdhash requirement must be replaced, not preserved"
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads everything")
 def test_tree_digest_refuses_an_unreadable_directory(tmp_path):
     app = make_bundle(tmp_path)
     locked = app / "Contents/Resources/locked"
@@ -389,8 +391,9 @@ def test_require_stages_and_logs_nothing_when_not_resigned(tmp_path):
     log = tmp_path / "log.jsonl"
     for tools in (FakeTools(listing="  0 valid identities found\n"), FakeTools(sign_rc=1)):
         out = tmp_path / f"W{id(tools)}.app.new"
-        with pytest.raises(rli.NotResigned, match="WILL RESET"):
+        with pytest.raises(rli.NotResigned, match="Nothing staged") as info:
             rli.resign(app, out, log=log, require=True, runner=tools, now=0)
+        assert "Installing" not in str(info.value) and "WILL RESET" in str(info.value)
         assert not out.exists()
     assert not log.exists(), "a rejected --require run leaves no line claiming an install"
 
@@ -399,21 +402,29 @@ def test_an_output_that_appears_mid_run_is_never_removed(tmp_path):
     app = make_bundle(tmp_path)
     out = tmp_path / "Wisp.app.new"
 
-    def copier(src, dst):
-        shutil.copytree(src, dst, symlinks=True)
-        (Path(dst) / "Contents/_CodeSignature/CodeResources").write_text("half")   # the sign step will "fail"
-    tools = FakeTools(sign_rc=1)
-    # Simulate someone else creating the output after the pre-flight check: the first copy
-    # finds it present and refuses, rather than deleting a stranger's bundle.
-    out.mkdir()
-    (out / "theirs").write_text("x")
-    with pytest.raises(rli.ResignError, match="already exists"):
-        rli.resign(app, out, log=None, runner=tools, copier=copier, now=0)
-    assert (out / "theirs").exists()
+    def stranger_copier(src, dst):
+        # Between the pre-flight check and the copy, someone else created the output.
+        Path(dst).mkdir()
+        (Path(dst) / "theirs").write_text("x")
+        raise rli.ResignError("ditto failed: File exists")
+    with pytest.raises(rli.ResignError, match="ditto failed"):
+        rli.resign(app, out, log=None, runner=FakeTools(), copier=stranger_copier, now=0)
+    assert (out / "theirs").exists(), "a bundle this run did not create is never removed"
     shutil.rmtree(out)
-    # Normal refusal path: the half-signed copy this run created is replaced.
+
+    def racing_copier(src, dst):
+        # The copy itself raced: a second copier call finds a stranger's output in place.
+        if not Path(dst).exists():
+            shutil.copytree(src, dst, symlinks=True)
+    tools = FakeTools(sign_rc=1)
+    calls = {"n": 0}
+
+    def copier(src, dst):
+        calls["n"] += 1
+        racing_copier(src, dst)
     record = rli.resign(app, out, log=None, runner=tools, copier=copier, now=0)
-    assert not record.resigned and (out / "Contents/_CodeSignature/CodeResources").read_text() == "adhoc seal" or True
+    assert not record.resigned and calls["n"] == 2
+    assert (out / "Contents/_CodeSignature/CodeResources").read_text() == "adhoc seal", "the half-signed copy was replaced"
 
 
 def test_inputs_are_checked(tmp_path):
@@ -438,7 +449,7 @@ def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(rli, "run", FakeTools(sign_rc=1))
     assert rli.main([str(app), "--output", str(tmp_path / "b.app.new"), "--log", str(log), "--installed", installed, "--require"]) == 2
     assert not (tmp_path / "b.app.new").exists(), "--require stages nothing when not re-signed"
-    assert "WILL RESET" in capsys.readouterr().err
+    assert "Nothing staged" in capsys.readouterr().err
     monkeypatch.setattr(rli, "run", FakeTools(artifact_verify_rc=1))
     assert rli.main([str(app), "--output", str(tmp_path / "c.app.new"), "--log", str(log), "--installed", installed]) == 1
     monkeypatch.setattr(rli, "run", FakeTools())

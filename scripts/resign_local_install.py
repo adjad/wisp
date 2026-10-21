@@ -52,6 +52,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -368,9 +369,10 @@ def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, lo
             raise ResignError(f"The copy at {output} differs from the artifact")
 
     def fallback(reason: str) -> Record:
-        record.reason = reason
         if require:
-            raise NotResigned(reason)
+            raise NotResigned(reason.replace("Installing the ad-hoc artifact;",
+                                             "Nothing staged (--require); an ad-hoc install would mean"))
+        record.reason = reason
         return _finish(record, log)
 
     done = False
@@ -499,6 +501,8 @@ def main(argv=None) -> int:
                         help="the app whose grants should carry over; its requirement is read, never changed (default /Applications/Wisp.app)")
     parser.add_argument("--require", action="store_true", help="exit 2 with nothing staged or logged when not re-signed")
     args = parser.parse_args(argv)
+    # A kill mid-codesign must clean up this run's copy like Ctrl-C does (the finally in resign).
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
         record = resign(args.artifact, args.output, identity=args.identity, log=args.log,
                         installed=args.installed, require=args.require)
