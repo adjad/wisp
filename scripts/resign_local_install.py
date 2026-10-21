@@ -121,10 +121,13 @@ def parse_display(text: str) -> dict:
 
 
 def parse_requirement(text: str) -> str | None:
-    """The designated requirement line of `codesign -d -r-`, without its prefix."""
+    """The designated requirement line of `codesign -d -r-`, without its prefix. codesign
+    prints `# designated => …` when the requirement is implicit (an ad-hoc signature's
+    cdhash) and `designated => …` when it is explicit; both are the requirement."""
     for line in text.splitlines():
-        if line.startswith("designated =>"):
-            return line[len("designated =>"):].strip()
+        stripped = line.lstrip("# ").strip()
+        if stripped.startswith("designated =>"):
+            return stripped[len("designated =>"):].strip()
     return None
 
 
@@ -146,12 +149,25 @@ def sign_command(bundle: Path, identity_hash: str) -> list[str]:
             "--preserve-metadata=identifier,entitlements,flags,runtime", str(bundle)]
 
 
+class ResignError(Exception):
+    pass
+
+
+class NotResigned(ResignError):
+    """--require: the bundle could not be re-signed; nothing was staged or logged."""
+
+
+def _unreadable(error: OSError) -> None:
+    raise ResignError(f"Cannot read {error.filename}: {error.strerror}")
+
+
 def tree_digest(bundle: Path, skip=RESIGNED_PATHS) -> dict[str, tuple]:
     """Every entry under the bundle except `skip`: regular files by size and
     SHA-256, symlinks by target, directories by presence. Equal digests before and
-    after the outer re-sign prove no nested file (so no nested signature) changed."""
+    after the outer re-sign prove no nested file (so no nested signature) changed.
+    An unreadable directory or file is an error, never a silently skipped subtree."""
     out: dict[str, tuple] = {}
-    for root, dirs, files in os.walk(bundle):
+    for root, dirs, files in os.walk(bundle, onerror=_unreadable):
         for name in list(dirs) + files:
             path = Path(root) / name
             rel = path.relative_to(bundle).as_posix()
@@ -163,13 +179,29 @@ def tree_digest(bundle: Path, skip=RESIGNED_PATHS) -> dict[str, tuple]:
                 out[rel] = ("l", os.readlink(path))
             elif path.is_dir():
                 out[rel] = ("d",)
-            else:
+            elif path.is_file():
                 digest = hashlib.sha256()
-                with path.open("rb") as handle:
-                    for chunk in iter(lambda: handle.read(1 << 20), b""):
-                        digest.update(chunk)
+                try:
+                    with path.open("rb") as handle:
+                        for chunk in iter(lambda: handle.read(1 << 20), b""):
+                            digest.update(chunk)
+                except OSError as exc:
+                    raise ResignError(f"Cannot read {path}: {exc.strerror}") from None
                 out[rel] = ("f", path.stat().st_size, digest.hexdigest())
+            else:
+                raise ResignError(f"Unexpected special file in the bundle: {path}")
     return out
+
+
+MACHO_MAGICS = (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca")
+
+
+def is_macho(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) in MACHO_MAGICS
+    except OSError:
+        return False
 
 
 @dataclass
@@ -200,9 +232,6 @@ class Record:
 
 
 # ---------------------------------------------------------------- the steps
-
-class ResignError(Exception):
-    pass
 
 
 def bundle_meta(bundle: Path) -> tuple[str | None, str | None]:
@@ -236,14 +265,16 @@ def verify(path: Path, runner=None) -> None:
 
 def nested_targets(bundle: Path) -> list[Path]:
     """The nested interpreters whose own cdhash is reported: the backend's python3
-    and, when an engine is shipped, each executable in its py/bin. Only paths that
-    resolve inside the bundle count."""
+    and, when an engine is shipped, the Mach-O interpreters in its py/bin (helper
+    scripts there are plain files, covered by the tree comparison instead). A path
+    that resolves outside the bundle is an error."""
     targets: list[Path] = []
     for rel in NESTED:
         path = bundle / rel
         if not path.exists():
             continue
-        candidates = sorted(p for p in path.iterdir() if p.is_file() and os.access(p, os.X_OK)) if path.is_dir() else [path]
+        candidates = (sorted(p for p in path.iterdir() if p.is_file() and os.access(p, os.X_OK) and is_macho(p))
+                      if path.is_dir() else [path])
         for candidate in candidates:
             try:
                 candidate.resolve().relative_to(bundle.resolve())
@@ -267,24 +298,31 @@ def find_identity(name: str, runner=None) -> tuple[str | None, str | None]:
     return hashes[0], None
 
 
-def previous_requirement(log: Path | None) -> str | None:
-    """The installed requirement of the last logged install, if any."""
+def previous_requirement(log: Path | None, installed: Path | None = None, runner=None) -> str | None:
+    """What the grants are currently bound to: the installed app's own designated
+    requirement when `installed` names one (read-only), else the requirement of the
+    last logged install, else None."""
+    if installed is not None and Path(installed).is_dir():
+        runner = runner or run
+        code, text = runner([CODESIGN, "-d", "-r-", str(installed)])
+        return parse_requirement(text) if not code else None
     if not log or not Path(log).is_file():
         return None
     last = None
-    for line in Path(log).read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            last = line
-    if not last:
-        return None
     try:
-        return json.loads(last).get("installed_requirement")
-    except ValueError:
+        for line in Path(log).read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                last = line
+        return json.loads(last).get("installed_requirement") if last else None
+    except (OSError, ValueError, UnicodeError, AttributeError):
         return None
 
 
 def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, log: Path | None = DEFAULT_LOG,
-           runner=None, copier=None, now=None) -> Record:
+           installed: Path | None = None, require: bool = False, runner=None, copier=None, now=None) -> Record:
+    """See the module docstring. `installed`: the app whose grants should carry over
+    (its requirement is read, never changed). `require`: raise NotResigned instead
+    of staging and logging the ad-hoc fallback."""
     runner = runner or run   # resolved at call time, so tests can swap the module's `run`
     artifact = Path(artifact).resolve()
     output = Path(output).absolute()
@@ -308,14 +346,20 @@ def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, lo
                     artifact_cdhash=before["cdhash"], artifact_signature=before["signature"],
                     artifact_requirement=before["requirement"], resigned=False, identity=identity,
                     identity_hash=None, installed_cdhash=before["cdhash"], installed_signature=before["signature"],
-                    installed_requirement=before["requirement"], previous_requirement=previous_requirement(log),
+                    installed_requirement=before["requirement"],
+                    previous_requirement=previous_requirement(log, installed, runner),
                     files_compared=len(tree_before))
+    created = False
 
     def fresh_copy() -> None:
-        if output.exists():
+        nonlocal created
+        if output.exists() or output.is_symlink():
+            if not created:
+                raise ResignError(f"{output} appeared while this ran; refusing to remove what this run did not create")
             shutil.rmtree(output)
-            if output.exists():
+            if output.exists() or output.is_symlink():
                 raise ResignError(f"Could not remove {output}")
+        created = True
         copy(artifact, output)
         # The copy must be the artifact, nothing less: same strict verify, same cdhash.
         verify(output, runner)
@@ -323,23 +367,33 @@ def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, lo
         if copied["cdhash"] != before["cdhash"] or tree_digest(output) != tree_before:
             raise ResignError(f"The copy at {output} differs from the artifact")
 
+    def fallback(reason: str) -> Record:
+        record.reason = reason
+        if require:
+            raise NotResigned(reason)
+        return _finish(record, log)
+
+    done = False
     try:
         fresh_copy()
         identity_hash, why = find_identity(identity, runner)
         if identity_hash is None:
-            record.reason = (f"Not re-signed: {why}. Installing the ad-hoc artifact; Calendar, Reminders and "
-                             "Full Disk Access grants WILL RESET.")
-            return _finish(record, log)
+            record = fallback(f"Not re-signed: {why}. Installing the ad-hoc artifact; Calendar, Reminders and "
+                              "Full Disk Access grants WILL RESET.")
+            done = True
+            return record
         record.identity_hash = identity_hash
         code, text = runner(sign_command(output, identity_hash))
         if code:
             # Leave the verified ad-hoc copy behind, never a half-signed one.
-            fresh_copy()
-            record.reason = (f'Not re-signed: codesign refused to sign with "{identity}" ({text.strip()[-300:]}). '
-                             "Installing the ad-hoc artifact; Calendar, Reminders and Full Disk Access grants "
-                             "WILL RESET. If macOS asked whether codesign may use the key, that prompt is the "
-                             "user's to answer; run again afterwards.")
-            return _finish(record, log)
+            if not require:
+                fresh_copy()
+            record = fallback(f'Not re-signed: codesign refused to sign with "{identity}" ({text.strip()[-300:]}). '
+                              "Installing the ad-hoc artifact; Calendar, Reminders and Full Disk Access grants "
+                              "WILL RESET. If macOS asked whether codesign may use the key, that prompt is the "
+                              "user's to answer; run again afterwards.")
+            done = True
+            return record
 
         verify(output, runner)
         after = describe(output, runner)
@@ -359,7 +413,12 @@ def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, lo
             changed = sorted(set(tree_before) ^ set(tree_after)) + sorted(
                 k for k in tree_before.keys() & tree_after.keys() if tree_before[k] != tree_after[k])
             problems.append("files other than the outer signature changed: " + ", ".join(changed[:8]))
-        nested_after = {p.relative_to(output).as_posix(): describe(p, runner)["cdhash"] for p in nested_targets(output)}
+        nested_after = {}
+        for p in nested_targets(output):
+            try:
+                nested_after[p.relative_to(output).as_posix()] = describe(p, runner)["cdhash"]
+            except ResignError:
+                nested_after[p.relative_to(output).as_posix()] = None   # unreadable counts as changed
         for rel, cdhash in nested_before.items():
             same = cdhash is not None and nested_after.get(rel) == cdhash
             record.nested_cdhash[rel] = {"cdhash": cdhash, "unchanged": same}
@@ -374,12 +433,16 @@ def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, lo
         record.installed_requirement = after["requirement"]
         if record.previous_requirement is not None:
             record.grants_carry_over = record.previous_requirement == record.installed_requirement
-        return _finish(record, log)
-    except Exception as exc:
-        shutil.rmtree(output, ignore_errors=True)
-        if isinstance(exc, ResignError):
-            raise
+        record = _finish(record, log)
+        done = True
+        return record
+    except ResignError:
+        raise
+    except BaseException as exc:   # noqa: BLE001  (an interrupt too: nothing half-signed may stay)
         raise ResignError(f"Re-sign failed: {exc!r}") from exc
+    finally:
+        if not done and created:
+            shutil.rmtree(output, ignore_errors=True)
 
 
 def _ditto(src: Path, dst: Path, runner=None) -> None:
@@ -396,6 +459,10 @@ def _finish(record: Record, log: Path | None) -> Record:
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(asdict(record), sort_keys=True) + "\n")
+        try:
+            os.chmod(log, 0o600)   # a log created by an older run keeps nothing wider
+        except OSError:
+            pass
     return record
 
 
@@ -410,12 +477,12 @@ def summary(record: Record) -> str:
         lines.append(f"          {record.files_compared} files outside the outer signature unchanged"
                      + (f"; nested cdhash unchanged: {', '.join(sorted(record.nested_cdhash))}" if record.nested_cdhash else ""))
         if record.grants_carry_over:
-            lines.append("          Same requirement as the last logged install: Calendar/Reminders/Full Disk Access grants carry over.")
+            lines.append("          Same requirement as the current install: Calendar/Reminders/Full Disk Access grants carry over.")
         elif record.grants_carry_over is False:
-            lines.append("          Requirement differs from the last logged install: macOS will ask once more; "
+            lines.append("          Requirement differs from the current install: macOS will ask once more; "
                          "later installs signed this way keep the grants.")
         else:
-            lines.append("          No earlier install logged: the first install signed this way re-prompts once; "
+            lines.append("          No current install known: the first install signed this way re-prompts once; "
                          "later ones keep the grants.")
     else:
         lines.append("          " + (record.reason or "NOT re-signed"))
@@ -428,18 +495,20 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path, required=True, help="where the re-signed copy goes (must not exist), e.g. /Applications/Wisp.app.new")
     parser.add_argument("--identity", default=DEFAULT_IDENTITY, help='common name of the code-signing identity (default "Wisp Dev")')
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG, help="JSONL install log (default ~/.moe/local-installs.jsonl)")
-    parser.add_argument("--require", action="store_true", help="exit 2 instead of staging the ad-hoc copy when not re-signed")
+    parser.add_argument("--installed", type=Path, default=Path("/Applications/Wisp.app"),
+                        help="the app whose grants should carry over; its requirement is read, never changed (default /Applications/Wisp.app)")
+    parser.add_argument("--require", action="store_true", help="exit 2 with nothing staged or logged when not re-signed")
     args = parser.parse_args(argv)
     try:
-        record = resign(args.artifact, args.output, identity=args.identity, log=args.log)
+        record = resign(args.artifact, args.output, identity=args.identity, log=args.log,
+                        installed=args.installed, require=args.require)
+    except NotResigned as exc:
+        print(f"RESIGN FAILED (--require): {exc}", file=sys.stderr)
+        return 2
     except ResignError as exc:
         print(f"RESIGN FAILED: {exc}", file=sys.stderr)
         return 1
     print(summary(record))
-    if args.require and not record.resigned:
-        shutil.rmtree(args.output, ignore_errors=True)
-        print("RESIGN FAILED: --require set and the bundle was not re-signed; nothing staged", file=sys.stderr)
-        return 2
     return 0
 
 

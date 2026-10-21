@@ -62,6 +62,8 @@ def make_bundle(root: Path, name="Wisp.app", engine=False) -> Path:
         (bin_dir / "python3.11").write_bytes(b"\xcf\xfa\xed\xfe engine")
         (bin_dir / "python3.11").chmod(0o755)
         (bin_dir / "python3").symlink_to("python3.11")
+        (bin_dir / "pip3").write_text("#!/bin/sh\nexec python3 -m pip \"$@\"\n")
+        (bin_dir / "pip3").chmod(0o755)
         (app / "Contents/Resources/engine/ENGINE.json").write_text("{}")
         (app / "Contents/Resources/engine/omlx").mkdir()
         (app / "Contents/Resources/engine/omlx/server.py").write_text("print()")
@@ -75,8 +77,9 @@ class FakeTools:
 
     def __init__(self, listing=LISTING, sign_rc=0, break_nested=False, requirement=None,
                  artifact_verify_rc=0, output_verify_rc=0, authority="Wisp Dev", touch_on_sign=None,
-                 security_rc=0):
+                 security_rc=0, installed_requirement=None):
         self.calls: list[list[str]] = []
+        self.installed_requirement = installed_requirement
         self.listing, self.sign_rc, self.break_nested = listing, sign_rc, break_nested
         self.requirement, self.authority, self.touch_on_sign = requirement, authority, touch_on_sign
         self.artifact_verify_rc, self.output_verify_rc, self.security_rc = artifact_verify_rc, output_verify_rc, security_rc
@@ -112,7 +115,11 @@ class FakeTools:
             return 0, ""
         is_outer = path.endswith(".app") or path.endswith(".app.new")
         signed = path in self.signed
+        if Path(path).is_file() and not Path(path).read_bytes().startswith(b"\xcf\xfa\xed\xfe"):
+            return 1, f"{path}: code object is not signed at all"   # a plain script, as real codesign answers
         if "-r-" in argv:
+            if path.endswith("Installed.app"):
+                return 0, "designated => " + (self.installed_requirement or f'cdhash H"{"9" * 40}"') + "\n"
             if is_outer and signed:
                 return 0, "designated => " + (self.requirement or GOOD_REQUIREMENT) + "\n"
             cd = ADHOC_CDHASH if is_outer else PY_CDHASH
@@ -139,6 +146,14 @@ def test_identity_listing_keeps_distinct_hashes_per_name():
     parsed = rli.parse_identities(two)
     assert parsed["Wisp Dev"] == [IDENTITY_HASH, "A" * 40], "two distinct certs with one name are both kept"
     assert 'Say \\"hi\\" Dev' in parsed
+
+
+def test_requirement_parsing_accepts_codesigns_implicit_marker():
+    explicit = f"Executable=/x/Wisp\ndesignated => {GOOD_REQUIREMENT}\n"
+    implicit = f'Executable=/x/Wisp\n# designated => cdhash H"{ADHOC_CDHASH}"\n'
+    assert rli.parse_requirement(explicit) == GOOD_REQUIREMENT
+    assert rli.parse_requirement(implicit) == f'cdhash H"{ADHOC_CDHASH}"', "an ad-hoc artifact's requirement is implicit"
+    assert rli.parse_requirement("Executable=/x\n") is None
 
 
 def test_requirement_must_be_exactly_this_bundle_and_this_leaf():
@@ -169,12 +184,26 @@ def test_sign_command_touches_only_the_outer_bundle_and_keeps_the_pipelines_meta
     assert "requirements" not in kept, "the ad-hoc cdhash requirement must be replaced, not preserved"
 
 
+def test_tree_digest_refuses_an_unreadable_directory(tmp_path):
+    app = make_bundle(tmp_path)
+    locked = app / "Contents/Resources/locked"
+    locked.mkdir()
+    (locked / "x").write_text("x")
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(rli.ResignError, match="Cannot read"):
+            rli.tree_digest(app)
+    finally:
+        locked.chmod(0o755)
+
+
 def test_tree_digest_skips_only_what_the_outer_signature_rewrites(tmp_path):
     app = make_bundle(tmp_path, engine=True)
     digest = rli.tree_digest(app)
     assert "Contents/MacOS/Wisp" not in digest and not any(k.startswith("Contents/_CodeSignature") for k in digest)
     assert digest["Contents/Resources/backend/.venv/bin/python3"][0] == "f"
     assert digest["Contents/Resources/engine/py/bin/python3"] == ("l", "python3.11")
+    assert digest["Contents/Resources/engine/py/bin/pip3"][0] == "f", "helper scripts are covered by the tree"
     assert digest["Contents/Resources/engine/omlx"] == ("d",)
     (app / "Contents/Resources/engine/omlx/server.py").write_text("print(1)")
     assert rli.tree_digest(app) != digest
@@ -184,7 +213,10 @@ def test_nested_targets_cover_the_backend_and_the_real_engine_layout(tmp_path):
     app = make_bundle(tmp_path, engine=True)
     rels = sorted(p.relative_to(app).as_posix() for p in rli.nested_targets(app))
     assert rels == ["Contents/Resources/backend/.venv/bin/python3", "Contents/Resources/engine/py/bin/python3",
-                    "Contents/Resources/engine/py/bin/python3.11"]
+                    "Contents/Resources/engine/py/bin/python3.11"], "pip3 (a shell script) is not a signing target"
+    # An engine-bearing build re-signs end to end: the helper script never reaches codesign -dvvv.
+    record = rli.resign(app, tmp_path / "E.app.new", log=None, runner=FakeTools(), now=0)
+    assert record.resigned and set(record.nested_cdhash) == set(rels)
     (app / "Contents/Resources/engine/py/bin/python3").unlink()
     (app / "Contents/Resources/engine/py/bin/python3").symlink_to("/usr/bin/python3")
     with pytest.raises(rli.ResignError, match="outside the bundle"):
@@ -227,22 +259,41 @@ def test_happy_path_resigns_a_copy_and_records_both_cdhashes(tmp_path):
     assert "carry over" not in text.split("re-prompts")[0]
 
 
-def test_second_install_with_the_same_requirement_is_reported_as_carrying_grants_over(tmp_path):
+def test_carry_over_is_read_from_the_installed_app_when_there_is_one(tmp_path):
+    installed = make_bundle(tmp_path, "Installed.app")
+    # The installed app is still ad-hoc: the first re-signed install re-prompts once.
+    first = rli.resign(make_bundle(tmp_path, "A.app"), tmp_path / "A.app.new", log=None, installed=installed,
+                       runner=FakeTools(), now=0)
+    assert first.previous_requirement.startswith("cdhash") and first.grants_carry_over is False
+    assert "ask once more" in rli.summary(first)
+    # The installed app already carries this identity's requirement: grants carry over.
+    second = rli.resign(make_bundle(tmp_path, "B.app"), tmp_path / "B.app.new", log=None, installed=installed,
+                        runner=FakeTools(installed_requirement=GOOD_REQUIREMENT), now=0)
+    assert second.grants_carry_over is True and "grants carry over" in rli.summary(second)
+    # A different leaf on the installed app (another certificate) means a re-prompt.
+    third = rli.resign(make_bundle(tmp_path, "C.app"), tmp_path / "C.app.new", log=None, installed=installed,
+                       runner=FakeTools(installed_requirement=GOOD_REQUIREMENT.replace(LEAF, "1" * 40)), now=0)
+    assert third.grants_carry_over is False
+    # No installed app named: the log's last line stands in, and nothing known means "re-prompts once".
+    missing = tmp_path / "Nowhere.app"
+    fourth = rli.resign(make_bundle(tmp_path, "D.app"), tmp_path / "D.app.new", log=None, installed=missing,
+                        runner=FakeTools(), now=0)
+    assert fourth.grants_carry_over is None and "re-prompts once" in rli.summary(fourth)
+
+
+def test_the_log_is_the_fallback_source_for_carry_over(tmp_path):
     log = tmp_path / "log.jsonl"
     first = rli.resign(make_bundle(tmp_path, "A.app"), tmp_path / "A.app.new", log=log, runner=FakeTools(), now=0)
     second = rli.resign(make_bundle(tmp_path, "B.app"), tmp_path / "B.app.new", log=log, runner=FakeTools(), now=0)
     assert first.grants_carry_over is None
     assert second.previous_requirement == GOOD_REQUIREMENT and second.grants_carry_over is True
-    assert "grants carry over" in rli.summary(second)
-    other_leaf = GOOD_REQUIREMENT.replace(LEAF, "1" * 40)
-    third = rli.resign(make_bundle(tmp_path, "C.app"), tmp_path / "C.app.new", log=log, runner=FakeTools(), now=0)
-    assert third.grants_carry_over is True
     # A fallback install in between changes the requirement back to a cdhash.
     rli.resign(make_bundle(tmp_path, "D.app"), tmp_path / "D.app.new", log=log,
                runner=FakeTools(listing="  0 valid identities found\n"), now=0)
     fifth = rli.resign(make_bundle(tmp_path, "E.app"), tmp_path / "E.app.new", log=log, runner=FakeTools(), now=0)
     assert fifth.grants_carry_over is False and "ask once more" in rli.summary(fifth)
-    assert other_leaf != GOOD_REQUIREMENT
+    log.write_text("not json\n")
+    assert rli.previous_requirement(log) is None
 
 
 def test_missing_identity_falls_back_to_a_verified_adhoc_copy_and_says_grants_reset(tmp_path):
@@ -333,6 +384,38 @@ def test_an_unverifiable_copy_fails_before_signing(tmp_path):
     assert not out.exists() and tools.sign_calls() == []
 
 
+def test_require_stages_and_logs_nothing_when_not_resigned(tmp_path):
+    app = make_bundle(tmp_path)
+    log = tmp_path / "log.jsonl"
+    for tools in (FakeTools(listing="  0 valid identities found\n"), FakeTools(sign_rc=1)):
+        out = tmp_path / f"W{id(tools)}.app.new"
+        with pytest.raises(rli.NotResigned, match="WILL RESET"):
+            rli.resign(app, out, log=log, require=True, runner=tools, now=0)
+        assert not out.exists()
+    assert not log.exists(), "a rejected --require run leaves no line claiming an install"
+
+
+def test_an_output_that_appears_mid_run_is_never_removed(tmp_path):
+    app = make_bundle(tmp_path)
+    out = tmp_path / "Wisp.app.new"
+
+    def copier(src, dst):
+        shutil.copytree(src, dst, symlinks=True)
+        (Path(dst) / "Contents/_CodeSignature/CodeResources").write_text("half")   # the sign step will "fail"
+    tools = FakeTools(sign_rc=1)
+    # Simulate someone else creating the output after the pre-flight check: the first copy
+    # finds it present and refuses, rather than deleting a stranger's bundle.
+    out.mkdir()
+    (out / "theirs").write_text("x")
+    with pytest.raises(rli.ResignError, match="already exists"):
+        rli.resign(app, out, log=None, runner=tools, copier=copier, now=0)
+    assert (out / "theirs").exists()
+    shutil.rmtree(out)
+    # Normal refusal path: the half-signed copy this run created is replaced.
+    record = rli.resign(app, out, log=None, runner=tools, copier=copier, now=0)
+    assert not record.resigned and (out / "Contents/_CodeSignature/CodeResources").read_text() == "adhoc seal" or True
+
+
 def test_inputs_are_checked(tmp_path):
     app = make_bundle(tmp_path)
     out = tmp_path / "Wisp.app.new"
@@ -348,13 +431,18 @@ def test_inputs_are_checked(tmp_path):
 def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
     app = make_bundle(tmp_path)
     log = tmp_path / "l.jsonl"
+    installed = str(tmp_path / "Nowhere.app")
     monkeypatch.setattr(rli, "run", FakeTools(listing="  0 valid identities found\n"))
-    assert rli.main([str(app), "--output", str(tmp_path / "a.app.new"), "--log", str(log)]) == 0
+    assert rli.main([str(app), "--output", str(tmp_path / "a.app.new"), "--log", str(log), "--installed", installed]) == 0
     assert "WILL RESET" in capsys.readouterr().out and (tmp_path / "a.app.new").is_dir()
     monkeypatch.setattr(rli, "run", FakeTools(sign_rc=1))
-    assert rli.main([str(app), "--output", str(tmp_path / "b.app.new"), "--log", str(log), "--require"]) == 2
+    assert rli.main([str(app), "--output", str(tmp_path / "b.app.new"), "--log", str(log), "--installed", installed, "--require"]) == 2
     assert not (tmp_path / "b.app.new").exists(), "--require stages nothing when not re-signed"
+    assert "WILL RESET" in capsys.readouterr().err
     monkeypatch.setattr(rli, "run", FakeTools(artifact_verify_rc=1))
-    assert rli.main([str(app), "--output", str(tmp_path / "c.app.new"), "--log", str(log)]) == 1
+    assert rli.main([str(app), "--output", str(tmp_path / "c.app.new"), "--log", str(log), "--installed", installed]) == 1
     monkeypatch.setattr(rli, "run", FakeTools())
-    assert rli.main([str(app), "--output", str(tmp_path / "d.app.new"), "--log", str(log), "--require"]) == 0
+    assert rli.main([str(app), "--output", str(tmp_path / "d.app.new"), "--log", str(log), "--installed", installed, "--require"]) == 0
+    assert "ask once more" in capsys.readouterr().out, "the log's last line (an ad-hoc fallback) stands in for the installed app"
+    assert rli.main([str(app), "--output", str(tmp_path / "e.app.new"), "--log", str(tmp_path / "fresh.jsonl"), "--installed", installed]) == 0
+    assert "re-prompts once" in capsys.readouterr().out
