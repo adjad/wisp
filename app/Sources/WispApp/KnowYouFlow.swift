@@ -210,7 +210,7 @@ struct UserProfile: Equatable {
 
     var hasContent: Bool {
         !name.isEmpty || !about.isEmpty || !goals.isEmpty || !struggles.isEmpty || !people.isEmpty
-            || !boundaries.isEmpty || !notes.isEmpty
+            || !boundaries.isEmpty || !notes.isEmpty || tone != "warm" || detail != "short"
     }
 
     /// Whether the user gave this step an answer. Tone always holds a default,

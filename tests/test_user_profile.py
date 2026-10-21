@@ -120,7 +120,26 @@ def test_offer_logic():
 
 def test_status_filled_ignores_defaults():
     assert P.status(P.empty())["has_content"] is False
-    assert P.filled_fields(P.validate({"tone": "direct"}) | P.empty()) == []
+    assert P.filled_fields(P.empty() | P.validate({"tone": "warm", "detail": "short"})) == []
+
+
+@pytest.mark.parametrize("patch,field,rule", [
+    ({"tone": "direct"}, "tone", "straight to the point"),
+    ({"tone": "gentle"}, "tone", "Speak gently"),
+    ({"detail": "thorough"}, "detail", "thorough answers"),
+])
+def test_nondefault_style_alone_is_applied_and_can_be_erased(patch, field, rule, client):
+    response = client.patch("/profile", json=patch)
+    assert response.status_code == 200
+    saved = response.json()
+    assert saved["status"]["has_content"] is True
+    assert saved["status"]["filled"] == [field]
+    assert rule in P.profile_block(P.load()), "style applies even without a name or goal"
+    assert not any("haven't told me anything" in line for line in saved["preview"])
+    assert client.get("/profile").json()["status"]["has_content"] is True
+    erased = client.delete("/profile").json()
+    assert erased["profile"] == P.empty() and erased["status"]["has_content"] is False
+    assert P.profile_block() == "" and not P.PROFILE_PATH.exists()
 
 
 # --- use 1: prompt block ---------------------------------------------------------
