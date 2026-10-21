@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<!-- Ling's 4-bit weights are ~4.3 GB; the default per-app memory limit is too small to hold them. -->
+<key>com.apple.developer.kernel.increased-memory-limit</key><true/>
+</dict></plist>

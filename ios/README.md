@@ -1,74 +1,97 @@
-# Wisp iPhone foundation
+# Wisp for iPhone
 
-A standalone SwiftUI iPhone app with synthetic data, explicit text import/paste,
-source excerpts, permission-aware native boundaries, and an on-device inference
-adapter. This is an initial port foundation, **not completion of the twenty
-natural-language workflows**. Native integration and local inference are disabled
-in the app. No account, model service or Mac resident server is required.
+A SwiftUI iPhone app for Wisp with three places to run, switchable from the
+chat's title bar:
 
-Open `WispPhone.xcodeproj` in Xcode. Deployment target is iOS 17; the optional
-Foundation Models adapter is guarded for iOS 26 and builds only when the SDK has
-the framework. The checked-in project needs no third-party dependencies, account,
-provisioning, network service, model weights or project generator to compile.
-`scripts/generate_project.py` regenerates the project using Python's standard
-library after adding/removing Swift files.
+| Mode | Where turns run | What it can do |
+| --- | --- | --- |
+| **Mac** | Wisp on your Mac, through the phone gateway over Tailscale | Everything Wisp does on the Mac: mail, messages, calendar, reminders, tools, with approval cards for actions |
+| **iPhone** | Ling-3.0-tiny on the phone with MLX | Private chat with no network. No tools. |
+| **Cloud** | Any OpenAI-compatible provider, with your own API key | Chat with a larger model. No tools. |
 
-The Workspace tab starts with fictional mail, messages, calendar, reminders and
-notes. Choose Inbox overview and inspect to see three full excerpts and stable
-source IDs. Search fields are explicit literal filters, not a validated intent
-parser. Calendar's day view uses the fixture's local timezone and overlapping
-event intervals. Every view states its available source scope.
+A conversation belongs to one mode (a Mac chat's history lives on the Mac), so
+switching modes mid-chat starts a new chat.
 
-Paste and UTF-8 import replace the workspace with a partial, in-memory source.
-Imports do not infer contact identity, event times or unread status. Reset discards
-the import. There is no disk persistence, account sync or directory scan. A share
-extension is not included yet. Imported text is displayed as data, never executed.
+## Layout
 
-## Validate without personal data or model execution
+- `App/`: SwiftUI app (chat, settings, pairing scanner, engines, on-device model copy).
+- `Sources/WispPhoneKit/`: platform-neutral logic, unit-tested on the Mac:
+  SSE and OpenAI stream decoding, `<think>` filtering, pairing links, gateway and cloud
+  clients, conversation storage, phone system prompt.
+- `Packages/WispLing/`: Ling's `bailing_hybrid` architecture ported to MLX Swift, plus
+  a parity tool against the Python reference. See its README.
+- `Sources/WispCore/`, `Sources/WorkflowContractRunner/`: the earlier workflow20 contract
+  foundation, unchanged.
+- `../service/phone_gateway/`: the Mac side. Protocol: [docs/PHONE_GATEWAY.md](docs/PHONE_GATEWAY.md).
+
+## Set up the Mac side
+
+1. Install Tailscale on the Mac and the iPhone and sign both in to the same tailnet.
+2. In the Wisp project folder on the Mac:
+
+   ```sh
+   .venv/bin/python -m service.phone_gateway pair --name "My iPhone"
+   ```
+
+   Scan the QR code with the iPhone's Camera (it opens Wisp) or from Settings → Mac.
+3. Keep the gateway running while you use Mac mode (`--model` also offers Ling to the phone):
+
+   ```sh
+   .venv/bin/python -m service.phone_gateway serve --model ~/Desktop/OMLX_Model_Files/Ling-3.0-tiny-Wisp-V3-merged-oQ4e
+   ```
+
+The gateway binds only the Mac's Tailscale address, needs a paired token for
+everything except `ping`, forwards a fixed set of routes to the backend on
+`127.0.0.1:8765`, and never exposes the backend itself. `devices` lists paired
+phones; `revoke <id>` removes one.
+
+## Build and run
 
 ```sh
-swift test --package-path ios --scratch-path /private/tmp/wisp-iphone-core
-xcodebuild -project ios/WispPhone.xcodeproj -scheme WispPhone \
-  -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-  -derivedDataPath /private/tmp/wisp-iphone-app CODE_SIGNING_ALLOWED=NO build
+python3 ios/scripts/generate_project.py          # after adding/removing Swift files
+open ios/WispPhone.xcodeproj
 ```
 
-From a clean committed checkout, `python3 ios/scripts/verify.py --expected-sha
-<full-sha> --artifacts <outside-repo-directory> --fixtures
-<shared-workflow20-cases-directory>` captures command logs and head/tree bindings.
-It does not boot a simulator, install an app, request native permissions or execute
-inference. A generic simulator compile does not establish device feasibility.
+To run on your iPhone, create `ios/Config/Local.xcconfig` (git-ignored):
+
+```
+DEVELOPMENT_TEAM = ABCDE12345
+WISP_BUNDLE_ID = com.yourname.wisp
+```
+
+A free Apple ID "Personal Team" works for installing on your own phone. Ling needs
+the *Increased Memory Limit* entitlement (`App/WispPhone.entitlements`). If your
+team can't sign it, remove that key; Mac and Cloud modes don't need it.
+
+The Simulator runs Mac and Cloud modes. MLX needs a real GPU, so iPhone mode only
+works on a device. Simulator builds also accept a `127.0.0.1` pairing link, which
+reaches a gateway started with `serve --host 127.0.0.1`.
+
+## Tests
+
+```sh
+swift test --package-path ios                                         # WispPhoneKit + WispCore
+.venv/bin/python -m pytest tests/test_phone_gateway.py -q             # Mac gateway
+xcodebuild -project ios/WispPhone.xcodeproj -scheme WispPhone -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+```
+
+## Privacy
+
+- **iPhone mode**: nothing leaves the phone.
+- **Mac mode**: traffic stays inside your tailnet (WireGuard-encrypted). The pairing
+  token is in the iPhone Keychain (this device only); the Mac stores only its SHA-256.
+- **Cloud mode**: prompts and recent chat history go to the provider you chose. The
+  API key is in the iPhone Keychain (this device only). Cloud mode has no tools and
+  no access to mail, calendar or files.
+- Model files copied from the Mac are checked against the Mac's SHA-256 before use,
+  are excluded from iCloud backup, and contain no executable code (`.py` is never served).
 
 ## Shared workflow20 contract
 
-Use the Mac-owned `docs/workflow20/CONTRACT.md` and
-`tests/workflow20/cases/*.json` directly, read-only. The CLI accepts one or more
-fixture files and emits JSONL observations:
+The earlier foundation's contract runner is unchanged; see
+[CAPABILITIES.md](docs/CAPABILITIES.md) and [HANDOFF.md](docs/HANDOFF.md):
 
 ```sh
-swift run --package-path ios --scratch-path /private/tmp/wisp-iphone-core \
-  workflow20-ios /path/to/shared/cases/actions.json /path/to/shared/cases/read_query.json
+swift run --package-path ios workflow20-ios /path/to/cases/actions.json
 ```
-
-The decoder deliberately excludes `expect` and scenario reference `facts` from
-execution input. Approval observations include exact `approved_effects`, which
-are empty in this foundation. The contract adapter returns `unsupported` for all
-semantic cases with zero effects. Source-inspector results are never mapped to
-semantic success. The shared grader correctly fails completion for this adapter;
-safe abstention and successful schema consumption are separate evidence.
-
-A future semantic adapter must derive facts and actions from source records, keep
-approval bound to exact payloads, and measure heldout outcomes without consuming
-the reference oracle. No model accuracy or latency has been measured.
-
-## Local inference boundary
-
-`AppleLocalInference` selects `SystemLanguageModel.default` explicitly, checks
-availability before each request, exposes no tools/cloud fallback, caps payloads,
-checks cancellation, and validates returned whole excerpts and IDs against input.
-It cannot create action parameters or new facts. Default scope is nil and fails
-before touching the model. The app does not instantiate or call the adapter.
-Enabling a runtime requires a separately approved resource profile and supported
-hardware; constructor source is not proof of inference quality or execution.
-
-See [capability matrix](docs/CAPABILITIES.md) and [handoff](docs/HANDOFF.md).

@@ -3,3 +3,5 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+Config/Local.xcconfig
+Packages/WispLing/.build/
