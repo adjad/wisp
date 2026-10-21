@@ -103,6 +103,17 @@ class MemoryQueue:
                 ORDER BY created_at DESC LIMIT 2000''', (max(1, min(100, int(session_limit))),))
             return self.sessions._db.total_changes - before
 
+    def has_ready(self):
+        """Observe eligible work without claiming it or advancing retry state.
+
+        This is only a cheap hint before inspecting model residency. next()
+        still arbitrates the claim if another worker or deletion wins a race.
+        """
+        with self.sessions._lock:
+            return self.sessions._db.execute('''SELECT 1 FROM memory_jobs
+                WHERE status='queued' AND available_at<=? LIMIT 1''',
+                (time.time(),)).fetchone() is not None
+
     def next(self):
         claim = uuid.uuid4().hex
         with self.sessions._lock, self.sessions._db:

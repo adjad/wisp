@@ -239,7 +239,9 @@ final class AssistantDelivery {
         var next = receipts
         next[id] = receipt
         do {
-            let data = try JSONSerialization.data(withJSONObject: next, options: [.sortedKeys])
+            // Receipt-file key order is not part of the delivery protocol. Keep
+            // canonical sorting in fingerprint(), where payload identity needs it.
+            let data = try JSONSerialization.data(withJSONObject: next)
             try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: path, options: [.atomic])
             receipts = next
@@ -408,7 +410,14 @@ final class AssistantDelivery {
             let receipt = receipts[id] ?? [:]
             let done = Set(receipt.keys) == ["kind", "done"] && Self.jsonBoolean(receipt["done"]) == true
             if !done {
-                guard await perform(event), save(id, ["kind": event.type, "done": true]) else { return false }
+                guard await perform(event) else { return false }
+                // A changed event only invalidates UI data. Repeating that
+                // refresh after a lost ACK is safe; persisting every refresh
+                // rewrites an ever-growing receipt file on the main actor.
+                // Preserve existing receipts and durable handling for effects.
+                if event.type != "changed" {
+                    guard save(id, ["kind": event.type, "done": true]) else { return false }
+                }
             }
         }
         let response = await client.assistantDeliveryPost("assistant/events/\(id)/ack",

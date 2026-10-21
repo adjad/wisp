@@ -148,6 +148,9 @@ class MemoryWorker:
                 if not investigation and not self.queue.enabled():
                     self.state = 'paused'
                     continue
+                if not investigation and not self.queue.has_ready():
+                    self.state = 'idle'
+                    continue
                 loaded = await client.loaded_models()
                 # Neither capture nor the experimental path cold-loads/swaps a
                 # foreground model. Leave jobs queued while the model is absent.
