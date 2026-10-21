@@ -116,6 +116,9 @@ struct OverlayView: View {
         .background(GeometryReader { geo in
             Color.clear.onChange(of: geo.size.height) { model.onResize() }
         })
+        // Closing: the content fades before the shape retracts; the surface
+        // below stays, so the panel still reads as the notch drawing back in.
+        .opacity(model.closing ? 0 : 1)
         // Must match the width OverlayPanel sizes its window to — both read
         // SurfaceLayout.expandedWidth, so they cannot disagree.
         .frame(width: layout.expandedWidth)

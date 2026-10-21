@@ -147,6 +147,15 @@ struct StoredBrief: Equatable {
         let candidates = [live, stored.map { (text: $0.text, at: $0.composedAt) }].compactMap { $0 }.filter { sameDay($0.at) }
         return candidates.max { $0.at < $1.at }
     }
+
+    /// Whether the brief on screen is the one this launch received, so "Ask
+    /// about this" may continue its saved chat. When the Brief shows the stored
+    /// brief instead (newer, or the only one from today), the live one is a
+    /// different brief, and continuing it would answer about the wrong one.
+    static func shownIsLive(shown: (text: String, at: Date)?, live: (text: String, at: Date)?) -> Bool {
+        guard let shown, let live else { return false }
+        return shown.text == live.text && shown.at == live.at
+    }
 }
 
 @MainActor
