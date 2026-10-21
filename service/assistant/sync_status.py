@@ -66,9 +66,15 @@ def source_status(source: str) -> dict:
                 "fresh": bool(email.email_source_details()) and all(
                     row["fresh"] for row in email.email_source_details())}
     if source == "messages":
-        from service.tools.imessage_tools import messages_sync_state
-        return {"id": source, "label": _LABELS[source],
-                "state": messages_sync_state(), "count": 0, "reason": ""}
+        from service.tools.imessage_tools import (messages_sync_state, messages_unavailable_kind,
+                                                  messages_unavailable_reason)
+        state = messages_sync_state()
+        # The reader's own reason ("Wisp needs Full Disk Access…"), so the row
+        # says what to do instead of "Could not read this source".
+        unavailable = state == "unavailable"
+        return {"id": source, "label": _LABELS[source], "state": state, "count": 0,
+                "reason": messages_unavailable_reason() if unavailable else "",
+                "reason_kind": messages_unavailable_kind() if unavailable else ""}
     if source == "notes":
         from service.tools.notes_tools import notes_sync_state
         return {"id": source, "label": _LABELS[source],

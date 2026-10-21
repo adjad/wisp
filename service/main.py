@@ -3092,7 +3092,8 @@ async def assistant_sync_messages(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "applied": applied, **contacts_privacy_status()}
     cache_messages(str(body.get("lines") or ""),
                    available=bool(diag.get("available")),
-                   reason=str(diag.get("reason") or ""))
+                   reason=str(diag.get("reason") or ""),
+                   kind=str(diag.get("reason_kind") or ""))
     return {"ok": True}
 
 
