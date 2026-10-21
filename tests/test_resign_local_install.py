@@ -222,7 +222,9 @@ def test_nested_targets_cover_the_backend_and_the_real_engine_layout(tmp_path):
     record = rli.resign(app, tmp_path / "E.app.new", log=None, runner=FakeTools(), now=0)
     assert record.resigned and set(record.nested_cdhash) == set(rels)
     (app / "Contents/Resources/engine/py/bin/python3").unlink()
-    (app / "Contents/Resources/engine/py/bin/python3").symlink_to("/usr/bin/python3")
+    # A hermetic escape target: the host's own python3 may be unreadable or absent in a sandbox,
+    # and an escaping symlink must be refused whatever it points at.
+    (app / "Contents/Resources/engine/py/bin/python3").symlink_to(tmp_path / "elsewhere-python3")
     with pytest.raises(rli.ResignError, match="outside the bundle"):
         rli.nested_targets(app)
 

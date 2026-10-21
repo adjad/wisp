@@ -275,14 +275,17 @@ def nested_targets(bundle: Path) -> list[Path]:
         path = bundle / rel
         if not path.exists():
             continue
-        candidates = (sorted(p for p in path.iterdir() if p.is_file() and os.access(p, os.X_OK) and is_macho(p))
-                      if path.is_dir() else [path])
-        for candidate in candidates:
+        entries = sorted(path.iterdir()) if path.is_dir() else [path]
+        for entry in entries:
+            # Escape is checked before any filtering: a symlink pointing out of the bundle is an
+            # error even when its target is unreadable or not a Mach-O file on this machine.
             try:
-                candidate.resolve().relative_to(bundle.resolve())
+                entry.resolve().relative_to(bundle.resolve())
             except ValueError:
-                raise ResignError(f"{candidate} resolves outside the bundle")
-            targets.append(candidate)
+                raise ResignError(f"{entry} resolves outside the bundle")
+        candidates = ([p for p in entries if p.is_file() and os.access(p, os.X_OK) and is_macho(p)]
+                      if path.is_dir() else entries)
+        targets.extend(candidates)
     return targets
 
 
