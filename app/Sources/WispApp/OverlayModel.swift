@@ -385,10 +385,10 @@ final class OverlayModel: ObservableObject {
     // Debug metadata for the turn currently in flight — folded into a Turn
     // record on "done"/"error" (see handle()). Reset in submit().
     private var lastDroppedReport: [String: Any]?
-    /// A dropped prompt the server may have started on (its stream had begun),
+    /// Dropped prompts the server may have started on (their stream had begun),
     /// set aside because the user had typed something else meanwhile. Never
-    /// sent by itself: Return on an empty box only puts it back in the box.
-    private var setAside: QueuedPrompt?
+    /// sent by itself: Return on an empty box only puts the latest back in the box.
+    private var setAside = SetAsidePrompts()
     private var lastDroppedReportKey: String?
     private var turnTraceID: String?
     private var turnStartedAt: Date?
@@ -454,8 +454,7 @@ final class OverlayModel: ObservableObject {
         guard !prompt.isEmpty else {
             // Return on an empty box first brings back a prompt set aside after
             // a drop (to read, not to send), then sends on prompts held behind it.
-            if let back = setAside {
-                setAside = nil
+            if let back = setAside.restore() {
                 input = back.text
                 attachedImage = back.image
                 attachedImageName = back.imageName
@@ -782,7 +781,7 @@ final class OverlayModel: ObservableObject {
         dailySummaryRunning = false
         briefComposing = false
         submissionState.reset()
-        setAside = nil
+        setAside.reset()
         researchDispatchID = nil
         syncQueue()
         stopSyncProgress()
@@ -1133,7 +1132,7 @@ final class OverlayModel: ObservableObject {
                     _ = submissionState.dropToQueue(dispatchID)
                     place = .queued
                 } else if typed {
-                    setAside = submissionState.dropForRetry(dispatchID)
+                    setAside.push(submissionState.dropForRetry(dispatchID))
                     place = .setAside
                 } else if let retry = submissionState.dropForRetry(dispatchID) {
                     input = retry.text
@@ -1148,7 +1147,8 @@ final class OverlayModel: ObservableObject {
                 phase = .idle
                 // Never silent: say what happened and how to send it again.
                 showTransientNotice(AgentSend.notice(message: ev.str("message"), unsent: unsent,
-                                                     queued: submissionState.queuedCount, place: place),
+                                                     queued: submissionState.queuedCount, place: place,
+                                                     setAside: setAside.count),
                                     duration: 12)
             } else {
                 let msg = ev.str("message").isEmpty ? "Something went wrong." : ev.str("message")
