@@ -2386,6 +2386,8 @@ class RouteDecision:
     isolated_public_query: str = ""
     # A clarification is legitimate; a calendar read is not reminder creation.
     reminder_action: str = ""  # create | clarify_time
+    # Host-only unresolved reminder boundary; never selected by model output.
+    _reminder_clarification: bool = field(default=False, repr=False)
     # Private ownership metadata, deliberately absent from as_dict(): the
     # topical parser owns positive obligations, while finalization still checks
     # routability and the outer source guard retains negative authority.
@@ -7463,6 +7465,7 @@ async def _reminder_compound_boundary(text: str, request: _WebRequest) -> RouteD
         return complete
     from service.tools.registry import REGISTRY
     decision = _mk("agent", reason="unresolved reminder task clauses -> clarify before effects")
+    decision._reminder_clarification = True
     decision.tool_subset = []
     decision.resolved_request = (text + '\n\nNo reminder or other action has happened. '
         'Ask a specific clarification about the reminder subjects, dates or additional actions '

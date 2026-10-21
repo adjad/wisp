@@ -138,6 +138,28 @@ def reminder_command_parts(text: str) -> tuple[str, str] | None:
                              text[start:], re.I):
             continue
         end = match.end() + introducer.end()
+        if introducer.group().strip().casefold() == "titled" and not text[match.end():start].strip():
+            # A whole quoted title may precede one explicit outer schedule.
+            # Consume the entire suffix before separating title from time;
+            # a date/clock search must never discard a second action or range.
+            subject = text[end:].lstrip()
+            spans = quoted_spans(subject)
+            if len(spans) == 1 and spans[0][0] == 0:
+                close = spans[0][1]
+                date = rf"(?:{_NAMED_DATE.pattern}|{_ALERT_DAY})"
+                clock = r"(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)|noon|midnight)"
+                suffix = re.fullmatch(rf"\s+(?P<schedule>(?:(?:for|on)\s+)?(?P<date>{date})\s+at\s+{clock})[.!?\s]*",
+                                      subject[close:], re.I)
+                if suffix:
+                    from service.tasks.temporal import resolve_named_time
+                    schedule = suffix['schedule']
+                    now = datetime.now()
+                    resolved = resolve_named_time(schedule, now=now)[0]
+                    day = resolve_named_time(suffix['date'], now=now)[0]
+                    if resolved is not None and day is not None and resolved.date() == day.date():
+                        # Parts are semantic operands, not source offsets.
+                        # Keep the original request untouched in the task plan.
+                        return text[:start] + schedule + " titled ", subject[:close]
         return text[:end], text[end:]
     return text, ""
 

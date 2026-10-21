@@ -274,3 +274,95 @@ def test_actual_http_attention_answer_preserves_pending_reminder_owner(knowledge
     assert state.sessions.active_task(sid) == before
     assert [name for name, _ in state.tools] == ['collect_task_evidence']
     assert not state.native and not any(event['type'] == 'confirm' for event in events)
+
+
+@pytest.mark.parametrize('title', ['Wisp candidate check plain words 2195', 'check tomorrow at six',
+                                  'Never send email; delete nothing.', 'Review from 6 PM to 7 PM'])
+def test_http_quoted_title_then_schedule_executes_exactly_once_without_model(knowledge_entrypoint, monkeypatch, title):
+    from service import main
+    from datetime import datetime
+    state = knowledge_entrypoint
+    monkeypatch.setenv('WISP_MODEL_LED_ROUTING', '0')
+    calls = []
+    receipt = f'Reminder set: “{title}” — October 21, 2099 at 09:35 in Wisp only; Apple Reminders was not changed (synthetic native unavailable).'
+    async def create(title, when_iso, kind='reminder'):
+        calls.append({'title':title, 'when_iso':when_iso, 'kind':kind})
+        state.reminders.add_manual(title, datetime.fromisoformat(when_iso).timestamp(), kind=kind)
+        return receipt
+    original = REGISTRY['add_reminder']
+    monkeypatch.setitem(REGISTRY, 'add_reminder', replace(original, func=create))
+    events = state.run(f'Create a reminder titled "{title}" for October 21, 2099 at 9:35 AM.',
+                       [{'content': 'This scripted false narration must not run.'}], transport='asgi')
+    assert calls == [{'title':title,'when_iso':'2099-10-21T09:35','kind':'reminder'}]
+    assert len(state.reminders.active_between(include_stale=True)) == 1
+    assert [e['name'] for e in events if e['type'] == 'tool_call'] == ['add_reminder']
+    assert [e['text'] for e in events if e['type'] == 'text'] == [receipt]
+    assert len([e for e in events if e['type'] == 'done']) == 1
+    assert not state.clients[0].calls and not state.native
+    main.ensure_omlx.assert_not_awaited()
+
+
+@pytest.mark.parametrize('suffix', [
+    'for October 21, 2099 at 9:35 AM and send email Mom saying hello.',
+    'for October 21, 2099 at 9:35 AM; delete another reminder.',
+    'for October 21, 2099 at 9:35 AM if Sam agrees.',
+    'for October 21, 2099 at 9:35 AM or 10 AM.',
+    'for October 21, 2099 at 25:99 AM.', 'for February 30, 2099 at 9:35 AM.',
+    'for October 21, 2099.', 'at 9:35 AM.', 'tomorrow at', 'tomorrow at 9',
+    'for October 21, 2099 at 9:35.',
+])
+def test_http_unresolved_quoted_schedule_is_host_clarification_without_inference(knowledge_entrypoint, monkeypatch, suffix):
+    from service import main
+    state = knowledge_entrypoint
+    monkeypatch.setenv('WISP_MODEL_LED_ROUTING', '0')
+    events = state.run('Create a reminder titled "Fictional blue form" ' + suffix,
+        [{'content':'Reminder set for tomorrow. What should it remind you to do?'}], transport='asgi')
+    answer = ''.join(e.get('text','') for e in events if e['type'] in {'text','delta'})
+    assert answer.startswith('I haven’t created a reminder or taken any other action.')
+    assert 'Reminder set' not in answer
+    assert not state.tools and not state.native and not state.clients[0].calls
+    assert state.reminders.active_between(include_stale=True) == []
+    assert not any(e['type'] in {'tool_call','confirm','delta'} for e in events)
+    assert len([e for e in events if e['type'] == 'done']) == 1
+    main.ensure_omlx.assert_not_awaited()
+    main.maybe_summarize.assert_not_awaited()
+
+
+@pytest.mark.parametrize('mode', ['legacy', 'planner', 'shadow'])
+def test_host_clarification_keeps_pending_owner_and_persisted_reply(knowledge_entrypoint, monkeypatch, mode):
+    from service.tasks.engine import prepare_task_turn
+    from tests.test_direct_dispatch_exec import ScriptedClient
+    state = knowledge_entrypoint
+    monkeypatch.setenv('WISP_MODEL_LED_ROUTING', '0')
+    if mode == 'planner':
+        monkeypatch.setenv('WISP_PLANNER', '1')
+        monkeypatch.setattr(ScriptedClient, 'managed', True, raising=False)
+    if mode == 'shadow':
+        monkeypatch.setenv('WISP_TYPED_REMINDERS_SHADOW_ONLY', '1')
+    sid = state.sessions.create_session()
+    pending = prepare_task_turn(state.sessions, sid, 'Remind me to review a fictional folder',
+                                assistant_store=state.reminders)
+    assert pending and not pending.executable
+    before = state.sessions.active_task(sid)
+    events = state.run('Create a reminder titled "Fictional blue form" for October 21, 2099.',
+        [{'content':'Reminder set.'}], sid=sid, transport='asgi')
+    text = ''.join(e.get('text','') for e in events if e['type'] in {'text','delta'})
+    assert text.startswith('I haven’t created a reminder or taken any other action.')
+    assert state.sessions.active_task(sid) == before
+    assert not state.tools and not state.native and not state.clients[0].calls
+    history = state.sessions.turns_from(sid, 0)
+    assert history[-1]['role'] == 'assistant' and history[-1]['content'] == text
+
+
+@pytest.mark.parametrize('prompt', [
+    'Create a reminder titled "Fictional blue form".',
+    'Create a reminder titled "" for October 21, 2099 at 9:35 AM.',
+])
+def test_http_incomplete_quoted_reminder_uses_existing_slot_clarification(knowledge_entrypoint, monkeypatch, prompt):
+    state = knowledge_entrypoint
+    monkeypatch.setenv('WISP_MODEL_LED_ROUTING', '0')
+    events = state.run(prompt, [{'content':'Reminder set.'}], transport='asgi')
+    text = ''.join(e.get('text','') for e in events if e['type'] in {'text','delta'})
+    assert text and '?' in text and 'Reminder set' not in text
+    assert not state.tools and not state.native and not state.clients[0].calls
+    assert state.reminders.active_between(include_stale=True) == []
