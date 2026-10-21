@@ -2334,8 +2334,24 @@ async def run_agent(
                     return ("I haven’t created a reminder yet. What time should I "
                             "remind you" + suffix)
                 return "I couldn't create the reminder. No reminder was added."
-            if _unmet_group() is None and all(name == "add_reminder" for name, _ in actions):
-                return created[-1].text
+        if actions and all(name == "add_reminder" for name, _ in actions):
+            # The generic/model-led path has no reminder_action route hint.
+            # Its local-only success is still a success, but only the tool's
+            # receipt can say whether Apple Reminders was changed. Preserve
+            # every create result rather than letting narration upgrade it.
+            receipts = [outcome.text for _, outcome in actions]
+            required_reads = set().union(*(group for group in required_tool_groups
+                if "add_reminder" not in group)) if required_tool_groups else set()
+            readable = [(name, result) for name, result in clean_results
+                        if name in required_reads]
+            if readable:
+                receipts.append(_merge_results(_readable_results(readable)))
+            for name, outcome in tool_outcomes:
+                if name in required_reads and outcome.status not in {"succeeded", "no_match"}:
+                    receipts.append(f"Required source result ({name}): " + _user_facing_failure(outcome.text))
+            if _unmet_group() is not None:
+                receipts.append("I couldn't complete every requested step.")
+            return "\n\n".join(receipts)
         # Priority evidence is bounded even when narration sounds exhaustive.
         # Keep selected/unavailable/excluded sources visible on the successful
         # path as well as the empty-model fallback. Never quote raw bodies.
