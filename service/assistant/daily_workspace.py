@@ -864,13 +864,14 @@ def collect_evidence(store, state, day, timezone, *, now):
             records.append(record)
         message_coverage = structured.get("coverage") or {}
         # Messages without Full Disk Access: say so, with what to grant, rather than
-        # reading as "still syncing" (MessagesReader: "chat.db not readable").
+        # reading as "still syncing".
         blocked = None
         if not ready and messages_sync_state() == "unavailable":
-            from service.tools.imessage_tools import messages_unavailable_reason
-            # Only the reader's Full Disk Access wording: another chat.db failure
-            # (a missing file) must not send the user to the wrong setting.
-            if "full disk access" in messages_unavailable_reason().casefold():
+            from service.tools.imessage_tools import messages_unavailable_kind
+            # Only when the reader classified the error as a Full Disk Access
+            # denial: another chat.db failure (a missing file) must not send the
+            # user to the wrong setting.
+            if messages_unavailable_kind() == "full_disk_access":
                 blocked = "full_disk_access"
         skipped = message_coverage.get("skipped", 0)
         result["messages"] = dict(ready=ready, records=records, inspected=min(100, len(rows)),
