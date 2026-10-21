@@ -53,6 +53,21 @@ struct DailyWorkspace: Decodable {
     var texts_overview: DailyOverview? = nil
     /// The written inbox summary under MAIL: a model's paragraph, or prose built without one.
     var mail_summary: DailyOverview? = nil
+    /// The Brief's "Needs you today" line (daily_workspace.needs_you); absent
+    /// from an older service.
+    var needs_you: DailyNeedsYou? = nil
+}
+
+struct DailyNeedsYou: Decodable, Equatable {
+    struct Item: Decodable, Equatable {
+        let id: String
+        let kind: String
+        let text: String
+        let due_ts: Double?
+        let all_day: Bool?
+    }
+    let items: [Item]
+    let more: Int
 }
 
 struct DailyOverview: Decodable, Equatable {
