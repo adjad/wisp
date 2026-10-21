@@ -6,8 +6,10 @@ Why: every pipeline artifact is ad-hoc signed, so its designated requirement is
 and Full Disk Access grants the user gave the previous build die on every
 install. A stable self-signed code-signing identity ("Wisp Dev", in the login
 keychain) gives every build the same designated requirement
-(`identifier "com.wisp.assistant" and certificate leaf = H"…"`), so the grants
-survive.
+(`identifier "com.wisp.assistant" and certificate leaf = H"<identity sha1>"`),
+so grants given to one install signed this way carry over to the next. The
+first install signed this way still differs from the ad-hoc one it replaces,
+so macOS asks once more; the install log says which case applies.
 
 What this does, and only this:
   * copies the verified artifact to --output (never signs the artifact in place),
@@ -17,12 +19,22 @@ What this does, and only this:
     read from the running processes,
   * preserves identifier, entitlements, flags and runtime; lets codesign derive
     the new designated requirement from the certificate,
-  * verifies the result (`codesign --verify --deep --strict`, the requirement,
-    unchanged nested signatures) and appends one JSON line to the local install
-    log with the artifact's cdhash next to the installed one.
+  * verifies the result: `codesign --verify --deep --strict`, the exact
+    requirement (identifier and this identity's leaf hash), the authority, and
+    that every file except the main executable and the outer _CodeSignature is
+    byte-identical to the artifact (so no nested signature changed),
+  * appends one JSON line to the local install log with the artifact's cdhash
+    next to the installed one.
 
-When the identity is missing or codesign refuses, the output is the untouched
-ad-hoc copy and this says so plainly: the grants will reset again.
+When the identity is missing, ambiguous, or codesign refuses, the output is the
+verified, untouched ad-hoc copy and this says so plainly: the grants will reset
+again. A codesign that hangs (an unanswered keychain prompt) is a hard failure
+after the timeout, with nothing left at --output.
+
+Trade-off, stated once: with a certificate-bound requirement, anything signed
+with this key and identifier would match the grants. The key lives in the user's
+login keychain; keep its access control prompting ("Allow", not "Always Allow")
+so no same-user program can sign with it silently.
 
 This is a local-install transformation. It is NOT part of the CI artifact
 pipeline, release.py, or the provenance rule that a verified artifact is ad-hoc
@@ -30,11 +42,12 @@ or Developer ID signed; those are unchanged and the artifact itself is never
 modified.
 
 Usage:
-  scripts/resign_local_install.py dist/preview/Wisp.app --output /Applications/Wisp.app.new
+  scripts/resign_local_install.py dist/preview/Wisp.app --output /Applications/Wisp.app.new --require
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -51,9 +64,13 @@ DEFAULT_LOG = Path.home() / ".moe" / "local-installs.jsonl"
 CODESIGN = "/usr/bin/codesign"
 SECURITY = "/usr/bin/security"
 DITTO = "/usr/bin/ditto"
-# Nested code whose signatures must come out exactly as they went in.
-NESTED = ("Contents/Resources/backend/.venv/bin/python3",
-          "Contents/Resources/engine")
+# The only parts of the bundle an outer re-sign may change.
+RESIGNED_PATHS = ("Contents/MacOS/Wisp", "Contents/_CodeSignature")
+# Nested code whose own signatures are also reported by cdhash: the backend
+# interpreter the pipeline signs, and the bundled engine's interpreter
+# (build-support/engine.py ENGINE_SIGNING_ID), absent from preview builds.
+NESTED = ("Contents/Resources/backend/.venv/bin/python3", "Contents/Resources/engine/py/bin")
+REQUIREMENT = re.compile(r'^identifier "' + re.escape(BUNDLE_ID) + r'" and certificate leaf = H"([0-9a-f]{40})"$')
 
 
 def clean_env() -> dict:
@@ -69,15 +86,17 @@ def run(argv, timeout=600):
 
 # ---------------------------------------------------------------- pure parsing
 
-def parse_identities(listing: str) -> dict[str, str]:
-    """`security find-identity -v -p codesigning` → {common name: SHA-1 hash}.
-    Only lines of the valid-identities table; a name that appears twice keeps the
-    first (the keychain search order), as codesign itself would pick."""
-    found: dict[str, str] = {}
+def parse_identities(listing: str) -> dict[str, list[str]]:
+    """`security find-identity -v -p codesigning` → {common name: [SHA-1 hashes]},
+    distinct hashes only, in keychain order. The listing prints identities twice
+    (matching, then valid); each hash is kept once."""
+    found: dict[str, list[str]] = {}
     for line in listing.splitlines():
         match = re.match(r'\s*\d+\)\s+([0-9A-F]{40})\s+"(.+)"\s*$', line)
-        if match and match.group(2) not in found:
-            found[match.group(2)] = match.group(1)
+        if match:
+            hashes = found.setdefault(match.group(2), [])
+            if match.group(1) not in hashes:
+                hashes.append(match.group(1))
     return found
 
 
@@ -109,14 +128,14 @@ def parse_requirement(text: str) -> str | None:
     return None
 
 
-def requirement_is_stable(requirement: str | None, identity_hash: str | None = None) -> bool:
-    """A requirement grants survive: bound to the bundle identifier and a
-    certificate (leaf), never to one build's cdhash."""
-    if not requirement or "cdhash" in requirement:
+def requirement_matches(requirement: str | None, identity_hash: str) -> bool:
+    """The one requirement grants survive under: exactly this bundle identifier and
+    exactly this identity's certificate leaf. Anything else (a cdhash, an anchor,
+    an `or`, another identifier, another certificate) is refused."""
+    if not requirement:
         return False
-    if f'identifier "{BUNDLE_ID}"' not in requirement:
-        return False
-    return "certificate leaf" in requirement or "certificate root" in requirement or "anchor" in requirement
+    match = REQUIREMENT.match(requirement.strip())
+    return bool(match) and match.group(1) == identity_hash.lower()
 
 
 def sign_command(bundle: Path, identity_hash: str) -> list[str]:
@@ -125,6 +144,32 @@ def sign_command(bundle: Path, identity_hash: str) -> list[str]:
     self-signed cert, keep what the pipeline set except the ad-hoc requirement."""
     return [CODESIGN, "--force", "--sign", identity_hash, "--timestamp=none",
             "--preserve-metadata=identifier,entitlements,flags,runtime", str(bundle)]
+
+
+def tree_digest(bundle: Path, skip=RESIGNED_PATHS) -> dict[str, tuple]:
+    """Every entry under the bundle except `skip`: regular files by size and
+    SHA-256, symlinks by target, directories by presence. Equal digests before and
+    after the outer re-sign prove no nested file (so no nested signature) changed."""
+    out: dict[str, tuple] = {}
+    for root, dirs, files in os.walk(bundle):
+        for name in list(dirs) + files:
+            path = Path(root) / name
+            rel = path.relative_to(bundle).as_posix()
+            if any(rel == s or rel.startswith(s + "/") for s in skip):
+                if name in dirs:
+                    dirs.remove(name)
+                continue
+            if path.is_symlink():
+                out[rel] = ("l", os.readlink(path))
+            elif path.is_dir():
+                out[rel] = ("d",)
+            else:
+                digest = hashlib.sha256()
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1 << 20), b""):
+                        digest.update(chunk)
+                out[rel] = ("f", path.stat().st_size, digest.hexdigest())
+    return out
 
 
 @dataclass
@@ -144,8 +189,11 @@ class Record:
     installed_cdhash: str | None
     installed_signature: str | None
     installed_requirement: str | None
-    nested_unchanged: dict = field(default_factory=dict)
-    grants_survive: bool = False
+    requirement_stable: bool = False
+    previous_requirement: str | None = None
+    grants_carry_over: bool | None = None
+    files_compared: int = 0
+    nested_cdhash: dict = field(default_factory=dict)
     note: str = ("local-install transformation of a verified artifact; not a release artifact; "
                  "the artifact file was not modified")
     reason: str | None = None
@@ -179,114 +227,159 @@ def describe(path: Path, runner=None) -> dict:
     return out
 
 
-def verify(path: Path, runner=None, deep=True) -> None:
+def verify(path: Path, runner=None) -> None:
     runner = runner or run
-    command = [CODESIGN, "--verify", "--strict", "--verbose=2", str(path)]
-    if deep:
-        command.insert(2, "--deep")
-    code, text = runner(command)
+    code, text = runner([CODESIGN, "--verify", "--deep", "--strict", "--verbose=2", str(path)])
     if code:
         raise ResignError(f"codesign --verify failed for {path}: {text.strip()[-600:]}")
 
 
 def nested_targets(bundle: Path) -> list[Path]:
-    """The nested code whose signatures are compared before and after: the backend
-    interpreter, and every Mach-O or bundle directly under the engine root when one
-    is shipped (preview builds ship none)."""
-    targets = []
+    """The nested interpreters whose own cdhash is reported: the backend's python3
+    and, when an engine is shipped, each executable in its py/bin. Only paths that
+    resolve inside the bundle count."""
+    targets: list[Path] = []
     for rel in NESTED:
         path = bundle / rel
         if not path.exists():
             continue
-        if path.is_dir() and rel.endswith("engine"):
-            for child in sorted(path.iterdir()):
-                if child.suffix in (".app", ".framework") or (child.is_file() and os.access(child, os.X_OK)):
-                    targets.append(child)
-        else:
-            targets.append(path)
+        candidates = sorted(p for p in path.iterdir() if p.is_file() and os.access(p, os.X_OK)) if path.is_dir() else [path]
+        for candidate in candidates:
+            try:
+                candidate.resolve().relative_to(bundle.resolve())
+            except ValueError:
+                raise ResignError(f"{candidate} resolves outside the bundle")
+            targets.append(candidate)
     return targets
 
 
-def find_identity(name: str, runner=None) -> str | None:
+def find_identity(name: str, runner=None) -> tuple[str | None, str | None]:
+    """(hash, None) for exactly one valid identity with this name, else (None, why)."""
     runner = runner or run
     code, text = runner([SECURITY, "find-identity", "-v", "-p", "codesigning"])
     if code:
+        return None, f"`security find-identity` failed ({text.strip()[-200:] or 'no output'}); is the login keychain locked?"
+    hashes = parse_identities(text).get(name, [])
+    if not hashes:
+        return None, f'no valid "{name}" code-signing identity in the keychain'
+    if len(hashes) > 1:
+        return None, f'{len(hashes)} valid identities are named "{name}" ({", ".join(hashes)}); refusing to guess'
+    return hashes[0], None
+
+
+def previous_requirement(log: Path | None) -> str | None:
+    """The installed requirement of the last logged install, if any."""
+    if not log or not Path(log).is_file():
         return None
-    return parse_identities(text).get(name)
+    last = None
+    for line in Path(log).read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            last = line
+    if not last:
+        return None
+    try:
+        return json.loads(last).get("installed_requirement")
+    except ValueError:
+        return None
 
 
-def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, log: Path = DEFAULT_LOG,
+def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, log: Path | None = DEFAULT_LOG,
            runner=None, copier=None, now=None) -> Record:
     runner = runner or run   # resolved at call time, so tests can swap the module's `run`
-    artifact = Path(artifact)
-    output = Path(output)
+    artifact = Path(artifact).resolve()
+    output = Path(output).absolute()
     if not (artifact.is_dir() and artifact.suffix == ".app" and (artifact / "Contents/Info.plist").is_file()):
         raise ResignError(f"Not an app bundle: {artifact}")
     if output.exists():
         raise ResignError(f"Output already exists: {output}")
-    if output.suffix not in (".app", ".new") and not output.name.endswith(".app.new"):
+    if not (output.suffix == ".app" or output.name.endswith(".app.new")):
         raise ResignError(f"Output should be a staging bundle path such as /Applications/Wisp.app.new: {output}")
+    copy = copier or (lambda src, dst: _ditto(src, dst, runner))
 
     # The artifact must be the verified thing the pipeline produced, as it is.
     verify(artifact, runner)
     before = describe(artifact, runner)
     build_number, commit = bundle_meta(artifact)
-    nested_before = {str(p.relative_to(artifact)): describe(p, runner)["cdhash"] for p in nested_targets(artifact)}
+    tree_before = tree_digest(artifact)
+    nested_before = {p.relative_to(artifact).as_posix(): describe(p, runner)["cdhash"] for p in nested_targets(artifact)}
 
     record = Record(at=time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now)), artifact=str(artifact),
                     output=str(output), build_number=build_number, commit=commit,
                     artifact_cdhash=before["cdhash"], artifact_signature=before["signature"],
                     artifact_requirement=before["requirement"], resigned=False, identity=identity,
                     identity_hash=None, installed_cdhash=before["cdhash"], installed_signature=before["signature"],
-                    installed_requirement=before["requirement"])
+                    installed_requirement=before["requirement"], previous_requirement=previous_requirement(log),
+                    files_compared=len(tree_before))
 
-    # Copy first; the artifact is never signed in place.
-    (copier or (lambda src, dst: _ditto(src, dst, runner)))(artifact, output)
+    def fresh_copy() -> None:
+        if output.exists():
+            shutil.rmtree(output)
+            if output.exists():
+                raise ResignError(f"Could not remove {output}")
+        copy(artifact, output)
+        # The copy must be the artifact, nothing less: same strict verify, same cdhash.
+        verify(output, runner)
+        copied = describe(output, runner)
+        if copied["cdhash"] != before["cdhash"] or tree_digest(output) != tree_before:
+            raise ResignError(f"The copy at {output} differs from the artifact")
+
     try:
-        identity_hash = find_identity(identity, runner)
+        fresh_copy()
+        identity_hash, why = find_identity(identity, runner)
         if identity_hash is None:
-            record.reason = (f'No valid "{identity}" code-signing identity in the keychain; installing the '
-                             "ad-hoc artifact. Calendar, Reminders and Full Disk Access grants WILL RESET.")
+            record.reason = (f"Not re-signed: {why}. Installing the ad-hoc artifact; Calendar, Reminders and "
+                             "Full Disk Access grants WILL RESET.")
             return _finish(record, log)
         record.identity_hash = identity_hash
         code, text = runner(sign_command(output, identity_hash))
         if code:
-            # Leave a clean ad-hoc copy behind, never a half-signed one.
-            shutil.rmtree(output, ignore_errors=True)
-            (copier or (lambda src, dst: _ditto(src, dst, runner)))(artifact, output)
-            record.reason = (f'codesign refused to sign with "{identity}" ({text.strip()[-300:]}); installing the '
-                             "ad-hoc artifact. Calendar, Reminders and Full Disk Access grants WILL RESET. "
-                             "A keychain prompt to allow codesign to use the key must be answered by the user.")
+            # Leave the verified ad-hoc copy behind, never a half-signed one.
+            fresh_copy()
+            record.reason = (f'Not re-signed: codesign refused to sign with "{identity}" ({text.strip()[-300:]}). '
+                             "Installing the ad-hoc artifact; Calendar, Reminders and Full Disk Access grants "
+                             "WILL RESET. If macOS asked whether codesign may use the key, that prompt is the "
+                             "user's to answer; run again afterwards.")
             return _finish(record, log)
 
         verify(output, runner)
         after = describe(output, runner)
-        nested_after = {str(p.relative_to(output)): describe(p, runner)["cdhash"] for p in nested_targets(output)}
-        for rel, cdhash in nested_before.items():
-            record.nested_unchanged[rel] = nested_after.get(rel) == cdhash
         problems = []
         if after["identifier"] != BUNDLE_ID:
             problems.append(f"identifier changed to {after['identifier']}")
-        if not requirement_is_stable(after["requirement"], identity_hash):
-            problems.append(f"designated requirement is not certificate-bound: {after['requirement']}")
-        if identity not in " ".join(after["authority"]):
+        if not requirement_matches(after["requirement"], identity_hash):
+            problems.append(f"designated requirement is not exactly this bundle id and this identity's leaf: {after['requirement']}")
+        if after["authority"][:1] != [identity]:
             problems.append(f"authority is {after['authority'] or 'none'}, not {identity}")
-        if not all(record.nested_unchanged.values()) or set(nested_after) != set(nested_before):
-            problems.append("a nested signature changed: " + json.dumps(record.nested_unchanged))
+        if after["flags"] and "adhoc" in after["flags"]:
+            problems.append(f"still ad-hoc: {after['flags']}")
+        if after["cdhash"] in (None, before["cdhash"]):
+            problems.append("the outer signature did not change")
+        tree_after = tree_digest(output)
+        if tree_after != tree_before:
+            changed = sorted(set(tree_before) ^ set(tree_after)) + sorted(
+                k for k in tree_before.keys() & tree_after.keys() if tree_before[k] != tree_after[k])
+            problems.append("files other than the outer signature changed: " + ", ".join(changed[:8]))
+        nested_after = {p.relative_to(output).as_posix(): describe(p, runner)["cdhash"] for p in nested_targets(output)}
+        for rel, cdhash in nested_before.items():
+            same = cdhash is not None and nested_after.get(rel) == cdhash
+            record.nested_cdhash[rel] = {"cdhash": cdhash, "unchanged": same}
+            if not same:
+                problems.append(f"nested signature changed or unreadable: {rel}")
         if problems:
-            shutil.rmtree(output, ignore_errors=True)
             raise ResignError("Re-signed bundle failed verification: " + "; ".join(problems))
         record.resigned = True
+        record.requirement_stable = True
         record.installed_cdhash = after["cdhash"]
-        record.installed_signature = "; ".join(after["authority"]) or after["signature"]
+        record.installed_signature = "; ".join(after["authority"])
         record.installed_requirement = after["requirement"]
-        record.grants_survive = True
+        if record.previous_requirement is not None:
+            record.grants_carry_over = record.previous_requirement == record.installed_requirement
         return _finish(record, log)
-    except ResignError:
-        raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         shutil.rmtree(output, ignore_errors=True)
-        raise ResignError(f"Re-sign failed: {exc}") from exc
+        if isinstance(exc, ResignError):
+            raise
+        raise ResignError(f"Re-sign failed: {exc!r}") from exc
 
 
 def _ditto(src: Path, dst: Path, runner=None) -> None:
@@ -296,16 +389,13 @@ def _ditto(src: Path, dst: Path, runner=None) -> None:
         raise ResignError(f"ditto failed: {text.strip()[-300:]}")
 
 
-def _finish(record: Record, log: Path) -> Record:
+def _finish(record: Record, log: Path | None) -> Record:
     if log:
         log = Path(log)
         log.parent.mkdir(parents=True, exist_ok=True)
-        with log.open("a", encoding="utf-8") as handle:
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(asdict(record), sort_keys=True) + "\n")
-        try:
-            os.chmod(log, 0o600)
-        except OSError:
-            pass
     return record
 
 
@@ -317,10 +407,18 @@ def summary(record: Record) -> str:
     if record.resigned:
         lines.append(f"          re-signed with {record.identity} ({record.identity_hash}); cdhash {record.installed_cdhash}")
         lines.append(f"          requirement: {record.installed_requirement}")
-        lines.append("          nested signatures unchanged: " + (", ".join(sorted(record.nested_unchanged)) or "none shipped"))
-        lines.append("          Calendar/Reminders/Full Disk Access grants survive installs signed this way.")
+        lines.append(f"          {record.files_compared} files outside the outer signature unchanged"
+                     + (f"; nested cdhash unchanged: {', '.join(sorted(record.nested_cdhash))}" if record.nested_cdhash else ""))
+        if record.grants_carry_over:
+            lines.append("          Same requirement as the last logged install: Calendar/Reminders/Full Disk Access grants carry over.")
+        elif record.grants_carry_over is False:
+            lines.append("          Requirement differs from the last logged install: macOS will ask once more; "
+                         "later installs signed this way keep the grants.")
+        else:
+            lines.append("          No earlier install logged: the first install signed this way re-prompts once; "
+                         "later ones keep the grants.")
     else:
-        lines.append("          NOT re-signed: " + (record.reason or "unknown reason"))
+        lines.append("          " + (record.reason or "NOT re-signed"))
     return "\n".join(lines)
 
 
@@ -330,7 +428,7 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path, required=True, help="where the re-signed copy goes (must not exist), e.g. /Applications/Wisp.app.new")
     parser.add_argument("--identity", default=DEFAULT_IDENTITY, help='common name of the code-signing identity (default "Wisp Dev")')
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG, help="JSONL install log (default ~/.moe/local-installs.jsonl)")
-    parser.add_argument("--require", action="store_true", help="fail instead of falling back to the ad-hoc copy")
+    parser.add_argument("--require", action="store_true", help="exit 2 instead of staging the ad-hoc copy when not re-signed")
     args = parser.parse_args(argv)
     try:
         record = resign(args.artifact, args.output, identity=args.identity, log=args.log)
@@ -339,7 +437,8 @@ def main(argv=None) -> int:
         return 1
     print(summary(record))
     if args.require and not record.resigned:
-        print("RESIGN FAILED: --require set and the bundle was not re-signed", file=sys.stderr)
+        shutil.rmtree(args.output, ignore_errors=True)
+        print("RESIGN FAILED: --require set and the bundle was not re-signed; nothing staged", file=sys.stderr)
         return 2
     return 0
 
