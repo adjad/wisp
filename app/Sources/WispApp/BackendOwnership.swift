@@ -5,7 +5,8 @@ import Foundation
 // backend port (127.0.0.1:8765), and that can create or rewrite any file Wisp can,
 // including anything Wisp might keep about its own state. Out of scope: an attacker who
 // can read or write Wisp's memory, attach a debugger, or inject code into it (the app is
-// ad-hoc signed, so that attacker already controls Wisp outright).
+// ad-hoc signed, or for a local install re-signed with a self-signed "Wisp Dev" certificate
+// whose key sits in the same user's keychain, so that attacker already controls Wisp outright).
 //
 // Is the program on Wisp's backend port Wisp's OWN backend? Two things depend on the
 // answer: whether Wisp may ever signal that process (PortGuard), and whether Wisp may
