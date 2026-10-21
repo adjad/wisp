@@ -52,10 +52,15 @@ def fixture_process(command, *, timeout, **kwargs):
             try:os.killpg(process.pid,kind)
             except ProcessLookupError:pass
         stop(signal.SIGTERM)
+        kill_attempted=False
         try:process.communicate(timeout=2)
         except subprocess.TimeoutExpired:
+            # Attempt KILL once, even if dispatch/drain raises. Re-signaling
+            # an already-drained group can itself fail on macOS.
+            kill_attempted=True
             stop(signal.SIGKILL);process.communicate(timeout=5)
-        finally:stop(signal.SIGKILL)
+        finally:
+            if not kill_attempted:stop(signal.SIGKILL)
         process.wait(timeout=5)
 
 

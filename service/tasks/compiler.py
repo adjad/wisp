@@ -488,6 +488,21 @@ def compile_reminder_complete(text: str, *, now: datetime | None = None,
             plan.original_request = text
         return plan
     del now
+    # Consume the entire named-target command before the legacy free-form
+    # target heuristic. Quotes are opaque title data, including punctuation
+    # and words such as "done", not part of the operation's prefix/suffix.
+    spans = quoted_spans(text)
+    if len(spans) == 1:
+        start, end = spans[0]
+        if (re.fullmatch(rf"\s*{_POLITE}(?:mark|check(?:\s+off)?|cross(?:\s+off)?|tick(?:\s+off)?)\s+"
+                         r"(?:(?:the|my)\s+)?reminder\s+(?:titled|called|named)\s+", text[:start], re.I)
+                and re.fullmatch(r"\s+(?:as\s+)?(?:done|complete)[.!?\s]*", text[end:], re.I)):
+            target = text[start + 1:end - 1]
+            if target.strip():
+                plan = TaskPlan(kind="task.reminder.complete", intent="reminder.complete",
+                    original_request=text, target=SlotValue(target, "explicit", turn=turn, original=target))
+                plan.recompute_status()
+                return plan
     if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
             or not _COMPLETE_REMINDER.search(_unquoted(text))):

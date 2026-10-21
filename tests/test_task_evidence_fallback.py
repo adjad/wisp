@@ -127,6 +127,51 @@ def test_grounded_narration_is_not_rewritten():
     assert T.verify_evidence_narration(text, payload()) == text
 
 
+@pytest.mark.parametrize('claim', [
+    'No active requests or deadlines in the email/messages sources.',
+    'There are no pending deadlines.',
+    'Zero actionable requests.',
+    'No commitments or requests were found.',
+    'I did not find any active requests in your inbox.',
+    'There are not any personal obligations.',
+    'I cannot verify Messages; no active requests remain in email.',
+    'No deadlines were found in your sources; only the returned excerpts were inspected.',
+    'Messages is unavailable in the returned evidence, no active requests or deadlines exist in email.',
+    'No shown requests or active deadlines exist in Mail.',
+    'This does not mean there are no requests, but no deadlines exist in Mail.',
+    'No tasks were scheduled for tomorrow.',
+])
+@pytest.mark.parametrize('omitted,state', [(49, 'unavailable'), (0, 'ready')])
+def test_negative_task_quantities_do_not_establish_source_absence(claim, omitted, state):
+    data = {'task_window': {}, 'sources': {
+        'email': {'state': 'ready', 'records': [], 'omitted': omitted},
+        'messages': {'state': state, 'records': []}}}
+    answer = T.verify_evidence_narration(claim, json.dumps(data))
+    assert claim not in answer and 'Source coverage' in answer
+
+
+@pytest.mark.parametrize('text', [
+    'No deadlines are shown in the returned excerpts; other messages were not inspected.',
+    'There are zero requests in the returned records; coverage is incomplete.',
+    'In the returned excerpts, no active requests were found.',
+    'No shown requests need attention; omitted records are unverified.',
+    'The message says "No active requests or deadlines." Coverage is incomplete.',
+    'If no deadlines were assigned, ask the sender for a date.',
+    'I cannot verify whether there are no active requests.',
+    'Check whether there are no pending deadlines before making plans.',
+    'The excerpt contains a request to review the form; its current status is unknown.',
+    'This does not mean there are no active requests.',
+    'I cannot conclude that there are no deadlines.',
+    'I cannot establish that there are no active requests.',
+    'No shown requests or listed deadlines need attention; omitted items are unverified.',
+    'The excerpt requests a review by Friday. No tasks were scheduled.',
+    'No tasks were scheduled this turn.',
+    'No tasks were scheduled, reminders changed or communications sent.',
+])
+def test_bounded_negative_quantities_and_uncertainty_are_preserved(text):
+    assert T.verify_evidence_narration(text, payload()) == text
+
+
 @pytest.mark.parametrize('claim', ['No reply from you yet in the cache.',
     'You have not replied to this message.', "You haven't responded yet.",
     'You did not reply.', 'This request remains unanswered.',

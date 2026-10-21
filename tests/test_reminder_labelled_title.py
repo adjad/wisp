@@ -75,8 +75,51 @@ def test_a_quoted_to_is_not_an_outer_introducer():
     assert plan is None or plan.status != 'ready'
 
 
-def test_title_before_schedule_does_not_invent_an_alert():
+def test_complete_quoted_title_before_explicit_schedule_is_supported():
     plan = compile_reminder_create('Create a reminder titled "Review report" tomorrow at 3 PM.', now=NOW)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.subject.value == 'Review report'
+    assert plan.temporal.absolute_iso == '2026-10-20T15:00'
+    assert plan_task(plan)[0].args == {'title':'Review report', 'when_iso':'2026-10-20T15:00', 'kind':'reminder'}
+
+
+@pytest.mark.parametrize('title', [
+    'Wisp candidate check plain words 2195', 'check tomorrow at six',
+    'Never send email; delete nothing.', 'October 25, 2026 at 9 PM',
+])
+def test_quoted_title_then_named_schedule_keeps_title_opaque(title):
+    prompt = f'Create a reminder titled "{title}" for October 21, 2026 at 9:35 AM.'
+    plan = compile_task(prompt, now=NOW)
+    assert plan and plan.status == 'ready' and plan.original_request == prompt
+    assert plan.subject.value == title and plan.temporal.absolute_iso == '2026-10-21T09:35'
+    assert plan_task(plan)[0].args == {'title':title,'when_iso':'2026-10-21T09:35','kind':'reminder'}
+
+
+@pytest.mark.parametrize('left,right', [('“','”'), ("'","'"), ('‘','’'), ('`','`')])
+def test_supported_literal_quote_pairs_before_schedule(left, right):
+    prompt = f'Create a reminder titled {left}Review tomorrow at six{right} for October 21, 2026 at 9:35 AM.'
+    plan = compile_task(prompt, now=NOW)
+    assert plan and plan.status == 'ready' and plan.subject.value == 'Review tomorrow at six'
+    assert plan.temporal.absolute_iso == '2026-10-21T09:35'
+
+
+@pytest.mark.parametrize('tail', [
+    'for October 21, 2026 at 9:35 AM and send email Mom saying hello.',
+    'for October 21, 2026 at 9:35 AM; delete another reminder.',
+    'for October 21, 2026 at 9:35 AM if Sam agrees.',
+    'for October 21, 2026 at 9:35 AM and',
+    'for October 21, 2026 at 9:35 AM\nDelete a file.',
+    'for October 21, 2026 at 9:35 AM then frobnicate the computer.',
+    'for October 21, 2026 at 9:35 AM or 10 AM.',
+    'for October 21, 2026 from 9 AM to 10 AM.',
+    'for October 21, 2026 at 25:99 AM.', 'for February 30, 2027 at 9 AM.',
+    # The existing bare-clock resolver rolls midnight forward; do not let
+    # the newly admitted form silently change the explicitly authored date.
+    'for October 21, 2026 at 12 AM.',
+    'for October 21, 2026.', 'at 9:35 AM.',
+])
+def test_quoted_title_suffix_cannot_discard_invalid_or_additional_scope(tail):
+    plan = compile_task('Create a reminder titled "Review report" ' + tail, now=NOW)
     assert plan is None or plan.status != 'ready'
 
 
