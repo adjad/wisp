@@ -163,6 +163,21 @@ func pairingRejectsSmuggledHosts(host: String) {
         try MacPairing.parse("wisp-pair://v1?host=\(host)&port=8799&token=\(token)")
     }
 }
+@Test func modelPathsStayOneSegmentDeep() {
+    // A not-yet-existing child under a symlinked parent (/var → /private/var on device) still passes.
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("Models-\(UUID().uuidString)")
+    let bundle = root.appendingPathComponent("ling-3.0-tiny", isDirectory: true)
+    #expect(ModelBundle.isDirectChild(bundle, of: root))
+    #expect(ModelBundle.isDirectChild(bundle.appendingPathComponent("model.safetensors"), of: bundle))
+    #expect(!ModelBundle.isDirectChild(root.appendingPathComponent(".."), of: root))
+    #expect(!ModelBundle.isDirectChild(bundle.appendingPathComponent("x/y.json"), of: bundle))
+    #expect(!ModelBundle.isDirectChild(bundle.appendingPathComponent("../../escape.json"), of: bundle))
+}
+@Test func tailscaleIPv4RejectsLeadingZeros() {
+    #expect(!MacPairing.isTailscaleIPv4("100.064.0.1"))
+    #expect(!MacPairing.isTailscaleIPv4("100.64.00.1"))
+    #expect(MacPairing.isTailscaleIPv4("100.64.0.1"))
+}
 @Test(arguments: ["100.64.0.1%2F", "100.+64.0.1", "100.64.0.01x", "100.064.0.1.5"])
 func pairingRejectsMalformedIPs(ip: String) {
     #expect(throws: MacPairing.ParseError.unsafeAddress) {

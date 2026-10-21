@@ -104,7 +104,9 @@ public struct MacPairing: Codable, Equatable, Sendable {
     /// Tailscale hands out IPv4 addresses from the CGNAT range 100.64.0.0/10.
     public static func isTailscaleIPv4(_ text: String) -> Bool {
         let parts = text.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 4, parts.allSatisfy({ (1...3).contains($0.count) && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) })
+        // Digits only and no leading zeros: some resolvers read `064` as octal.
+        guard parts.count == 4, parts.allSatisfy({ (1...3).contains($0.count) && $0.allSatisfy(\.isASCII)
+                && $0.allSatisfy(\.isNumber) && ($0.count == 1 || $0.first != "0") })
         else { return false }
         let octets = parts.compactMap { UInt8($0) }
         guard octets.count == 4 else { return false }

@@ -54,7 +54,15 @@ public struct ModelBundle: Decodable, Equatable, Identifiable, Sendable {
             && id.allSatisfy { ($0.isASCII && ($0.isLowercase || $0.isNumber)) || $0 == "." || $0 == "_" || $0 == "-" }
     }
 
-    public static let allowedExtensions = [".safetensors", ".json", ".jinja", ".txt", ".model"]
+    /// True when `child` is exactly one path segment below `parent`. Deliberately lexical: resolving
+    /// symlinks would turn iOS's `/var` into `/private/var` only for paths that already exist.
+    public static func isDirectChild(_ child: URL, of parent: URL) -> Bool {
+        let name = child.lastPathComponent
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else { return false }
+        return child.deletingLastPathComponent().standardizedFileURL.path == parent.standardizedFileURL.path
+    }
+
+    public static let allowedExtensions =[".safetensors", ".json", ".jinja", ".txt", ".model"]
 
     public static func isSafeFileName(_ name: String) -> Bool {
         guard (1...128).contains(name.count), let first = name.first, first.isASCII, first.isLetter || first.isNumber,

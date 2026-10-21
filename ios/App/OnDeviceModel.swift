@@ -128,7 +128,7 @@ final class OnDeviceModel {
             }
             try FileManager.default.createDirectory(at: Self.root, withIntermediateDirectories: true)
             let destination = Self.root.appendingPathComponent(bundle.id, isDirectory: true)
-            guard Self.isInside(destination, Self.root) else { throw DownloadError.unsafePath(bundle.id) }
+            guard ModelBundle.isDirectChild(destination, of: Self.root) else { throw DownloadError.unsafePath(bundle.id) }
             try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
             // Files are about to be replaced one by one; until all are verified this isn't an installed model.
             try? FileManager.default.removeItem(at: destination.appendingPathComponent(Self.receiptName))
@@ -142,7 +142,7 @@ final class OnDeviceModel {
             for file in bundle.files {
                 try Task.checkCancellation()
                 let target = destination.appendingPathComponent(file.name)
-                guard Self.isInside(target, destination) else { throw DownloadError.unsafePath(file.name) }
+                guard ModelBundle.isDirectChild(target, of: destination) else { throw DownloadError.unsafePath(file.name) }
                 if FileManager.default.fileExists(atPath: target.path),
                    (try? target.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) == file.size {
                     state = .verifying(file: file.name)
@@ -192,13 +192,6 @@ final class OnDeviceModel {
             case .unsafePath(let name): "Refused to save \(name): it would land outside Wisp's model folder."
             }
         }
-    }
-
-    /// True when `child` resolves to a path strictly inside `parent`.
-    static func isInside(_ child: URL, _ parent: URL) -> Bool {
-        let base = parent.standardizedFileURL.resolvingSymlinksInPath().path
-        let path = child.standardizedFileURL.resolvingSymlinksInPath().path
-        return path.hasPrefix(base.hasSuffix("/") ? base : base + "/")
     }
 
     static func sha256(of url: URL) async throws -> String {
