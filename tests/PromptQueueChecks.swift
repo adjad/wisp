@@ -126,7 +126,9 @@ enum PromptQueueChecks {
         precondition(!AgentSend.notice(message: "", unsent: false, queued: 0, place: .setAside).contains("earlier"))
         precondition(AgentSend.notice(message: "", unsent: false, queued: 0, place: .setAside, setAside: 3)
                      .hasSuffix("2 earlier set-aside messages stay behind it."))
+        precondition(AgentSend.notice(message: "", unsent: false, queued: 0, place: .setAside, setAside: 2)
+                     .hasSuffix("1 earlier set-aside message stays behind it."))
 
-        print("PromptSubmissionState: 57 regression checks passed")
+        print("PromptSubmissionState: 58 regression checks passed")
     }
 }

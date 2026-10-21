@@ -48,7 +48,7 @@ enum AgentSend {
         case .setAside:
             return why + " It may have started on that message, so it won't be sent again by itself."
                 + " Press Return on an empty box to bring it back."
-                + (setAside > 1 ? " \(setAside - 1) earlier set-aside message\(setAside == 2 ? "" : "s") stay behind it." : "")
+                + (setAside > 1 ? " \(setAside - 1) earlier set-aside message\(setAside == 2 ? " stays" : "s stay") behind it." : "")
         case .box: break
         }
         var text = why + " Your message is back in the box. Press Return to send it again."
