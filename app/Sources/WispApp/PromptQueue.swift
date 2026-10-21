@@ -15,6 +15,28 @@ struct PromptDispatch: Equatable {
     let work: PromptWork
 }
 
+/// Dropped prompts the server may have started on, set aside because the user
+/// had typed something else meanwhile. Never sent by itself: restoring one only
+/// hands it back to be put in the box. A later drop doesn't displace an earlier
+/// one; Return on an empty box brings back the most recent first.
+struct SetAsidePrompts {
+    private var stack: [QueuedPrompt] = []
+
+    var count: Int { stack.count }
+
+    mutating func push(_ prompt: QueuedPrompt?) {
+        if let prompt { stack.append(prompt) }
+    }
+
+    mutating func restore() -> QueuedPrompt? {
+        stack.popLast()
+    }
+
+    mutating func reset() {
+        stack.removeAll(keepingCapacity: false)
+    }
+}
+
 struct PromptSubmissionState {
     private(set) var active: PromptDispatch?
     private var queued: [QueuedPrompt] = []
