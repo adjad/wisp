@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import resign_local_install as rli  # noqa: E402
@@ -95,7 +96,7 @@ class FakeTools:
             return self.security_rc, "" if self.security_rc else self.listing
         if tool == rli.DITTO:
             self.artifact = self.artifact or argv[1]
-            shutil.copytree(argv[1], argv[2], symlinks=True)
+            shutil.copytree(argv[1], argv[2], symlinks=True, dirs_exist_ok=True)
             self.signed.discard(argv[2])
             return 0, ""
         assert tool == rli.CODESIGN
@@ -401,30 +402,28 @@ def test_require_stages_and_logs_nothing_when_not_resigned(tmp_path):
 def test_an_output_that_appears_mid_run_is_never_removed(tmp_path):
     app = make_bundle(tmp_path)
     out = tmp_path / "Wisp.app.new"
+    real_exists = Path.exists
 
-    def stranger_copier(src, dst):
-        # Between the pre-flight check and the copy, someone else created the output.
-        Path(dst).mkdir()
-        (Path(dst) / "theirs").write_text("x")
-        raise rli.ResignError("ditto failed: File exists")
-    with pytest.raises(rli.ResignError, match="ditto failed"):
-        rli.resign(app, out, log=None, runner=FakeTools(), copier=stranger_copier, now=0)
+    def exists_then_stranger(self):
+        # The pre-flight check passes; a stranger's bundle lands before the mkdir claims the path.
+        if self == out and not real_exists(self):
+            out.mkdir()
+            (out / "theirs").write_text("x")
+            return False
+        return real_exists(self)
+    with patch.object(Path, "exists", exists_then_stranger):
+        with pytest.raises(rli.ResignError, match="appeared while this ran"):
+            rli.resign(app, out, log=None, runner=FakeTools(), now=0)
     assert (out / "theirs").exists(), "a bundle this run did not create is never removed"
     shutil.rmtree(out)
 
-    def racing_copier(src, dst):
-        # The copy itself raced: a second copier call finds a stranger's output in place.
-        if not Path(dst).exists():
-            shutil.copytree(src, dst, symlinks=True)
-    tools = FakeTools(sign_rc=1)
-    calls = {"n": 0}
-
-    def copier(src, dst):
-        calls["n"] += 1
-        racing_copier(src, dst)
-    record = rli.resign(app, out, log=None, runner=tools, copier=copier, now=0)
-    assert not record.resigned and calls["n"] == 2
-    assert (out / "Contents/_CodeSignature/CodeResources").read_text() == "adhoc seal", "the half-signed copy was replaced"
+    # A copier that fails after the claim leaves only this run's own directory to clean up.
+    def failing_copier(src, dst):
+        (Path(dst) / "partial").write_text("x")
+        raise rli.ResignError("ditto failed: disk full")
+    with pytest.raises(rli.ResignError, match="disk full"):
+        rli.resign(app, out, log=None, runner=FakeTools(), copier=failing_copier, now=0)
+    assert not out.exists(), "this run's own partial copy is removed"
 
 
 def test_inputs_are_checked(tmp_path):

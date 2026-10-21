@@ -360,8 +360,14 @@ def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, lo
             shutil.rmtree(output)
             if output.exists() or output.is_symlink():
                 raise ResignError(f"Could not remove {output}")
+        try:
+            # Claim the path atomically: a stranger's bundle appearing between the check
+            # above and this mkdir makes mkdir fail, and nothing of theirs is touched.
+            os.mkdir(output)
+        except FileExistsError:
+            raise ResignError(f"{output} appeared while this ran; refusing to remove what this run did not create")
         created = True
-        copy(artifact, output)
+        copy(artifact, output)   # ditto fills the directory this run just made
         # The copy must be the artifact, nothing less: same strict verify, same cdhash.
         verify(output, runner)
         copied = describe(output, runner)
