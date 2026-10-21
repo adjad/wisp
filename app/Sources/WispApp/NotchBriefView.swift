@@ -38,6 +38,13 @@ struct NotchBriefView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
+                if let needsYou = brief.needsYou {
+                    Text(needsYou)
+                        .font(.system(size: 13.5)).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
                 if !brief.summary.isEmpty || !brief.agenda.isEmpty { summary(brief) }
                 VStack(alignment: .leading, spacing: 9) {
                     ForEach(brief.lines) { line in
@@ -229,6 +236,8 @@ struct NotchBriefView: View {
 @MainActor
 struct BriefContent {
     let lede: String
+    /// "Needs you today: …" under the lede, on today only; nil when nothing does.
+    let needsYou: String?
     /// The composed Daily Summary's short version; empty without one from today.
     let summary: [String]
     /// The rest of today's events under the summary; empty without a composed brief.
@@ -257,8 +266,15 @@ struct BriefContent {
         let next = calendarBlocks.first { $0.start > reference }.map { (title: $0.title, time: today.clock($0.start)) }
         let weekday = today.selectedDate.formatted(Date.FormatStyle(timeZone: zone).weekday(.wide))
         let calendarKnown = !(plan.sources["calendar"]?.ready == false && calendarBlocks.isEmpty && plan.all_day.isEmpty)
+        // The service's pick from the same attention items as the Day tab's Needs you.
+        let needsLine = isToday ? plan.workspace?.needs_you.flatMap { picked in
+            DayTimeline.needsYou(picked.items.map { NeedsYouInput(kind: $0.kind, text: $0.text, due: $0.due_ts,
+                                                                  allDay: $0.all_day ?? false) },
+                                 more: picked.more, clock: today.clock)
+        } : nil
+        needsYou = needsLine
         lede = DayTimeline.lede(weekday: weekday, isToday: isToday, load: calendarKnown ? load.verdict : nil,
-                                dueToday: dueToday, overdue: overdue, next: next)
+                                dueToday: dueToday, overdue: overdue, next: next, othersNeedYou: needsLine != nil)
 
         func coverage(_ source: String) -> DailySourceCoverage? {
             plan.workspace?.source_coverage.first { $0.source == source }

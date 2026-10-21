@@ -457,6 +457,91 @@ def _group_reviews(suggestions, by_id):
     return out, {group["id"]: listed}
 
 
+# Titles that aren't a thing to do, as the notch's DayTimeline.isJunk reads them.
+_JUNK_TITLES = {"nothing", "none", "n/a", "na", "null", "nil", "no", "yes", "ok", "okay", "untitled",
+                "new reminder", "tbd", "todo", "to do", "asdf", "idk", "nothing really", "nothing much",
+                "not sure", "no plans"}
+NEEDS_YOU_SHOWN = 4
+
+
+def _junk(title):
+    text = str(title or "").strip().strip(".,;:!?\"'()[]-–—…").strip().casefold()
+    return (not any(c.isalpha() for c in text) or (len(text) < 2 and text.isascii())
+            or text in _JUNK_TITLES)
+
+
+def needs_you(attention, *, now, day_end):
+    """The Brief's "Needs you today" line: the day's attention items that are
+    work for the user today, as short grounded phrases, in this order:
+
+    - reminders past due ("overdue"), then reminders due today by their time
+      ("due"), then active tasks on the day plan with no due time ("plan");
+    - email from a person ("mail"): its subject, or for a subject the privacy
+      layer withheld, its class and sender ("a deadline notice from Dr. Patel");
+    - people whose texts you haven't answered ("text"), one entry per person,
+      never what they wrote.
+
+    Drawn only from ``attention`` (the list the Day tab's Needs you reads), so
+    the tabs can't disagree; collection already left out mass mail
+    (mass_mail_filter). Undated reminders, notes, calendar events, mail from
+    automated senders and withheld-credential mail are never listed.
+    Returns ``dict(items=[...], more=N)``: at most NEEDS_YOU_SHOWN items, and
+    how many more were selected."""
+    overdue, due, plan, mail, texts = [], [], [], [], {}
+    seen = set()
+    for item in attention:
+        source, title = item.get("source"), clean(item.get("title"))
+        if _junk(title) or _WITHHELD_AUTH_SUBJECT.search(title):
+            continue
+        stamp = item.get("due_ts")
+        dated = finite(stamp)
+        if source in {"reminders", "wisp"} and (dated or str(item.get("reason", "")).endswith("On your day plan.")):
+            # A Day task twin of a reminder is the same thing to do.
+            name = title.removeprefix("Review: ").casefold()
+            if name in seen or (dated and stamp >= day_end):
+                continue
+            seen.add(name)
+            entry = dict(id=item["id"], kind="overdue" if dated and stamp < now else "due" if dated else "plan",
+                         text=title, due_ts=stamp if dated else None, all_day=item.get("all_day") is True)
+            (overdue if entry["kind"] == "overdue" else due if dated else plan).append(entry)
+        elif source == "email" and item.get("person") is True:
+            sender = clean(item.get("sender"), 80)
+            named = review_title(title, sender)
+            if named.startswith("Review: "):
+                subject = title if len(title) <= 60 else title[:59].rstrip() + "…"
+                text = f"“{subject}” from {sender}" if sender else f"“{subject}”"
+            elif named.startswith("Review "):
+                text = named[len("Review "):]
+            else:
+                text = "a security notice" + (f" from {sender}" if sender else "") + " (unverified)"
+            # A review the user already kept on the day plan is listed there, once.
+            planned = {title.casefold(), named.casefold().removeprefix("review: ")}
+            mail.append(dict(id=item["id"], kind="mail", text=text, due_ts=None, all_day=False,
+                             received_ts=item.get("received_ts"), planned=planned))
+        elif source == "messages" and item.get("replied") is not True:
+            sender = clean(item.get("sender"), 80)
+            if not sender or sender == "Me":
+                continue
+            entry = texts.setdefault(sender, dict(id=item["id"], kind="text", count=0, due_ts=None,
+                                                  all_day=False, received_ts=item.get("received_ts")))
+            entry["count"] += 1
+            if finite(item.get("received_ts")) and (not finite(entry["received_ts"])
+                                                     or item["received_ts"] > entry["received_ts"]):
+                entry["received_ts"] = item["received_ts"]
+    newest = lambda e: -(e["received_ts"] if finite(e.get("received_ts")) else float("-inf"))
+    people = []
+    for sender, entry in sorted(texts.items(), key=lambda kv: newest(kv[1])):
+        count = entry.pop("count")
+        people.append(dict(entry, text=(f"{count} texts from {sender}" if count > 1 else f"a text from {sender}")))
+    overdue.sort(key=lambda e: e["due_ts"])
+    due.sort(key=lambda e: e["due_ts"])
+    mail = [e for e in sorted(mail, key=newest) if not e.pop("planned") & seen]
+    picked = overdue + due + plan + mail + people
+    for entry in picked:
+        entry.pop("received_ts", None)
+    return dict(items=picked[:NEEDS_YOU_SHOWN], more=max(0, len(picked) - NEEDS_YOU_SHOWN))
+
+
 def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=(), profile=None):
     """Return explainable attention items and a proposed itinerary, all transient.
 
@@ -678,6 +763,7 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
             block["warnings"].append("Suggested time · duration is an estimate")
     proposal["tasks"] = state["tasks"]
     return dict(day=day, timezone=timezone, generated_at=now, attention=items[:MAX_ITEMS],
+                needs_you=needs_you(items[:MAX_ITEMS], now=now, day_end=hi),
                 attention_omitted=max(0, len(items) - MAX_ITEMS), source_coverage=coverage,
                 behavior_detail=behavior_detail,
                 behavior_context=(dict(ready=True, generated_at=behavior["generated_at"],
