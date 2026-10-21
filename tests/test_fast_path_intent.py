@@ -983,6 +983,17 @@ def test_actual_http_alternative_clock_keeps_typed_specific_time_question(
     assert events[-1]["type"] == "done"
 
 
+def assert_host_reminder_clarification(events, streams):
+    assert streams == []
+    answer = "".join(event.get("text", "") for event in events
+                     if event["type"] in {"text", "delta"})
+    assert answer.startswith("I haven’t created a reminder or taken any other action.")
+    assert "Reminder set" not in answer
+    assert not any(event["type"] in {"tool_call", "confirm", "task_plan", "delta"}
+                   for event in events)
+    assert sum(event["type"] == "done" for event in events) == 1
+
+
 @pytest.mark.parametrize("tail", ["and frobnicate the gizmo", "; wobble the widget",
                                  "then silence all the alerts", "disable Wi-Fi"])
 def test_unknown_outer_reminder_text_is_not_swallowed_by_a_partial_write(
@@ -992,7 +1003,10 @@ def test_unknown_outer_reminder_text_is_not_swallowed_by_a_partial_write(
     assert compile_task(text, now=NOW) is None
     events = asyncio.run(request(text))
     assert calls == []
-    assert streams
+    if tail == "disable Wi-Fi":
+        assert streams  # This existing single-clause fallback is unchanged.
+    else:
+        assert_host_reminder_clarification(events, streams)
     assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
     assert not any(event["type"] == "task_plan" for event in events)
     assert events[-1]["type"] == "done"
@@ -1074,7 +1088,7 @@ def test_unresolved_reminder_compound_withholds_effects_from_eager_model(
     events = asyncio.run(request(text))
     assert calls == [] and approvals == []
     assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
-    assert streams and all(not stream.get("tools") for stream in streams)
+    assert_host_reminder_clarification(events, streams)
     assert not any(event["type"] == "task_plan" for event in events)
     assert events[-1]["type"] == "done"
 
@@ -1130,7 +1144,7 @@ def test_unconsumed_command_or_ambiguous_content_cannot_create_a_reminder(
     assert compile_task(text, now=NOW) is None
     events = asyncio.run(request(text))
     assert calls == []
-    assert streams
+    assert_host_reminder_clarification(events, streams)
     assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
     assert events[-1]["type"] == "done"
 

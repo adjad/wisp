@@ -2148,7 +2148,16 @@ async def agent(body: dict[str, Any]):
             def finish_model_action(claim, verified):
                 return store.finish_model_effect(sid, claim, verified=verified)
 
-            if test_mode and not decision.needs_tools:
+            if decision._reminder_clarification:
+                # This host boundary ran no action and admitted no tools.
+                # Publishing model prose here could still claim "Reminder
+                # set" despite the missing subject/time/whole-clause proof.
+                await emit({"type": "text", "text": (
+                    "I haven’t created a reminder or taken any other action. "
+                    "Please give one reminder’s title and alert time, and "
+                    "request any additional actions separately.")})
+                await emit({"type": "done"})
+            elif test_mode and not decision.needs_tools:
                 # No tool would be offered at all — reasoning/general/fast/
                 # coding all generate a REAL answer, which test mode must
                 # never do (see the endpoint docstring). Report the plan
@@ -2425,7 +2434,8 @@ async def agent(body: dict[str, Any]):
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.
-            if not test_mode and remote_only_profile() is None:
+            if (not test_mode and remote_only_profile() is None
+                    and not decision._reminder_clarification):
                 summary_target = role_target("fast")
 
                 async def prepare_local_summary() -> None:
