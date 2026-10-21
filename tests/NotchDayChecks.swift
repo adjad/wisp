@@ -196,6 +196,28 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.lede(weekday: "Tuesday", isToday: true, load: .steady, dueToday: [], overdue: [],
                            next: (title: "Club", time: "3 PM"))
           == "A steady Tuesday. Next up: Club at 3 PM.", "lede with only the next event")
+    check(DayTimeline.lede(weekday: "Sunday", isToday: true, load: .free, dueToday: [], overdue: [], next: nil,
+                           othersNeedYou: true) == "A free Sunday.",
+          "lede never says nothing needs you while the Needs you line lists something")
+
+    // The Brief's Needs you line under the lede (daily_workspace.needs_you picks the items).
+    let picked = [
+        NeedsYouInput(kind: "overdue", text: "Pay rent", due: dayStart - 5 * hour),
+        NeedsYouInput(kind: "due", text: "PA 2", due: at(23.5)),
+        NeedsYouInput(kind: "due", text: "Library book", due: at(0), allDay: true),
+        NeedsYouInput(kind: "mail", text: "a deadline notice from Dr. Patel"),
+    ]
+    check(DayTimeline.needsYou(picked, more: 2, clock: clock)
+          == "Needs you today: Pay rent (overdue), PA 2 (due 23:30), Library book (due today), a deadline notice from Dr. Patel and 2 more.",
+          "needs-you line lists items with their due words and the rest as a count")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "text", text: "a text from Mom")], more: 0, clock: clock)
+          == "Needs you today: a text from Mom.", "needs-you line with one item")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "plan", text: "Finish slides"), NeedsYouInput(kind: "mail", text: "“Lab feedback” from Dr. Patel")],
+                               more: 0, clock: clock)
+          == "Needs you today: Finish slides and “Lab feedback” from Dr. Patel.", "needs-you line joins two with and")
+    check(DayTimeline.needsYou([], more: 0, clock: clock) == nil, "nothing to list: no line, not an empty header")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "due", text: "nothing", due: at(15))], more: 0, clock: clock) == nil,
+          "a junk title alone makes no line")
 
     // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!
