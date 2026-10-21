@@ -112,6 +112,7 @@ PROFILE_TESTS = {
         "tests/test_temporal_facts.py",
         "tests/test_daily_workspace.py",
         "tests/test_day_review_blocks.py",
+        "tests/test_brief_needs_you.py",
         "tests/test_day_timeline_event_fields.py",
         "tests/test_mail_gists.py",
         "tests/test_behavior_gmail_history.py",
@@ -427,6 +428,8 @@ ADDITIONAL_FULL_TESTS = {
     # verified-self identity, fake policy/outbox and ASGI transport; no effects.
     "tests/test_daily_workspace.py",
     "tests/test_day_review_blocks.py",
+    # The Brief's "Needs you today" selection over synthetic attention items.
+    "tests/test_brief_needs_you.py",
     # Day timeline Cancel/Move fields: disposable AssistantStore, the planner and
     # today_api.snapshot in process; no model, app, hub or real ~/.moe.
     "tests/test_day_timeline_event_fields.py",
