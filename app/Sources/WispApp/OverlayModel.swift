@@ -187,6 +187,11 @@ final class OverlayModel: ObservableObject {
         // Rows that show the report read it through this model, so redraw with it.
         reportObserver = report.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
+    /// True while the panel retracts into the bar: the content fades out at
+    /// the start of the close so the shrinking shape never slices live text.
+    /// Cleared when the bar takes over or the panel opens again.
+    @Published var closing = false
+
     @Published var collapsed = false {
         didSet {
             if collapsed && !oldValue {
@@ -264,6 +269,10 @@ final class OverlayModel: ObservableObject {
     // re-subscribed after any drop, so the same brief can arrive twice.
 
     var onResize: () -> Void = {}
+    /// Fit the window now, in this run-loop turn (onResize waits one turn).
+    /// For a change whose animation starts on the next frame, so a grow lands
+    /// before the first frame instead of after it.
+    var onResizeNow: () -> Void = {}
     // Collapse/expand resizes animate; streaming resizes (onResize) are instant.
     var onCollapsedChanged: () -> Void = {}
     // Set by the app delegate: expand / collapse WITH the drop animation.
