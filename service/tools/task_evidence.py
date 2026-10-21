@@ -371,6 +371,50 @@ def render_coverage_text(result: str) -> str | None:
     return '\n'.join(lines)
 
 
+def _claims_task_absence(narration: str) -> bool:
+    """Recognize negative task quantities without treating a footer as scope.
+
+    Only directly attached uncertainty or a returned-view restriction qualifies
+    the claim. This remains a finite rejection guard, not a factual grader.
+    Quoted source statements are masked by the caller.
+    """
+    category = r'(?:tasks?|commitments?|obligations?|deadlines?|requests?)'
+    modifiers = (r'(?:(?:active|pending|actionable|personal|known|upcoming|remaining|'
+                 r'current|additional|other|urgent|shown|listed|visible|returned)\s+)*')
+    task = modifiers + category
+    view = r'(?:the\s+)?(?:returned|shown|listed|visible|selected|provided)\s+(?:excerpts?|records?|rows?|items?|evidence)'
+    negative = (r'(?:no|zero|not\s+any|(?:did\s+not|didn[\'’]t|have\s+not|haven[\'’]t)'
+                r'\s+(?:find|found|see|seen)\s+any)\s+')
+    for clause in re.split(r'[.!?\n;]+|\b(?:but|and|however|yet)\b', narration, flags=re.I):
+        for claim in re.finditer(r'\b' + negative + task + r'(?:\s+or\s+' + task + r')*\b', clause, re.I):
+            before, after = clause[:claim.start()], clause[claim.end():]
+            if re.search(r'\b(?:if|unless|whether)\s+(?:there\s+(?:are|were|is|was)\s+)?$', before, re.I):
+                continue
+            if re.search(r'\b(?:cannot|can[\'’]t)\s+(?:verify|confirm|tell|determine|conclude|establish)\s+'
+                         r'(?:that\s+)?(?:there\s+(?:are|were|is|was)\s+)?$', before, re.I):
+                continue
+            if re.search(r'\b(?:does\s+not|doesn[\'’]t)\s+mean\s+(?:that\s+)?'
+                         r'(?:there\s+(?:are|were|is|was)\s+)?$', before, re.I):
+                continue
+            if re.fullmatch(r'\s*(?:in|within|among)\s+' + view + r'\s*,?\s*(?:there\s+are\s+)?', before, re.I):
+                continue
+            # A source-wide suffix ("in your email") is not a returned view.
+            if re.match(r'\s+(?:(?:are|were|is|was)\s+)?(?:shown|listed|visible|returned)\b', after, re.I):
+                continue
+            if re.match(r'\s+(?:(?:are|were)\s+(?:found|seen)\s+)?(?:in|within|among)\s+' + view + r'\b', after, re.I):
+                continue
+            if all(re.search(r'\b(?:shown|listed|visible|returned)\s+' + category + r'\b', part, re.I)
+                   for part in re.split(r'\s+or\s+', claim.group(), flags=re.I)):
+                continue
+            # A no-action receipt is not a statement about source inventory.
+            # A date suffix ("for tomorrow") would turn it into such a claim.
+            if re.match(r'\s+(?:were|have\s+been)\s+(?:scheduled|created|added|changed|completed|deleted)'
+                        r'(?:\s+(?:this\s+turn|by\s+me))?\s*(?:,|$)', after, re.I):
+                continue
+            return True
+    return False
+
+
 def verify_evidence_narration(text: str, result: str) -> str:
     """Refuse the confirmed exhaustive-absence claim over bounded sources.
 
@@ -383,6 +427,8 @@ def verify_evidence_narration(text: str, result: str) -> str:
     # Ignore the host coverage footer itself when this guard is called again.
     narration = text.split('Source coverage (bounded; absence not verified):', 1)[0]
     from service.utterance_shape import mask_quoted
+    if _claims_task_absence(mask_quoted(narration)):
+        return render_evidence_text(result)
     # "Tomorrow's only task is ..." also claims exhaustive coverage. A bare
     # category needs no second noun or inbox suffix to make that claim.
     for clause in re.split(r'[.!?\n,;]+|\b(?:but|and|however)\b', mask_quoted(narration), flags=re.I):

@@ -110,6 +110,27 @@ def test_partial_inbox_cannot_publish_no_other_items_need_attention(monkeypatch)
     assert len(client.calls) == 3  # one bounded correction; no repeated read
 
 
+@pytest.mark.parametrize('mode', ['normal', 'planner'])
+@pytest.mark.parametrize('corrected', [False, True])
+def test_live_negative_task_claim_uses_one_correction_without_new_reads(monkeypatch, mode, corrected):
+    claim = 'No active requests or deadlines in the email/messages sources.'
+    useful = ('The returned excerpt asks you to review the blue form. '
+              'I cannot establish whether other requests or deadlines exist.')
+    text, client, _ = run_receipts(monkeypatch,
+        [('collect_task_evidence', {}, evidence())], claim,
+        correction=useful if corrected else claim, planner=mode == 'planner')
+    assert claim not in text and '49 omitted' in text and 'Messages: unavailable' in text
+    if corrected:
+        assert text.startswith(useful)
+    else:
+        assert 'Fictional review request' not in text  # no private bodies in deterministic fallback
+    if mode == 'planner':
+        assert client.plan_requests == 2  # one read plan, then an answer plan
+        assert len(client.calls) == 4  # both plans, narration, one correction
+    else:
+        assert len(client.calls) == 3  # read, narration, one tool-free correction
+
+
 @pytest.mark.parametrize('mode', ['normal', 'planner', 'model_led'])
 @pytest.mark.parametrize('receipt', [
     'Reminder set: “Review blue form” — tomorrow 09:15 in Wisp only; Apple Reminders was not changed (Reminders access is unavailable).',
