@@ -71,12 +71,25 @@ enum ChatTheme {
         codeFill: glass, tableFill: glass, bodySize: 15)
 }
 
-/// The breathing droplet that stands for Wisp.
+/// The droplet is still at rest and breathes only while an answer is live.
 struct ChatOrb: View {
     var size: CGFloat = 22
     var thinking = false
     @State private var breathe = false
+    @State private var mounted = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+#if WISP_ORB_QA
+    // The system environment is read-only. The isolated fixture supplies the
+    // same decision input without changing the user's accessibility setting.
+    var reducedMotionForQA: Bool? = nil
+#endif
+
+    private var animates: Bool {
+#if WISP_ORB_QA
+        if let reducedMotionForQA { return mounted && thinking && !reducedMotionForQA }
+#endif
+        return mounted && thinking && !reduceMotion
+    }
 
     var body: some View {
         Circle()
@@ -85,10 +98,13 @@ struct ChatOrb: View {
             .frame(width: size, height: size)
             .shadow(color: ChatTheme.orbGlow, radius: size * 0.45)
             .scaleEffect(breathe ? 1.08 : 1.0)
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: thinking ? 1.3 : 5).repeatForever(autoreverses: true)) { breathe = true }
-            }
+            // Replacing the animation as well as its value cancels an
+            // in-flight repeat when the answer settles or motion is reduced.
+            .animation(animates ? .easeInOut(duration: 1.3).repeatForever(autoreverses: true) : nil,
+                       value: breathe)
+            .onAppear { mounted = true }
+            .onChange(of: animates) { _, active in breathe = active }
+            .onDisappear { mounted = false; breathe = false }
             .accessibilityHidden(true)
     }
 }
