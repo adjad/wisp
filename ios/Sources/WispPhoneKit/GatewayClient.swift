@@ -18,14 +18,50 @@ public struct ModelBundle: Decodable, Equatable, Identifiable, Sendable {
         public var name: String
         public var size: Int64
         public var sha256: String
+
+        public init(name: String, size: Int64, sha256: String) {
+            self.name = name
+            self.size = size
+            self.sha256 = sha256
+        }
     }
     public var id: String
     public var modelType: String?
     public var totalBytes: Int64
     public var files: [File]
 
+    public init(id: String, modelType: String?, totalBytes: Int64, files: [File]) {
+        self.id = id
+        self.modelType = modelType
+        self.totalBytes = totalBytes
+        self.files = files
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, modelType = "model_type", totalBytes = "total_bytes", files
+    }
+
+    /// The listing comes from the network, so its names become paths only if they pass the
+    /// same rules the Mac serves by: plain names, no separators, no `..`, known file types.
+    public var isSafe: Bool {
+        Self.isSafeID(id) && !files.isEmpty && files.allSatisfy { Self.isSafeFileName($0.name) && $0.size >= 0 }
+            && Set(files.map(\.name)).count == files.count
+            && files.allSatisfy { $0.sha256.count == 64 && $0.sha256.allSatisfy(\.isHexDigit) }
+    }
+
+    public static func isSafeID(_ id: String) -> Bool {
+        (1...128).contains(id.count) && id != "." && id != ".."
+            && id.allSatisfy { ($0.isASCII && ($0.isLowercase || $0.isNumber)) || $0 == "." || $0 == "_" || $0 == "-" }
+    }
+
+    public static let allowedExtensions = [".safetensors", ".json", ".jinja", ".txt", ".model"]
+
+    public static func isSafeFileName(_ name: String) -> Bool {
+        guard (1...128).contains(name.count), let first = name.first, first.isASCII, first.isLetter || first.isNumber,
+              name.allSatisfy({ ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "." || $0 == "_" || $0 == "-" })
+        else { return false }
+        let lower = name.lowercased()
+        return allowedExtensions.contains { lower.hasSuffix($0) }
     }
 }
 

@@ -7,6 +7,8 @@ written devices.json. Only the SHA-256 of a device token is ever stored.
 from __future__ import annotations
 
 import base64
+import contextlib
+import fcntl
 import hashlib
 import hmac
 import json
@@ -148,9 +150,22 @@ class DeviceStore:
         atomic_write_json(self.path, devices)
         self._sig = None  # force a reload on the next read
 
+    @contextlib.contextmanager
+    def _exclusive(self):
+        """Thread lock plus an flock on a sibling lock file, so the server and the CLI
+        (`pair`, `revoke`) never interleave a read-modify-write of devices.json."""
+        with self._lock:
+            ensure_private_dir(self.directory)
+            fd = os.open(self.directory / "devices.lock", os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                yield
+            finally:
+                os.close(fd)
+
     def add(self, name: str, token: str) -> dict[str, Any]:
         name = clean_name(name)
-        with self._lock:
+        with self._exclusive():
             devices = self._read_file()
             used = {d["id"] for d in devices}
             device_id = secrets.token_hex(4)
@@ -163,7 +178,7 @@ class DeviceStore:
             return dict(device)
 
     def revoke(self, device_id: str) -> bool:
-        with self._lock:
+        with self._exclusive():
             devices = self._read_file()
             kept = [d for d in devices if d["id"] != device_id]
             if len(kept) == len(devices):
@@ -179,7 +194,7 @@ class DeviceStore:
     def touch(self, device_id: str, clock=time.monotonic) -> bool:
         """Record last_seen, at most once a minute per device. True if written."""
         now = clock()
-        with self._lock:
+        with self._exclusive():
             last = self._touched.get(device_id)
             if last is not None and now - last < LAST_SEEN_INTERVAL_S:
                 return False

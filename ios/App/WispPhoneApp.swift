@@ -19,7 +19,7 @@ struct WispPhoneApp: App {
                     Button("Pair") { model.confirmPairing() }
                     Button("Cancel", role: .cancel) { model.pairingOffer = nil }
                 } message: {
-                    Text("This iPhone will be able to use Wisp on \(model.pairingOffer?.macName ?? "your Mac") over Tailscale, including its mail, calendar and tools.")
+                    Text("This iPhone will send its Wisp requests to \(model.pairingOffer?.addressDescription ?? "?") over Tailscale and can use that Mac's mail, calendar and tools. Pair only with a code you just made on your own Mac.")
                 }
                 .task { await model.refreshMac() }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in

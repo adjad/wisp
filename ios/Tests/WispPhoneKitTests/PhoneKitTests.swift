@@ -153,3 +153,44 @@ private let token = String(repeating: "A", count: 43)
     #expect(Conversation.title(from: String(repeating: "a", count: 60)).count == 48)
     #expect(Conversation.title(from: "   ") == "New chat")
 }
+
+// MARK: Audit regressions (PR 336)
+
+@Test(arguments: ["203.0.113.5%2F.ts.net", "evil.com%23.ts.net", "evil.com%3F.ts.net", "x@evil.com.ts.net",
+                  "a..b.ts.net", "-bad.tail.ts.net", "ts.net", ".ts.net", "host%20x.tail.ts.net"])
+func pairingRejectsSmuggledHosts(host: String) {
+    #expect(throws: MacPairing.ParseError.unsafeAddress) {
+        try MacPairing.parse("wisp-pair://v1?host=\(host)&port=8799&token=\(token)")
+    }
+}
+@Test(arguments: ["100.64.0.1%2F", "100.+64.0.1", "100.64.0.01x", "100.064.0.1.5"])
+func pairingRejectsMalformedIPs(ip: String) {
+    #expect(throws: MacPairing.ParseError.unsafeAddress) {
+        try MacPairing.parse("wisp-pair://v1?ip=\(ip)&port=8799&token=\(token)")
+    }
+}
+@Test func pairingURLsCarryNoPath() throws {
+    let pairing = try MacPairing.parse("wisp-pair://v1?host=mac.tail1.ts.net&ip=100.64.0.1&port=8799&token=\(token)")
+    for url in pairing.baseURLs {
+        #expect(url.path.isEmpty && url.query == nil && url.fragment == nil && url.port == 8799)
+    }
+    #expect(pairing.addressDescription == "mac.tail1.ts.net:8799")
+    // A pairing stored before validation tightened still never yields an unsafe URL.
+    let stale = MacPairing(host: "1.2.3.4/.ts.net", ip: "8.8.8.8", port: 80, macName: "x", token: token)
+    #expect(stale.baseURLs.isEmpty)
+}
+@Test func modelBundleNamesAreValidated() {
+    func bundle(id: String, name: String) -> ModelBundle {
+        ModelBundle(id: id, modelType: "bailing_hybrid", totalBytes: 1,
+                    files: [.init(name: name, size: 1, sha256: String(repeating: "a", count: 64))])
+    }
+    #expect(bundle(id: "ling-3.0-tiny-oq4e", name: "model.safetensors").isSafe)
+    #expect(!bundle(id: "..", name: "model.safetensors").isSafe)
+    #expect(!bundle(id: "a/b", name: "model.safetensors").isSafe)
+    #expect(!bundle(id: "ling", name: "../../Wisp/conversations.json").isSafe)
+    #expect(!bundle(id: "ling", name: ".hidden.json").isSafe)
+    #expect(!bundle(id: "ling", name: "modeling.py").isSafe)
+    #expect(!bundle(id: "ling", name: "a%2Fb.json").isSafe)
+    #expect(!ModelBundle(id: "ling", modelType: nil, totalBytes: 1,
+                         files: [.init(name: "a.json", size: 1, sha256: "zz")]).isSafe)
+}

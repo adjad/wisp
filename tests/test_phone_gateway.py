@@ -201,6 +201,27 @@ def test_touch_never_resurrects_a_revoked_device(env):
     assert env.store.devices() == []
 
 
+def test_cli_revoke_waits_for_a_server_write_in_progress(tmp_path):
+    # Two store instances stand in for the server and a separate `revoke` CLI process:
+    # the revoke must not run between the server's read and its write.
+    import threading
+
+    server = DeviceStore(tmp_path)
+    device = server.add("Phone", new_token())
+    cli_store = DeviceStore(tmp_path)
+    done = threading.Event()
+
+    with server._exclusive():
+        thread = threading.Thread(target=lambda: (cli_store.revoke(device["id"]), done.set()))
+        thread.start()
+        assert not done.wait(0.3), "revoke ran while another writer held the file lock"
+        server._save(server._read_file())  # the server's stale write lands first
+    thread.join(5)
+    assert done.is_set()
+    assert DeviceStore(tmp_path).devices() == []
+    assert stat.S_IMODE(os.stat(tmp_path / "devices.lock").st_mode) == 0o600
+
+
 def test_cli_pair_devices_revoke(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MOE_DIR", str(tmp_path / "moe"))
     monkeypatch.setattr(tailscale, "tailscale_ipv4", lambda: "100.101.102.103")

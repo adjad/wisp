@@ -48,6 +48,7 @@ final class OnDeviceModel {
     struct Receipt: Codable {
         var id: String
         var files: [String: String]
+        var sizes: [String: Int64]
         var totalBytes: Int64
     }
 
@@ -66,9 +67,16 @@ final class OnDeviceModel {
         }
         for directory in entries {
             let receiptURL = directory.appendingPathComponent(Self.receiptName)
+            // Every listed file must still be there at the size that was verified, so a re-download
+            // that stopped half-way never passes for an installed model.
             guard let data = try? Data(contentsOf: receiptURL),
                   let receipt = try? JSONDecoder().decode(Receipt.self, from: data),
-                  receipt.files.keys.allSatisfy({ FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path) })
+                  receipt.id == directory.lastPathComponent, ModelBundle.isSafeID(receipt.id),
+                  receipt.files.keys.allSatisfy({ name in
+                      ModelBundle.isSafeFileName(name)
+                          && (try? directory.appendingPathComponent(name).resourceValues(forKeys: [.fileSizeKey]).fileSize)
+                              .map(Int64.init) == receipt.sizes[name]
+                  })
             else { continue }
             state = .installed(id: receipt.id, bytes: receipt.totalBytes)
             return
@@ -104,8 +112,11 @@ final class OnDeviceModel {
     private func runDownload(gateway: GatewayClient) async {
         do {
             let bundles = try await gateway.models()
-            guard let bundle = bundles.first(where: { $0.modelType == "bailing_hybrid" }) ?? bundles.first else {
-                state = .failed("Your Mac isn't offering a model. Start the gateway with --model <Ling folder>.")
+            let offered = bundles.filter(\.isSafe)
+            guard let bundle = offered.first(where: { $0.modelType == "bailing_hybrid" }) ?? offered.first else {
+                state = .failed(bundles.isEmpty
+                    ? "Your Mac isn't offering a model. Start the gateway with --model <Ling folder>."
+                    : "Your Mac offered a model with unsafe file names, so nothing was downloaded.")
                 return
             }
             let free = (try? Self.root.deletingLastPathComponent()
@@ -115,8 +126,13 @@ final class OnDeviceModel {
                 state = .failed("Not enough free space: Ling needs \(Self.format(bundle.totalBytes)) plus 1 GB.")
                 return
             }
+            try FileManager.default.createDirectory(at: Self.root, withIntermediateDirectories: true)
             let destination = Self.root.appendingPathComponent(bundle.id, isDirectory: true)
+            guard Self.isInside(destination, Self.root) else { throw DownloadError.unsafePath(bundle.id) }
             try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            // Files are about to be replaced one by one; until all are verified this isn't an installed model.
+            try? FileManager.default.removeItem(at: destination.appendingPathComponent(Self.receiptName))
+            if case .installed(let id, _) = state, id == bundle.id { state = .notInstalled }
             var root = Self.root
             var values = URLResourceValues()
             values.isExcludedFromBackup = true
@@ -126,6 +142,7 @@ final class OnDeviceModel {
             for file in bundle.files {
                 try Task.checkCancellation()
                 let target = destination.appendingPathComponent(file.name)
+                guard Self.isInside(target, destination) else { throw DownloadError.unsafePath(file.name) }
                 if FileManager.default.fileExists(atPath: target.path),
                    (try? target.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) == file.size {
                     state = .verifying(file: file.name)
@@ -152,7 +169,8 @@ final class OnDeviceModel {
             let missing = LingRuntime.requiredFiles(in: destination).filter { hashes[$0] == nil }
             guard missing.isEmpty else { throw DownloadError.incomplete(missing) }
             #endif
-            let receipt = Receipt(id: bundle.id, files: hashes, totalBytes: bundle.totalBytes)
+            let sizes = Dictionary(uniqueKeysWithValues: bundle.files.map { ($0.name, $0.size) })
+            let receipt = Receipt(id: bundle.id, files: hashes, sizes: sizes, totalBytes: bundle.totalBytes)
             try JSONEncoder().encode(receipt).write(to: destination.appendingPathComponent(Self.receiptName), options: .atomic)
             state = .installed(id: bundle.id, bytes: bundle.totalBytes)
         } catch is CancellationError {
@@ -165,13 +183,22 @@ final class OnDeviceModel {
     enum DownloadError: Error, LocalizedError {
         case checksum(String)
         case incomplete([String])
+        case unsafePath(String)
 
         var errorDescription: String? {
             switch self {
             case .checksum(let name): "\(name) didn't match your Mac's copy. Try the download again."
             case .incomplete(let names): "Your Mac's model folder is missing \(names.joined(separator: ", "))."
+            case .unsafePath(let name): "Refused to save \(name): it would land outside Wisp's model folder."
             }
         }
+    }
+
+    /// True when `child` resolves to a path strictly inside `parent`.
+    static func isInside(_ child: URL, _ parent: URL) -> Bool {
+        let base = parent.standardizedFileURL.resolvingSymlinksInPath().path
+        let path = child.standardizedFileURL.resolvingSymlinksInPath().path
+        return path.hasPrefix(base.hasSuffix("/") ? base : base + "/")
     }
 
     static func sha256(of url: URL) async throws -> String {
