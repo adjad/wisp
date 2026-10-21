@@ -20,6 +20,22 @@ enum MessagesReaderRegression {
         let path = root.appendingPathComponent("chat.db").path
         let reader = MessagesReader(dbPath: path)
         precondition(reader.readRecentMessages() == nil, "Missing db is unavailable")
+        // Why it failed comes from the error itself: a missing file is not a
+        // Full Disk Access problem, so the user isn't sent to that setting.
+        precondition(reader.lastFailure?.kind == .missing, "Missing db is reported as missing")
+        precondition(reader.lastFailure?.diagnostics["reason_kind"] as? String == "missing"
+                     && reader.lastFailure?.diagnostics["available"] as? Bool == false)
+        checkFailureClassification()
+        // A file this user can't open (mode 000, EACCES) is not a Full Disk
+        // Access denial, which macOS reports as EPERM.
+        let locked = root.appendingPathComponent("locked.db").path
+        precondition(FileManager.default.createFile(atPath: locked, contents: Data(),
+                                                    attributes: [.posixPermissions: 0]))
+        let lockedReader = MessagesReader(dbPath: locked)
+        precondition(lockedReader.readRecentMessages() == nil
+                     && lockedReader.lastFailure?.kind == .unreadable
+                     && lockedReader.lastFailure?.reason.contains("Full Disk Access") == false,
+                     "A plain permission error keeps its own reason")
 
         var db: OpaquePointer?
         precondition(sqlite3_open(path, &db) == SQLITE_OK)
@@ -29,6 +45,9 @@ enum MessagesReaderRegression {
                          "Fixture SQL failed: \(statement)")
         }
         precondition(reader.readRecentMessages() == nil, "Missing schema is unavailable")
+        precondition(reader.lastFailure?.kind == .unreadable
+                     && reader.lastFailure?.reason.contains("no such table") == true,
+                     "A missing schema keeps SQLite's own reason, not a permissions claim")
         sql("CREATE TABLE message (date INTEGER, text TEXT, attributedBody BLOB, " +
             "is_from_me INTEGER, handle_id INTEGER, is_read INTEGER, " +
             "associated_message_type INTEGER, guid TEXT, date_edited INTEGER)")
@@ -38,6 +57,7 @@ enum MessagesReaderRegression {
         sql("CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER)")
         precondition(reader.readRecentMessages()?.lines.isEmpty == true,
                      "Empty readable store is ready")
+        precondition(reader.lastFailure == nil, "A successful read clears the last failure")
         sql("INSERT INTO handle VALUES ('+15555550100')")
         sql("INSERT INTO chat VALUES ('Project', 'chat1', 'chat-guid-1')")
         sql("INSERT INTO chat_handle_join VALUES (1, 1)")
@@ -334,5 +354,30 @@ enum MessagesReaderRegression {
                      && bounded.truncated >= 27 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
         print("MessagesReader: synthetic read-only regression passed")
+    }
+
+    /// Full Disk Access only when the error says so: macOS refused the file
+    /// (EPERM) or SQLite reports "authorization denied".
+    static func checkFailureClassification() {
+        let denied = MessagesReadFailure.classify(systemErrno: EPERM, sqliteCode: SQLITE_CANTOPEN,
+                                                  sqliteMessage: "unable to open database file")
+        precondition(denied.kind == .fullDiskAccess && denied.reason == MessagesReadFailure.fullDiskAccessReason)
+        precondition(denied.reason.contains("Full Disk Access") && denied.reason.contains("turn on Wisp"))
+        precondition(MessagesReadFailure.classify(systemErrno: 0, sqliteCode: SQLITE_AUTH,
+                                                  sqliteMessage: "authorization denied").kind == .fullDiskAccess)
+        precondition(MessagesReadFailure.classify(systemErrno: 0, sqliteCode: SQLITE_ERROR,
+                                                  sqliteMessage: "Authorization denied").kind == .fullDiskAccess)
+        // A plain Unix permission error, a busy or corrupt store, or an unknown
+        // failure keeps its own reason.
+        let mode = MessagesReadFailure.classify(systemErrno: EACCES, sqliteCode: SQLITE_CANTOPEN,
+                                                sqliteMessage: "unable to open database file")
+        precondition(mode.kind == .unreadable && mode.reason == "Couldn't read Messages: unable to open database file.")
+        precondition(MessagesReadFailure.classify(systemErrno: 0, sqliteCode: SQLITE_BUSY,
+                                                  sqliteMessage: "database is locked").kind == .unreadable)
+        let blank = MessagesReadFailure.classify(systemErrno: EIO, sqliteCode: SQLITE_IOERR, sqliteMessage: "")
+        precondition(blank.kind == .unreadable && blank.reason.hasPrefix("Couldn't read Messages: ")
+                     && !blank.reason.contains("Full Disk Access"))
+        precondition(MessagesReadFailure.classify(systemErrno: ENOENT, sqliteCode: SQLITE_CANTOPEN,
+                                                  sqliteMessage: "unable to open database file").kind == .missing)
     }
 }

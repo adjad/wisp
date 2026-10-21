@@ -73,6 +73,12 @@ final class WispClient {
         let progress: Double?
         let detail: String
         let warning: String
+        /// Why an unavailable source can't be read, as its reader classified the
+        /// error ("full_disk_access", …); "" when unknown or not unavailable.
+        var reasonKind: String = ""
+
+        /// Unavailable because Wisp lacks Full Disk Access, so a button can open it.
+        var needsFullDiskAccess: Bool { state == "unavailable" && reasonKind == "full_disk_access" }
 
         var percentageLabel: String {
             if state == "unavailable" { return "Unavailable" }
@@ -89,7 +95,8 @@ final class WispClient {
             return SourceSyncStatus(id: id, label: label, state: state,
                                     progress: (row["progress"] as? NSNumber)?.doubleValue,
                                     detail: row["progress_detail"] as? String ?? "",
-                                    warning: row["warning"] as? String ?? "")
+                                    warning: row["warning"] as? String ?? "",
+                                    reasonKind: row["reason_kind"] as? String ?? "")
         }
     }
 
