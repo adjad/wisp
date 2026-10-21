@@ -48,13 +48,17 @@ struct NotchBriefView: View {
                 if !brief.summary.isEmpty || !brief.agenda.isEmpty { summary(brief) }
                 VStack(alignment: .leading, spacing: 9) {
                     ForEach(brief.lines) { line in
-                        lineRow(line, isOpen: open == line.tag)
-                        if open == line.tag, let detail = brief.details[line.tag] {
-                            // A plain fade: the rows below glide down with the layout,
-                            // and nothing slides over the row it belongs to.
-                            detailView(detail)
-                                .transition(reduceMotion ? .identity : .opacity)
+                        // Each row and its detail clip together, so the detail is
+                        // uncovered and covered by the group's own edge while the
+                        // rows below glide; nothing draws over a neighbouring row.
+                        VStack(alignment: .leading, spacing: 9) {
+                            lineRow(line, isOpen: open == line.tag)
+                            if open == line.tag, let detail = brief.details[line.tag] {
+                                detailView(detail)
+                                    .transition(reduceMotion ? .identity : .opacity)
+                            }
                         }
+                        .clipped()
                     }
                 }
                 HStack(spacing: 8) {

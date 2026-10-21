@@ -163,6 +163,13 @@ struct OverlayTransitionChecks {
         try? await Task.sleep(for: .milliseconds(60))
         panel.resizeToFit()
         check(panel.frame.height == 320, "Back to the opened height")
+        // The host never follows the content: resized inside a SwiftUI
+        // animation, it would centre the animating content and jolt it.
+        let stage = panel.contentView!
+        stage.layoutSubtreeIfNeeded()
+        let slide = stage.subviews[0]
+        check(slide.frame.height == OverlayPanel.hostHeight && slide.frame.maxY == stage.bounds.maxY,
+              "The content host keeps a fixed height, pinned to the top")
 
         var stale = 0
         var closed = false

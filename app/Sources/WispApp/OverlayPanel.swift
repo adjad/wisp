@@ -66,7 +66,14 @@ final class OverlayPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         animationBehavior = .none
 
-        let hostView = NSHostingView(rootView: content())
+        // The content keeps its own (ideal) height and sits at the top of a
+        // host that never resizes. A host sized to the content resized inside
+        // every SwiftUI animation, and SwiftUI then centred the animating
+        // content in it: a Brief row opening dropped the whole panel by half
+        // the change and slid it back up.
+        let hostView = NSHostingView(rootView: content()
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxHeight: .infinity, alignment: .top))
         hostView.translatesAutoresizingMaskIntoConstraints = false
         self.host = hostView
 
@@ -102,14 +109,20 @@ final class OverlayPanel: NSPanel {
             hostView.bottomAnchor.constraint(equalTo: slideView.bottomAnchor),
             hostView.leadingAnchor.constraint(equalTo: slideView.leadingAnchor),
             hostView.trailingAnchor.constraint(equalTo: slideView.trailingAnchor),
-            // slide view pinned top/leading/trailing — NOT bottom, so it keeps
-            // its full intrinsic height and the window bounds clip it.
+            // slide view pinned top/leading/trailing — NOT bottom — at a fixed
+            // height taller than any screen; the window bounds clip it, and
+            // the window's height comes from the content's measured size.
+            slideView.heightAnchor.constraint(equalToConstant: Self.hostHeight),
             slideView.topAnchor.constraint(equalTo: container.topAnchor),
             slideView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             slideView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
         contentView = container
     }
+
+    /// The host's fixed height: taller than any display, so content never
+    /// reaches its bottom. Only the window's own bounds decide what shows.
+    static let hostHeight: CGFloat = 8192
 
     // Pointer entered / left the panel's content (set by AppDelegate).
     var onMouseEnter: () -> Void = {}
@@ -243,6 +256,9 @@ final class OverlayPanel: NSPanel {
     // A shared non-overshooting curve keeps size and corners together. The
     // top edge never moves, so content grows out of the notch without bounce.
     private static let revealCurve = CAMediaTimingFunction(controlPoints: 0.22, 0.75, 0.25, 1)
+    // Closing starts gently, so the shape barely moves while the content
+    // fades (AppDelegate.closeFade), then gathers into the notch.
+    private static let closeCurve = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
 
     /// The mask's rounded edge is rasterized at the layer's scale; left at the
     /// default 1x it can step visibly on a Retina screen while it animates.
@@ -316,12 +332,12 @@ final class OverlayPanel: NSPanel {
         radius.toValue = endRadius
         let group = CAAnimationGroup()
         group.animations = [size, radius]
-        // Closing is a touch quicker than opening; the content has already
-        // faded (OverlayModel.closing), so the shape alone retracts.
+        // Closing is a touch quicker than opening; the content fades out
+        // (OverlayModel.closing) while the slow start holds the shape.
         group.duration = opening ? 0.38 : 0.28
         size.duration = group.duration
         radius.duration = group.duration
-        group.timingFunction = Self.revealCurve
+        group.timingFunction = opening ? Self.revealCurve : Self.closeCurve
         CATransaction.begin()
         CATransaction.setCompletionBlock(finish)
         mask.add(group, forKey: "reveal")
