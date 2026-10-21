@@ -62,7 +62,7 @@ public struct ModelBundle: Decodable, Equatable, Identifiable, Sendable {
         return child.deletingLastPathComponent().standardizedFileURL.path == parent.standardizedFileURL.path
     }
 
-    public static let allowedExtensions =[".safetensors", ".json", ".jinja", ".txt", ".model"]
+    public static let allowedExtensions = [".safetensors", ".json", ".jinja", ".txt", ".model"]
 
     public static func isSafeFileName(_ name: String) -> Bool {
         guard (1...128).contains(name.count), let first = name.first, first.isASCII, first.isLetter || first.isNumber,
