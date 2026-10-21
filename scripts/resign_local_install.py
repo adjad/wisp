@@ -53,6 +53,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -360,6 +361,7 @@ def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, lo
             shutil.rmtree(output)
             if output.exists() or output.is_symlink():
                 raise ResignError(f"Could not remove {output}")
+            created = False   # this run's copy is gone; whatever appears next is not ours
         try:
             # Claim the path atomically: a stranger's bundle appearing between the check
             # above and this mkdir makes mkdir fail, and nothing of theirs is touched.
@@ -367,6 +369,8 @@ def resign(artifact: Path, output: Path, *, identity: str = DEFAULT_IDENTITY, lo
         except FileExistsError:
             raise ResignError(f"{output} appeared while this ran; refusing to remove what this run did not create")
         created = True
+        # ditto fills an existing directory without copying its mode; carry the artifact's over.
+        os.chmod(output, stat.S_IMODE(artifact.stat().st_mode))
         copy(artifact, output)   # ditto fills the directory this run just made
         # The copy must be the artifact, nothing less: same strict verify, same cdhash.
         verify(output, runner)
@@ -516,6 +520,10 @@ def main(argv=None) -> int:
         print(f"RESIGN FAILED (--require): {exc}", file=sys.stderr)
         return 2
     except ResignError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, SystemExit) and isinstance(cause.code, int):   # SIGTERM: copy removed, exit 143
+            print("RESIGN INTERRUPTED: nothing staged", file=sys.stderr)
+            return cause.code
         print(f"RESIGN FAILED: {exc}", file=sys.stderr)
         return 1
     print(summary(record))

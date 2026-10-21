@@ -18,6 +18,7 @@ import json
 import os
 import plistlib
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -399,22 +400,40 @@ def test_require_stages_and_logs_nothing_when_not_resigned(tmp_path):
     assert not log.exists(), "a rejected --require run leaves no line claiming an install"
 
 
+def _stranger_on_mkdir(out, nth):
+    """Patch os.mkdir so the nth mkdir of `out` finds a stranger's bundle already there."""
+    real_mkdir = os.mkdir
+    seen = {"n": 0}
+
+    def mkdir(path, *args, **kwargs):
+        # Only claims count: copytree(dirs_exist_ok=True) also calls mkdir on an existing out.
+        if Path(path) == out and not out.exists():
+            seen["n"] += 1
+            if seen["n"] == nth:
+                real_mkdir(path)
+                (out / "theirs").write_text("x")
+                raise FileExistsError(17, "File exists", str(path))
+        return real_mkdir(path, *args, **kwargs)
+    return patch.object(os, "mkdir", mkdir)
+
+
 def test_an_output_that_appears_mid_run_is_never_removed(tmp_path):
     app = make_bundle(tmp_path)
     out = tmp_path / "Wisp.app.new"
-    real_exists = Path.exists
 
-    def exists_then_stranger(self):
-        # The pre-flight check passes; a stranger's bundle lands before the mkdir claims the path.
-        if self == out and not real_exists(self):
-            out.mkdir()
-            (out / "theirs").write_text("x")
-            return False
-        return real_exists(self)
-    with patch.object(Path, "exists", exists_then_stranger):
+    # The pre-flight check passes; a stranger's bundle lands exactly as this run claims the path.
+    with _stranger_on_mkdir(out, 1):
         with pytest.raises(rli.ResignError, match="appeared while this ran"):
             rli.resign(app, out, log=None, runner=FakeTools(), now=0)
     assert (out / "theirs").exists(), "a bundle this run did not create is never removed"
+    shutil.rmtree(out)
+
+    # After a refused signature the half-signed copy is removed and the path claimed again;
+    # a stranger landing in that gap is refused and kept too.
+    with _stranger_on_mkdir(out, 2):
+        with pytest.raises(rli.ResignError, match="appeared while this ran"):
+            rli.resign(app, out, log=None, runner=FakeTools(sign_rc=1), now=0)
+    assert (out / "theirs").exists() and not (out / "Contents").exists()
     shutil.rmtree(out)
 
     # A copier that fails after the claim leaves only this run's own directory to clean up.
@@ -424,6 +443,10 @@ def test_an_output_that_appears_mid_run_is_never_removed(tmp_path):
     with pytest.raises(rli.ResignError, match="disk full"):
         rli.resign(app, out, log=None, runner=FakeTools(), copier=failing_copier, now=0)
     assert not out.exists(), "this run's own partial copy is removed"
+
+    app.chmod(0o750)
+    record = rli.resign(app, out, log=None, runner=FakeTools(), now=0)
+    assert record.resigned and stat.S_IMODE(out.stat().st_mode) == 0o750, "the artifact's top-level mode is carried over"
 
 
 def test_inputs_are_checked(tmp_path):
