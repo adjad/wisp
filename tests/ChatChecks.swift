@@ -49,6 +49,52 @@ struct ChatChecks {
         _ = ChatTurnReducer.apply(ev("tool_result", ["id": "unknown", "result": "x"]), to: &t, now: t0)
         check(t.tools.count == 1, "a stray result adds nothing")
 
+        // Tool rows own only the preview, including when constructed directly.
+        // Keep explicit expected strings rather than deriving the expectations
+        // with the production compaction helper.
+        let previewCases: [(String, String, String)] = [
+            ("", "", ""),
+            ("\n\r\n\u{2028}\u{2029}", "", ""),
+            ("\n\r\nfirst\nsecond", "first", "first"),
+            ("   \nsecond", "   ", "   "),
+            ("a\r\nb", "a", "a"),
+            ("\u{0085}a\u{2028}b", "a", "a"),
+            ("\u{000B}\u{000C}a\u{2029}b", "a", "a"),
+            (String(repeating: "a", count: 59), String(repeating: "a", count: 59), String(repeating: "a", count: 59)),
+            (String(repeating: "a", count: 60), String(repeating: "a", count: 60), String(repeating: "a", count: 60)),
+            (String(repeating: "a", count: 61), String(repeating: "a", count: 61), String(repeating: "a", count: 60) + "…"),
+            (String(repeating: "a", count: 62), String(repeating: "a", count: 61), String(repeating: "a", count: 60) + "…"),
+            (String(repeating: "e\u{0301}", count: 62), String(repeating: "e\u{0301}", count: 61), String(repeating: "e\u{0301}", count: 60) + "…"),
+            (String(repeating: "👩🏽‍💻", count: 62), String(repeating: "👩🏽‍💻", count: 61), String(repeating: "👩🏽‍💻", count: 60) + "…"),
+            (String(repeating: "🇺🇸", count: 62), String(repeating: "🇺🇸", count: 61), String(repeating: "🇺🇸", count: 60) + "…"),
+            ("short\n" + String(repeating: "x", count: 1_048_576), "short", "short"),
+            (String(repeating: "x", count: 1_048_576), String(repeating: "x", count: 61), String(repeating: "x", count: 60) + "…"),
+        ]
+        for (input, retained, visible) in previewCases {
+            var row = ChatToolRow(id: "preview", name: "read_file", decision: "allow", result: input, finished: true)
+            check(row.result == retained && row.detail == visible, "initializer preserves visible Unicode preview in compact storage")
+            row.result = "replace"
+            row.result = input
+            check(row.result == retained && row.detail == visible, "assignment preserves the same compact preview")
+        }
+        for (decision, finished, visible) in [("deny", true, "blocked"), ("confirm", false, "waiting for you"), ("allow", false, "running")] {
+            let row = ChatToolRow(id: "state", name: "read_file", decision: decision,
+                                  result: String(repeating: "x", count: 1_000), finished: finished)
+            check(row.detail == visible && row.result.count == 61, "state text keeps precedence over compact results")
+        }
+        var duplicate = ChatMessage(role: .assistant)
+        for _ in 0..<2 {
+            _ = ChatTurnReducer.apply(ev("tool_call", ["id": "same", "name": "read_file", "decision": "allow"]), to: &duplicate)
+        }
+        _ = ChatTurnReducer.apply(ev("tool_result", ["id": "same", "result": String(repeating: "z", count: 1_000)]), to: &duplicate)
+        check(!duplicate.tools[0].finished && duplicate.tools[1].finished && duplicate.tools[1].result == String(repeating: "z", count: 61),
+              "only the last matching call receives the compact result")
+        _ = ChatTurnReducer.apply(ev("tool_result", ["id": "same", "result": "replacement\nbody"]), to: &duplicate)
+        check(duplicate.tools.count == 2 && duplicate.tools[1].result == "replacement", "a repeated result replaces the existing preview")
+        let beforeUnknown = duplicate.tools
+        _ = ChatTurnReducer.apply(ev("tool_result", ["id": "unknown", "result": String(repeating: "x", count: 1_000)]), to: &duplicate)
+        check(duplicate.tools == beforeUnknown, "an unknown result does not modify or retain a tool row")
+
         // Blocked and waiting tools say so.
         var denied = ChatToolRow(id: "d", name: "delete_file", decision: "deny")
         check(denied.detail == "blocked", "denied detail")

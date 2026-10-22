@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 import sqlite3
 
-from service.codex_monitor import CodexMonitor
+import pytest
+
+from service.codex_monitor import CodexMonitor, CodexMonitorUnavailable
 
 
 def _fixture(root: Path, now: int) -> tuple[Path, Path]:
@@ -151,3 +153,133 @@ def test_cooldown_never_holds_back_a_failure(tmp_path: Path):
     assert monitor.poll_events(now=now + 60) == []
     _finish(state, history, "running", "turn-2", now + 90, status="failed")
     assert [e["kind"] for e in monitor.poll_events(now=now + 90)] == ["failed"]
+
+
+def test_history_selection_keeps_all_user_states_and_latest_ordinals(tmp_path: Path):
+    now = 2_000_000_000
+    state, history = _fixture(tmp_path, now)
+    with sqlite3.connect(state) as db:
+        db.execute("INSERT INTO threads VALUES (?, ?, 0, ?, '', '', 'user', '', '')",
+                   ("missing' OR 1=1 --", now, "No history"))
+        db.execute("INSERT INTO threads VALUES ('archived', ?, 1, 'Archived', '', '', 'user', '', '')",
+                   (now,))
+    with sqlite3.connect(history) as db:
+        # The ordinal, not the most recent clock, determines the latest turn.
+        db.execute("INSERT INTO thread_turns VALUES ('running', 'new', 2, 'failed', ?, ?)",
+                   (now - 1000, now - 900))
+        db.execute("INSERT INTO thread_items VALUES ('running', 'new', 'old-clock', 2, ?, ?, 'agentMessage')",
+                   ((now - 1000) * 1000, json.dumps({"text": "Latest by ordinal", "phase": "commentary"})))
+        db.execute("INSERT INTO thread_items VALUES ('running', 'new', 'tool', 3, ?, '{}', 'toolCall')",
+                   (now * 1000,))
+        db.execute("INSERT INTO thread_items VALUES ('done', 'turn-d', 'malformed', 2, ?, '{', 'agentMessage')",
+                   ((now - 20) * 1000,))
+    monitor = CodexMonitor(tmp_path, tmp_path / "snapshot.json")
+    tasks = {task.id: task for task in monitor.tasks()}
+    assert set(tasks) == {"running", "done", "missing' OR 1=1 --"}
+    assert tasks["running"].status == "failed"
+    assert tasks["running"].latest_update == "Latest by ordinal"
+    assert tasks["running"].update_phase == "commentary"
+    assert tasks["done"].status == "completed"
+    assert tasks["done"].latest_update == ""
+    assert tasks["done"].updated_at == now - 20
+    assert tasks["missing' OR 1=1 --"].status == "unknown"
+    assert "child" in {task.id for task in monitor.tasks(include_subagents=True)}
+    assert "archived" not in {task.id for task in monitor.tasks(include_subagents=True)}
+
+
+def test_history_queries_batch_large_eligible_sets(tmp_path: Path):
+    now = 2_000_000_000
+    state, history = _fixture(tmp_path, now)
+    names = [f"extra-{i}" for i in range(1001)]
+    with sqlite3.connect(state) as db:
+        db.executemany("INSERT INTO threads VALUES (?, ?, 0, ?, '', '', 'user', '', '')",
+                       [(name, now, name) for name in names])
+    with sqlite3.connect(history) as db:
+        db.executemany("INSERT INTO thread_turns VALUES (?, 'new', 3, 'completed', ?, ?)",
+                       [(name, now - 10, now) for name in names])
+        db.executemany("INSERT INTO thread_items VALUES (?, 'new', 'answer', 4, ?, ?, 'agentMessage')",
+                       [(name, now * 1000, json.dumps({"text": name, "phase": "final"})) for name in names])
+    tasks = {task.id: task for task in CodexMonitor(tmp_path, tmp_path / "snapshot.json").tasks()}
+    assert len(tasks) == 1003
+    assert all(tasks[name].status == "completed" and tasks[name].latest_update == name for name in names)
+
+
+@pytest.mark.parametrize("damage", ["turn-table", "message-table", "turn-column", "message-column"])
+def test_empty_selection_still_rejects_unsupported_history(tmp_path: Path, damage: str):
+    now = 2_000_000_000
+    state, history = _fixture(tmp_path, now)
+    with sqlite3.connect(state) as db:
+        db.execute("UPDATE threads SET archived=1")
+    monitor = CodexMonitor(tmp_path, tmp_path / "snapshot.json")
+    assert monitor.tasks() == []
+    with sqlite3.connect(history) as db:
+        if damage == "turn-table":
+            db.execute("DROP TABLE thread_turns")
+        elif damage == "message-table":
+            db.execute("DROP TABLE thread_items")
+        elif damage == "turn-column":
+            db.execute("ALTER TABLE thread_turns RENAME COLUMN status TO unsupported_status")
+        else:
+            db.execute("ALTER TABLE thread_items RENAME COLUMN item_json TO unsupported_json")
+    with pytest.raises(CodexMonitorUnavailable):
+        monitor.tasks()
+
+
+def test_unselected_history_does_not_add_full_scan_work(tmp_path: Path, monkeypatch):
+    now = 2_000_000_000
+    _, history = _fixture(tmp_path, now)
+    with sqlite3.connect(history) as db:
+        db.execute("CREATE INDEX turn_lookup ON thread_turns(thread_id, rollout_ordinal)")
+        db.execute("CREATE INDEX item_lookup ON thread_items(thread_id, rollout_ordinal)")
+        records = [(f"archived-{i}", str(n), n, "completed", now, now)
+                   for i in range(2500) for n in range(8)]
+        db.executemany("INSERT INTO thread_turns VALUES (?, ?, ?, ?, ?, ?)", records)
+        db.executemany("INSERT INTO thread_items VALUES (?, ?, 'm', ?, ?, '{}', 'agentMessage')",
+                       [(row[0], row[1], row[2], now * 1000) for row in records])
+    connect = CodexMonitor._connect
+    instructions = 0
+
+    def count_work():
+        nonlocal instructions
+        instructions += 1000
+        return 0
+
+    def observed_connect(path):
+        connection = connect(path)
+        if path == history:
+            connection.set_progress_handler(count_work, 1000)
+        return connection
+
+    monkeypatch.setattr(CodexMonitor, "_connect", staticmethod(observed_connect))
+    tasks = CodexMonitor(tmp_path, tmp_path / "snapshot.json").tasks()
+    assert {task.id for task in tasks} == {"running", "done"}
+    # SQLite instruction count is deterministic work, not a machine-speed
+    # threshold. A full aggregation of these 40k irrelevant rows exceeds it.
+    assert instructions < 50_000
+
+
+@pytest.mark.parametrize("broken_history", [False, True])
+def test_reader_closes_connections_on_success_and_error(tmp_path: Path, monkeypatch, broken_history: bool):
+    _, history = _fixture(tmp_path, 2_000_000_000)
+    if broken_history:
+        with sqlite3.connect(history) as db:
+            db.execute("DROP TABLE thread_items")
+    connect = CodexMonitor._connect
+    connections = []
+
+    def observed_connect(path):
+        connection = connect(path)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(CodexMonitor, "_connect", staticmethod(observed_connect))
+    monitor = CodexMonitor(tmp_path, tmp_path / "snapshot.json")
+    if broken_history:
+        with pytest.raises(CodexMonitorUnavailable):
+            monitor.tasks()
+    else:
+        monitor.tasks()
+    assert len(connections) == 2
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
