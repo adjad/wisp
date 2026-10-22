@@ -623,15 +623,35 @@ private func transferFixture(port: Int, reply: @escaping StubProtocol.ReplyHandl
     return (transfer, session, request, file)
 }
 
-/// Fails the test instead of hanging when `operation` never returns.
+/// Resumes a continuation at most once, whichever caller gets there first.
+final class OneShot<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+    init(_ continuation: CheckedContinuation<T, Never>) { self.continuation = continuation }
+    func resume(_ value: T) {
+        let pending = lock.withLock { () -> CheckedContinuation<T, Never>? in
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: value)
+    }
+}
+
+/// `operation`'s result, or nil after `seconds`. The timeout resumes on its own: it never waits
+/// for the operation, so an operation that ignores cancellation can't hang the test. A stuck
+/// operation is cancelled best effort and left behind.
 private func finishes<T: Sendable>(within seconds: Double = 5,
                                    _ operation: @escaping @Sendable () async throws -> T) async -> Result<T, Error>? {
-    await withTaskGroup(of: Result<T, Error>?.self) { group in
-        group.addTask { do { return .success(try await operation()) } catch { return .failure(error) } }
-        group.addTask { try? await Task.sleep(for: .seconds(seconds)); return nil }
-        let first = await group.next() ?? nil
-        group.cancelAll()
-        return first
+    await withCheckedContinuation { (continuation: CheckedContinuation<Result<T, Error>?, Never>) in
+        let shot = OneShot(continuation)
+        let work = Task {
+            do { shot.resume(.success(try await operation())) } catch { shot.resume(.failure(error)) }
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(seconds))
+            shot.resume(nil)
+            work.cancel()
+        }
     }
 }
 
