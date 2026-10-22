@@ -230,6 +230,30 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.needsYou([NeedsYouInput(kind: "due", text: "nothing", due: at(15))], more: 0, clock: clock) == nil,
           "a junk title alone makes no line")
 
+    let structuredNeeds = DayTimeline.needsYouList([
+        NeedsYouInput(id: "late", kind: "overdue", text: "Pay rent", due: dayStart - 5 * hour),
+        NeedsYouInput(id: "timed", kind: "due", text: "PA 2", due: at(23.5)),
+        NeedsYouInput(id: "all-day", kind: "due", text: "Library book", due: at(0), allDay: true),
+        NeedsYouInput(id: "no-date", kind: "due", text: "Date withheld"),
+        NeedsYouInput(id: "task", kind: "plan", text: "Finish slides"),
+        NeedsYouInput(id: "mail", kind: "mail", text: "“Lab feedback” from Dr. Patel"),
+        NeedsYouInput(id: "text", kind: "text", text: "a text from Mom"),
+    ], more: 2, clock: clock)
+    check(structuredNeeds?.rows.map(\.id) == ["late", "timed", "all-day", "no-date", "task", "mail", "text"],
+          "structured needs-you keeps service item identities and order")
+    check(structuredNeeds?.rows.map(\.label) == ["OVERDUE", "DUE 23:30", "DUE TODAY", "DUE", "PLAN", "MAIL", "TEXT"],
+          "structured needs-you uses readable labels and leaves missing dates unspecified")
+    check(structuredNeeds?.rows.map(\.text) == ["Pay rent", "PA 2", "Library book", "Date withheld", "Finish slides",
+                                                "“Lab feedback” from Dr. Patel", "a text from Mom"],
+          "structured needs-you preserves each selected item as a separate row")
+    check(structuredNeeds?.rows.map(\.overdue) == [true, false, false, false, false, false, false],
+          "only overdue rows receive overdue emphasis")
+    check(structuredNeeds?.more == 2, "structured needs-you retains the service's additional-item count")
+    check(DayTimeline.needsYouList([NeedsYouInput(kind: "due", text: "Date withheld")], more: -1, clock: clock)?.more == 0,
+          "structured needs-you never displays a negative additional-item count")
+    check(DayTimeline.needsYouList([NeedsYouInput(kind: "due", text: "nothing")], more: 4, clock: clock) == nil,
+          "junk-only selected items do not create a needs-you section")
+
     // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!
     let light = DayLoad.assess(events: [], allDay: ["PA 2 [CSE-20-04]"], from: now, dayStart: dayStart, isToday: true, zone: utc)

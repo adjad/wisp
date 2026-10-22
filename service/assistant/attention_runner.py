@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -252,6 +253,7 @@ async def run_tick(now: float | None = None) -> list:
     except Exception:  # noqa: BLE001 — housekeeping must never stop a pass
         pass
     if settings.mode == "off":
+        ledger.set_meta("capture_live", "preview")
         ledger.set_meta("last_mode", "off")           # so resuming live re-baselines
         return []
     if settings.mode == "live":
@@ -263,6 +265,7 @@ async def run_tick(now: float | None = None) -> list:
             # swept into reminders after the fact.
             if ledger.meta("last_mode") != "off":
                 _audit("deny", tool="add_reminder", source="attention", reason=blocked)
+            ledger.set_meta("capture_live", "preview")
             ledger.set_meta("last_mode", "off")
             return []
     tz = current_zone()
@@ -272,6 +275,9 @@ async def run_tick(now: float | None = None) -> list:
         # what arrived meanwhile.
         ledger.set_meta("last_mode", "off")
         return []
+    capture_outcomes = await run_capture_tick(now, tz, settings)
+    if settings.capture_events:
+        return capture_outcomes
     from service.tools import imessage_tools
     feed = imessage_tools.structured_messages_snapshot()
     # Only a read completed in THIS launch is trusted; restored rows are not "new".
@@ -370,3 +376,164 @@ async def undo(source_id: str) -> dict:
     except Exception:  # noqa: BLE001
         pass
     return {"ok": True}
+
+
+def capture_sources() -> tuple[list[dict], list[dict], object, object]:
+    """Only existing admitted publications; never warm a cache or scan a source."""
+    from service.tools import email_tools, imessage_tools
+    from service.assistant.daily_workspace import important_email_rows
+    from service.attention.event_capture import mail_items
+    feed = imessage_tools.structured_messages_snapshot()
+    records = (feed.get('records') or []) if (feed.get('state') == 'ready'
+        and (feed.get('coverage') or {}).get('status') != 'unavailable') else []
+    mail = email_tools.raw_email_snapshot()
+    rows = []
+    if mail is not None:
+        selected = {id(r) for r, _ in important_email_rows(mail)}
+        # Individually addressed course announcements can be automated and need
+        # not have two-way Messages contact. Institutional address + course cue
+        # are checked by the pure adapter, using only admitted current rows.
+        _, school = mail_items(list(mail.rows))
+        for row in mail.rows:
+            adapted, _ = mail_items([row])
+            if id(row) in selected or (adapted and adapted[0].id in school):
+                rows.append(dict(row))
+    return list(records), rows, feed, mail
+
+
+def capture_candidates(now: float, tz: str, settings):
+    from service.attention.event_capture import candidates, mail_items
+    from service.attention.live import items_from_records
+    records, rows, feed, mail = capture_sources()
+    values = candidates(records, rows, now=now, tz=tz, settings=settings)
+    # Keep the interpretation zone first used for this source across travel/restarts.
+    # Mail's cache has an epoch receipt, not a sender's named zone; this recorded
+    # local-zone inference is shown in the preview and never rebased at ingestion.
+    pinned = {}
+    source_items = items_from_records(records) + mail_items(rows)[0]
+    for item in source_items:
+        saved = get_ledger().get('preview:' + item.id)
+        zone = saved['detail'].get('timezone') if saved else None
+        if zone and zone != tz:
+            pinned.setdefault(zone, set()).add(item.id)
+    for zone, ids in pinned.items():
+        replacement = {c.source_id: c for c in candidates(records, rows, now=now, tz=zone, settings=settings)}
+        values = [c for c in values if c.source_id not in ids] + [c for sid, c in replacement.items() if sid in ids]
+    pinned_values = []
+    for c in values:
+        saved = get_ledger().get('preview:' + c.source_id)
+        if (saved and saved['state'] == 'shadow' and saved['detail'].get('source_fingerprint') == c.source_fingerprint
+                and saved.get('due_ts') and float(saved['due_ts']) > now + 30):
+            c = replace(c, due_ts=float(saved['due_ts']), when=saved['detail'].get('when', c.when))
+        pinned_values.append(c)
+    return pinned_values
+
+
+async def _capture_calendar(candidate, *, automatic: bool, approval=None) -> dict:
+    from service.assistant.attention_calendar import create_calendar
+    return await create_calendar(candidate.calendar_plan(automatic=automatic), approval=approval,
+                                 source_current=lambda: _capture_current(candidate, automatic=automatic))
+
+
+async def _capture_reminder(candidate, *, automatic: bool) -> dict:
+    """Paired effects use the verified native protocol without a local fallback.
+
+    Reconnect can suspend a write after the planner checked its source. The
+    host-held callback revalidates source, consent and policy at publication.
+    """
+    from service.assistant.outbox import request
+    def before_dispatch():
+        if not _capture_current(candidate, automatic=automatic):
+            return 'The exact source or capture authorization changed; refresh the preview.'
+        return _policy_block(title=candidate.title, kind='reminder')
+    if problem := before_dispatch():
+        _audit('deny', tool='add_reminder', source='attention_capture', reason=problem)
+        return {'ok': False, 'status': 'blocked', 'error': problem}
+    result = await request('create_reminder', {'title': candidate.title,
+        'due_ts': candidate.due_ts, 'commitment_kind': 'reminder'}, before_dispatch=before_dispatch)
+    _audit('allow', tool='add_reminder', source='attention_capture',
+           status='succeeded' if result.get('ok') is True else result.get('status', 'unknown'),
+           args={'capture_key': candidate.capture_key, 'title_sha256': hashlib.sha256(candidate.title.encode()).hexdigest()[:16],
+                 'due_ts': candidate.due_ts})
+    if result.get('ok') is True:
+        try:
+            await hub.publish({'type': 'changed'})
+        except Exception:  # the verified native result remains true if UI refresh fails
+            pass
+    return result
+
+
+def _capture_current(candidate, *, automatic: bool) -> bool:
+    """Re-read admission around every effect and require the exact source preview."""
+    try:
+        latest = load_settings(settings_path(MOE_DIR))
+        if latest.mode == 'off' or (automatic and (latest.mode != 'live' or not latest.capture_events)):
+            return False
+        if _policy_block():
+            return False
+        current = capture_candidates(time.time(), candidate.timezone, latest)
+        return any(c.source_id == candidate.source_id and c.review_fingerprint == candidate.review_fingerprint
+                   and c.capture_key == candidate.capture_key for c in current)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def capture_one(source_id: str, fingerprint: str) -> dict:
+    """Explicit exact-preview Add. Does not enable automatic capture or replay backlog."""
+    from service.attention.event_capture import capture, preview
+    from service.assistant.attention_calendar import approve_capture
+    settings = load_settings(settings_path(MOE_DIR))
+    tz = current_zone()
+    if settings.mode == 'off' or tz is None:
+        raise ValueError('Capture is off or the local time zone is unavailable.')
+    values = capture_candidates(time.time(), tz, settings)
+    candidate = next((c for c in values if 'preview:' + c.source_id == source_id), None)
+    if candidate is None:
+        raise ValueError('The source changed or is no longer fresh. Refresh the preview.')
+    saved = get_ledger().get(source_id)
+    if not saved or saved['state'] != 'shadow':
+        raise ValueError('Refresh and review this preview before adding it.')
+    if candidate.review_fingerprint != fingerprint or saved['detail'].get('review_fingerprint') != fingerprint:
+        preview(candidate, get_ledger(), time.time())
+        raise ValueError('The event or reminder time changed. Review the refreshed preview before adding it.')
+    approval = approve_capture(candidate.calendar_plan(automatic=False))
+
+    async def calendar(c, *, automatic):
+        return await _capture_calendar(c, automatic=automatic, approval=approval)
+    return await capture(candidate, ledger=get_ledger(), now=time.time(), settings=settings,
+                         fresh_commitments=lambda: _capture_commitments(time.time(), tz),
+                         create_calendar=calendar, create_reminder=_capture_reminder, automatic=False,
+                         still_current=lambda: _capture_current(candidate, automatic=False))
+
+
+def _capture_commitments(now: float, tz: str) -> list[dict]:
+    from service.attention.event_capture import HORIZON_DAYS
+    return assistant_store.upcoming(local_midnight(now, tz), days=HORIZON_DAYS + 2)
+
+
+async def run_capture_tick(now: float, tz: str, settings) -> list:
+    from service.attention.event_capture import capture, preview
+    ledger = get_ledger()
+    ledger.recover(now)
+    enabled = settings.mode == 'live' and settings.capture_events
+    last = ledger.meta('capture_live')
+    if enabled and last != 'live':
+        ledger.set_meta('capture_enabled_at', repr(now))
+    ledger.set_meta('capture_live', 'live' if enabled else 'preview')
+    values = capture_candidates(now, tz, settings)
+    outcomes = []
+    floor = float(ledger.meta('capture_enabled_at') or now)
+    for c in values:
+        record = preview(c, ledger, now)
+        if not enabled or not c.automatic_eligible or c.source_ts < floor or record['state'] != 'shadow':
+            continue
+        try:
+            row = await capture(c, ledger=ledger, now=now, settings=settings,
+                                fresh_commitments=lambda: _capture_commitments(time.time(), tz),
+                                create_calendar=_capture_calendar, create_reminder=_capture_reminder,
+                                automatic=True, still_current=lambda: _capture_current(c, automatic=True))
+            outcomes.append(row)
+        except ValueError:
+            continue
+        break  # one pair per scheduler pass
+    return outcomes

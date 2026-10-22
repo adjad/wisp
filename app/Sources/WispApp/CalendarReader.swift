@@ -216,18 +216,41 @@ final class CalendarReader {
         ev.endDate = ev.startDate.addingTimeInterval(Double(max(1, durationMin) * 60))
         if !location.isEmpty { ev.location = location }
         ev.calendar = cal
-        do {
-            try store.save(ev, span: .thisEvent)
-            guard let identifier = ev.eventIdentifier, !identifier.isEmpty else {
-                // EventKit has already accepted the save. Without its identity
-                // we cannot prove whether a retry would create a duplicate.
-                return ["ok": false, "status": "unknown",
-                        "error": "Calendar may have saved this event but returned no identity; check Calendar before retrying"]
-            }
-            return ["ok": true, "source_id": identifier]
-        } catch {
-            return ["ok": false, "error": "Calendar save failed: \(error.localizedDescription)"]
+        return verifiedCreation(ev)
+    }
+
+    /// A date-only commitment never borrows an arbitrary meeting start or duration.
+    func createAllDayEvent(title: String, day: String, timezone: String, location: String) -> [String: Any] {
+        guard isAuthorized, let cal = store.defaultCalendarForNewEvents,
+              cal.allowsContentModifications,
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let zone = TimeZone(identifier: timezone),
+              let bounds = AssistantDelivery.allDayCalendarBounds(day: day, timezone: timezone) else {
+            return ["ok": false, "error": "All-day Calendar access or date is unavailable"]
         }
+        let ev = EKEvent(eventStore: store)
+        ev.title = title
+        ev.calendar = cal
+        ev.timeZone = zone
+        ev.isAllDay = true
+        ev.startDate = Date(timeIntervalSince1970: bounds.start)
+        ev.endDate = ev.startDate.addingTimeInterval(Double(bounds.minutes) * 60)
+        if !location.isEmpty { ev.location = location }
+        return verifiedCreation(ev)
+    }
+
+    private func verifiedCreation(_ event: EKEvent) -> [String: Any] {
+        let expected = CalendarCreationFacts(title: event.title, start: event.startDate.timeIntervalSince1970,
+            end: event.endDate.timeIntervalSince1970, allDay: event.isAllDay)
+        return CalendarCreationReceipt.perform(expected: expected, save: {
+            try store.save(event, span: .thisEvent)
+            return event.eventIdentifier
+        }, readback: { id in
+            guard let observed = store.event(withIdentifier: id),
+                  let start = observed.startDate, let end = observed.endDate else { return nil }
+            return CalendarCreationFacts(title: observed.title ?? "", start: start.timeIntervalSince1970,
+                end: end.timeIntervalSince1970, allDay: observed.isAllDay)
+        })
     }
 
     // Remove a real event from macOS Calendar. `occurrenceTs` disambiguates

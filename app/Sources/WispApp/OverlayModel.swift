@@ -1414,6 +1414,8 @@ final class OverlayModel: ObservableObject {
     // holds the Calendar grant; the backend can't touch Calendar directly).
     var onCreateCalendarEvent: ((_ title: String, _ startTs: Double,
                                  _ durationMin: Int, _ location: String) -> [String: Any])?
+    var onCreateAllDayCalendarEvent: ((_ title: String, _ day: String,
+                                       _ timezone: String, _ location: String) -> [String: Any])?
     var onDeleteCalendarEvent: ((_ identifier: String, _ occurrenceTs: Double?) -> [String: Any])?
     /// Calendar's deep link to one synced occurrence, for the check-in card's
     /// "Decline in Calendar" / "Open in Calendar"; nil when it is gone.
@@ -1491,6 +1493,17 @@ final class OverlayModel: ObservableObject {
             return move(ev.str("source_id"), ev.str("expected_title"), expected, ts, duration, invitees)
         }
         if ev.type == "create_calendar_event" {
+            if ev.payload["all_day"] != nil {
+                guard AssistantDelivery.jsonBoolean(ev.payload["all_day"]) == true,
+                      let bounds = AssistantDelivery.allDayCalendarBounds(day: ev.str("due_date"), timezone: ev.str("timezone")),
+                      abs(bounds.start - ts) < 1,
+                      ev.payload["duration_min"] as? Int == bounds.minutes,
+                      !ev.str("title").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      let create = onCreateAllDayCalendarEvent else {
+                    return ["ok": false, "error": "All-day Calendar creation payload or handler is unavailable"]
+                }
+                return create(ev.str("title"), ev.str("due_date"), ev.str("timezone"), ev.str("location"))
+            }
             guard !ev.str("title").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let duration = ev.payload["duration_min"] as? Int, (1...10080).contains(duration),
                   let create = onCreateCalendarEvent else {
