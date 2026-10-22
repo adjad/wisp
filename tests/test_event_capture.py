@@ -815,3 +815,66 @@ def test_neutral_instructions_and_notes_do_not_erase_an_exam(body):
     got = plans([mail('STAT 5 exam next Wednesday', body=body)])
     assert len(got) == 1 and got[0].automatic_eligible
     assert got[0].start_ts is None and got[0].duration_min is None
+
+
+@pytest.mark.parametrize('text', [
+    'Our coffee next Thursday is unconfirmed',
+    'Our coffee next Thursday is pending confirmation',
+    'Our coffee next Thursday is provisional',
+    'Our coffee is subject to weather next Thursday',
+    'Our coffee is unconfirmed next Thursday',
+    'Our coffee is pending confirmation next Thursday',
+    'Provisional coffee next Thursday',
+    'Our coffee next Thursday unconfirmed',
+    'Our coffee next Thursday has an unsupported extension',
+    'Our coffee is a predicate unknown to the parser next Thursday',
+    'Our coffee next Thursday is a predicate unknown to the parser',
+    'Our coffee is confirmed pending permission next Thursday',
+    'Our coffee is confirmed for next Thursday subject to weather',
+    'Our coffee is scheduled for next Thursday with an unresolved extension',
+    'Our coffee next Thursday will be confirmed later',
+    'Our coffee next Thursday will be provisional',
+    'Our coffee’s provisional next Thursday',
+])
+@pytest.mark.parametrize('affirm', [False, True])
+def test_concrete_day_does_not_override_unsupported_whole_event_predicate(text, affirm):
+    records = [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)]
+    if affirm:
+        records.append(message('Yes sounds good', ts=MON+1, direction='outgoing', guid='yes'))
+    assert plans([], records) == []
+
+
+@pytest.mark.parametrize('body', [
+    'Your STAT 5 exam next Wednesday is unconfirmed',
+    'Your STAT 5 exam is pending confirmation next Wednesday',
+    'Your STAT 5 exam is provisional next Wednesday',
+    'Your STAT 5 exam is subject to approval next Wednesday',
+    'Your STAT 5 exam is confirmed for next Wednesday subject to approval',
+    'Your STAT 5 exam next Wednesday has an unsupported extension',
+])
+def test_positive_subject_cannot_override_qualified_dated_body_predicate(body):
+    assert plans([mail('STAT 5 Exam next Wednesday', body=body)]) == []
+
+
+@pytest.mark.parametrize('text', [
+    'Our coffee next Thursday', 'Our hangout next Friday',
+    'Our coffee is next Thursday', 'Our coffee is scheduled for next Thursday',
+    'Our coffee is confirmed for next Thursday', 'Our coffee is booked for next Thursday',
+    'Our coffee next Thursday is confirmed', 'Our coffee next Thursday will be scheduled',
+    'Our coffee will be next Thursday', 'Our coffee is happening next Thursday',
+    'Our coffee is taking place next Thursday',
+    'Our coffee is scheduled for next Thursday at 3pm for 1 hour',
+    'Our coffee is next Thursday from 3pm to 4pm',
+    'We are having coffee next Thursday', 'We’re having coffee next Thursday',
+    'Our scheduled meeting is next Friday',
+    'Our Boundary Methods STAT 5 exam is next Wednesday',
+])
+def test_supported_whole_schedule_assertions_remain_positive(text):
+    got = plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)])
+    assert len(got) == 1 and got[0].automatic_eligible
+
+
+def test_concrete_institutional_exam_and_supported_schedule_restatement_stay_positive():
+    got = plans([mail('26 Fall-STAT 5 02: Reminder: STAT 5 Exam 1 Next Wednesday',
+                      body='Your STAT 5 Exam 1 is scheduled for next Wednesday. Please bring a calculator')])
+    assert len(got) == 1 and got[0].automatic_eligible and got[0].start_ts is None

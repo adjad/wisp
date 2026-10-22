@@ -60,6 +60,57 @@ _DATE_CUE = re.compile(
     r"|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b"
     r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b", re.I)
 _EVENT_TIME_GAP = re.compile(r"(?:\s|[,()]|\b(?:at|on|from|is|starts?|begins?|starting|beginning|scheduled|will|be|for|take|place)\b)*", re.I)
+_UNRESOLVED_QUALIFICATION = re.compile(
+    r"\b(?:unconfirmed|pending|provisional(?:ly)?|probab(?:le|ly)|tentativ(?:e|ely)|uncertain|speculativ(?:e|ely)|"
+    r"reconsider(?:ing|ed)?|subject\s+to)\b", re.I)
+_ASSERTION_BE = re.compile(r"\b(?:will\s+be|is|are|am|be|was|were)\b|(?<=\w)['’](?:s|re|m)\b", re.I)
+_POSITIVE_STATUS = r"(?:confirmed|scheduled|booked|set|happening|taking\s+place)"
+_SCHEDULE_PREDICATE = re.compile(
+    rf"(?:{_POSITIVE_STATUS}|(?:{_POSITIVE_STATUS}(?:\s+(?:for|on|at|from))?\s+)?"
+    r"(?:(?:(?:on|at|from|for|to)\s+)?<schedule>\s*)+)", re.I)
+_POSITIVE_TAIL = re.compile(rf"(?:(?:will\s+be|is|are|be|was|were)\s+|['’](?:s|re)\s*)?{_POSITIVE_STATUS}", re.I)
+
+
+def _supported_assertion(clause: str, event_words: list, generic) -> bool:
+    """Check whole schedule predicates, not a trusted prefix before qualifiers.
+
+    Course/event titles before the assertion remain free text. After a copula,
+    only a complete positive status or explicit schedule form is supported.
+    Unknown trailing extensions also require review, even without a copula.
+    """
+    if _UNRESOLVED_QUALIFICATION.search(clause):
+        return False
+    for copula in _ASSERTION_BE.finditer(clause):
+        if copula[0] in ("'s", '’s') and clause[:copula.start()].lower().endswith('let'):
+            continue  # "let's" is an invitation, not a copular predicate
+        predicate = clause[copula.end():]
+        if not event_words and generic is not None:
+            activity = re.match(r"\s*(?:volunteering|hiking|playing)\b", predicate, re.I)
+            if activity is None:
+                return False
+            predicate = predicate[activity.end():]
+        following = next((event for event in event_words if event.start() >= copula.end()), None)
+        if following is not None:
+            # A joint activity such as "we are having coffee" is affirmative.
+            # Other assertions before an event noun need a clearer statement.
+            if generic is None or generic.start() > copula.start():
+                return False
+            activity = clause[copula.end():following.start()].strip()
+            if activity and not re.fullmatch(r"(?:having|holding|attending|joining|going\s+to)", activity, re.I):
+                return False
+            predicate = clause[following.end():]
+        for expression in (_RANGE, _DURATION, _DATE_CUE, _CLOCK):
+            predicate = expression.sub(' <schedule> ', predicate)
+        predicate = re.sub(r'\s+', ' ', predicate).strip(' ,()')
+        if not predicate or not _SCHEDULE_PREDICATE.fullmatch(predicate):
+            return False
+    schedule_ends = [match.end() for expression in (_RANGE, _DURATION, _DATE_CUE, _CLOCK)
+                     for match in expression.finditer(clause)]
+    if schedule_ends:
+        tail = clause[max(schedule_ends):].strip(' ,()')
+        if tail and not _POSITIVE_TAIL.fullmatch(tail):
+            return False
+    return True
 
 
 def _scoped_event(text: str, arrival: datetime, tz: str, source_id: str, *, confirmed: bool) -> tuple[Resolved, str, int | None] | None:
@@ -87,6 +138,8 @@ def _scoped_event(text: str, arrival: datetime, tz: str, source_id: str, *, conf
             continue
         if not event_words and not generic and _UNRELATED_NOTE.fullmatch(plain):
             continue
+        if (event_words or generic) and not _supported_assertion(clause, event_words, generic):
+            return None
         # An unsupported predicate about 'it', 'our plan', etc. is not proof
         # of an affirmative event. Never drop that qualification, even with a
         # later generic yes or a clock we cannot attach to an event noun.
