@@ -69,6 +69,7 @@ struct OverlayView: View {
                                         save: { model.saveReport(model.report) })
                             .padding(.top, 8)
                     }
+                    if model.serviceDown { serviceDownCard }
                     MemoryReviewNotice()
                     NudgeStack(model: model)
                     promptArea
@@ -435,6 +436,9 @@ struct OverlayView: View {
             if let name = model.attachedImageName {
                 Label(name, systemImage: "paperclip")
                     .font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1).frame(maxWidth: 84)
+                Button(action: model.removeAttachment) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textMuted)
+                }.buttonStyle(.plain).help("Remove image").accessibilityLabel("Remove image")
             }
             if !model.queueLabel.isEmpty {
                 Text(model.queueLabel)
@@ -444,13 +448,14 @@ struct OverlayView: View {
             Button(action: pickImage) {
                 Image(systemName: "paperclip").font(.system(size: 16)).foregroundStyle(Theme.textSecondary)
             }
-            .buttonStyle(.plain).help("Attach a file")
+            .buttonStyle(.plain).help("Attach an image").accessibilityLabel("Attach an image")
             Button(action: { model.submit() }) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 22))
                     .foregroundStyle(canSend ? Theme.accent : Theme.textMuted)
             }
-            .buttonStyle(.plain).help(model.willQueuePrompt ? "Queue prompt" : "Send").disabled(!canSend)
+            .buttonStyle(.plain).help(model.willQueuePrompt ? "Queue prompt" : "Send")
+            .accessibilityLabel(model.willQueuePrompt ? "Queue prompt" : "Send").disabled(!canSend)
         }
     }
 
@@ -797,15 +802,22 @@ struct OverlayView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
     }
 
-    // Model/routing detail used to be its own wrapping pill up in the header
-    // (the main source of clutter) — it lives here now, folded into the one
-    // status line that was already at the bottom, so nothing is lost, it's
-    // just no longer competing for space with Daily Summary / AM-PM / window
-    // controls up top.
+    // Model/routing detail lives here, folded into the one status line at the
+    // bottom of Ask.
     private var statusRow: some View {
         HStack(spacing: 6) {
-            Circle().fill(statusColor).frame(width: 5, height: 5)
-            if !model.modelAbbrev.isEmpty {
+            Circle().fill(model.serviceDown ? Theme.bad : statusColor).frame(width: 5, height: 5)
+            if model.serviceStarting {
+                Text("Starting Wisp…").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+            } else if model.serviceDown {
+                Text("Wisp service isn't running").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                Button("Retry") { model.onRetryService() }
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(Capsule().fill(Theme.chipFill))
+                    .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                    .accessibilityLabel("Retry starting the Wisp service")
+            } else if !model.modelAbbrev.isEmpty {
                 if !model.routeLabel.isEmpty {
                     Text(model.routeLabel).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
                     Image(systemName: "arrow.right").font(.system(size: 8, weight: .bold))
@@ -826,17 +838,43 @@ struct OverlayView: View {
         .lineLimit(1)
     }
 
+    /// Shown at the top of Ask when Wisp's own service doesn't answer, instead of
+    /// a blank panel that silently fails.
+    private var serviceDownCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Wisp's service isn't running").font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text("Nothing you ask will be answered until it starts. Retry, or send a report if it keeps happening.")
+                .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("Retry") { model.onRetryService() }
+                    .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(.black)
+                    .padding(.horizontal, 14).padding(.vertical, 5)
+                    .background(Capsule().fill(.white))
+                Button("Report") { model.reportCurrentProblem() }
+                    .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(Capsule().fill(Theme.chipFill))
+                    .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
+        .padding(.top, 8)
+    }
+
     private func pickImage() {
+        model.cancelAttachmentRead()
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
         model.pickingFile = true
         defer { model.pickingFile = false }
-        if panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) {
-            let b64 = data.base64EncodedString()
-            let ext = url.pathExtension.lowercased()
-            model.attach(name: url.lastPathComponent, dataURL: "data:image/\(ext);base64,\(b64)")
-        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.loadAttachment(url: url)
     }
 }
 

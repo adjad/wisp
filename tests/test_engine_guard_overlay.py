@@ -162,5 +162,35 @@ class OverlayTests(unittest.TestCase):
         self.refuse_without_mutation()
 
 
+class PinnedEnforcerLoopTests(unittest.TestCase):
+    """The shipped patch, not synthetic bytes: found by a real fresh install."""
+
+    def test_pass_completes_before_the_ttl_sweep_takes_the_pool_lock(self):
+        # The TTL sweep takes the engine pool lock, which a model load holds
+        # through its post-load admission check. Completing the pass after the
+        # sweep left it "pending" during every load longer than one poll, so a
+        # fresh install's first model was always refused (engine_guard_unavailable).
+        root = Path(__file__).resolve().parents[1] / "build-support" / "engine_guard"
+        patch = json.loads((root / "process_memory_enforcer.py.patch.json").read_text())
+        loop = [e["new"] for e in patch["edits"] if "begin_iteration" in e["new"]]
+        self.assertEqual(len(loop), 1)
+        body = loop[0]
+        self.assertLess(body.index("await self._check_and_enforce()"),
+                        body.index("_wisp_guard.complete_iteration(self)"))
+        self.assertLess(body.index("_wisp_guard.complete_iteration(self)"),
+                        body.index("await self._check_ttl()"))
+
+    def test_ttl_sweep_never_waits_on_a_load_held_pool_lock(self):
+        # Waiting on the lock stalled the evidence through a slow load (a model
+        # swap right after a reply polls at 1s), so the post-load check refused
+        # the new model as stale. The sweep now yields to a held lock.
+        root = Path(__file__).resolve().parents[1] / "build-support" / "engine_guard"
+        patch = json.loads((root / "process_memory_enforcer.py.patch.json").read_text())
+        ttl = [e["new"] for e in patch["edits"] if "check_ttl_expirations(" in e["new"]]
+        self.assertEqual(len(ttl), 1)
+        body = ttl[0]
+        self.assertLess(body.index("lock.locked()"), body.index("check_ttl_expirations("))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1236,6 +1236,10 @@ def _meeting_redacted_return(function):
     return wrapped
 
 
+# Reads whose result is model-facing evidence, never a user-facing answer.
+_NARRATED_EVIDENCE_READS = frozenset({"daily_brief"})
+
+
 @_meeting_redacted_return
 async def run_agent(
     client: OMLXClient,
@@ -1813,8 +1817,9 @@ async def run_agent(
             # "verbatim": the agent relays view_messages' raw record, which keeps
             # the `conversation | Sender: text` shape (see render_for_summary on
             # why the verbatim path is deliberately left un-annotated).
-            identity_hint = identity_prompt_block(with_date=False, shape="verbatim",
-                                                  messages=offers_messages)
+            identity_hint = identity_prompt_block(
+                with_date=False, shape="verbatim", messages=offers_messages,
+                preferred_name=getattr(client, "endpoint_name", "") != "local_provider")
         except Exception:  # noqa: BLE001
             identity_hint = ""
         # Who the user is in THEIR words — goals, struggles, people, how they
@@ -1893,7 +1898,13 @@ async def run_agent(
         """Skill tools this run must not offer or run. Read from the registry NOW, never
         from a snapshot taken at the start of the turn: create_tool reloads skills, so a
         skill tool can be registered mid-turn and must be covered the moment it exists."""
-        if test_mode or not skills_external:
+        if not allow_skill_context:
+            # A synthetic/literal host opt-out also excludes installed schemas
+            # from unscoped menus, without opening the saved skill catalog.
+            from service.tools.registry import REGISTRY
+            return frozenset({"use_skill", "wisp_skills"} | {
+                name for name, tool in REGISTRY.items() if tool.category == "skill_tool"})
+        if not skills_external:
             return frozenset()
         from service.skills import skill_tool_names
         return skill_tool_names()
@@ -2179,6 +2190,12 @@ async def run_agent(
         executed = bool(_exec_state["ran"]) and not planned and not denied
         _exec_state["ran"] = False
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
+        if outcome.status == "no_match" and name in _NARRATED_EVIDENCE_READS:
+            # A brief with one empty or unverified section still carries the
+            # others, and its text is evidence written for the model: it is
+            # always narrated, never shown as a terminal "no match" answer.
+            from dataclasses import replace
+            outcome = replace(outcome, status="succeeded")
         if model_led_discovery and str(result).startswith((
                 "(error: Action was attempted but", "(error: Action did not return a verified")):
             from dataclasses import replace

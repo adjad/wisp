@@ -174,9 +174,10 @@ def test_first_launch_and_stickiness() -> None:
                 check("built-in setup offers start before process answers", first["setup_engine"]["state"] == "warn"
                       and first["setup_engine"].get("action") == "start_engine"
                       and first["profile"] == "Wisp's built-in engine")
-                check("built-in setup offers the local Mellum model folder",
-                      first["setup_model"].get("action") == "add_local_model"
-                      and "Mellum" in first["setup_model"]["detail"])
+                # A fresh Mac is offered a model it can download (Mellum on 24 GB+,
+                # Ling below), never a folder it doesn't have.
+                check("built-in setup offers a public model download on a fresh Mac",
+                      first["setup_model"].get("action") == "download_model")
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)
         engine = fixture(root, present=False)

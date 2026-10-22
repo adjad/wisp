@@ -32,11 +32,39 @@ MODELS_YAML = Path(__file__).parent / "models.yaml"
 # code defaults; this holds the user's changes, deep-merged on top at read time.
 USER_CONFIG = MOE_DIR / "config.yaml"
 
-@lru_cache
+_omlx_settings_seen: tuple = (None, {})
+
+
 def omlx_settings() -> dict:
-    """oMLX's own settings.json — single source of truth for host/port/api_key."""
-    with OMLX_SETTINGS.open() as f:
-        return json.load(f)
+    """oMLX's own settings.json — single source of truth for host/port/api_key.
+
+    A fresh install has no such file: oMLX.app was never opened, or there is no
+    engine at all yet. That reads as ``{}`` so the service still starts and setup
+    can say what is missing, instead of the backend dying at launch. The result
+    is reused only while the file is unchanged, so opening oMLX.app (or changing
+    its key or port) after Wisp started takes effect without a restart.
+    """
+    global _omlx_settings_seen
+    try:
+        info = OMLX_SETTINGS.stat()
+    except OSError:
+        return {}
+    key = (str(OMLX_SETTINGS), info.st_mtime_ns, info.st_size)
+    if _omlx_settings_seen[0] == key:
+        return _omlx_settings_seen[1]
+    try:
+        with OMLX_SETTINGS.open() as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    data = data if isinstance(data, dict) else {}
+    _omlx_settings_seen = (key, data)
+    return data
+
+
+def _settings_section(name: str) -> dict:
+    section = omlx_settings().get(name)
+    return section if isinstance(section, dict) else {}
 
 
 @lru_cache
@@ -139,7 +167,18 @@ models_config.cache_info = _effective_config.cache_info
 models_config.cache_parameters = _effective_config.cache_parameters
 
 
-def _write_overlay(update: dict) -> dict:
+class ConfigurationPreconditionFailed(ValueError):
+    """An automatic setup request no longer owns the configuration it saw."""
+
+
+def setup_configuration_token(config: dict | None = None) -> str:
+    import hashlib
+    value = models_config() if config is None else config
+    projection = {key: value.get(key) for key in ("roles", "inference", "engine")}
+    return hashlib.sha256(json.dumps(projection, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _write_overlay(update: dict, *, precondition=None) -> dict:
     """Serialize read/merge/atomic replacement; never truncate the live overlay."""
     import fcntl
     import os
@@ -151,6 +190,11 @@ def _write_overlay(update: dict) -> dict:
         current = yaml.safe_load(USER_CONFIG.read_text()) if USER_CONFIG.exists() else {}
         if current is not None and not isinstance(current, dict):
             raise ValueError("Invalid configuration overlay; refusing to overwrite it")
+        # Inspect the file we will replace, under the same lock as every overlay
+        # writer. Cached config and an earlier endpoint check cannot fence a
+        # settings change made while setup awaited the engine's model list.
+        if precondition is not None:
+            precondition(_deep_merge(_packaged_config(), current or {}))
         merged = _deep_merge(current or {}, update)
         fd, path = tempfile.mkstemp(prefix=".config-", dir=USER_CONFIG.parent)
         try:
@@ -165,7 +209,7 @@ def _write_overlay(update: dict) -> dict:
     return merged
 
 
-def _save_overlay(update: dict) -> None:
+def _save_overlay(update: dict, *, precondition=None) -> None:
     # Refuse reentrant calls before any file/cache/authority change. Keep the
     # unsettled revision while I/O proceeds outside the short application lease;
     # concurrent writers may register, but none can publish readiness yet.
@@ -174,7 +218,8 @@ def _save_overlay(update: dict) -> None:
         before = _authority_changes.current()
         token = _authority_changes.begin() if relevant else None
     try:
-        merged = _write_overlay(update)
+        merged = (_write_overlay(update) if precondition is None else
+                  _write_overlay(update, precondition=precondition))
     finally:
         # The atomic writer has released its file lock before callbacks or
         # cache invalidation. Failure never preserves a previous grant.
@@ -278,16 +323,16 @@ def omlx_base_url() -> str:
     cfg = models_config()["omlx"].get("base_url")
     if cfg:
         return cfg.rstrip("/")
-    s = omlx_settings()["server"]
-    return f"http://{s['host']}:{s['port']}"
+    s = _settings_section("server")
+    return f"http://{s.get('host') or '127.0.0.1'}:{s.get('port') or 8000}"
 
 
 def omlx_api_key() -> str:
     if is_bundled():
         # The engine's own key lives in its settings.json; a key the native launcher
         # holds for a user's oMLX.app must never be sent to the bundled engine.
-        return omlx_settings()["auth"]["api_key"]
-    return _credential("WISP_LOCAL_OMLX_KEY") or omlx_settings()["auth"]["api_key"]
+        return str(_settings_section("auth").get("api_key") or "")
+    return _credential("WISP_LOCAL_OMLX_KEY") or str(_settings_section("auth").get("api_key") or "")
 
 
 # Whether the agent loop's NARRATION step still generates a think block, and
@@ -736,7 +781,8 @@ def save_installed_models(models: list[str]) -> None:
     _save_overlay({"installed_models": sorted(models)})
 
 
-def set_roles(assignments: dict[str, str]) -> None:
+def set_roles(assignments: dict[str, str], *, expected_configuration: str | None = None,
+              available_models: list[str] | None = None) -> None:
     """Point several roles at installed models in ONE overlay write, so a failure
     cannot leave some roles moved and others not."""
     from service.inference.remote_policy import require_local_models_disabled
@@ -749,10 +795,26 @@ def set_roles(assignments: dict[str, str]) -> None:
         if role == "general":         # general drives the agent loop
             roles["agent"] = model
     # Settings model selection is a local rollback, including coupled roles.
-    _save_overlay({"roles": roles, "inference": {"bindings": {
+    def automatic_precondition(config):
+        if setup_configuration_token(config) != expected_configuration:
+            raise ConfigurationPreconditionFailed("Inference settings changed. Check setup again.")
+        bindings = config.get("inference", {}).get("bindings", {})
+        installed = set(available_models or ())
+        for name in roles:
+            binding = bindings.get(name, {})
+            endpoint = binding.get("endpoint", "local")
+            model = binding.get("model_id") or config.get("roles", {}).get(name)
+            if endpoint != "local" or model in installed:
+                raise ConfigurationPreconditionFailed("A model choice already exists. Use Apply to change it.")
+
+    update = {"roles": roles, "inference": {"bindings": {
         name: {"endpoint": "local", "model_id": value, "revision": "", "profile": "",
                "context_window": None, "qualified_capabilities": [], "dimensions": 0}
-        for name, value in roles.items()}}})
+        for name, value in roles.items()}}}
+    if expected_configuration is None:
+        _save_overlay(update)
+    else:
+        _save_overlay(update, precondition=automatic_precondition)
 
 
 def set_role(role: str, model: str) -> None:

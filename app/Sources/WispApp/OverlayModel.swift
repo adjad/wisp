@@ -145,7 +145,7 @@ final class OverlayModel: ObservableObject {
     @Published var activity: [String] = []
     @Published var pending: Pending?
     @Published var messageDraft: MessageDraft?
-    @Published var attachedImageName: String?
+    @Published private(set) var attachedImageName: String?
     // The panel's tab. App-scoped, so it survives collapse.
     @Published var tab: NotchTab = .ask {
         didSet {
@@ -153,6 +153,9 @@ final class OverlayModel: ObservableObject {
             // A research plan holds the prompt queue only while it is on screen.
             // Leaving the tab lets a question asked in Ask, or a brief, run.
             if oldValue == .research { releaseResearchDispatch() }
+            // Any way off Ask (⌘1-3, a deep link, a notification) ends the
+            // questionnaire; its answers so far are already saved.
+            if tab != .ask { leaveKnowYou() }
             showingQuickSettings = false
             onResize()
         }
@@ -185,6 +188,15 @@ final class OverlayModel: ObservableObject {
     // First-run setup at the top of Ask. Its readiness lives on the app's one
     // SetupGuideModel, which the setup window shares.
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
+    // Whether Wisp's own service answers (BackendManager's reachability watch).
+    // False shows "Wisp service isn't running" with Retry instead of a green dot.
+    @Published var serviceReachable = true { didSet { if serviceReachable != oldValue { onResize() } } }
+    // The service is coming up (a cold first launch, or after Retry): a neutral
+    // "Starting Wisp…" line, never the red down card.
+    @Published var serviceStarting = false { didSet { if serviceStarting != oldValue { onResize() } } }
+    var serviceDown: Bool { !serviceReachable && !serviceStarting }
+    // Set by the app delegate: ask the backend manager to start the service again.
+    var onRetryService: () -> Void = {}
     // The one problem report open in the notch, unfolded under the reply it is
     // about (or at the top of Ask when it isn't about a reply on screen).
     let report = ReportDraft()
@@ -331,10 +343,14 @@ final class OverlayModel: ObservableObject {
     func startKnowYou() {
         if knowYou == nil {
             let flow = KnowYouModel(client: client)
-            flow.onClose = { [weak self] notice in self?.endKnowYou(notice: notice) }
-            flow.onShowBrief = { [weak self] in
-                self?.endKnowYou(notice: nil)
-                self?.runDailySummary()
+            flow.onClose = { [weak self, weak flow] notice in
+                guard let self, let flow, self.knowYou === flow else { return }
+                self.endKnowYou(notice: notice)
+            }
+            flow.onShowBrief = { [weak self, weak flow] in
+                guard let self, let flow, self.knowYou === flow else { return }
+                self.endKnowYou(notice: nil)
+                self.runDailySummary()
             }
             knowYou = flow
         }
@@ -353,8 +369,12 @@ final class OverlayModel: ObservableObject {
     /// The person moved on (a tab) before Done. The flow saves after every
     /// step, so nothing is lost; the service counts it as Later.
     func leaveKnowYou() {
-        guard let knowYou else { return }
-        Task { await knowYou.leave() }
+        guard let flow = knowYou else { return }
+        // Drop it now so a second gesture finds nothing to leave; tell the
+        // service in the background.
+        knowYou = nil
+        onResize()
+        Task { await flow.leave() }
     }
 
     /// Pick the tab for an opening panel: Ask, or for a hover soon after the
@@ -387,6 +407,8 @@ final class OverlayModel: ObservableObject {
     private let client = WispClient()
     private var sessionId = ""
     private var attachedImage: String?
+    private var attachmentReadTask: Task<Void, Never>?
+    private var attachmentReadID = UUID()
     private var streamStart: Date?
     private var streamChars = 0
     // Coalesces rapid delta chunks into ~60ms visual updates instead of
@@ -472,6 +494,7 @@ final class OverlayModel: ObservableObject {
             // Return on an empty box first brings back a prompt set aside after
             // a drop (to read, not to send), then sends on prompts held behind it.
             if let back = setAside.restore() {
+                cancelAttachmentRead()
                 input = back.text
                 attachedImage = back.image
                 attachedImageName = back.imageName
@@ -479,6 +502,7 @@ final class OverlayModel: ObservableObject {
             } else if !corpusBusy, let next = submissionState.resume() { syncQueue(); start(next) }
             return
         }
+        cancelAttachmentRead()
         if NotchCommand.isCorpusRequest(prompt) {
             startCorpusCommand(prompt)
             return
@@ -498,8 +522,7 @@ final class OverlayModel: ObservableObject {
         let submission = QueuedPrompt(text: prompt, image: attachedImage,
                                       imageName: attachedImageName, researchMode: researchMode)
         input = ""
-        attachedImage = nil
-        attachedImageName = nil
+        removeAttachment()
         let dispatch = submissionState.submit(submission)
         syncQueue()
         if let dispatch { start(dispatch) } else {
@@ -823,12 +846,60 @@ final class OverlayModel: ObservableObject {
         }
     }
 
+    /// A read belongs to this composer generation. Cancellation is advisory for
+    /// file I/O; the identity check also rejects a reader that finishes late.
+    @discardableResult
+    func loadAttachment(name: String, read: @escaping @Sendable () async -> String?) -> Task<Void, Never> {
+        cancelAttachmentRead()
+        let id = attachmentReadID
+        let task = Task { [weak self] in
+            let dataURL = await read()
+            guard let self, self.attachmentReadID == id, !Task.isCancelled else { return }
+            self.attachmentReadTask = nil
+            guard let dataURL else { return }
+            self.attachedImageName = name
+            self.attachedImage = dataURL
+        }
+        attachmentReadTask = task
+        return task
+    }
+
+    func loadAttachment(url: URL) {
+        let ext = url.pathExtension.lowercased()
+        let mime = (ext == "jpg" || ext == "jpeg") ? "jpeg" : ext
+        loadAttachment(name: url.lastPathComponent) {
+            let reader = Task.detached(priority: .userInitiated) { () -> String? in
+                guard !Task.isCancelled, let data = try? Data(contentsOf: url), !Task.isCancelled else { return nil }
+                return "data:image/\(mime);base64,\(data.base64EncodedString())"
+            }
+            return await withTaskCancellationHandler {
+                await reader.value
+            } onCancel: {
+                reader.cancel()
+            }
+        }
+    }
+
+    func cancelAttachmentRead() {
+        attachmentReadID = UUID()
+        attachmentReadTask?.cancel()
+        attachmentReadTask = nil
+    }
+
+    func removeAttachment() {
+        cancelAttachmentRead()
+        attachedImage = nil
+        attachedImageName = nil
+    }
+
     func attach(name: String, dataURL: String) {
+        cancelAttachmentRead()
         attachedImageName = name
         attachedImage = dataURL
     }
 
     func reset() {
+        removeAttachment()
         onResetCorpus()
         // A report belongs to the conversation being left.
         report.close()
@@ -1193,6 +1264,7 @@ final class OverlayModel: ObservableObject {
                     setAside.push(submissionState.dropForRetry(dispatchID))
                     place = .setAside
                 } else if let retry = submissionState.dropForRetry(dispatchID) {
+                    cancelAttachmentRead()
                     input = retry.text
                     attachedImage = retry.image
                     attachedImageName = retry.imageName
@@ -1396,6 +1468,8 @@ final class OverlayModel: ObservableObject {
                   self.submissionState.isCurrent(dispatch.id) else { return }
             self.dailySummaryRunning = false
             self.briefComposing = false
+            // A failed compose must not leave the 1 Hz sync poll running.
+            if result.text == nil { self.stopSyncProgress() }
             // Do not stop source polling here. A "still syncing" response is
             // a bounded wait, not completion of the background sync itself.
             if let text = result.text {
@@ -1430,10 +1504,21 @@ final class OverlayModel: ObservableObject {
         dailySyncProgress = 0
         dailySyncLabel = "Checking synced data…"
         sourceSyncTask = Task { [weak self] in
+            // Bounded: 10 minutes overall (a local brief can take minutes), or
+            // 5 unanswered polls in a row. A downed service must not be polled
+            // at 1 Hz for the rest of the session.
+            let deadline = Date().addingTimeInterval(600)
+            var misses = 0
             while !Task.isCancelled {
                 guard let self else { return }
                 let status = await self.client.assistantSyncStatus(sources: wanted)
                 guard !Task.isCancelled, self.sourceSyncID == syncID else { return }
+                if status == nil { misses += 1 } else { misses = 0 }
+                if misses >= 5 || Date() > deadline {
+                    self.stopSyncProgress()
+                    self.onResize()
+                    return
+                }
                 if let status {
                     self.sourceSyncStatuses = status.sources
                     self.dailySyncProgress = status.progress

@@ -896,6 +896,43 @@ def _clean(text: object, limit: int = 0) -> str:
     return out
 
 
+
+# Regions whose default clock is 12-hour; macOS's own toggle overrides this.
+_TWELVE_HOUR_REGIONS = frozenset({"US", "CA", "AU", "NZ", "IN", "PH", "PK", "BD", "EG", "SA"})
+_clock_pref: tuple[float, bool] = (0.0, False)
+
+
+def _uses_24_hour() -> bool:
+    """The Mac's 12/24-hour setting, so brief times match the app's own clocks.
+
+    Read from the global preferences (re-read at most once a minute); a Mac
+    with no readable setting keeps the 12-hour default.
+    """
+    global _clock_pref
+    checked, value = _clock_pref
+    if time.monotonic() - checked < 60 and checked:
+        return value
+    value = False
+    try:
+        import plistlib
+        from pathlib import Path
+        with (Path.home() / "Library/Preferences/.GlobalPreferences.plist").open("rb") as f:
+            prefs = plistlib.load(f)
+        if prefs.get("AppleICUForce24HourTime"):
+            value = True
+        elif not prefs.get("AppleICUForce12HourTime"):
+            region = str(prefs.get("AppleLocale") or "en_US").split("@")[0].replace("-", "_").split("_")
+            value = len(region) > 1 and region[-1].upper() not in _TWELVE_HOUR_REGIONS
+    except Exception:
+        value = False
+    _clock_pref = (time.monotonic(), value)
+    return value
+
+
+def _hm(when: datetime) -> str:
+    """"3:05 PM", or "15:05" on a 24-hour Mac."""
+    return when.strftime("%H:%M" if _uses_24_hour() else "%-I:%M %p")
+
 def _clock(ts: float, now: float) -> str:
     """A wall-clock time, marked "Yesterday" when it isn't today's.
 
@@ -903,7 +940,7 @@ def _clock(ts: float, now: float) -> str:
     sat in the same list as this morning's rows with nothing to separate them.
     """
     when = datetime.fromtimestamp(ts)
-    label = when.strftime("%-I:%M %p")
+    label = _hm(when)
     return label if when.date() == datetime.fromtimestamp(now).date() else f"Yesterday {label}"
 
 
@@ -1004,21 +1041,21 @@ def _agenda_row(item: dict, now: float, *, show_account: bool,
             rel = "continued into today"
     else:
         if continued_from_prior_day:
-            clock = f"Started {when.strftime('%a %-I:%M %p')}"
+            clock = f"Started {when.strftime('%a')} {_hm(when)}"
             rel = "continued into today"
         elif delta < -300:
-            clock = when.strftime("%-I:%M %p")
+            clock = _hm(when)
             # "(now)" for something that was due two hours ago is what the old
             # rows said, and it read as "happening right now".
             rel = "overdue" if _is_reminder(item) else "earlier today"
         elif delta < 300:
-            clock = when.strftime("%-I:%M %p")
+            clock = _hm(when)
             rel = "now"
         elif delta < 3600:
-            clock = when.strftime("%-I:%M %p")
+            clock = _hm(when)
             rel = f"in {int(delta // 60)} min"
         else:
-            clock = when.strftime("%-I:%M %p")
+            clock = _hm(when)
             hours = delta / 3600
             rel = f"in {hours:.0f} h" if hours >= 2 else f"in {hours:.1f} h"
     extras = []
@@ -1923,7 +1960,7 @@ def _today_card(now: float) -> str:
     if upcoming:
         nxt = upcoming[0]
         clock = ("all day" if nxt.get("all_day")
-                 else datetime.fromtimestamp(nxt["when_ts"]).strftime("%-I:%M %p"))
+                 else _hm(datetime.fromtimestamp(nxt["when_ts"])))
         title = (_reminder_title(nxt, 60) if _is_reminder(nxt)
                  else _clean(nxt["title"], 60))
         lines.append(f"Next: {title} at {clock}.")

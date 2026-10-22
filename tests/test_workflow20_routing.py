@@ -151,7 +151,8 @@ def test_daily_envelope_variants_preserve_exclusions_at_both_entrypoints(prompt,
     from service.workflows.reads import compile_read
     from service.workflows.compiler import compile_new
     assert compile_new(prompt) is None
-    assert compile_read(prompt)==([('daily_brief',args)],'')
+    # Never shown verbatim: the router's direct call is narrated by the model.
+    assert compile_read(prompt) is None
     decision=asyncio.run(R.route(prompt))
     assert decision.direct_calls==[('daily_brief',args)]
     assert 'web_search' in decision.forbidden_tools
@@ -501,7 +502,7 @@ def test_evidence_collectors_execute_before_first_model_narration(monkeypatch, p
 ])
 def test_daily_envelope_preserves_date_and_source_constraints(prompt, args):
     from service.workflows.reads import compile_read
-    assert compile_read(prompt) == ([("daily_brief", args)], "")
+    assert compile_read(prompt) is None
     decision = asyncio.run(R.route(prompt))
     assert decision.direct_calls == [("daily_brief", args)]
     assert decision.tool_argument_bindings["daily_brief"] == args

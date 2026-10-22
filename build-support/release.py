@@ -117,6 +117,12 @@ def public_release_archive(assets, meta):
             os.fstat(descriptor).st_size)
 
 
+# Shown directly under the download link: the public ZIP is ad-hoc signed, not notarized.
+FIRST_LAUNCH_NOTE = (
+    "First launch: Control-click Wisp.app and choose Open (or System Settings > Privacy & Security > Open Anyway).\n"
+    "If macOS still blocks it, run `xattr -dr com.apple.quarantine /Applications/Wisp.app` in Terminal.\n\n")
+
+
 def create_public_draft(runner, assets, env, tag, meta):
     """Put the app first on the release page; notes stay in the page body."""
     app_asset = public_release_archive(assets, meta)
@@ -124,6 +130,7 @@ def create_public_draft(runner, assets, env, tag, meta):
     download = (f"https://github.com/{repository}/releases/download/"
                 f"{quote(tag, safe='')}/{quote(app_asset[0], safe='')}")
     body = (f"**[Download Wisp for Mac (Apple silicon)]({download})**\n\n".encode()
+            + FIRST_LAUNCH_NOTE.encode()
             + assets.read_bytes("release-notes.md"))
     with tempfile.TemporaryFile() as notes:
         notes.write(body)

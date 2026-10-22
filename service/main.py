@@ -432,7 +432,7 @@ async def lifespan(app: FastAPI):
         await client.aclose()
         if is_bundled():
             from service.engine.runtime import stop_if_running
-            await asyncio.to_thread(stop_if_running)
+            await asyncio.to_thread(stop_if_running, final=True)
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
@@ -573,7 +573,7 @@ async def shutdown_omlx() -> dict[str, Any]:
         return {"stopped": False}
     if is_bundled():
         from service.engine.runtime import stop_if_running
-        return {"stopped": await asyncio.to_thread(stop_if_running)}
+        return {"stopped": await asyncio.to_thread(stop_if_running, final=True)}
     try:
         subprocess.Popen([OMLX_CLI, "stop"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1029,11 +1029,14 @@ async def setup_status() -> dict[str, Any]:
         saved = models_config().get("installed_models") or []
         installed = [m for m in saved if isinstance(m, str)]
     from service.config import tool_capable_models
-    return setup_guide.build_status(
+    status = setup_guide.build_status(
         hardware=current_hardware(),
         omlx=setup_guide.OmlxState(_omlx_installed(), running, _omlx_model_dir(), _omlx_admin_url()),
         installed=installed, models_source=source, roles=_setup_roles(),
         externals=await detect_external_engines(), tool_capable=tool_capable_models())
+    from service.config import setup_configuration_token
+    status["configuration_token"] = setup_configuration_token()
+    return status
 
 
 @app.post("/setup/start-engine")
@@ -1048,6 +1051,11 @@ async def setup_start_engine() -> dict[str, Any]:
 
 @app.post("/setup/apply")
 async def setup_apply(body: dict[str, Any]) -> dict[str, Any]:
+    automatic = body.get("automatic", False)
+    expected = body.get("expected_configuration")
+    if not isinstance(automatic, bool) or (automatic and
+            (not isinstance(expected, str) or not expected)):
+        raise HTTPException(status_code=400, detail="Automatic setup needs its current configuration.")
     model = body.get("model")
     if not isinstance(model, str) or not model.strip():
         raise HTTPException(status_code=400, detail="Choose a model.")
@@ -1062,8 +1070,16 @@ async def setup_apply(body: dict[str, Any]) -> dict[str, Any]:
     if model not in available or "embedding" in lowered or "rerank" in lowered:
         raise HTTPException(status_code=400, detail="Choose a chat model that is installed in oMLX.")
     with _local_provider_operation_lock:
+        from service.config import ConfigurationPreconditionFailed
+        assignments = {role: model for role in setup_guide.TEXT_ROLES}
+        try:
+            if automatic:
+                set_roles(assignments, expected_configuration=expected, available_models=available)
+            else:
+                set_roles(assignments)
+        except ConfigurationPreconditionFailed as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
         _supersede_local_provider_probe_unlocked()
-        set_roles({role: model for role in setup_guide.TEXT_ROLES})
     _sync_keep_warm()
     return await setup_status()
 
@@ -1965,7 +1981,9 @@ async def agent(body: dict[str, Any]):
                 decision = await route(prompt, last_user=last_user,
                                        recent_users=recent_users,
                                        last_assistant=last_assistant,
-                                       last_tools=last_tools)
+                                       last_tools=last_tools, test_mode=test_mode,
+                                       allow_skill_context=not literal_envelope,
+                                       allow_profile_context=not literal_envelope)
 
             # A "pin generation to whichever big model is already resident"
             # step used to sit here, to avoid paying a swap for a trivial

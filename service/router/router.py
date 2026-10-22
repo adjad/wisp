@@ -5270,13 +5270,18 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         d.forbidden_tools = frozenset({"clear_reminders", "clear_past_reminders",
                                        "cancel_event"})
         return d
-    if reschedule := re.match(r"^(?:(?:please|can\s+you|could\s+you|would\s+you|"
-                              r"i\s+need\s+you\s+to)\s+)*reschedule\b", t, re.I):
+    if reschedule := (re.match(r"^(?:(?:please|can\s+you|could\s+you|would\s+you|"
+                               r"i\s+need\s+you\s+to)\s+)*reschedule\b", t, re.I)
+                      or (_calendar_move_request(t) and re.match(
+                          r"^(?:(?:please|can\s+you|could\s+you|would\s+you|"
+                          r"i\s+need\s+you\s+to)\s+)*(?:move|push|shift|bump|postpone|delay)\b",
+                          t, re.I))):
         parts = re.split(r"\b(?:to|for)\b", t[reschedule.end():],
                          maxsplit=1, flags=re.I)
         target_text = parts[0]
         reminder = bool(re.search(r"\breminders?\b", target_text, re.I))
-        event = bool(re.search(r"\b(?:events?|meetings?|appointments?)\b", target_text, re.I))
+        event = bool(re.search(r"\b(?:events?|meetings?|appointments?)\b", target_text, re.I)
+                     or _calendar_move_request(t))
         updating = ["update_reminder"] if reminder else []
         if event and (not reminder or re.search(r"\band\b", target_text, re.I)):
             updating.append("update_event")
@@ -7684,6 +7689,13 @@ def _meeting_plan(text: str) -> RouteDecision | None:
     if re.search(r"\b(?:web|news|internet|public|using|based|lock|screen|open|launch|play|check|search|checking|restarting|agrees|agreed|accepts|confirms)\b", value, re.I):
         return None
     tools = ["plan_meeting", "get_upcoming", "find_free_time"]
+    from service.router.common_claims import plain_timed_add
+    plain_add = plain_timed_add(value)
+    if plain_add:
+        # "add a meeting with Sam tomorrow at 3pm" names a time and asks for no
+        # invitation or search: a plain calendar add is on the menu too. The
+        # add tool keeps its own confirmation policy.
+        tools = ["add_calendar_event", "get_upcoming", "plan_meeting"]
     from service.tools.schedule_extras import _private_block_request
     private_creation = _private_block_request(text)
     if private_creation:
@@ -7695,6 +7707,8 @@ def _meeting_plan(text: str) -> RouteDecision | None:
     # exact approval and refreshed Calendar evidence before any write.
     decision.forbidden_tools |= frozenset({"send_email", "send_message", "schedule_send",
         "draft_email", "draft_message", "add_reminder", "update_event", "cancel_event", "add_calendar_event"})
+    if plain_add:
+        decision.forbidden_tools -= frozenset({"add_calendar_event"})
     if not private_creation:
         decision.forbidden_tools |= frozenset({"commit_private_meeting"})
     creation_guidance = (
@@ -8265,8 +8279,20 @@ async def route(text: str, *,
                 last_user: str | None = None,
                 recent_users: list[str] | None = None,
                 last_assistant: str | None = None,
-                last_tools: str | None = None) -> RouteDecision:
+                last_tools: str | None = None,
+                test_mode: bool = False,
+                allow_skill_context: bool = True,
+                allow_profile_context: bool = True) -> RouteDecision:
     original_text = text
+    # Routing itself may inspect installed skills and the saved goals. Apply
+    # the host boundary before either loader, rather than waiting for inference
+    # prompt assembly. Literal envelopes carry data, not skill triggers.
+    from service.knowledge_intent import knowledge_envelope
+    from service.inference.remote_policy import remote_only_profile
+    literal = knowledge_envelope(text) is not None or _scheduled_send_review(text) is not None
+    allow_profile_context = allow_profile_context and not test_mode and not literal
+    allow_skill_context = (allow_skill_context and not test_mode and not literal
+                           and remote_only_profile() is None)
     # Behavior-learning questions are claimed here, ahead of _route_impl (whose
     # body is pinned), only while behavior learning is on.
     behavior = _assistant_read_claim(text)
@@ -8275,16 +8301,123 @@ async def route(text: str, *,
                                last_assistant=last_assistant, last_tools=last_tools)
     if behavior is None:
         behavior = _no_tool_claim(text, last_user=last_user, recent_users=recent_users,
-                                  last_assistant=last_assistant, last_tools=last_tools)
+                                  last_assistant=last_assistant, last_tools=last_tools,
+                                  allow_profile_context=allow_profile_context)
+    if behavior is None:
+        behavior = _common_prompt_claim(text, last_user=last_user, recent_users=recent_users,
+                                        last_assistant=last_assistant, last_tools=last_tools)
     decision = behavior if behavior is not None else await _route_impl(
         text, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)
     _clarify_unnamed_offer_channel(decision, text, last_assistant=last_assistant)
+    _force_relative_reminder(decision, original_text)
+    if allow_skill_context:
+        _add_matched_skill_tools(decision, original_text)
     return _guard_explicit_sources(_guard_scheduled_cancel(decision, original_text), original_text)
 
 
+def _common_prompt_claim(text: str, *, last_user: str | None, recent_users: list[str] | None,
+                         last_assistant: str | None, last_tools: str | None) -> RouteDecision | None:
+    """Everyday single-intent asks (timers, alarms, clock, weather, arithmetic,
+    conversions, definitions, volume, email lookup) with exactly one right tool.
+    The grammars are fully consumed in router/common_claims.py, so an extra
+    clause or an unknown qualifier falls through to the ordinary router."""
+    if last_tools and re.match(r"\s*(?:yes|yeah|yep|sure|ok|okay|no|nope)\b", text, re.I):
+        return None
+    from service.router import common_claims
+    claim = common_claims.claim(text)
+    if claim is None:
+        return None
+    decision = _mk_scoped(list(claim.subset), claim.reason, force=claim.force,
+                          expect=claim.expect, light=False)
+    if claim.bindings:
+        decision.tool_argument_bindings = {k: dict(v) for k, v in claim.bindings.items()}
+    if claim.forbid:
+        decision.forbidden_tools = frozenset(decision.forbidden_tools) | claim.forbid
+    request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
+                                    last_assistant=last_assistant)
+    if not claim.private:
+        return _finalize(decision, text, web_request=request)
+    decision = _finalize(decision, text, web_request=replace(
+        request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
+        public_reference=False, inherited=False, clarification=None))
+    if claim.force and decision.force_first_tool != claim.force and claim.force != "update_event":
+        # An alarm/timer sentence also looks like a reminder to the reminder
+        # normalizers; the claim already decided it is not one.
+        decision.tool_subset = list(claim.subset)
+        decision.force_first_tool = claim.force
+        decision.expect_tool_first = True
+        decision.needs_tools = True
+        decision.required_tool_groups = ()
+        decision.conditional_tools = ()
+        decision.direct_calls = []
+        decision.multi_round = False
+        decision.reminder_action = ""
+        decision.tool_argument_bindings = {k: dict(v) for k, v in claim.bindings.items()}
+        decision.forbidden_tools = frozenset(decision.forbidden_tools) | claim.forbid
+    return decision
+
+
+def _force_relative_reminder(decision: RouteDecision, text: str) -> None:
+    """'remind me in 20 minutes to ...' names its time, so the one reminder tool
+    is forced (the model computes when_iso; the loop still gates the write)."""
+    from service.router import common_claims
+    if (decision.force_first_tool is None and decision.tool_subset
+            and "add_reminder" in decision.tool_subset
+            and decision.reminder_action == "create"
+            and common_claims.is_relative_reminder(text)):
+        decision.force_first_tool = "add_reminder"
+        decision.expect_tool_first = True
+
+
+_SKILL_ADDED_UNSAFE_RE = re.compile(
+    r"send_|draft|delete|cancel_event|add_calendar_event|forward_email|reply", re.I)
+
+
+def _add_matched_skill_tools(decision: RouteDecision, text: str) -> None:
+    """A skill whose trigger fires brings its tools into a scoped menu: skill
+    triggers used to feed only the prompt, so 'turn it down' reached the model
+    with 13 retrieved tools and none of mac-controls'. A trigger never adds an
+    outbound, draft, delete or calendar-write tool the route did not offer."""
+    if (not decision.tool_subset or decision.force_first_tool or not decision.needs_tools
+            or decision.direct_calls or decision.required_tool_groups):
+        return
+    try:
+        from service import skills
+        from service.tools.registry import is_tool_routable
+        extra: list[str] = []
+        # Matched directly (not via turn_skill_names): the main turn loop owns
+        # that call and withholds it from literal-envelope turns.
+        for skill in skills.all_skills().values():
+            if skill.error or not skill.enabled or not skill.tools or not skill.matches(text):
+                continue
+            for tool in skill.tools:
+                tool_name = tool.get("name")
+                if (tool_name and is_tool_routable(tool_name)
+                        and not _SKILL_ADDED_UNSAFE_RE.search(tool_name)
+                        and tool_name not in decision.forbidden_tools
+                        and tool_name not in decision.tool_subset and tool_name not in extra):
+                    extra.append(tool_name)
+        if extra:
+            decision.tool_subset = [*decision.tool_subset, *extra]
+            decision.reason += " · matched skill tools offered"
+    except Exception:  # noqa: BLE001 — skills are optional; never break routing
+        return
+
+
+def _calendar_move_request(text: str) -> bool:
+    from service.router import common_claims
+    return common_claims.is_calendar_move(text)
+
+
+def _common_claims_no_tool(text: str, *, allow_profile_context: bool = True) -> bool:
+    from service.router import common_claims
+    return common_claims.is_no_tool_ask(text, allow_profile_context=allow_profile_context)
+
+
 def _no_tool_claim(text: str, *, last_user: str | None, recent_users: list[str] | None,
-                   last_assistant: str | None, last_tools: str | None) -> RouteDecision | None:
+                   last_assistant: str | None, last_tools: str | None,
+                   allow_profile_context: bool = True) -> RouteDecision | None:
     """Requests whose whole answer is text: a creative piece, or a bare "send
     it" that opens a conversation. Claimed ahead of _route_impl (whose body is
     pinned) because their nouns otherwise decide the route — "compose a haiku"
@@ -8316,7 +8449,11 @@ def _no_tool_claim(text: str, *, last_user: str | None, recent_users: list[str] 
         decision = _mk("general", reason="bare send with nothing drafted -> ask what to send")
         decision.forbidden_tools = frozenset(_SEND_TOOLS | _DRAFT_TOOLS | {"schedule_send"})
     elif (decision := _creative_writing_decision(text)) is None:
-        return None
+        if not _common_claims_no_tool(text, allow_profile_context=allow_profile_context):
+            return None
+        decision = _mk("general", reason="no-tool ask (joke, translation, own name or goals) -> answer without tools")
+        decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell",
+                                              "send_email", "send_message", "draft_email", "draft_message"})
     request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
                                     last_assistant=last_assistant)
     return _finalize(decision, text, web_request=replace(

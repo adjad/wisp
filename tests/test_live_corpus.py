@@ -317,6 +317,101 @@ def test_bundled_synthetic_calendar_move_preserves_existing_event():
 from tests.test_model_led_entrypoint import endpoint as synthetic_agent_endpoint
 
 
+def _router_saved_context_sentinels(monkeypatch):
+    from pathlib import Path
+    from service import skills
+    from service.memory import profile
+    from service.tools import registry
+    calls = []
+    sentinel = "PRIVATE_ROUTER_CONTEXT_SENTINEL"
+    skill = skills.Skill("fixture-controls", sentinel, sentinel, Path("/synthetic/skill"),
+                         triggers=["turn it down", "remember"], tools=[{"name": "fixture_level"}])
+    def all_skills():
+        calls.append("skills.all_skills")
+        return {skill.name: skill}
+    def saved_profile():
+        calls.append("profile.load")
+        return {**profile.empty(), "goals": [sentinel]}
+    monkeypatch.setattr(skills, "all_skills", all_skills)
+    monkeypatch.setattr(profile, "load", saved_profile)
+    for name in ("mac_get_volume", "mac_set_volume", "fixture_level"):
+        monkeypatch.setitem(registry.REGISTRY, name, Tool(
+            name=name, description=sentinel if name == "fixture_level" else "Synthetic volume",
+            parameters={"type": "object", "properties": {}},
+            category="skill_tool" if name == "fixture_level" else "mac_read",
+            func=lambda **kw: "Synthetic fixture only"))
+    return calls, sentinel
+
+
+@pytest.mark.parametrize("policy", ["ordinary", "synthetic", "opt_out"])
+def test_actual_router_saved_context_loaders_obey_host_policy(monkeypatch, policy):
+    from service.router.router import route
+    calls, _ = _router_saved_context_sentinels(monkeypatch)
+    flags = ({"test_mode": True} if policy == "synthetic" else
+             {"allow_skill_context": False, "allow_profile_context": False} if policy == "opt_out" else {})
+    volume = asyncio.run(route("turn it down", **flags))
+    goals = asyncio.run(route("what are my goals", **flags))
+    if policy == "ordinary":
+        assert "fixture_level" in volume.tool_subset
+        assert "profile.load" in calls and "skills.all_skills" in calls
+        assert not goals.needs_tools
+    else:
+        assert "fixture_level" not in (volume.tool_subset or ())
+        assert calls == []
+
+
+def test_actual_router_literal_envelopes_do_not_load_saved_context(monkeypatch):
+    from service.router.router import route
+    calls, _ = _router_saved_context_sentinels(monkeypatch)
+    for prompt in ('remember that fixture title is "turn it down"',
+                   'remember that my goals are "turn it down"'):
+        decision = asyncio.run(route(prompt))
+        assert "fixture_level" not in (decision.tool_subset or ())
+    assert calls == []
+
+
+@pytest.mark.parametrize("test_mode", [False, True])
+@pytest.mark.parametrize("prompt", ["turn it down", "what are my goals"])
+def test_actual_agent_and_router_saved_loaders_and_schemas(
+        synthetic_agent_endpoint, monkeypatch, test_mode, prompt):
+    from service import main, skills
+    from service.agent import loop
+    from service.memory import identity, profile
+    from service.router.router import route
+    state = synthetic_agent_endpoint
+    calls, sentinel = _router_saved_context_sentinels(monkeypatch)
+    monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")
+    monkeypatch.setattr(main, "route", route)
+    monkeypatch.setattr(main, "run_agent", loop.run_agent)
+    monkeypatch.setattr(identity, "identity_prompt_block", lambda **kw: "")
+    monkeypatch.setattr(identity, "user_name", lambda: "Fixture")
+    monkeypatch.setattr(profile, "profile_block", lambda: "")
+    monkeypatch.setattr(skills, "skills_context_block", lambda *args, **kw: "")
+    monkeypatch.setattr(skills, "skill_tool_names", lambda: frozenset({"fixture_level"}))
+    events = state.request(prompt, test_mode=test_mode)
+    requests = [*state.shared.requests, *(r for client in state.owned for r in client.requests)]
+    assert requests and any(event["type"] == "done" for event in events)
+    wire = json.dumps(requests)
+    if test_mode:
+        assert calls == []
+        assert sentinel not in wire and "fixture_level" not in wire
+    elif prompt == "turn it down":
+        assert "skills.all_skills" in calls and "fixture_level" in wire
+    else:
+        assert "profile.load" in calls
+
+
+def test_actual_agent_literal_envelope_does_not_load_saved_router_context(
+        synthetic_agent_endpoint, monkeypatch):
+    from service import main
+    from service.router.router import route
+    calls, _ = _router_saved_context_sentinels(monkeypatch)
+    monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")
+    monkeypatch.setattr(main, "route", route)
+    synthetic_agent_endpoint.request('remember that fixture title is "turn it down"', test_mode=True)
+    assert calls == []
+
+
 @pytest.mark.parametrize("model_led", [False, True])
 @pytest.mark.parametrize("test_mode", [False, True])
 def test_synthetic_endpoint_never_loads_saved_context(

@@ -58,6 +58,39 @@ final class BackendManager {
     /// backend answers on the backend port. AppDelegate shows the conflict alert.
     var onPortConflict: () -> Void = {}
 
+    /// Called on the main actor whenever the service flips between answering and
+    /// not. The first call after `startReachabilityWatch` reports the first probe.
+    var onReachabilityChange: (Bool) -> Void = { _ in }
+    private var reachabilityWatch: Task<Void, Never>?
+    private(set) var lastReachable: Bool?
+    /// Whether the service has answered at least once since the app launched.
+    private(set) var everReachable = false
+    /// Whether this manager's own backend process is alive (it may not answer yet).
+    var childRunning: Bool { process?.isRunning == true }
+
+    /// Probe the service while the app runs (every 5 s up, 2 s down) so the
+    /// notch can say plainly that it isn't running. Independent of the launch
+    /// monitor, which only starts once a launch is attempted. A busy service can
+    /// miss one probe (a model load or a long compose holds its event loop), so
+    /// it is called down only after three misses in a row.
+    func startReachabilityWatch() {
+        guard reachabilityWatch == nil else { return }
+        reachabilityWatch = Task { [weak self] in
+            var misses = 0
+            while !Task.isCancelled {
+                guard let self else { return }
+                let answered = await self.isHealthy(timeout: 4)
+                misses = answered ? 0 : misses + 1
+                if answered { self.everReachable = true }
+                if answered || misses >= 3, self.lastReachable != answered {
+                    self.lastReachable = answered
+                    self.onReachabilityChange(answered)
+                }
+                try? await Task.sleep(nanoseconds: answered ? 5_000_000_000 : 2_000_000_000)
+            }
+        }
+    }
+
     private func enforceCredentialState() -> Bool {
         let allowed = credentialState.observe(try? BackendCredentials.generation())
         if !allowed, let process, process.isRunning { process.terminate() }
@@ -440,9 +473,9 @@ final class BackendManager {
               rename(temporary, receipt.path) == 0 else { throw BackendCredentials.Failure.quarantined }
     }
 
-    private func isHealthy() async -> Bool {
+    private func isHealthy(timeout: TimeInterval = 1) async -> Bool {
         var req = URLRequest(url: readyURL)
-        req.timeoutInterval = 1
+        req.timeoutInterval = timeout
         do {
             let (_, resp) = try await URLSession.shared.data(for: req)
             return (resp as? HTTPURLResponse)?.statusCode == 200
