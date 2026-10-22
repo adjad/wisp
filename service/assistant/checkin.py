@@ -600,7 +600,9 @@ def goal_pulse(profile: dict | None, *, now: float) -> dict | None:
     open_goals = [g for g in goals if (statuses.get(g) or {}).get("status") != "done"]
     if not open_goals:
         return None
-    last = profile.get("goal_pulse_at") or profile.get("updated_at")
+    last = profile.get("goal_pulse_at")
+    if last is None:
+        last = profile.get("updated_at")
     if last is not None and now - float(last) < GOAL_PULSE_DAYS * 86400:
         return None
     behind = [g for g in open_goals if (statuses.get(g) or {}).get("status") == "behind"]
