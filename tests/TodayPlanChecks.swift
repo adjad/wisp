@@ -70,15 +70,28 @@ struct TodayPlanChecks {
     static func windowChecks() async throws {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        let offscreen = ProcessInfo.processInfo.environment["WISP_QA_OFFSCREEN"] == "1"
         let la = TimeZone(identifier: "America/Los_Angeles")!
         var zone = la
         var now = instant("2026-09-25T06:59:00Z")
         let model = TodayModel(now: { now }, timeZoneProvider: { zone })
+        defer { model.stopBackgroundRefresh() }
         var presentations: [TodayPresentation] = []
         var queries: [(String, String)] = []
+        var supplementalPaths: Set<String> = []
         var holdYesterday = false
         var pending: CheckedContinuation<(Data, URLResponse), Error>?
         model.transport = { request in
+            switch request.url!.path {
+            case "/assistant/upcoming":
+                supplementalPaths.insert(request.url!.path)
+                return (Data(#"{"commitments":[]}"#.utf8), response(request))
+            case "/assistant/daily_summary/latest":
+                supplementalPaths.insert(request.url!.path)
+                return (Data("{}".utf8), HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+            case "/assistant/today": break
+            default: preconditionFailure("Unexpected window fixture endpoint: \(request.url!.path)")
+            }
             let day = query(request, "day")
             let requestedZone = query(request, "timezone")
             queries.append((day, requestedZone))
@@ -91,7 +104,8 @@ struct TodayPlanChecks {
         let window = TodayWindow.show(model: model, onPresentation: { presentations.append($0) }, present: false)
         await waitFor("Mounted view must display yesterday's event") {
             presentations.last?.day == "2026-09-24" && presentations.last?.pickerDay == "2026-09-24" &&
-            presentations.last?.blockTitles == ["Yesterday's event"]
+            presentations.last?.blockTitles == ["Yesterday's event"] &&
+            supplementalPaths == ["/assistant/upcoming", "/assistant/daily_summary/latest"]
         }
         holdYesterday = true
         let stale = Task { await model.refresh() }
@@ -116,8 +130,8 @@ struct TodayPlanChecks {
 
         window.close()
         let queriesBeforeReopen = queries.count
-        let reopened = TodayWindow.show(present: true)
-        check(reopened === window && reopened.isVisible, "Today must reuse its window on reopen")
+        let reopened = TodayWindow.show(present: !offscreen)
+        check(reopened === window && reopened.isVisible == !offscreen, "Today must reuse its window on reopen")
         await waitFor("Reopened view must still display the empty current day") {
             presentations.last?.day == "2026-09-25" && presentations.last?.pickerDay == "2026-09-25" &&
             presentations.last?.blockTitles.isEmpty == true && queries.count > queriesBeforeReopen
@@ -165,7 +179,7 @@ struct TodayPlanChecks {
         reopened.close()
         now = instant("2026-09-30T19:00:00Z")
         let queriesBeforeNextReopen = queries.count
-        let nextReopen = TodayWindow.show(present: true)
+        let nextReopen = TodayWindow.show(present: !offscreen)
         check(nextReopen === window)
         await waitFor("Reopening after another local day must advance the displayed date") {
             presentations.last?.day == "2026-09-30" && presentations.last?.pickerDay == "2026-09-30" &&
