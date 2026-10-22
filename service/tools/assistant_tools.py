@@ -447,27 +447,48 @@ def _match_schedule_query(rows: list[dict], query: str) -> list[dict]:
     return results
 
 
-def _format_calendar_end_times(items: list[dict], *, window_label: str) -> str:
-    """Project scheduled endpoints without changing the normal agenda renderer."""
-    lines = [f"Scheduled Calendar end times ({window_label}); these do not verify actual completion."]
-    if len(items) > 1:
-        lines.append("Multiple matching events; each scheduled end is listed separately.")
+def _format_calendar_end_times(items: list[dict], *, now: float, window_label: str) -> str:
+    """Scheduled end times the user can read as-is, in the agenda's style.
+
+    Like _format_forward_agenda, deterministic reads show this with no model
+    pass, so the old "Scheduled Calendar end times (...); these do not verify
+    actual completion." / "Multiple matching events; ..." lines and the
+    "%Y-%m-%d %-I:%M %p %Z%z" stamps reached the user verbatim. The summary
+    line keeps the agenda's "<window>: N events" shape, which
+    router._edit_reference_subset reads to scope a follow-up edit. Each row
+    still names its start so two same-titled events stay distinct, and the
+    caveat is one plain sentence: a calendar end is not proof it finished.
+    """
+    today = datetime.fromtimestamp(now).date()
+    lines = []
     for item in items:
-        title = item.get('title') or 'Untitled'
-        start = datetime.fromtimestamp(float(item['when_ts']), tz=timezone.utc).astimezone()
-        identity = start.strftime('%Y-%m-%d %-I:%M %p %Z%z')
-        end_ts = item.get('end_ts')
-        if end_ts is None or float(end_ts) < float(item['when_ts']):
-            end = 'scheduled end unknown (no valid end recorded)'
+        title = _agenda_text(item.get("title")) or "Untitled"
+        start = datetime.fromtimestamp(float(item["when_ts"]), tz=timezone.utc).astimezone()
+        start_day = _agenda_day_label(start, today)
+        end_ts = item.get("end_ts")
+        if item.get("all_day"):
+            starts = f"{start_day}, all day"
         else:
-            endpoint = datetime.fromtimestamp(float(end_ts), tz=timezone.utc).astimezone()
-            if item.get('all_day'):
-                end = ('all-day event; exclusive scheduled end boundary ' +
-                       endpoint.strftime('%Y-%m-%d %-I:%M %p %Z%z') + '; no timed finish recorded')
-            else:
-                end = 'scheduled to end ' + endpoint.strftime('%Y-%m-%d %-I:%M %p %Z%z')
-        lines.append(f'- {title} (starts {identity}): {end}.')
-    return '\n'.join(lines)
+            starts = f"{start_day}, {_agenda_clock(start, now)}"
+        if end_ts is None or float(end_ts) < float(item["when_ts"]):
+            ends = "has no end time on the calendar"
+        elif item.get("all_day"):
+            # The stored end is the exclusive midnight after the last day.
+            last = datetime.fromtimestamp(max(float(end_ts) - 1, float(item["when_ts"]))).date()
+            ends = "is all day, with no set finish time"
+            if last != start.date():
+                ends += f"; it runs through **{last.strftime('%a, %b %-d')}**"
+        else:
+            end = datetime.fromtimestamp(float(end_ts), tz=timezone.utc).astimezone()
+            clock = _agenda_clock(end, now)
+            ends = (f"ends at **{clock}**" if end.date() == start.date() else
+                    f"ends **{_agenda_day_label(end, today)}, {clock}**")
+        lines.append(f"- {title} ({starts}) {ends}")
+    window = re.sub(r"\bnext 1 day\(s\)", "next day", window_label).replace("day(s)", "days")
+    header = f"{window[:1].upper()}{window[1:]}: {_agenda_count(len(items), 'event')}"
+    caveat = ("These are scheduled end times from your calendar, not a record of "
+              "when anything actually ended.")
+    return header + "\n\n" + "\n".join(lines) + "\n\n" + caveat
 
 
 @register(
@@ -593,7 +614,7 @@ async def get_upcoming(days: int = 7, account: str | None = None,
                     + reminder_note)
         return f"Today is {today_str}. Nothing scheduled in {window_label}."
     if boundary == "end":
-        return notice + _format_calendar_end_times(items, window_label=window_label)
+        return notice + _format_calendar_end_times(items, now=now, window_label=window_label)
     return notice + _format_forward_agenda(
         items, now=now, window_label=window_label,
         apple_reminders_checked="reminders" not in withheld,

@@ -63,6 +63,17 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                          DayBlockInput(id: "late", title: "Late", start: at(15), end: at(16), kind: "calendar")], now: now)
     check(recent.items.map(\.id) == ["block:coffee", "block:lunch", "block:late"], "the back window keeps what ended in it: \(recent.items.map(\.id))")
     check(recent.items.map(\.past) == [true, false, false], "only what is over is dim; a block running now is not")
+    // A block that ends while its Cancel is still in the 5-second Undo window (or
+    // in flight) stays live: Undo must not vanish because the clock passed its end.
+    let lunchOver = window([DayBlockInput(id: "lunch", title: "Lunch", start: at(12.5), end: at(13.5), kind: "calendar"),
+                            DayBlockInput(id: "late", title: "Late", start: at(15), end: at(16), kind: "calendar")], now: at(13.6))
+    let endedLunch = lunchOver.items.first { $0.id == "block:lunch" }
+    let upcomingLate = lunchOver.items.first { $0.id == "block:late" }
+    check(endedLunch?.past == true && upcomingLate?.past == false, "lunch ended at 13:30, late has not started")
+    check(endedLunch?.isOver(cancelActive: false) == true, "an ended block with nothing pending is over: dim, no controls")
+    check(endedLunch?.isOver(cancelActive: true) == false, "a cancel still undoable or in flight keeps the ended block live")
+    check(upcomingLate?.isOver(cancelActive: false) == false && upcomingLate?.isOver(cancelActive: true) == false,
+          "a block that has not ended is never over")
     check(DayTimeline.blurb(window([DayBlockInput(id: "coffee", title: "Coffee", start: at(11.25), end: at(11.75), kind: "calendar")], now: now),
                             needs: [], isToday: true, endOfDay: dayEnd, clock: clock) == "Nothing is planned for the rest of today.",
           "the blurb ignores what is already over")
@@ -218,6 +229,30 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.needsYou([], more: 0, clock: clock) == nil, "nothing to list: no line, not an empty header")
     check(DayTimeline.needsYou([NeedsYouInput(kind: "due", text: "nothing", due: at(15))], more: 0, clock: clock) == nil,
           "a junk title alone makes no line")
+
+    let structuredNeeds = DayTimeline.needsYouList([
+        NeedsYouInput(id: "late", kind: "overdue", text: "Pay rent", due: dayStart - 5 * hour),
+        NeedsYouInput(id: "timed", kind: "due", text: "PA 2", due: at(23.5)),
+        NeedsYouInput(id: "all-day", kind: "due", text: "Library book", due: at(0), allDay: true),
+        NeedsYouInput(id: "no-date", kind: "due", text: "Date withheld"),
+        NeedsYouInput(id: "task", kind: "plan", text: "Finish slides"),
+        NeedsYouInput(id: "mail", kind: "mail", text: "“Lab feedback” from Dr. Patel"),
+        NeedsYouInput(id: "text", kind: "text", text: "a text from Mom"),
+    ], more: 2, clock: clock)
+    check(structuredNeeds?.rows.map(\.id) == ["late", "timed", "all-day", "no-date", "task", "mail", "text"],
+          "structured needs-you keeps service item identities and order")
+    check(structuredNeeds?.rows.map(\.label) == ["OVERDUE", "DUE 23:30", "DUE TODAY", "DUE", "PLAN", "MAIL", "TEXT"],
+          "structured needs-you uses readable labels and leaves missing dates unspecified")
+    check(structuredNeeds?.rows.map(\.text) == ["Pay rent", "PA 2", "Library book", "Date withheld", "Finish slides",
+                                                "“Lab feedback” from Dr. Patel", "a text from Mom"],
+          "structured needs-you preserves each selected item as a separate row")
+    check(structuredNeeds?.rows.map(\.overdue) == [true, false, false, false, false, false, false],
+          "only overdue rows receive overdue emphasis")
+    check(structuredNeeds?.more == 2, "structured needs-you retains the service's additional-item count")
+    check(DayTimeline.needsYouList([NeedsYouInput(kind: "due", text: "Date withheld")], more: -1, clock: clock)?.more == 0,
+          "structured needs-you never displays a negative additional-item count")
+    check(DayTimeline.needsYouList([NeedsYouInput(kind: "due", text: "nothing")], more: 4, clock: clock) == nil,
+          "junk-only selected items do not create a needs-you section")
 
     // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!

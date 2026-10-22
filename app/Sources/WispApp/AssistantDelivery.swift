@@ -2,6 +2,37 @@ import Foundation
 import CoreFoundation
 import CryptoKit
 
+/// Pure receipt boundary, also exercised with fault-injected saves in offline QA.
+struct CalendarCreationFacts: Equatable {
+    let title: String
+    let start: Double
+    let end: Double
+    let allDay: Bool
+}
+
+enum CalendarCreationReceipt {
+    static func perform(expected: CalendarCreationFacts, save: () throws -> String?,
+                        readback: (String) -> CalendarCreationFacts?) -> [String: Any] {
+        guard !expected.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              expected.start.isFinite, expected.end.isFinite, expected.start > 0,
+              expected.end > expected.start else {
+            return ["ok": false, "status": "failed", "error": "Invalid Calendar creation bounds"]
+        }
+        func unknown() -> [String: Any] {
+            ["ok": false, "status": "unknown",
+             "error": "Calendar save outcome is unknown; check Calendar before retrying"]
+        }
+        do {
+            guard let id = try save(), !id.isEmpty, let observed = readback(id),
+                  observed.title == expected.title, observed.allDay == expected.allDay,
+                  abs(observed.start - expected.start) < 1, abs(observed.end - expected.end) < 1 else {
+                return unknown()
+            }
+            return ["ok": true, "source_id": id]
+        } catch { return unknown() }
+    }
+}
+
 /// Atomic local receipts precede ACKs. Calendar effects require an identity-
 /// and payload-bound claim; a cached result survives every unconfirmed POST.
 @MainActor
@@ -31,7 +62,7 @@ final class AssistantDelivery {
         return value.doubleValue
     }
 
-    static func validReminderDate(_ value: Any?) -> Bool {
+    nonisolated static func validReminderDate(_ value: Any?) -> Bool {
         guard let value = value as? String,
               value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", options: .regularExpression) != nil else { return false }
         let parts = value.split(separator: "-").compactMap { Int($0) }
@@ -42,6 +73,22 @@ final class AssistantDelivery {
         guard let date = calendar.date(from: components) else { return false }
         let readback = calendar.dateComponents([.year, .month, .day], from: date)
         return readback.year == parts[0] && readback.month == parts[1] && readback.day == parts[2]
+    }
+
+    /// An all-day event is one civil day in its named zone, including 23/25-hour days.
+    nonisolated static func allDayCalendarBounds(day: String, timezone: String) -> (start: Double, minutes: Int)? {
+        guard validReminderDate(day), let zone = TimeZone(identifier: timezone) else { return nil }
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        guard let start = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])),
+              let end = calendar.date(byAdding: .day, value: 1, to: start) else { return nil }
+        let actual = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: start)
+        guard actual.year == parts[0], actual.month == parts[1], actual.day == parts[2],
+              actual.hour == 0, actual.minute == 0 else { return nil }
+        let minutes = end.timeIntervalSince(start) / 60
+        guard minutes.isFinite, minutes.rounded() == minutes, (1...10080).contains(minutes) else { return nil }
+        return (start.timeIntervalSince1970, Int(minutes))
     }
 
     static func calendarPayload(_ value: [String: Any], kind: String) -> [String: Any]? {
@@ -133,9 +180,17 @@ final class AssistantDelivery {
         }
         let create = kind == "create_calendar_event"
         guard create || kind == "delete_calendar_event" else { return nil }
-        let keys: Set<String> = create
+        var keys: Set<String> = create
             ? ["type", "action_id", "title", "when_ts", "duration_min", "location"]
             : ["type", "action_id", "source_id", "when_ts"]
+        if create && value["all_day"] != nil {
+            guard jsonBoolean(value["all_day"]) == true, let day = value["due_date"] as? String,
+                  let zone = value["timezone"] as? String,
+                  let bounds = allDayCalendarBounds(day: day, timezone: zone),
+                  let start = number(value["when_ts"]), abs(start - bounds.start) < 1,
+                  number(value["duration_min"]) == Double(bounds.minutes) else { return nil }
+            keys.formUnion(["all_day", "due_date", "timezone"])
+        }
         guard Set(value.keys) == keys, value["type"] as? String == kind,
               text(value["action_id"]) != nil, let when = number(value["when_ts"]), when > 0 else { return nil }
         var result = value

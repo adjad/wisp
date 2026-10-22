@@ -84,6 +84,35 @@ final class ReceiptServer {
 @main
 struct AssistantDeliveryChecks {
     @MainActor static func main() async throws {
+        let facts = CalendarCreationFacts(title: "Exam", start: 2e9, end: 2e9 + 3600, allDay: false)
+        var saves = 0
+        let saveThenThrow = CalendarCreationReceipt.perform(expected: facts, save: {
+            saves += 1
+            throw URLError(.networkConnectionLost)
+        }, readback: { _ in facts })
+        precondition(saves == 1 && saveThenThrow["status"] as? String == "unknown")
+        for observed: CalendarCreationFacts? in [nil,
+            .init(title: "Other", start: facts.start, end: facts.end, allDay: false),
+            .init(title: facts.title, start: facts.start + 3600, end: facts.end, allDay: false),
+            .init(title: facts.title, start: facts.start, end: facts.end, allDay: true)] {
+            let result = CalendarCreationReceipt.perform(expected: facts, save: { "fixture" }, readback: { _ in observed })
+            precondition(result["status"] as? String == "unknown")
+        }
+        precondition(CalendarCreationReceipt.perform(expected: facts, save: { nil }, readback: { _ in facts })["status"] as? String == "unknown")
+        precondition(CalendarCreationReceipt.perform(expected: facts, save: { "fixture" }, readback: { _ in facts })["ok"] as? Bool == true)
+        // Native and backend must agree on civil-date bounds across DST.
+        for (day, minutes) in [("2036-03-09", 1380), ("2036-11-02", 1500), ("2036-10-29", 1440)] {
+            let bounds = AssistantDelivery.allDayCalendarBounds(day: day, timezone: "America/Los_Angeles")!
+            precondition(bounds.minutes == minutes)
+            let payload: [String: Any] = ["type": "create_calendar_event", "action_id": "all-day-calendar",
+                "title": "Exam", "when_ts": bounds.start, "duration_min": bounds.minutes, "location": "",
+                "all_day": true, "due_date": day, "timezone": "America/Los_Angeles"]
+            precondition(AssistantDelivery.calendarPayload(payload, kind: "create_calendar_event") != nil)
+            for invalid: [String: Any] in [["all_day": 1], ["due_date": "2036-02-30"],
+                ["when_ts": bounds.start + 3600], ["timezone": "invalid"], ["invitees": ["Other"]]] {
+                precondition(AssistantDelivery.calendarPayload(payload.merging(invalid) { _, b in b }, kind: "create_calendar_event") == nil)
+            }
+        }
         let datePayload: [String: Any] = ["type": "create_reminder", "action_id": "all-day-fixture",
             "title": "Review report", "commitment_kind": "reminder", "all_day": true, "due_date": "2026-10-20"]
         precondition(AssistantDelivery.calendarPayload(datePayload, kind: "create_reminder") != nil)

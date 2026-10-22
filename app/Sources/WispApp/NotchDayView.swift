@@ -13,14 +13,14 @@ import AppKit
 ///
 /// The full planner (task editor, pins, working hours, the daily email) stays
 /// in the Wisp window, because this non-activating panel can't host sheets.
-/// The plan loads while this tab or Brief is on screen, never at launch or on
-/// hover of the bar.
+/// The app keeps the plan current in the background, so opening either tab
+/// shows the latest loaded day immediately.
 struct NotchDayView: View {
     @ObservedObject var model: OverlayModel
     @ObservedObject var today: TodayModel
     // Plans caught in texts and the stale-reminder questions come from shared
-    // models (DayCards) that outlive a tab switch and load with the plan on
-    // Brief, so the Day tab's first frame already holds every card.
+    // models (DayCards) that outlive a tab switch and load in the background
+    // with the plan, so the Day tab's first frame already holds every card.
     @ObservedObject private var attention = DayCards.attention
     @State private var minutes = 45
     @State private var addingTask = false
@@ -365,7 +365,8 @@ struct NotchDayView: View {
 
     /// A short block keeps only its title; its detail is in the VoiceOver label.
     private func blockView(_ item: DayItem, compact: Bool) -> some View {
-        HStack(alignment: compact ? .center : .top, spacing: 6) {
+        let over = item.isOver(cancelActive: cancelActive(item))
+        return HStack(alignment: compact ? .center : .top, spacing: 6) {
             let status = cancelStatus(item)
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title).font(.system(size: 12, weight: .semibold))
@@ -378,19 +379,26 @@ struct NotchDayView: View {
                 }
             }
             Spacer(minLength: 2)
-            // What's over has nothing left to act on.
-            if !item.past { trailing(item) }
+            // What's over has nothing left to act on; a cancel still in its Undo
+            // window (or in flight) keeps the block live until it settles.
+            if !over { trailing(item) }
         }
         .padding(.horizontal, 8).padding(.vertical, compact ? 1 : 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(DayInk.fill(item.style))
         .overlay(DayInk.border(item.style))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .opacity(item.past ? 0.45 : 1)
+        .opacity(over ? 0.45 : 1)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(item.title), \(detail(item)), \(today.clock(item.start)) to \(today.clock(item.end))"
                             + (item.members.count > 1 ? ", covers " + item.members.map(\.title).joined(separator: "; ") : "")
                             + (item.past ? ", already over" : ""))
+    }
+
+    /// A cancel of this block that is still in its Undo window or being sent.
+    private func cancelActive(_ item: DayItem) -> Bool {
+        guard let event = calendarEvent(for: item) else { return false }
+        return checkIn.pendingCancels[event.id] != nil || checkIn.cancelling.contains(event.id)
     }
 
     /// Where a timeline cancel of this block stands, for the detail line: the
@@ -751,37 +759,23 @@ extension TodayPlan {
     }
 }
 
-/// While Brief or Day is on screen: follow the clock and keep the plan current.
+/// Data refresh belongs to the app. These views only size the panel when the
+/// shared plan changes; their disappearance never cancels a network request.
 struct DayRefreshLoop: ViewModifier {
     let model: OverlayModel
-    let today: TodayModel
+    @ObservedObject var today: TodayModel
 
     func body(content: Content) -> some View {
-        content.task {
-            while !Task.isCancelled {
-                today.reconcileClock()
-                await today.refresh()
-                // The evening check-in loads with the plan, on Brief as well as
-                // Day, so the Day tab's first frame already holds it and the
-                // panel is sized once (CheckInView.swift).
-                if today.isShowingCurrentDay {
-                    await CheckInModel.shared.load(day: today.day, timezone: today.timezone.identifier)
-                    if model.checkInDue { model.checkInDue = false }
-                }
-                // The Day tab's cards load here too, on Brief as well as Day,
-                // before the panel is sized.
-                await DayCards.refresh()
-                model.onResize()
-                do { try await Task.sleep(for: .seconds(30)) } catch { break }
-            }
+        content.onReceive(today.$plan) { _ in
+            model.onResize()
         }
     }
 }
 
 /// The Day tab's card sources: plans caught in texts and the stale-reminder
 /// questions. One instance each for the whole app, so switching tabs keeps
-/// what was loaded instead of starting empty and refetching. DayRefreshLoop
-/// refreshes them with the plan, while Brief or Day is on screen.
+/// what was loaded instead of starting empty and refetching. The app refreshes
+/// them with the plan even while the notch is collapsed.
 @MainActor
 enum DayCards {
     static var attention = AttentionModel()

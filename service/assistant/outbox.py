@@ -8,6 +8,7 @@ import hashlib
 import json
 import uuid
 import time
+from typing import Callable
 
 from service.assistant.hub import hub
 
@@ -85,12 +86,15 @@ async def app_connected(grace: float | None = None, *, via=None) -> bool:
 
 
 async def request(event_type: str, payload: dict,
-                  timeout: float = DEFAULT_TIMEOUT_S) -> dict:
+                  timeout: float = DEFAULT_TIMEOUT_S, *, idempotency_key: str | None = None,
+                  before_dispatch: Callable[[], str | None] | None = None) -> dict:
     from service import diagnostics
     standalone = diagnostics.current_id() is None
     with diagnostics.span("native") as trace:
         trace.event("requested", component="native", native_operation=event_type)
-        result = await _request(event_type, payload, timeout)
+        result = (await _request(event_type, payload, timeout) if idempotency_key is None and before_dispatch is None else
+                  await _request(event_type, payload, timeout, idempotency_key=idempotency_key,
+                                 before_dispatch=before_dispatch))
         outcome = "succeeded" if result.get("ok") is True else "unknown" if result.get("status") == "unknown" else "failed"
         trace.event("result", component="native", ok=result.get("ok") is True, native_outcome=outcome)
         if standalone and outcome != "succeeded":
@@ -99,7 +103,8 @@ async def request(event_type: str, payload: dict,
 
 
 async def _request(event_type: str, payload: dict,
-                   timeout: float = DEFAULT_TIMEOUT_S) -> dict:
+                   timeout: float = DEFAULT_TIMEOUT_S, *, idempotency_key: str | None = None,
+                   before_dispatch: Callable[[], str | None] | None = None) -> dict:
     """Ask the app to do something and wait for its result.
 
     Returns {"ok": bool, "error": str, ...}. Cancellation propagates.
@@ -108,6 +113,27 @@ async def _request(event_type: str, payload: dict,
                                "cancel_calendar_event"}
     reminder = event_type in {"create_reminder", "update_reminder", "complete_reminder", "delete_reminder"}
     native = calendar or reminder
+    capture_id = None
+    if idempotency_key is not None:
+        # Only the private capture path supplies a durable semantic key. A key
+        # can never be repurposed for another payload, even across restarts.
+        if (event_type != "create_calendar_event" or not isinstance(idempotency_key, str)
+                or not idempotency_key.startswith("capture:") or len(idempotency_key) > 200):
+            return {"ok": False, "status": "failed", "error": "Invalid Calendar capture identity"}
+        capture_id = "calendar-capture:" + hashlib.sha256(idempotency_key.encode()).hexdigest()
+        try:
+            expected = hub.store.calendar_payload(event_type, {"type": event_type,
+                                                               "action_id": capture_id, **payload})
+            previous = hub.store.event_by_key("action:" + capture_id)
+            if previous:
+                if previous["payload"] != expected:
+                    return {"ok": False, "status": "failed", "error": "Calendar capture identity changed"}
+                if previous["result"]:
+                    return previous["result"]
+                if previous["claim_token"]:
+                    return {"ok": False, "status": "unknown", "error": "Prior Calendar capture is unconfirmed"}
+        except Exception:
+            return {"ok": False, "status": "failed", "error": "Calendar capture claim store is unavailable"}
     outbound = event_type in {"send_email", "send_message", "forward_email", "reply_to_email"}
     if outbound:
         # Only the host can prove a send never reached publication. Native
@@ -191,7 +217,7 @@ async def _request(event_type: str, payload: dict,
         else:
             action_id = base_action_id
     else:
-        action_id = uuid.uuid4().hex[:12]
+        action_id = capture_id or uuid.uuid4().hex[:12]
     fut = _pending.get(action_id)
     first_waiter = fut is None
     if fut is None:
@@ -200,6 +226,12 @@ async def _request(event_type: str, payload: dict,
     _pending_waiters[action_id] = _pending_waiters.get(action_id, 0) + 1
     dispatch_started = False
     try:
+        if before_dispatch is not None:
+            # The app may have spent seconds reconnecting since authorization.
+            # No await separates this renewed check from synchronous publication.
+            reason = before_dispatch()
+            if reason:
+                return {"ok": False, "status": "blocked", "error": reason}
         event = {"type": event_type, "action_id": action_id, **payload}
         if native and first_waiter:
             await hub.publish(event, dedupe_key="action:" + action_id,

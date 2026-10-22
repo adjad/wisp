@@ -141,7 +141,7 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
             outcomes.append(Outcome(item.id, "shadow", plan.title, detail))
             continue
 
-        if ledger.count_since(local_midnight(now, tz), CAP_STATES, exclude=item.id) >= settings.daily_cap:
+        if ledger.effect_count_since(local_midnight(now, tz), exclude=item.id) >= settings.daily_cap:
             ledger.finish(item.id, "capped", detail, now)
             outcomes.append(Outcome(item.id, "capped", plan.title, detail))
             continue
@@ -209,6 +209,8 @@ def _already_acted(ledger: Ledger, resolved, context: str, thread: str, now: flo
     acted on long before its event is still found."""
     rows = ledger.rows_relevant(now - LOOKBACK_S, now, DEDUP_STATES.get(mode, DEDUP_STATES["live"]))
     for r in rows:
+        if r["source_id"].startswith("preview:"):
+            continue  # paired previews have no reminder effect
         # The quote, not the title: a title opens with the sender's label ("Mom:", "Text from"),
         # which another conversation's words could match.
         pseudo = {"id": r["source_id"], "title": r["detail"].get("quote") or r["title"], "status": "active",
