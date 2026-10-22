@@ -2,8 +2,9 @@ import AppKit
 import Darwin
 import Foundation
 
-/// Actual production interaction seams, supplied completions and recording
-/// actions only. Never creates an app, a default OverlayModel or a live client.
+/// Supplied completions and recording actions. Inherited AssistantDelivery still
+/// derives a Foundation receipt path: OS home denial must precede construction.
+/// Never creates an app or invokes a live service/provider/native-data action.
 @main
 enum ReleaseInteractionChecks {
     struct Failure: Error, CustomStringConvertible { let description: String }
@@ -25,32 +26,59 @@ enum ReleaseInteractionChecks {
     }
 
     static func isolationChecks() throws {
+        // This MUST be first: a forged outer-isolation marker or an unconfined
+        // invocation fails without constructing a model or probing the network.
+        let foundationHome = FileManager.default.homeDirectoryForCurrentUser.path
+        let fd = open(foundationHome + "/.wisp-release-denial-" + UUID().uuidString, O_RDONLY)
+        let homeError = errno
+        if fd >= 0 { close(fd); throw Failure(description: "Real-home read denial is absent") }
+        try check([EPERM, EACCES].contains(homeError), "Real-home reads must be denied; ENOENT does not prove isolation")
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        try check(arguments.isEmpty || arguments == ["--outer-isolation"], "Unknown fixture isolation mode")
+        let outer = arguments == ["--outer-isolation"]
         let env = ProcessInfo.processInfo.environment
-        guard let root = env["WISP_RELEASE_INTERACTIONS_ROOT"], root.hasPrefix("/private/tmp/wisp-release-interactions-"),
-              let denied = env["WISP_RELEASE_INTERACTIONS_DENIED"], denied.hasPrefix(root + "/denied/"),
-              let realHome = env["WISP_RELEASE_INTERACTIONS_REAL_HOME"], realHome.hasPrefix("/Users/") else {
+        guard let rawRoot = env["WISP_RELEASE_INTERACTIONS_ROOT"],
+              let rawParent = env["WISP_RELEASE_INTERACTIONS_PARENT"],
+              let denied = env["WISP_RELEASE_INTERACTIONS_DENIED"],
+              let state = env["WISP_HOME"], let temporary = env["TMPDIR"],
+              env["WISP_RELEASE_INTERACTIONS_REAL_HOME"] == foundationHome else {
             throw Failure(description: "Missing owned fixture and real-home denial configuration")
         }
-        do {
-            _ = try Data(contentsOf: URL(fileURLWithPath: denied))
-            throw Failure(description: "Synthetic denied-file control was readable")
-        } catch let failure as Failure { throw failure }
-        catch {
-            let error = error as NSError
-            try check((error.domain == NSCocoaErrorDomain && error.code == CocoaError.fileReadNoPermission.rawValue)
-                || (error.domain == NSPOSIXErrorDomain && [EPERM, EACCES].contains(Int32(error.code))),
-                "Denied fixture must fail with permission denial")
+        let parent = URL(fileURLWithPath: rawParent).standardizedFileURL.resolvingSymlinksInPath().path
+        let root = URL(fileURLWithPath: rawRoot).standardizedFileURL.resolvingSymlinksInPath().path
+        try check(parent == rawParent && root == rawRoot && root.hasPrefix(parent + "/wisp-release-interactions-"),
+                  "Root must be a physical child of the supplied fixture TMPDIR")
+        for directory in [parent, root, state, temporary] {
+            let url = URL(fileURLWithPath: directory).standardizedFileURL.resolvingSymlinksInPath()
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            try check(url.path == directory && attributes[.type] as? FileAttributeType == .typeDirectory
+                && (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+                "Fixture directories must be owned physical directories")
+        }
+        try check(state.hasPrefix(root + "/state-") && temporary.hasPrefix(root + "/tmp-")
+                  && denied.hasPrefix(root + "/denied-") && denied.hasSuffix("/synthetic-control"),
+                  "Fixture state must remain beneath the supplied root")
+        if outer {
+            // Canonical isolation allows owned scratch. Its real-home denial,
+            // proved above, protects inherited Foundation stores instead.
+            try check(try String(contentsOfFile: denied, encoding: .utf8) == "Synthetic denied fixture only\n",
+                      "Outer mode must retain its seeded scratch positive control")
+        } else {
+            do {
+                _ = try Data(contentsOf: URL(fileURLWithPath: denied))
+                throw Failure(description: "Synthetic denied-file control was readable")
+            } catch let failure as Failure { throw failure }
+            catch {
+                let error = error as NSError
+                try check((error.domain == NSCocoaErrorDomain && error.code == CocoaError.fileReadNoPermission.rawValue)
+                    || (error.domain == NSPOSIXErrorDomain && [EPERM, EACCES].contains(Int32(error.code))),
+                    "Denied fixture must fail with permission denial")
+            }
         }
         let control = URL(fileURLWithPath: root).appendingPathComponent("positive-control")
         let data = Data("synthetic fixture only".utf8)
         try data.write(to: control)
         try check(try Data(contentsOf: control) == data, "Owned fixture must remain readable/writable")
-        // A nonexistent random path tests the real-home policy without reading
-        // an existing user file or creating anything if the sandbox is absent.
-        let fd = open(realHome + "/.wisp-release-denial-" + UUID().uuidString, O_RDONLY)
-        let homeError = errno
-        if fd >= 0 { close(fd); throw Failure(description: "Real-home read denial is absent") }
-        try check([EPERM, EACCES].contains(homeError), "Real-home reads must be denied")
         let socketFD = socket(AF_INET, SOCK_STREAM, 0)
         if socketFD >= 0 {
             defer { close(socketFD) }
@@ -68,6 +96,7 @@ enum ReleaseInteractionChecks {
         } else {
             try check([EPERM, EACCES].contains(errno), "Socket creation must fail only by policy")
         }
+        print("Isolation: actual Foundation home/network denied; owned scratch controls passed (\(outer ? "outer" : "direct"))")
     }
 
     actor DeferredImage {
