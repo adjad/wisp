@@ -29,10 +29,10 @@ enum ReleaseInteractionChecks {
         // This MUST be first: a forged outer-isolation marker or an unconfined
         // invocation fails without constructing a model or probing the network.
         let foundationHome = FileManager.default.homeDirectoryForCurrentUser.path
-        let fd = open(foundationHome + "/.wisp-release-denial-" + UUID().uuidString, O_RDONLY)
+        let fd = open(foundationHome, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         let homeError = errno
-        if fd >= 0 { close(fd); throw Failure(description: "Real-home read denial is absent") }
-        try check([EPERM, EACCES].contains(homeError), "Real-home reads must be denied; ENOENT does not prove isolation")
+        if fd >= 0 { close(fd); throw Failure(description: "Real-home directory isolation is absent (open succeeded)") }
+        try check([EPERM, EACCES].contains(homeError), "Real-home directory open must be denied; ENOENT does not prove isolation")
         let arguments = Array(CommandLine.arguments.dropFirst())
         try check(arguments.isEmpty || arguments == ["--outer-isolation"], "Unknown fixture isolation mode")
         let outer = arguments == ["--outer-isolation"]
