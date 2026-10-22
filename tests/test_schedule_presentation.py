@@ -81,10 +81,10 @@ def test_busy_month_is_a_clean_agenda_not_a_raw_storage_dump(monkeypatch):
 
     result = asyncio.run(assistant_tools.get_upcoming(period="this month"))
 
-    assert result.startswith("Upcoming — September 2026")
-    assert "Already happened" not in result
-    assert "Today · Wed Sep 9" in result
-    assert "Calendar events" in result and "Reminders" in result
+    assert result.startswith("September 2026: ")
+    assert "item(s)" not in result and "[Calendar event]" not in result
+    assert "**Today · Wed, Sep 9**" in result
+    assert "*Reminders*" in result
     assert "Calendar 0" in result and "Reminder 12" in result
     assert "Room 301" in result
     assert result.count("Call dentist") == 1
@@ -249,8 +249,8 @@ def test_month_range_keeps_future_month_items_and_separates_sources(monkeypatch)
 
     assert "September event" in result and "September reminder" in result
     assert "October event" not in result
-    assert ("Calendar events\n  - " + datetime.fromtimestamp(rows[0]['when_ts']).astimezone().strftime('%-I:%M %p %Z%z') + " — September event @ Campus") in result
-    assert ("Reminders\n  - " + datetime.fromtimestamp(rows[1]['when_ts']).astimezone().strftime('%-I:%M %p %Z%z') + " — September reminder") in result
+    assert ("- **" + datetime.fromtimestamp(rows[0]['when_ts']).strftime('%-I:%M %p') + "** — September event · Campus\n*Reminders*\n- **"
+            + datetime.fromtimestamp(rows[1]['when_ts']).strftime('%-I:%M %p') + "** — September reminder") in result
 
 
 def test_fresh_empty_calendar_is_a_genuine_empty_state(monkeypatch):
