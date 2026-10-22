@@ -365,7 +365,8 @@ struct NotchDayView: View {
 
     /// A short block keeps only its title; its detail is in the VoiceOver label.
     private func blockView(_ item: DayItem, compact: Bool) -> some View {
-        HStack(alignment: compact ? .center : .top, spacing: 6) {
+        let over = item.isOver(cancelActive: cancelActive(item))
+        return HStack(alignment: compact ? .center : .top, spacing: 6) {
             let status = cancelStatus(item)
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title).font(.system(size: 12, weight: .semibold))
@@ -378,19 +379,26 @@ struct NotchDayView: View {
                 }
             }
             Spacer(minLength: 2)
-            // What's over has nothing left to act on.
-            if !item.past { trailing(item) }
+            // What's over has nothing left to act on; a cancel still in its Undo
+            // window (or in flight) keeps the block live until it settles.
+            if !over { trailing(item) }
         }
         .padding(.horizontal, 8).padding(.vertical, compact ? 1 : 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(DayInk.fill(item.style))
         .overlay(DayInk.border(item.style))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .opacity(item.past ? 0.45 : 1)
+        .opacity(over ? 0.45 : 1)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(item.title), \(detail(item)), \(today.clock(item.start)) to \(today.clock(item.end))"
                             + (item.members.count > 1 ? ", covers " + item.members.map(\.title).joined(separator: "; ") : "")
                             + (item.past ? ", already over" : ""))
+    }
+
+    /// A cancel of this block that is still in its Undo window or being sent.
+    private func cancelActive(_ item: DayItem) -> Bool {
+        guard let event = calendarEvent(for: item) else { return false }
+        return checkIn.pendingCancels[event.id] != nil || checkIn.cancelling.contains(event.id)
     }
 
     /// Where a timeline cancel of this block stands, for the detail line: the
