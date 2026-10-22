@@ -1398,6 +1398,13 @@ async def run_agent(
     # the bounded sanitized evidence payload carried by DisplayOnlyToolResult;
     # the full publisher display still reaches only the final UI event.
     # main.py persists our safe return value separately from emitted text.
+    # Dry runs describe tool plans over supplied fixtures. Enforce isolation
+    # here as well as at /agent so another caller cannot reopen saved context.
+    if test_mode:
+        include_identity_context = False
+        include_memory_context = False
+        allow_skill_context = False
+        active_skill = ""
     news_displays: dict[str, str] = {}
     # A capability pasted/replayed from a transcript is not a continuation
     # grant. Only this turn's local planner may put one in ephemeral context.
@@ -1886,7 +1893,7 @@ async def run_agent(
         """Skill tools this run must not offer or run. Read from the registry NOW, never
         from a snapshot taken at the start of the turn: create_tool reloads skills, so a
         skill tool can be registered mid-turn and must be covered the moment it exists."""
-        if not skills_external:
+        if test_mode or not skills_external:
             return frozenset()
         from service.skills import skill_tool_names
         return skill_tool_names()

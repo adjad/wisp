@@ -310,3 +310,241 @@ def test_bundled_synthetic_calendar_move_preserves_existing_event():
     move = next(row for row in rows if row["id"] == "ATC-037")
     assert move["expected"]["tools"] == ["get_upcoming", "update_event"]
     assert any("does not create a duplicate" in check for check in move["expected"]["behavior"])
+
+
+# Reuse the isolated real-/agent harness; only providers and data stores are
+# replaced. Restore run_agent below so these checks exercise its real loaders.
+from tests.test_model_led_entrypoint import endpoint as synthetic_agent_endpoint
+
+
+@pytest.mark.parametrize("model_led", [False, True])
+@pytest.mark.parametrize("test_mode", [False, True])
+def test_synthetic_endpoint_never_loads_saved_context(
+        synthetic_agent_endpoint, monkeypatch, model_led, test_mode):
+    from service import main, skills
+    from service.agent import loop
+    from service.memory import identity, profile, prompt_blocks
+    from service.router.router import RouteDecision
+    from service.tools import registry
+    state = synthetic_agent_endpoint
+    calls = []
+    sentinel = "PRIVATE_CONTEXT_SENTINEL"
+
+    def spy(name, result):
+        def read(*args, **kwargs):
+            calls.append(name)
+            return result
+        return read
+
+    monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "1" if model_led else "0")
+    monkeypatch.setattr(identity, "identity_prompt_block", spy("identity", sentinel))
+    monkeypatch.setattr(identity, "user_name", spy("user_name", sentinel))
+    monkeypatch.setattr(profile, "profile_block", spy("profile", sentinel))
+    monkeypatch.setattr(prompt_blocks, "memory_block", spy("memory", sentinel))
+    monkeypatch.setattr(main, "memory_block", spy("main_memory", sentinel))
+    monkeypatch.setattr(skills, "select_for_turn", spy("select_skill", ""))
+    monkeypatch.setattr(skills, "turn_skill_names", spy("turn_skills", []))
+    monkeypatch.setattr(skills, "digest_used_skill", spy("digest_skills", False))
+    monkeypatch.setattr(skills, "skill_tool_names", spy("skill_tools", frozenset()))
+    monkeypatch.setattr(skills, "skills_context_block", spy("skills_context", sentinel))
+    monkeypatch.setattr(main, "run_agent", loop.run_agent)
+
+    async def probe(**args):
+        state.effects.append("read")
+        return "Synthetic fixture only."
+    monkeypatch.setitem(registry.REGISTRY, "corpus_context_probe", Tool(
+        name="corpus_context_probe", description="Synthetic probe", category="fs_read",
+        parameters={"type": "object", "properties": {}}, func=probe))
+
+    async def route(prompt, **kwargs):
+        return RouteDecision(role="agent", model=state.target.model, needs_tools=True,
+                             source="default", reason="Synthetic fixture route",
+                             tool_subset=["corpus_context_probe"])
+    monkeypatch.setattr(main, "route", route)
+    if model_led:
+        monkeypatch.setattr(main, "_model_led_preload", lambda prompt: ["corpus_context_probe"])
+    script = [[{"id": "fixture-probe", "function": {
+        "name": "corpus_context_probe", "arguments": "{}"}}], "Synthetic plan."]
+    state.script[:] = script
+    state.shared.script[:] = script
+    events = state.request(
+        "Wisp evaluation case ATC-001. Synthetic fixture: fictional document. "
+        "Conversation transcript: User: examine the fixture document.", test_mode=test_mode)
+    requests = [*state.shared.requests, *(r for c in state.owned for r in c.requests)]
+    assert requests, "The real agent loop must reach scripted inference"
+    assert any(event["type"] == "tool_call" for event in events)
+    if test_mode:
+        assert calls == []
+        assert sentinel not in json.dumps(requests)
+        assert state.effects == []
+        assert any(event.get("test_mode") is True for event in events if event["type"] == "tool_call")
+    else:
+        assert {"identity", "profile", "memory", "select_skill", "skills_context"} <= set(calls)
+        assert sentinel in json.dumps(requests)
+        assert state.effects == ["read"]
+
+
+@pytest.fixture
+def corpus_mail_reader(monkeypatch):
+    from service.tools import email_tools as email
+    warmed = []
+
+    async def warm(**kwargs):
+        warmed.append(kwargs)
+    monkeypatch.setattr(email, "_ensure_email_cache", warm)
+    monkeypatch.setattr(email, "_purge_raw_if_expired", lambda: None)
+    monkeypatch.setattr(email, "email_freshness_warning", lambda *args, **kwargs: "")
+    monkeypatch.setattr(email, "raw_email_inventory", lambda: None)
+    monkeypatch.setattr(email, "_external_accounts", {})
+    monkeypatch.setattr(email, "_email_available", True)
+
+    def install(rows):
+        raw = "\x02".join("\x01".join([
+            str(1700000000 + i), "R", "Fixture", "fixture-account", sender, recipients,
+            subject, f"fixture-{i}@example.invalid", body])
+            for i, (sender, recipients, subject, body) in enumerate(rows))
+        monkeypatch.setattr(email, "_raw_emails", raw)
+    return email, install, warmed
+
+
+def test_corpus_mail_reader_matches_exact_headers_only(corpus_mail_reader):
+    email, install, _ = corpus_mail_reader
+    target = "alice@example.invalid"
+    install([
+        ("Other <other@example.invalid>", "me@example.invalid", "BODYONLY", target),
+        ("Other <other@example.invalid>", "me@example.invalid", target + " SUBJECTONLY", "unrelated"),
+        ("Other <alice@example.invalid.evil>", "me@example.invalid", "SUFFIX", "unrelated"),
+        ("Other <notalice@example.invalid>", "me@example.invalid", "PREFIX", "unrelated"),
+        ("Other <alice+tag@example.invalid>", "me@example.invalid", "PLUSALIAS", "unrelated"),
+        ('"alice@example.invalid" <other@example.invalid>', "me@example.invalid", "SPOOF", "unrelated"),
+        ("Alice Example <ALICE@EXAMPLE.INVALID>", "me@example.invalid", "EXACTSENDER", "source one"),
+        ("Other <other@example.invalid>", "first@example.invalid, alice@example.invalid", "SECONDRECIPIENT", "source two"),
+    ])
+    with email.corpus_mail_identifier_scope(target):
+        result = asyncio.run(email.view_emails_impl(query=target, strict_match=True, count=3))
+    assert "EXACTSENDER" in result and "SECONDRECIPIENT" in result
+    assert not any(marker in result for marker in ("BODYONLY", "SUBJECTONLY", "SUFFIX", "PREFIX", "PLUSALIAS", "SPOOF"))
+
+
+@pytest.mark.parametrize("target,sender,expected", [
+    ("alice@gmail", "Alice <alice@gmail.com>", False),
+    ("alice@gmail", "Alice <alice@gmail>", True),
+    ("Alice Example", '"Alice Example" <alice@example.invalid>', True),
+    ("Alice Example", '"Alice Example Two" <alice@example.invalid>', False),
+    ("Other Name", "Alice <alice@example.invalid>", False),
+])
+def test_corpus_mail_literal_identifiers_and_bounded_absence(corpus_mail_reader, target, sender, expected):
+    email, install, _ = corpus_mail_reader
+    install([(sender, "me@example.invalid", "FIXTUREMATCH", "synthetic body")])
+    with email.corpus_mail_identifier_scope(target):
+        result = asyncio.run(email.view_emails_impl(query=target, strict_match=True))
+    assert ("FIXTUREMATCH" in result) is expected
+    if not expected:
+        assert "No emails matching" in result and "recent inbox Wisp searched" in result
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_ordinary_mail_topic_search_keeps_body_matching(corpus_mail_reader, strict):
+    email, install, _ = corpus_mail_reader
+    install([("Other <other@example.invalid>", "me@example.invalid", "TOPICRESULT", "financial planning notes")])
+    result = asyncio.run(email.view_emails_impl(query="financial", strict_match=strict))
+    assert "TOPICRESULT" in result
+
+
+def test_corpus_mail_scope_fails_closed_and_resets_on_error(corpus_mail_reader):
+    email, install, warmed = corpus_mail_reader
+    install([("Alice <alice@example.invalid>", "me@example.invalid", "FIXTURE", "financial notes")])
+    with pytest.raises(RuntimeError):
+        with email.corpus_mail_identifier_scope("alice@example.invalid"):
+            for arguments in ({}, {"query": "other@example.invalid", "strict_match": True},
+                              {"query": "alice@example.invalid", "strict_match": False}):
+                result = asyncio.run(email.view_emails_impl(**arguments))
+                assert "scope rejected" in result
+            assert warmed == []
+            raise RuntimeError("fixture cleanup")
+    assert email._CORPUS_MAIL_IDENTIFIER.get() is None
+    assert "FIXTURE" in asyncio.run(email.view_emails_impl(query="financial", strict_match=True))
+
+
+def test_corpus_mail_scope_is_task_local_and_resets_on_cancel(corpus_mail_reader):
+    email, install, _ = corpus_mail_reader
+    install([("Alice <alice@example.invalid>", "me@example.invalid", "ALICERESULT", "financial notes")])
+
+    async def check():
+        started = asyncio.Event()
+        async def scoped():
+            with email.corpus_mail_identifier_scope("alice@example.invalid"):
+                started.set()
+                await asyncio.Event().wait()
+        task = asyncio.create_task(scoped())
+        await started.wait()
+        assert email._CORPUS_MAIL_IDENTIFIER.get() is None
+        assert "ALICERESULT" in await email.view_emails_impl(query="financial", strict_match=True)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert email._CORPUS_MAIL_IDENTIFIER.get() is None
+    asyncio.run(check())
+
+
+def test_live_mail_runner_establishes_actual_reader_scope(corpus_mail_reader, monkeypatch):
+    from types import SimpleNamespace
+    from service import agent, idle, main
+    from service.agent import loop
+    from service.config import endpoints
+    from service.inference import omlx_client, readiness
+    from service.tools import registry
+    email, install, _ = corpus_mail_reader
+    install([
+        ("Other <other@example.invalid>", "me@example.invalid", "BODYONLY", "alice@example.invalid"),
+        ("Alice <alice@example.invalid>", "me@example.invalid", "EXACTSOURCE", "synthetic source"),
+    ])
+    monkeypatch.setitem(registry.REGISTRY, "view_emails", Tool(
+        name="view_emails", description="Synthetic cache reader", category="email_read",
+        parameters={"type": "object", "properties": {
+            "query": {"type": "string"}, "count": {"type": "integer"},
+            "strict_match": {"type": "boolean"}}}, func=email.view_emails_impl))
+    target = SimpleNamespace(endpoint=SimpleNamespace(managed=True, base_url="http://127.0.0.1:8000"), model="fixture-model")
+    monkeypatch.setattr(endpoints, "local_role_target", lambda role: target)
+    observed, events = [], []
+
+    class Client:
+        index = 0
+        managed = True
+        endpoint_name = "local"
+        async def ensure_only(self, *args, **kwargs):
+            pass
+        async def stream_events(self, *args, **kwargs):
+            self.index += 1
+            if self.index == 1:
+                yield {"kind": "final", "message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "fixture-mail", "function": {"name": "view_emails", "arguments": "{}"}}]}}
+            else:
+                yield {"kind": "final", "message": {"role": "assistant", "content": "Synthetic answer."}}
+        async def aclose(self):
+            observed.append("closed")
+    monkeypatch.setattr(omlx_client, "OMLXClient", lambda **kwargs: Client())
+    monkeypatch.setattr(readiness, "TurnInferenceClient", lambda owned, *args, **kwargs: owned)
+    monkeypatch.setattr(main, "ensure_omlx", lambda: None)
+    monkeypatch.setattr(idle, "begin_foreground", lambda: None)
+    monkeypatch.setattr(idle, "end_foreground", lambda: None)
+    monkeypatch.setattr(agent, "run_agent", loop.run_agent)
+    case = {**example("mail", "alice@example.invalid"),
+            "conversation": [{"role": "user", "content": "Read Alice's email."}],
+            "expected": {"tools": ["view_emails"]}}
+    async def emit(event):
+        events.append(event)
+    asyncio.run(corpus.run_case(case, emit))
+    sources = [event["result"] for event in events if event["type"] == "tool_result"]
+    assert len(sources) == 1 and "EXACTSOURCE" in sources[0] and "BODYONLY" not in sources[0]
+    assert email._CORPUS_MAIL_IDENTIFIER.get() is None
+    assert observed == ["closed"] and events[-1]["type"] == "done"
+
+
+def test_corpus_mail_reader_discloses_count_coverage(corpus_mail_reader):
+    email, install, _ = corpus_mail_reader
+    install([("Alice <alice@example.invalid>", "me@example.invalid", f"FIXTURE-{i}", "synthetic") for i in range(4)])
+    with email.corpus_mail_identifier_scope("alice@example.invalid"):
+        result = asyncio.run(email.view_emails_impl(query="alice@example.invalid", strict_match=True, count=3))
+    assert "returned 3 of 4" in result and "count=3" in result
+    assert "FIXTURE-0" not in result and all(f"FIXTURE-{i}" in result for i in range(1, 4))
