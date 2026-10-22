@@ -109,6 +109,21 @@ class Ledger:
             row = self._db.execute("SELECT * FROM actions WHERE source_id=?", (source_id,)).fetchone()
         return _row(row) if row else None
 
+    def save_preview(self, source_id: str, *, title: str, due_ts: float,
+                     event_ts: float | None, now: float, detail: dict) -> dict:
+        """Refresh only disposable previews, never a claimed or finished effect."""
+        if not source_id.startswith('preview:'):
+            raise ValueError('A preview identity is required')
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO actions(source_id,state,decided_at,finished_at,title,due_ts,event_ts,detail) "
+                "VALUES (?,'shadow',?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+                "title=excluded.title,due_ts=excluded.due_ts,event_ts=excluded.event_ts,"
+                "finished_at=excluded.finished_at,detail=excluded.detail WHERE actions.state='shadow'",
+                (source_id, now, now, title, due_ts, event_ts, json.dumps(detail, sort_keys=True)))
+            row = self._db.execute('SELECT * FROM actions WHERE source_id=?', (source_id,)).fetchone()
+        return _row(row)
+
     def known(self, source_ids: list[str]) -> set[str]:
         found: set[str] = set()
         for i in range(0, len(source_ids), 500):          # stay under SQLite's variable limit
@@ -135,12 +150,16 @@ class Ledger:
                 "SELECT COUNT(*) FROM actions WHERE decided_at>=? AND state='created' "
                 "AND source_id NOT LIKE 'preview:%'", (since_ts,)).fetchone()[0]
 
-    def capture_count_since(self, since_ts: float) -> int:
-        """Count pairs once; disposable preview mirrors never consume the cap."""
+    def effect_count_since(self, since_ts: float, *, exclude: str | None = None) -> int:
+        """Shared daily cap across legacy reminders and pairs; previews never write."""
         with self._lock:
             return self._db.execute(
-                "SELECT COUNT(*) FROM actions WHERE decided_at>=? AND source_id LIKE 'capture:%' "
-                "AND state IN ('created','partial','unknown','claimed','undone')", (since_ts,)).fetchone()[0]
+                "SELECT COUNT(*) FROM actions WHERE decided_at>=? AND source_id NOT LIKE 'preview:%' "
+                "AND source_id IS NOT ? AND state IN ('created','partial','unknown','claimed','undone')",
+                (since_ts, exclude)).fetchone()[0]
+
+    def capture_count_since(self, since_ts: float) -> int:
+        return self.effect_count_since(since_ts)
 
     def rows_relevant(self, since_ts: float, upcoming_from: float, states: tuple[str, ...]) -> list[dict]:
         """Rows in any of `states` decided since `since_ts`, or whose event (or, with no clock,

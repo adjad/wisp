@@ -197,6 +197,66 @@ async def test_pair_daily_cap_counts_one_pair_not_its_preview_mirror(ledger):
     assert ledger.count_since(MON) == 2  # ordinary recent rows include the display mirror
 
 
+async def test_native_receipt_title_is_not_duplicated_in_capture_history(ledger):
+    c = plans()[0]
+    preview(c, ledger, MON+10)
+    row, _ = await run_capture(c, ledger, result={'reminder': {
+        'ok': True, 'status': 'succeeded', 'source_id': 'native:reminder',
+        'title': 'NATIVE-RECEIPT-PRIVATE-TITLE', 'due_ts': c.due_ts}})
+    assert 'title' not in row['detail']['effects']['reminder']
+    ledger.purge_content(MON+8*86400, MON+10*86400)
+    for sid in (c.capture_key, 'preview:' + c.source_id):
+        saved = ledger.get(sid)
+        assert saved['title'] is None and 'title' not in saved['detail'] and 'quote' not in saved['detail']
+
+
+def test_refresh_preview_updates_displayed_fields_but_never_finished_effects(ledger):
+    c = plans()[0]
+    preview(c, ledger, MON+10)
+    revised = replace(c, title='Revised exam', due_ts=c.due_ts+3600, when='Revised reminder time')
+    row = preview(revised, ledger, MON+20)
+    assert row['title'] == revised.title and row['due_ts'] == revised.due_ts
+    assert row['detail']['review_fingerprint'] == revised.review_fingerprint
+    ledger.finish(row['source_id'], 'created', row['detail'], MON+30)
+    assert preview(c, ledger, MON+40)['title'] == revised.title
+
+
+async def test_legacy_reminder_attempt_consumes_paired_daily_cap(ledger):
+    ledger.claim('msg:legacy', now=MON+1)
+    ledger.finish('msg:legacy', 'created', now=MON+1)
+    c = plans()[0]
+    calls = []
+    async def effect(*args, **kwargs):
+        calls.append(args)
+        return {'ok': True}
+    with pytest.raises(ValueError, match='Daily capture limit'):
+        await capture(c, ledger=ledger, now=MON+10, settings=Settings(daily_cap=1),
+            fresh_commitments=lambda: [], create_calendar=effect, create_reminder=effect, automatic=True)
+    assert calls == []
+
+
+@pytest.mark.parametrize('cap,expected_calls', [(1, 0), (2, 1)])
+async def test_pair_and_display_mirror_consume_one_legacy_cap_slot(ledger, cap, expected_calls):
+    from service.attention.runner import process
+    for source_id in ['capture:prior', 'preview:prior']:
+        ledger.claim(source_id, now=MON+1)
+        ledger.finish(source_id, 'created', now=MON+1)
+    ledger.mark_live(MON-HOUR)
+    calls = []
+    async def effect(plan):
+        calls.append(plan)
+        return {'ok': True, 'status': 'succeeded'}
+    async def publish(event):
+        pass
+    rows = [message('Hi', ts=MON-HOUR, direction='outgoing', guid='contact'),
+            message('Meeting today at 3pm', ts=MON+2, guid='new-plan')]
+    outcomes = await process(records=rows, commitments=[], now=MON+10, tz=TZ,
+        settings=Settings(mode='live', daily_cap=cap), ledger=ledger,
+        create=effect, publish=publish, fresh_commitments=lambda: [])
+    assert len(calls) == expected_calls
+    assert outcomes and outcomes[0].state == ('created' if expected_calls else 'capped')
+
+
 @pytest.fixture
 def wired(tmp_path, monkeypatch):
     import sys
@@ -263,6 +323,22 @@ async def test_explicit_add_refuses_source_changed_after_review(wired):
     response = w.client.post('/assistant/attention/capture', json={
         'source_id': record['source_id'], 'fingerprint': record['fingerprint']})
     assert response.status_code == 409 and not w.writes and not w.approvals
+
+
+async def test_expired_displayed_reminder_requires_updated_exact_preview(wired):
+    w = wired
+    await w.wiring.run_capture_tick(w.clock.value, TZ, Settings())
+    old = w.client.get('/assistant/attention').json()['recent'][0]
+    w.clock.value = datetime(2026, 10, 21, 9, 5, tzinfo=ZONE).timestamp()
+    response = w.client.post('/assistant/attention/capture', json={
+        'source_id': old['source_id'], 'fingerprint': old['fingerprint']})
+    assert response.status_code == 409 and not w.writes and not w.approvals
+    fresh = w.client.get('/assistant/attention').json()['recent'][0]
+    assert fresh['fingerprint'] != old['fingerprint'] and fresh['due_ts'] > w.clock.value
+    assert fresh['captureable']
+    added = w.client.post('/assistant/attention/capture', json={
+        'source_id': fresh['source_id'], 'fingerprint': fresh['fingerprint']})
+    assert added.status_code == 200 and added.json()['state'] == 'created'
 
 
 async def test_old_reminder_live_optin_never_writes_calendar(wired):

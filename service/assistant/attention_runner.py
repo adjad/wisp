@@ -472,7 +472,7 @@ def _capture_current(candidate, *, automatic: bool) -> bool:
         if _policy_block():
             return False
         current = capture_candidates(time.time(), candidate.timezone, latest)
-        return any(c.source_id == candidate.source_id and c.source_fingerprint == candidate.source_fingerprint
+        return any(c.source_id == candidate.source_id and c.review_fingerprint == candidate.review_fingerprint
                    and c.capture_key == candidate.capture_key for c in current)
     except Exception:  # noqa: BLE001
         return False
@@ -480,20 +480,22 @@ def _capture_current(candidate, *, automatic: bool) -> bool:
 
 async def capture_one(source_id: str, fingerprint: str) -> dict:
     """Explicit exact-preview Add. Does not enable automatic capture or replay backlog."""
-    from service.attention.event_capture import capture
+    from service.attention.event_capture import capture, preview
     from service.assistant.attention_calendar import approve_capture
     settings = load_settings(settings_path(MOE_DIR))
     tz = current_zone()
     if settings.mode == 'off' or tz is None:
         raise ValueError('Capture is off or the local time zone is unavailable.')
     values = capture_candidates(time.time(), tz, settings)
-    candidate = next((c for c in values if 'preview:' + c.source_id == source_id
-                      and c.source_fingerprint == fingerprint), None)
+    candidate = next((c for c in values if 'preview:' + c.source_id == source_id), None)
     if candidate is None:
         raise ValueError('The source changed or is no longer fresh. Refresh the preview.')
     saved = get_ledger().get(source_id)
-    if not saved or saved['state'] != 'shadow' or saved['detail'].get('source_fingerprint') != fingerprint:
+    if not saved or saved['state'] != 'shadow':
         raise ValueError('Refresh and review this preview before adding it.')
+    if candidate.review_fingerprint != fingerprint or saved['detail'].get('review_fingerprint') != fingerprint:
+        preview(candidate, get_ledger(), time.time())
+        raise ValueError('The event or reminder time changed. Review the refreshed preview before adding it.')
     approval = approve_capture(candidate.calendar_plan(automatic=False))
 
     async def calendar(c, *, automatic):

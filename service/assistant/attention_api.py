@@ -57,7 +57,7 @@ def status():
     current = set()
     if settings.mode != 'off' and tz:
         try:
-            current = {('preview:' + c.source_id, c.source_fingerprint)
+            current = {('preview:' + c.source_id, c.review_fingerprint)
                        for c in runner.capture_candidates(now, tz, settings)}
         except Exception:  # source admission unavailable: no Add button
             pass
@@ -75,9 +75,9 @@ def status():
                     "due_ts": r["due_ts"], "event_ts": r["event_ts"], "decided_at": r["decided_at"],
                     "when": r["detail"].get("when"), "quote": r["detail"].get("quote"),
                     "undoable": _undoable(r), "paired": r["detail"].get("paired", False),
-                    "fingerprint": r["detail"].get("source_fingerprint"),
+                    "fingerprint": r["detail"].get("review_fingerprint"),
                     "effects": r["detail"].get("effects"),
-                    "captureable": (r["source_id"], r["detail"].get("source_fingerprint")) in current and r["state"] == "shadow"}
+                    "captureable": (r["source_id"], r["detail"].get("review_fingerprint")) in current and r["state"] == "shadow"}
                    for r in recent],
     }
 

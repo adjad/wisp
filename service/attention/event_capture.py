@@ -6,6 +6,7 @@ independent receipts survive partial completion and uncertain writes are never r
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from dataclasses import asdict, dataclass
@@ -61,6 +62,12 @@ class Candidate:
     source_kind: str
     scope: str
     automatic_eligible: bool
+
+    @property
+    def review_fingerprint(self) -> str:
+        """Bind Add to the displayed schedule, including reminder defaults."""
+        return digest(json.dumps({key: value for key, value in asdict(self).items()
+                                  if key != 'inferred'}, sort_keys=True, allow_nan=False))
 
     def calendar_plan(self, *, automatic: bool) -> dict:
         return {"capture_key": self.capture_key, "source_id": self.source_id,
@@ -204,14 +211,10 @@ def candidates(records: list[dict], rows: list[dict], *, now: float, tz: str,
 def preview(candidate: Candidate, ledger: Ledger, now: float) -> dict:
     """Upsert a disposable preview separately from the durable effect claim."""
     sid = 'preview:' + candidate.source_id
-    detail = {**asdict(candidate), 'paired': True, 'when': candidate.when, 'quote': candidate.quote}
-    old = ledger.get(sid)
-    if old and old['state'] != 'shadow':
-        return old
-    ledger.claim(sid, title=candidate.title, due_ts=candidate.due_ts,
-                 event_ts=candidate.start_ts, now=now, detail=detail)
-    ledger.finish(sid, 'shadow', detail, now)
-    return ledger.get(sid)
+    detail = {**asdict(candidate), 'paired': True, 'when': candidate.when, 'quote': candidate.quote,
+              'review_fingerprint': candidate.review_fingerprint}
+    return ledger.save_preview(sid, title=candidate.title, due_ts=candidate.due_ts,
+                               event_ts=candidate.start_ts, now=now, detail=detail)
 
 
 def _resolved(c: Candidate):
