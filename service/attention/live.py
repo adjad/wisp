@@ -31,6 +31,7 @@ TITLE_MAX = 110
 @dataclass(frozen=True)
 class Settings:
     mode: str = "shadow"
+    capture_events: bool = False  # separate Calendar + email authority; legacy live stays reminders only
     daily_cap: int = 3          # reminders created (and alerts sent) per local day
     quiet_start: int = 22       # local hour; alerts are suppressed from here...
     quiet_end: int = 8          # ...until here (wraps midnight)
@@ -38,6 +39,8 @@ class Settings:
     default_hour: int = 9       # reminder hour for a date with no clock time
 
     def validate(self) -> "Settings":
+        if type(self.capture_events) is not bool:
+            raise ValueError("capture_events must be a boolean")
         if self.mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
         for name, lo, hi in (("daily_cap", 0, 50), ("quiet_start", 0, 23), ("quiet_end", 0, 23),

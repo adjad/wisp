@@ -209,6 +209,8 @@ def _already_acted(ledger: Ledger, resolved, context: str, thread: str, now: flo
     acted on long before its event is still found."""
     rows = ledger.rows_relevant(now - LOOKBACK_S, now, DEDUP_STATES.get(mode, DEDUP_STATES["live"]))
     for r in rows:
+        if r["source_id"].startswith("preview:"):
+            continue  # paired previews have no reminder effect
         # The quote, not the title: a title opens with the sender's label ("Mom:", "Text from"),
         # which another conversation's words could match.
         pseudo = {"id": r["source_id"], "title": r["detail"].get("quote") or r["title"], "status": "active",
