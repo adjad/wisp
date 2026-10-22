@@ -16,6 +16,10 @@ from service.attention import live
 from service.safety import Tier, policy, grants
 
 
+async def create_calendar(item, **kwargs):
+    return await capture.create_calendar(item, source_current=kwargs.pop('source_current', lambda: True), **kwargs)
+
+
 def plan(**changes):
     return dict(capture_key="capture:fixture", title="STAT 5 Exam 1", day="2036-10-29",
                 timezone="America/Los_Angeles", start_ts=None, duration_min=None,
@@ -49,15 +53,15 @@ def test_civil_day_uses_real_dst_bounds(day, minutes):
 async def test_exact_host_approval_required_and_bound_to_whole_plan(isolated):
     _, request = isolated
     item = plan()
-    assert (await capture.create_calendar(item))["status"] == "blocked"
-    assert (await capture.create_calendar(item, approval={"approved": True}))["status"] == "blocked"
+    assert (await create_calendar(item))["status"] == "blocked"
+    assert (await create_calendar(item, approval={"approved": True}))["status"] == "blocked"
     approval = capture.approve_capture(item)
     for field, value in [("title", "Other exam"), ("day", "2036-10-30"),
                          ("timezone", "America/New_York"), ("source_id", "email:other"),
                          ("capture_key", "capture:other")]:
-        assert (await capture.create_calendar({**item, field: value}, approval=approval))["status"] == "blocked"
+        assert (await create_calendar({**item, field: value}, approval=approval))["status"] == "blocked"
     request.assert_not_awaited()
-    result = await capture.create_calendar(item, approval=approval)
+    result = await create_calendar(item, approval=approval)
     assert result == {"ok": True, "status": "succeeded", "source_id": "fixture-native"}
     payload = request.await_args.args[1]
     assert payload["all_day"] is True and payload["due_date"] == item["day"]
@@ -71,15 +75,15 @@ async def test_auto_consent_is_fresh_persisted_separate_from_legacy_live(isolate
     item = {**plan(), "automatic": True, "capture_events": True, "approved": True}
     for mode, enabled in [("shadow", True), ("off", True), ("live", False)]:
         settings.mode, settings.capture_events = mode, enabled
-        assert (await capture.create_calendar(item))["status"] == "blocked"
+        assert (await create_calendar(item))["status"] == "blocked"
     request.assert_not_awaited()
     settings.mode, settings.capture_events = "live", True
-    assert (await capture.create_calendar(item))["ok"]
+    assert (await create_calendar(item))["ok"]
     # Generic tools keep the original always-confirm rule even with opt-in.
     monkeypatch.setattr(policy, "_FULL_ACCESS", True)
     assert policy.decide("calendar_write", {}, tool="add_calendar_event").tier is Tier.CONFIRM
     settings.capture_events = False
-    assert (await capture.create_calendar(item))["status"] == "blocked"
+    assert (await create_calendar(item))["status"] == "blocked"
 
 
 @pytest.mark.asyncio
@@ -89,22 +93,37 @@ async def test_view_only_deny_grants_and_unknown_are_preserved(isolated, monkeyp
     token = capture.approve_capture(item)
     monkeypatch.setattr(policy, "_READ_ONLY", True)
     monkeypatch.setattr(policy, "_FULL_ACCESS", True)
-    assert (await capture.create_calendar(item, approval=token))["status"] == "blocked"
+    assert (await create_calendar(item, approval=token))["status"] == "blocked"
     monkeypatch.setattr(policy, "_READ_ONLY", False)
     monkeypatch.setattr(grants, "check", lambda *a: "deny")
-    assert (await capture.create_calendar(item, approval=token))["status"] == "blocked"
+    assert (await create_calendar(item, approval=token))["status"] == "blocked"
     request.assert_not_awaited()
     monkeypatch.setattr(grants, "check", lambda *a: None)
     request.return_value = {"ok": False, "status": "unknown", "error": "receipt lost"}
-    assert (await capture.create_calendar(item, approval=token))["status"] == "unknown"
+    assert (await create_calendar(item, approval=token))["status"] == "unknown"
 
 
 @pytest.mark.asyncio
 async def test_missing_time_is_not_a_guessed_timed_meeting(isolated):
     _, request = isolated
     item = {**plan(), "all_day": False, "start_ts": 2100000000.0}
-    assert (await capture.create_calendar(item, approval=capture.approve_capture(item)))["status"] == "blocked"
+    assert (await create_calendar(item, approval=capture.approve_capture(item)))["status"] == "blocked"
     request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_exact_source_is_revalidated_at_dispatch(isolated):
+    _, request = isolated
+    item, current = plan(), True
+    async def reconnected(*args, **kwargs):
+        nonlocal current
+        current = False  # withdrawal/edit while waiting for native reconnect
+        reason = kwargs['before_dispatch']()
+        assert reason and 'source' in reason
+        return {'ok': False, 'status': 'blocked', 'error': reason}
+    request.side_effect = reconnected
+    result = await create_calendar(item, approval=capture.approve_capture(item), source_current=lambda: current)
+    assert result['status'] == 'blocked'
 
 
 def event_payload(day="2036-11-02"):
@@ -198,5 +217,28 @@ async def test_capture_timeout_reuses_unclaimed_or_late_receipt_identity(tmp_pat
             claim = store.claim_calendar_action(row['id'], 'create_calendar_event', action, row['payload'])
             assert claim['execute'] is False and claim['result']['status'] == 'failed'
         assert len(store.reminder_actions_by_prefix(action)) == 1
+    finally:
+        store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_revocation_during_app_reconnect_prevents_publication(tmp_path, monkeypatch):
+    store = AssistantStore(tmp_path / 'assistant.db')
+    channel = Hub(store)
+    publish = AsyncMock()
+    monkeypatch.setattr(channel, 'publish', publish)
+    monkeypatch.setattr(outbox, 'hub', channel)
+    granted = True
+    async def reconnect():
+        nonlocal granted
+        granted = False
+        return True
+    monkeypatch.setattr(outbox, 'app_connected', reconnect)
+    try:
+        result = await outbox.request('create_calendar_event', event_payload(),
+            idempotency_key='capture:revoked', before_dispatch=lambda: None if granted else 'Capture disabled')
+        assert result['status'] == 'blocked'
+        publish.assert_not_awaited()
+        assert outbox._pending == {}
     finally:
         store._db.close()

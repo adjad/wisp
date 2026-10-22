@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import time
+from typing import Callable
 
 from service.assistant.calendar_dates import all_day_bounds
 from service.paths import MOE_DIR
@@ -64,7 +65,8 @@ def _payload(plan: dict) -> dict:
     return {"title": title.strip(), "when_ts": float(start), "duration_min": duration, "location": ""}
 
 
-async def create_calendar(plan: dict, *, approval: _Approval | None = None) -> dict:
+async def create_calendar(plan: dict, *, approval: _Approval | None = None,
+                          source_current: Callable[[], bool]) -> dict:
     from service.safety import Tier, audit, decide, read_only
     from service.attention.live import load_settings, settings_path
     from service.assistant.outbox import request
@@ -75,25 +77,31 @@ async def create_calendar(plan: dict, *, approval: _Approval | None = None) -> d
     try:
         payload = _payload(plan)
         digest = _digest(plan)
-        # Grants must not lift view-only for an autonomous source interpreter.
-        if read_only():
-            return blocked("View-only mode: Calendar capture is disabled")
-        decision = decide("calendar_write", payload, tool="add_calendar_event")
-        if decision.tier is Tier.DENY:
-            return blocked(decision.reason)
-        if plan["automatic"]:
-            settings = load_settings(settings_path(MOE_DIR))
-            if settings.mode != "live" or getattr(settings, "capture_events", False) is not True:
-                return blocked("Automatic Calendar capture has not been enabled")
-        elif not (isinstance(approval, _Approval) and approval.seal is _SEAL and approval.digest == digest):
-            return blocked("Review this exact event before adding it to Calendar")
+        def authorization_problem():
+            if source_current() is not True:
+                return "The source changed or is no longer fresh; review it again"
+            # Grants must not lift view-only for an autonomous source interpreter.
+            if read_only():
+                return "View-only mode: Calendar capture is disabled"
+            decision = decide("calendar_write", payload, tool="add_calendar_event")
+            if decision.tier is Tier.DENY:
+                return decision.reason
+            if plan["automatic"]:
+                settings = load_settings(settings_path(MOE_DIR))
+                if settings.mode != "live" or getattr(settings, "capture_events", False) is not True:
+                    return "Automatic Calendar capture has not been enabled"
+            elif not (isinstance(approval, _Approval) and approval.seal is _SEAL and approval.digest == digest):
+                return "Review this exact event before adding it to Calendar"
+            return None
+        if problem := authorization_problem():
+            return blocked(problem)
         # Date-only events stay useful until their civil day ends; timed events
         # must still be ahead. Do not use process-local midnight arithmetic.
         end = payload["when_ts"] + payload["duration_min"] * 60
         if (end if plan["all_day"] else payload["when_ts"]) <= time.time():
             return blocked("The source event is already in the past")
         result = await request("create_calendar_event", payload,
-                               idempotency_key=plan["capture_key"])
+                               idempotency_key=plan["capture_key"], before_dispatch=authorization_problem)
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         return blocked(str(exc))
     except Exception as exc:  # unknown after any possible native dispatch
@@ -102,5 +110,5 @@ async def create_calendar(plan: dict, *, approval: _Approval | None = None) -> d
           args={"capture_sha256": digest}, status=result.get("status", "unknown"))
     if result.get("ok") is True:
         return {"ok": True, "status": "succeeded", "source_id": result["source_id"]}
-    return {"ok": False, "status": "unknown" if result.get("status") == "unknown" else "failed",
+    return {"ok": False, "status": result.get("status") if result.get("status") in {"unknown", "blocked"} else "failed",
             "error": result.get("error") or "Calendar creation was not confirmed"}
