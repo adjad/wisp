@@ -161,8 +161,8 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
         with patch("service.assistant.sync_status.ensure_sources",
                    new_callable=AsyncMock, return_value=ready):
             text = await A.get_upcoming(days=2)
-        self.assertIn("Calendar events: 1; Wisp/Apple reminders: 0", text)
-        self.assertIn("[Calendar event]", text)
+        self.assertIn("1 event, no reminders", text)
+        self.assertNotIn("item(s)", text)
 
     async def test_past_date_cannot_count_as_success(self):
         result = await A.add_reminder("repair", "2000-01-01T12:30")

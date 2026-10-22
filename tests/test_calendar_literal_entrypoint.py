@@ -139,7 +139,10 @@ async def test_stream_literal_source_words_reach_actual_source_boundary(
         events = [json.loads(line[6:]) for line in ''.join(chunks).splitlines() if line.startswith('data: ')]
         answer = ''.join(e.get('text', '') for e in events if e['type'] == 'text')
         assert 'calendar events' in answer
-        assert f'Wisp/Apple reminders: {reminder_count}' in answer
+        header = next(line for line in answer.splitlines() if line.startswith('Tomorrow: '))
+        # A calendar-only read did not check Reminders, so it claims nothing about them.
+        assert header == ('Tomorrow: 1 event, 1 reminder' if reminder_count
+                          else 'Tomorrow: 1 event')
         readiness.assert_awaited_once_with(expected_sources)
         main.route.assert_not_awaited()
         main.ensure_omlx.assert_not_awaited()
