@@ -537,14 +537,16 @@ final class WispClient {
         }
     }
 
-    // POST /agent and yield decoded SSE events to `onEvent` (called on a background task).
     // Pass `sessionId` to continue a conversation; the server loads & budgets the
     // history. Omit it (empty) to start a fresh chat — the new id arrives in the
-    // first `session` event.
+    // first `session` event. `testMode` asks the service to run a stateless dry
+    // run where tool calls are reported but never executed.
     func runAgent(prompt: String, image: String?, sessionId: String = "",
                   debug: Bool = false,
+                  testMode: Bool = false,
+                  corpusCaseID: String? = nil, corpusToken: String? = nil,
                   onEvent: @escaping @Sendable (Event) -> Void) async {
-        var req = URLRequest(url: Self.baseURL.appendingPathComponent("agent"))
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent(corpusCaseID == nil ? "agent" : "corpus/run"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         // Default URLRequest timeout is 60s of no data. Hard reasoning prompts can
@@ -556,8 +558,10 @@ final class WispClient {
         // response per model call this turn) — real cost, not free, so it
         // only goes out when the user has Debug Mode on and might export.
         var body: [String: Any] = ["prompt": prompt, "debug": debug]
-        if !sessionId.isEmpty { body["session_id"] = sessionId }
+        if testMode { body["test_mode"] = true }
+        if !testMode && !sessionId.isEmpty { body["session_id"] = sessionId }
         if let image { body["image"] = image }
+        if let corpusCaseID { body = ["case_id": corpusCaseID, "token": corpusToken ?? ""] }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         // The request goes out at most twice, and the second time only when the
         // server provably never ran the turn (AgentSend.retryable): no

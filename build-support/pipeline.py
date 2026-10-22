@@ -554,6 +554,10 @@ def assemble(runner, binary, destination, meta, offline=False, engine_app=None):
     (contents / "MacOS").mkdir(parents=True)
     backend.mkdir(parents=True)
     shutil.copy2(binary, contents / "MacOS" / "Wisp")
+    corpus = ROOT / "app/Sources/WispApp/Resources/assistant-task-corpus-v1.jsonl"
+    if not corpus.is_file():
+        raise BuildError("Missing source assistant task corpus")
+    shutil.copyfile(corpus, resources / corpus.name)
     with (contents / "Info.plist").open("wb") as output:
         plistlib.dump(plist(meta), output, sort_keys=True)
     iconset = runner.logs / "Wisp.iconset"
@@ -623,6 +627,7 @@ def is_macho(path):
 def validate_structure(bundle: Path, meta: dict):
     bundle = bundle.resolve()
     required = ["Contents/MacOS/Wisp", "Contents/Info.plist", "Contents/Resources/AppIcon.icns",
+                "Contents/Resources/assistant-task-corpus-v1.jsonl",
                 "Contents/Resources/build-info.json", "Contents/Resources/backend/.venv/bin/python",
                 "Contents/Resources/backend/service/main.py", "Contents/Resources/backend/service/config/models.yaml",
                 "Contents/Resources/backend/service/config/policy.yaml",
@@ -633,6 +638,10 @@ def validate_structure(bundle: Path, meta: dict):
     for name in required:
         if not (bundle / name).is_file():
             raise BuildError(f"Missing bundle resource: {name}")
+    bundled_corpus = bundle / "Contents/Resources/assistant-task-corpus-v1.jsonl"
+    source_corpus = ROOT / "training/assistant-task-corpus-v1/cases.jsonl"
+    if bundled_corpus.read_bytes() != source_corpus.read_bytes():
+        raise BuildError("Packaged assistant task corpus differs from the repository corpus")
     actual = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
     for key, value in plist(meta).items():
         if actual.get(key) != value:

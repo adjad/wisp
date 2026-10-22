@@ -63,6 +63,27 @@ enum ChatToolKind: Equatable {
     }
 }
 
+/// Source evidence is retained only for host-created live corpus messages.
+/// UTF-8 byte limits bound even a single enormous composed Character. Ordinary
+/// chat continues keeping only its small, owned first-line preview.
+struct ChatCorpusSourceEvidence: Equatable {
+    static let perResultByteLimit = 64 * 1024
+    static let perCaseByteLimit = 256 * 1024
+    let text: String
+    let sourceByteCount: Int
+    var retainedByteCount: Int { text.utf8.count }
+    var isTruncated: Bool { retainedByteCount < sourceByteCount }
+
+    init(_ source: String, byteLimit: Int) {
+        sourceByteCount = source.utf8.count
+        var bytes = Array(source.utf8.prefix(max(0, byteLimit)))
+        // A bounded prefix may end inside one UTF-8 scalar. Drop only that
+        // incomplete scalar, preserving valid text without replacement bytes.
+        while !bytes.isEmpty && String(bytes: bytes, encoding: .utf8) == nil { bytes.removeLast() }
+        text = String(bytes: bytes, encoding: .utf8) ?? ""
+    }
+}
+
 struct ChatToolRow: Identifiable, Equatable {
     let id: String              // the server's call id; a unique value when absent
     var name: String
@@ -73,14 +94,24 @@ struct ChatToolRow: Identifiable, Equatable {
         set { resultPreview = Self.preview(newValue) }
     }
     var finished = false
+    var isTestPlan = false
+    private(set) var corpusSourceEvidence: ChatCorpusSourceEvidence?
 
-    init(id: String, name: String, decision: String, result: String = "", finished: Bool = false) {
+    init(id: String, name: String, decision: String, result: String = "", finished: Bool = false,
+         isTestPlan: Bool = false) {
         self.id = id
         self.name = name
         self.decision = decision
         self.resultPreview = Self.preview(result)
         self.finished = finished
+        self.isTestPlan = isTestPlan
     }
+
+    mutating func retainCorpusSource(_ source: String, byteLimit: Int) {
+        corpusSourceEvidence = ChatCorpusSourceEvidence(source, byteLimit: byteLimit)
+    }
+
+    mutating func clearCorpusSource() { corpusSourceEvidence = nil }
 
     /// These rows only display the first nonempty line. Keep one extra
     /// character to preserve the 60-character detail's ellipsis, and copy it
@@ -101,6 +132,7 @@ struct ChatToolRow: Identifiable, Equatable {
     /// One short line of what came back, or what is still happening.
     var detail: String {
         if decision == "deny" { return "blocked" }
+        if isTestPlan { return "dry run · not executed" }
         if !finished { return decision == "confirm" ? "waiting for you" : "running" }
         let flat = result.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? ""
         return flat.count > 60 ? String(flat.prefix(60)) + "…" : flat
@@ -136,6 +168,28 @@ struct ChatDraft: Equatable {
     var sent = false
     var discarded = false
     var status = ""
+}
+
+/// The model's planned tool path and the rubric shown for a live corpus dry run.
+/// Behavior checks remain for a human to review; the client only compares tools.
+struct ChatCorpusEvaluation: Equatable {
+    let caseID: String
+    let split: String
+    let category: String
+    let expectedTools: [String]
+    let behavior: [String]
+    var usesLiveData = false
+    var modelCalls = 0
+    var modelAttempts = 0
+    var modelName = ""
+    var observedTools: [String] = []
+    var completed = false
+    var stopped = false
+
+    var toolPathMatches: Bool? {
+        guard completed, !stopped, !usesLiveData else { return nil }
+        return expectedTools == observedTools
+    }
 }
 
 // MARK: - Metadata
@@ -200,6 +254,7 @@ struct ChatMessage: Identifiable, Equatable {
     var isError = false
     var errorDetail = ""
     var attachmentName: String?
+    var corpusEvaluation: ChatCorpusEvaluation?
 
     init(id: UUID = UUID(), role: Role, text: String = "", phase: Phase = .done) {
         self.id = id; self.role = role; self.text = text; self.phase = phase
@@ -225,10 +280,20 @@ enum ChatTurnReducer {
     }
 
     static func apply(_ ev: ChatEvent, to msg: inout ChatMessage, now: Date = Date()) -> Outcome {
+        if msg.corpusEvaluation?.usesLiveData != true {
+            for index in msg.tools.indices where msg.tools[index].corpusSourceEvidence != nil {
+                msg.tools[index].clearCorpusSource()
+            }
+        }
         if ev.type != "status" { msg.status = "" }
         var meta = msg.meta ?? ChatMeta()
         defer { msg.meta = meta }
         switch ev.type {
+        case "corpus_model":
+            msg.corpusEvaluation?.modelCalls = ev.payload["completed"] as? Int ?? 0
+            msg.corpusEvaluation?.modelAttempts = ev.payload["started"] as? Int ?? 0
+            msg.corpusEvaluation?.modelName = ev.str("model")
+            msg.phase = .working
         case "session":
             return .session(ev.str("id"))
         case "status":
@@ -242,13 +307,25 @@ enum ChatTurnReducer {
             msg.phase = meta.needsTools ? .working : .streaming
         case "tool_call":
             let row = ChatToolRow(id: ev.str("id").isEmpty ? UUID().uuidString : ev.str("id"),
-                                  name: ev.str("name"), decision: ev.str("decision"))
+                                  name: ev.str("name"), decision: ev.str("decision"),
+                                  isTestPlan: ev.bool("test_mode"))
             msg.tools.append(row)
             if meta.firstTokenAt == nil { meta.firstTokenAt = now }
             msg.phase = .working
         case "tool_result":
             if let i = msg.tools.lastIndex(where: { $0.id == ev.str("id") }) {
-                msg.tools[i].result = ev.str("result")
+                let source = ev.str("result")
+                msg.tools[i].result = source
+                if msg.corpusEvaluation?.usesLiveData == true {
+                    let retainedElsewhere = msg.tools.enumerated().reduce(0) { count, row in
+                        count + (row.offset == i ? 0 : (row.element.corpusSourceEvidence?.retainedByteCount ?? 0))
+                    }
+                    let available = max(0, ChatCorpusSourceEvidence.perCaseByteLimit - retainedElsewhere)
+                    msg.tools[i].retainCorpusSource(source,
+                        byteLimit: min(ChatCorpusSourceEvidence.perResultByteLimit, available))
+                } else {
+                    msg.tools[i].clearCorpusSource()
+                }
                 msg.tools[i].finished = true
             }
         case "clear_answer":
