@@ -182,8 +182,11 @@ public actor GatewayClient {
         _ = try await send(path: "phone/v1/agent/approve", method: "POST", body: body, timeout: 15)
     }
 
-    /// A request for one model file, for a URLSession download task.
+    /// A request for one model file, against a base proved by a ping made just now, never the
+    /// cached one. A download can outlive the proof window by minutes, so VerifiedFileDownloader
+    /// calls this before every attempt.
     public func fileRequest(model: String, file: String) async throws -> URLRequest {
+        preferredBase = nil
         let base = try await reachableBase()
         var request = URLRequest(url: base.appendingPathComponent("phone/v1/models/\(model)/files/\(file)"))
         request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
@@ -307,5 +310,189 @@ public actor GatewayClient {
             }
         }
         return error
+    }
+}
+
+/// One model-file download from the Mac with progress and automatic retry (multi-GB files over
+/// Tailscale can drop mid-way). Returns a temporary file the caller must move or delete.
+///
+/// Every attempt, the first included, gets its request from `GatewayClient.fileRequest`, which
+/// proves the Mac with a fresh ping first. A download can outlive the proof window by minutes,
+/// and Tailscale may drop between attempts, so no retry reuses an earlier request or the opaque
+/// resume data URLSession keeps. A retry resumes with an explicit `Range` request rebuilt for the
+/// freshly proved base, and only when that base is the one the partial bytes came from.
+/// Otherwise it starts over.
+public enum VerifiedFileDownloader {
+    public typealias Progress = @Sendable (Int64, Int64) -> Void
+
+    public enum Failure: Error, Equatable, LocalizedError {
+        case oversized
+        case badRange
+
+        public var errorDescription: String? {
+            switch self {
+            case .oversized: "Your Mac sent more than the file's listed size, so the download was stopped."
+            case .badRange: "Your Mac resumed the download at the wrong place. Try the download again."
+            }
+        }
+    }
+
+    /// Stops as soon as more than `maxBytes` arrive, so a bad listing can't fill the disk.
+    public static func download(
+        gateway: GatewayClient, model: String, file: String, maxBytes: Int64, attempts: Int = 4,
+        configuration: URLSessionConfiguration = .default,
+        backoff: @escaping @Sendable (Int) async throws -> Void = { try await Task.sleep(for: .seconds(2 * $0)) },
+        progress: @escaping Progress
+    ) async throws -> URL {
+        let partial = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-download-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: partial.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+        let transfer = Transfer(file: partial, maxBytes: maxBytes, progress: progress)
+        let session = URLSession(configuration: configuration, delegate: transfer, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        do {
+            var lastOrigin: String?
+            var lastError: Error = URLError(.unknown)
+            for attempt in 0..<max(attempts, 1) {
+                try Task.checkCancellation()
+                if attempt > 0 { try await backoff(attempt) }
+                do {
+                    var request = try await gateway.fileRequest(model: model, file: file)
+                    let origin = request.url.map { "\($0.scheme ?? "")://\($0.host ?? ""):\($0.port ?? -1)" }
+                    if origin != lastOrigin { try transfer.restart() }
+                    lastOrigin = origin
+                    let offset = transfer.received
+                    if offset > 0 { request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range") }
+                    try await transfer.run(session: session, request: request, offset: offset)
+                    return partial
+                } catch GatewayError.unreachable {
+                    // No proof, so nothing was sent; Tailscale may be reconnecting.
+                    lastError = GatewayError.unreachable
+                } catch let error as URLError where error.code != .cancelled && error.code != .userAuthenticationRequired {
+                    lastError = error
+                }
+            }
+            throw lastError
+        } catch {
+            try? FileManager.default.removeItem(at: partial)
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
+    }
+
+    /// Writes one attempt's bytes onto the partial file. Delegate callbacks arrive on the
+    /// session's serial queue; the lock covers the reads from `download`.
+    final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private let file: URL
+        private let maxBytes: Int64
+        private let progress: Progress
+        private let lock = NSLock()
+        private var handle: FileHandle?
+        private var written: Int64 = 0
+        private var offset: Int64 = 0
+        private var failure: Error?
+        private var continuation: CheckedContinuation<Void, Error>?
+
+        init(file: URL, maxBytes: Int64, progress: @escaping Progress) {
+            self.file = file
+            self.maxBytes = maxBytes
+            self.progress = progress
+        }
+
+        var received: Int64 { lock.withLock { written } }
+
+        func restart() throws {
+            try lock.withLock {
+                let handle = try FileHandle(forWritingTo: file)
+                defer { try? handle.close() }
+                try handle.truncate(atOffset: 0)
+                written = 0
+            }
+        }
+
+        func run(session: URLSession, request: URLRequest, offset: Int64) async throws {
+            let task = session.dataTask(with: request)
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    lock.withLock {
+                        self.continuation = continuation
+                        self.offset = offset
+                        self.failure = nil
+                    }
+                    task.resume()
+                }
+            } onCancel: {
+                task.cancel()
+            }
+        }
+
+        private func fail(_ error: Error, _ task: URLSessionTask) {
+            lock.withLock { failure = error }
+            task.cancel()
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+            guard let http = response as? HTTPURLResponse else {
+                fail(GatewayError.badResponse, dataTask); return completionHandler(.cancel)
+            }
+            do {
+                let requested = lock.withLock { offset }
+                switch http.statusCode {
+                case 200:
+                    // A whole file, even if a range was asked for: start the partial over.
+                    try restart()
+                case 206:
+                    let range = http.value(forHTTPHeaderField: "Content-Range") ?? ""
+                    guard requested > 0, range.hasPrefix("bytes \(requested)-") else {
+                        try? restart()
+                        fail(Failure.badRange, dataTask); return completionHandler(.cancel)
+                    }
+                case 401:
+                    fail(GatewayError.unauthorized, dataTask); return completionHandler(.cancel)
+                default:
+                    fail(GatewayError.http(http.statusCode, "The Mac refused the model download."), dataTask)
+                    return completionHandler(.cancel)
+                }
+                let handle = try FileHandle(forWritingTo: file)
+                try handle.seekToEnd()
+                lock.withLock { self.handle = handle }
+                completionHandler(.allow)
+            } catch {
+                fail(error, dataTask); completionHandler(.cancel)
+            }
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            let total: Int64? = lock.withLock {
+                guard let handle, failure == nil else { return nil }
+                guard written + Int64(data.count) <= maxBytes else { return nil }
+                do { try handle.write(contentsOf: data) } catch { failure = error; return nil }
+                written += Int64(data.count)
+                return written
+            }
+            guard let total else {
+                if received + Int64(data.count) > maxBytes { fail(Failure.oversized, dataTask) } else { dataTask.cancel() }
+                return
+            }
+            progress(total, maxBytes)
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            let (continuation, failure) = lock.withLock {
+                try? handle?.close()
+                handle = nil
+                let pending = (self.continuation, self.failure)
+                self.continuation = nil
+                self.failure = nil
+                return pending
+            }
+            if let failure {
+                continuation?.resume(throwing: failure)
+            } else if let error {
+                continuation?.resume(throwing: error)
+            } else {
+                continuation?.resume()
+            }
+        }
     }
 }

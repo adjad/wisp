@@ -64,6 +64,10 @@ answer the ping and then collect the bearer token.
 
 A verified address is trusted for at most 60 s, and only until a request to it
 fails. After that the phone proves the Mac again before it sends the token.
+Model-file downloads never use that cache: every attempt, retries included,
+proves the Mac with a fresh ping first. A retry resumes with a `Range` request
+rebuilt for that base, and only when the base is unchanged; otherwise it
+starts the file over. URLSession's opaque resume data is never reused.
 
 The proof binds the pairing, not the channel. Something on the path that can
 reach the real gateway could relay a nonce and its proof. Only a tailnet peer

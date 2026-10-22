@@ -154,9 +154,11 @@ final class OnDeviceModel {
                     state = .verifying(file: file.name)
                     if try await Self.sha256(of: target) == file.sha256 { hashes[file.name] = file.sha256; continue }
                 }
-                let request = try await gateway.fileRequest(model: bundle.id, file: file.name)
                 state = .downloading(file: file.name, received: 0, total: file.size)
-                let temporary = try await FileDownloader.download(request, maxBytes: file.size) { [weak self] received, _ in
+                // Proves the Mac again before every attempt, so a retry never sends the token unproved.
+                let temporary = try await VerifiedFileDownloader.download(
+                    gateway: gateway, model: bundle.id, file: file.name, maxBytes: file.size
+                ) { [weak self] received, _ in
                     Task { @MainActor in
                         self?.state = .downloading(file: file.name, received: received, total: file.size)
                     }
@@ -190,11 +192,9 @@ final class OnDeviceModel {
         case checksum(String)
         case incomplete([String])
         case unsafePath(String)
-        case oversized
 
         var errorDescription: String? {
             switch self {
-            case .oversized: "Your Mac sent more than the file's listed size, so the download was stopped."
             case .checksum(let name): "\(name) didn't match your Mac's copy. Try the download again."
             case .incomplete(let names): "Your Mac's model folder is missing \(names.joined(separator: ", "))."
             case .unsafePath(let name): "Refused to save \(name): it would land outside Wisp's model folder."
@@ -217,105 +217,5 @@ final class OnDeviceModel {
 
     static func format(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-    }
-}
-
-/// One file download with progress and automatic resume (multi-GB files over Tailscale
-/// can drop mid-way). Returns a temporary file the caller must move or delete.
-final class FileDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    typealias Progress = @Sendable (Int64, Int64) -> Void
-
-    private let progress: Progress
-    private let maxBytes: Int64
-    private let lock = NSLock()
-    private var oversized = false
-    private var continuation: CheckedContinuation<URL, Error>?
-    private var resumeData: Data?
-    private var movedFile: URL?
-
-    private init(maxBytes: Int64, progress: @escaping Progress) {
-        self.maxBytes = maxBytes
-        self.progress = progress
-    }
-
-    /// Stops as soon as more than `maxBytes` arrive, so a bad listing can't fill the disk.
-    static func download(_ request: URLRequest, maxBytes: Int64, attempts: Int = 4,
-                         progress: @escaping Progress) async throws -> URL {
-        let downloader = FileDownloader(maxBytes: maxBytes, progress: progress)
-        let session = URLSession(configuration: .default, delegate: downloader, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-        var lastError: Error = URLError(.unknown)
-        for attempt in 0..<attempts {
-            try Task.checkCancellation()
-            if attempt > 0 { try await Task.sleep(for: .seconds(2 * attempt)) }
-            do {
-                return try await withTaskCancellationHandler {
-                    try await withCheckedThrowingContinuation { continuation in
-                        downloader.start(session: session, request: request, continuation: continuation)
-                    }
-                } onCancel: {
-                    session.invalidateAndCancel()
-                }
-            } catch let error as URLError where error.code != .cancelled && error.code != .userAuthenticationRequired {
-                lastError = error
-                continue
-            }
-        }
-        throw lastError
-    }
-
-    private func start(session: URLSession, request: URLRequest, continuation: CheckedContinuation<URL, Error>) {
-        lock.lock()
-        self.continuation = continuation
-        let resume = resumeData
-        resumeData = nil
-        lock.unlock()
-        let task = resume.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: request)
-        task.resume()
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard totalBytesWritten <= maxBytes else {
-            lock.lock(); oversized = true; lock.unlock()
-            downloadTask.cancel()
-            return
-        }
-        progress(totalBytesWritten, totalBytesExpectedToWrite)
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        // The system deletes `location` when this returns, so move it now.
-        guard let http = downloadTask.response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
-        let kept = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        if (try? FileManager.default.moveItem(at: location, to: kept)) != nil {
-            lock.lock(); movedFile = kept; lock.unlock()
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        lock.lock()
-        let continuation = self.continuation
-        self.continuation = nil
-        let file = movedFile
-        movedFile = nil
-        let tooBig = oversized
-        if let error = error as NSError?, !tooBig,
-           let data = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
-            resumeData = data
-        }
-        lock.unlock()
-        if tooBig {
-            if let file { try? FileManager.default.removeItem(at: file) }
-            continuation?.resume(throwing: OnDeviceModel.DownloadError.oversized)
-        } else if let error {
-            continuation?.resume(throwing: error)
-        } else if let file {
-            continuation?.resume(returning: file)
-        } else {
-            let status = (task.response as? HTTPURLResponse)?.statusCode ?? 0
-            continuation?.resume(throwing: status == 401
-                                 ? GatewayError.unauthorized : GatewayError.http(status, "The Mac refused the model download."))
-        }
     }
 }
