@@ -86,3 +86,12 @@ what an R2 menu family is about (Family.absent / Family.tempt).
 | msg_channel_photos | R2 | gold | 50 | 39/50 | 78 | gold call ['view_messages'] not offered 11 |
 | msg_channel_mom | R2 | gold | 12 | 8/12 | 16 | gold call ['view_messages'] not offered 4 |
 | mail_card_balance | R2 | gold | 57 | 16/57 | 32 | gold call ['view_emails'] not offered 41 |
+
+## Current-main acceptance
+
+This is the frozen historical corpus: train/dev bytes and all 3,662 rows remain
+unchanged. See BUILD_NOTES.md for clean-checkout `validate-rendered` and package
+commands. The current acceptance report binds data, source controls, held-out
+fixtures and trainer-kit hashes; it does not rerun the historical tokenizer or
+router, GPU training, or quality gate. Privacy coverage is the existing bounded
+regex scan plus pending independent synthetic-provenance/semantic review.

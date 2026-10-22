@@ -12,6 +12,7 @@ injection families (families.INJECTED_FILES / INJECTED_NOTES).
     python build.py distill [--k 2]      # Mellum samples (thinking off on narration), keep the best pass
     python build.py render               # prompt/completion text with Mellum's own tokenizer + template
     python build.py validate             # schema, offered tools, privacy, hold-out, template consistency
+    python build.py validate-rendered    # committed corpus only; no model/tokenizer/runtime
     python build.py stats                # counts and token lengths -> stats.json + DATA_CARD.md
     python build.py all --k 2            # everything above, in order
 
@@ -30,6 +31,7 @@ step (distill) or a gold step (gold), and only the target is trained on.
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import hashlib
 import json
@@ -45,7 +47,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
-sys.stdout.reconfigure(line_buffering=True)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
 
 MODEL = "Mellum2.1-12B-A2.5B-Thinking-oQ5e"
 MELLUM_DIR = Path.home() / "Desktop/OMLX_Model_Files/niteg/Mellum2.1-12B-A2.5B-Thinking-oQ5e"
@@ -55,6 +58,10 @@ MAX_DUP = 4                         # identical (prompt, history) text kept at m
 OVERLAP_MAX = 0.5                   # reject an item sharing >= this share of its 4-grams with one gate prompt
 THINK_STEP_MAX, THINK_TOTAL_MAX = 1500, 2500   # distill filter, reasoning characters
 PRIVATE = re.compile(r"adijain|trishala|/Users/(?!test\b)[A-Za-z]|@gmail\.com", re.I)  # Wisp prompts say /Users/<name>
+FROZEN_CORPUS_SHA256 = {
+    "train.jsonl": "39fce9cbd4afc9d1fa6cc82f4b02cf8f18f2699d6d3aba42036338e878f8460e",
+    "dev.jsonl": "85dec979353f42c8e89d9422de1ab3bf35454c35d71056bc97e35f28f39362ca",
+}
 
 OUT = {k: HERE / f"{k}.jsonl" for k in ("pool", "gold_rows", "distill_rows", "distill_log",
                                          "train", "dev", "rejects")}
@@ -421,7 +428,7 @@ def cmd_distill(args) -> None:
 
 def _tokenizer():
     from transformers import AutoTokenizer
-    return AutoTokenizer.from_pretrained(str(MELLUM_DIR))
+    return AutoTokenizer.from_pretrained(str(MELLUM_DIR), local_files_only=True)
 
 
 def completion_text(target: dict, enable_thinking: bool) -> str:
@@ -441,8 +448,10 @@ def completion_text(target: dict, enable_thinking: bool) -> str:
 
 
 def cmd_render(args) -> None:
-    tok = _tokenizer()
     rows = _r(OUT["gold_rows"]) + _r(OUT["distill_rows"])
+    if not rows:
+        raise SystemExit("render: generation rows are missing/empty; committed train/dev left unchanged")
+    tok = _tokenizer()
     by_split = defaultdict(list)
     for r in rows:
         prompt = tok.apply_chat_template(r["messages"], tools=r["tools"] or None, add_generation_prompt=True,
@@ -462,6 +471,8 @@ def cmd_render(args) -> None:
 def cmd_validate(args) -> None:
     rows = _r(OUT["gold_rows"]) + _r(OUT["distill_rows"])
     pool = {i["id"]: i for i in _r(OUT["pool"])}
+    if not rows or not pool:
+        raise SystemExit("validate: generation inputs are missing/empty; use validate-rendered for the committed corpus")
     problems = Counter()
     examples = defaultdict(list)
 
@@ -535,6 +546,311 @@ def cmd_validate(args) -> None:
         raise SystemExit(1)
 
 
+# ---------------------------------------------------- committed corpus acceptance
+
+def file_sha(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def acceptance_inputs() -> dict[str, str]:
+    """Bind data, checks, trainer, held-outs and current router/tool source.
+
+    Hashing router source does not claim that historical menus match today's
+    routing behavior. The corpus is a frozen synthetic snapshot, not a replay.
+    """
+    paths = [HERE / n for n in ("train.jsonl", "dev.jsonl", "stats.json", "families.py", "build.py",
+                                "DATA_CARD.md", "BUILD_NOTES.md")]
+    paths += [ROOT / f"training/mellum-r2-train/{name}" for name in
+              ("train.py", "vm-setup.sh", "README.md", "mellum-r2-a6000.ipynb")]
+    paths += [
+              ROOT / "scripts/toolbench/cases.py", ROOT / "scripts/toolbench/world.py"]
+    paths += sorted((ROOT / "scripts/toolbench/cases").glob("*.yaml"))
+    for folder in ("service/router", "service/tools"):
+        paths += sorted((ROOT / folder).rglob("*.py"))
+    return {str(p.relative_to(ROOT)): file_sha(p) for p in paths}
+
+
+def current_tool_keysets() -> dict[str, tuple[set, set]]:
+    """Read current registration keysets through a restricted AST grammar.
+
+    No imports/eval/service execution. Unsupported dynamic schemas fail closed;
+    this checks names/argument keys, not runtime availability or argument values.
+    """
+    result = {}
+    for path in sorted((ROOT / "service/tools").glob("*.py")):
+        tree = ast.parse(path.read_text())
+        aliases = {a.asname or a.name for n in tree.body
+                   if isinstance(n, ast.ImportFrom) and n.module == "service.tools.registry"
+                   for a in n.names if a.name == "register"}
+        constants = {n.targets[0].id: n.value for n in tree.body
+                     if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)}
+
+        def resolve(node):
+            return constants.get(node.id, node) if isinstance(node, ast.Name) else node
+
+        def text_key(node, bindings):
+            if isinstance(node, ast.Name) and node.id in bindings:
+                return bindings[node.id]
+            if isinstance(node, ast.JoinedStr):
+                parts = []
+                for part in node.values:
+                    if isinstance(part, ast.FormattedValue):
+                        if part.conversion != -1 or part.format_spec is not None:
+                            raise ValueError("unsupported formatted schema key")
+                        part = part.value
+                    parts.append(text_key(part, bindings))
+                return "".join(parts)
+            value = ast.literal_eval(node)
+            if not isinstance(value, str):
+                raise ValueError("non-string schema key")
+            return value
+
+        def property_keys(node):
+            node = resolve(node)
+            if isinstance(node, ast.Dict):
+                keys = set()
+                for key, value in zip(node.keys, node.values):
+                    keys |= property_keys(value) if key is None else {text_key(key, {})}
+                return keys
+            if isinstance(node, ast.DictComp) and len(node.generators) == 1:
+                gen = node.generators[0]
+                if isinstance(gen.target, ast.Name) and not gen.ifs and not gen.is_async:
+                    values = ast.literal_eval(resolve(gen.iter))
+                    if isinstance(values, (tuple, list)) and all(isinstance(v, str) for v in values):
+                        return {text_key(node.key, {gen.target.id: v}) for v in values}
+            raise ValueError("unsupported dynamic schema properties")
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for dec in node.decorator_list:
+                if not (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Name) and dec.func.id in aliases):
+                    continue
+                kw = {k.arg: k.value for k in dec.keywords}
+                name = ast.literal_eval(dec.args[0] if dec.args else kw["name"])
+                params = resolve(dec.args[2] if len(dec.args) > 2 else kw["parameters"])
+                if not isinstance(params, ast.Dict) or any(k is None for k in params.keys):
+                    raise ValueError("unsupported registration schema")
+                fields = {ast.literal_eval(k): v for k, v in zip(params.keys, params.values)}
+                props = property_keys(fields["properties"]) if "properties" in fields else set()
+                required = ast.literal_eval(resolve(fields["required"])) if "required" in fields else []
+                if (not isinstance(name, str) or not isinstance(required, list)
+                        or any(not isinstance(k, str) for k in required)
+                        or name in result or not set(required) <= props):
+                    raise ValueError("duplicate/invalid registration keys")
+                result[name] = (props, set(required))
+    if not result:
+        raise ValueError("no current tool registrations")
+    return result
+
+
+def validate_rendered() -> dict:
+    """Stream the tracked rows; never import service or open a model/tokenizer.
+
+    Token counts are historical metadata, checked against stats but not
+    re-tokenized. The privacy regex is a bounded leak scan, not proof of the
+    absence of all personal data. Only aggregate failures leave this function.
+    """
+    from families import FAMILIES
+    from scripts.toolbench.cases import load_cases
+    from scripts.toolbench.world import make_facts
+
+    before = acceptance_inputs()  # missing files fail before accepting anything
+    families = {f.id: f for f in FAMILIES}
+    stats = json.loads((HERE / "stats.json").read_text())
+    gate = [c for c in load_cases() if c.split == "gate"]
+    if not gate:
+        raise ValueError("validate-rendered: no held-out gate cases")
+    gate_cache = {}
+    problems, counts = Counter(), Counter()
+    registered = current_tool_keysets()
+    for name, expected in FROZEN_CORPUS_SHA256.items():
+        if file_sha(HERE / name) != expected:
+            problems["frozen_corpus_hash"] += 1
+    by_split, by_family, by_source, by_category = Counter(), Counter(), Counter(), Counter()
+    ids, item_split, checked_items = set(), {}, set()
+    total_train_tokens = total_train_completion = 0
+    max_overlap = 0.0
+    required = {"id", "item", "family", "category", "source", "step", "enable_thinking",
+                "prompt", "completion", "prompt_tokens", "completion_tokens"}
+
+    def heldouts(seed):
+        if seed not in gate_cache:
+            facts = make_facts(seed)
+            cases = [c.bind(facts) for c in gate]
+            texts = [c.prompt for c in cases] + [t["user"] for c in cases for t in c.history if t.get("user")]
+            gate_cache[seed] = [(_grams(_toks(t)), tuple(_toks(t))) for t in texts]
+        return gate_cache[seed]
+
+    for split in ("train", "dev"):
+        with OUT[split].open() as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    problems["invalid_json"] += 1
+                    continue
+                if not isinstance(r, dict) or set(r) != required:
+                    problems["row_schema"] += 1
+                    continue
+                if (any(not isinstance(r[k], str) or not r[k] for k in
+                        ("id", "item", "family", "category", "source", "prompt", "completion"))
+                        or type(r["enable_thinking"]) is not bool
+                        or any(type(r[k]) is not int or r[k] < (0 if k == "step" else 1)
+                               for k in ("step", "prompt_tokens", "completion_tokens"))):
+                    problems["row_types"] += 1
+                    continue
+                counts["rows"] += 1
+                by_split[split] += 1
+                by_family[r["family"]] += 1
+                by_source[r["source"]] += 1
+                by_category[r["category"]] += 1
+                if r["id"] in ids:
+                    problems["duplicate_id"] += 1
+                ids.add(r["id"])
+                if r["id"] != f"{r['item']}-s{r['step']}":
+                    problems["row_identity"] += 1
+                match = re.fullmatch(re.escape(r["family"]) + r"-(\d+)-(\d+)", r["item"])
+                seed = int(match[1]) if match else -1
+                expected_split = "dev" if (seed - SEED0) % DEV_EVERY == 0 else "train"
+                if not SEED0 <= seed < SEED0 + N_WORLDS or expected_split != split:
+                    problems["world_split"] += 1
+                if item_split.setdefault(r["item"], split) != split:
+                    problems["item_in_both_splits"] += 1
+                fam = families.get(r["family"])
+                if fam is None or fam.category != r["category"]:
+                    problems["family_category"] += 1
+                    continue
+                if r["source"] not in {"gold", "distill", "gold-fallback"}:
+                    problems["unknown_source"] += 1
+                prompt, completion = r["prompt"], r["completion"]
+                if PRIVATE.search(prompt + completion):
+                    problems["privacy_regex"] += 1
+                suffix = "<|im_start|>assistant\n" + ("" if r["enable_thinking"] else "<think>\n\n</think>\n\n")
+                if not prompt.startswith("<|im_start|>system\n") or not prompt.endswith(suffix):
+                    problems["prompt_frame"] += 1
+                if not completion.endswith("<|im_end|>") or "<|im_start|>" in completion:
+                    problems["completion_frame"] += 1
+                thinking = re.match(r"<think>\n(.*?)\n</think>\n\n", completion, re.S)
+                if bool(thinking) != r["enable_thinking"]:
+                    problems["thinking_mode"] += 1
+                if thinking and (not thinking[1].strip() or len(thinking[1]) > THINK_STEP_MAX):
+                    problems["reasoning_bounds"] += 1
+                body = completion[thinking.end():] if thinking else completion
+                if "<think" in body or "</think>" in body:
+                    problems["reasoning_markup"] += 1
+                # Only parse complete schema JSON lines in the first system
+                # message. The template also contains quoted <tools> examples.
+                offered = {}
+                system = prompt.split("<|im_end|>", 1)[0]
+                menus = re.findall(r"^<tools>\n(.*?)\n</tools>$", system, re.M | re.S)
+                delimiters = re.findall(r"^</?tools>.*$", system, re.M)
+                if (("# Tools" in system and len(menus) != 1) or len(menus) > 1
+                        or delimiters != (["<tools>", "</tools>"] if menus else [])):
+                    problems["tool_menu_frame"] += 1
+                for schema_line in menus[0].splitlines() if menus else ():
+                    try:
+                        schema = json.loads(schema_line)
+                        name = schema["function"]["name"]
+                        params = schema["function"]["parameters"]
+                        if (schema["type"] != "function" or not isinstance(name, str) or name in offered
+                                or not isinstance(params.get("properties"), dict)
+                                or not isinstance(params.get("required", []), list)):
+                            raise ValueError("duplicate/invalid tool")
+                        offered[name] = params
+                    except (ValueError, KeyError, TypeError):
+                        problems["tool_schema"] += 1
+                if set(offered) - set(registered):
+                    problems["unknown_current_tool"] += 1
+                calls = []
+                call_blocks = re.findall(r"<tool_call>\s*(.*?)\s*</tool_call>", body, re.S)
+                if len(call_blocks) != body.count("<tool_call>") or len(call_blocks) != body.count("</tool_call>"):
+                    problems["call_markup"] += 1
+                for block in call_blocks:
+                    try:
+                        call = json.loads(block)
+                        if set(call) != {"name", "arguments"} or not isinstance(call["name"], str) or not isinstance(call["arguments"], dict):
+                            raise ValueError("call schema")
+                        calls.append(call["name"])
+                        params = offered.get(call["name"])
+                        if params is not None and (set(call["arguments"]) - set(params["properties"])
+                                                   or set(params.get("required", [])) - set(call["arguments"])):
+                            problems["call_arguments"] += 1
+                        if call["name"] in registered:
+                            props, required_args = registered[call["name"]]
+                            if set(call["arguments"]) - props or required_args - set(call["arguments"]):
+                                problems["current_call_arguments"] += 1
+                    except (ValueError, TypeError, KeyError):
+                        problems["call_schema"] += 1
+                if set(calls) - set(offered):
+                    problems["call_not_offered"] += 1
+                if set(calls) & set(fam.forbid) or (fam.no_tool and calls):
+                    problems["family_forbidden_call"] += 1
+                if r["step"] == 0:
+                    if set(fam.absent) & set(offered) or (fam.tempt and not set(fam.tempt) & set(offered)):
+                        problems["family_menu"] += 1
+                    if fam.id.startswith("msg_channel_") and not set(calls) & {"view_messages", "summarize_messages"}:
+                        problems["messages_channel"] += 1
+                    if fam.id == "mail_card_balance" and not set(calls) & {"view_emails", "summarize_emails", "triage_inbox"}:
+                        problems["card_balance_lookup"] += 1
+                counts["tool_call_targets"] += bool(calls)
+                counts["thinking_steps"] += r["enable_thinking"]
+                if split == "train":
+                    total_train_tokens += r["prompt_tokens"] + r["completion_tokens"]
+                    total_train_completion += r["completion_tokens"]
+                if r["item"] not in checked_items and SEED0 <= seed < SEED0 + N_WORLDS:
+                    checked_items.add(r["item"])
+                    users = re.findall(r"<\|im_start\|>user\n(.*?)<\|im_end\|>", prompt, re.S)
+                    request = next((u for u in reversed(users) if not u.lstrip().startswith("<tool_response>")), "")
+                    if not request:
+                        problems["missing_user_request"] += 1
+                        continue
+                    pt = _toks(request)
+                    pg = _grams(pt)
+                    worst = max(1.0 if full == tuple(pt) else len(pg & g) / len(pg)
+                                for s in (None, seed) for g, full in heldouts(s))
+                    max_overlap = max(max_overlap, worst)
+                    if worst >= OVERLAP_MAX:
+                        problems["gate_overlap"] += 1
+
+    # The frozen R2 delivery has 3662 rows. Do not accept a smaller or empty
+    # corpus by modifying its accompanying stats; a new dataset needs review.
+    if dict(by_split) != {"train": 3270, "dev": 392}:
+        problems["frozen_split_counts"] += 1
+    for key, actual in (("rows_by_split", by_split), ("rows_by_family", by_family),
+                        ("rows_by_source", by_source), ("rows_by_category", by_category)):
+        if dict(actual) != stats.get(key):
+            problems[key] += 1
+    for key in ("rows", "tool_call_targets", "thinking_steps"):
+        if counts[key] != stats.get(key):
+            problems[key] += 1
+    if len(item_split) != stats.get("items_with_rows") or set(by_family) != set(families):
+        problems["family_item_coverage"] += 1
+    if (total_train_tokens != stats.get("tokens_per_epoch_train")
+            or total_train_completion != stats.get("completion_tokens", {}).get("total_train")):
+        problems["token_metadata_totals"] += 1
+    if acceptance_inputs() != before:
+        problems["inputs_changed_during_validation"] += 1
+    return {"mode": "committed-rendered", "rows": counts["rows"], "rows_by_split": dict(by_split),
+            "items": len(item_split), "families": len(by_family), "gate_cases": len(gate),
+            "max_gate_overlap": round(max_overlap, 6), "template_checks": 0,
+            "tokenizer_run": False, "router_replay_run": False, "training_run": False,
+            "privacy_scope": "Existing PRIVATE regex only; synthetic provenance and semantics need independent review",
+            "inputs_sha256": before, "problems": dict(problems), "ok": not problems}
+
+
+def cmd_validate_rendered(args) -> None:
+    report = validate_rendered()
+    (HERE / "validation.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps({k: v for k, v in report.items() if k != "inputs_sha256"}, indent=2))
+    if not report["ok"]:
+        raise SystemExit(1)
+
+
 # ------------------------------------------------------------------------- stats
 
 R2_FAMILIES = ("menu_", "inj_", "chat_writing_tools_offered", "chat_define_tools_offered", "msg_channel_",
@@ -559,6 +875,8 @@ def cmd_stats(args) -> None:
     pool = _r(OUT["pool"])
     rows = _r(OUT["gold_rows"]) + _r(OUT["distill_rows"])
     rendered = _r(OUT["train"]) + _r(OUT["dev"])
+    if not pool or not rows or not rendered:
+        raise SystemExit("stats: generation inputs are missing/empty; committed stats left unchanged")
     tok_by_id = {x["id"]: x for x in rendered}
     split = Counter(r["split"] for r in rows)
     source = Counter(r["source"] for r in rows)
@@ -658,28 +976,52 @@ def cmd_package(args) -> None:
     missing = [n for n, f in files.items() if not f.exists()]
     if missing:
         raise SystemExit(f"package: missing {missing} - run render/validate/stats first")
-    if not json.loads((HERE / "validation.json").read_text()).get("ok"):
-        raise SystemExit("package: validation.json is not ok - run validate")
-    stub = sum(r.get("embedder") == "stub" for r in _r(OUT["gold_rows"]) + _r(OUT["distill_rows"]))
-    if stub:
-        raise SystemExit(f"package: {stub} rows were routed with the stub embedder - rerun `gold --engine`")
-    if not OUT["distill_log"].exists():
-        raise SystemExit("package: no distill run yet - the distill families have no rows")
-    sha = lambda f: hashlib.sha256(f.read_bytes()).hexdigest()  # noqa: E731
-    manifest = {"built": datetime.now().isoformat(timespec="seconds"), "files": {n: sha(f) for n, f in files.items()}}
+    recorded_bytes = (HERE / "validation.json").read_bytes()
+    recorded = json.loads(recorded_bytes)
+    current = validate_rendered()
+    if not current["ok"] or recorded != current:
+        raise SystemExit("package: absent, failing or stale committed acceptance - run validate-rendered")
+    expected = {n: (hashlib.sha256(recorded_bytes).hexdigest() if n == "validation.json"
+                    else current["inputs_sha256"][str(f.relative_to(ROOT))]) for n, f in files.items()}
+    manifest = {"built": datetime.now().isoformat(timespec="seconds"), "files": expected}
     z = HERE / "mellum-r2-data.zip"
-    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
-        for n, f in files.items():
-            zf.write(f, n)
-        zf.writestr("MANIFEST.json", json.dumps(manifest, indent=2))
-    rec = {"zip": z.name, "sha256": sha(z), "bytes": z.stat().st_size, "manifest": manifest}
-    (HERE / "upload-zip.json").write_text(json.dumps(rec, indent=2) + "\n")
+    with tempfile.NamedTemporaryFile(prefix=".mellum-r2-package-", suffix=".zip", dir=HERE, delete=False) as fh:
+        stage = Path(fh.name)
+    receipt_stage = None
+    try:
+        with zipfile.ZipFile(stage, "w", zipfile.ZIP_DEFLATED) as zf:
+            for n, f in files.items():
+                zf.write(f, n)
+            zf.writestr("MANIFEST.json", json.dumps(manifest, indent=2))
+        with zipfile.ZipFile(stage) as zf:
+            if set(zf.namelist()) != set(files) | {"MANIFEST.json"}:
+                raise SystemExit("package: staged inventory mismatch")
+            for n, expected_sha in expected.items():
+                digest = hashlib.sha256()
+                with zf.open(n) as fh:
+                    for block in iter(lambda: fh.read(1024 * 1024), b""):
+                        digest.update(block)
+                if digest.hexdigest() != expected_sha:
+                    raise SystemExit("package: staged member changed after acceptance")
+        if (acceptance_inputs() != current["inputs_sha256"]
+                or (HERE / "validation.json").read_bytes() != recorded_bytes):
+            raise SystemExit("package: inputs changed after acceptance")
+        rec = {"zip": z.name, "sha256": file_sha(stage), "bytes": stage.stat().st_size, "manifest": manifest}
+        with tempfile.NamedTemporaryFile(prefix=".mellum-r2-receipt-", suffix=".json", dir=HERE, delete=False) as fh:
+            receipt_stage = Path(fh.name)
+            fh.write((json.dumps(rec, indent=2) + "\n").encode())
+        stage.replace(z)
+        receipt_stage.replace(HERE / "upload-zip.json")
+    finally:
+        stage.unlink(missing_ok=True)
+        if receipt_stage is not None:
+            receipt_stage.unlink(missing_ok=True)
     print(f"package: {z.name} {rec['bytes'] / 1e6:.1f}MB sha256 {rec['sha256']}")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["pool", "gold", "distill", "render", "validate", "stats", "package", "all"])
+    ap.add_argument("cmd", choices=["pool", "gold", "distill", "render", "validate", "validate-rendered", "stats", "package", "all"])
     ap.add_argument("--per-world", type=int, default=1, help="items per family per world (pool)")
     ap.add_argument("--engine", action="store_true",
                     help="gold: route with oMLX embeddings (needs the engine; default is the offline stub)")
@@ -693,9 +1035,9 @@ def main() -> int:
     args = ap.parse_args()
     if args.cmd == "all":
         args.engine = True  # distill needs the engine anyway; route gold rows the same way
-    steps = ["pool", "gold", "distill", "render", "validate", "stats", "package"] if args.cmd == "all" else [args.cmd]
+    steps = ["pool", "gold", "distill", "render", "validate", "stats", "validate-rendered", "package"] if args.cmd == "all" else [args.cmd]
     for s in steps:
-        globals()[f"cmd_{s}"](args)
+        globals()[f"cmd_{s.replace('-', '_')}"](args)
     return 0
 
 

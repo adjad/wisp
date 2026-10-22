@@ -73,19 +73,25 @@ def tokenize(tok, rows: list[dict], max_len: int) -> tuple[list[tuple], list[str
 
 
 def cmd_preflight(a) -> int:
-    from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(a.base)
+    import hashlib
     problems = 0
     tpl = Path(a.base) / "chat_template.jinja"
-    if tpl.exists():
-        import hashlib
-        sha = hashlib.sha256(tpl.read_bytes()).hexdigest()
-        ok = sha == a.template_sha
-        problems += not ok
-        print(f"chat_template.jinja sha256 {sha[:12]}… {'matches' if ok else 'DIFFERS FROM'} the template the data was rendered with")
+    if not tpl.is_file():
+        print("PREFLIGHT FAILED: local chat_template.jinja is missing; tokenizer checks UNRUN")
+        return 1
+    sha = hashlib.sha256(tpl.read_bytes()).hexdigest()
+    if sha != a.template_sha:
+        print("PREFLIGHT FAILED: chat_template.jinja differs from the rendered-data template; tokenizer checks UNRUN")
+        return 1
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(a.base, local_files_only=True)
+    print(f"chat_template.jinja sha256 {sha[:12]}… matches the template the data was rendered with")
     for split in ("train", "dev"):
         rows = load_rows(Path(a.data), split)
         toks, skipped = tokenize(tok, rows, a.max_len)
+        if not toks or any(not p or not c for _, p, c in toks):
+            print(f"PREFLIGHT FAILED: {split} has no usable rows or an empty token sequence")
+            return 1
         lens = sorted(len(p) + len(c) for _, p, c in toks)
         labeled = [len(c) for _, _, c in toks]
         bad_eos = [i for i, _, c in toks if c[-1] != EOS_ID]
@@ -119,7 +125,7 @@ def load_model(a, *, for_training: bool = True):
         except ImportError:
             if a.attn == "flash":
                 sys.exit("--attn flash but flash_attn is not installed")
-    tok = AutoTokenizer.from_pretrained(a.base)
+    tok = AutoTokenizer.from_pretrained(a.base, local_files_only=True)
     model = AutoModelForCausalLM.from_pretrained(a.base, dtype=torch.bfloat16, attn_implementation=impl,
                                                  device_map={"": 0})
     model.config.use_cache = False

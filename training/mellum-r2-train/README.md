@@ -13,7 +13,9 @@ local oQ5e build was quantized from. Data: `training/mellum-dataset-r2-20261015/
 
 This kit is the R1 kit (`training/mellum-r1-train/`) with every path and name moved to R2: the data zip
 `mellum-r2-data.zip`, the work dirs `~/wisp/mellum-r2*`, the adapter `mellum-r2-adapter.zip` and the merged model
-`Mellum2.1-12B-A2.5B-Thinking-Wisp-R2-merged`. The trainer and `run.sh` logic are unchanged.
+`Mellum2.1-12B-A2.5B-Thinking-Wisp-R2-merged`. Training hyperparameters remain unchanged.
+The current-main reconciliation adds source acceptance, verified staged unpack,
+and fail-closed local template/preflight binding; it does not run GPU training.
 
 | | R1 | R2 |
 |---|---|---|
@@ -30,13 +32,20 @@ give it the same deadline or a longer one.
 
 ## All commands, in order
 
-On the Mac, once the dataset is final:
+On the Mac, accept and package the committed historical corpus without a model
+or tokenizer (use the repository Python environment with PyYAML):
 
 ```bash
-cd training/mellum-dataset-r2-20261015 && ../../.venv/bin/python build.py render && ../../.venv/bin/python build.py validate --template-checks 100000 && ../../.venv/bin/python build.py stats && ../../.venv/bin/python build.py package
+python training/mellum-dataset-r2-20261015/build.py validate-rendered
+python -m pytest -q tests/test_mellum_r2_source_contracts.py
+python training/mellum-dataset-r2-20261015/build.py package
 ```
 
-`package` writes `mellum-r2-data.zip`, with its sha256 recorded in `upload-zip.json`.
+`package` reruns acceptance and refuses stale/missing evidence, then writes
+`mellum-r2-data.zip`, with its sha256 recorded in `upload-zip.json`. Preserve that
+record outside the archive as the trusted source of the digest passed to unpack.
+These are source/data/package checks. They do not replace tokenizer preflight,
+the GPU smoke step, training, or the post-training quality gate.
 
 On the VM:
 
@@ -44,8 +53,8 @@ On the VM:
 |---|---|---|---|
 | 0 | (setup field) `vm-setup.sh` | uv venv, torch + transformers ≥5.8.1 + peft, optional flash-attn, 24GB base download | `~/wisp/SETUP_DONE` |
 | 1 | `!~/wisp/run.sh check` | GPU, versions, `MellumForCausalLM`, flash-attn, base shards, data zip sha | all yes; sha = `upload-zip.json` |
-| 2 | upload `mellum-r2-data.zip` → `wisp/uploads`, then `!~/wisp/run.sh unpack` | unzip + per-file manifest check | `manifest: … ALL OK` |
-| 3 | `!~/wisp/run.sh preflight` | tokenizer-only: template sha, lengths, `<|im_end|>` endings, decode round-trip | `PREFLIGHT OK` |
+| 2 | upload `mellum-r2-data.zip` → `wisp/uploads`, then `!~/wisp/run.sh unpack <trusted-sha256>` | verify the external ZIP digest, fixed inventory, safe paths/types/sizes and every member hash, then stage and replace data | `manifest: … ALL OK` |
+| 3 | `!~/wisp/run.sh preflight` | local tokenizer only: required template sha, lengths, `<|im_end|>` endings, decode round-trip; bind marker to data/trainer/template hashes | `PREFLIGHT OK` |
 | 4 | `!~/wisp/run.sh smoke` | 8 longest rows fwd+bwd, 1 optimizer step | `MEMORY OK`, peak GiB, full-run estimate |
 | 5 | `!~/wisp/run.sh train` | background run, 2 epochs, eval + checkpoint every 50 steps | `training started` |
 | 6 | `!~/wisp/run.sh status` (repeat) | progress, last evals, errors | loss falling, no OOM |
@@ -98,9 +107,14 @@ real layer-0 weight names to confirm. bitsandbytes 4-bit only replaces `nn.Linea
 and head (~1B params) and leave the experts in bf16, saving roughly 1.5 GiB. Lowering `--max-len` is the real lever.
 At 10,240 the trainer skips the 32 longest train rows (of 3270) and 4 dev rows, which preflight lists.
 
-## Not verified yet
+## Verification limits
 
-- `train.py` has only been exercised offline: preflight on the Mac passes with Mellum's tokenizer, but the GPU
+- The historical 2026-10-16 Mac tokenizer preflight passed; it has **not** been
+  rerun for this reconciliation. Current source tests mock the tokenizer and
+  exercise only its local-only and required-template controls. Missing or changed
+  templates fail before tokenizer loading, and changed data/trainer/template
+  bytes invalidate the VM's preflight marker.
+- `train.py` has only been exercised offline; the GPU
   path (model load, LoRA targets, `logits_to_keep`, backward) first runs in the smoke cell. The trainer fails fast
   if LoRA does not find exactly 112 attention projections, and it warns if the model ignores `logits_to_keep`.
 - The flash-attn wheel availability and the HF MoE expert implementation's speed are unknown until `check` and
