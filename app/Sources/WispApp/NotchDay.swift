@@ -113,6 +113,15 @@ struct DayItem: Identifiable, Equatable {
     var members: [DayMember] = []
     /// Over before now, on today: drawn dim, inside the lane's two hours back.
     var past = false
+
+    /// Whether the block is drawn as over: dim, with nothing left to act on. A
+    /// block that ended keeps its controls while a cancel on it is still in its
+    /// Undo window or being sent: the person tapped Cancel while it was still
+    /// on, and the clock passing its end must not take Undo away mid-window
+    /// (or hide the spinner while the service works). The ⋯ menu never offers a
+    /// new Cancel on a past block (CheckInCancel.menuEntries), so this only
+    /// keeps a cancel that began in time.
+    func isOver(cancelActive: Bool) -> Bool { past && !cancelActive }
 }
 
 struct DayTimeline: Equatable {

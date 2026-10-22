@@ -3500,9 +3500,11 @@ def legacy_executable_authority(host, monkeypatch):
     return authority
 
 
-def real_process_path(host):
+def real_process_path(host, *, started=None):
     """The REAL libproc helper for the one real pid in play (1); the fake pids keep their fake answers."""
     def lookup(pid):
+        if pid == 1 and started is not None:
+            started.set()
         host.events.append(('path', pid))
         return local_peer.process_path(pid) if pid == 1 else host.txt[str(pid)]
     return lookup
@@ -3515,8 +3517,12 @@ def test_a_foreign_uid_server_pid_1_is_refused_by_the_ps_uid_check_under_the_sch
     host = make_host()
     host.listen = f'p1\nu{UID}\nf4\nn127.0.0.1:8000\n'.encode()
     host.ps['1'] = f'{PARENT_PID} 0 omlx-server\n'                   # root's process: uid 0
-    host.process_path = real_process_path(host)
-    Probe(host, monkeypatch, delays=delays_for(profile, 5))
+    path_started = threading.Event()
+    host.process_path = real_process_path(host, started=path_started)
+    # Exercise a lookup already running when the UID check refuses. Otherwise
+    # the unused queued lookup can legitimately be canceled before it starts.
+    Probe(host, monkeypatch, delays=delays_for(profile, 5),
+          hooks={'ps-parent': lambda: must(path_started)})
     new = outcome(lambda: current(bare()))
     assert ('path', 1) in host.events                                 # the helper really ran, speculatively...
     assert new[:2] == ('AuthRefused', ('desktop_process_unqualified',))      # ...and was not the gate
@@ -3532,8 +3538,10 @@ def test_a_foreign_uid_parent_pid_1_is_refused_by_the_ps_uid_check_under_the_sch
     host = make_host()
     host.ps[str(SERVER_PID)] = f'1 {UID} omlx-server\n'               # the server's parent is pid 1
     host.ps['1'] = f'1 0 {host.app_executable}\n'                      # root's launchd-like row: uid 0
-    host.process_path = real_process_path(host)
-    Probe(host, monkeypatch, delays=delays_for(profile, 6))
+    path_started = threading.Event()
+    host.process_path = real_process_path(host, started=path_started)
+    Probe(host, monkeypatch, delays=delays_for(profile, 6),
+          hooks={'ps-parent': lambda: must(path_started)})
     new = outcome(lambda: current(bare()))
     assert ('path', 1) in host.events
     assert new[:2] == ('AuthRefused', ('desktop_parent_unqualified',))
@@ -3541,6 +3549,67 @@ def test_a_foreign_uid_parent_pid_1_is_refused_by_the_ps_uid_check_under_the_sch
     old_host.ps[str(SERVER_PID)], old_host.ps['1'] = host.ps[str(SERVER_PID)], host.ps['1']
     old = outcome(lambda: legacy(legacy_executable_authority(old_host, monkeypatch)))
     assert same_outcome(new, old)
+
+
+@pytest.mark.parametrize('role', ['server', 'parent'])
+def test_foreign_uid_refusal_cancels_an_unused_queued_path_lookup(host, monkeypatch, role):
+    """A queued path need not start for the UID guard to enforce its exact refusal."""
+    foreign_uid = UID + 1
+    if role == 'server':
+        host.listen = f'p1\nu{UID}\nf4\nn127.0.0.1:8000\n'.encode()
+        host.ps['1'] = f'{PARENT_PID} {foreign_uid} omlx-server\n'
+        reason = 'desktop_process_unqualified'
+    else:
+        host.ps[str(SERVER_PID)] = f'1 {UID} omlx-server\n'
+        host.ps['1'] = f'1 {foreign_uid} {host.app_executable}\n'
+        reason = 'desktop_parent_unqualified'
+
+    class QueuedLookup(concurrent.futures.Future):
+        def result(self, timeout=None):
+            raise AssertionError('foreign UID must be refused before consuming its path')
+
+        def cancel(self):
+            was_canceled = self.cancelled()
+            canceled = super().cancel()
+            if canceled and not was_canceled:
+                # Model an executor consuming the canceled queue item: notify
+                # waiters without executing its callable or doing native work.
+                assert not self.set_running_or_notify_cancel()
+            return canceled
+
+    queued = []
+    waited = []
+    real_wait = concurrent.futures.wait
+
+    def wait_without_blocking(futures, *args, **kwargs):
+        waited.append(tuple(futures))
+        return real_wait(waited[-1], timeout=0)
+
+    def submit(call, *args):
+        if getattr(call, '__name__', None) == '_executable' and args == (1,):
+            future = QueuedLookup()
+            queued.append(future)
+            return future
+        future = concurrent.futures.Future()
+        future.set_running_or_notify_cancel()
+        try:
+            future.set_result(call(*args))
+        except BaseException as error:
+            future.set_exception(error)
+        return future
+
+    monkeypatch.setattr(at._POOL, 'submit', submit)
+    # All other fake futures are terminal. A missing cancellation or drain
+    # must fail these assertions instead of hanging the whole test module.
+    monkeypatch.setattr(concurrent.futures, 'wait', wait_without_blocking)
+    new = outcome(lambda: current(bare()))
+    assert new[:2] == ('AuthRefused', (reason,))
+    assert len(waited) == 1 and queued[0] in waited[0]
+    assert all(future.done() for future in waited[0])
+    assert len(queued) == 1 and queued[0].cancelled() and queued[0].done()
+    assert queued[0].cancel() and queued[0].cancelled()
+    assert real_wait(queued, timeout=0).not_done == set()
+    assert ('path', 1) not in host.events
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='libproc')
