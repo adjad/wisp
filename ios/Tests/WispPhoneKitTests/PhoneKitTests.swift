@@ -216,3 +216,140 @@ func pairingRejectsMalformedIPs(ip: String) {
     #expect(!ModelBundle(id: "ling", modelType: nil, totalBytes: 1,
                          files: [.init(name: "a.json", size: 1, sha256: "zz")]).isSafe)
 }
+
+// MARK: Ping challenge (gateway v2)
+
+/// Answers requests for one port from a per-test handler, so parallel tests never share state.
+final class StubProtocol: URLProtocol, @unchecked Sendable {
+    typealias Handler = @Sendable (URLRequest) -> (Int, Data)?
+    nonisolated(unsafe) private static var handlers: [Int: Handler] = [:]
+    nonisolated(unsafe) private static var seen: [Int: [URLRequest]] = [:]
+    private static let lock = NSLock()
+
+    static func session(port: Int, handler: @escaping Handler) -> URLSession {
+        lock.withLock { handlers[port] = handler; seen[port] = [] }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubProtocol.self]
+        return URLSession(configuration: config)
+    }
+    static func requests(port: Int) -> [URLRequest] { lock.withLock { seen[port] ?? [] } }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        let port = request.url?.port ?? 0
+        let handler = Self.lock.withLock { Self.seen[port, default: []].append(request); return Self.handlers[port] }
+        guard let url = request.url, let (status, body) = handler?(request) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost)); return
+        }
+        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
+private func nonce(of request: URLRequest) -> String {
+    URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+        .queryItems?.first { $0.name == "nonce" }?.value ?? ""
+}
+
+private func pingAnswer(_ proofs: [String]) -> Data {
+    try! JSONSerialization.data(withJSONObject: ["wisp_gateway": 2, "proofs": proofs])
+}
+
+private func helloBody() -> Data {
+    Data(#"{"gateway_version":2,"mac_name":"Mac","device":{"id":"d1","name":"Phone"},"backend":{"reachable":true}}"#.utf8)
+}
+
+@Test func pingProofMatchesGatewayVector() {
+    // Same vector as tests/test_phone_gateway.py::test_ping_proof_known_vector.
+    #expect(GatewayProof.proof(token: token, nonce: "00112233445566778899aabbccddeeff")
+            == "2dd110115354b568036ae2d48dec99d6f038e6398e9e184e8a1c7c381c7f32ea")
+}
+@Test func pingNoncesAreFreshHex() {
+    let a = GatewayProof.newNonce(), b = GatewayProof.newNonce()
+    #expect(a.count == 64 && a.allSatisfy { $0.isHexDigit && !$0.isUppercase } && a != b)
+}
+@Test func pingVerificationNeedsTheRightTokenAndNonce() {
+    let nonce = GatewayProof.newNonce()
+    let good = GatewayProof.proof(token: token, nonce: nonce)
+    #expect(GatewayProof.verify(pingResponse: pingAnswer(["00", good]), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer([good]), token: token + "x", nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer([good]), token: token, nonce: GatewayProof.newNonce()))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer([]), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: Data(#"{"wisp_gateway":1}"#.utf8), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer([String(good.dropLast(2))]), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: Data("not json".utf8), token: token, nonce: nonce))
+}
+@Test func gatewaySendsTokenOnlyAfterProof() async throws {
+    let port = 18_801
+    let session = StubProtocol.session(port: port) { request in
+        if request.url!.path == "/phone/v1/ping" {
+            return (200, pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))]))
+        }
+        return (200, helloBody())
+    }
+    let pairing = MacPairing(host: "mac.tail1.ts.net", ip: nil, port: port, macName: "Mac", token: token)
+    let hello = try await GatewayClient(pairing: pairing, session: session).hello()
+    #expect(hello.macName == "Mac")
+    let seen = StubProtocol.requests(port: port)
+    #expect(seen.map { $0.url!.path } == ["/phone/v1/ping", "/phone/v1/hello"])
+    #expect(seen[0].value(forHTTPHeaderField: "Authorization") == nil)
+    #expect(nonce(of: seen[0]).count == 64)
+    #expect(seen[1].value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
+}
+@Test(arguments: ["plain", "wrongToken", "replayed"])
+func gatewayWithholdsTokenFromImpostor(kind: String) async {
+    let port = 18_802 + ["plain", "wrongToken", "replayed"].firstIndex(of: kind)!
+    let stale = GatewayProof.proof(token: token, nonce: GatewayProof.newNonce())
+    let session = StubProtocol.session(port: port) { request in
+        switch kind {
+        case "plain": return (200, Data(#"{"wisp_gateway":1}"#.utf8))  // a v1 ping, or anyone answering 200
+        case "wrongToken": return (200, pingAnswer([GatewayProof.proof(token: "other", nonce: nonce(of: request))]))
+        default: return (200, pingAnswer([stale]))  // a proof captured for some other nonce
+        }
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    await #expect(throws: GatewayError.unverified) {
+        try await GatewayClient(pairing: pairing, session: session).hello()
+    }
+    let seen = StubProtocol.requests(port: port)
+    #expect(seen.allSatisfy { $0.url!.path == "/phone/v1/ping" && $0.value(forHTTPHeaderField: "Authorization") == nil })
+}
+@Test func gatewayFallsBackToTheAddressThatProves() async throws {
+    // MagicDNS answers without a proof; the IP proves. Same port, so route by host.
+    let port = 18_810
+    let session = StubProtocol.session(port: port) { request in
+        let url = request.url!
+        guard url.path == "/phone/v1/ping" else { return url.host == "100.64.0.1" ? (200, helloBody()) : nil }
+        if url.host == "mac.tail1.ts.net" { return (200, pingAnswer([])) }
+        return (200, pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))]))
+    }
+    let pairing = MacPairing(host: "mac.tail1.ts.net", ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    _ = try await GatewayClient(pairing: pairing, session: session).hello()
+    let authed = StubProtocol.requests(port: port).filter { $0.value(forHTTPHeaderField: "Authorization") != nil }
+    #expect(authed.map { $0.url!.host } == ["100.64.0.1"])
+}
+@Test func gatewayUnreachableWhenNothingAnswers() async {
+    let session = StubProtocol.session(port: 18_811) { _ in nil }
+    let pairing = MacPairing(host: "mac.tail1.ts.net", ip: nil, port: 18_811, macName: "Mac", token: token)
+    await #expect(throws: GatewayError.unreachable) {
+        try await GatewayClient(pairing: pairing, session: session).hello()
+    }
+}
+@Test func cloudPlainHTTPOnlyToMagicDNSNames() throws {
+    for base in ["http://100.64.0.1:8000/v1", "http://100.100.1.2/v1", "http://127.0.0.1:8000/v1",
+                 "http://evil.com#.ts.net/v1"] {
+        #expect(throws: CloudSettings.Problem.self) {
+            try CloudSettings(provider: .custom, baseURL: base, model: "m").completionsURL()
+        }
+    }
+    #expect(throws: CloudSettings.Problem.insecureURL) {
+        try CloudSettings(provider: .custom, baseURL: "http://100.64.0.1:8000/v1", model: "m").completionsURL()
+    }
+    _ = try CloudSettings(provider: .custom, baseURL: "http://Box.Tail1.ts.net/v1", model: "m").completionsURL()
+    #expect(try CloudSettings(provider: .custom, baseURL: "https://100.64.0.1/v1", model: "m")
+        .completionsURL().scheme == "https")
+}

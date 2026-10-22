@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct GatewayHello: Decodable, Equatable, Sendable {
@@ -75,6 +76,7 @@ public struct ModelBundle: Decodable, Equatable, Identifiable, Sendable {
 
 public enum GatewayError: Error, Equatable, LocalizedError {
     case unreachable
+    case unverified
     case unauthorized
     case backendDown
     case http(Int, String)
@@ -84,6 +86,8 @@ public enum GatewayError: Error, Equatable, LocalizedError {
         switch self {
         case .unreachable:
             "Can't reach your Mac. Check that Tailscale is connected on both devices and the gateway is running."
+        case .unverified:
+            "Something answered at your Mac's address but couldn't prove it's your Mac, so the app didn't send your pairing token. Update Wisp on your Mac, or pair again from Settings."
         case .unauthorized:
             "Your Mac no longer recognizes this iPhone. Pair again from Settings."
         case .backendDown:
@@ -93,6 +97,51 @@ public enum GatewayError: Error, Equatable, LocalizedError {
         case .badResponse:
             "Your Mac sent a response the app couldn't read."
         }
+    }
+}
+
+/// The ping challenge (gateway v2): the Mac proves it holds this phone's pairing before
+/// the phone sends its token. proof = HMAC-SHA256(key: SHA-256(token), "wisp-phone-ping-v1:" + nonce).
+public enum GatewayProof {
+    static let label = "wisp-phone-ping-v1:"
+
+    /// 32 random bytes as lowercase hex. The system generator is cryptographically secure.
+    public static func newNonce() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return (0..<32).map { _ in String(format: "%02x", UInt8.random(in: .min ... .max, using: &generator)) }.joined()
+    }
+
+    public static func proof(token: String, nonce: String) -> String {
+        let code = HMAC<SHA256>.authenticationCode(for: Data((label + nonce).utf8), using: key(token))
+        return Data(code).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// True when any proof in the ping answer is this token's proof for `nonce`. Constant-time compare.
+    public static func verify(pingResponse data: Data, token: String, nonce: String) -> Bool {
+        struct Ping: Decodable { var proofs: [String]? }
+        guard let proofs = (try? JSONDecoder().decode(Ping.self, from: data))?.proofs, proofs.count <= 1024 else {
+            return false
+        }
+        let message = Data((label + nonce).utf8)
+        return proofs.contains { candidate in
+            guard let bytes = hexBytes(candidate), bytes.count == SHA256.byteCount else { return false }
+            return HMAC<SHA256>.isValidAuthenticationCode(bytes, authenticating: message, using: key(token))
+        }
+    }
+
+    private static func key(_ token: String) -> SymmetricKey {
+        SymmetricKey(data: Data(SHA256.hash(data: Data(token.utf8))))
+    }
+
+    private static func hexBytes(_ text: String) -> Data? {
+        let chars = Array(text.utf8)
+        guard chars.count.isMultiple(of: 2) else { return nil }
+        var out = Data(capacity: chars.count / 2)
+        for i in stride(from: 0, to: chars.count, by: 2) {
+            guard let byte = UInt8(String(decoding: chars[i...i + 1], as: UTF8.self), radix: 16) else { return nil }
+            out.append(byte)
+        }
+        return out
     }
 }
 
@@ -200,19 +249,29 @@ public actor GatewayClient {
         }
     }
 
-    /// The first base URL that answers the unauthenticated ping, MagicDNS name first.
-    private func reachableBase() async throws -> URL {
+    /// The first base URL whose ping proves it holds this pairing, MagicDNS name first.
+    /// Nothing carries the token until then: 100.64/10 is also carrier CGNAT space, so with
+    /// Tailscale off, whoever answers at the Mac's address may be a stranger.
+    func reachableBase() async throws -> URL {
         if let preferredBase { return preferredBase }
+        var answered = false
         for base in pairing.baseURLs {
-            var request = URLRequest(url: base.appendingPathComponent("phone/v1/ping"))
+            let nonce = GatewayProof.newNonce()
+            guard var components = URLComponents(url: base.appendingPathComponent("phone/v1/ping"),
+                                                 resolvingAgainstBaseURL: false) else { continue }
+            components.queryItems = [URLQueryItem(name: "nonce", value: nonce)]
+            guard let url = components.url else { continue }
+            var request = URLRequest(url: url)
             request.timeoutInterval = 4
-            if let (_, response) = try? await session.data(for: request),
-               (response as? HTTPURLResponse)?.statusCode == 200 {
+            guard let (data, response) = try? await session.data(for: request),
+                  (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
+            answered = true
+            if GatewayProof.verify(pingResponse: data, token: pairing.token, nonce: nonce) {
                 preferredBase = base
                 return base
             }
         }
-        throw GatewayError.unreachable
+        throw answered ? GatewayError.unverified : GatewayError.unreachable
     }
 
     @discardableResult

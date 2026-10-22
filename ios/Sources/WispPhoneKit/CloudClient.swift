@@ -49,20 +49,21 @@ public struct CloudSettings: Codable, Equatable, Sendable {
             switch self {
             case .missingModel: "Choose a model ID for the cloud provider."
             case .badURL: "The provider URL isn't valid."
-            case .insecureURL: "The provider URL must use https, so your key and messages are encrypted."
+            case .insecureURL: "The provider URL must use https (or http to a .ts.net name), so your key and messages are encrypted."
             case .missingKey: "Add your API key in Settings → Cloud."
             }
         }
     }
 
-    /// The validated `/chat/completions` endpoint. Plain http is allowed only inside a tailnet.
+    /// The validated `/chat/completions` endpoint. Plain http is allowed only to a MagicDNS
+    /// (`*.ts.net`) name: a bare 100.x address may be carrier CGNAT, not the tailnet.
     public func completionsURL() throws -> URL {
         let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(), let host = url.host else {
             throw Problem.badURL
         }
         if scheme != "https" {
-            guard scheme == "http", MacPairing.isPrivateHost(host) else { throw Problem.insecureURL }
+            guard scheme == "http", MacPairing.isMagicDNSName(host.lowercased()) else { throw Problem.insecureURL }
         }
         guard !model.trimmingCharacters(in: .whitespaces).isEmpty else { throw Problem.missingModel }
         return url.appendingPathComponent("chat/completions")

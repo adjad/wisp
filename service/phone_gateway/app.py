@@ -28,6 +28,7 @@ MAX_TOKEN_CHARS = 256
 FAIL_LIMIT = 10
 FAIL_WINDOW_S = 60.0
 SID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+NONCE_RE = re.compile(r"[0-9a-f]{32,128}")
 _MAX_ID_FIELD = 200
 _SCOPES = ("once", "always", "never")
 _FILE_CHUNK = 1024 * 1024
@@ -240,8 +241,15 @@ def create_app(
 
     # -- routes ------------------------------------------------------------
     @app.get("/phone/v1/ping")
-    async def ping() -> dict[str, int]:
-        return {"wisp_gateway": GATEWAY_VERSION}
+    async def ping(nonce: str | None = None) -> dict[str, Any]:
+        # Without a nonce: the v1 answer, for older phones. With one, the phone only
+        # sends its token once a proof matches, so a stranger at the address learns nothing.
+        if nonce is None:
+            return {"wisp_gateway": GATEWAY_VERSION}
+        if not NONCE_RE.fullmatch(nonce):
+            raise _bad("nonce must be 32..128 lowercase hex characters")
+        proofs = await asyncio.to_thread(devices.ping_proofs, nonce)
+        return {"wisp_gateway": GATEWAY_VERSION, "proofs": proofs}
 
     @app.get("/phone/v1/hello")
     async def hello(request: Request) -> dict[str, Any]:
