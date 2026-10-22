@@ -702,6 +702,14 @@ _PERSONAL_INBOX_QUESTION = (
     r"(?:\s+(?:today|yet|tonight|so\s+far|this\s+(?:morning|afternoon|evening|week)|"
     r"for\s+me|since\s+(?:this\s+morning|yesterday|lunch)))?")
 
+# Keep source ownership and current-information detection on the same grammar.
+# A modal is not an external subject in "what must we do today?".
+_PERSONAL_DECISION_QUESTION = (
+    r"(?:what|how|when|where|which)\s+"
+    r"(?:(?:should|shall|ought|must|need|can|could|would|will|do|did|am|have)\s+(?:i|we)\b|"
+    r"(?:i|we)\s+(?:should\b|(?:need|have|ought)\s+to\b))"
+)
+
 
 def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, bool]:
     # Quotes mask commands for consent/effect parsing, not source ownership.
@@ -710,8 +718,7 @@ def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, boo
     # A compound's first-person decision remains private even when another
     # sentence contains a temporal/public cue. Independent public clauses are
     # extracted by their typed owner; an unresolved compound cannot export it.
-    if _matches(r"(?:^|[.!?;\n]\s*)(?:what|how|when|where|which)\s+"
-                r"(?:should|can|could|would|will|do|did|am|have)\s+(?:i|we)\b", _unquoted(t)):
+    if _matches(r"(?:^|[.!?;\n]\s*)" + _POLITE + _PERSONAL_DECISION_QUESTION, _unquoted(t)):
         return Provenance.PRIVATE, False
     # Explicit metalinguistic framing makes the quote a public title/topic,
     # not the referenced person's store. Only that framed span is masked;
@@ -826,7 +833,7 @@ def _current(text: str, scopes: tuple[TimeScope, ...]) -> bool:
     # First-person decisions are local questions. Context in a later sentence
     # must not become an external subject for this question's temporal cue.
     # Explicit public lookups retain their own separately composed contract.
-    if _matches(r"^(?:what|how|when|where|which)\s+(?:should|can|could|would|will|do|did|am|have)\s+(?:i|we)\b", t):
+    if _matches(r"^" + _PERSONAL_DECISION_QUESTION, t):
         return False
     if (re.search(DATA_TOOL_QUESTION_PATTERN, t, re.I)
             and not _matches(r"\b(?:news|headlines?|articles?|markets?|economy|earnings)\b", t)):
@@ -851,7 +858,10 @@ def _current(text: str, scopes: tuple[TimeScope, ...]) -> bool:
     remainder = re.sub(r"\b(?:what's|who's|what|who|where|when|how|did|does|do|has|have|is|are|was|were|any|give|show|tell|me|an?|the|latest|current|currently|new|recent|update|updates|brief|briefing|developments?|developing|breaking|happening|happened|going|on|in|with|regarding|situation|status|changed|things)\b", " ", remainder, flags=re.I)
     remainder = re.sub(r"\b(?:of|for|about|to|from|it|that|this|you|we|i|doing|due|scheduled|queued)\b", " ", remainder, flags=re.I)
     external_subject = bool(re.search(r"[a-z0-9]", remainder, re.I))
-    if _matches(r"\b(?:am\s+i|are\s+(?:we|you)|(?:do|did|have)\s+(?:i|we|you))\b", t):
+    # "what should I be doing today" asks about the user's own agenda, not the world.
+    if _matches(r"\b(?:am\s+i|are\s+(?:we|you)|"
+                r"(?:do|did|have|should|shall|ought|must|need)\s+(?:i|we|you)|"
+                r"(?:i|we)\s+(?:should|need\s+to|have\s+to|ought\s+to))\b", t):
         external_subject = False
     if re.fullmatch(r"\s*(?:volume|battery(?:\s+level)?|clipboard|wi-?fi|bluetooth|screen)\s*[?.!]*\s*", remainder, re.I):
         external_subject = False
