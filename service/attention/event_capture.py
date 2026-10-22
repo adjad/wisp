@@ -9,7 +9,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parseaddr
 from pathlib import Path
@@ -22,7 +22,7 @@ from service.attention.exclusions import _PROMO, _SCAM_PHRASES, screen
 from service.attention.ledger import Ledger
 from service.attention.live import LOOKBACK_S, Settings, _clause, items_from_records, local_midnight, plan_reminder
 from service.attention.matching import find_on_file, shares_words
-from service.attention.resolve import _CANCEL, _TENTATIVE, resolve
+from service.attention.resolve import Resolved, _CANCEL, _TENTATIVE, resolve
 
 HORIZON_DAYS = 31
 _EVENT = re.compile(r"\b(?:exam|quiz|midterm|final|appointment|interview|meeting|coffee(?:\s+chat)?|hangout|hang\s+out|lunch|dinner|breakfast|brunch|party|practice|rehearsal|concert|visit|reservation|flight|workshop|class|seminar|session|catch\s+up|meet(?:\s+up)?|see\s+you|come\s+over)\b", re.I)
@@ -40,6 +40,103 @@ _DIRECT_JOINT = re.compile(r"\bi\s+have\s+our\b|\bi(?:['’]ll|\s+will|['’]m)\
 _USER_PARTICIPATES = re.compile(r"\b(?:you|your|our|we)\b|\b(?:let'?s|see\s+you)\b", re.I)
 _RANGE = re.compile(r"\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*(?:to|[-–—])\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b", re.I)
 _DURATION = re.compile(r"\b(?:for|lasting)\s+(\d{1,3})\s*(minutes?|mins?|hours?|hrs?)\b", re.I)
+# Each supported scope must carry its own event cue and date/clock evidence.
+# A neighboring sentence or coordinated activity cannot lend an event its time.
+_SCOPE_BOUNDARY = re.compile(
+    r"[.!?\n;]+|,(?!\s*(?:(?:(?:at|from)\s+)?\d|(?:for|lasting)\b))\s*"
+    r"|\s+(?:and|but|while|whereas|then|although|because)\s+(?!\d+\s*(?:minutes?|mins?|hours?|hrs?)\b)", re.I)
+_CLOCK = re.compile(r"\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)|(?:[01]?\d|2[0-3]):\d{2}|noon|midnight)\b", re.I)
+_TIME_GAP = re.compile(
+    r"(?:\s|[,()]|\b(?:at|on|from|next|this|today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b)*", re.I)
+_DATE_CUE = re.compile(
+    r"\b(?:(?:next|this)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|tonight)\b"
+    r"|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b"
+    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b", re.I)
+_EVENT_TIME_GAP = re.compile(r"(?:\s|[,()]|\b(?:at|on|from|is|starts?|begins?|starting|beginning|scheduled|will|be|for|take|place)\b)*", re.I)
+
+
+def _scoped_event(text: str, arrival: datetime, tz: str, source_id: str) -> tuple[Resolved, str, int | None] | None:
+    """One unambiguous event, with all schedule evidence in its own clause.
+
+    Refuse competing events rather than combine a date from one with a clock or
+    duration from another. Ownership contradictions apply to every source kind.
+    """
+    choices = []
+    offset = 0
+    for boundary in list(_SCOPE_BOUNDARY.finditer(text)) + [None]:
+        end = boundary.start() if boundary else len(text)
+        clause = text[offset:end]
+        clause_at = offset
+        offset = boundary.end() if boundary else len(text)
+        if not (_EVENT.search(clause) or _GENERIC_EVENT.search(clause)):
+            continue
+        if _THIRD_OWNER.search(clause) or (_OTHER_OWNER.search(clause) and not _DIRECT_JOINT.search(clause)):
+            return None
+        ranges = list(_RANGE.finditer(clause))
+        if len(ranges) > 1:
+            return None
+        stated_range = ranges[0] if ranges else None
+        start_text = (clause[:stated_range.start()] + stated_range[1] + clause[stated_range.end():]
+                      if stated_range else clause)
+        resolved = resolve(start_text, arrival, tz, source_id)
+        if resolved.blocked or resolved.day is None or resolved.guessed:
+            # A clause with no concrete date/clock cannot lend another event a
+            # duration. Other ambiguous temporal evidence makes the source unsafe.
+            if resolved.blocked not in ('no_time_stated', 'no_usable_time'):
+                return None
+            continue
+        if resolved.has_clock:
+            named_day, clock = _DATE_CUE.search(clause), _CLOCK.search(clause)
+            if named_day and clock:
+                gap = (clause[named_day.end():clock.start()] if named_day.end() <= clock.start()
+                       else clause[clock.end():named_day.start()] if clock.end() <= named_day.start() else '')
+                # Missing punctuation must not join 'exam Wednesday' to an
+                # intervening activity's clock. Only direct schedule modifiers link.
+                if not _EVENT_TIME_GAP.fullmatch(_DURATION.sub('', gap)):
+                    return None
+        range_minutes = None
+        if stated_range:
+            end_text = clause[:stated_range.start()] + stated_range[2] + clause[stated_range.end():]
+            last = resolve(end_text, arrival, tz, source_id)
+            if resolved.start is None or last.start is None or last.blocked or last.guessed:
+                return None
+            gap = (last.start.timestamp() - resolved.start.timestamp()) / 60
+            if not 1 <= gap <= 10080 or gap != int(gap):
+                return None
+            range_minutes = int(gap)
+        minutes = None
+        durations = list(_DURATION.finditer(clause))
+        if len(durations) > 1:
+            return None
+        if durations and resolved.has_clock:
+            duration = durations[0]
+            # Even inside one grammatical scope, an intervening activity such
+            # as 'the commute takes' does not describe the event's duration.
+            clocks = list(_CLOCK.finditer(clause))
+            linked = any(_TIME_GAP.fullmatch(clause[clock.end():duration.start()])
+                         if clock.end() <= duration.start() else
+                         _TIME_GAP.fullmatch(clause[duration.end():clock.start()])
+                         if duration.end() <= clock.start() else False for clock in clocks)
+            if linked:
+                minutes = int(duration[1]) * (60 if duration[2].lower().startswith(('hour', 'hr')) else 1)
+                if not 1 <= minutes <= 10080:
+                    return None
+                # Compound lengths are unsupported; never silently shorten them.
+                if re.match(r"\s+and\s+\d+\s*(?:minutes?|mins?|hours?|hrs?)\b", clause[duration.end():], re.I):
+                    return None
+        if range_minutes is not None:
+            if minutes is not None and minutes != range_minutes:
+                return None
+            minutes = range_minutes
+        choices.append((resolved, clause, minutes, clause_at))
+    if not choices:
+        return None
+    schedules = {(r.day, r.start, r.has_clock, minutes) for r, _, minutes, _ in choices}
+    if len(schedules) != 1:
+        return None
+    resolved, clause, minutes, clause_at = choices[0]
+    # Restore the original source offset for title/evidence extraction.
+    return replace(resolved, at=clause_at + (resolved.at or 0)), clause, minutes
 
 
 def digest(value: str) -> str:
@@ -134,25 +231,10 @@ def candidates(records: list[dict], rows: list[dict], *, now: float, tz: str,
         event_cue = _EVENT.search(text) or (_GENERIC_EVENT.search(text) and not _GENERIC_UNCERTAIN.search(text))
         if not event_cue or _CANCEL.search(text) or _WITHDRAW.search(text) or _NEGATED.search(text):
             continue
-        stated_range = _RANGE.search(text)
-        start_text = text[:stated_range.start()] + stated_range[1] + text[stated_range.end():] if stated_range else text
-        r = resolve(start_text, datetime.fromtimestamp(item.ts, timezone.utc), tz, item.id)
-        range_minutes = None
-        if stated_range:
-            end_text = text[:stated_range.start()] + stated_range[2] + text[stated_range.end():]
-            end = resolve(end_text, datetime.fromtimestamp(item.ts, timezone.utc), tz, item.id)
-            if r.start is None or end.start is None or end.blocked or end.guessed:
-                continue
-            gap = (end.start.timestamp() - r.start.timestamp()) / 60
-            if not 1 <= gap <= 10080 or gap != int(gap):
-                continue
-            range_minutes = int(gap)
-        if r.blocked or r.day is None or r.guessed:
+        scoped = _scoped_event(text, datetime.fromtimestamp(item.ts, timezone.utc), tz, item.id)
+        if scoped is None:
             continue
-        at = r.at or 0
-        before = max((text.rfind(mark, 0, at) for mark in '.!?\n;'), default=-1) + 1
-        ends = [index for mark in '.!?\n;' if (index := text.find(mark, at)) >= 0]
-        event_clause = text[before:min(ends) if ends else len(text)]
+        r, event_clause, minutes = scoped
         # Known event nouns do not make a cancelled plan affirmative. Keep
         # positive reminders ("do not forget") without reviving "will not meet".
         polarity = re.sub(r"\b(?:(?:do\s+)?not|don['’]t)\s+(?:forget|miss)\b", '', event_clause, flags=re.I)
@@ -189,16 +271,8 @@ def candidates(records: list[dict], rows: list[dict], *, now: float, tz: str,
         plan = plan_reminder(item, r, now, settings, tz, who='Email' if item.source == 'mail' else None)
         if plan is None:
             continue
-        quote = _clause(item.text, r.at, 160)
+        quote = _clause(event_clause, None, 160)
         title = ' '.join(quote.split())[:110]
-        duration = _DURATION.search(text)
-        minutes = int(duration[1]) * (60 if duration[2].lower().startswith(('hour', 'hr')) else 1) if duration else None
-        if range_minutes is not None:
-            if minutes is not None and minutes != range_minutes:
-                continue
-            minutes = range_minutes
-        if minutes is not None and not 1 <= minutes <= 10080:
-            minutes = None
         when = r.day.isoformat() + (' · time not stated; all-day Calendar; reminder at ' + datetime.fromtimestamp(plan.due_ts, ZoneInfo(tz)).strftime('%H:%M') if not r.has_clock else ' · ' + plan.when_label)
         if r.has_clock and minutes is None:
             when += ' · Calendar needs an end time or duration'
