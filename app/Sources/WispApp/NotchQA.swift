@@ -15,8 +15,9 @@ enum NotchQADriver {
         let outDir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["WISP_NOTCH_QA_OUT"]
                          ?? FileManager.default.currentDirectoryPath, isDirectory: true)
         try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+        let offscreen = ProcessInfo.processInfo.environment["WISP_QA_OFFSCREEN"] == "1"
         let app = NSApplication.shared
-        app.setActivationPolicy(.regular)
+        app.setActivationPolicy(offscreen ? .accessory : .regular)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = zone
         let midnight = calendar.startOfDay(for: Date())
@@ -46,6 +47,9 @@ enum NotchQADriver {
                     HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
         DayCards.qaUse(attention: attention, staleReminders: stale)
+        // This driver has no AppDelegate. Own the same refresh lifecycle using
+        // only its injected transports, instead of relying on a mounted tab.
+        today.startBackgroundRefresh(afterRefresh: { await DayCards.refresh() })
         let model = OverlayModel()
         model.qaShow(brief: fixtureBrief)
         let unsummarized = OverlayModel()
@@ -66,12 +70,22 @@ enum NotchQADriver {
             let host = NSHostingView(rootView: content)
             window.contentView = host
             window.setContentSize(host.fittingSize)
-            window.makeKeyAndOrderFront(nil)
+            if !offscreen { window.makeKeyAndOrderFront(nil) }
             windows[name] = window
         }
-        quickSettings(width: width, model: model)
-        app.activate(ignoringOtherApps: true)
+        quickSettings(width: width, model: model, offscreen: offscreen)
+        if !offscreen { app.activate(ignoringOtherApps: true) }
         Task { @MainActor in
+            let deadline = Date().addingTimeInterval(5)
+            @MainActor func populated() -> Bool {
+                today.currentPlan?.workspace != nil && today.upcomingReply != nil && today.storedBriefChecked &&
+                attention.items.count == 1 && stale.asks.count == 2
+            }
+            while !populated() && Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            precondition(populated(), "Notch fixtures must populate Brief, Day and shared cards before capture")
+            print("Notch fixture population: passed")
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             for (name, window) in windows {
                 guard let view = window.contentView else { continue }
@@ -83,6 +97,7 @@ enum NotchQADriver {
                 try? rep.representation(using: .png, properties: [:])?.write(to: outDir.appendingPathComponent("notch-\(name).png"))
                 print("notch-\(name): \(Int(view.bounds.width))×\(Int(view.bounds.height)) pt")
             }
+            today.stopBackgroundRefresh()
             app.terminate(nil)
         }
         app.run()
@@ -92,7 +107,7 @@ enum NotchQADriver {
 
     /// Quick settings in its two tallest states: every switch known, and Full access
     /// unconfirmed with the morning time list open. Also measured with the notch header.
-    static func quickSettings(width: CGFloat, model: OverlayModel) {
+    static func quickSettings(width: CGFloat, model: OverlayModel, offscreen: Bool = false) {
         model.qaShow(modelMemory: ModelMemory(models: [.init(id: "Mellum2.1-8B-oQ4e", bytes: 7_301_444_403)]))
         for (name, unconfirmed) in [("settings", false), ("settings-unconfirmed", true)] {
             let loader = SettingsLoader()
@@ -114,7 +129,7 @@ enum NotchQADriver {
             let host = NSHostingView(rootView: content)
             window.contentView = host
             window.setContentSize(host.fittingSize)
-            window.makeKeyAndOrderFront(nil)
+            if !offscreen { window.makeKeyAndOrderFront(nil) }
             windows[name] = window
         }
     }
@@ -177,6 +192,12 @@ enum NotchQADriver {
                          extra: ["sender": "MIT Technology Review", "person": false, "received_ts": at(7)]),
                 ],
                 "attention_omitted": 0,
+                "needs_you": ["items": [
+                    ["id": "doordash", "kind": "overdue", "text": "Get DoorDash order", "due_ts": at(-20), "all_day": false],
+                    ["id": "pa2", "kind": "due", "text": "PA 2", "due_ts": at(23.98), "all_day": false],
+                    ["id": "thesis", "kind": "mail", "text": "“Thesis meeting” from Prof. Lee", "due_ts": NSNull(), "all_day": false],
+                    ["id": "draft", "kind": "mail", "text": "“Can you review my draft?” from Jordan Kim", "due_ts": NSNull(), "all_day": false],
+                ], "more": 4],
                 "source_coverage": [["source": "email", "ready": true, "detail": "5 unread", "inspected": 5, "omitted": 0],
                                     ["source": "messages", "ready": true, "detail": "", "inspected": 3, "omitted": 0]],
                 "behavior_detail": "Tentative", "explanation": "",

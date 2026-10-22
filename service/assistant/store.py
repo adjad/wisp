@@ -1160,9 +1160,12 @@ class AssistantStore:
                   # A one-tap cancel of one exact occurrence (the Day tab's Cancel).
                   "cancel_calendar_event": {"type", "action_id", "source_id", "expected_title",
                                             "expected_start_ts", "invitee_count"}}[kind]
+        date_only = kind == "create_calendar_event" and "all_day" in payload
+        if date_only:
+            fields = fields | {"all_day", "due_date", "timezone"}
         if set(payload) != fields or payload.get("type") != kind:
             raise ValueError("Calendar payload fields do not match the action")
-        for field in fields - {"when_ts", "duration_min", "expected_start_ts", "invitee_count"}:
+        for field in fields - {"when_ts", "duration_min", "expected_start_ts", "invitee_count", "all_day"}:
             if not isinstance(payload[field], str) or (field != "location" and not payload[field].strip()):
                 raise ValueError("invalid Calendar payload text")
         times = {"move_calendar_event": ["when_ts", "expected_start_ts"],
@@ -1194,6 +1197,11 @@ class AssistantStore:
             duration = payload["duration_min"]
             if type(duration) is not int or not 1 <= duration <= 10080:
                 raise ValueError("invalid Calendar duration")
+            if date_only:
+                from service.assistant.calendar_dates import all_day_bounds
+                start, minutes = all_day_bounds(payload["due_date"], payload["timezone"])
+                if payload["all_day"] is not True or abs(when - start) >= 1 or duration != minutes:
+                    raise ValueError("Calendar all-day bounds do not match the civil date")
         return {**payload, "when_ts": float(when)}
 
     @staticmethod
@@ -1705,11 +1713,11 @@ class AssistantStore:
                         raise ValueError("successful creation requires native source_id")
                     now = time.time()
                     inserted = self._db.execute(
-                        "INSERT INTO commitments (id,source,source_id,kind,title,when_ts,location,"
-                        "status,confidence,created_at,updated_at) VALUES (?,?,?,'event',?,?,?,'active',1,?,?) "
+                        "INSERT INTO commitments (id,source,source_id,kind,title,when_ts,location,all_day,"
+                        "status,confidence,created_at,updated_at) VALUES (?,?,?,'event',?,?,?,?,'active',1,?,?) "
                         "ON CONFLICT(source,source_id,when_ts) DO NOTHING",
                         (uuid.uuid4().hex, "calendar", source_id, payload["title"], payload["when_ts"],
-                         payload.get("location", ""), now, now))
+                         payload.get("location", ""), int(payload.get("all_day", False)), now, now))
                     if inserted.rowcount:
                         # A later native sync may already own this identity and duration.
                         # The creation receipt only supplies an end for the row it inserted.

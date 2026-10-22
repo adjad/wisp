@@ -280,6 +280,12 @@ ADDITIONAL_FULL_TESTS = {
     # Wiring and endpoints with faked feed, reminder tool, hub and store reads, and MOE_DIR
     # redirected to a temp dir. An in-process TestClient only; no listener or network.
     "tests/test_attention_wiring.py",
+    # Paired event capture over synthetic mail/messages, temp ledgers, fake native
+    # effects and in-process endpoint clients; no source/provider/native access.
+    "tests/test_event_capture.py",
+    # Calendar consent, civil dates, durable claims and fault-injected saves;
+    # disposable stores and fake effect channels only, no Calendar/user state.
+    "tests/test_attention_calendar.py",
     # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
     # separately sandboxed exact-case report rather than granting network here.
     "tests/test_browser_transport_native.py",
@@ -875,6 +881,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/today-contract",
             [TRUSTED_BASH, "scripts/test_today_contract.sh"],
+        ),
+        (
+            "native/brief-time-contract",
+            [TRUSTED_BASH, "scripts/test_brief_time.sh"],
         ),
         (
             "native/markdown-contract",

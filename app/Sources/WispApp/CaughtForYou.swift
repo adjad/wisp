@@ -15,12 +15,41 @@ struct AttentionRecord: Decodable, Identifiable, Equatable {
     let quote: String?
     /// The backend's view of whether Undo can work (identity recorded, title on file).
     let undoable: Bool?
+    let paired: Bool?
+    let fingerprint: String?
+    let captureable: Bool?
+    let effects: [String: CaptureEffect]?
+
+    struct CaptureEffect: Decodable, Equatable {
+        let status: String
+        let error: String?
+    }
     var id: String { source_id }
 
     /// States worth showing. `already_on_file` means nothing needed doing.
-    static let shown: Set<String> = ["created", "shadow", "capped", "unknown", "failed", "undone"]
+    static let shown: Set<String> = ["created", "shadow", "capped", "unknown", "failed", "undone", "partial"]
 
     var label: String {
+        if paired == true {
+            let names = ["calendar": "Calendar", "reminder": "Reminder"]
+            if let effects, !effects.isEmpty {
+                let summary = state == "partial" ? "Partially added · " : (state == "unknown" ? "Check both apps · " : "")
+                return summary + ["calendar", "reminder"].compactMap { kind in
+                    guard let effect = effects[kind] else { return nil }
+                    let status: String
+                    switch effect.status {
+                    case "succeeded": status = "added"
+                    case "already_on_file": status = "already saved"
+                    case "unknown", "claimed": status = "check app · outcome unknown"
+                    case "needs_duration": status = "needs an end time"
+                    case "blocked": status = "blocked"
+                    default: status = "couldn't add"
+                    }
+                    return "\(names[kind] ?? kind): \(status)"
+                }.joined(separator: " · ")
+            }
+            return "Calendar + reminder · preview"
+        }
         switch state {
         case "created": return "Added to Reminders"
         case "shadow": return "Would add · preview"
@@ -36,6 +65,7 @@ struct AttentionRecord: Decodable, Identifiable, Equatable {
 struct AttentionSettings: Decodable, Equatable {
     let mode: String
     let daily_cap: Int
+    let capture_events: Bool?
 }
 
 struct AttentionStatus: Decodable, Equatable {
@@ -61,6 +91,8 @@ final class AttentionModel: ObservableObject {
         self.transport = transport
     }
 
+    var captureEvents: Bool { status?.settings.capture_events == true }
+
     var live: Bool { status?.settings.mode == "live" }
 
     /// The last week's decisions that say something, newest first.
@@ -75,7 +107,7 @@ final class AttentionModel: ObservableObject {
         guard let url = URL(string: path, relativeTo: WispClient.baseURL) else { throw URLError(.badURL) }
         var req = URLRequest(url: url)
         req.httpMethod = method
-        req.timeoutInterval = 15
+        req.timeoutInterval = path.hasSuffix("/capture") ? 120 : 15
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -120,6 +152,29 @@ final class AttentionModel: ObservableObject {
         await refresh(keepError: true)
     }
 
+    func setCaptureEvents(_ enabled: Bool) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await send("/assistant/attention/settings", method: "PUT", body: ["capture_events": enabled])
+            error = ""
+        } catch { self.error = error.localizedDescription }
+        await refresh(keepError: true)
+    }
+
+    func capture(_ record: AttentionRecord) async {
+        guard !busy, record.captureable == true, let fingerprint = record.fingerprint else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await send("/assistant/attention/capture", method: "POST",
+                               body: ["source_id": record.source_id, "fingerprint": fingerprint])
+            error = ""
+        } catch { self.error = error.localizedDescription }
+        await refresh(keepError: true)
+    }
+
     /// Removes exactly the reminder this record created (the backend refuses anything else).
     func undo(_ record: AttentionRecord) async {
         guard !busy, record.state == "created", record.undoable == true else { return }
@@ -139,6 +194,7 @@ struct CaughtForYouSection: View {
     @StateObject private var model: AttentionModel
     /// The notch shows at most three rows and no explanation paragraph.
     let compact: Bool
+    @State private var reviewedCapture: AttentionRecord?
 
     @MainActor
     init(compact: Bool = false) { self.init(model: AttentionModel(), compact: compact) }
@@ -162,10 +218,20 @@ struct CaughtForYouSection: View {
                         .help("Off: Wisp only lists what it would add. On: it adds the reminder (at most \(status.settings.daily_cap) a day) and tells you.")
                 }
             }
+            if model.status?.settings.mode != "off" {
+                Toggle("Also capture Calendar events from mail and texts", isOn: Binding(
+                    get: { model.captureEvents }, set: { value in Task { await model.setCaptureEvents(value) } }))
+                    .toggleStyle(.switch).controlSize(.mini).font(.caption).disabled(model.busy)
+                    .help("With automatic reminders on, new confirmed plans also create Calendar events. Existing plans stay previews. Dates without times become all-day events; the reminder uses the shown default hour.")
+                if model.captureEvents && !model.live {
+                    Text("Calendar capture is in preview until automatic reminders are on.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if !model.error.isEmpty {
                 Text(model.error).font(.caption).foregroundStyle(.orange)
             } else if model.status?.settings.mode == "off" {
-                Text("Off. Wisp isn't watching your texts for plans.").font(.caption).foregroundStyle(.secondary)
+                Text("Off. Wisp isn't watching mail or texts for plans.").font(.caption).foregroundStyle(.secondary)
             } else if model.items.isEmpty {
                 Text(model.live
                      ? "Nothing caught this week. When a text states a plan that isn't on your calendar or reminders, Wisp adds a reminder and it shows here."
@@ -174,6 +240,13 @@ struct CaughtForYouSection: View {
             }
             ForEach(compact ? Array(model.items.prefix(3)) : model.items) { item in row(item) }
         }
+        .alert("Add Calendar event and reminder?", isPresented: Binding(
+            get: { reviewedCapture != nil }, set: { if !$0 { reviewedCapture = nil } })) {
+                Button("Add") { if let item = reviewedCapture { Task { await model.capture(item) } }; reviewedCapture = nil }
+                Button("Cancel", role: .cancel) { reviewedCapture = nil }
+            } message: {
+                Text([reviewedCapture?.title, reviewedCapture?.when].compactMap { $0 }.joined(separator: "\n"))
+            }
         .task {
             while !Task.isCancelled {
                 await model.refresh()
@@ -188,13 +261,17 @@ struct CaughtForYouSection: View {
                 Text(item.title ?? "A plan from your messages")
                     .font(compact ? .system(size: 13, weight: .medium) : .headline).lineLimit(2)
                 Text([item.label, item.when].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(compact ? 2 : 3)
                 if let quote = item.quote, !quote.isEmpty {
                     Text("“\(quote)”").font(.caption).italic().foregroundStyle(.secondary)
                         .lineLimit(compact ? 1 : 3).textSelection(.enabled)
                 }
             }
             Spacer(minLength: 8)
+            if item.captureable == true {
+                Button("Review & add") { reviewedCapture = item }
+                    .disabled(model.busy)
+            }
             if item.state == "created" && item.undoable == true {
                 Button("Undo") { Task { await model.undo(item) } }
                     .disabled(model.busy)

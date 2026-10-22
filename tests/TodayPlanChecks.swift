@@ -70,15 +70,28 @@ struct TodayPlanChecks {
     static func windowChecks() async throws {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        let offscreen = ProcessInfo.processInfo.environment["WISP_QA_OFFSCREEN"] == "1"
         let la = TimeZone(identifier: "America/Los_Angeles")!
         var zone = la
         var now = instant("2026-09-25T06:59:00Z")
         let model = TodayModel(now: { now }, timeZoneProvider: { zone })
+        defer { model.stopBackgroundRefresh() }
         var presentations: [TodayPresentation] = []
         var queries: [(String, String)] = []
+        var supplementalPaths: Set<String> = []
         var holdYesterday = false
         var pending: CheckedContinuation<(Data, URLResponse), Error>?
         model.transport = { request in
+            switch request.url!.path {
+            case "/assistant/upcoming":
+                supplementalPaths.insert(request.url!.path)
+                return (Data(#"{"commitments":[]}"#.utf8), response(request))
+            case "/assistant/daily_summary/latest":
+                supplementalPaths.insert(request.url!.path)
+                return (Data("{}".utf8), HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+            case "/assistant/today": break
+            default: preconditionFailure("Unexpected window fixture endpoint: \(request.url!.path)")
+            }
             let day = query(request, "day")
             let requestedZone = query(request, "timezone")
             queries.append((day, requestedZone))
@@ -91,7 +104,8 @@ struct TodayPlanChecks {
         let window = TodayWindow.show(model: model, onPresentation: { presentations.append($0) }, present: false)
         await waitFor("Mounted view must display yesterday's event") {
             presentations.last?.day == "2026-09-24" && presentations.last?.pickerDay == "2026-09-24" &&
-            presentations.last?.blockTitles == ["Yesterday's event"]
+            presentations.last?.blockTitles == ["Yesterday's event"] &&
+            supplementalPaths == ["/assistant/upcoming", "/assistant/daily_summary/latest"]
         }
         holdYesterday = true
         let stale = Task { await model.refresh() }
@@ -116,8 +130,8 @@ struct TodayPlanChecks {
 
         window.close()
         let queriesBeforeReopen = queries.count
-        let reopened = TodayWindow.show(present: true)
-        check(reopened === window && reopened.isVisible, "Today must reuse its window on reopen")
+        let reopened = TodayWindow.show(present: !offscreen)
+        check(reopened === window && reopened.isVisible == !offscreen, "Today must reuse its window on reopen")
         await waitFor("Reopened view must still display the empty current day") {
             presentations.last?.day == "2026-09-25" && presentations.last?.pickerDay == "2026-09-25" &&
             presentations.last?.blockTitles.isEmpty == true && queries.count > queriesBeforeReopen
@@ -165,7 +179,7 @@ struct TodayPlanChecks {
         reopened.close()
         now = instant("2026-09-30T19:00:00Z")
         let queriesBeforeNextReopen = queries.count
-        let nextReopen = TodayWindow.show(present: true)
+        let nextReopen = TodayWindow.show(present: !offscreen)
         check(nextReopen === window)
         await waitFor("Reopening after another local day must advance the displayed date") {
             presentations.last?.day == "2026-09-30" && presentations.last?.pickerDay == "2026-09-30" &&
@@ -223,9 +237,156 @@ struct TodayPlanChecks {
     }
 
     @MainActor
+    static func refreshLifecycleChecks() async throws {
+        let zone = TimeZone(identifier: "America/Los_Angeles")!
+        var now = instant("2026-10-22T19:00:00Z")
+        var currentZone = zone
+        let model = TodayModel(now: { now }, timeZoneProvider: { currentZone })
+        let good: (URLRequest) async throws -> (Data, URLResponse) = { request in
+            (try planData(day: query(request, "day"), zone: query(request, "timezone"), blocks: ["Retained event"]), response(request))
+        }
+        model.transport = good
+        await model.refresh()
+        for failure: Error in [CancellationError(), URLError(.cancelled)] {
+            model.transport = { _ in throw failure }
+            await model.refresh()
+            check(model.plan?.blocks.first?.title == "Retained event" && model.error.isEmpty,
+                  "Navigation cancellation must preserve Brief and Day content")
+            check(model.diagnosticSnapshot().metadata["client_outcome"] as? String == "completed",
+                  "Cancellation must not replace a successful diagnostic with refresh_failed")
+        }
+        let empty = TodayModel(timezone: zone)
+        empty.transport = { _ in throw URLError(.cancelled) }
+        await empty.refresh()
+        check(empty.plan == nil && empty.error.isEmpty, "Initial cancellation must not publish a cancelled page")
+
+        var reads = 0
+        var pending: CheckedContinuation<(Data, URLResponse), Error>?
+        model.transport = { request in
+            reads += 1
+            return try await withCheckedThrowingContinuation { pending = $0 }
+        }
+        let first = Task { await model.refresh() }
+        await waitFor("First read must start") { pending != nil }
+        await model.refresh()
+        check(reads == 1, "Concurrent same-day refreshes must share one request")
+        let held = pending!
+        pending = nil
+        first.cancel()
+        let request = URLRequest(url: URL(string: "http://127.0.0.1:1/assistant/today")!)
+        held.resume(returning: (try planData(day: model.day, zone: zone.identifier, blocks: ["Cancelled response"]), response(request)))
+        await first.value
+        check(model.plan?.blocks.first?.title == "Retained event" && model.error.isEmpty,
+              "A transport completing after cancellation cannot publish its response")
+
+        // Mutation's post-write read must supersede a pre-write background read.
+        model.transport = { request in
+            if request.httpMethod == "GET" {
+                return try await withCheckedThrowingContinuation { pending = $0 }
+            }
+            return (Data("{}".utf8), response(request))
+        }
+        let stale = Task { await model.refresh() }
+        await waitFor("Pre-mutation read must be held") { pending != nil }
+        let preMutation = pending!
+        pending = nil
+        let mutation = Task { await model.mutate("/assistant/today/tasks", method: "POST", body: [:]) }
+        await waitFor("Mutation must start its own follow-up read") { pending != nil }
+        check(model.busy, "Mutation controls stay disabled during follow-up")
+        preMutation.resume(throwing: URLError(.timedOut))
+        await stale.value
+        await model.refresh()
+        check(model.error.isEmpty, "An old read cannot clear or fail the mutation's new read")
+        pending!.resume(returning: (try planData(day: model.day, zone: zone.identifier, blocks: ["After edit"]), response(request)))
+        pending = nil
+        check(await mutation.value && !model.busy && model.plan?.blocks.first?.title == "After edit")
+        model.transport = { _ in throw URLError(.timedOut) }
+        await model.refresh()
+        check(model.plan == nil && !model.error.isEmpty, "Real failures must still clear unsafe planner actions")
+
+        // Drive the model's app-owned loop without a view or wall-clock waits.
+        var todayReads = 0, upcomingReads = 0, briefReads = 0
+        var sleeps: [CheckedContinuation<Void, Error>] = []
+        var cycles = 0
+        model.transport = { request in
+            switch request.url!.path {
+            case "/assistant/today":
+                todayReads += 1
+                return try await good(request)
+            case "/assistant/upcoming":
+                upcomingReads += 1
+                return (Data(#"{"commitments":[]}"#.utf8), response(request))
+            default:
+                briefReads += 1
+                return (Data("{}".utf8), HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+            }
+        }
+        model.startBackgroundRefresh(sleep: { _ in
+            try await withCheckedThrowingContinuation { sleeps.append($0) }
+        }, afterRefresh: { cycles += 1 })
+        await waitFor("Background refresh must load without a mounted tab") { cycles == 1 && sleeps.count == 1 }
+        check(todayReads == 1 && upcomingReads == 1 && briefReads == 1)
+        model.startBackgroundRefresh()
+        await Task.yield()
+        check(todayReads == 1 && sleeps.count == 1, "Reopening must not restart the loop or refetch")
+        for tick in 1...4 {
+            now = now.addingTimeInterval(30)
+            sleeps.removeFirst().resume()
+            await waitFor("Each background tick must complete") { cycles == tick + 1 && sleeps.count == 1 }
+            check(todayReads == tick + 1)
+            check(upcomingReads == (tick == 4 ? 2 : 1) && briefReads == (tick == 4 ? 2 : 1),
+                  "Supplementary Brief reads stay on the two-minute cadence")
+        }
+        now = instant("2026-10-24T19:00:00Z")
+        sleeps.removeFirst().resume()
+        await waitFor("Background tick must reconcile a multi-day wake") { cycles == 6 && sleeps.count == 1 }
+        check(model.plan?.day == "2026-10-24" && upcomingReads == 3 && briefReads == 3)
+        model.selectDate(instant("2026-10-20T19:00:00Z"))
+        currentZone = TimeZone(identifier: "Asia/Tokyo")!
+        sleeps.removeFirst().resume()
+        await waitFor("Background refresh must follow a zone change without a mounted tab") { cycles == 7 && sleeps.count == 1 }
+        check(model.plan?.timezone == currentZone.identifier && model.day == "2026-10-20" && !model.followsToday,
+              "Background refresh must preserve a manually selected civil day")
+        check(upcomingReads == 4 && briefReads == 4, "Zone changes invalidate the slower Brief cadence")
+        model.stopBackgroundRefresh()
+        sleeps.removeFirst().resume()
+        await Task.yield()
+        check(todayReads == 7, "Stopping the app refresh must prevent another read")
+    }
+
+    @MainActor
+    static func storedBriefRolloverChecks() async throws {
+        let zone = TimeZone(identifier: "America/Los_Angeles")!
+        for oldStatus in [200, 404] {
+            var now = instant("2026-10-23T06:59:00Z")
+            let model = TodayModel(timezone: zone, now: { now })
+            var pending: CheckedContinuation<(Data, URLResponse), Error>?
+            var oldRequest: URLRequest?
+            model.transport = { request in
+                if query(request, "day") == "2026-10-22" {
+                    oldRequest = request
+                    return try await withCheckedThrowingContinuation { pending = $0 }
+                }
+                return (try JSONSerialization.data(withJSONObject: ["text": "Today's brief", "composed_at": now.timeIntervalSince1970]), response(request))
+            }
+            let old = Task { await model.refreshStoredBrief() }
+            await waitFor("Yesterday's summary read must be held") { pending != nil }
+            now = instant("2026-10-23T07:01:00Z")
+            await model.refreshStoredBrief()
+            let body = try JSONSerialization.data(withJSONObject: ["text": "Yesterday's brief", "composed_at": now.addingTimeInterval(-120).timeIntervalSince1970])
+            pending!.resume(returning: (body, HTTPURLResponse(url: oldRequest!.url!, statusCode: oldStatus, httpVersion: nil, headerFields: nil)!))
+            await old.value
+            check(model.storedBrief?.text == "Today's brief" && model.storedBrief?.day == "2026-10-23",
+                  "A delayed old-day success or 404 cannot overwrite today's summary")
+        }
+    }
+
+    @MainActor
     static func main() async throws {
         try evidenceLabelChecks()
         await storedBriefChecks()
+        try await refreshLifecycleChecks()
+        try await storedBriefRolloverChecks()
         let zone = TimeZone(identifier: "America/Los_Angeles")!
         let model = TodayModel(timezone: zone)
         check(model.clock(instant("2026-09-24T07:00:00Z").timeIntervalSince1970) == "12:00 AM")
@@ -664,6 +825,47 @@ struct TodayPlanChecks {
         check(put.url!.path == "/assistant/attention/settings" && model.live)
         await model.setLive(false)
         check(!model.live && mode == "shadow", "Turning it off returns to preview, never to a hidden mode")
+        check(!model.captureEvents, "Legacy live settings never imply Calendar capture authority")
+        var captureEvents = false
+        var pairRequests: [URLRequest] = []
+        var pairRow: [String: Any] = ["source_id": "preview:mail:synthetic", "state": "shadow",
+            "title": "STAT 5 Exam 1", "due_ts": t + 86400, "decided_at": t,
+            "when": "2026-10-21 · all-day Calendar; reminder at 09:00",
+            "paired": true, "captureable": true, "fingerprint": String(repeating: "a", count: 64)]
+        let pairModel = AttentionModel(now: { now }) { request in
+            pairRequests.append(request)
+            if request.httpMethod == "PUT" {
+                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                check(body["mode"] == nil, "Calendar opt-in must preserve the legacy reminders mode")
+                captureEvents = body["capture_events"] as! Bool
+            }
+            let data = try JSONSerialization.data(withJSONObject: [
+                "settings": ["mode": "live", "daily_cap": 3, "capture_events": captureEvents],
+                "created_today": 0, "recent": [pairRow]])
+            return (data, response(request))
+        }
+        await pairModel.refresh()
+        check(pairModel.live && !pairModel.captureEvents)
+        await pairModel.setCaptureEvents(true)
+        check(pairModel.live && pairModel.captureEvents)
+        await pairModel.capture(pairModel.items[0])
+        let captureRequest = pairRequests.first { $0.url!.path.hasSuffix("/capture") }!
+        let captureBody = try JSONSerialization.jsonObject(with: captureRequest.httpBody!) as! [String: Any]
+        check(captureRequest.httpMethod == "POST" && captureRequest.timeoutInterval == 120)
+        check(Set(captureBody.keys) == ["source_id", "fingerprint"],
+              "Reviewed Add sends exact source binding; neither native payload nor approval comes from JSON")
+        check(captureBody["source_id"] as? String == "preview:mail:synthetic")
+        pairRow["state"] = "partial"
+        pairRow["captureable"] = false
+        pairRow["effects"] = ["calendar": ["status": "succeeded"], "reminder": ["status": "failed"]]
+        await pairModel.refresh()
+        check(pairModel.items[0].label.hasPrefix("Partially added"))
+        check(pairModel.items[0].label.contains("Calendar: added") && pairModel.items[0].label.contains("Reminder: couldn't add"))
+        pairRow["state"] = "unknown"
+        pairRow["effects"] = ["calendar": ["status": "unknown"], "reminder": ["status": "succeeded"]]
+        await pairModel.refresh()
+        check(pairModel.items[0].label.hasPrefix("Check both apps"))
+        check(pairModel.items[0].label.contains("outcome unknown"))
         // A refusal from Undo stays on screen after the reload that follows it.
         var stale: CheckedContinuation<(Data, URLResponse), Error>?
         var holdNextGet = false

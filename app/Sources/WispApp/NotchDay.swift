@@ -73,10 +73,25 @@ struct DayNeedInput: Equatable {
 /// One item of the Brief's Needs you line, as the service phrased it.
 struct NeedsYouInput: Equatable {
     /// "overdue", "due", "plan", "mail" or "text".
+    var id: String? = nil
     var kind: String
     var text: String
     var due: Double? = nil
     var allDay = false
+}
+
+/// One scannable row in the Brief's structured Needs you section.
+struct NeedsYouRow: Equatable, Identifiable {
+    let id: String
+    let label: String?
+    let text: String
+    let overdue: Bool
+}
+
+/// The items selected by the service plus its count of additional items.
+struct NeedsYouList: Equatable {
+    let rows: [NeedsYouRow]
+    let more: Int
 }
 
 /// One "Caught for you" record from the attention runner.
@@ -406,24 +421,26 @@ struct DayTimeline: Equatable {
 
     // MARK: Brief
 
-    /// The Brief's one sentence, from the day itself. It opens with the same
-    /// verdict word as the CAL line ("A light Saturday." / "Light day: …"), so
-    /// the two never disagree.
+    /// The Brief's one sentence, from the day itself. The default opening shares
+    /// the CAL verdict. A current-day caller can supply a time-aware opening and
+    /// due reference without rewriting its factual clauses or empty state.
     /// `othersNeedYou`: the Needs you line under it lists something (a person's
     /// email or text, a plan task), so the lede never says nothing does.
     static func lede(weekday: String, isToday: Bool, load: DayLoad.Verdict?, dueToday: [String], overdue: [String],
-                     next: (title: String, time: String)?, othersNeedYou: Bool = false) -> String {
+                     next: (title: String, time: String)?, othersNeedYou: Bool = false,
+                     openingOverride: String? = nil, dueReference: String? = nil) -> String {
         var parts: [String] = []
         let due = dueToday.filter { !isJunk($0) }
         let late = overdue.filter { !isJunk($0) }
         if !due.isEmpty {
-            parts.append(list(due) + (due.count == 1 ? " is due " : " are due ") + (isToday ? "today" : "that day"))
+            parts.append(list(due) + (due.count == 1 ? " is due " : " are due ")
+                         + (dueReference ?? (isToday ? "today" : "that day")))
         }
         if !late.isEmpty {
             parts.append(late.count == 1 ? late[0] + " is still open" : "\(count(late.count)) overdue reminders are still open")
         }
         // Without a current calendar there's no verdict to give.
-        let opening = load.map { $0.article + " " + weekday + "." } ?? "It's \(weekday)."
+        let opening = openingOverride ?? (load.map { $0.article + " " + weekday + "." } ?? "It's \(weekday).")
         if parts.isEmpty {
             if let next { return opening + " Next up: \(next.title) at \(next.time)." }
             if othersNeedYou { return opening }
@@ -453,6 +470,34 @@ struct DayTimeline: Equatable {
         let joined = phrases.count == 1 ? phrases[0]
             : phrases.dropLast().joined(separator: ", ") + " and " + phrases[phrases.count - 1]
         return "Needs you today: " + joined + "."
+    }
+
+    /// Keeps the service-picked items separate for the Brief's one-item-per-row
+    /// presentation. Missing due times stay undated; the label says only "DUE".
+    static func needsYouList(_ items: [NeedsYouInput], more: Int, clock: (Double) -> String) -> NeedsYouList? {
+        let shown = items.enumerated().filter { !isJunk($0.element.text) }
+        guard !shown.isEmpty else { return nil }
+
+        let rows = shown.map { index, item -> NeedsYouRow in
+            let due = item.due.flatMap { $0.isFinite ? $0 : nil }
+            let label: String?
+            switch item.kind {
+            case "overdue": label = "OVERDUE"
+            case "due":
+                if let due {
+                    label = item.allDay ? "DUE TODAY" : "DUE " + clock(due)
+                } else {
+                    label = "DUE"
+                }
+            case "plan": label = "PLAN"
+            case "mail": label = "MAIL"
+            case "text": label = "TEXT"
+            default: label = nil
+            }
+            return NeedsYouRow(id: item.id ?? "needs-you-\(index)", label: label,
+                               text: item.text, overdue: item.kind == "overdue")
+        }
+        return NeedsYouList(rows: rows, more: max(0, more))
     }
 
     enum BriefSource: Equatable { case calendar, mail, messages, reminders }
