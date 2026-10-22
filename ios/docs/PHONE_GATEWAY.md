@@ -62,8 +62,9 @@ answer the ping and then collect the bearer token.
    checked in constant time. If something answers but no proof matches, the app
    shows "couldn't prove it's your Mac" and sends nothing.
 
-A verified address is trusted for at most 60 s, and only until a request to it
-fails. A clock that moves backwards ends the trust at once. After that the phone proves the Mac again before it sends the token.
+A verified address is trusted for at most 60 s, measured on a monotonic clock
+that keeps counting through sleep, and only until a request to it fails or an
+agent stream ends without `done`. After that the phone proves the Mac again before it sends the token.
 Model-file downloads never use that cache: every attempt, retries included,
 proves the Mac with a fresh ping first. A retry resumes with a `Range` request
 rebuilt for that base, and only when the base is unchanged; otherwise it
