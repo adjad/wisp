@@ -207,6 +207,9 @@ def test_second_clause_is_rejected_before_whitespace_cleanup(first, join):
 @pytest.mark.parametrize("prompt", [
     "set a timer for 10 minutes email Bob", "set a timer for 10 minutes call Mom",
     "set a timer for 10 minutes. Email Bob",
+    "start a 5 minute timer email Bob", "set a 1 hr timer call Mom",
+    "create a 5 minute timer\nemail Bob", "start a 1 hr timer. Email Bob",
+    "start a 5 minute timer and email Bob", "create a 5 minute timer; call Mom",
 ])
 def test_timer_consumes_its_entire_duration(prompt):
     from service.router import common_claims
@@ -282,6 +285,8 @@ def test_timer_without_a_length_is_not_forced(prompt):
     "set a timer for 10 minutes", "10 minute timer", "timer for 5 min",
     "set a timer for an hour", "set a timer for half an hour", "set a timer for 90 seconds",
     "set a timer for 30s", "start a 1 hr timer",
+    "set a 5 minute timer", "create a 5 minute timer", "please start a 5 minute timer",
+    "start an hour timer", "start a half an hour timer",
 ])
 def test_timer_with_a_length_is_forced(prompt):
     d = asyncio.run(route(prompt))

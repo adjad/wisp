@@ -91,6 +91,9 @@ _TIMER_LENGTH = re.compile(
     r"(?:an?|one)\s+(?:hour|minute|second)\b|half\s+an?\s+hour|a\s+half[\s-]hour|"
     r"(?:a\s+)?quarter\s+(?:of\s+)?an?\s+hour|"
     r"\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)|\d{1,2}:\d{2}|noon|midnight)", re.I)
+_TIMER_DURATION_FIRST = re.compile(
+    rf"{_PREFIX}(?:set|start|create|make|begin|put on|run)\s+(?:me\s+)?(?:an?\s+|the\s+)?"
+    rf"(?:{_TIMER_LENGTH.pattern})\s+timer", re.I)
 _TIMER_BARE = re.compile(
     rf"{_PREFIX}(?:(?:an?\s+)?\d+(?:\.\d+)?[\s-]*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)\s+timer|"
     r"timer\s+(?:for\s+)?\d+(?:\.\d+)?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?)|"
@@ -328,7 +331,8 @@ def _timer(t: str) -> CommonClaim | None:
     # A timer is forced only when its length (or end time) is named: "set a
     # timer to remind me to email Bob" is a reminder ask, not a countdown.
     timed = _TIMER.fullmatch(t)
-    if _TIMER_BARE.fullmatch(t) or (timed and _TIMER_LENGTH.fullmatch(timed["length"] or "")):
+    if (_TIMER_BARE.fullmatch(t) or _TIMER_DURATION_FIRST.fullmatch(t)
+            or (timed and _TIMER_LENGTH.fullmatch(timed["length"] or ""))):
         return CommonClaim(("set_timer",), "countdown timer -> set_timer", force="set_timer",
                            forbid=frozenset({"add_reminder", "add_calendar_event"}))
     return None

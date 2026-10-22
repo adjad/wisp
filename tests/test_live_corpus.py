@@ -294,7 +294,7 @@ def test_reconciled_notch_restores_empty_input_before_corpus_dispatch():
     assert "researchMode = back.researchMode" in submit[:corpus]
     assert "syncQueue(); start(next)" in submit[:corpus]
     assert "else if !corpusBusy, let next = submissionState.resume()" in submit[:corpus]
-    assert "return\n        }\n        if NotchCommand.isCorpusRequest" in submit
+    assert "return\n        }\n        cancelAttachmentRead()\n        if NotchCommand.isCorpusRequest" in submit
     dispatch = source.split("    private func start(_ dispatch: PromptDispatch)", 1)[1].split("        let prompt = submission.text", 1)[0]
     assert dispatch.index("guard case .prompt") < dispatch.index("onHideCorpus()") < dispatch.index("stopSyncProgress()")
 

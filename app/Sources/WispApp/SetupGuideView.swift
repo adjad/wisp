@@ -189,6 +189,16 @@ final class SetupGuideModel: ObservableObject {
         autoAdvanceFirstSetup(next)
     }
 
+    #if WISP_NOTCH_QA
+    /// Inject a supplied status into the actual accept/queue path without a
+    /// polling host or an app delegate. Production cannot call this seam.
+    func qaAcceptAutomaticStatus(_ next: SetupStatus) {
+        hosts["release-interaction-fixture"] = 1
+        monitoringStopped = false
+        accept(next)
+    }
+    #endif
+
     /// First setup should not stall on steps whose only choice is "yes".
     private func autoAdvanceFirstSetup(_ next: SetupStatus) {
         guard busy == nil, isShown, !monitoringStopped else { return }

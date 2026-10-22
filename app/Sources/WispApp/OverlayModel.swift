@@ -202,7 +202,12 @@ final class OverlayModel: ObservableObject {
     let report = ReportDraft()
     private var reportObserver: AnyCancellable?
 
-    init() {
+    init(loadDebugMode: () -> Bool = { UserDefaults.standard.bool(forKey: "wisp.debugMode") },
+         saveDebugMode: @escaping (Bool) -> Void = { UserDefaults.standard.set($0, forKey: "wisp.debugMode") },
+         recentChatsLoader: ((Int) async -> [[String: Any]]?)? = nil) {
+        self.saveDebugMode = saveDebugMode
+        self.recentChatsLoader = recentChatsLoader
+        debugMode = loadDebugMode()
         // Rows that show the report read it through this model, so redraw with it.
         reportObserver = report.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
@@ -241,8 +246,10 @@ final class OverlayModel: ObservableObject {
     // Debug mode: shows a per-reply metadata line (model, route reason, tok/s,
     // timing, tool calls) inline in the transcript, and unlocks exporting the
     // full session as JSON/text from the menu bar. Persisted across launches.
-    @Published var debugMode = UserDefaults.standard.bool(forKey: "wisp.debugMode") {
-        didSet { UserDefaults.standard.set(debugMode, forKey: "wisp.debugMode") }
+    private let saveDebugMode: (Bool) -> Void
+    private let recentChatsLoader: ((Int) async -> [[String: Any]]?)?
+    @Published var debugMode = false {
+        didSet { saveDebugMode(debugMode) }
     }
 
     // --- assistant layer (calendar/reminders) ---
@@ -737,7 +744,11 @@ final class OverlayModel: ObservableObject {
         recentChatsGeneration += 1
         let generation = recentChatsGeneration
         Task { [weak self] in
-            guard let self, let rows = await self.client.chatList(limit: 9),
+            guard let self else { return }
+            let loaded: [[String: Any]]?
+            if let loader = self.recentChatsLoader { loaded = await loader(9) }
+            else { loaded = await self.client.chatList(limit: 9) }
+            guard let rows = loaded,
                   generation == self.recentChatsGeneration else { return }
             let current = self.sessionId
             self.recentChats = Array(rows.compactMap(ChatSummary.parse).filter { $0.id != current }.prefix(8))
