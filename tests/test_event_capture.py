@@ -686,3 +686,86 @@ def test_unsupported_compound_duration_never_shortens_event():
 ])
 def test_missing_punctuation_does_not_link_another_activity_clock(text):
     assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)]) == []
+
+
+@pytest.mark.parametrize('text', [
+    'Our exam next Wednesday. No exam next Wednesday',
+    'No exam next Wednesday. Our exam next Wednesday',
+    'Our coffee next Thursday. We are not having coffee next Thursday',
+    'Our coffee next Thursday. We are considering coffee next Thursday',
+    'Our exam next Wednesday. No exam',
+    'Our exam next Wednesday. The exam is not confirmed',
+    'Our exam next Wednesday. We are considering the exam',
+    'Our coffee next Thursday. Coffee if the weather is good',
+    'Our exam next Wednesday. No exam next Friday',
+    'Our exam next Wednesday. No coffee next Wednesday',
+    'Our coffee next Wednesday at 3pm for 1 hour. No coffee next Wednesday at 3pm for 1 hour',
+    'Our coffee next Wednesday at 3pm for 1 hour and not coffee next Wednesday at 3pm for 1 hour',
+    'Our exam next Wednesday. "No exam"',
+    'Our exam next Wednesday. Not confirmed',
+    'Our exam next Wednesday. No',
+    'Our exam next Wednesday. It is not confirmed',
+    'Our coffee next Thursday. That might happen',
+])
+def test_every_event_clause_must_remain_affirmative_before_schedule_collapse(text):
+    assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)]) == []
+
+
+@pytest.mark.parametrize('body', [
+    'No STAT 5 exam next Wednesday', 'No exam', 'The exam is not confirmed',
+    'We are considering the exam', 'Your exam is next Wednesday if the strike ends',
+    'Not confirmed', '"No exam next Wednesday"',
+])
+def test_institutional_subject_cannot_override_negative_or_uncertain_current_body(body):
+    assert plans([mail('STAT 5 Exam next Wednesday', body=body)]) == []
+
+
+@pytest.mark.parametrize('text', [
+    'Our exam next Wednesday. Our interview next Wednesday',
+    'Our exam next Wednesday. Our coffee next Wednesday',
+    'Our exam next Wednesday at 3pm for 1 hour. Our interview next Wednesday at 3pm for 1 hour',
+    'Our exam next Wednesday, 3pm is our practice for 2 hours',
+    'Our exam next Wednesday, 3pm practice for 2 hours',
+    'Our STAT 5 exam next Wednesday. Our HIST 2 exam next Wednesday',
+    'Our STAT 5 exam 1 next Wednesday. Our STAT 5 exam 2 next Wednesday',
+])
+def test_equal_schedule_or_comma_clock_does_not_merge_distinct_events(text):
+    assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)]) == []
+
+
+@pytest.mark.parametrize('text', [
+    'Our coffee next Thursday if the weather is good',
+    'Our exam next Wednesday unless the strike continues',
+    'Our coffee next Thursday. Coffee if the weather is good',
+    'Our coffee next Thursday. Whether coffee happens depends on the weather',
+])
+def test_affirmative_reply_cannot_certify_external_conditions(text):
+    assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text),
+                      message('Yes sounds good', ts=MON+1, direction='outgoing', guid='yes')]) == []
+
+
+@pytest.mark.parametrize('text', [
+    'Our exam next Wednesday. Do not forget our exam next Wednesday',
+    "Our coffee next Thursday. Don't forget our coffee next Thursday",
+    'Our coffee next Thursday. Don’t miss our coffee next Thursday',
+    'Do not forget our exam next Wednesday. Our exam next Wednesday',
+    'Our exam next Wednesday. The note is not done',
+    'Our exam next Wednesday. No worries',
+    'Our coffee next Thursday. See you for coffee next Thursday',
+])
+def test_matching_positive_restatements_and_unrelated_notes_are_not_cancellation(text):
+    got = plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)])
+    assert len(got) == 1 and got[0].automatic_eligible
+
+
+def test_real_affirmation_still_settles_plain_question_with_matching_restatement():
+    records = [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'),
+               message('Our coffee next Thursday? Coffee next Thursday?'),
+               message('Yes sounds good', ts=MON+1, direction='outgoing', guid='yes')]
+    assert len(plans([], records)) == 1
+    assert plans([], records[:-1] + [message('Unrelated update', ts=MON+1, direction='outgoing', guid='no-affirm')]) == []
+
+
+def test_quoted_email_history_cancellation_is_not_current_source_evidence():
+    got = plans([mail('STAT 5 exam next Wednesday', body='Your STAT 5 exam is next Wednesday.\nOn Monday, Professor wrote:\nNo exam')])
+    assert len(got) == 1 and got[0].automatic_eligible

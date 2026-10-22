@@ -29,6 +29,9 @@ _EVENT = re.compile(r"\b(?:exam|quiz|midterm|final|appointment|interview|meeting
 _GENERIC_EVENT = re.compile(r"\b(?:we(?:['’]re|\s+are|\s+will)|let'?s|see\s+you|i(?:['’]ll|\s+will)\s+(?:join|meet|see|bring|pick\s+you))\b", re.I)
 _GENERIC_UNCERTAIN = re.compile(r"\b(?:wondering|hoping|hope|considering|thinking|maybe|might|could|would|if|unless|whether)\b", re.I)
 _EVENT_NEGATION = re.compile(r"\b(?:not|never|no)\b", re.I)
+_UNRESOLVED_CONDITION = re.compile(r"\b(?:if|unless|whether)\b", re.I)
+_SHORT_REVERSAL = re.compile(r"(?:no|not|never)(?:\s+(?:yet|confirmed|happening|sure|definitely|anymore))?", re.I)
+_LINKED_REFERENCE = re.compile(r"^(?:it|that|this|the\s+plan)\b", re.I)
 _NEGATIVE_CONTRACTION = re.compile(r"\b(?:(?:is|are|do|does|did|would|could|have|has|had|should|must|was|were)n['’]t|won['’]t|can['’]t)\b", re.I)
 _COMMITTED = re.compile(r"\b(?:confirmed|scheduled|booked|we(?:'re|\s+are|\s+will)|i(?:'ll|\s+will)|see\s+you|let'?s|our|your|reminder|have|is|on\s+for)\b", re.I)
 _QUOTED = re.compile(r"(?im)^\s*(?:on .+wrote:|from:|>+|[-_]{3,}\s*(?:original|forwarded)|begin forwarded message:|forwarded message:)")
@@ -55,22 +58,64 @@ _DATE_CUE = re.compile(
 _EVENT_TIME_GAP = re.compile(r"(?:\s|[,()]|\b(?:at|on|from|is|starts?|begins?|starting|beginning|scheduled|will|be|for|take|place)\b)*", re.I)
 
 
-def _scoped_event(text: str, arrival: datetime, tz: str, source_id: str) -> tuple[Resolved, str, int | None] | None:
+def _scoped_event(text: str, arrival: datetime, tz: str, source_id: str, *, confirmed: bool) -> tuple[Resolved, str, int | None] | None:
     """One unambiguous event, with all schedule evidence in its own clause.
 
     Refuse competing events rather than combine a date from one with a clock or
     duration from another. Ownership contradictions apply to every source kind.
     """
     choices = []
+    event_identity = None
+    named_course = None
+    named_number = None
     offset = 0
     for boundary in list(_SCOPE_BOUNDARY.finditer(text)) + [None]:
         end = boundary.start() if boundary else len(text)
         clause = text[offset:end]
         clause_at = offset
         offset = boundary.end() if boundary else len(text)
-        if not (_EVENT.search(clause) or _GENERIC_EVENT.search(clause)):
+        event_words = list(_EVENT.finditer(clause))
+        generic = _GENERIC_EVENT.search(clause)
+        # A direct reversal can refer back to the plan without repeating its
+        # event noun or time. Unrelated non-event notes remain outside this gate.
+        plain = clause.strip(" \t\r\n'\"“”‘’()")
+        if not event_words and not generic:
+            if _SHORT_REVERSAL.fullmatch(plain):
+                return None
+            if not _LINKED_REFERENCE.search(plain):
+                continue
+        # Check EVERY linked clause before dropping no-time clauses or merging
+        # matching schedules. Generic assent cannot prove an external condition.
+        polarity = re.sub(r"\b(?:(?:do\s+)?not|don['’]t)\s+(?:forget|miss)\b", '', clause, flags=re.I)
+        if (_EVENT_NEGATION.search(polarity) or _NEGATIVE_CONTRACTION.search(polarity)
+                or _CANCEL.search(clause) or _WITHDRAW.search(clause)):
+            return None
+        if _UNRESOLVED_CONDITION.search(clause):
+            return None
+        if (_GENERIC_UNCERTAIN.search(clause) or _TENTATIVE.search(clause)) and not confirmed:
+            return None
+        if not event_words and not generic:
             continue
         if _THIRD_OWNER.search(clause) or (_OTHER_OWNER.search(clause) and not _DIRECT_JOINT.search(clause)):
+            return None
+        # Equal dates/times do not establish equal events. Only a matching
+        # event kind (and any explicit course/ordinal) can restate a plan.
+        names = {' '.join(match[0].lower().split()) for match in event_words}
+        names = {'coffee' if name.startswith('coffee') else 'hangout' if name == 'hang out' else name for name in names}
+        auxiliary = {'see you', 'come over', 'meet', 'meet up', 'catch up'}
+        core = names - auxiliary
+        if not core:
+            if names:
+                core = {'meeting' if name in {'meet', 'meet up', 'see you'} else name for name in names}
+            elif generic:
+                stops = [m.start() for regex in (_DATE_CUE, _CLOCK, _DURATION) if (m := regex.search(clause, generic.end()))]
+                action = clause[generic.end():min(stops) if stops else len(clause)]
+                core = {'action:' + ' '.join(action.lower().split())}
+        if len(core) != 1:
+            return None
+        courses = {(m[1], m[2]) for m in re.finditer(r'\b((?!(?:EXAM|QUIZ|FINAL|COURSE)\b)[A-Z]{2,8})[- ]?(\d{1,4})\b', clause)}
+        numbers = {m[1] for m in re.finditer(r'\b(?:exam|quiz|midterm|final|session)\s+(\d{1,3})\b', clause, re.I)}
+        if len(courses) > 1 or len(numbers) > 1:
             return None
         ranges = list(_RANGE.finditer(clause))
         if len(ranges) > 1:
@@ -85,6 +130,17 @@ def _scoped_event(text: str, arrival: datetime, tz: str, source_id: str) -> tupl
             if resolved.blocked not in ('no_time_stated', 'no_usable_time'):
                 return None
             continue
+        if event_identity is not None and event_identity != core:
+            return None
+        event_identity = core
+        if courses:
+            if named_course is not None and named_course != courses:
+                return None
+            named_course = courses
+        if numbers:
+            if named_number is not None and named_number != numbers:
+                return None
+            named_number = numbers
         if resolved.has_clock:
             named_day, clock = _DATE_CUE.search(clause), _CLOCK.search(clause)
             if named_day and clock:
@@ -231,7 +287,11 @@ def candidates(records: list[dict], rows: list[dict], *, now: float, tz: str,
         event_cue = _EVENT.search(text) or (_GENERIC_EVENT.search(text) and not _GENERIC_UNCERTAIN.search(text))
         if not event_cue or _CANCEL.search(text) or _WITHDRAW.search(text) or _NEGATED.search(text):
             continue
-        scoped = _scoped_event(text, datetime.fromtimestamp(item.ts, timezone.utc), tz, item.id)
+        # A reply must actually affirm; an unrelated outgoing reply is not consent.
+        later = [i for i in items if i.source == item.source and i.conversation == item.conversation
+                 and i.direction == 'outgoing' and item.ts < i.ts <= min(now, item.ts + 6 * 3600)]
+        confirmed = any(AFFIRM.search(i.text) and not DECLINE.search(i.text) for i in later)
+        scoped = _scoped_event(text, datetime.fromtimestamp(item.ts, timezone.utc), tz, item.id, confirmed=confirmed)
         if scoped is None:
             continue
         r, event_clause, minutes = scoped
@@ -249,10 +309,6 @@ def candidates(records: list[dict], rows: list[dict], *, now: float, tz: str,
                 continue
             if not _EVENT.search(event_clause) and not (_GENERIC_EVENT.search(event_clause) and not _GENERIC_UNCERTAIN.search(event_clause)):
                 continue
-        # A reply must actually affirm; an unrelated outgoing reply is not consent.
-        later = [i for i in items if i.source == item.source and i.conversation == item.conversation
-                 and i.direction == 'outgoing' and item.ts < i.ts <= min(now, item.ts + 6 * 3600)]
-        confirmed = any(AFFIRM.search(i.text) and not DECLINE.search(i.text) for i in later)
         if _GENERIC_UNCERTAIN.search(event_clause) and not confirmed:
             continue
         if any(_CANCEL.search(i.text) or _WITHDRAW.search(i.text) or DECLINE.search(i.text)
