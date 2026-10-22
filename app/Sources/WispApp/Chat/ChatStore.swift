@@ -8,7 +8,10 @@ protocol ChatBackend: AnyObject {
     func listChats() async -> [ChatSummary]?
     func loadChat(id: String) async -> [ChatMessage]?
     func deleteChat(id: String) async -> Bool
+    func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase]
+    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
+             testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async
     func approve(sessionId: String, actionId: String, approved: Bool, scope: String, requestId: String) async
     func sendDraft(to: String, text: String) async -> (ok: Bool, result: String)
@@ -16,6 +19,15 @@ protocol ChatBackend: AnyObject {
     func fullAccess() async -> Bool?
     /// The flag the service confirmed after the change; nil when it can't be confirmed.
     func setFullAccess(_ on: Bool) async -> Bool?
+}
+
+extension ChatBackend {
+    func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase] {
+        throw AssistantTaskCorpusCommand.CommandError.resourceUnavailable
+    }
+    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
+        onEvent(ChatEvent(type: "error", payload: ["message": "This backend does not support live corpus evaluation."]))
+    }
 }
 
 /// One conversation in the sidebar and the window.
@@ -31,11 +43,14 @@ final class ChatConversation: ObservableObject, Identifiable {
     @Published var loaded: Bool
     @Published var loading = false
     @Published var busy = false
+    @Published fileprivate(set) var corpusRunning = false
+    @Published fileprivate(set) var corpusTotal = 0
     /// Text to put back in the composer after a dropped request.
     @Published var restoredInput: String?
 
     // Per-run streaming state, outside the published surface.
     fileprivate var task: Task<Void, Never>?
+    fileprivate var corpusTask: Task<Void, Never>?
     fileprivate var pendingDelta = ""
     fileprivate var flushScheduled = false
     fileprivate var streamStart: Date?
@@ -50,6 +65,12 @@ final class ChatConversation: ObservableObject, Identifiable {
         self.lastUsed = lastUsed; self.loaded = loaded
     }
 
+    var corpusFinishedCount: Int {
+        messages.filter { $0.corpusEvaluation != nil && ($0.corpusEvaluation?.completed == true || $0.isError) }.count
+    }
+    var corpusVerifiedCount: Int {
+        messages.filter { $0.corpusEvaluation?.completed == true && ($0.corpusEvaluation?.modelCalls ?? 0) > 0 }.count
+    }
     var isEmpty: Bool { messages.isEmpty }
     var latestAssistant: ChatMessage? { messages.last(where: { $0.role == .assistant }) }
 }
@@ -216,16 +237,94 @@ final class ChatStore: ObservableObject {
 
     // MARK: - Sending
 
+    /// Interprets the Ask composer command and otherwise sends a normal prompt.
+    func submit(_ text: String, attachmentName: String? = nil, image: String? = nil) {
+        do {
+            guard let selection = try AssistantTaskCorpusCommand.resolve(text) else {
+                send(text, attachmentName: attachmentName, image: image)
+                return
+            }
+            guard attachmentName == nil, image == nil else {
+                appendLocalNotice("Remove the image attachment before starting the corpus runner.")
+                return
+            }
+            Task {
+                do { _ = try await performCorpus(selection, command: text) }
+                catch is CancellationError { }
+                catch { appendLocalNotice("Could not load corpus: \(error.localizedDescription)") }
+            }
+        } catch {
+            appendLocalNotice(error.localizedDescription)
+        }
+    }
+
+    private var loadingCorpus = false
+
+    /// Shared by the window and notch. Caller cancellation must survive a
+    /// transport that returns late, before any case can start.
+    @discardableResult
+    func submitCorpusCommand(_ text: String) async throws -> ChatConversation {
+        guard let selection = try AssistantTaskCorpusCommand.resolve(text) else {
+            throw AssistantTaskCorpusCommand.CommandError.usage
+        }
+        return try await performCorpus(selection, command: text)
+    }
+
+    private func performCorpus(_ selection: AssistantTaskCorpusCommand.Selection,
+                               command: String) async throws -> ChatConversation {
+        guard !loadingCorpus, !conversations.contains(where: { $0.corpusRunning }) else {
+            throw AssistantTaskCorpusCommand.CommandError.busy
+        }
+        loadingCorpus = true
+        defer { loadingCorpus = false }
+        try Task.checkCancellation()
+        switch selection {
+        case .help:
+            _ = newChat()
+            return appendLocalNotice(AssistantTaskCorpusCommand.helpText)
+        case .live(let selector):
+            let cases = try await backend.liveCorpusCases(selector: selector)
+            try Task.checkCancellation()
+            return runCorpus(label: selector, cases: cases, command: command)
+        case .catalog, .profile:
+            let cases = try await backend.liveCorpusCases(selector: "all")
+            try Task.checkCancellation()
+            _ = newChat()
+            if case .catalog = selection {
+                let rows = cases.map { "\($0.id) [\($0.category)] \($0.requestPrompt)\n\($0.setup)" }
+                return appendLocalNotices(["Live corpus: \(cases.count) configured requests"] + rows + ["Run /corpus batch-1 through batch-10, or select one case by ID."])
+            }
+            let contacts = cases.filter { $0.category == "contacts" }.compactMap(\.target).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            let mail = cases.filter { $0.category == "mail" }.compactMap(\.target).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            return appendLocalNotice("Local corpus targets\nContacts / Messages: \(contacts.joined(separator: ", "))\nMail identifiers: \(mail.joined(separator: ", "))\nMail identifiers are search terms; an incomplete address is not assumed to be deliverable.")
+        case .cases(let label, let cases):
+            return runCorpus(label: label, cases: cases, command: command)
+        }
+    }
+
     func send(_ text: String, attachmentName: String? = nil, image: String? = nil) {
+        let conversation = selected ?? newChat()
+        send(text, attachmentName: attachmentName, image: image, in: conversation,
+             testMode: false, corpusCase: nil)
+    }
+
+    private func send(_ text: String, attachmentName: String? = nil, image: String? = nil,
+                      in conversation: ChatConversation, testMode: Bool,
+                      corpusCase: AssistantTaskCorpusCase?) {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
-        let conversation = selected ?? newChat()
         guard !conversation.busy, !conversation.loading else { return }
-        if conversation.messages.isEmpty { conversation.title = ChatTitle.make(from: prompt) }
+        if conversation.messages.isEmpty && corpusCase == nil { conversation.title = ChatTitle.make(from: prompt) }
         var user = ChatMessage(role: .user, text: prompt)
         user.attachmentName = attachmentName
         var reply = ChatMessage(role: .assistant, phase: .waiting)
         reply.meta = ChatMeta(startedAt: Date())
+        if let corpusCase {
+            reply.corpusEvaluation = ChatCorpusEvaluation(
+                caseID: corpusCase.id, split: corpusCase.split, category: corpusCase.category,
+                expectedTools: corpusCase.expected.tools, behavior: corpusCase.expected.behavior,
+                usesLiveData: corpusCase.usesLiveData)
+        }
         conversation.messages.append(contentsOf: [user, reply])
         conversation.lastUsed = Date()
         conversation.busy = true
@@ -240,23 +339,108 @@ final class ChatStore: ObservableObject {
         let wantsDebug = false
         conversation.task = Task { [weak self, weak conversation] in
             guard let self else { return }
-            await self.backend.run(prompt: prompt, image: image, sessionId: sid, debug: wantsDebug) { event in
+            let receive: @Sendable (ChatEvent) -> Void = { event in
                 Task { @MainActor in
                     guard let conversation else { return }
                     self.handle(event, in: conversation, replyID: replyID, runID: runID)
                 }
             }
+            if let corpusCase, corpusCase.usesLiveData {
+                await self.backend.runLiveCorpusCase(id: corpusCase.id, token: corpusCase.token ?? "", onEvent: receive)
+            } else {
+                await self.backend.run(prompt: prompt, image: image, sessionId: sid, debug: wantsDebug,
+                                       testMode: testMode, onEvent: receive)
+            }
         }
+    }
+
+    private func runCorpus(label: String, cases: [AssistantTaskCorpusCase], command: String) -> ChatConversation {
+        guard !cases.isEmpty else {
+            _ = newChat()
+            return appendLocalNotice("No corpus cases were found for `\(label)`. Check the bundled corpus and try again.")
+        }
+        let conversation = newChat()
+        conversation.title = "Assistant corpus · \(label)"
+        conversation.messages.append(ChatMessage(role: .user, text: command))
+        let live = cases.allSatisfy(\.usesLiveData)
+        let intro = live
+            ? "Running \(cases.count) live cases with the local agent model and bounded reads of your real Wisp data. Expand source results and review each answer. Completed model calls are counted from inference responses. Writes and sends are blocked. Each case starts without chat history."
+            : "Running \(cases.count) synthetic routing plans. Tools are not executed; deterministic routes may skip the model. These plans do not evaluate real-data answers."
+        conversation.messages.append(ChatMessage(role: .assistant, text: intro))
+        conversation.corpusTotal = cases.count
+        conversation.corpusRunning = true
+        conversation.lastUsed = Date()
+
+        conversation.corpusTask = Task { [weak self, weak conversation] in
+            guard let self, let conversation else { return }
+            var matched = 0
+            var reviewed = 0
+            var modelCompleted = 0
+            for corpusCase in cases {
+                guard !Task.isCancelled else { break }
+                self.send(corpusCase.requestPrompt, in: conversation, testMode: !live, corpusCase: corpusCase)
+                while conversation.busy && !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                guard !Task.isCancelled else { break }
+                if let evaluation = conversation.messages.last(where: { $0.role == .assistant })?.corpusEvaluation,
+                   evaluation.completed {
+                    if evaluation.toolPathMatches == true { matched += 1 } else { reviewed += 1 }
+                    if evaluation.modelCalls > 0 { modelCompleted += 1 }
+                } else {
+                    reviewed += 1
+                }
+            }
+            let wasCancelled = Task.isCancelled
+            conversation.corpusRunning = false
+            conversation.corpusTask = nil
+            if !wasCancelled {
+                let summary = live ? "Live corpus finished: \(modelCompleted)/\(cases.count) cases completed with verified model inference. Review the answers against each card's source results and checklist. Live answers are not automatically graded; a model call alone does not prove correctness."
+                : """
+                Corpus run finished: \(matched) tool path\(matched == 1 ? "" : "s") matched the expected list; \(reviewed) need review. This compares tool names only. Review the behavior rubric and Wisp's streamed response for each case.
+                """
+                conversation.messages.append(ChatMessage(role: .assistant, text: summary))
+            }
+        }
+        return conversation
+    }
+
+    @discardableResult
+    private func appendLocalNotice(_ text: String) -> ChatConversation {
+        appendLocalNotices([text])
+    }
+
+    @discardableResult
+    private func appendLocalNotices(_ texts: [String]) -> ChatConversation {
+        let conversation = selected ?? newChat()
+        guard !conversation.busy, !conversation.corpusRunning else { return conversation }
+        if conversation.messages.isEmpty { conversation.title = "Corpus runner" }
+        conversation.messages.append(contentsOf: texts.map { ChatMessage(role: .assistant, text: $0) })
+        return conversation
     }
 
     /// Stop the reply in flight. The text so far stays; a pending approval is denied.
     func stop(_ conversation: ChatConversation) {
-        guard conversation.busy else { return }
+        guard conversation.busy || conversation.corpusRunning else { return }
+        let stoppedCorpus = conversation.corpusRunning
+        conversation.corpusTask?.cancel()
+        conversation.corpusTask = nil
+        conversation.corpusRunning = false
+        guard conversation.busy else {
+            if stoppedCorpus {
+                conversation.messages.append(ChatMessage(role: .assistant, text: "Corpus run stopped. Completed cases remain above."))
+            }
+            return
+        }
         conversation.task?.cancel()
         conversation.task = nil
         flush(conversation)
         conversation.runID = UUID()
         if let i = conversation.messages.lastIndex(where: { $0.role == .assistant }) {
+            if conversation.messages[i].corpusEvaluation != nil {
+                conversation.messages[i].corpusEvaluation?.observedTools = conversation.messages[i].tools.map(\.name)
+                conversation.messages[i].corpusEvaluation?.stopped = true
+            }
             if conversation.messages[i].approval?.state == .pending {
                 resolve(conversation, messageID: conversation.messages[i].id, approved: false, scope: "once")
             }
@@ -264,6 +448,9 @@ final class ChatStore: ObservableObject {
             conversation.messages[i].meta?.finishedAt = Date()
         }
         conversation.busy = false
+        if stoppedCorpus {
+            conversation.messages.append(ChatMessage(role: .assistant, text: "Corpus run stopped. Completed cases remain above."))
+        }
     }
 
     private func handle(_ event: ChatEvent, in conversation: ChatConversation, replyID: UUID, runID: UUID) {
@@ -283,25 +470,45 @@ final class ChatStore: ObservableObject {
         guard let i = conversation.messages.firstIndex(where: { $0.id == replyID }) else { return }
         var message = conversation.messages[i]
         let outcome = ChatTurnReducer.apply(event, to: &message)
+        // Corpus replies are text and read evidence, never actionable drafts.
+        if message.corpusEvaluation != nil { message.draft = nil }
         if let start = conversation.streamStart, message.meta != nil {
             let rate = ChatTurnReducer.tokensPerSecond(chars: conversation.streamChars, since: start)
             if rate > 0 { message.meta?.tokensPerSecond = rate }
+        }
+        if event.type == "confirm", message.corpusEvaluation != nil, let approval = message.approval {
+            message.approval?.state = .denied
+            conversation.messages[i] = message
+            Task {
+                await self.backend.approve(sessionId: "", actionId: approval.actionId, approved: false,
+                                           scope: "once", requestId: approval.requestId)
+            }
+            return
         }
         switch outcome {
         case .none:
             conversation.messages[i] = message
         case .session(let id):
-            if conversation.sessionId.isEmpty { conversation.sessionId = id }
+            if message.corpusEvaluation == nil && conversation.sessionId.isEmpty { conversation.sessionId = id }
         case .finished, .failed:
             if message.approval?.state == .pending { message.approval?.state = .timedOut }
             conversation.messages[i] = message
+            if conversation.messages[i].corpusEvaluation != nil {
+                conversation.messages[i].corpusEvaluation?.observedTools = conversation.messages[i].tools.map(\.name)
+                conversation.messages[i].corpusEvaluation?.completed = outcome == .finished
+            }
             conversation.busy = false
             conversation.lastUsed = Date()
             conversation.preview = message.text.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? ""
-            Task { await self.refresh() }
+            if message.corpusEvaluation == nil { Task { await self.refresh() } }
         case .droppedEmpty:
             // Nothing arrived: take the exchange back and hand the prompt to the composer.
-            if i > 0, conversation.messages[i - 1].role == .user {
+            if message.corpusEvaluation != nil {
+                message.isError = true
+                message.text = "Wisp did not return a response. This case was not scored."
+                message.phase = .failed
+                conversation.messages[i] = message
+            } else if i > 0, conversation.messages[i - 1].role == .user {
                 conversation.restoredInput = conversation.messages[i - 1].text
                 conversation.messages.removeSubrange((i - 1)...i)
             }
@@ -339,6 +546,7 @@ final class ChatStore: ObservableObject {
         guard let i = conversation.messages.firstIndex(where: { $0.id == messageID }),
               conversation.busy,
               var approval = conversation.messages[i].approval, approval.state == .pending else { return }
+        guard !(approved && conversation.messages[i].corpusEvaluation != nil) else { return }
         approval.state = approved ? .allowed : .denied
         conversation.messages[i].approval = approval
         conversation.messages[i].phase = .working
@@ -356,6 +564,7 @@ final class ChatStore: ObservableObject {
 
     func sendDraft(_ conversation: ChatConversation, messageID: UUID) {
         guard let i = conversation.messages.firstIndex(where: { $0.id == messageID }),
+              conversation.messages[i].corpusEvaluation == nil,
               let draft = conversation.messages[i].draft, !draft.isSending, !draft.sent, !draft.discarded else { return }
         guard !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             updateDraft(conversation, messageID: messageID) { $0.status = "The message is empty." }

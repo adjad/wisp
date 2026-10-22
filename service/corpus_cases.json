@@ -1,0 +1,928 @@
+{
+  "version": 2,
+  "provenance_note": "Five request patterns adapted from nine relevant user requests in a bounded review of 60 recent saved Wisp chats; 95 additional requests authored. No raw private chat content is included. These are evaluation requests, not assistant training completions.",
+  "cases": [
+    {
+      "id": "LIVE-001",
+      "category": "contacts",
+      "target_slot": 0,
+      "prompt": "Find {target} in my contacts and show the saved details.",
+      "intent": "contacts-01",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-002",
+      "category": "contacts",
+      "target_slot": 1,
+      "prompt": "What phone numbers do I have saved for {target}? Keep the labels next to each number.",
+      "intent": "contacts-02",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-003",
+      "category": "contacts",
+      "target_slot": 2,
+      "prompt": "Which email addresses are saved for {target}? If there are none, say so.",
+      "intent": "contacts-03",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-004",
+      "category": "messages",
+      "target_slot": 0,
+      "prompt": "Catch me up on my latest conversation with {target}.",
+      "intent": "messages-01",
+      "provenance": "adapted_saved_request_pattern",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-005",
+      "category": "messages",
+      "target_slot": 1,
+      "prompt": "What was the last thing {target} said to me? Quote it with the date.",
+      "intent": "messages-02",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-006",
+      "category": "messages",
+      "target_slot": 2,
+      "prompt": "What did I last say to {target}? Include the timestamp you can see.",
+      "intent": "messages-03",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-007",
+      "category": "mail",
+      "target_slot": 0,
+      "prompt": "Check my recent mail involving {target}. What is there?",
+      "intent": "mail-01",
+      "provenance": "adapted_saved_request_pattern",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-008",
+      "category": "mail",
+      "target_slot": 1,
+      "prompt": "What is the newest email involving {target} about?",
+      "intent": "mail-02",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-009",
+      "category": "contacts",
+      "target_slot": 3,
+      "prompt": "Is there more than one contact matching {target}? Show enough saved information to tell the matches apart.",
+      "intent": "contacts-04",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-010",
+      "category": "contacts",
+      "target_slot": 4,
+      "prompt": "Show the exact saved name for {target} and explain how it matched my search.",
+      "intent": "contacts-05",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-011",
+      "category": "contacts",
+      "target_slot": 5,
+      "prompt": "Give me a compact contact card for {target}, using only fields that are actually saved.",
+      "intent": "contacts-06",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-012",
+      "category": "contacts",
+      "target_slot": 6,
+      "prompt": "Do I have both a phone number and an email address for {target}? List what is present and what is missing.",
+      "intent": "contacts-07",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-013",
+      "category": "contacts",
+      "target_slot": 7,
+      "prompt": "Are any phone numbers or email addresses repeated in the matching contact details for {target}?",
+      "intent": "contacts-08",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-014",
+      "category": "contacts",
+      "target_slot": 8,
+      "prompt": "Put the saved phone numbers and email addresses for {target} in a small table.",
+      "intent": "contacts-09",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-015",
+      "category": "contacts",
+      "target_slot": 9,
+      "prompt": "Can you find {target} in my saved contacts? Tell me if the contacts source is unavailable or if there simply is no match.",
+      "intent": "contacts-10",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-016",
+      "category": "messages",
+      "target_slot": 3,
+      "prompt": "List the questions {target} asked in our latest messages.",
+      "intent": "messages-04",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-017",
+      "category": "messages",
+      "target_slot": 4,
+      "prompt": "Which questions from {target} still appear unanswered in the messages you can see?",
+      "intent": "messages-05",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-018",
+      "category": "messages",
+      "target_slot": 5,
+      "prompt": "Did {target} ask me to do anything? Pull out the requests.",
+      "intent": "messages-06",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-019",
+      "category": "messages",
+      "target_slot": 6,
+      "prompt": "What plans did we discuss in my latest messages with {target}?",
+      "intent": "messages-07",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-020",
+      "category": "messages",
+      "target_slot": 7,
+      "prompt": "What dates or times came up in my recent conversation with {target}?",
+      "intent": "messages-08",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-021",
+      "category": "messages",
+      "target_slot": 8,
+      "prompt": "Did {target} and I agree on a plan, or were we still discussing options? Show the wording.",
+      "intent": "messages-09",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-022",
+      "category": "messages",
+      "target_slot": 9,
+      "prompt": "Show how the plan changed across my latest messages with {target}.",
+      "intent": "messages-10",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-023",
+      "category": "messages",
+      "target_slot": 10,
+      "prompt": "Separate what I committed to from what {target} committed to in our latest messages.",
+      "intent": "messages-11",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-024",
+      "category": "messages",
+      "target_slot": 11,
+      "prompt": "Are any addresses or locations mentioned in my recent messages with {target}? Quote them exactly.",
+      "intent": "messages-12",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-025",
+      "category": "messages",
+      "target_slot": 12,
+      "prompt": "What details would I still need before acting on the latest request from {target}?",
+      "intent": "messages-13",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-026",
+      "category": "messages",
+      "target_slot": 13,
+      "prompt": "Give me a short timeline of my latest conversation with {target}, with who said what.",
+      "intent": "messages-14",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-027",
+      "category": "messages",
+      "target_slot": 14,
+      "prompt": "Find one useful line to quote from the recent messages with {target}, and explain its context.",
+      "intent": "messages-15",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-028",
+      "category": "messages",
+      "target_slot": 15,
+      "prompt": "Is the latest thing {target} mentioned about me or someone else? Show what makes that clear.",
+      "intent": "messages-16",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-029",
+      "category": "messages",
+      "target_slot": 16,
+      "prompt": "Do the latest messages with {target} repeat information, or does each add something new?",
+      "intent": "messages-17",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-030",
+      "category": "messages",
+      "target_slot": 17,
+      "prompt": "Draft a brief message to {target} based on our latest conversation. Show the draft here.",
+      "intent": "messages-18",
+      "provenance": "adapted_saved_request_pattern",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-031",
+      "category": "messages",
+      "target_slot": 18,
+      "prompt": "Draft a reply asking {target} to clarify anything missing from our latest plan.",
+      "intent": "messages-19",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-032",
+      "category": "messages",
+      "target_slot": 19,
+      "prompt": "Turn the action items in my latest conversation with {target} into a checklist here.",
+      "intent": "messages-20",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-033",
+      "category": "messages",
+      "target_slot": 20,
+      "prompt": "What did {target} message me today?",
+      "intent": "messages-21",
+      "provenance": "authored_realistic_request",
+      "read_filters": {
+        "day": "today"
+      }
+    },
+    {
+      "id": "LIVE-034",
+      "category": "messages",
+      "target_slot": 21,
+      "prompt": "What did {target} and I discuss yesterday, and what was unresolved?",
+      "intent": "messages-22",
+      "provenance": "authored_realistic_request",
+      "read_filters": {
+        "day": "yesterday"
+      }
+    },
+    {
+      "id": "LIVE-035",
+      "category": "messages",
+      "target_slot": 22,
+      "prompt": "Summarize my messages with {target} from this week. Tell me if you only saw part of them.",
+      "intent": "messages-23",
+      "provenance": "authored_realistic_request",
+      "read_filters": {
+        "period": "this week"
+      }
+    },
+    {
+      "id": "LIVE-036",
+      "category": "messages",
+      "target_slot": 23,
+      "prompt": "Show my unread messages from {target}, oldest first within the records you can see.",
+      "intent": "messages-24",
+      "provenance": "authored_realistic_request",
+      "read_filters": {
+        "unread": true
+      }
+    },
+    {
+      "id": "LIVE-037",
+      "category": "messages",
+      "target_slot": 24,
+      "prompt": "Are there unread messages from {target} today? Distinguish unknown read status from unread.",
+      "intent": "messages-25",
+      "provenance": "authored_realistic_request",
+      "read_filters": {
+        "day": "today",
+        "unread": true
+      }
+    },
+    {
+      "id": "LIVE-038",
+      "category": "messages",
+      "target_slot": 25,
+      "prompt": "Give me the gist of my latest messages with {target} in one sentence.",
+      "intent": "messages-26",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-039",
+      "category": "messages",
+      "target_slot": 26,
+      "prompt": "What are the main topics in my recent conversation with {target}?",
+      "intent": "messages-27",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-040",
+      "category": "messages",
+      "target_slot": 27,
+      "prompt": "Pull out any names of other people mentioned in my recent messages with {target}. Keep them separate from the senders.",
+      "intent": "messages-28",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-041",
+      "category": "messages",
+      "target_slot": 28,
+      "prompt": "Are any amounts of money mentioned in my latest conversation with {target}? Quote the amounts and their context.",
+      "intent": "messages-29",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-042",
+      "category": "messages",
+      "target_slot": 29,
+      "prompt": "Did either of us cancel or postpone anything in my recent messages with {target}?",
+      "intent": "messages-30",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-043",
+      "category": "messages",
+      "target_slot": 30,
+      "prompt": "What is the next step explicitly mentioned in my latest conversation with {target}?",
+      "intent": "messages-31",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-044",
+      "category": "messages",
+      "target_slot": 31,
+      "prompt": "Which recent messages from {target} ask for a yes or no answer?",
+      "intent": "messages-32",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-045",
+      "category": "messages",
+      "target_slot": 32,
+      "prompt": "What did {target} explicitly confirm in our recent messages?",
+      "intent": "messages-33",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-046",
+      "category": "messages",
+      "target_slot": 33,
+      "prompt": "What did I ask {target} that has no visible answer in these recent messages?",
+      "intent": "messages-34",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-047",
+      "category": "messages",
+      "target_slot": 34,
+      "prompt": "Are there any links in my recent messages with {target}? Show the links as written and their surrounding context.",
+      "intent": "messages-35",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-048",
+      "category": "messages",
+      "target_slot": 35,
+      "prompt": "Does the latest message from {target} depend on earlier context you cannot see?",
+      "intent": "messages-36",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-049",
+      "category": "messages",
+      "target_slot": 36,
+      "prompt": "Explain any ambiguous pronouns in my latest messages with {target}. Leave them unresolved if the text is insufficient.",
+      "intent": "messages-37",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-050",
+      "category": "messages",
+      "target_slot": 37,
+      "prompt": "Write a short acknowledgment of the latest message from {target} for me to review here.",
+      "intent": "messages-38",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-051",
+      "category": "messages",
+      "target_slot": 38,
+      "prompt": "Can you turn my recent conversation with {target} into three factual bullets with source dates?",
+      "intent": "messages-39",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-052",
+      "category": "messages",
+      "target_slot": 39,
+      "prompt": "Which recent message with {target} contains the most concrete planning details? Quote it.",
+      "intent": "messages-40",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-053",
+      "category": "messages",
+      "target_slot": 40,
+      "prompt": "Show the difference between suggestions and firm commitments in my latest messages with {target}.",
+      "intent": "messages-41",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-054",
+      "category": "messages",
+      "target_slot": 41,
+      "prompt": "Did anyone correct a date, name, or location in my latest conversation with {target}?",
+      "intent": "messages-42",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-055",
+      "category": "messages",
+      "target_slot": 42,
+      "prompt": "Extract any travel details in my recent messages with {target}; do not assume a booking exists.",
+      "intent": "messages-43",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-056",
+      "category": "messages",
+      "target_slot": 43,
+      "prompt": "How much of my recent conversation with {target} could you actually read? Include the visible date range.",
+      "intent": "messages-44",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-057",
+      "category": "messages",
+      "target_slot": 44,
+      "prompt": "Give me a catch-up note about my latest messages with {target}, ending with anything I may need to answer.",
+      "intent": "messages-45",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-058",
+      "category": "mail",
+      "target_slot": 2,
+      "prompt": "Show the subject, date, sender, and recipients of the latest emails involving {target}.",
+      "intent": "mail-03",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-059",
+      "category": "mail",
+      "target_slot": 3,
+      "prompt": "Which recent emails involving {target} came from them, and which were sent to them?",
+      "intent": "mail-04",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-060",
+      "category": "mail",
+      "target_slot": 4,
+      "prompt": "What questions are asked in the latest emails involving {target}?",
+      "intent": "mail-05",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-061",
+      "category": "mail",
+      "target_slot": 5,
+      "prompt": "Which recent emails involving {target} explicitly ask for a response?",
+      "intent": "mail-06",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-062",
+      "category": "mail",
+      "target_slot": 6,
+      "prompt": "What actions do the latest emails involving {target} ask me to take?",
+      "intent": "mail-07",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-063",
+      "category": "mail",
+      "target_slot": 7,
+      "prompt": "Pull out any deadlines from recent emails involving {target}, with the exact wording and source date.",
+      "intent": "mail-08",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-064",
+      "category": "mail",
+      "target_slot": 8,
+      "prompt": "Are there meeting dates, times, or locations in the latest emails involving {target}?",
+      "intent": "mail-09",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-065",
+      "category": "mail",
+      "target_slot": 9,
+      "prompt": "List any order or reference numbers in recent emails involving {target}, exactly as written.",
+      "intent": "mail-10",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-066",
+      "category": "mail",
+      "target_slot": 10,
+      "prompt": "Compare the latest emails involving {target}. Are they about the same topic or different things?",
+      "intent": "mail-11",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-067",
+      "category": "mail",
+      "target_slot": 11,
+      "prompt": "Does a newer email involving {target} update or contradict an older result? Cite the text.",
+      "intent": "mail-12",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-068",
+      "category": "mail",
+      "target_slot": 12,
+      "prompt": "Give me a timeline of the latest emails involving {target} and what changed.",
+      "intent": "mail-13",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-069",
+      "category": "mail",
+      "target_slot": 13,
+      "prompt": "Which details in recent emails involving {target} are confirmed, and which are proposals?",
+      "intent": "mail-14",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-070",
+      "category": "mail",
+      "target_slot": 14,
+      "prompt": "What information would I still need before acting on the newest email involving {target}?",
+      "intent": "mail-15",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-071",
+      "category": "mail",
+      "target_slot": 15,
+      "prompt": "Quote the part of the latest email involving {target} that explains what the sender needs.",
+      "intent": "mail-16",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-072",
+      "category": "mail",
+      "target_slot": 16,
+      "prompt": "Does {target} appear as a sender or recipient in these emails, or only in the text?",
+      "intent": "mail-17",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-073",
+      "category": "mail",
+      "target_slot": 17,
+      "prompt": "Draft a short reply to the newest email involving {target}. Show it here.",
+      "intent": "mail-18",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-074",
+      "category": "mail",
+      "target_slot": 18,
+      "prompt": "Draft a reply asking for missing details in the newest email involving {target}.",
+      "intent": "mail-19",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-075",
+      "category": "mail",
+      "target_slot": 19,
+      "prompt": "Make a checklist from the latest emails involving {target}, keeping each item linked to its subject.",
+      "intent": "mail-20",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-076",
+      "category": "mail",
+      "target_slot": 20,
+      "prompt": "What is in my email today involving {target}?",
+      "intent": "mail-21",
+      "provenance": "adapted_saved_request_pattern",
+      "read_filters": {
+        "day": "today"
+      }
+    },
+    {
+      "id": "LIVE-077",
+      "category": "mail",
+      "target_slot": 21,
+      "prompt": "What did yesterday's emails involving {target} ask for?",
+      "intent": "mail-22",
+      "provenance": "authored_realistic_request",
+      "read_filters": {
+        "day": "yesterday"
+      }
+    },
+    {
+      "id": "LIVE-078",
+      "category": "mail",
+      "target_slot": 22,
+      "prompt": "What came up in emails involving {target} this week? Explain the coverage searched.",
+      "intent": "mail-23",
+      "provenance": "authored_realistic_request",
+      "read_filters": {
+        "period": "this week"
+      }
+    },
+    {
+      "id": "LIVE-079",
+      "category": "mail",
+      "target_slot": 23,
+      "prompt": "Summarize my unread mail involving {target}.",
+      "intent": "mail-24",
+      "provenance": "adapted_saved_request_pattern",
+      "read_filters": {
+        "unread": true
+      }
+    },
+    {
+      "id": "LIVE-080",
+      "category": "mail",
+      "target_slot": 24,
+      "prompt": "Are there unread emails involving {target} today that explicitly ask me to act?",
+      "intent": "mail-25",
+      "provenance": "authored_realistic_request",
+      "read_filters": {
+        "day": "today",
+        "unread": true
+      }
+    },
+    {
+      "id": "LIVE-081",
+      "category": "mail",
+      "target_slot": 25,
+      "prompt": "Give me a one-sentence summary of each recent email involving {target}.",
+      "intent": "mail-26",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-082",
+      "category": "mail",
+      "target_slot": 26,
+      "prompt": "Group the latest emails involving {target} by topic.",
+      "intent": "mail-27",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-083",
+      "category": "mail",
+      "target_slot": 27,
+      "prompt": "Are any recent emails involving {target} duplicates or part of the same apparent thread?",
+      "intent": "mail-28",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-084",
+      "category": "mail",
+      "target_slot": 28,
+      "prompt": "Extract any amounts and currencies from recent emails involving {target}, without inferring payment status.",
+      "intent": "mail-29",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-085",
+      "category": "mail",
+      "target_slot": 29,
+      "prompt": "What attachments are mentioned in the latest emails involving {target}? Distinguish mentions from attachments you can actually inspect.",
+      "intent": "mail-30",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-086",
+      "category": "mail",
+      "target_slot": 30,
+      "prompt": "Pull out any travel dates or booking references from recent emails involving {target}.",
+      "intent": "mail-31",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-087",
+      "category": "mail",
+      "target_slot": 31,
+      "prompt": "Do the latest emails involving {target} include any cancellations or rescheduling?",
+      "intent": "mail-32",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-088",
+      "category": "mail",
+      "target_slot": 32,
+      "prompt": "Which of the recent emails involving {target} is a notification versus a personal request? Explain from the text.",
+      "intent": "mail-33",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-089",
+      "category": "mail",
+      "target_slot": 33,
+      "prompt": "Is there an explicit next step in the newest email involving {target}?",
+      "intent": "mail-34",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-090",
+      "category": "mail",
+      "target_slot": 34,
+      "prompt": "Which people or organizations are named in the recent emails involving {target}? Keep them separate from verified sender addresses.",
+      "intent": "mail-35",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-091",
+      "category": "mail",
+      "target_slot": 35,
+      "prompt": "Are there links in the latest emails involving {target}? Show what is visible without opening them.",
+      "intent": "mail-36",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-092",
+      "category": "mail",
+      "target_slot": 36,
+      "prompt": "Could the newest email involving {target} be understood without earlier thread history? Point out any missing context.",
+      "intent": "mail-37",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-093",
+      "category": "mail",
+      "target_slot": 37,
+      "prompt": "What facts repeat across the latest emails involving {target}?",
+      "intent": "mail-38",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-094",
+      "category": "mail",
+      "target_slot": 38,
+      "prompt": "Write a neutral acknowledgment of the newest email involving {target} for me to review here.",
+      "intent": "mail-39",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-095",
+      "category": "mail",
+      "target_slot": 39,
+      "prompt": "Which recent email involving {target} has the clearest request? Quote the relevant sentence.",
+      "intent": "mail-40",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-096",
+      "category": "mail",
+      "target_slot": 40,
+      "prompt": "Separate explicit deadlines from dates that are just mentioned in recent emails involving {target}.",
+      "intent": "mail-41",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-097",
+      "category": "mail",
+      "target_slot": 41,
+      "prompt": "What does the latest email involving {target} say about delivery or availability, if anything?",
+      "intent": "mail-42",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-098",
+      "category": "mail",
+      "target_slot": 42,
+      "prompt": "Show the visible date range and freshness warnings for the recent emails involving {target}.",
+      "intent": "mail-43",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-099",
+      "category": "mail",
+      "target_slot": 43,
+      "prompt": "Could you verify {target} as a complete email address from these results? Do not fill in missing characters.",
+      "intent": "mail-44",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    },
+    {
+      "id": "LIVE-100",
+      "category": "mail",
+      "target_slot": 44,
+      "prompt": "Give me a catch-up note on recent emails involving {target}, ending with anything that needs my review.",
+      "intent": "mail-45",
+      "provenance": "authored_realistic_request",
+      "read_filters": {}
+    }
+  ]
+}

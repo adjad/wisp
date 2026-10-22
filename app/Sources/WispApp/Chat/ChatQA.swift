@@ -37,6 +37,7 @@ final class FixtureChatBackend: ChatBackend {
     func deleteChat(id: String) async -> Bool { true }
 
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
+             testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
         func emit(_ type: String, _ fields: [String: Any] = [:]) {
             var payload = fields; payload["type"] = type

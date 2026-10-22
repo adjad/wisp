@@ -339,7 +339,7 @@ struct ChatWelcome: View {
     @ObservedObject var store: ChatStore
     var body: some View {
         VStack(spacing: 0) {
-            ChatEmptyState { store.newChat(); store.send($0) }
+            ChatEmptyState { store.newChat(); store.submit($0) }
             ChatComposer(store: store, busy: false, loading: false, restoredInput: .constant(nil), stop: {})
         }
     }
@@ -348,7 +348,7 @@ struct ChatWelcome: View {
 struct ChatEmptyState: View {
     let ask: (String) -> Void
     private let suggestions = ["Catch me up on today", "What's on my calendar this week?", "Summarize my unread mail",
-                               "Draft a reply to my last email", "Find a file on my Mac"]
+                               "Draft a reply to my last email", "Find a file on my Mac", "/corpus smoke"]
     var body: some View {
         VStack(spacing: 18) {
             Spacer(minLength: 24)
@@ -429,12 +429,12 @@ struct ChatConversationView: View {
                 if conversation.loading {
                     VStack { Spacer(); ProgressView().controlSize(.small); Spacer() }.frame(maxWidth: .infinity)
                 } else {
-                    ChatEmptyState { store.send($0) }
+                    ChatEmptyState { store.submit($0) }
                 }
             } else {
                 ChatThread(store: store, conversation: conversation)
             }
-            ChatComposer(store: store, busy: conversation.busy, loading: conversation.loading,
+            ChatComposer(store: store, busy: conversation.busy || conversation.corpusRunning, loading: conversation.loading,
                          restoredInput: Binding(get: { conversation.restoredInput }, set: { conversation.restoredInput = $0 }),
                          stop: { store.stop(conversation) })
         }
@@ -563,6 +563,9 @@ struct ChatMessageRow: View {
                             .environment(\.markdownPalette, ChatTheme.markdown)
                     }
                 }
+                if let evaluation = message.corpusEvaluation {
+                    ChatCorpusEvaluationCard(evaluation: evaluation, failed: message.isError, tools: message.tools)
+                }
                 if let approval = message.approval {
                     ChatApprovalCard(approval: approval) { approved, scope in
                         store.resolve(conversation, messageID: message.id, approved: approved, scope: scope)
@@ -594,6 +597,91 @@ private struct ChatThinkingRow: View {
             Text(label).font(.system(size: 13.5)).foregroundStyle(ChatTheme.text3)
         }
     }
+}
+
+private struct ChatCorpusEvaluationCard: View {
+    let evaluation: ChatCorpusEvaluation
+    let failed: Bool
+    let tools: [ChatToolRow]
+
+    private var heading: String {
+        if evaluation.stopped { return "Stopped · \(evaluation.caseID)" }
+        if failed { return "Run failed · \(evaluation.caseID)" }
+        if evaluation.usesLiveData { return "\(evaluation.completed ? "Review live answer" : "Reading live data") · \(evaluation.caseID)" }
+        guard let matches = evaluation.toolPathMatches else { return "Checking · \(evaluation.caseID)" }
+        return matches ? "Tool path matched · \(evaluation.caseID)" : "Review tool path · \(evaluation.caseID)"
+    }
+
+    private var headingColor: Color {
+        guard let matches = evaluation.toolPathMatches else { return ChatTheme.amber }
+        return matches ? ChatTheme.ok : ChatTheme.amber
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Image(systemName: evaluation.toolPathMatches == true ? "checkmark.circle" : "list.bullet.clipboard")
+                Text(heading).font(.system(size: 12.5, weight: .medium))
+                Spacer()
+                Text("\(evaluation.split) · \(evaluation.category)")
+                    .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(ChatTheme.text3)
+            }
+            .foregroundStyle(headingColor)
+
+            HStack(alignment: .top, spacing: 8) {
+                Text(evaluation.usesLiveData ? "Relevant reads" : "Expected").foregroundStyle(ChatTheme.text3)
+                Text(toolList(evaluation.expectedTools)).foregroundStyle(ChatTheme.text2)
+            }
+            .font(.system(size: 11.5, design: .monospaced))
+            if evaluation.completed || evaluation.stopped {
+                HStack(alignment: .top, spacing: 8) {
+                    Text("Observed").foregroundStyle(ChatTheme.text3)
+                    Text(toolList(evaluation.observedTools)).foregroundStyle(ChatTheme.text2)
+                }
+                .font(.system(size: 11.5, design: .monospaced))
+            }
+
+            if evaluation.usesLiveData {
+                Text("Model: \(evaluation.modelName.isEmpty ? "awaiting inference" : evaluation.modelName) · \(evaluation.modelCalls) completed call\(evaluation.modelCalls == 1 ? "" : "s") / \(evaluation.modelAttempts) started")
+                    .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(ChatTheme.text2)
+                DisclosureGroup("Source results (\(tools.count))") {
+                    ForEach(tools) { tool in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(tool.name) · \(tool.decision)").font(.system(size: 11.5, weight: .medium))
+                            if let evidence = tool.corpusSourceEvidence {
+                                Text(evidence.text.isEmpty ? "No source text retained." : evidence.text)
+                                    .font(.system(size: 11.5)).textSelection(.enabled)
+                                if evidence.isTruncated {
+                                    Text("Source evidence truncated for display: \(evidence.retainedByteCount) of \(evidence.sourceByteCount) UTF-8 bytes retained. The answer may refer to omitted text; review with this coverage limit.")
+                                        .font(.system(size: 10.5)).foregroundStyle(ChatTheme.amber)
+                                }
+                            } else {
+                                Text(tool.finished ? "No corpus source evidence retained for this result." : "Awaiting source result")
+                                    .font(.system(size: 11.5)).foregroundStyle(ChatTheme.text3)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+                    }
+                }.foregroundStyle(ChatTheme.text2)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Behavior rubric · review the response")
+                    .font(.system(size: 11.5, weight: .medium)).foregroundStyle(ChatTheme.text2)
+                ForEach(Array(evaluation.behavior.indices), id: \.self) { index in
+                    Text("• \(evaluation.behavior[index])").font(.system(size: 11.5)).foregroundStyle(ChatTheme.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Text(evaluation.usesLiveData ? "Real source reads · writes and sends blocked · review answers manually" : "Tool plan only · no action was executed")
+                .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(ChatTheme.text3)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(ChatTheme.glass))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ChatTheme.line, lineWidth: 1))
+    }
+
+    private func toolList(_ tools: [String]) -> String { tools.isEmpty ? "none" : tools.joined(separator: " → ") }
 }
 
 private struct ChatMetaLine: View {
@@ -632,6 +720,9 @@ struct ChatTraceView: View {
     private var title: String {
         let n = message.tools.count
         let running = message.tools.contains { !$0.finished && $0.decision != "deny" }
+        if message.tools.contains(where: \.isTestPlan) {
+            return running ? "Planning \(n) tool\(n == 1 ? "" : "s")…" : "Planned \(n) tool\(n == 1 ? "" : "s") · dry run"
+        }
         if running { return "Working with \(n) tool\(n == 1 ? "" : "s")…" }
         return "Used \(n) tool\(n == 1 ? "" : "s")"
     }
@@ -858,7 +949,7 @@ struct ChatComposer: View {
                     .background(RoundedRectangle(cornerRadius: 9).fill(ChatTheme.glass))
                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(ChatTheme.line, lineWidth: 1))
                 }
-                TextField("Message Wisp", text: $text, axis: .vertical)
+                TextField("Message Wisp · /corpus smoke to run the test set", text: $text, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .foregroundStyle(ChatTheme.text)
@@ -925,7 +1016,7 @@ struct ChatComposer: View {
         text = ""
         image = nil
         attachNote = ""
-        store.send(prompt, attachmentName: attached?.name, image: attached?.dataURL)
+        store.submit(prompt, attachmentName: attached?.name, image: attached?.dataURL)
     }
 
     private func pickImage() {

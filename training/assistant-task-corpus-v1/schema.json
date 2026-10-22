@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Wisp assistant task corpus case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "split", "category", "difficulty", "conversation", "setup", "expected", "risk"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^ATC-[0-9]{3}$"},
+    "split": {"enum": ["smoke", "regression", "challenge"]},
+    "category": {"enum": ["calendar", "mail", "messages", "memory", "files", "research", "system", "utilities", "ambiguity", "safety"]},
+    "difficulty": {"enum": ["basic", "intermediate", "advanced"]},
+    "conversation": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["role", "content"],
+        "properties": {"role": {"enum": ["user", "assistant"]}, "content": {"type": "string", "minLength": 1}}
+      }
+    },
+    "setup": {"type": "string", "minLength": 1},
+    "expected": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tools", "behavior"],
+      "properties": {
+        "tools": {"type": "array", "items": {"type": "string"}},
+        "behavior": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "risk": {"enum": ["read_only", "write_authorized", "live_lookup", "confirmation_required", "clarification", "source_injection", "refusal"]}
+  }
+}

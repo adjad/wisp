@@ -450,6 +450,8 @@ from service.assistant.attention_api import router as attention_router
 app.include_router(attention_router)
 from service.assistant.stale_reminders_api import router as stale_reminders_router
 app.include_router(stale_reminders_router)
+from service.corpus import router as corpus_router
+app.include_router(corpus_router)
 from service.assistant.checkin_api import router as checkin_router
 app.include_router(checkin_router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
@@ -1344,7 +1346,8 @@ async def agent(body: dict[str, Any]):
     tool actually runs, nothing is read/written/sent. The response is the
     tool-call plan (as `tool_call` events, same shape as a real turn) plus the
     model's own prose description of that plan. Deliberately stateless: no
-    session is read or created, and nothing is persisted — a test run must
+    session is read or created, saved identity/profile/memory/skills context
+    is not loaded, and nothing is persisted — a test run must
     leave no trace and must not see conversation history it wasn't given,
     since "what would Wisp do with THIS prompt" is the whole point.
 
@@ -1699,7 +1702,7 @@ async def agent(body: dict[str, Any]):
             # their first question. Keep one active skill on the session until
             # the user stops it, switches explicitly, or the skill emits its
             # completion marker.
-            if remote_only_profile() is not None:
+            if test_mode or remote_only_profile() is not None:
                 active_skill = ""
                 skill_turn = ""
             else:
@@ -2047,7 +2050,7 @@ async def agent(body: dict[str, Any]):
                 target = model_led_target if model_led_turn else role_target(decision.role)
                 if decision.role in models_config().get("inference", {}).get("bindings", {}):
                     decision.model = target.model
-            if not skill_turn:
+            if not test_mode and not skill_turn:
                 # A route that forces a skill-content tool (for example "list my installed
                 # skills" forcing wisp_skills) is a skill turn too, even though the prompt
                 # triggers no skill: its answer is skill metadata. A broad default menu that
@@ -2236,7 +2239,8 @@ async def agent(body: dict[str, Any]):
                 final = await run_agent(turn_client, decision.model, messages, emit, approver,
                                         tools=decision.tool_subset,
                                         active_skill=active_skill,
-                                        allow_skill_context=remote_only_profile() is None and not literal_envelope,
+                                        allow_skill_context=not test_mode and remote_only_profile() is None and not literal_envelope,
+                                        include_identity_context=not test_mode,
                                         force_first_tool=force_tool,
                                         expect_tool_first=decision.expect_tool_first,
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
@@ -2250,12 +2254,12 @@ async def agent(body: dict[str, Any]):
                                                               if model_led_turn else None),
                                         claim_effect=claim_model_action if model_led_turn else None,
                                         finish_effect=finish_model_action if model_led_turn else None,
-                                        include_memory_context=_agent_memory_context_allowed(
+                                        include_memory_context=not test_mode and (_agent_memory_context_allowed(
                                             decision, cloud=super_model_cloud,
                                             grounded_workflow=bool(workflow_turn and
                                                                    workflow_turn.decision),
                                             schedule_read=schedule_read) if not model_led_turn
-                                            else not ({"recall", "search_memory"} & set(decision.forbidden_tools)),
+                                            else not ({"recall", "search_memory"} & set(decision.forbidden_tools))),
                                         multi_round=decision.multi_round,
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,
