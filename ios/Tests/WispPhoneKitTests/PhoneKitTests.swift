@@ -353,3 +353,62 @@ func gatewayWithholdsTokenFromImpostor(kind: String) async {
     #expect(try CloudSettings(provider: .custom, baseURL: "https://100.64.0.1/v1", model: "m")
         .completionsURL().scheme == "https")
 }
+
+/// A mutable value tests can flip while a client holds a reference.
+final class Box<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: T
+    init(_ value: T) { stored = value }
+    var value: T {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
+@Test func verifiedBaseExpiresAndIsProvedAgain() async throws {
+    // The Mac proves, then Tailscale drops and a stranger answers at the same address.
+    let port = 18_812
+    let impostor = Box(false), clock = Box(Date(timeIntervalSince1970: 1_000))
+    let session = StubProtocol.session(port: port) { request in
+        if request.url!.path == "/phone/v1/ping" {
+            return impostor.value ? (200, Data(#"{"wisp_gateway":2,"proofs":[]}"#.utf8))
+                : (200, pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))]))
+        }
+        return (200, helloBody())
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: session, now: { clock.value })
+    _ = try await client.hello()
+    _ = try await client.hello()  // within the lifetime: no second ping
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path }
+            == ["/phone/v1/ping", "/phone/v1/hello", "/phone/v1/hello"])
+    impostor.value = true
+    clock.value = clock.value.addingTimeInterval(GatewayClient.proofLifetime + 1)
+    await #expect(throws: GatewayError.unverified) { try await client.hello() }
+    #expect(StubProtocol.requests(port: port).last?.value(forHTTPHeaderField: "Authorization") == nil)
+}
+@Test func httpErrorForgetsTheVerifiedBase() async throws {
+    let port = 18_813
+    let failHello = Box(true)
+    let session = StubProtocol.session(port: port) { request in
+        if request.url!.path == "/phone/v1/ping" {
+            return (200, pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))]))
+        }
+        return failHello.value ? (503, Data()) : (200, helloBody())
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: session)
+    await #expect(throws: GatewayError.http(503, "")) { try await client.hello() }
+    failHello.value = false
+    _ = try await client.hello()
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path }
+            == ["/phone/v1/ping", "/phone/v1/hello", "/phone/v1/ping", "/phone/v1/hello"])
+}
+@Test func malformedProofsAreRejected() {
+    let nonce = GatewayProof.newNonce()
+    let good = GatewayProof.proof(token: token, nonce: nonce)
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer([good + "0"]), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer(["zz" + good.dropFirst(2)]), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer(Array(repeating: "00", count: 1_024) + [good]),
+                                 token: token, nonce: nonce))
+}

@@ -62,6 +62,14 @@ answer the ping and then collect the bearer token.
    checked in constant time. If something answers but no proof matches, the app
    shows "couldn't prove it's your Mac" and sends nothing.
 
+A verified address is trusted for at most 60 s, and only until a request to it
+fails. After that the phone proves the Mac again before it sends the token.
+
+The proof binds the pairing, not the channel. Something on the path that can
+reach the real gateway could relay a nonce and its proof. Only a tailnet peer
+can reach the gateway, so a CGNAT stranger can't, and the token itself is
+protected by WireGuard.
+
 A ping without `nonce` still returns `{"wisp_gateway": 2}`, so older phones keep
 working. A v2 phone refuses a v1 gateway, because a v1 gateway can't prove the
 pairing. Update the Mac first.

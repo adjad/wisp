@@ -149,11 +149,16 @@ public enum GatewayProof {
 public actor GatewayClient {
     public nonisolated let pairing: MacPairing
     private let session: URLSession
+    /// How long a verified base is trusted before the next request re-proves it.
+    public static let proofLifetime: TimeInterval = 60
+    private let now: @Sendable () -> Date
     private var preferredBase: URL?
+    private var verifiedAt = Date.distantPast
 
-    public init(pairing: MacPairing, session: URLSession = .shared) {
+    public init(pairing: MacPairing, session: URLSession = .shared, now: @escaping @Sendable () -> Date = Date.init) {
         self.pairing = pairing
         self.session = session
+        self.now = now
     }
 
     // MARK: Requests
@@ -217,6 +222,7 @@ public actor GatewayClient {
                 } catch is CancellationError {
                     continuation.finish()
                 } catch {
+                    await self.forgetBase()
                     continuation.finish(throwing: Self.map(error))
                 }
             }
@@ -241,9 +247,8 @@ public actor GatewayClient {
             let (data, response) = try await session.data(for: request)
             let http = try Self.check(response, body: data)
             return (data, http)
-        } catch let error as GatewayError {
-            throw error
         } catch {
+            // Any failure, an HTTP error included, makes the next request prove the Mac again.
             preferredBase = nil
             throw Self.map(error)
         }
@@ -253,7 +258,8 @@ public actor GatewayClient {
     /// Nothing carries the token until then: 100.64/10 is also carrier CGNAT space, so with
     /// Tailscale off, whoever answers at the Mac's address may be a stranger.
     func reachableBase() async throws -> URL {
-        if let preferredBase { return preferredBase }
+        if let preferredBase, now().timeIntervalSince(verifiedAt) < Self.proofLifetime { return preferredBase }
+        preferredBase = nil
         var answered = false
         for base in pairing.baseURLs {
             let nonce = GatewayProof.newNonce()
@@ -268,11 +274,14 @@ public actor GatewayClient {
             answered = true
             if GatewayProof.verify(pingResponse: data, token: pairing.token, nonce: nonce) {
                 preferredBase = base
+                verifiedAt = now()
                 return base
             }
         }
         throw answered ? GatewayError.unverified : GatewayError.unreachable
     }
+
+    private func forgetBase() { preferredBase = nil }
 
     @discardableResult
     private static func check(_ response: URLResponse, body: Data?) throws -> HTTPURLResponse {
