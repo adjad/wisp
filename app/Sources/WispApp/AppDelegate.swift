@@ -733,6 +733,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                               durationMin: dur, location: loc)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
+        model.onCreateAllDayCalendarEvent = { [weak self] title, day, zone, loc in
+            self?.calendarReader?.createAllDayEvent(title: title, day: day, timezone: zone, location: loc)
+                ?? ["ok": false, "error": "Calendar handler unavailable"]
+        }
         model.showCalendarEventURL = { [weak self] identifier, startTs in
             self?.calendarReader?.showInCalendarURL(identifier: identifier, at: startTs)
         }

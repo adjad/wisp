@@ -825,6 +825,47 @@ struct TodayPlanChecks {
         check(put.url!.path == "/assistant/attention/settings" && model.live)
         await model.setLive(false)
         check(!model.live && mode == "shadow", "Turning it off returns to preview, never to a hidden mode")
+        check(!model.captureEvents, "Legacy live settings never imply Calendar capture authority")
+        var captureEvents = false
+        var pairRequests: [URLRequest] = []
+        var pairRow: [String: Any] = ["source_id": "preview:mail:synthetic", "state": "shadow",
+            "title": "STAT 5 Exam 1", "due_ts": t + 86400, "decided_at": t,
+            "when": "2026-10-21 · all-day Calendar; reminder at 09:00",
+            "paired": true, "captureable": true, "fingerprint": String(repeating: "a", count: 64)]
+        let pairModel = AttentionModel(now: { now }) { request in
+            pairRequests.append(request)
+            if request.httpMethod == "PUT" {
+                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                check(body["mode"] == nil, "Calendar opt-in must preserve the legacy reminders mode")
+                captureEvents = body["capture_events"] as! Bool
+            }
+            let data = try JSONSerialization.data(withJSONObject: [
+                "settings": ["mode": "live", "daily_cap": 3, "capture_events": captureEvents],
+                "created_today": 0, "recent": [pairRow]])
+            return (data, response(request))
+        }
+        await pairModel.refresh()
+        check(pairModel.live && !pairModel.captureEvents)
+        await pairModel.setCaptureEvents(true)
+        check(pairModel.live && pairModel.captureEvents)
+        await pairModel.capture(pairModel.items[0])
+        let captureRequest = pairRequests.first { $0.url!.path.hasSuffix("/capture") }!
+        let captureBody = try JSONSerialization.jsonObject(with: captureRequest.httpBody!) as! [String: Any]
+        check(captureRequest.httpMethod == "POST" && captureRequest.timeoutInterval == 120)
+        check(Set(captureBody.keys) == ["source_id", "fingerprint"],
+              "Reviewed Add sends exact source binding; neither native payload nor approval comes from JSON")
+        check(captureBody["source_id"] as? String == "preview:mail:synthetic")
+        pairRow["state"] = "partial"
+        pairRow["captureable"] = false
+        pairRow["effects"] = ["calendar": ["status": "succeeded"], "reminder": ["status": "failed"]]
+        await pairModel.refresh()
+        check(pairModel.items[0].label.hasPrefix("Partially added"))
+        check(pairModel.items[0].label.contains("Calendar: added") && pairModel.items[0].label.contains("Reminder: couldn't add"))
+        pairRow["state"] = "unknown"
+        pairRow["effects"] = ["calendar": ["status": "unknown"], "reminder": ["status": "succeeded"]]
+        await pairModel.refresh()
+        check(pairModel.items[0].label.hasPrefix("Check both apps"))
+        check(pairModel.items[0].label.contains("outcome unknown"))
         // A refusal from Undo stays on screen after the reload that follows it.
         var stale: CheckedContinuation<(Data, URLResponse), Error>?
         var holdNextGet = false
