@@ -1,0 +1,46 @@
+import Foundation
+import Security
+
+/// The Mac pairing token and the cloud API key. Stored this-device-only, so they never
+/// sync to iCloud Keychain or move to a restored backup on another phone.
+enum Keychain {
+    enum Item: String {
+        case macToken = "mac-gateway-token"
+        case cloudKey = "cloud-api-key"
+    }
+
+    private static let service = "app.wisp.iphone"
+
+    static func read(_ item: Item) -> String? {
+        var query = base(item)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Returns the Security framework status; `errSecSuccess` means saved. Updates in place and
+    /// never deletes first, so a failed save leaves the previous secret intact.
+    @discardableResult
+    static func write(_ value: String, for item: Item) -> OSStatus {
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(value.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let status = SecItemUpdate(base(item) as CFDictionary, attributes as CFDictionary)
+        guard status == errSecItemNotFound else { return status }
+        return SecItemAdd(base(item).merging(attributes) { _, new in new } as CFDictionary, nil)
+    }
+
+    static func delete(_ item: Item) {
+        SecItemDelete(base(item) as CFDictionary)
+    }
+
+    private static func base(_ item: Item) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: item.rawValue]
+    }
+}

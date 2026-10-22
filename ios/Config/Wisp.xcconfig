@@ -1,0 +1,5 @@
+// Shared app settings. Personal signing goes in Local.xcconfig (git-ignored), e.g.
+//   DEVELOPMENT_TEAM = ABCDE12345
+//   WISP_BUNDLE_ID = com.yourname.wisp
+WISP_BUNDLE_ID = app.wisp.iphone
+#include? "Local.xcconfig"
