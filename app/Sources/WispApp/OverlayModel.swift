@@ -120,6 +120,13 @@ final class OverlayModel: ObservableObject {
         var rawIO: [RawModelIO] = []
     }
 
+    @Published var corpusBusy = false
+    @Published var showingCorpus = false
+    var onCorpusCommand: ((String) -> Void)?
+    var onHideCorpus: () -> Void = {}
+    var onResetCorpus: () -> Void = {}
+    var onOpenCorpus: () -> Void = {}
+
     @Published var input = ""
     @Published var answer = ""
     @Published var reasoning = ""
@@ -359,7 +366,7 @@ final class OverlayModel: ObservableObject {
     /// False while a turn is in flight. The Wisp window and the chat switcher
     /// read the saved history, which the service writes only at the end of a turn.
     var conversationSettled: Bool {
-        ![Phase.routing, .working, .streaming, .confirming].contains(phase)
+        !corpusBusy && ![Phase.routing, .working, .streaming, .confirming].contains(phase)
     }
 
     /// What the chat switcher calls the conversation open here.
@@ -421,6 +428,7 @@ final class OverlayModel: ObservableObject {
     // the reasoning disclosure is collapsed by default, so the UI looked like
     // a dead void with nothing visibly happening.
     var isProcessing: Bool {
+        if corpusBusy { return true }
         switch phase {
         case .routing, .working: return true
         case .streaming: return answer.isEmpty
@@ -468,7 +476,11 @@ final class OverlayModel: ObservableObject {
                 attachedImage = back.image
                 attachedImageName = back.imageName
                 researchMode = back.researchMode
-            } else if let next = submissionState.resume() { syncQueue(); start(next) }
+            } else if !corpusBusy, let next = submissionState.resume() { syncQueue(); start(next) }
+            return
+        }
+        if NotchCommand.isCorpusRequest(prompt) {
+            startCorpusCommand(prompt)
             return
         }
         if let command = NotchCommand.match(prompt) {
@@ -479,6 +491,10 @@ final class OverlayModel: ObservableObject {
         // Part of a command that could still be one of several ("/re"): keep the
         // list showing rather than sending a fragment to the model.
         if !NotchCommand.suggestions(for: prompt).isEmpty { return }
+        guard !corpusBusy else {
+            showTransientNotice("Stop the corpus run before asking another question.")
+            return
+        }
         let submission = QueuedPrompt(text: prompt, image: attachedImage,
                                       imageName: attachedImageName, researchMode: researchMode)
         input = ""
@@ -509,8 +525,38 @@ final class OverlayModel: ObservableObject {
         }
     }
 
+    func canStartCorpusCommand() -> Bool {
+        guard !submissionState.isActive, !briefComposing, !freeingMemory,
+              ![Phase.routing, .working, .streaming, .confirming].contains(phase) else {
+            showTransientNotice("Wait for the current request to finish before opening the corpus.")
+            return false
+        }
+        guard attachedImage == nil, attachedImageName == nil else {
+            showTransientNotice("Remove the attachment before starting the corpus runner.")
+            return false
+        }
+        return true
+    }
+
+    private func startCorpusCommand(_ command: String) {
+        guard canStartCorpusCommand() else { return }
+        guard let onCorpusCommand else {
+            showTransientNotice("The corpus runner is unavailable in this build.")
+            return
+        }
+        input = ""
+        leaveKnowYou()
+        showingQuickSettings = false
+        tab = .ask
+        onCorpusCommand(command)
+        onResize()
+    }
+
     private func start(_ dispatch: PromptDispatch) {
         guard case .prompt(let submission) = dispatch.work else { return }
+        // Includes empty-Return recovery and queued dispatches, not just typed
+        // prompts: their answers must not render behind the corpus surface.
+        onHideCorpus()
         stopSyncProgress()
         if submission.researchMode {
             researchDispatchID = dispatch.id
@@ -582,6 +628,7 @@ final class OverlayModel: ObservableObject {
 
     func run(_ command: NotchCommand) {
         switch command {
+        case .corpus: startCorpusCommand("/corpus list")
         case .today: tab = .day
         case .memory: WispRouter.shared.open(.memory(.facts))
         case .research: tab = .research
@@ -623,6 +670,7 @@ final class OverlayModel: ObservableObject {
 
     /// ⤢, ⌘O and /window: open what this tab shows in the Wisp window.
     func openTabInWindow() {
+        if tab == .ask && showingCorpus { onOpenCorpus(); return }
         switch tab {
         case .ask:
             if conversationSettled { openInChat() }
@@ -781,6 +829,7 @@ final class OverlayModel: ObservableObject {
     }
 
     func reset() {
+        onResetCorpus()
         // A report belongs to the conversation being left.
         report.close()
         streamTask?.cancel()
@@ -1321,6 +1370,10 @@ final class OverlayModel: ObservableObject {
     // It waits its turn with prompts, so it never reads the sources while a
     // reply is being written. A prompt sent meanwhile is queued behind it.
     func runDailySummary() {
+        guard !corpusBusy else {
+            showTransientNotice("Stop the corpus run before refreshing the brief.")
+            return
+        }
         tab = .brief
         guard !briefComposing else { return }
         guard let dispatch = submissionState.beginDailySummary() else {
