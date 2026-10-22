@@ -21,14 +21,17 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
+    /// Returns the Security framework status; `errSecSuccess` means saved. Updates in place and
+    /// never deletes first, so a failed save leaves the previous secret intact.
     @discardableResult
-    /// Returns the Security framework status; `errSecSuccess` means saved.
     static func write(_ value: String, for item: Item) -> OSStatus {
-        delete(item)
-        var query = base(item)
-        query[kSecValueData as String] = Data(value.utf8)
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(query as CFDictionary, nil)
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(value.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let status = SecItemUpdate(base(item) as CFDictionary, attributes as CFDictionary)
+        guard status == errSecItemNotFound else { return status }
+        return SecItemAdd(base(item).merging(attributes) { _, new in new } as CFDictionary, nil)
     }
 
     static func delete(_ item: Item) {

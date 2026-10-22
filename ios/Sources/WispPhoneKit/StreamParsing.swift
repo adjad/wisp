@@ -36,7 +36,7 @@ public enum GatewayEventDecoder {
             return .approval(ApprovalRequest(
                 id: str("id"), requestId: str("request_id"), sessionId: sessionId,
                 tool: str("tool"), reason: str("reason"), preview: str("preview"),
-                grantable: object["grantable"] as? Bool ?? false))
+                grantable: object["grantable"] as? Bool ?? false, scopeHint: str("scope_hint")))
         case "confirm_timeout":
             return .approvalExpired(str("id"))
         case "error":

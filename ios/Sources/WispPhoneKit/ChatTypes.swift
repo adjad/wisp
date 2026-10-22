@@ -66,9 +66,11 @@ public struct ApprovalRequest: Codable, Equatable, Identifiable, Sendable {
     public var reason: String
     public var preview: String
     public var grantable: Bool
+    /// What an "Always allow" grant would cover (a host, folder or program); empty means the whole tool.
+    public var scopeHint: String
 
     public init(id: String, requestId: String, sessionId: String, tool: String,
-                reason: String, preview: String, grantable: Bool) {
+                reason: String, preview: String, grantable: Bool, scopeHint: String = "") {
         self.id = id
         self.requestId = requestId
         self.sessionId = sessionId
@@ -76,6 +78,7 @@ public struct ApprovalRequest: Codable, Equatable, Identifiable, Sendable {
         self.reason = reason
         self.preview = preview
         self.grantable = grantable
+        self.scopeHint = scopeHint
     }
 }
 

@@ -86,7 +86,7 @@ struct ChatView: View {
                     // One new character that is a newline is Return, wherever the cursor was; a paste is left alone.
                     .onChange(of: draft) { old, text in
                         guard text.count == old.count + 1,
-                              text.filter({ $0 == "\n" }).count == old.filter({ $0 == "\n" }).count + 1 else { return }
+                              text.filter(\.isNewline).count == old.filter(\.isNewline).count + 1 else { return }
                         draft = old
                         submit()
                     }
@@ -248,6 +248,11 @@ private struct ApprovalCard: View {
                 .frame(height: min(max(previewHeight, 20), 140))
                 .padding(10)
                 .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
+            }
+            if request.grantable && !request.scopeHint.isEmpty {
+                Text("Always allow applies to \(ToolNames.friendly(request.tool)) on \(request.scopeHint)")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.7))
             }
             HStack {
                 Button("Deny", role: .cancel) { model.answer(request, approved: false) }

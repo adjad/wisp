@@ -611,6 +611,12 @@ def test_file_range_unsatisfiable_416(menv, spec):
     assert r.status_code == 416 and r.headers["content-range"] == f"bytes */{len(BLOB)}"
 
 
+def test_file_range_with_huge_numbers_serves_whole_file(menv):
+    # int() refuses ~4300+ digit strings; the header must be ignored, not turned into a 500.
+    r = menv.client.get(url("model.safetensors"), headers={**menv.auth, "Range": "bytes=" + "9" * 5000 + "-"})
+    assert r.status_code == 200 and r.content == BLOB
+
+
 def test_file_head(menv):
     r = menv.client.head(url("model.safetensors"), headers=menv.auth)
     assert r.status_code == 200 and r.content == b""

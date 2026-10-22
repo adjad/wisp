@@ -44,6 +44,13 @@ private func filtered(_ chunks: [String]) -> String {
     #expect(request == ApprovalRequest(id: "a1", requestId: "r9", sessionId: "s42", tool: "send_email",
                                        reason: "Send to Sam", preview: "Hi Sam", grantable: false))
 }
+@Test func confirmCarriesGrantScope() {
+    let line = #"data: {"type":"confirm","id":"a2","tool":"web_fetch","grantable":true,"scope_hint":"example.com"}"#
+    guard case .approval(let request)? = GatewayEventDecoder.decode(line: line, sessionId: "s1") else {
+        Issue.record("not an approval"); return
+    }
+    #expect(request.grantable && request.scopeHint == "example.com")
+}
 
 // MARK: OpenAI stream
 

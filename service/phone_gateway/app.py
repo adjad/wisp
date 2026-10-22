@@ -149,7 +149,7 @@ def _build_approve_body(raw: dict[str, Any]) -> dict[str, Any]:
 
 def _parse_range(header: str, size: int) -> tuple[int, int] | None | str:
     """(start, end) inclusive; None = no/ignored range header; 'bad' = unsatisfiable."""
-    match = re.fullmatch(r"bytes=(\d*)-(\d*)", header.strip())
+    match = re.fullmatch(r"bytes=(\d{0,19})-(\d{0,19})", header.strip())
     if not match:
         return None  # unsupported form (multi-range, other units): serve the whole file
     first, last = match.groups()

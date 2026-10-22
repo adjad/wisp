@@ -122,8 +122,10 @@ final class OnDeviceModel {
             let free = (try? Self.root.deletingLastPathComponent()
                 .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
                 .volumeAvailableCapacityForImportantUsage) ?? Int64.max
-            guard free > bundle.totalBytes + 1_000_000_000 else {
-                state = .failed("Not enough free space: Ling needs \(Self.format(bundle.totalBytes)) plus 1 GB.")
+            // Sum the files rather than trusting the listing's total.
+            let totalBytes = bundle.files.reduce(Int64(0)) { $0 + $1.size }
+            guard free > totalBytes + 1_000_000_000 else {
+                state = .failed("Not enough free space: Ling needs \(Self.format(totalBytes)) plus 1 GB.")
                 return
             }
             try FileManager.default.createDirectory(at: Self.root, withIntermediateDirectories: true)
@@ -150,7 +152,7 @@ final class OnDeviceModel {
                 }
                 let request = try await gateway.fileRequest(model: bundle.id, file: file.name)
                 state = .downloading(file: file.name, received: 0, total: file.size)
-                let temporary = try await FileDownloader.download(request) { [weak self] received, _ in
+                let temporary = try await FileDownloader.download(request, maxBytes: file.size) { [weak self] received, _ in
                     Task { @MainActor in
                         self?.state = .downloading(file: file.name, received: received, total: file.size)
                     }
@@ -170,9 +172,9 @@ final class OnDeviceModel {
             guard missing.isEmpty else { throw DownloadError.incomplete(missing) }
             #endif
             let sizes = Dictionary(uniqueKeysWithValues: bundle.files.map { ($0.name, $0.size) })
-            let receipt = Receipt(id: bundle.id, files: hashes, sizes: sizes, totalBytes: bundle.totalBytes)
+            let receipt = Receipt(id: bundle.id, files: hashes, sizes: sizes, totalBytes: totalBytes)
             try JSONEncoder().encode(receipt).write(to: destination.appendingPathComponent(Self.receiptName), options: .atomic)
-            state = .installed(id: bundle.id, bytes: bundle.totalBytes)
+            state = .installed(id: bundle.id, bytes: totalBytes)
         } catch is CancellationError {
             refresh()
         } catch {
@@ -184,9 +186,11 @@ final class OnDeviceModel {
         case checksum(String)
         case incomplete([String])
         case unsafePath(String)
+        case oversized
 
         var errorDescription: String? {
             switch self {
+            case .oversized: "Your Mac sent more than the file's listed size, so the download was stopped."
             case .checksum(let name): "\(name) didn't match your Mac's copy. Try the download again."
             case .incomplete(let names): "Your Mac's model folder is missing \(names.joined(separator: ", "))."
             case .unsafePath(let name): "Refused to save \(name): it would land outside Wisp's model folder."
@@ -218,15 +222,22 @@ final class FileDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     typealias Progress = @Sendable (Int64, Int64) -> Void
 
     private let progress: Progress
+    private let maxBytes: Int64
     private let lock = NSLock()
+    private var oversized = false
     private var continuation: CheckedContinuation<URL, Error>?
     private var resumeData: Data?
     private var movedFile: URL?
 
-    private init(progress: @escaping Progress) { self.progress = progress }
+    private init(maxBytes: Int64, progress: @escaping Progress) {
+        self.maxBytes = maxBytes
+        self.progress = progress
+    }
 
-    static func download(_ request: URLRequest, attempts: Int = 4, progress: @escaping Progress) async throws -> URL {
-        let downloader = FileDownloader(progress: progress)
+    /// Stops as soon as more than `maxBytes` arrive, so a bad listing can't fill the disk.
+    static func download(_ request: URLRequest, maxBytes: Int64, attempts: Int = 4,
+                         progress: @escaping Progress) async throws -> URL {
+        let downloader = FileDownloader(maxBytes: maxBytes, progress: progress)
         let session = URLSession(configuration: .default, delegate: downloader, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         var lastError: Error = URLError(.unknown)
@@ -261,6 +272,11 @@ final class FileDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sen
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        guard totalBytesWritten <= maxBytes else {
+            lock.lock(); oversized = true; lock.unlock()
+            downloadTask.cancel()
+            return
+        }
         progress(totalBytesWritten, totalBytesExpectedToWrite)
     }
 
@@ -279,12 +295,16 @@ final class FileDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         self.continuation = nil
         let file = movedFile
         movedFile = nil
-        if let error = error as NSError?,
+        let tooBig = oversized
+        if let error = error as NSError?, !tooBig,
            let data = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
             resumeData = data
         }
         lock.unlock()
-        if let error {
+        if tooBig {
+            if let file { try? FileManager.default.removeItem(at: file) }
+            continuation?.resume(throwing: OnDeviceModel.DownloadError.oversized)
+        } else if let error {
             continuation?.resume(throwing: error)
         } else if let file {
             continuation?.resume(returning: file)
