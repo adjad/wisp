@@ -8,9 +8,9 @@ trap 'rm -rf "$brief_view_scratch"' EXIT
 export WISP_HOME="$brief_view_scratch/state"
 export WISP_BRIEF_TIME_QA_OUT="${WISP_BRIEF_TIME_QA_OUT:-$project_root/app/.build/brief-time-renders}"
 brief_view_sources=()
-while IFS= read -r source_file; do
-    if [[ "$source_file" != */main.swift ]]; then brief_view_sources+=("$source_file"); fi
-done < <(rg --files "$project_root/app/Sources/WispApp" -g '*.swift')
+while IFS= read -r -d '' source_file; do
+    brief_view_sources+=("$source_file")
+done < <(find "$project_root/app/Sources/WispApp" -type f -name '*.swift' ! -name main.swift -print0)
 swiftc ${swiftc_nested_sandbox_flags[@]+"${swiftc_nested_sandbox_flags[@]}"} \
     -parse-as-library -swift-version 5 -D WISP_NOTCH_QA \
     -target "$(uname -m)-apple-macosx14.0" \

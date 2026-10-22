@@ -66,11 +66,13 @@ struct BriefTimeViewChecks {
             try check(content.needsYou?.rows.count == 2, "\(name): Spotlight attention rows are preserved")
 
             let model = OverlayModel()
+            model.tab = .brief
             let initialTurns = model.turns.count
             let initialAnswer = model.answer
             model.askAbout(content.suggestions[0].prompt)
             try check(model.tab == .ask && model.input == content.suggestions[0].prompt, "\(name): suggestion opens editable Ask draft")
-            try check(model.turns.count == initialTurns && model.answer == initialAnswer, "\(name): suggestion does not submit a turn")
+            try check(model.turns.count == initialTurns && model.answer == initialAnswer && model.conversationSettled,
+                      "\(name): suggestion does not submit a turn")
             model.tab = .brief
 
             let view = NotchBriefView(model: model, today: today)
@@ -129,6 +131,77 @@ struct BriefTimeViewChecks {
             try check(oldContent.suggestions.isEmpty && !oldContent.lede.contains("morning"), "\(name): another selected day stays neutral")
 
         }
+        checks += try await mountedClockChecks(output: output, calendar: calendar)
         print("Brief view integration: \(checks) checks passed")
+    }
+
+    @MainActor final class FixtureClock { var value = Date() }
+
+    /// Change an unobserved clock while keeping the same mounted view, plan and
+    /// models. Only TimelineView's minute tick can refresh the rendered copy.
+    @MainActor static func mountedClockChecks(output: URL, calendar: Calendar) async throws -> Int {
+        let clock = FixtureClock()
+        let zone = calendar.timeZone
+        let start = calendar.startOfDay(for: clock.value)
+        var requests = 0
+        let today = TodayModel(now: { clock.value }, timeZoneProvider: { zone }, transport: { request in
+            requests += 1
+            guard let day = URLComponents(url: request.url!, resolvingAgainstBaseURL: true)?.queryItems?.first(where: { $0.name == "day" })?.value else {
+                throw Failure(description: "mounted clock: expected a dated fixture request")
+            }
+            let data = try NotchQADriver.fixturePlan(day: day, dayStart: start.timeIntervalSince1970)
+            return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        })
+        await today.refresh()
+        guard today.currentPlan != nil else { throw Failure(description: "mounted-clock fixture did not load") }
+        let model = OverlayModel()
+        let view = NotchBriefView(model: model, today: today)
+            .padding(20).frame(width: 640).background(Theme.surface).environment(\.colorScheme, .dark)
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 640, height: 900),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.setContentSize(host.fittingSize)
+        window.orderFrontRegardless()
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(250))
+
+        func snapshot() throws -> Data {
+            window.setContentSize(host.fittingSize)
+            host.layoutSubtreeIfNeeded()
+            guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
+                throw Failure(description: "mounted clock: no bitmap")
+            }
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            guard let data = bitmap.representation(using: .png, properties: [:]) else {
+                throw Failure(description: "mounted clock: no PNG")
+            }
+            return data
+        }
+        let before = try snapshot()
+        let initialPeriod = BriefTimeContext(date: clock.value, timezone: zone).period
+        let targetHour: Int
+        switch initialPeriod {
+        case .morning: targetHour = 12
+        case .afternoon: targetHour = 17
+        case .evening: targetHour = 21
+        case .night: targetHour = 5
+        }
+        clock.value = calendar.date(bySettingHour: targetHour, minute: 0, second: 0, of: clock.value)!
+        let nextPeriod = BriefTimeContext(date: clock.value, timezone: zone).period
+        guard nextPeriod != initialPeriod else { throw Failure(description: "mounted clock: fixture did not change daypart") }
+        guard today.currentPlan != nil else { throw Failure(description: "mounted clock: clock change lost the current day") }
+        let requestCount = requests
+        // The schedule was anchored to the real minute when the view mounted.
+        // Wait through its next tick without publishing a model or plan change.
+        let delay = 61.5 - Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 60)
+        try await Task.sleep(for: .seconds(delay))
+        let after = try snapshot()
+        guard after != before else { throw Failure(description: "mounted clock: rendered Brief did not change at the minute tick") }
+        guard requests == requestCount else { throw Failure(description: "mounted clock: a fetch refreshed the view instead of its local clock") }
+        try after.write(to: output.appendingPathComponent("brief-clock-transition.png"))
+        print("Mounted clock: \(initialPeriod.rawValue) → \(nextPeriod.rawValue), without a data refresh")
+        return 4
     }
 }
