@@ -347,7 +347,9 @@ struct BriefContent {
         suggestions = time.suggestions(isToday: isToday)
         let needs = (plan.workspace?.attention ?? []).filter { $0.source != "calendar" }
         let reference = isToday ? now : dayStart
-        let calendarBlocks = plan.displayBlocks.filter { $0.kind == "calendar" || $0.kind == "manual" }
+        let calendarBlocks = plan.displayBlocks.filter {
+            ($0.kind == "calendar" || $0.kind == "manual") && !DayTimeline.isJunk($0.title)
+        }
             .sorted { $0.start < $1.start }
         // Calendar entries only; learned away windows never make a day busy.
         let loadEvents = calendarBlocks.map { DayLoad.Event(title: $0.title, start: $0.start, end: $0.end) }
@@ -359,7 +361,8 @@ struct BriefContent {
         let overdue = isToday ? needs.filter { ($0.due_ts ?? .infinity) < now }.map(\.title) : []
         let next = calendarBlocks.first { $0.start > reference }.map { (title: $0.title, time: today.clock($0.start)) }
         let weekday = today.selectedDate.formatted(Date.FormatStyle(timeZone: zone).weekday(.wide))
-        let calendarKnown = plan.sources["calendar"]?.ready == true || !calendarBlocks.isEmpty || !plan.all_day.isEmpty
+        let calendarKnown = plan.sources["calendar"]?.ready == true || !calendarBlocks.isEmpty
+            || plan.all_day.contains { !DayTimeline.isJunk($0.title) }
         // The service's pick from the same attention items as the Day tab's Needs you.
         let needsList = isToday ? plan.workspace?.needs_you.flatMap { picked in
             DayTimeline.needsYouList(picked.items.map { NeedsYouInput(id: $0.id, kind: $0.kind, text: $0.text,

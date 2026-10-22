@@ -109,6 +109,19 @@ struct BriefTimeViewChecks {
             try check(!unknownContent.lede.contains("light") && !unknownContent.lede.contains("clear") && !unknownContent.lede.contains("quiet"),
                       "\(name): an unread calendar makes no workload claim in the actual Brief")
 
+            var placeholderObject = unknownObject
+            let placeholder: [String: Any] = ["id": "junk-calendar", "title": "nothing", "start": now.timeIntervalSince1970 + 300,
+                                              "end": now.timeIntervalSince1970 + 900, "kind": "calendar", "warnings": [String]()]
+            var placeholderWorkspace = unknownWorkspace
+            placeholderWorkspace["proposed_plan"] = ["blocks": [placeholder], "unscheduled": [[String: Any]](), "warnings": [String]()]
+            placeholderObject["workspace"] = placeholderWorkspace
+            placeholderObject["all_day"] = [["id": "junk-all-day", "title": "n/a", "start": start.timeIntervalSince1970,
+                                               "kind": "calendar", "warnings": [String]()]]
+            let placeholderPlan = try JSONDecoder().decode(TodayPlan.self, from: JSONSerialization.data(withJSONObject: placeholderObject))
+            let placeholderContent = BriefContent(plan: placeholderPlan, today: today, composed: nil)
+            try check(!placeholderContent.lede.contains("light") && !placeholderContent.lede.contains("clear") && !placeholderContent.lede.contains("quiet")
+                      && !placeholderContent.lede.contains("Next up: nothing"), "\(name): placeholder rows do not establish calendar coverage")
+
             if name == "night" {
                 var overnightObject = unknownObject
                 overnightObject["sources"] = ["calendar": ["ready": true, "last_sync": now.timeIntervalSince1970, "reason": "Fixture"]]
