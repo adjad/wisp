@@ -39,6 +39,8 @@ only the first account.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 import hashlib
 import math
@@ -49,7 +51,7 @@ import time
 from types import MappingProxyType
 from typing import Mapping
 from datetime import datetime, timedelta
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
 from functools import wraps
 
 from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_span
@@ -2827,6 +2829,35 @@ async def summarize_emails(day: str | None = None, count: int = 20,
     return await summarize_inbox_recent(count, account)
 
 
+# Only the host corpus runner establishes this task-local scope. Ordinary
+# keyword searches (including strict topical reads) retain their semantics.
+_CORPUS_MAIL_IDENTIFIER: ContextVar[str | None] = ContextVar("corpus_mail_identifier", default=None)
+
+
+@contextmanager
+def corpus_mail_identifier_scope(identifier: str):
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise ValueError("Corpus mail scope requires a literal identifier.")
+    token = _CORPUS_MAIL_IDENTIFIER.set(identifier.strip())
+    try:
+        yield
+    finally:
+        _CORPUS_MAIL_IDENTIFIER.reset(token)
+
+
+def _corpus_identifier_matches(identifier: str, sender: str, to: str) -> bool:
+    target = identifier.strip().casefold()
+    # Never treat a quoted address in someone else's display name as their
+    # address, complete partial domains, fold Gmail aliases, or search bodies.
+    for name, address in getaddresses([sender, to]):
+        if "@" in target:
+            if target == address.strip().casefold():
+                return True
+        elif name.strip() and target == " ".join(name.split()).casefold():
+            return True
+    return False
+
+
 def _matches(query: str, sender: str, to: str, subject: str, body: str) -> bool:
     q = query.lower()
     return any(q in f.lower() for f in (sender, to, subject, body))
@@ -2838,6 +2869,10 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
                            period: str | None = None,
                            unread: bool = False,
                            strict_match: bool = False) -> str:
+    corpus_identifier = _CORPUS_MAIL_IDENTIFIER.get()
+    if corpus_identifier is not None and (
+            not isinstance(query, str) or query != corpus_identifier or strict_match is not True):
+        return "Corpus mail scope rejected: the exact identifier and strict matching are required."
     # Interactive path: warm the raw cache on demand if it's cold, rather than
     # dead-ending on "no raw content cached" and forcing a retry.
     await _ensure_email_cache(want_raw=True)
@@ -2879,7 +2914,9 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     # unrelated mail must not inflate the exclusion count for this lookup.
     if query:
         rows = [r for r in rows
-                if _matches(query, r["sender"], r["to"], r["subject"], r["body"])]
+                if (_corpus_identifier_matches(corpus_identifier, r["sender"], r["to"])
+                    if corpus_identifier is not None else
+                    _matches(query, r["sender"], r["to"], r["subject"], r["body"]))]
         if not rows:
             return (f"No emails matching “{query}” were found in the recent "
                     "inbox Wisp searched.")

@@ -1245,6 +1245,9 @@ async def run_agent(
     approver,
     *,
     tools: list[str] | None = None,
+    # Host-only scope for bounded live evaluations. Checked before preparation,
+    # policy, and dispatch; model/body data cannot install or widen this guard.
+    tool_execution_guard: Callable[[str, dict], str | None] | None = None,
     active_skill: str = "",
     allow_skill_context: bool = True,
     max_steps: int = 8,
@@ -1274,6 +1277,7 @@ async def run_agent(
     style_hint: str | None = None,
     public_web_synthesis: bool = False,
     include_memory_context: bool = True,
+    include_identity_context: bool = True,
     temperature: float | None = None,
     # True for routes whose tools are SEQUENTIAL/COMPLEMENTARY rather than
     # alternatives (the aggregate to-do route, the document read-then-open
@@ -1394,6 +1398,13 @@ async def run_agent(
     # the bounded sanitized evidence payload carried by DisplayOnlyToolResult;
     # the full publisher display still reaches only the final UI event.
     # main.py persists our safe return value separately from emitted text.
+    # Dry runs describe tool plans over supplied fixtures. Enforce isolation
+    # here as well as at /agent so another caller cannot reopen saved context.
+    if test_mode:
+        include_identity_context = False
+        include_memory_context = False
+        allow_skill_context = False
+        active_skill = ""
     news_displays: dict[str, str] = {}
     # A capability pasted/replayed from a transcript is not a continuation
     # grant. Only this turn's local planner may put one in ephemeral context.
@@ -1574,6 +1585,9 @@ async def run_agent(
         return url is not None and not _typed_host_url(url)
 
     def tool_policy(tool, args):
+        if tool_execution_guard and (problem := tool_execution_guard(tool.name, args)):
+            from service.safety.policy import Decision
+            return Decision(Tier.DENY, problem)
         if private_shell_read_only:
             from service.tools.registry import private_shell_problem
             if problem := private_shell_problem(tool, args):
@@ -1635,6 +1649,8 @@ async def run_agent(
     async def execute_tool(tool, args):
         nonlocal guarded_meeting
         _exec_state["ran"] = False
+        if tool_execution_guard and (problem := tool_execution_guard(tool.name, args)):
+            return f"(error: {problem} The tool was NOT run.)"
         if tool.name == "update_event":
             binding = move_bindings.get(_action_fingerprint(tool.name, args))
             if binding is None:
@@ -1791,7 +1807,7 @@ async def run_agent(
     # unscoped route (the whole registry, messages included).
     offers_messages = model_led_discovery or tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
     identity_hint = ""
-    if not public_web_synthesis:
+    if not public_web_synthesis and include_identity_context:
         try:
             from service.memory.identity import identity_prompt_block
             # "verbatim": the agent relays view_messages' raw record, which keeps
@@ -1812,6 +1828,16 @@ async def run_agent(
                 identity_hint += profile_block()
             except Exception:  # noqa: BLE001
                 pass
+    elif not public_web_synthesis and offers_messages:
+        # Evaluations keep the static sender/group attribution rules while
+        # excluding unrelated saved identity and personal profile facts.
+        identity_hint = (
+            "\n\nMessage records read `conversation | Sender: text`. The conversation "
+            "label is not the speaker. `Me` is the user; other sender labels name "
+            "the people who wrote those lines. Group labels list other members; "
+            "the user is also present. Attribute quotations to their explicit "
+            "sender. Names or mentions inside a message refer to those named "
+            "people, not necessarily to the user.")
 
     if model_led_discovery and identity_hint:
         # Conservatively includes static attribution guidance: the combined
@@ -1867,7 +1893,7 @@ async def run_agent(
         """Skill tools this run must not offer or run. Read from the registry NOW, never
         from a snapshot taken at the start of the turn: create_tool reloads skills, so a
         skill tool can be registered mid-turn and must be covered the moment it exists."""
-        if not skills_external:
+        if test_mode or not skills_external:
             return frozenset()
         from service.skills import skill_tool_names
         return skill_tool_names()
@@ -2448,6 +2474,9 @@ async def run_agent(
         await emit({"type": "done"})
         return response
     for _name, _args in (direct_calls or []):
+        if tool_execution_guard and (problem := tool_execution_guard(_name, _args)):
+            await emit({"type": "error", "message": problem})
+            return problem
         if _name == "commit_private_meeting":
             response = "(error: A private meeting commit requires its exact interactive confirmation; direct dispatch refused.)"
             await emit({"type": "text", "text": response})
@@ -3421,6 +3450,22 @@ async def run_agent(
             return text
 
         contract_force_tool = None
+        if tool_execution_guard:
+            # Reject the entire model-selected batch before calendar previews,
+            # skill discovery, authoring, confirmations, or other preparation.
+            for call in tool_calls:
+                name = _clean_tool_name(call["function"]["name"])
+                args = _parse_args(call["function"].get("arguments", ""))
+                if problem := tool_execution_guard(name, args):
+                    await emit({"type": "clear_answer"})
+                    await emit({"type": "tool_call", "id": call.get("id", ""),
+                                "name": name, "args": args, "decision": "deny", "reason": problem})
+                    await emit({"type": "tool_result", "id": call.get("id", ""), "result": problem})
+                    response = "This case attempted a read or action outside its fixed read-only scope. Review the blocked tool call."
+                    await emit({"type": "text", "text": response})
+                    await emit({"type": "done"})
+                    return response
+                call["function"]["arguments"] = json.dumps(args)
         msgs.append({"role": "assistant", "content": msg.get("content") or "",
                      "tool_calls": tool_calls})
 

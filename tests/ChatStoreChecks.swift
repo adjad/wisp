@@ -14,6 +14,11 @@ final class ScriptedBackend: ChatBackend {
     var approvals: [(actionId: String, approved: Bool, scope: String, requestId: String, session: String)] = []
     var deleted: [String] = []
     var runs: [(prompt: String, session: String)] = []
+    var liveCases: [AssistantTaskCorpusCase] = []
+    var liveRuns: [String] = []
+    var caseDelayMs: UInt64 = 0
+    var liveDelayMs: UInt64 = 0
+    var draftSends = 0
     var fullAccessValue = false
     var loadDelayMs: UInt64 = 0
     var holdNextHistoryLoad = false
@@ -52,7 +57,17 @@ final class ScriptedBackend: ChatBackend {
         return history[id]
     }
     func deleteChat(id: String) async -> Bool { deleted.append(id); return true }
+    func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase] {
+        if caseDelayMs > 0 { try? await Task.sleep(nanoseconds: caseDelayMs * 1_000_000) }
+        return liveCases // deliberately return even after cancellation
+    }
+    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
+        liveRuns.append(id)
+        if liveDelayMs > 0 { try? await Task.sleep(nanoseconds: liveDelayMs * 1_000_000) }
+        for event in script(id) { onEvent(event) }
+    }
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
+             testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
         runs.append((prompt, sessionId))
         for event in script(prompt) { onEvent(event) }
@@ -60,7 +75,7 @@ final class ScriptedBackend: ChatBackend {
     func approve(sessionId: String, actionId: String, approved: Bool, scope: String, requestId: String) async {
         approvals.append((actionId, approved, scope, requestId, sessionId))
     }
-    func sendDraft(to: String, text: String) async -> (ok: Bool, result: String) { (true, "Sent") }
+    func sendDraft(to: String, text: String) async -> (ok: Bool, result: String) { draftSends += 1; return (true, "Sent") }
     func fullAccess() async -> Bool? { fullAccessValue }
     func setFullAccess(_ on: Bool) async -> Bool? { fullAccessValue = on; return on }
 }
@@ -85,6 +100,191 @@ struct ChatStoreChecks {
     }
 
     @MainActor static func run() async {
+        for number in 1...10 {
+            if case .live(let selector)? = try! AssistantTaskCorpusCommand.resolve("/corpus batch-\(number)") {
+                check(selector == "batch-\(number)", "batch command reaches the live backend")
+            } else { check(false, "batch command must be live") }
+        }
+        if case .catalog? = try! AssistantTaskCorpusCommand.resolve("/corpus list") {
+            check(true, "catalog can be browsed without running inference")
+        } else { check(false, "list must resolve to browsing") }
+        // Live cases use the isolated server corpus path, and only completed
+        // inference receipts may claim model use. Source results stay inspectable.
+        do {
+            let backend = ScriptedBackend()
+            let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"messages","difficulty":"basic","target":"Example Person","token":"t1","conversation":[{"role":"user","content":"Read my recent messages with Example Person."}],"setup":"local","expected":{"tools":["view_messages"],"behavior":["Verify the source quote."]},"risk":"read_only"}"#.utf8)
+            backend.liveCases = [try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)]
+            let catalogStore = ChatStore(backend: backend)
+            catalogStore.submit("/corpus list")
+            await settle(200)
+            check(catalogStore.selected?.messages.count == 3, "catalog uses separate header, case and command entries")
+            check(catalogStore.selected?.messages[1].text.contains("LIVE-001") == true, "catalog entry contains its runnable ID")
+            check(backend.liveRuns.isEmpty && backend.runs.isEmpty, "browsing cases never invokes inference")
+            backend.script = { _ in [
+                ev("corpus_model", ["model": "agent-local", "started": 1, "completed": 0]),
+                ev("corpus_model", ["model": "agent-local", "started": 1, "completed": 1]),
+                ev("tool_call", ["id": "read1", "name": "view_messages", "decision": "allow"]),
+                ev("tool_result", ["id": "read1", "result": "Example Person: source quotation"]),
+                ev("text", ["text": "An answer grounded in the source."]), ev("done")
+            ] }
+            let store = ChatStore(backend: backend)
+            store.submit("/corpus smoke")
+            await settle(500)
+            let conversation = store.selected!
+            let reply = conversation.messages.first { $0.corpusEvaluation != nil }!
+            check(backend.runs.isEmpty && backend.liveRuns == ["LIVE-001"], "live cases bypass ordinary agent routing")
+            check(conversation.messages.contains { $0.text == "Read my recent messages with Example Person." }, "live request has no synthetic wrapper")
+            check(reply.corpusEvaluation?.modelCalls == 1, "actual inference receipt is visible")
+            check(reply.corpusEvaluation?.toolPathMatches == nil, "live data is reviewed, not falsely graded")
+            check(reply.tools.first?.result.contains("source quotation") == true, "real source output stays inspectable")
+            check(conversation.sessionId.isEmpty, "corpus does not reuse a saved session")
+            check(conversation.messages.last!.text.contains("1/1"), "summary counts verified model completions")
+        }
+        // The notch shares guarded execution and pins its own conversation.
+        do {
+            let backend = ScriptedBackend()
+            let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"mail","difficulty":"basic","target":"example@sender.invalid","token":"t1","conversation":[{"role":"user","content":"Read my recent mail."}],"setup":"local","expected":{"tools":["view_emails"],"behavior":["Verify the source."]},"risk":"read_only"}"#.utf8)
+            backend.liveCases = [try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)]
+            backend.script = { _ in [
+                ev("corpus_model", ["model": "local", "started": 1, "completed": 1]),
+                ev("tool_call", ["id": "read", "name": "view_emails", "decision": "allow"]),
+                ev("tool_result", ["id": "read", "result": "synthetic mail source"]),
+                ev("message_draft", ["to": "Example Person", "text": "must stay blocked"]),
+                ev("confirm", ["id": "blocked", "tool": "send_message", "request_id": "request"]),
+                ev("send_email", ["to": "example@sender.invalid", "body": "must not send"]),
+                ev("text", ["text": "Source-grounded answer"]), ev("done")
+            ] }
+            let store = ChatStore(backend: backend)
+            let notch = NotchCorpusController(store: store)
+            notch.canStart = { false } // normal request/brief admission is shared by buttons and typing
+            notch.submit("/corpus smoke")
+            await settle(100)
+            check(!notch.loading && !notch.isPresented && backend.liveRuns.isEmpty,
+                  "button submission respects the shared active-request admission check")
+            notch.canStart = { true }
+            notch.submit("/corpus list")
+            await settle(200)
+            check(notch.isPresented && notch.conversation?.messages.count == 3, "notch browses the shared catalog")
+            check(backend.liveRuns.isEmpty && backend.runs.isEmpty, "notch browsing calls no model")
+            notch.submit("/corpus smoke")
+            await settle(500)
+            let run = notch.conversation!
+            check(run === store.selected, "notch and window share one run object")
+            check(run.corpusTotal == 1 && run.corpusFinishedCount == 1 && run.corpusVerifiedCount == 1, "notch progress uses finished cards and receipts")
+            check(run.messages.contains { $0.tools.first?.result == "synthetic mail source" }, "notch retains source evidence")
+            check(run.messages.allSatisfy { $0.draft == nil }, "corpus never renders an actionable draft")
+            check(backend.approvals.count == 1 && !backend.approvals[0].approved, "corpus confirmation is denied automatically")
+            if let i = run.messages.firstIndex(where: { $0.corpusEvaluation != nil }) {
+                run.messages[i].draft = ChatDraft(to: "Example Person", text: "must not send")
+                store.sendDraft(run, messageID: run.messages[i].id)
+                await settle(100)
+                check(backend.draftSends == 0, "even an injected corpus draft cannot send")
+                run.messages[i].draft = nil
+            }
+            check(backend.runs.isEmpty && backend.draftSends == 0, "notch bypasses normal inference and outbound handlers")
+            _ = store.newChat()
+            check(notch.conversation === run && store.selected !== run, "window selection cannot switch notch evidence")
+            notch.selectInWindow()
+            check(store.selected === run && backend.liveRuns.count == 1, "window handoff preserves results without replay")
+            notch.hide()
+            check(!notch.isPresented && notch.conversation === run, "hiding preserves completed evidence")
+        }
+        do {
+            let backend = ScriptedBackend()
+            backend.caseDelayMs = 500
+            let store = ChatStore(backend: backend)
+            let notch = NotchCorpusController(store: store)
+            notch.submit("/corpus all")
+            check(notch.loading && notch.busy, "loading reserves the notch before transport finishes")
+            await settle(100)
+            notch.stopAndHide()
+            await settle(600)
+            check(!notch.busy && !notch.isPresented && notch.conversation == nil, "New chat rejects a late catalog response")
+            check(backend.liveRuns.isEmpty && backend.runs.isEmpty, "cancelling loading cannot start a model afterward")
+            notch.submit("ordinary question")
+            await settle(100)
+            check(backend.runs.isEmpty && !notch.notice.isEmpty, "controller accepts corpus commands only")
+        }
+        do {
+            let backend = ScriptedBackend()
+            let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"contacts","difficulty":"basic","token":"t1","conversation":[{"role":"user","content":"Find Example Person."}],"setup":"local","expected":{"tools":["lookup_contact"],"behavior":["Review source."]},"risk":"read_only"}"#.utf8)
+            let one = try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)
+            backend.liveCases = [one, one]
+            backend.liveDelayMs = 700
+            backend.script = { _ in [ev("text", ["text":"late answer"]), ev("done")] }
+            let store = ChatStore(backend: backend)
+            let notch = NotchCorpusController(store: store)
+            notch.submit("/corpus all")
+            await settle(150)
+            notch.submit("/corpus smoke")
+            check(backend.liveRuns.count == 1, "another corpus command cannot duplicate an active run")
+            notch.stop()
+            await settle(800)
+            check(!notch.busy && notch.isPresented, "Stop leaves results visible")
+            check(backend.liveRuns.count == 1, "Stop cancels remaining cases")
+            check(notch.conversation?.messages.contains { $0.text == "late answer" } == false, "late stream events cannot rewrite a stopped result")
+        }
+        // Current main keeps only a short ordinary-tool preview. Live corpus
+        // review deliberately retains separate bounded multiline evidence.
+        do {
+            let source = String(repeating: "A", count: 120) + "\nsecond line: example@sender.invalid\nthird line"
+            let ordinary = ChatToolRow(id: "ordinary", name: "view_emails", decision: "allow", result: source, finished: true)
+            check(ordinary.result == String(repeating: "A", count: 61), "ordinary result retains main's preview cap")
+            check(ordinary.corpusSourceEvidence == nil, "ordinary rows retain no corpus evidence")
+            let testPlan = ChatToolRow(id: "plan", name: "view_emails", decision: "allow", isTestPlan: true)
+            check(testPlan.isTestPlan && testPlan.detail == "dry run · not executed", "custom initializer accepts synthetic test plans")
+            var reply = ChatMessage(role: .assistant, phase: .waiting)
+            reply.corpusEvaluation = ChatCorpusEvaluation(caseID: "LIVE-001", split: "live", category: "mail",
+                expectedTools: ["view_emails"], behavior: ["Compare source."], usesLiveData: true)
+            _ = ChatTurnReducer.apply(ev("tool_call", ["id": "source", "name": "view_emails", "decision": "allow"]), to: &reply)
+            _ = ChatTurnReducer.apply(ev("tool_result", ["id": "source", "result": source]), to: &reply)
+            check(reply.tools[0].result.count == 61, "live tool trace keeps the same compact preview")
+            check(reply.tools[0].corpusSourceEvidence?.text == source, "live source evidence preserves lines and text past character 61")
+            check(reply.tools[0].corpusSourceEvidence?.isTruncated == false, "small source reports complete retained evidence")
+            _ = ChatTurnReducer.apply(ev("tool_result", ["id": "source", "result": "replacement\nfull second line"]), to: &reply)
+            check(reply.tools[0].corpusSourceEvidence?.text == "replacement\nfull second line", "replacement source replaces evidence rather than appending")
+            _ = ChatTurnReducer.apply(ev("tool_call", ["id": "second", "name": "view_emails", "decision": "allow"]), to: &reply)
+            _ = ChatTurnReducer.apply(ev("tool_result", ["id": "second", "result": "another\nsource"]), to: &reply)
+            reply.corpusEvaluation = nil
+            _ = ChatTurnReducer.apply(ev("text", ["text": "ordinary response"]), to: &reply)
+            check(reply.tools.allSatisfy { $0.corpusSourceEvidence == nil }, "leaving live mode clears every row even on a non-result event")
+            _ = ChatTurnReducer.apply(ev("tool_result", ["id": "source", "result": source]), to: &reply)
+            check(reply.tools[0].corpusSourceEvidence == nil, "non-corpus updates cannot keep prior corpus evidence")
+            var synthetic = ChatMessage(role: .assistant, phase: .waiting)
+            synthetic.corpusEvaluation = ChatCorpusEvaluation(caseID: "ATC-001", split: "smoke", category: "mail",
+                expectedTools: ["view_emails"], behavior: [], usesLiveData: false)
+            _ = ChatTurnReducer.apply(ev("tool_call", ["id": "plan", "name": "view_emails", "decision": "allow", "test_mode": true]), to: &synthetic)
+            _ = ChatTurnReducer.apply(ev("tool_result", ["id": "plan", "result": source]), to: &synthetic)
+            check(synthetic.tools[0].isTestPlan && synthetic.tools[0].corpusSourceEvidence == nil,
+                  "synthetic tool plans never opt in to real source retention")
+        }
+        do {
+            let largeSource = String(repeating: "😀", count: 40_000) + "\ntrailing source line"
+            var reply = ChatMessage(role: .assistant, phase: .waiting)
+            reply.corpusEvaluation = ChatCorpusEvaluation(caseID: "LIVE-002", split: "live", category: "messages",
+                expectedTools: ["view_messages"], behavior: [], usesLiveData: true)
+            for index in 0..<6 {
+                let id = "bounded-\(index)"
+                _ = ChatTurnReducer.apply(ev("tool_call", ["id": id, "name": "view_messages", "decision": "allow"]), to: &reply)
+                _ = ChatTurnReducer.apply(ev("tool_result", ["id": id, "result": largeSource]), to: &reply)
+            }
+            let evidence = reply.tools.compactMap(\.corpusSourceEvidence)
+            check(evidence.count == 6 && evidence.allSatisfy(\.isTruncated), "every capped or omitted source discloses truncation")
+            check(evidence.allSatisfy { $0.retainedByteCount <= ChatCorpusSourceEvidence.perResultByteLimit }, "UTF-8 per-result evidence is bounded")
+            check(evidence.reduce(0) { $0 + $1.retainedByteCount } == ChatCorpusSourceEvidence.perCaseByteLimit,
+                  "all evidence together obeys the per-case byte budget")
+            check(evidence[4].text.isEmpty && evidence[4].sourceByteCount == largeSource.utf8.count,
+                  "exhausted budget records omission instead of pretending an empty source")
+            let boundary = ChatCorpusSourceEvidence("ab😀z", byteLimit: 5)
+            check(boundary.text == "ab" && boundary.isTruncated && !boundary.text.contains("�"), "byte boundary preserves valid UTF-8 without replacement glyphs")
+            let empty = ChatCorpusSourceEvidence("", byteLimit: 0)
+            check(empty.text.isEmpty && !empty.isTruncated, "genuinely empty source differs from omitted evidence")
+            _ = ChatTurnReducer.apply(ev("tool_result", ["id": "bounded-0", "result": "short\nreplacement"]), to: &reply)
+            _ = ChatTurnReducer.apply(ev("tool_result", ["id": "bounded-4", "result": "now retained\nsecond line"]), to: &reply)
+            check(reply.tools[4].corpusSourceEvidence?.text == "now retained\nsecond line", "replacement frees the old source's byte allocation")
+            check(reply.tools.reduce(0) { $0 + ($1.corpusSourceEvidence?.retainedByteCount ?? 0) } <= ChatCorpusSourceEvidence.perCaseByteLimit,
+                  "replacing results preserves the case budget")
+        }
         // A full reply: session, route, tools, streamed text, done.
         do {
             let backend = ScriptedBackend()

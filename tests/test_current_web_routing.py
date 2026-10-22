@@ -2124,5 +2124,49 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(forbidden & set(d.tool_subset or ()))
             self.assertTrue(forbidden <= d.forbidden_tools)
 
+    async def test_personal_modal_questions_never_web_search(self) -> None:
+        # "must I" previously exported the literal personal question even
+        # though the original "should I" regressions were already protected.
+        prompts = [
+            f"{prefix}what {modal} {person} {action} today"
+            for prefix, (modal, action), person in product(
+                ("", "please ", "can you tell me; "),
+                (("should", "do"), ("shall", "do"), ("ought", "to do"),
+                 ("must", "do"), ("need", "do"), ("do", "need to do")),
+                ("I", "we"),
+            )
+        ]
+        prompts += ["what should I be doing today", "what do I have to do today",
+                    "what I should do today", "what we need to do today",
+                    "what I have to do today", "what we ought to do today",
+                    "what must I do today? Zorvia changed today."]
+        forbidden = {"web_search", "web_fetch", "http_request"}
+        for prompt, prior in product(prompts, (None, "what happened in Zorvia today?")):
+            with self.subTest(prompt=prompt, prior=prior):
+                parsed = _classify_web_request(prompt, last_user=prior)
+                self.assertTrue(parsed.private)
+                self.assertIsNone(parsed.query)
+                self.assertFalse(parsed.allowed)
+                # Exercise the boundary with retrieval proposing web tools,
+                # without contacting the embedding/model provider.
+                with patch("service.router.router._semantic_core", new=AsyncMock(
+                        return_value=[*sorted(forbidden), "search_notes"])):
+                    decision = await route(prompt, last_user=prior)
+                self.assertFalse(forbidden & {name for name, _ in decision.direct_calls})
+                self.assertFalse(forbidden & set(decision.tool_subset or ()))
+                self.assertFalse(forbidden & set(decision.tool_argument_bindings))
+                self.assertTrue(forbidden <= decision.forbidden_tools)
+
+    async def test_personal_modal_guard_preserves_public_lookups(self) -> None:
+        for prompt in (
+            "what is the president doing today",
+            "what must Zorvia do today",
+            "did Zorvia ratify the treaty today",
+            "search the web for the latest public Python release",
+            'search the web for the phrase "what must I do today"',
+        ):
+            with self.subTest(prompt=prompt):
+                await self.assert_direct_web_search(prompt)
+
 if __name__ == "__main__":
     unittest.main()
