@@ -185,6 +185,14 @@ async def test_capture_action_identity_survives_restart_and_unknown(tmp_path, mo
 @pytest.mark.asyncio
 @pytest.mark.parametrize("claim_before_timeout", [False, True])
 async def test_capture_timeout_reuses_unclaimed_or_late_receipt_identity(tmp_path, monkeypatch, claim_before_timeout):
+    from service.assistant import store as store_module
+
+    # Keep durable wall-clock expiry separate from the real asyncio waiter.
+    # A slow SQLite commit must not expire the claimed-case fixture first.
+    wall_clock = SimpleNamespace(now=time.time())
+    clock = SimpleNamespace(time=lambda: wall_clock.now, monotonic=time.monotonic)
+    monkeypatch.setattr(outbox, 'time', clock)
+    monkeypatch.setattr(store_module, 'time', clock)
     store = AssistantStore(tmp_path / "assistant.db")
     class FakeNativeChannel:
         has_subscribers = True
@@ -204,8 +212,11 @@ async def test_capture_timeout_reuses_unclaimed_or_late_receipt_identity(tmp_pat
         first = await outbox.request('create_calendar_event', payload, timeout=.001, idempotency_key=key)
         assert first['status'] == 'unknown'
         row = store.event_by_key('action:' + action)
+        assert row['expires_at'] == wall_clock.now + .001
+        wall_clock.now += 1  # both completion/retry occur after durable expiry
         if claim_before_timeout:
             # Native completion can arrive after the waiting caller timed out.
+            assert channel.claim['execute'] is True
             receipt = {'ok': True, 'status': 'succeeded', 'error': '', 'source_id': 'native:late'}
             store.complete_calendar_action(row['id'], 'create_calendar_event', channel.claim['claim_token'], receipt)
             assert await outbox.request('create_calendar_event', payload, idempotency_key=key) == receipt

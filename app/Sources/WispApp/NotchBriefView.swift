@@ -28,6 +28,17 @@ struct NotchBriefView: View {
     private var plan: TodayPlan? { today.currentPlan }
 
     var body: some View {
+        // Refresh presentation at minute boundaries while visible, without a
+        // request or another background refresh loop. The model supplies the
+        // clock so fixture dates and the Brief's timezone stay consistent.
+        TimelineView(.periodic(from: BriefTimeContext(date: today.now, timezone: today.timezone).minuteStart, by: 60)) { _ in
+            content
+        }
+        .environment(\.timeZone, today.timezone)
+        .modifier(DayRefreshLoop(model: model, today: today))
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             heading
             if let notice = model.transientNotice { NotchChrome.notice(notice) }
@@ -62,6 +73,7 @@ struct NotchBriefView: View {
                         .clipped()
                     }
                 }
+                if !brief.suggestions.isEmpty { suggestionsRow(brief.suggestions) }
                 HStack(spacing: 8) {
                     NotchChrome.chip("Ask about this", icon: "bubble.left", help: "Continue from this in Ask") {
                         // Continue the brief's saved chat only when that brief is the
@@ -83,8 +95,25 @@ struct NotchBriefView: View {
                 ProcessingRow(label: "Loading your day…")
             }
         }
-        .environment(\.timeZone, today.timezone)
-        .modifier(DayRefreshLoop(model: model, today: today))
+    }
+
+    private func suggestionsRow(_ suggestions: [BriefTimeContext.Suggestion]) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { suggestionButtons(suggestions) }
+            VStack(alignment: .leading, spacing: 6) { suggestionButtons(suggestions) }
+        }
+        .disabled(!model.conversationSettled)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Suggestions for this time of day")
+    }
+
+    @ViewBuilder private func suggestionButtons(_ suggestions: [BriefTimeContext.Suggestion]) -> some View {
+        ForEach(suggestions) { suggestion in
+            NotchChrome.chip(suggestion.title, icon: "arrow.up.right",
+                             help: "Open Ask with a prompt you can review and send") {
+                model.askAbout(suggestion.prompt)
+            }
+        }
     }
 
     /// Today's composed Daily Summary, when the Brief shows today: the newer of
@@ -297,6 +326,7 @@ struct NotchBriefView: View {
 @MainActor
 struct BriefContent {
     let lede: String
+    let suggestions: [BriefTimeContext.Suggestion]
     /// Service-selected, structured needs-you rows under the lede, on today only.
     let needsYou: NeedsYouList?
     /// The composed Daily Summary's short version; empty without one from today.
@@ -313,12 +343,17 @@ struct BriefContent {
         let dayStart = bounds.start.timeIntervalSince1970, dayEnd = bounds.end.timeIntervalSince1970
         let isToday = today.isShowingCurrentDay
         let zone = today.timezone
+        let time = BriefTimeContext(date: today.now, timezone: zone)
+        suggestions = time.suggestions(isToday: isToday)
         let needs = (plan.workspace?.attention ?? []).filter { $0.source != "calendar" }
         let reference = isToday ? now : dayStart
-        let calendarBlocks = plan.displayBlocks.filter { $0.kind == "calendar" || $0.kind == "manual" }
+        let calendarBlocks = plan.displayBlocks.filter {
+            ($0.kind == "calendar" || $0.kind == "manual") && !DayTimeline.isJunk($0.title)
+        }
             .sorted { $0.start < $1.start }
         // Calendar entries only; learned away windows never make a day busy.
-        let load = DayLoad.assess(events: calendarBlocks.map { DayLoad.Event(title: $0.title, start: $0.start, end: $0.end) },
+        let loadEvents = calendarBlocks.map { DayLoad.Event(title: $0.title, start: $0.start, end: $0.end) }
+        let load = DayLoad.assess(events: loadEvents,
                                   allDay: plan.all_day.map(\.title), from: reference, dayStart: dayStart,
                                   isToday: isToday, zone: zone)
         let dueToday = needs.filter { ($0.due_ts ?? .infinity) >= reference && ($0.due_ts ?? .infinity) <= dayEnd }
@@ -326,7 +361,8 @@ struct BriefContent {
         let overdue = isToday ? needs.filter { ($0.due_ts ?? .infinity) < now }.map(\.title) : []
         let next = calendarBlocks.first { $0.start > reference }.map { (title: $0.title, time: today.clock($0.start)) }
         let weekday = today.selectedDate.formatted(Date.FormatStyle(timeZone: zone).weekday(.wide))
-        let calendarKnown = !(plan.sources["calendar"]?.ready == false && calendarBlocks.isEmpty && plan.all_day.isEmpty)
+        let calendarKnown = plan.sources["calendar"]?.ready == true || !calendarBlocks.isEmpty
+            || plan.all_day.contains { !DayTimeline.isJunk($0.title) }
         // The service's pick from the same attention items as the Day tab's Needs you.
         let needsList = isToday ? plan.workspace?.needs_you.flatMap { picked in
             DayTimeline.needsYouList(picked.items.map { NeedsYouInput(id: $0.id, kind: $0.kind, text: $0.text,
@@ -335,7 +371,10 @@ struct BriefContent {
         } : nil
         needsYou = needsList
         lede = DayTimeline.lede(weekday: weekday, isToday: isToday, load: calendarKnown ? load.verdict : nil,
-                                dueToday: dueToday, overdue: overdue, next: next, othersNeedYou: needsList != nil)
+                                dueToday: dueToday, overdue: overdue, next: next, othersNeedYou: needsList != nil,
+                                openingOverride: time.opening(weekday: weekday, isToday: isToday,
+                                                              load: calendarKnown ? load.verdict : nil, events: loadEvents),
+                                dueReference: time.duePhrase(isToday: isToday))
 
         func coverage(_ source: String) -> DailySourceCoverage? {
             plan.workspace?.source_coverage.first { $0.source == source }
