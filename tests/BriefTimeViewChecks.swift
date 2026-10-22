@@ -6,6 +6,10 @@ import AppKit
 @main
 struct BriefTimeViewChecks {
     @MainActor static func main() {
+        if CommandLine.arguments.contains("--print-real-home") {
+            print(FileManager.default.homeDirectoryForCurrentUser.path)
+            return
+        }
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         Task { @MainActor in
@@ -34,6 +38,7 @@ struct BriefTimeViewChecks {
         let start = calendar.date(from: DateComponents(year: 2026, month: 10, day: 22))!
         let output = URL(fileURLWithPath: ProcessInfo.processInfo.environment["WISP_BRIEF_TIME_QA_OUT"]!)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        checks += try await isolationChecks()
 
         for (name, hour) in [("morning", 8), ("afternoon", 14), ("evening", 18), ("night", 0), ("late-night", 22)] {
             let now = calendar.date(bySettingHour: hour, minute: 30, second: 0, of: start)!
@@ -149,6 +154,64 @@ struct BriefTimeViewChecks {
     }
 
     @MainActor final class FixtureClock { var value = Date() }
+
+    /// Prove the launcher denies host state before constructing OverlayModel,
+    /// whose eager delivery store otherwise uses Foundation's real home.
+    @MainActor static func isolationChecks() async throws -> Int {
+        let env = ProcessInfo.processInfo.environment
+        guard let rootPath = env["WISP_BRIEF_TIME_QA_ROOT"],
+              let statePath = env["WISP_HOME"],
+              let deniedPath = env["WISP_BRIEF_TIME_QA_DENIED_RECEIPT"],
+              let realHome = env["WISP_BRIEF_TIME_QA_REAL_HOME"] else {
+            throw Failure(description: "Isolation launcher configuration is missing")
+        }
+        // Foundation normalizes /private/tmp differently when a file is denied.
+        // Validate the launcher's exact temporary paths without probing them.
+        let root = URL(fileURLWithPath: rootPath)
+        guard rootPath.range(of: "^/private/tmp/wisp-brief-view\\.[A-Za-z0-9]+$", options: .regularExpression) != nil,
+              statePath == root.appendingPathComponent("state").path,
+              deniedPath == root.appendingPathComponent("denied/.moe/receipts.json").path,
+              realHome.hasPrefix("/") && !realHome.hasPrefix(root.path) else {
+            throw Failure(description: "Isolation paths must belong to the disposable fixture")
+        }
+        // This is a seeded synthetic receipt, never a probe of real user data.
+        do {
+            _ = try Data(contentsOf: URL(fileURLWithPath: deniedPath))
+            throw Failure(description: "Filesystem denial is not active")
+        } catch let failure as Failure {
+            throw failure
+        } catch {
+            let denied = error as NSError
+            guard (denied.domain == NSCocoaErrorDomain && denied.code == CocoaError.fileReadNoPermission.rawValue)
+                    || (denied.domain == NSPOSIXErrorDomain && [EPERM, EACCES].contains(Int32(denied.code))) else {
+                throw Failure(description: "Expected permission denial for the synthetic host receipt")
+            }
+        }
+        let path = root.appendingPathComponent("state/receipt-control.json")
+        let data = try JSONSerialization.data(withJSONObject: ["brief-fixture": ["kind": "changed", "done": true]])
+        try data.write(to: path)
+        guard try Data(contentsOf: path) == data else { throw Failure(description: "Synthetic receipts must remain readable") }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ReceiptControlProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        var callbacks = 0
+        let handled = await AssistantDelivery(path: path).handle(
+            .init(type: "reminder", payload: ["event_id": "brief-fixture"]),
+            client: WispClient(deliverySession: session, deliveryURL: URL(string: "http://fixture.invalid")!),
+            perform: { _ in callbacks += 1; return true }, calendar: { _ in callbacks += 1; return [:] })
+        guard !handled && callbacks == 0 else { throw Failure(description: "Synthetic receipt collision must prevent dispatch") }
+        guard try Data(contentsOf: path) == data else { throw Failure(description: "Receipt control must not mutate its fixture") }
+        print("Isolation: real home denied; synthetic denial and receipt-read controls passed")
+        return 5
+    }
+
+    final class ReceiptControlProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func startLoading() { fatalError("Receipt control must not make a request") }
+        override func stopLoading() {}
+    }
 
     /// Change an unobserved clock while keeping the same mounted view, plan and
     /// models. Only TimelineView's minute tick can refresh the rendered copy.
