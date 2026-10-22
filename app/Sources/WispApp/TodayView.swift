@@ -181,6 +181,12 @@ final class TodayModel: ObservableObject {
     private var reportDetails: [String: Any]?
     @Published private(set) var selectedDate: Date
     private var generation = 0
+    private var refreshing: (key: DayKey, ticket: Int)?
+    private var backgroundRefresh: Task<Void, Never>?
+    private var backgroundID: UUID?
+    private var lastBriefRead: (key: DayKey, at: Date)?
+    private var storedBriefKey: DayKey?
+    private var afterBackgroundRefresh: (@MainActor () async -> Void)?
     private var manualDay: String?
     private var displayedKey: DayKey
     private let nowProvider: () -> Date
@@ -211,6 +217,55 @@ final class TodayModel: ObservableObject {
     var day: String { currentKey.day }
     var pickerDay: String { Self.dayString(selectedDate, in: timezone) }
     var isShowingCurrentDay: Bool { day == Self.dayString(nowProvider(), in: timezone) }
+
+    /// Owned by the app/model, so collapsing the notch or changing tabs cannot
+    /// cancel a read. Repeated starts (including a retained planner reopening)
+    /// keep the same loop and its slower Brief cadence.
+    func startBackgroundRefresh(interval: Duration = .seconds(30),
+                                sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+                                afterRefresh: (@MainActor () async -> Void)? = nil) {
+        if let afterRefresh { afterBackgroundRefresh = afterRefresh }
+        guard backgroundRefresh == nil else { return }
+        let id = UUID()
+        backgroundID = id
+        backgroundRefresh = Task { [weak self] in
+            while !Task.isCancelled {
+                guard self != nil else { return }
+                await self?.refreshBackgroundSnapshot()
+                guard !Task.isCancelled else { break }
+                do { try await sleep(interval) } catch { break }
+            }
+            if self?.backgroundID == id {
+                self?.backgroundRefresh = nil
+                self?.backgroundID = nil
+            }
+        }
+    }
+
+    func stopBackgroundRefresh() {
+        backgroundID = nil
+        backgroundRefresh?.cancel()
+        backgroundRefresh = nil
+    }
+
+    private func refreshBackgroundSnapshot() async {
+        guard !Task.isCancelled else { return }
+        reconcileClock()
+        await refresh()
+        guard !Task.isCancelled else { return }
+        let key = DayKey(day: Self.dayString(now, in: timezone), zone: timezone.identifier)
+        let briefDue = lastBriefRead.map {
+            $0.key != key || now.timeIntervalSince($0.at) < 0 || now.timeIntervalSince($0.at) >= 120
+        } ?? true
+        if briefDue {
+            lastBriefRead = (key, now)
+            await refreshUpcoming()
+            guard !Task.isCancelled else { return }
+            await refreshStoredBrief()
+        }
+        guard !Task.isCancelled else { return }
+        await afterBackgroundRefresh?()
+    }
 
     private static func dayString(_ date: Date, in zone: TimeZone) -> String {
         let formatter = DateFormatter()
@@ -315,11 +370,17 @@ final class TodayModel: ObservableObject {
     }
 
     func refresh(afterMutation: Bool = false) async {
+        guard !Task.isCancelled else { return }
         reconcileClock()
         guard !busy || afterMutation else { return }
+        let selected = currentKey
+        // A visible planner and the app loop share one read. A mutation or a
+        // different day may supersede it; the older cleanup cannot clear that read.
+        if !afterMutation, refreshing?.key == selected, refreshing?.ticket == generation { return }
         generation += 1
         let ticket = generation
-        let selected = currentKey
+        refreshing = (selected, ticket)
+        defer { if refreshing?.ticket == ticket { refreshing = nil } }
         var components = URLComponents()
         components.path = "/assistant/today"
         components.queryItems = [URLQueryItem(name: "day", value: selected.day), URLQueryItem(name: "timezone", value: selected.zone)]
@@ -328,7 +389,7 @@ final class TodayModel: ObservableObject {
         do {
             let data = try await request(components.string!)
             let next = try JSONDecoder().decode(TodayPlan.self, from: data)
-            guard ticket == generation, selected == currentKey else { return }
+            guard ticket == generation, selected == currentKey, !Task.isCancelled else { return }
             plan = next
             reportMetadata = ["surface": "today", "client_outcome": "completed", "revision": next.revision,
                               "task_count": next.tasks.count, "block_count": next.blocks.count,
@@ -345,6 +406,8 @@ final class TodayModel: ObservableObject {
             error = ""
         } catch {
             guard ticket == generation, selected == currentKey else { return }
+            // View/task cancellation is normal navigation, not a failed day.
+            if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { return }
             self.error = error.localizedDescription
             reportMetadata = ["surface": "today", "client_outcome": "refresh_failed", "journal_available": false,
                               "client_error_code": (error as NSError).code]
@@ -356,9 +419,11 @@ final class TodayModel: ObservableObject {
 
     /// A failed read keeps the last reply, so SOON never empties on a hiccup.
     func refreshUpcoming() async {
+        let key = DayKey(day: Self.dayString(now, in: timezone), zone: timezone.identifier)
         guard let data = try? await request("/assistant/upcoming?days=7"),
               let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              reply["commitments"] is [[String: Any]] else { return }
+              reply["commitments"] is [[String: Any]], !Task.isCancelled,
+              key == DayKey(day: Self.dayString(now, in: timezone), zone: timezone.identifier) else { return }
         upcomingReply = reply
     }
 
@@ -366,13 +431,24 @@ final class TodayModel: ObservableObject {
     /// any other failure keeps what was read before.
     func refreshStoredBrief() async {
         let day = Self.dayString(nowProvider(), in: timezone)
+        let zone = timezone.identifier
+        let key = DayKey(day: day, zone: zone)
+        if storedBriefKey != key {
+            storedBriefKey = key
+            storedBrief = nil
+            storedBriefChecked = false
+        }
+        func stillCurrent() -> Bool {
+            day == Self.dayString(nowProvider(), in: timezone) && zone == timezone.identifier && !Task.isCancelled
+        }
         do {
             let data = try await request("/assistant/daily_summary/latest?day=\(day)")
             guard let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let brief = StoredBrief.parse(reply, day: day) else { return }
+                  let brief = StoredBrief.parse(reply, day: day), stillCurrent() else { return }
             storedBrief = brief
             storedBriefChecked = true
         } catch {
+            guard stillCurrent(), !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return }
             let failure = error as NSError
             if failure.domain == "Today", failure.code == 404 { storedBrief = nil }
             // Any answer settles it: a service that can't say still shows the note.
@@ -651,10 +727,10 @@ struct TodayView: View {
         .sheet(item: $editingTask) { task in TodayTaskEditor(task: task, model: model) }
         .sheet(isPresented: $showingEmailSettings) { DailyEmailSettingsView(today: model) }
         .task {
+            model.startBackgroundRefresh()
             while !Task.isCancelled {
                 if model.reconcileClock() { hoursDirty = false }
                 rebaseDefaultDeadline()
-                await model.refresh()
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }
             }
         }

@@ -164,6 +164,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `.owned` cannot occur without a receipt. On `.free`/`.unknown` a responder the
             // listing missed is still caught by BackendManager before it launches anything.
             await self.backend.startIfNeeded()
+            guard !self.shutdownStarted else { return }
+            self.todayModel.startBackgroundRefresh(afterRefresh: { [weak self] in
+                guard let self else { return }
+                if self.todayModel.isShowingCurrentDay {
+                    await CheckInModel.shared.load(day: self.todayModel.day, timezone: self.todayModel.timezone.identifier)
+                    self.model.checkInDue = false
+                }
+                await DayCards.refresh()
+                self.model.onResize()
+            })
         }
         WispRouter.shared.handler = { [weak self] route in self?.open(route) }
         observeFullAccess()
@@ -942,6 +952,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func beginShutdown() {
         shutdownStarted = true
+        todayModel.stopBackgroundRefresh()
         // Quitting must never hang: exit after a bound even if a stop step stalls.
         // The bound is longer than the stop steps' own limits added together.
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
