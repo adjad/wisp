@@ -1,11 +1,27 @@
 // !$*UTF8*$!
-{ archiveVersion = 1; classes = {}; objectVersion = 56; objects = {
+{ archiveVersion = 1; classes = {}; objectVersion = 60; objects = {
+005689EC4EE8C5C453565AAA = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/AppModel.swift"; sourceTree = "<group>"; };
+381684D2BF5D02C8AB071AD4 = { isa = PBXBuildFile; fileRef = 005689EC4EE8C5C453565AAA; };
 22D4A111A3589B2E3821F81F = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/AppleLocalInference.swift"; sourceTree = "<group>"; };
 945A05D28E9783A018AAD7B6 = { isa = PBXBuildFile; fileRef = 22D4A111A3589B2E3821F81F; };
-20F271F3604BC98A9FE40E98 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/HomeView.swift"; sourceTree = "<group>"; };
-A11BBF461C569FF09EB023F5 = { isa = PBXBuildFile; fileRef = 20F271F3604BC98A9FE40E98; };
+1EA2305CC955878C10611DE3 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/ChatView.swift"; sourceTree = "<group>"; };
+BA12001B6AD19DDCCB940316 = { isa = PBXBuildFile; fileRef = 1EA2305CC955878C10611DE3; };
+A0FEBA2D96EBDE9FD6EC17BA = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/ConversationsView.swift"; sourceTree = "<group>"; };
+2225E1FDDB6E9BB49FBBF7D0 = { isa = PBXBuildFile; fileRef = A0FEBA2D96EBDE9FD6EC17BA; };
+9CF3FD0EB044A7ABB2256A3F = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/Engines.swift"; sourceTree = "<group>"; };
+2EEA06F277F879547CBE06C3 = { isa = PBXBuildFile; fileRef = 9CF3FD0EB044A7ABB2256A3F; };
+F0DF52337F24853198800A55 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/Keychain.swift"; sourceTree = "<group>"; };
+FC0D9F266B84543775236AC6 = { isa = PBXBuildFile; fileRef = F0DF52337F24853198800A55; };
+6BB1A738EDE0F81883B6E69B = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/OnDeviceModel.swift"; sourceTree = "<group>"; };
+D49A1A88C6ED32E30510CD9D = { isa = PBXBuildFile; fileRef = 6BB1A738EDE0F81883B6E69B; };
 E71392A8681404184E629C7C = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/PlatformServices.swift"; sourceTree = "<group>"; };
 9E599175A23D337E495D88A6 = { isa = PBXBuildFile; fileRef = E71392A8681404184E629C7C; };
+7ED042115179E62C2186CFB4 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/QRScannerView.swift"; sourceTree = "<group>"; };
+8E37D0A476E35BA58F5F1057 = { isa = PBXBuildFile; fileRef = 7ED042115179E62C2186CFB4; };
+4F8CAEC19389779851DE60DD = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/SettingsView.swift"; sourceTree = "<group>"; };
+726B017AB0C8377AA9E03CB7 = { isa = PBXBuildFile; fileRef = 4F8CAEC19389779851DE60DD; };
+6D399793C581D6A9F2D50C9C = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/Theme.swift"; sourceTree = "<group>"; };
+E748B01438B0371DC7F9104A = { isa = PBXBuildFile; fileRef = 6D399793C581D6A9F2D50C9C; };
 31AF4B00D8F2CA564E5BEDD0 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/WispPhoneApp.swift"; sourceTree = "<group>"; };
 7389A713DC5055720519F22B = { isa = PBXBuildFile; fileRef = 31AF4B00D8F2CA564E5BEDD0; };
 84BD7B4A3ADAB79E0D6BE569 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/WispCore/Domain.swift"; sourceTree = "<group>"; };
@@ -16,32 +32,52 @@ D00BA9F8BAF2BDF2DEDFFF11 = { isa = PBXFileReference; lastKnownFileType = sourcec
 7589169C25F3FA3D99BED1A0 = { isa = PBXBuildFile; fileRef = 8EDFC9A3A4A6AD29CBE7FE4F; };
 1727B5C95FE44339EC8B9E94 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/WispCore/WorkflowEngine.swift"; sourceTree = "<group>"; };
 4CD8F9326EC3B05851BA58D9 = { isa = PBXBuildFile; fileRef = 1727B5C95FE44339EC8B9E94; };
+8A6B4FC01C26A69A67449011 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/WispPhoneKit/ChatTypes.swift"; sourceTree = "<group>"; };
+3E0B1D2D15C14A620F4E5C66 = { isa = PBXBuildFile; fileRef = 8A6B4FC01C26A69A67449011; };
+F88411BB4F04CFFEF56F0086 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/WispPhoneKit/CloudClient.swift"; sourceTree = "<group>"; };
+E5B8D9B3075B909042B7F3B3 = { isa = PBXBuildFile; fileRef = F88411BB4F04CFFEF56F0086; };
+4ECAEA97374584F64CB4BBE5 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/WispPhoneKit/Conversations.swift"; sourceTree = "<group>"; };
+1C0E60BA57DC495BD0F2B72A = { isa = PBXBuildFile; fileRef = 4ECAEA97374584F64CB4BBE5; };
+E61D9B7B2EFECA7C9A74F6CC = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/WispPhoneKit/GatewayClient.swift"; sourceTree = "<group>"; };
+9086BE12799B9831E005B14F = { isa = PBXBuildFile; fileRef = E61D9B7B2EFECA7C9A74F6CC; };
+DCAD558BD9056C468D9EB4FF = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/WispPhoneKit/Pairing.swift"; sourceTree = "<group>"; };
+542EF4C8737BD56030361E51 = { isa = PBXBuildFile; fileRef = DCAD558BD9056C468D9EB4FF; };
+BEF15F3151FB0BF14B4C30E6 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/WispPhoneKit/StreamParsing.swift"; sourceTree = "<group>"; };
+F7BC7D9879E326B799ADAA74 = { isa = PBXBuildFile; fileRef = BEF15F3151FB0BF14B4C30E6; };
+35EF1D121F4E145A5E44095C = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "App/Info.plist"; sourceTree = "<group>"; };
+975AB69F5DCEDAA22844868D = { isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "App/WispPhone.entitlements"; sourceTree = "<group>"; };
+5776FBE2613D654F7D1715C8 = { isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Config/Wisp.xcconfig"; sourceTree = "<group>"; };
+0D4CDBD81ADA0517F43A54AB = { isa = XCLocalSwiftPackageReference; relativePath = Packages/WispLing; };
+A71DFB554B3D3D13E1D9D480 = { isa = XCSwiftPackageProductDependency; package = 0D4CDBD81ADA0517F43A54AB; productName = WispLing; };
+BBEA18E6DE51A57BBF5DA967 = { isa = PBXBuildFile; productRef = A71DFB554B3D3D13E1D9D480; };
 A8792157CB4F27FB949C035F = { isa = PBXFileReference; explicitFileType = wrapper.application; path = WispPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
 0A3E27B8CA818264D75C8D81 = { isa = PBXGroup; children = (A8792157CB4F27FB949C035F,); name = Products; sourceTree = "<group>"; };
-AD936FCBED631FA67E05C3EA = { isa = PBXGroup; children = (22D4A111A3589B2E3821F81F,20F271F3604BC98A9FE40E98,E71392A8681404184E629C7C,31AF4B00D8F2CA564E5BEDD0,84BD7B4A3ADAB79E0D6BE569,D00BA9F8BAF2BDF2DEDFFF11,8EDFC9A3A4A6AD29CBE7FE4F,1727B5C95FE44339EC8B9E94,0A3E27B8CA818264D75C8D81,); sourceTree = "<group>"; };
-878A52FC5FF6A57D50B7B870 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (945A05D28E9783A018AAD7B6,A11BBF461C569FF09EB023F5,9E599175A23D337E495D88A6,7389A713DC5055720519F22B,3FCB3533740C3FCC4DB86B3E,61BBBCABC7FA402450E31878,7589169C25F3FA3D99BED1A0,4CD8F9326EC3B05851BA58D9,); runOnlyForDeploymentPostprocessing = 0; };
-E2AA269EB967A8853A258BFA = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+AD936FCBED631FA67E05C3EA = { isa = PBXGroup; children = (005689EC4EE8C5C453565AAA,22D4A111A3589B2E3821F81F,1EA2305CC955878C10611DE3,A0FEBA2D96EBDE9FD6EC17BA,9CF3FD0EB044A7ABB2256A3F,F0DF52337F24853198800A55,6BB1A738EDE0F81883B6E69B,E71392A8681404184E629C7C,7ED042115179E62C2186CFB4,4F8CAEC19389779851DE60DD,6D399793C581D6A9F2D50C9C,31AF4B00D8F2CA564E5BEDD0,84BD7B4A3ADAB79E0D6BE569,D00BA9F8BAF2BDF2DEDFFF11,8EDFC9A3A4A6AD29CBE7FE4F,1727B5C95FE44339EC8B9E94,8A6B4FC01C26A69A67449011,F88411BB4F04CFFEF56F0086,4ECAEA97374584F64CB4BBE5,E61D9B7B2EFECA7C9A74F6CC,DCAD558BD9056C468D9EB4FF,BEF15F3151FB0BF14B4C30E6,35EF1D121F4E145A5E44095C,975AB69F5DCEDAA22844868D,5776FBE2613D654F7D1715C8,0A3E27B8CA818264D75C8D81,); sourceTree = "<group>"; };
+878A52FC5FF6A57D50B7B870 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (381684D2BF5D02C8AB071AD4,945A05D28E9783A018AAD7B6,BA12001B6AD19DDCCB940316,2225E1FDDB6E9BB49FBBF7D0,2EEA06F277F879547CBE06C3,FC0D9F266B84543775236AC6,D49A1A88C6ED32E30510CD9D,9E599175A23D337E495D88A6,8E37D0A476E35BA58F5F1057,726B017AB0C8377AA9E03CB7,E748B01438B0371DC7F9104A,7389A713DC5055720519F22B,3FCB3533740C3FCC4DB86B3E,61BBBCABC7FA402450E31878,7589169C25F3FA3D99BED1A0,4CD8F9326EC3B05851BA58D9,3E0B1D2D15C14A620F4E5C66,E5B8D9B3075B909042B7F3B3,1C0E60BA57DC495BD0F2B72A,9086BE12799B9831E005B14F,542EF4C8737BD56030361E51,F7BC7D9879E326B799ADAA74,); runOnlyForDeploymentPostprocessing = 0; };
+E2AA269EB967A8853A258BFA = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (BBEA18E6DE51A57BBF5DA967); runOnlyForDeploymentPostprocessing = 0; };
 41D311A605520FC7B8B9A980 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 2B23A31EEC75B029432F2445 = { isa = XCBuildConfiguration; name = Debug; buildSettings = { CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; }; };
-EDDA600A3F771F810A8065C9 = { isa = XCBuildConfiguration; name = Debug; buildSettings = {
-        PRODUCT_NAME = WispPhone; PRODUCT_BUNDLE_IDENTIFIER = app.wisp.iphone.prototype;
+EDDA600A3F771F810A8065C9 = { isa = XCBuildConfiguration; baseConfigurationReference = 5776FBE2613D654F7D1715C8; name = Debug; buildSettings = {
+        PRODUCT_NAME = WispPhone; PRODUCT_BUNDLE_IDENTIFIER = "$(WISP_BUNDLE_ID)";
         SWIFT_VERSION = 6.0; SWIFT_STRICT_CONCURRENCY = complete;
         INFOPLIST_FILE = App/Info.plist; GENERATE_INFOPLIST_FILE = NO;
+        CODE_SIGN_ENTITLEMENTS = App/WispPhone.entitlements;
         TARGETED_DEVICE_FAMILY = 1; CODE_SIGN_STYLE = Automatic;
-        CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1.0;
+        CURRENT_PROJECT_VERSION = 2; MARKETING_VERSION = 0.2.0;
         SWIFT_OPTIMIZATION_LEVEL = "-Onone";
     }; };
 07CA1E69F6068DEA30A4DA6B = { isa = XCBuildConfiguration; name = Release; buildSettings = { CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; }; };
-594BCDCC96599D88EF772A08 = { isa = XCBuildConfiguration; name = Release; buildSettings = {
-        PRODUCT_NAME = WispPhone; PRODUCT_BUNDLE_IDENTIFIER = app.wisp.iphone.prototype;
+594BCDCC96599D88EF772A08 = { isa = XCBuildConfiguration; baseConfigurationReference = 5776FBE2613D654F7D1715C8; name = Release; buildSettings = {
+        PRODUCT_NAME = WispPhone; PRODUCT_BUNDLE_IDENTIFIER = "$(WISP_BUNDLE_ID)";
         SWIFT_VERSION = 6.0; SWIFT_STRICT_CONCURRENCY = complete;
         INFOPLIST_FILE = App/Info.plist; GENERATE_INFOPLIST_FILE = NO;
+        CODE_SIGN_ENTITLEMENTS = App/WispPhone.entitlements;
         TARGETED_DEVICE_FAMILY = 1; CODE_SIGN_STYLE = Automatic;
-        CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1.0;
+        CURRENT_PROJECT_VERSION = 2; MARKETING_VERSION = 0.2.0;
         SWIFT_OPTIMIZATION_LEVEL = "-O";
     }; };
 B4E10CAA9C5E22150B71559C = { isa = XCConfigurationList; buildConfigurations = (2B23A31EEC75B029432F2445,07CA1E69F6068DEA30A4DA6B,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 4A807E8A027297B0B93701FB = { isa = XCConfigurationList; buildConfigurations = (EDDA600A3F771F810A8065C9,594BCDCC96599D88EF772A08,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-34A04005BCAF206EEC990BD9 = { isa = PBXNativeTarget; buildConfigurationList = 4A807E8A027297B0B93701FB; buildPhases = (878A52FC5FF6A57D50B7B870,E2AA269EB967A8853A258BFA,41D311A605520FC7B8B9A980,); buildRules = (); dependencies = (); name = WispPhone; productName = WispPhone; productReference = A8792157CB4F27FB949C035F; productType = "com.apple.product-type.application"; };
-244210E48437B6556980A702 = { isa = PBXProject; attributes = { LastUpgradeCheck = 2700; }; buildConfigurationList = B4E10CAA9C5E22150B71559C; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en,Base,); mainGroup = AD936FCBED631FA67E05C3EA; productRefGroup = 0A3E27B8CA818264D75C8D81; projectDirPath = ""; projectRoot = ""; targets = (34A04005BCAF206EEC990BD9,); };
+34A04005BCAF206EEC990BD9 = { isa = PBXNativeTarget; buildConfigurationList = 4A807E8A027297B0B93701FB; buildPhases = (878A52FC5FF6A57D50B7B870,E2AA269EB967A8853A258BFA,41D311A605520FC7B8B9A980,); buildRules = (); dependencies = (); name = WispPhone; packageProductDependencies = (A71DFB554B3D3D13E1D9D480); productName = WispPhone; productReference = A8792157CB4F27FB949C035F; productType = "com.apple.product-type.application"; };
+244210E48437B6556980A702 = { isa = PBXProject; attributes = { LastUpgradeCheck = 2700; }; buildConfigurationList = B4E10CAA9C5E22150B71559C; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en,Base,); mainGroup = AD936FCBED631FA67E05C3EA; packageReferences = (0D4CDBD81ADA0517F43A54AB); productRefGroup = 0A3E27B8CA818264D75C8D81; projectDirPath = ""; projectRoot = ""; targets = (34A04005BCAF206EEC990BD9,); };
 }; rootObject = 244210E48437B6556980A702; }
