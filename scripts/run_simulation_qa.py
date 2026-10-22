@@ -181,6 +181,7 @@ PROFILE_TESTS = {
         "tests/test_mini_http.py",
         "tests/test_mini_store.py",
         "tests/test_mini_contract.py",
+        "tests/test_phone_gateway.py",
         "tests/test_paths_override.py",
         "tests/test_regression_gate.py",
         "tests/test_retry_nudge.py",
