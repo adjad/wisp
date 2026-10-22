@@ -89,6 +89,70 @@ def test_full_committed_corpus_acceptance(builder):
         assert builder.file_sha(DATA / name) == expected
 
 
+def assert_stored_acceptance_and_receipt(builder):
+    """Check tracked evidence in a clean checkout; the ZIP is gitignored."""
+    recorded = json.loads((builder.HERE / "validation.json").read_text())
+    current = builder.validate_rendered()
+    assert current["ok"], current["problems"]
+    assert recorded == current, "committed validation does not bind current acceptance inputs"
+    receipt = json.loads((builder.HERE / "upload-zip.json").read_text())
+    payloads = {name: builder.HERE / name for name in
+                ("train.jsonl", "dev.jsonl", "stats.json", "validation.json", "DATA_CARD.md")}
+    payloads["train/train.py"] = builder.ROOT / "training/mellum-r2-train/train.py"
+    expected = {name: builder.file_sha(path) for name, path in payloads.items()}
+    assert receipt["manifest"]["files"] == expected, "external receipt does not bind current payloads"
+    assert receipt["zip"] == "mellum-r2-data.zip"
+    assert re.fullmatch(r"[0-9a-f]{64}", receipt["sha256"])
+    assert type(receipt["bytes"]) is int and receipt["bytes"] > 0
+    # The receipt's outer digest is verified by package/ZIP controls separately;
+    # a clean checkout cannot verify an archive that is deliberately not tracked.
+
+
+def test_committed_acceptance_and_receipt_bind_current_inputs(builder):
+    assert_stored_acceptance_and_receipt(builder)
+
+
+def test_stored_binding_accepts_clean_fixture_without_zip(builder, corpus_copy):
+    assert not (corpus_copy / "mellum-r2-data.zip").exists()
+    assert_stored_acceptance_and_receipt(builder)
+
+
+@pytest.mark.parametrize("mutation", ["input-hash", "input-inventory", "missing-bound-entry",
+                                    "receipt-hash", "receipt-missing", "receipt-extra"])
+def test_stored_binding_rejects_stale_inputs_and_receipts(builder, corpus_copy, mutation):
+    if mutation == "input-hash":
+        replace_text(corpus_copy / "BUILD_NOTES.md", "changed after stored acceptance\n")
+    elif mutation == "input-inventory":
+        service = builder.ROOT / "service"
+        source = service.resolve()
+        service.unlink()
+        service.mkdir()
+        for child in source.iterdir():
+            if child.name == "router":
+                shutil.copytree(child, service / child.name, ignore=shutil.ignore_patterns("__pycache__"))
+            else:
+                (service / child.name).symlink_to(child)
+        (service / "router/new_bound_fixture.py").write_text('"""Synthetic added acceptance input."""\n')
+    elif mutation == "missing-bound-entry":
+        path = corpus_copy / "validation.json"
+        report = json.loads(path.read_text())
+        del report["inputs_sha256"]["service/router/router.py"]
+        replace_text(path, json.dumps(report))
+    else:
+        path = corpus_copy / "upload-zip.json"
+        receipt = json.loads(path.read_text())
+        files = receipt["manifest"]["files"]
+        if mutation == "receipt-hash":
+            files["validation.json"] = "0" * 64
+        elif mutation == "receipt-missing":
+            del files["stats.json"]
+        else:
+            files["unexpected.txt"] = "0" * 64
+        replace_text(path, json.dumps(receipt))
+    with pytest.raises(AssertionError, match="does not bind current"):
+        assert_stored_acceptance_and_receipt(builder)
+
+
 def test_missing_generation_inputs_do_not_overwrite_acceptance(builder, corpus_copy):
     before = (corpus_copy / "validation.json").read_bytes()
     with pytest.raises(SystemExit, match="generation inputs are missing/empty"):

@@ -1,9 +1,9 @@
 {
   "zip": "mellum-r2-data.zip",
-  "sha256": "61f49e0b2b22ab3f6a497cb860848d3f584f04f1dccd92066ea058ca36e84f25",
+  "sha256": "115df3ae6488ed8ff50e63dfacb6fd2c2a3064f883153fae8dffe9e9f845c3e7",
   "bytes": 8041403,
   "manifest": {
-    "built": "2026-10-22T15:39:00",
+    "built": "2026-10-22T15:41:26",
     "files": {
       "train.jsonl": "39fce9cbd4afc9d1fa6cc82f4b02cf8f18f2699d6d3aba42036338e878f8460e",
       "dev.jsonl": "85dec979353f42c8e89d9422de1ab3bf35454c35d71056bc97e35f28f39362ca",
