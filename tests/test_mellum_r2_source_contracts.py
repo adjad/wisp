@@ -359,3 +359,150 @@ sha256sum() {
         path.write_text("changed")
     check = subprocess.run(["bash", "-c", helpers + "\nchecked_preflight"], env=env, capture_output=True, text=True)
     assert (check.returncode == 0) == (changed is None)
+
+
+@pytest.mark.parametrize("mutation", [None, "train", "dev", "trainer", "template", "trainer-failure", "missing-dev", "missing-train"])
+def test_preflight_rejects_changes_during_validation(tmp_path, mutation):
+    # Copy only the generated run.sh, never execute VM setup. Its preflight
+    # branch invokes a disposable stdlib stub instead of the real trainer.
+    source = (KIT / "vm-setup.sh").read_text()
+    script = source.split('cat > "$WORK/run.sh" <<\'RUN\'\n', 1)[1].split("\nRUN\n", 1)[0]
+    checksum = '''
+sha256sum() {
+  "$SOURCE_TEST_PYTHON" -c 'import hashlib,sys; from pathlib import Path; [print(hashlib.sha256(Path(p).read_bytes()).hexdigest()+"  "+p) for p in sys.argv[1:]]' "$@"
+}
+'''
+    script = script.replace("set -uo pipefail\n", "set -uo pipefail\n" + checksum, 1)
+    run = tmp_path / "run.sh"
+    run.write_text(script)
+    data, base = tmp_path / "mellum-r2", tmp_path / "base"
+    (data / "train").mkdir(parents=True)
+    (tmp_path / "venv/bin").mkdir(parents=True)
+    (tmp_path / "venv/bin/python").symlink_to(sys.executable)
+    base.mkdir()
+    (tmp_path / "base_path").write_text(str(base))
+    (data / "train.jsonl").write_text("synthetic train")
+    (data / "dev.jsonl").write_text("synthetic dev")
+    (base / "chat_template.jinja").write_text("synthetic template")
+    (data / "train/train.py").write_text('''
+import os, sys
+from pathlib import Path
+assert sys.argv[1] == "preflight"
+data = Path(sys.argv[sys.argv.index("--data") + 1])
+base = Path(sys.argv[sys.argv.index("--base") + 1])
+(data / "stub-ran").write_text("yes")
+kind = os.environ.get("PREFLIGHT_TEST_MUTATION")
+if kind == "trainer-failure":
+    (data / "PREFLIGHT_OK").write_text("invalid marker from failed validation")
+    sys.exit(7)
+paths = {"train": data / "train.jsonl", "dev": data / "dev.jsonl",
+         "trainer": data / "train/train.py", "template": base / "chat_template.jinja"}
+if kind in paths:
+    path = paths[kind]
+    path.write_text(path.read_text() + " changed during preflight")
+''')
+    marker = data / "PREFLIGHT_OK"
+    marker.write_text("old marker must be removed")
+    if mutation in {"missing-train", "missing-dev"}:
+        (data / ("train.jsonl" if mutation == "missing-train" else "dev.jsonl")).unlink()
+    env = dict(os.environ, SOURCE_TEST_PYTHON=sys.executable, PREFLIGHT_TEST_MUTATION=mutation or "")
+    result = subprocess.run(["bash", str(run), "preflight"], env=env, capture_output=True, text=True)
+    assert (result.returncode == 0) == (mutation is None), result.stdout + result.stderr
+    assert marker.exists() == (mutation is None)
+    assert not list(data.glob(".PREFLIGHT_OK.*"))
+    if mutation is None:
+        expected = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in
+                    (data / "train.jsonl", data / "dev.jsonl", data / "train/train.py", base / "chat_template.jinja")}
+        actual = {path: digest for digest, path in (line.split("  ", 1) for line in marker.read_text().splitlines())}
+        assert actual == expected
+    elif mutation in {"missing-train", "missing-dev"}:
+        assert not (data / "stub-ran").exists()
+    elif mutation != "trainer-failure":
+        assert "inputs changed during validation" in result.stdout
+
+
+@pytest.mark.parametrize("scenario,expected", [
+    ("unchanged", ["preflight", "smoke", "train", "merge", "package"]),
+    ("retry-smoke", ["preflight", "smoke", "smoke", "train", "merge", "package"]),
+    ("retry-train", ["preflight", "smoke", "train", "train", "merge", "package"]),
+    ("after-preflight", ["preflight"]),
+    ("between-smoke-retries", ["preflight", "smoke"]),
+    ("before-train", ["preflight", "smoke"]),
+    ("between-train-retries", ["preflight", "smoke", "train"]),
+])
+def test_unattended_attempts_check_preflight_binding(tmp_path, scenario, expected):
+    source = (KIT / "vm-setup.sh").read_text()
+    script = source.split('cat > "$WORK/run.sh" <<\'RUN\'\n', 1)[1].split("\nRUN\n", 1)[0]
+    # Substitute only infrastructure primitives and terminal fixture stages.
+    # The actual preflight, _auto loops and checked_preflight remain intact.
+    script = script.replace("set -uo pipefail\n", '''set -uo pipefail
+sha256sum() {
+  "$SOURCE_TEST_PYTHON" -c 'import hashlib,sys; from pathlib import Path; [print(hashlib.sha256(Path(p).read_bytes()).hexdigest()+"  "+p) for p in sys.argv[1:]]' "$@"
+}
+date() { if [ "${1:-}" = "-d" ]; then printf 'synthetic deadline\\n'; else command date "$@"; fi; }
+''', 1)
+    preflight_line = '  "$0" preflight || { say "STOP: preflight failed"; exit 1; }'
+    assert script.count(preflight_line) == 1
+    script = script.replace(preflight_line, preflight_line + '''
+  if [ "$AUTO_TEST_SCENARIO" = "after-preflight" ]; then printf 'changed after preflight' >> "$DATA/train.jsonl"; fi
+''', 1)
+    for stage in ("merge", "package"):
+        case_line = f"\n{stage})\n"
+        assert script.count(case_line) == 1
+        script = script.replace(case_line, f'''\n{stage})
+  printf '{stage}\\n' >> "$WORK/stage-calls"; exit 0 ;;
+unused_fixture_{stage})
+''', 1)
+    run = tmp_path / "run.sh"
+    run.write_text(script)
+    run.chmod(0o755)
+    data, base = tmp_path / "mellum-r2", tmp_path / "base"
+    (data / "train").mkdir(parents=True)
+    (tmp_path / "venv/bin").mkdir(parents=True)
+    (tmp_path / "venv/bin/python").symlink_to(sys.executable)
+    base.mkdir()
+    (tmp_path / "base_path").write_text(str(base))
+    (data / "train.jsonl").write_text("synthetic train")
+    (data / "dev.jsonl").write_text("synthetic dev")
+    (base / "chat_template.jinja").write_text("synthetic template")
+    (data / "train/train.py").write_text('''
+import json, os, sys
+from pathlib import Path
+data = Path(sys.argv[sys.argv.index("--data") + 1])
+base = Path(sys.argv[sys.argv.index("--base") + 1])
+work = data.parent
+stage = sys.argv[1]
+calls = work / "stage-calls"
+with calls.open("a") as fh:
+    fh.write(stage + "\\n")
+number = calls.read_text().splitlines().count(stage)
+scenario = os.environ["AUTO_TEST_SCENARIO"]
+if stage == "smoke":
+    out = Path(sys.argv[sys.argv.index("--out") + 1])
+    out.mkdir(exist_ok=True)
+    (out / "smoke.json").write_text(json.dumps({"epoch_min": 1, "eval_min_per_epoch": 1}))
+    if scenario == "between-smoke-retries" and number == 1:
+        (data / "dev.jsonl").write_text("changed between smoke attempts")
+        sys.exit(3)
+    if scenario == "retry-smoke" and number == 1:
+        sys.exit(3)
+    if scenario == "before-train":
+        (base / "chat_template.jinja").write_text("changed after smoke")
+elif stage == "train":
+    out = Path(sys.argv[sys.argv.index("--out") + 1])
+    if scenario == "between-train-retries" and number == 1:
+        (data / "dev.jsonl").write_text("changed between train attempts")
+        sys.exit(9)
+    if scenario == "retry-train" and number == 1:
+        sys.exit(9)
+    (out / "train.log.jsonl").write_text('{"event": "done"}\\n')
+elif stage != "preflight":
+    raise AssertionError("unexpected fixture stage")
+''')
+    env = dict(os.environ, SOURCE_TEST_PYTHON=sys.executable, AUTO_TEST_SCENARIO=scenario)
+    result = subprocess.run(["bash", str(run), "_auto", "8"], env=env, capture_output=True, text=True)
+    assert (tmp_path / "stage-calls").read_text().splitlines() == expected, result.stdout + result.stderr
+    positive = scenario in {"unchanged", "retry-smoke", "retry-train"}
+    assert (result.returncode == 0) == positive, result.stdout + result.stderr
+    if not positive:
+        assert "preflight inputs changed" in result.stdout

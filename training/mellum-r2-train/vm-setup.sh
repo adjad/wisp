@@ -210,10 +210,22 @@ print("manifest: 6 payloads ALL OK; trusted outer sha256 verified; unpacked ->",
 VERIFY_DATA_ZIP
   ;;
 preflight)
+  R2_PREFLIGHT_STAGED=""
+  trap 'rm -f "$DATA/PREFLIGHT_OK"; [ -z "$R2_PREFLIGHT_STAGED" ] || rm -f "$R2_PREFLIGHT_STAGED"' EXIT
+  rm -f "$DATA/PREFLIGHT_OK" || die "cannot clear previous preflight marker"
   need "$DATA/train.jsonl" unpack
-  rm -f "$DATA/PREFLIGHT_OK"
+  R2_PREFLIGHT_BEFORE="$(preflight_stamp)" || die "preflight inputs unavailable"
   T preflight --data "$DATA" --base "$(base)" || die "preflight failed"
-  preflight_stamp > "$DATA/PREFLIGHT_OK" || { rm -f "$DATA/PREFLIGHT_OK"; die "preflight stamp failed"; } ;;
+  R2_PREFLIGHT_AFTER="$(preflight_stamp)" || die "preflight inputs unavailable after validation"
+  [ "$R2_PREFLIGHT_BEFORE" = "$R2_PREFLIGHT_AFTER" ] || die "preflight inputs changed during validation"
+  R2_PREFLIGHT_STAGED="$(mktemp "$DATA/.PREFLIGHT_OK.XXXXXX")" || die "preflight marker staging failed"
+  # Publish the captured pre-validation binding, never a fresh hash of bytes
+  # that the successful validation may not have read. Later changes are still
+  # rejected by checked_preflight before smoke/train.
+  printf '%s\n' "$R2_PREFLIGHT_BEFORE" > "$R2_PREFLIGHT_STAGED" || die "preflight marker write failed"
+  mv -f "$R2_PREFLIGHT_STAGED" "$DATA/PREFLIGHT_OK" || die "preflight marker publish failed"
+  R2_PREFLIGHT_STAGED=""
+  trap - EXIT ;;
 smoke)
   checked_preflight
   ( while sleep 2; do nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits; done ) > "$DATA/smoke-mem.txt" & M=$!
@@ -273,6 +285,7 @@ _auto)
   for try in "12288 auto" "12288 sdpa" "10240 sdpa" "8192 sdpa"; do
     set -- $try
     say "smoke --max-len $1 --attn $2"
+    checked_preflight
     T smoke --data "$DATA" --base "$(base)" --out "$OUT" --max-len "$1" --attn "$2" 2>&1 | tee "$DATA/smoke.log"
     rc=${PIPESTATUS[0]}
     if [ "$rc" -eq 0 ]; then ML=$1; ATTN=$2; break; fi
@@ -299,6 +312,7 @@ PY
       ATTN=sdpa
       say "retrying: $RES --max-len $ML --attn $ATTN"
     fi
+    checked_preflight
     "$PY" "$DATA/train/train.py" train --data "$DATA" --base "$(base)" --out "$OUT" --epochs "$EP" \
       --max-len "$ML" --attn "$ATTN" --stop-at "$STOP" $RES >> "$DATA/train.out" 2>&1 && break
     say "train exited with an error (attempt $attempt) - tail of train.out:"; tail -5 "$DATA/train.out"

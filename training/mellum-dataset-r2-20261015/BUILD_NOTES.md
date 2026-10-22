@@ -40,6 +40,15 @@ Tokenizer preflight requires the pinned local template and uses local files
 only. Source-contract tests use synthetic temporary archives and a mocked
 tokenizer; they are not a real tokenizer/GPU preflight.
 
+Preflight captures data/trainer/template hashes before validation, requires the
+same hashes after successful validation, then atomically publishes the captured
+binding. Failure removes the marker; later smoke/train checks reject changed
+inputs. The unattended loop checks that binding immediately before every smoke
+and training attempt, including retries. Mutation-during-preflight and
+between-stage controls use a copied runner and stub trainer.
+This assures stable before/after inputs on a trusted local filesystem, not an
+immutable snapshot or protection against hostile change-and-restore behavior.
+
 Generation commands (`pool`, `gold`, `distill`, `render`, `stats`, `validate`)
 need the original ignored generation artifacts and/or model resources. They are
 not clean-checkout acceptance commands. Missing inputs fail before overwriting
