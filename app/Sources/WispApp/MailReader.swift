@@ -144,15 +144,24 @@ final class MailReader {
     // Workspace accounts use; the "Inbox" retry covers account types that
     // localize/capitalize it differently. Failure of both lookups propagates
     // so raw coverage cannot mistake an unreadable account for an empty one.
-    private func inboxSource(_ account: String?) -> String {
+    private func inboxSource(_ account: AccountTarget?) -> String {
         guard let account else { return "        set theMessages to messages of inbox" }
-        let n = esc(account)
+        let nativeID = esc(account.id)
+        let capturedLabel = esc(account.label)
         return """
+                considering case
+                    set matches to every account whose id is "\(nativeID)"
+                    if (count of matches) is not 1 then error "Account identity changed."
+                    set scanAccount to item 1 of matches
+                    if not enabled of scanAccount then error "Account disabled."
+                    if ((id of scanAccount) as text) is not "\(nativeID)" then error "Account identity changed."
+                    if ((name of scanAccount) as text) is not "\(capturedLabel)" then error "Account label changed."
+                end considering
                 set theMessages to {}
                 try
-                    set theMessages to messages of (mailbox "INBOX" of account "\(n)")
+                    set theMessages to messages of (mailbox "INBOX" of scanAccount)
                 on error
-                    set theMessages to messages of (mailbox "Inbox" of account "\(n)")
+                    set theMessages to messages of (mailbox "Inbox" of scanAccount)
                 end try
         """
     }
@@ -163,7 +172,7 @@ final class MailReader {
     // per-message round trip and comes back blank for an odd mailbox with no
     // normal account. Wrapped in its own try there so such a message drops its
     // account tag rather than dropping the whole row.
-    private func acctNameFragment(_ account: String?) -> String {
+    private func acctNameFragment(_ account: AccountTarget?) -> String {
         guard let account else {
             return """
                         set acctName to ""
@@ -172,22 +181,19 @@ final class MailReader {
                         end try
             """
         }
-        return "                set acctName to \"\(esc(account))\""
+        return "                set acctName to \"\(esc(account.label))\""
     }
 
     // Recent header scan for one account (or the unified inbox when nil).
-    private func headerScript(account: String?, limit: Int) -> String {
-        let capName = esc(account ?? "Mail")
+    private func headerScript(account: AccountTarget?, limit: Int) -> String {
+        let capName = esc(account?.label ?? "Mail")
         return """
         tell application "Mail"
         \(refDateSetup)
             set FS to ASCII character 1
             set output to ""
             set capName to "\(capName)"
-            set capID to ""
-            try
-                set capID to (id of (account capName)) as text
-            end try
+            set capID to "\(esc(account?.id ?? "*"))"
             set skippedCount to 0
         \(inboxSource(account))
             set n to count of theMessages
@@ -206,6 +212,9 @@ final class MailReader {
                     try
                         set acctID to (id of (account of (mailbox of m))) as text
                     end try
+                    considering case
+                        if "\(esc(account?.id ?? ""))" is not "" and acctID is not "\(esc(account?.id ?? ""))" then error "Message account identity changed."
+                    end considering
                     set senderName to (sender of m) as text
                     try
                         set senderName to (extract name from sender of m) as text
@@ -237,9 +246,7 @@ final class MailReader {
             if n >= \(limit) then set capHit to "1"
             if (capName contains FS) or (capName contains linefeed) or (capName contains return) then set capName to "Mail"
             if (capID contains FS) or (capID contains linefeed) or (capID contains return) then set capID to ""
-            if capHit is "1" or skippedCount > 0 then
-                set output to output & "C2" & FS & capName & FS & capID & FS & lim & FS & skippedCount & FS & capHit & linefeed
-            end if
+            set output to output & "C2" & FS & capName & FS & capID & FS & lim & FS & skippedCount & FS & capHit & linefeed
             return output
         end tell
         """
@@ -263,7 +270,7 @@ final class MailReader {
     // INCREMENTAL walk: the same newest-first early exit then stops at the
     // newest row the previous walk already holds (minus a margin), so a normal
     // tick reads a day or so of mail instead of two years (see HistoryMerge).
-    private func historyBatchScript(account: String?, start: Int, count: Int,
+    private func historyBatchScript(account: AccountTarget?, start: Int, count: Int,
                                     cutoff: Double? = nil) -> String {
         """
         tell application "Mail"
@@ -275,14 +282,14 @@ final class MailReader {
             set startIdx to \(start)
             set endIdx to startIdx + \(count) - 1
             if endIdx > n then set endIdx to n
-            if startIdx > n then return "DONE" & linefeed
+            if startIdx > n then return "DONE" & linefeed & "C2" & FS & "\(esc(account?.label ?? "Mail"))" & FS & "\(esc(account?.id ?? "*"))" & FS & "0" & FS & "0" & FS & "0" & linefeed
             set output to ""
             set stoppedEarly to false
             set attemptedCount to 0
             set skippedCount to 0
             set scanAcctName to "Mail"
-            set scanAcctID to "\(account == nil ? "*" : "")"
-            set scanAcctName to "\(esc(account ?? "Mail"))"
+            set scanAcctID to "\(esc(account?.id ?? "*"))"
+            set scanAcctName to "\(esc(account?.label ?? "Mail"))"
             repeat with i from startIdx to endIdx
                 set attemptedCount to attemptedCount + 1
                 try
@@ -302,6 +309,9 @@ final class MailReader {
                         set acctID to (id of (account of (mailbox of m))) as text
                     end try
                     if scanAcctID is "" then set scanAcctID to acctID
+                    considering case
+                        if "\(esc(account?.id ?? ""))" is not "" and acctID is not "\(esc(account?.id ?? ""))" then error "Message account identity changed."
+                    end considering
                     set senderName to (sender of m) as text
                     try
                         set senderName to (extract name from sender of m) as text
@@ -352,7 +362,7 @@ final class MailReader {
     // email body routinely contains both, which would otherwise corrupt the
     // record boundaries the header format gets away with because subjects
     // don't.
-    private func rawScript(account: String?, limit: Int) -> String {
+    private func rawScript(account: AccountTarget?, limit: Int) -> String {
         """
         tell application "Mail"
         \(refDateSetup)
@@ -394,6 +404,9 @@ final class MailReader {
                         set msgId to (message id of m) as string
                     end try
                     set acctID to (id of (account of (mailbox of m))) as text
+                    considering case
+                        if "\(esc(account?.id ?? ""))" is not "" and acctID is not "\(esc(account?.id ?? ""))" then error "Message account identity changed."
+                    end considering
                     set rowFields to {epochSecs as text, readFlag as text, acctName as text, acctID, (sender of m) as text, toLine as text, (subject of m) as text, msgId as text, (content of m) as text}
                     repeat with fieldValue in rowFields
                         set fieldText to contents of fieldValue
@@ -611,13 +624,20 @@ final class MailReader {
 
     private typealias AccountEnumeration = AccountLabelCache.Enumeration
 
-    /// Enabled account names. An unavailable enumeration retains the legacy
-    /// unified-inbox fallback for display-only reads. Duplicate labels are
-    /// different: name-based scans cannot tell those accounts apart, so they
-    /// must fail closed with an actionable diagnostic rather than quietly
-    /// treating the ambiguity as a generic enumeration failure.
+    private struct AccountTarget {
+        let id: String
+        let label: String
+    }
+
+    /// Current enabled IDs and captured display labels. Only recent display
+    /// headers retain a unified-inbox fallback when enumeration is unavailable;
+    /// body coverage and retained history always require a valid inventory.
     private func accountNames() -> AccountEnumeration {
-        let (text, _) = run(accountsScript, tag: "accounts")
+        accountInventory().0
+    }
+
+    private func accountInventory() -> (AccountEnumeration, Int) {
+        let (text, code) = run(accountsScript, tag: "accounts")
         let enumeration = AccountLabelCache.enumeration(text)
         if case .accounts(let accounts) = enumeration {
             historyState.observe(accounts)
@@ -625,7 +645,7 @@ final class MailReader {
         } else {
             historyState.observe(nil)
         }
-        return enumeration
+        return (enumeration, code)
     }
 
     /// Leading epoch-seconds field of a scan line. AppleScript emits these in
@@ -656,11 +676,11 @@ final class MailReader {
         return sorted.joined(separator: "\n") + "\n"
     }
 
-    private func incompleteMarker(account: String?, accountID: String = "",
+    private func incompleteMarker(account: AccountTarget?, accountID: String = "",
                                   reason: String) -> String {
-        let label = account ?? "Mail"
+        let label = account?.label ?? "Mail"
         let safeLabel = label.contains("\u{01}") || label.contains("\n") || label.contains("\r") ? "Mail" : label
-        let key = account == nil ? "*" : accountID
+        let key = account?.id ?? (accountID.isEmpty ? "*" : accountID)
         let safeKey = key.contains("\u{01}") || key.contains("\n") || key.contains("\r") ? "" : key
         return ["C3", safeLabel, safeKey, reason].joined(separator: "\u{01}")
     }
@@ -792,16 +812,15 @@ final class MailReader {
                     return
                 }
 
-                // nil = unified-inbox fallback when enumeration is unavailable.
-                // Never use it for duplicate labels: that would hide the account
-                // ambiguity that must be resolved before account-scoped reads.
+                // nil is the display-only fallback for unavailable enumeration.
+                // Every enumerated target retains its exact native identity.
                 let enumeration = self.accountNames()
                 let names: [String]
-                let targets: [String?]
+                let targets: [AccountTarget?]
                 switch enumeration {
                 case .accounts(let accounts):
                     names = accounts.values.sorted()
-                    targets = names.map { $0 }
+                    targets = accounts.sorted { $0.key < $1.key }.map { AccountTarget(id: $0.key, label: $0.value) }
                 case .unavailable:
                     names = []
                     targets = [nil]
@@ -954,22 +973,27 @@ final class MailReader {
                 defer { self.syncIdentity(capture: capture, readAccounts: identityMayRead, knownEmpty: identityKnownEmpty) }
                 guard self.isMailRunning() else {
                     self.post(raw: "", coverage: ["accounts": [String](),
-                              "failed_accounts": ["Mail unavailable"], "complete": false])
+                              "failed_accounts": ["Mail unavailable"], "complete": false,
+                              "failure_diagnostics": [["stage": "mail_closed", "code": 0]]])
                     return
                 }
-                let enumeration = self.accountNames()
+                let (enumeration, enumerationCode) = self.accountInventory()
                 let names: [String]
+                let inventory: [String: String]
                 switch enumeration {
                 case .accounts(let accounts):
-                    names = accounts.values.sorted()
+                    names = accounts.keys.sorted()
+                    inventory = accounts
                 case .unavailable:
                     self.post(raw: "", coverage: ["accounts": [String](),
-                              "failed_accounts": ["account enumeration"], "complete": false])
+                              "failed_accounts": ["account enumeration"], "complete": false,
+                              "failure_diagnostics": [["stage": "account_inventory", "code": enumerationCode]]])
                     return
                 case .duplicateLabels:
                     self.post(raw: "", coverage: ["accounts": [String](),
                               "failed_accounts": ["duplicate account labels"],
-                              "failure_reason": "duplicate_account_labels", "complete": false])
+                              "failure_reason": "duplicate_account_labels", "complete": false,
+                              "failure_diagnostics": [["stage": "duplicate_account_labels", "code": 0]]])
                     return
                 }
                 if names.isEmpty {
@@ -977,19 +1001,22 @@ final class MailReader {
                     self.historyState.publishEmptyInventory {
                         self.post(history: "")
                         self.post(raw: "", coverage: ["accounts": [String](),
-                                  "failed_accounts": [String](), "complete": true])
+                                  "failed_accounts": [String](), "version": 2,
+                                  "account_inventory": [[String: String]](), "successful_account_ids": [String](),
+                                  "failed_account_ids": [String](), "complete": true])
                     }
                     return
                 }
                 // Content failure is not account loss; settle from a full live
                 // address read after this independently fenced inventory observation.
                 identityMayRead = true
-                let targets: [String?] = names.map { $0 }
+                let targets = names.map { AccountTarget(id: $0, label: inventory[$0]!) }
                 let limit = self.rawLimit(accountCount: targets.count)
 
                 var chunks: [String] = []
                 var succeeded: [String] = []
                 var failed: [String] = []
+                var failures: [[String: Any]] = []
                 for target in targets {
                     // Re-checked per account — same relaunch race as sync()'s loop.
                     guard self.isMailRunning() else {
@@ -997,21 +1024,28 @@ final class MailReader {
                         failed = names
                         succeeded.removeAll()
                         chunks.removeAll()
+                        failures = [["stage": "mail_closed_during_scan", "code": 0]]
                         break
                     }
                     // Mail not running or Automation not granted — skip this
                     // account rather than the whole sync.
-                    let (text, _) = self.run(self.rawScript(account: target, limit: limit), tag: "raw")
+                    let (text, code) = self.run(self.rawScript(account: target, limit: limit), tag: "raw")
                     guard let text else {
-                        failed.append(target ?? "unknown account")
+                        failed.append(target.id)
+                        failures.append(["stage": "body_scan", "code": code])
                         continue
                     }
                     chunks.append(text)
-                    if let target { succeeded.append(target) }
+                    succeeded.append(target.id)
                 }
                 self.post(raw: self.mergeRawChunks(chunks), coverage: [
-                    "accounts": succeeded, "failed_accounts": failed,
+                    "version": 2,
+                    "account_inventory": names.map { ["id": $0, "label": inventory[$0]!] },
+                    "successful_account_ids": succeeded, "failed_account_ids": failed,
+                    "accounts": succeeded.compactMap { inventory[$0] },
+                    "failed_accounts": failed.compactMap { inventory[$0] },
                     "complete": !names.isEmpty && failed.isEmpty,
+                    "failure_diagnostics": failures,
                 ])
             }
         }
@@ -1120,12 +1154,12 @@ final class MailReader {
     // caps and superseded cache commits do not themselves invalidate accounts.
     private func walkHistoryWithAppleScript(enumeration: AccountEnumeration) -> Bool {
         Task { @MainActor in SyncProgress.shared.mailHistoryFraction = 0 }
-        let targets: [String?]
+        let targets: [AccountTarget?]
         let accounts: [String: String]
         switch enumeration {
         case .accounts(let current):
             accounts = current
-            targets = current.values.sorted().map { $0 }
+            targets = current.sorted { $0.key < $1.key }.map { AccountTarget(id: $0.key, label: $0.value) }
         case .unavailable:
             // Do not replace persisted history with an unauthenticated unified
             // read or a C3-only failure. Recent header fallback is independent.
@@ -1143,10 +1177,9 @@ final class MailReader {
         var interrupted = false
 
         for (idx, target) in targets.enumerated() {
-            let label = target ?? "Mail"
-            // The unified-inbox fallback has no stable per-account key, so it
-            // is always a full walk with nothing carried over.
-            let currentID = accounts.first { $0.value == label }?.key ?? ""
+            let label = target?.label ?? "Mail"
+            // Retained history is keyed by the captured native ID, never label.
+            let currentID = target?.id ?? ""
             let previous = currentID.isEmpty ? nil : previousState[currentID]
             let cutoff = HistoryMerge.incrementalCutoff(previous: previous,
                                                        currentAccountID: currentID, now: now)

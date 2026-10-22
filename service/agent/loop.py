@@ -1619,9 +1619,34 @@ async def run_agent(
         from service.safety.policy import read_only_shell_argv
         return set(args) == {"cmd"} and read_only_shell_argv(args.get("cmd")) is not None
 
+    # update_event: the exact occurrence each confirmation card showed, by the call's
+    # fingerprint (see bind_event_move). Execution moves only that occurrence.
+    move_bindings: dict[str, dict] = {}
+
+    def bind_event_move(args: dict) -> tuple[dict, str | None, str | None]:
+        """Resolve an update_event call once, before its card: (args, preview, error)."""
+        from service.tools.assistant_tools import prepare_event_move
+        prepared = prepare_event_move(args)
+        if "error" in prepared:
+            return args, None, prepared["error"]
+        move_bindings[_action_fingerprint("update_event", prepared["args"])] = prepared["binding"]
+        return prepared["args"], prepared["preview"], None
+
     async def execute_tool(tool, args):
         nonlocal guarded_meeting
         _exec_state["ran"] = False
+        if tool.name == "update_event":
+            binding = move_bindings.get(_action_fingerprint(tool.name, args))
+            if binding is None:
+                return ("(error: This move was not confirmed against an exact Calendar event. "
+                        "Nothing was moved.)")
+            from service.tools.assistant_tools import bound_event_move
+            with bound_event_move(binding):
+                return await execute_tool_unbound(tool, args)
+        return await execute_tool_unbound(tool, args)
+
+    async def execute_tool_unbound(tool, args):
+        nonlocal guarded_meeting
         if tool.name in {"plan_meeting", "commit_private_meeting"}:
             if public_web_synthesis or not _meeting_local_client(client):
                 return "(error: Private meeting capability transport requires local inference; no action ran.)"
@@ -2212,6 +2237,45 @@ async def run_agent(
         previews = {name for name, outcome in latest.items() if outcome.status == "preview"}
         return set(group or ()) - (attempted_tools - previews)
 
+    def _reminder_update_receipts() -> str | None:
+        """Project update-only effects; model prose is not an effect receipt."""
+        actions = [(name, outcome) for name, outcome in tool_outcomes
+                   if outcome.effect != "read"]
+        if not actions or any(name != "update_reminder" for name, _ in actions):
+            return None
+        if test_mode:
+            return ("Dry run only — planned update_reminder. No message, email, reminder, "
+                    "file, calendar item, or setting was changed.")
+        receipts = []
+        incomplete = _unmet_group() is not None
+        for _, outcome in actions:
+            if outcome.status == "succeeded" and outcome.text.startswith("Reminder updated:"):
+                receipts.append(outcome.text)
+            else:
+                incomplete = True
+                if (outcome.status in {"failed", "denied", "needs_input", "no_match", "unsupported"}
+                        and not outcome.facts.get("completion_uncertain")):
+                    receipts.append("Reminder change not completed: " + _user_facing_failure(outcome.text))
+                else:
+                    receipts.append("I couldn't verify the reminder change. Check the reminder before retrying.")
+        # A resolution-only lookup need not become a second answer. Explicitly
+        # required independent reads still get their deterministic readable view.
+        required_reads = set().union(*(group for group in required_tool_groups
+                                      if "update_reminder" not in group)) if required_tool_groups else set()
+        readable = [(name, result) for name, result in clean_results
+                    if name in required_reads and any(
+                        seen == name and outcome.effect == "read" and outcome.status == "succeeded"
+                        for seen, outcome in tool_outcomes)]
+        if readable:
+            receipts.append(_merge_results(_readable_results(readable)))
+        for name, outcome in tool_outcomes:
+            if name in required_reads and outcome.effect == "read" and outcome.status != "succeeded":
+                receipts.append(f"Required source result ({name}): " + _user_facing_failure(outcome.text))
+                incomplete = True
+        if incomplete:
+            receipts.append("I couldn't complete every requested step.")
+        return "\n".join(receipts)
+
     def _verified_final(text: str) -> str:
         uncertain = [outcome for name, outcome in tool_outcomes
                      if name in {"send_email", "send_message", "forward_email", "reply_to_email"}
@@ -2233,6 +2297,8 @@ async def run_agent(
             planned = ", ".join(dict.fromkeys(name for name, _ in actions))
             return (f"Dry run only — planned {planned}. No message, email, reminder, "
                     "file, calendar item, or setting was changed.")
+        if (updates := _reminder_update_receipts()) is not None:
+            return updates
         bad = [(name, outcome) for name, outcome in actions
                if outcome.status in {"denied", "failed", "needs_input", "unsupported"}]
         if bad and not any(outcome.status == "succeeded" for _, outcome in actions):
@@ -2268,8 +2334,35 @@ async def run_agent(
                     return ("I haven’t created a reminder yet. What time should I "
                             "remind you" + suffix)
                 return "I couldn't create the reminder. No reminder was added."
-            if _unmet_group() is None and all(name == "add_reminder" for name, _ in actions):
-                return created[-1].text
+        if actions and all(name == "add_reminder" for name, _ in actions):
+            # The generic/model-led path has no reminder_action route hint.
+            # Its local-only success is still a success, but only the tool's
+            # receipt can say whether Apple Reminders was changed. Preserve
+            # every create result rather than letting narration upgrade it.
+            receipts = [outcome.text for _, outcome in actions]
+            required_reads = set().union(*(group for group in required_tool_groups
+                if "add_reminder" not in group)) if required_tool_groups else set()
+            readable = [(name, result) for name, result in clean_results
+                        if name in required_reads]
+            if readable:
+                receipts.append(_merge_results(_readable_results(readable)))
+            for name, outcome in tool_outcomes:
+                if name in required_reads and outcome.status not in {"succeeded", "no_match"}:
+                    receipts.append(f"Required source result ({name}): " + _user_facing_failure(outcome.text))
+            if _unmet_group() is not None:
+                receipts.append("I couldn't complete every requested step.")
+            return "\n\n".join(receipts)
+        # Priority evidence is bounded even when narration sounds exhaustive.
+        # Keep selected/unavailable/excluded sources visible on the successful
+        # path as well as the empty-model fallback. Never quote raw bodies.
+        from service.tools.task_evidence import render_coverage_text, verify_evidence_narration
+        for name, result in clean_results:
+            if name == 'collect_task_evidence':
+                text = verify_evidence_narration(text, result)
+        coverage = [render_coverage_text(result) for name, result in clean_results
+                    if name == 'collect_task_evidence']
+        if coverage and coverage[-1] and coverage[-1] not in text:
+            text = text.rstrip() + '\n\n' + coverage[-1]
         return text
 
     def _prior_requirements_met(tool_name: str) -> bool:
@@ -2377,6 +2470,13 @@ async def run_agent(
         if _tool is None:  # a roster/registry mismatch must not kill the turn
             continue
         _cid = f"direct_{_name}"
+        _move_preview = None
+        if _name == "update_event" and not _tool.unavailable_reason and not test_mode:
+            _args, _move_preview, _problem = bind_event_move(_args)
+            if _problem:
+                await emit({"type": "tool_result", "id": _cid, "result": _problem})
+                failed_tools.add(_name)
+                continue
         _dec = tool_policy(_tool, _args)
         await emit({"type": "tool_call", "id": _cid, "name": _name, "args": _args,
                     "decision": _dec.tier.value, "reason": _dec.reason,
@@ -2398,10 +2498,12 @@ async def run_agent(
             # that normally builds confirmation previews. Preserve the same
             # safety contract here: the card must show the exact reminder set
             # selected by the same helper the tool will execute.
+            if _move_preview:
+                _action["preview"] = _move_preview
             if _name == "clear_reminders":
                 from service.tools.assistant_tools import reminders_matching
                 _scope = str(_args.get("scope", "all"))
-                _items = reminders_matching(_scope, _args.get("query", ""))
+                _items = reminders_matching(_scope, _args.get("query", ""), include_stale=True)
                 _rows = [
                     f"{datetime.fromtimestamp(c['when_ts']):%a %b %-d, %Y}"
                     f"  {c['title']}" for c in _items]
@@ -2456,7 +2558,8 @@ async def run_agent(
             if _direct_outcome.effect != "read":
                 if _name in _TERMINAL_OUTBOUND_DENIALS:
                     return await _finish_denied_outbound(emit)
-                response = "The requested action was not completed because approval was denied."
+                response = (_reminder_update_receipts() or
+                            "The requested action was not completed because approval was denied.")
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -2469,7 +2572,8 @@ async def run_agent(
         elif _direct_outcome.status in {"failed", "needs_input", "no_match", "unsupported"}:
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
-                response = "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result)
+                response = (_reminder_update_receipts() or
+                            "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result))
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -2517,6 +2621,7 @@ async def run_agent(
         else:
             response = (f"I couldn’t retrieve the required {name} source, so I "
                         "didn’t prepare or send a partial result.")
+        response = _reminder_update_receipts() or response
         await emit({"type": "text", "text": response})
         await emit({"type": "done"})
         return response
@@ -2547,9 +2652,10 @@ async def run_agent(
             and _unmet_group() is None
             and last_tier is Tier.ALLOW and last_tool_result.strip()
             and not is_tool_error(last_tool_result)):
-        await emit({"type": "text", "text": last_tool_result})
+        response = _reminder_update_receipts() or last_tool_result
+        await emit({"type": "text", "text": response})
         await emit({"type": "done"})
-        return last_tool_result
+        return response
 
     if public_web_synthesis:
         # The router has already executed the public reads on this Mac.  A
@@ -2830,6 +2936,7 @@ async def run_agent(
             answer = {**answer, "content": text or _EMPTY_MESSAGE}
         return answer, plan.thought or reasoning_text, streamed
 
+    evidence_narration_retried = False
     for _step in range(max_steps):
         if restricted[0] is not None and restricted_ran[0]:
             restricted[0] = None  # the forced lookup ran; the turn is free again
@@ -2850,7 +2957,11 @@ async def run_agent(
         # from memory / says "I can't" instead of calling the obvious tool — this
         # nudge-and-retry corrects that on the first step. This is the fix for
         # "doesn't use its tools when it should".
-        expecting_tool = expect_tool_first and _step == 0 and not forcing_first_step
+        # Router-direct reads already satisfy the first-tool requirement. Do
+        # not discard a grounded answer and demand an unrelated second action.
+        # Unmet groups still force their own tool; failed reads do not count.
+        expecting_tool = (expect_tool_first and _step == 0 and not forcing_first_step
+                          and not tools_answered)
         if forcing_first_step:
             # An obligation group contains alternatives, not an arbitrary
             # mandatory first member (e.g. list_dir vs find_files).
@@ -2860,6 +2971,9 @@ async def run_agent(
         else:
             step_schemas = schemas
         choice = "required" if (forcing_first_step or expecting_tool) else "auto"
+        if evidence_narration_retried and _unmet_group() is None:
+            choice = 'none'
+            step_schemas = []
         # STALLED ON REFUSED REPEATS: last step the model only asked for what it
         # already has, and no required group is still unmet, so this step may
         # not call anything — it must answer from the results in context.
@@ -3182,6 +3296,14 @@ async def run_agent(
                          "from memory and do NOT say you can't.")
             msgs.append({"role": "user", "content": nudge})
         tool_calls = msg.get("tool_calls")
+        if tool_calls and evidence_narration_retried and _unmet_group() is None:
+            # Reject before discovery, argument preparation or native getters:
+            # even a forbidden call can otherwise enter an early read binder.
+            from service.tools.task_evidence import render_evidence_text
+            evidence = next((result for name, result in reversed(clean_results)
+                             if name == 'collect_task_evidence'), '')
+            msg = {**msg, 'tool_calls':None, 'content':render_evidence_text(evidence) or _STUCK_MESSAGE}
+            tool_calls = None
         prev_step_calls = len(tool_calls or [])
 
         # Correct a specific failure mode: oMLX can return content AND
@@ -3269,6 +3391,23 @@ async def run_agent(
                 if content_streamed:
                     await emit({"type": "clear_answer"})
                 text = _EMPTY_MESSAGE
+            # One bounded correction over the SAME evidence, without another
+            # read. If it still overclaims, _verified_final uses the safe view.
+            from service.tools.task_evidence import verify_evidence_narration
+            evidence_results = [result for name, result in clean_results
+                                if name == 'collect_task_evidence']
+            if (evidence_results and not evidence_narration_retried and unmet is None
+                    and _step < max_steps - 1
+                    and all(outcome.effect == 'read' for _, outcome in tool_outcomes)
+                    and verify_evidence_narration(text, evidence_results[-1]) != text):
+                evidence_narration_retried = True
+                msgs.append({'role':'assistant', 'content':text})
+                msgs.append({'role':'user', 'content':(
+                    'Correct the unsupported absence or reply-status claim in your answer. These are bounded cached sources; they do not establish whether the user has replied. '
+                    'Do not say no other tasks exist, only one thing matters, or that an unverified source '
+                    'has no requests. Keep useful facts and exact source dates from the results already returned. '
+                    'Qualify coverage and any missing sources. Do not call tools again.')})
+                continue
             # Publish once, after checking receipts and obligations.
             verified = _verified_final(text)
             if verified != text:
@@ -3314,6 +3453,7 @@ async def run_agent(
             return response
         batch_verdict: dict[str, bool] = {}
         batch_calendar_args: dict[str, dict] = {}
+        move_previews: dict[str, str] = {}
         _batch_calls = []
         for tc in tool_calls:
             _batch_name = _clean_tool_name(tc["function"]["name"])
@@ -3449,6 +3589,15 @@ async def run_agent(
                 continue
             if name == "add_calendar_event" and cid not in batch_calendar_args:
                 args["when_iso"] = bind_calendar_local_start(args["when_iso"])
+            if name == "update_event" and get_tool(name) and not get_tool(name).unavailable_reason:
+                # Resolve the move once: a failure is the tool result (no card to
+                # approve); success binds the exact occurrence the card will show.
+                args, move_preview, problem = bind_event_move(args)
+                if problem:
+                    await emit({"type": "tool_result", "id": cid, "result": problem})
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": problem})
+                    continue
+                move_previews[cid] = move_preview
             if name == "get_stock_price" and excluded_stocks:
                 original_symbols = args.get("symbols")
                 args = permitted_stock_args(name, args)
@@ -3772,6 +3921,9 @@ async def run_agent(
                         action["preview"] = f"Cancel: {args.get('title', '?')}"
                     elif name == "add_calendar_event":
                         action["preview"] = _calendar_create_preview(args)
+                    elif name == "update_event":
+                        # The occurrence bound above: the one the approved call moves.
+                        action["preview"] = move_previews.get(cid, "")
                     elif name == "commit_private_meeting":
                         from service.tools.schedule_extras import private_meeting_review
                         # Consume the inert reference before validation/await.
@@ -3818,7 +3970,7 @@ async def run_agent(
                     elif name == "clear_reminders":
                         from service.tools.assistant_tools import reminders_matching
                         _scope = str(args.get("scope", "all"))
-                        _items = reminders_matching(_scope, args.get("query", ""))
+                        _items = reminders_matching(_scope, args.get("query", ""), include_stale=True)
                         _rows = [
                             f"{datetime.fromtimestamp(c['when_ts']):%a %b %-d, %Y}"
                             f"  {c['title']}" for c in _items]
@@ -3919,7 +4071,8 @@ async def run_agent(
                 if outcome.effect != "read":
                     if name in _TERMINAL_OUTBOUND_DENIALS:
                         return await _finish_denied_outbound(emit)
-                    response = "The requested action was not completed because approval was denied."
+                    response = (_reminder_update_receipts() or
+                                "The requested action was not completed because approval was denied.")
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response
@@ -3934,7 +4087,8 @@ async def run_agent(
                 if outcome.effect != "read":
                     # Retrying a write after an uncertain response can create
                     # duplicates; let the user correct the arguments first.
-                    response = "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result)
+                    response = (_reminder_update_receipts() or
+                                "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result))
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response
@@ -4045,9 +4199,10 @@ async def run_agent(
                 and not is_tool_error(last_tool_result)):
             if reasoning:
                 await emit({"type": "reasoning", "text": reasoning})
-            await emit({"type": "text", "text": last_tool_result})
+            response = _reminder_update_receipts() or last_tool_result
+            await emit({"type": "text", "text": response})
             await emit({"type": "done"})
-            return last_tool_result
+            return response
 
     # Step limit reached without the model ever producing a final answer.
     # Surface whatever the last tool actually returned instead of a bare,

@@ -30,6 +30,13 @@ from service.message_content import canonicalize_url, normalize_message_content
 _lines: str = ""
 _available = False
 _unavailable_reason = ""
+# Why the last read failed, as MessagesReader.swift classified the error itself
+# (MessagesReadFailure): "full_disk_access" only when macOS refused chat.db or
+# SQLite said "authorization denied"; "missing" or "unreadable" otherwise.
+_unavailable_kind = ""
+_READ_FAILURE_KINDS = frozenset({"full_disk_access", "missing", "unreadable"})
+FULL_DISK_ACCESS_REASON = ("Wisp needs Full Disk Access to read Messages. Open System Settings "
+                           "\u2192 Privacy & Security \u2192 Full Disk Access and turn on Wisp.")
 # A restored cache belongs to the previous process. Only cache_messages(),
 # reached by a live MessagesReader POST, completes the current launch.
 _sync_completed = False
@@ -288,9 +295,12 @@ _issued_snapshot = None
 
 
 @mutating
-def cache_messages(lines: str, available: bool, reason: str = "") -> None:
+def cache_messages(lines: str, available: bool, reason: str = "", kind: str = "") -> None:
+    kind = kind if not available and kind in _READ_FAILURE_KINDS else ""
+    if kind == "full_disk_access":
+        reason = FULL_DISK_ACCESS_REASON
     with _snapshot_lock:
-        global _lines, _available, _unavailable_reason, _sync_completed
+        global _lines, _available, _unavailable_reason, _unavailable_kind, _sync_completed
         global _snapshot_generation, _snapshot_captured_at, _publication_expires_monotonic, _issued_snapshot
         _publication_authority.withdraw()
         _issued_snapshot = None
@@ -298,7 +308,8 @@ def cache_messages(lines: str, available: bool, reason: str = "") -> None:
         _snapshot_captured_at = time.time()
         _lines = lines or ""
         _available = available
-        _unavailable_reason = reason
+        _unavailable_reason = "" if available else reason
+        _unavailable_kind = kind
         _sync_completed = True
         _publication_expires_monotonic = time.monotonic()+600
         body = _lines
@@ -1389,6 +1400,20 @@ def summary_message_rows(*, require_read_state: bool = False) -> list[tuple[floa
     return filter_summary_message_rows(sorted(selected, key=lambda row: row[0], reverse=True))
 
 
+def latest_outgoing_by_context() -> dict[str, float]:
+    """The newest message the user sent in each conversation, by context label.
+
+    Lets a summary say who is still waiting on the user: an important text
+    followed by the user's own reply in the same conversation is not waiting.
+    """
+    from service.tools import message_digest as digest
+    latest: dict[str, float] = {}
+    for ts, _identity, context, text, _unread in _parse_records():
+        if digest.split_sender(text)[0] == "Me" and ts > latest.get(context, float("-inf")):
+            latest[context] = ts
+    return latest
+
+
 _RECENT_SUMMARY_SECONDS = 3 * 86400
 
 
@@ -1653,13 +1678,25 @@ def _unavailable_message() -> str:
                 "Try again in a moment.")
     if _available:
         return "No messages found."
+    # Full Disk Access is named only when the reader's error said so; any other
+    # failure keeps its own reason, never a guess at the wrong setting.
+    if _unavailable_kind and _unavailable_reason:
+        return f"({_unavailable_reason})"
     if _unavailable_reason:
-        return (f"(Can't read Messages: {_unavailable_reason}. Grant Wisp Full "
-                "Disk Access — System Settings > Privacy & Security > Full Disk "
-                "Access > Wisp — then try again.)")
-    return ("(No message data yet. Grant Wisp Full Disk Access — System "
-            "Settings > Privacy & Security > Full Disk Access > Wisp — then "
-            "try again.)")
+        return f"(Can't read Messages: {_unavailable_reason.rstrip('.')}.)"
+    return "(Can't read Messages right now. Try again in a moment.)"
+
+
+def messages_unavailable_reason() -> str:
+    """Why the last Messages read failed, in words the user can act on, or ""
+    when it didn't."""
+    return _unavailable_reason or ""
+
+
+def messages_unavailable_kind() -> str:
+    """"full_disk_access", "missing" or "unreadable" when the last read failed
+    and the reader classified why; "" otherwise."""
+    return _unavailable_kind if _sync_completed and not _available else ""
 
 
 def messages_sync_state() -> str:

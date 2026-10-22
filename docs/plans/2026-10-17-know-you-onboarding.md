@@ -82,13 +82,49 @@ and tap-only, the way a chief of staff actually works:
 - **Evening (from 17:00 local).** Today's card: "You planned 4 things today." Each
   active task has Done / Tomorrow / Drop. Tomorrow moves the task (pin cleared, a
   missed deadline cleared, `carried_from` set to the first planned day); Drop dismisses
-  it. Then tomorrow's events with Keep / Move / Cancel; Move and Cancel only prefill Ask,
-  so the existing draft-and-confirm path decides what is sent. The scheduler posts one
+  it. Then tomorrow's events with Keep / Move / Cancel. Cancel cancels: the row becomes an
+  Undo bar for five seconds ("Cancelled · its N invitees will be notified · Undo" when the
+  synced row has invitees), then `POST /assistant/checkin/cancel_event` (`source_id`, the
+  row's `when_ts`, the row's `invitee_count`) removes exactly that occurrence through the
+  app's EventKit handler and reads back that it is gone (`CheckInCancel.swift`). The wait
+  lives on the shared `CheckInModel`, not the view: closing the panel or switching tabs
+  neither drops the cancel nor hurries it, Undo is back if the card reopens inside the
+  window, and quitting Wisp inside the window drops it (nothing cancelled). Refusals show
+  the service's message in the row (404 gone, 403/409 not the user's to cancel or invitees
+  not synced, 409 not current, 409 unknown "check Calendar" with no retry, 503 app not
+  connected, 502 failed). Any answer that cannot prove nothing happened is uncertain: a 409
+  unknown, no answer within 70 s (the service may wait 8 s + 45 s on the app), a connection
+  dropped mid-request, or an error without the service's structured outcome; the row then
+  reads "Check Calendar" with no tap target, so a second native cancel is never one tap
+  away. Try again appears only when nothing was cancelled (not current, app not connected,
+  failed, service unreachable, row changed) and restarts the Undo window. Rows whose
+  `cancel_blocked` is set show "Cancel in Calendar" with the reason on hover. Move opens an inline sub-panel in the card: up to three times Wisp found free
+  the way the Day tab plans (`GET /assistant/checkin/move_suggestions`: working hours,
+  calendar, planned tasks, learned busy and away windows; deterministic, no model call),
+  each with a short reason, plus "Other time…" with a day and time picker. Picking one
+  opens Ask with "Move … to …"; nothing changes from the card itself. The scheduler posts one
   notification when the card becomes due and the app is listening; "Skip tonight" or
   "Done for today" completes it. Decisions are recorded in `~/.moe/checkins.json`
   (60 days), which also answers "how many evenings has this been moved".
+- **The Day timeline's ⋯ menu.** Every Calendar block the user can change offers the
+  same Cancel and Move, under the card's rules: `GET /assistant/today` annotates each
+  Calendar block with `source_id`, `all_day` and the card rows' facts (`invitee_count`,
+  `organizer_is_user`, `calendar_writable`, `cancel_blocked`, `move_blocked`; one helper,
+  `checkin.occurrence_fields`). "Cancel event" starts the same 5-second Undo on the one
+  shared queue (`CheckInModel.shared`), with Undo and the outcome on the block itself;
+  "Move…" opens the same sub-panel (`CheckInMovePanel`) above the lane. A read-only
+  calendar gets a disabled "On a read-only calendar" line and "Open in Calendar ↗";
+  someone else's event gets "Decline in Calendar ↗"; any other block on Cancel shows the
+  service's reason and Open. Events that are over, and blocks an older service didn't
+  describe, get only Open (`CheckInCancel.menuEntries`). Each surface shows and
+  reconciles only the cancels it started, so a timeline cancel never pops the card.
 - **Morning.** `carry_forward` moves every still-active task from an earlier day onto
-  today (scheduler tick and the first Today load, idempotent). The brief's Keeping in
+  today (scheduler tick and the first Today load, idempotent), unless it has aged out:
+  a task keeps an `origin_ts` from the first day it was planned (never later than a
+  same-titled reminder's due or creation time), and from seven days on it is left on
+  its last day instead of carried, the same rule the user set for stale reminders. A
+  task whose title matches an undated reminder the stale policy has stopped using is
+  left behind too. Nothing is deleted; `checkins.json` lists what aged out and why. The brief's Keeping in
   mind says "2 tasks carried over from before: …", and Needs you's reason reads
   "Carried over from 2026-10-16."
 - **Weekly goal pulse.** One goal, one tap: On track / Behind / Done, due seven days

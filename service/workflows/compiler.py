@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from service.utterance_shape import deliberate
+from service.utterance_shape import deliberate, mask_quoted, is_complete_explanation, explanation_remainder, is_retrospective_communication_question
 from service.authored_message import authored_message_intent
 from service.config import role_to_model
 from service.reminder_intent import REMINDER_CREATE_RE
@@ -51,24 +51,39 @@ _LEADING_EMAIL_NOUN = re.compile(
 _ADDRESSEE_CUE = re.compile(r"\bto\b|@|\bme\b|\bmyself\b", re.I)
 
 
+def _command_head_text(text: str) -> str:
+    """Ignore leading emphasis only for role proof; retain all operand bytes."""
+    return re.sub(r'^[ \t]*\*+[ \t]*', '', text)
+
+
 def outbound_verb(text: str) -> bool:
-    """True when the text asks to deliver something, not merely names email."""
+    """Prove a current delivery verb in an outer command clause.
+
+    Communication nouns, reported speech and questions about past sends do
+    not create delivery authority. A later independent command still can.
+    """
+    text = _command_head_text(text)
+    if is_complete_explanation(text) or is_retrospective_communication_question(text):
+        return False
+    if (remainder := explanation_remainder(text)) is not None:
+        return outbound_verb(remainder) if remainder else False
     from service.workflows.workflow20 import personal_read
     if personal_read(text) is not None:
-        return False
-    # Retrospective communication questions are reads. Consume the whole
-    # question so a subsequent independent delivery still reaches compilation.
-    if re.fullmatch(
-            r"\s*(?:what\s+(?:did|has|had)|did)\s+(?:my\s+)?"
-            r"[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2}\s+"
-            r"(?:text(?:ed)?|e-?mail(?:ed)?|message[ds]?|send|sent|write|wrote|say|said|tell|told)"
-            r"(?:\s+(?:me|to\s+me|back|earlier|today|yesterday|last\s+night|this\s+morning|recently|lately))*"
-            r"[.!?\s]*", text, re.I):
         return False
     masked = _EMAIL_NOUN_USE.sub(" ", text)
     if _LEADING_EMAIL_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
         masked = _LEADING_EMAIL_NOUN.sub(" ", masked, count=1)
-    return bool(_OUTBOUND.search(masked))
+    # Matching a word anywhere confuses "an email needs a reply", "without
+    # reading email" and "what messages did I send" with new deliveries.
+    # Require the verb at the head of a current request or independent clause.
+    return bool(re.search(
+        r"(?:^|[;.!?\n,]|\b(?:and|then|but|while)\b)\s*"
+        r"(?:(?:and|then|please|also|now|just|only)\s+)*"
+        r"(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?"
+        r"(?:(?:I\s+(?:want|need)\s+you\s+to|I'd\s+like\s+you\s+to)\s+)?"
+        r"(?:(?:schedule\s+)?(?:send|text|message|e-?mail|share|forward|draft|compose|write)\b|"
+        r"schedule\s+(?:an?\s+)?(?:e-?mail|message|text)\b)",
+        mask_quoted(masked), re.I))
 
 
 _SUMMARY = re.compile(
@@ -2588,15 +2603,38 @@ def _bind_inline_read_then_deliver(text: str) -> str:
     return f"{verb} {who + ' ' if who else ''}a summary of {obj_text}"
 
 
+def projected_workflow_supported(plan: WorkflowPlan) -> bool:
+    """Pure shared admission for a retained compound delivery clause."""
+    return plan.status == 'ready' and not plan.content_error
+
+
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
                 prior_display=None) -> WorkflowPlan | None:
     from service.tools.registry import StoredDisplayArtifact
     if prior_display is not None and not isinstance(prior_display, StoredDisplayArtifact):
         raise ValueError("Prior display must come from the server store")
+    if (remainder := explanation_remainder(text)) is not None:
+        plan = compile_new(remainder, last_user=last_user, last_assistant=last_assistant,
+                           prior_display=prior_display) if remainder else None
+        if plan is not None:
+            plan.original_request = text
+        return plan
     original = text
     if deliberate(text) is not None:
         return None
     if _file_directed_write(text):
+        return None
+    # A proven literal send already owns its authored body. In shadow mode
+    # the typed engine can fall through here; body nouns are not read sources.
+    from service.tasks.compiler import (
+        _MESSAGE_SEND_INTRO, _EMAIL_SEND_INTRO, compile_message_send, compile_email_send,
+    )
+    literal_text = _command_head_text(text)
+    literal = _MESSAGE_SEND_INTRO.match(literal_text) or _EMAIL_SEND_INTRO.match(literal_text)
+    # Bare "that" can instead refer to a stored display ("text Mom that via
+    # Messages without the links"). Keep that existing reference precedence.
+    explicit_body = literal and not literal_text[:literal.start('body')].rstrip().casefold().endswith(' that')
+    if explicit_body and (compile_message_send(literal_text) or compile_email_send(literal_text)):
         return None
     text = _delivery_scope_text(_normalize(_message_scope_text(text)))
     text = _bind_inline_read_then_deliver(text)

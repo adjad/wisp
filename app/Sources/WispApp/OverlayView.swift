@@ -116,6 +116,9 @@ struct OverlayView: View {
         .background(GeometryReader { geo in
             Color.clear.onChange(of: geo.size.height) { model.onResize() }
         })
+        // Closing: the content fades before the shape retracts; the surface
+        // below stays, so the panel still reads as the notch drawing back in.
+        .opacity(model.closing ? 0 : 1)
         // Must match the width OverlayPanel sizes its window to — both read
         // SurfaceLayout.expandedWidth, so they cannot disagree.
         .frame(width: layout.expandedWidth)
@@ -428,8 +431,8 @@ struct OverlayView: View {
                 Label(name, systemImage: "paperclip")
                     .font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1).frame(maxWidth: 84)
             }
-            if model.queuedPromptCount > 0 {
-                Text("\(model.queuedPromptCount) queued")
+            if !model.queueLabel.isEmpty {
+                Text(model.queueLabel)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Theme.textMuted)
             }
@@ -869,19 +872,34 @@ struct SourceSyncTip: View {
     }
 
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: progress < 1 ? "arrow.triangle.2.circlepath" : "info.circle")
-                .accessibilityHidden(true)
-            Text(label).monospacedDigit()
-                .lineLimit(1)
-                .truncationMode(.tail)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                Image(systemName: progress < 1 ? "arrow.triangle.2.circlepath" : "info.circle")
+                    .accessibilityHidden(true)
+                Text(label).monospacedDigit()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(details.isEmpty ? label : details)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .accessibilityValue(details)
+            // A source blocked on Full Disk Access says so and opens the setting,
+            // instead of a bare "Unavailable" the user can't act on.
+            ForEach(sources.filter(\.needsFullDiskAccess)) { source in
+                Button {
+                    if let url = URL(string: BriefDetail.fullDiskAccess.url) { NSWorkspace.shared.open(url) }
+                } label: {
+                    Text("\(source.label) needs Full Disk Access. \(BriefDetail.fullDiskAccess.label)")
+                        .lineLimit(2)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accent)
+                .help(source.detail)
+            }
         }
         .font(.system(size: 11))
         .foregroundStyle(Theme.textMuted)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .help(details.isEmpty ? label : details)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityValue(details)
     }
 }

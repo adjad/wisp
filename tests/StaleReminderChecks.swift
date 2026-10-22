@@ -6,6 +6,9 @@ import Foundation
 
 @MainActor
 func staleReminderChecks(_ check: (Bool, String) -> Void) {
+    // The hub's "changed" event reaches the Day tab under this name (OverlayModel posts it).
+    check(Notification.Name.wispAssistantChanged.rawValue == "WispAssistantChanged", "the change notification's name")
+
     // The reply.
     let reply: [String: Any] = ["asks": [
         ["kind": "stale_reminder", "source_id": "r1", "title": "Return library book", "context": "Errands",
@@ -19,6 +22,16 @@ func staleReminderChecks(_ check: (Bool, String) -> Void) {
     check(asks?.map(\.sourceID) == ["r1", "r2"], "questions need an id, a title and both answers: \(asks?.map(\.sourceID) ?? [])")
     check(asks?[0].detail == "Added 9 days ago · Errands" && asks?[1].detail == "Added 1 day ago", "row details")
     check(StaleReminderAsk.parse(["detail": "x"]) == nil, "an unreadable reply is not an empty list")
+    // An overdue reminder says how long it's been overdue; an undated one, how long since it was added.
+    let mixed = StaleReminderAsk.parse(["asks": [
+        ["source_id": "o1", "title": "Pay rent", "context": "Home", "reason": "overdue", "due_ts": 1, "age_days": 8,
+         "actions": ["keep", "delete"]],
+        ["source_id": "o2", "title": "Renew ID", "reason": "overdue", "age_days": 1, "actions": ["keep", "delete"]],
+        ["source_id": "u1", "title": "Return book", "reason": "undated", "age_days": 9, "actions": ["keep", "delete"]],
+    ]])
+    check(mixed?.map(\.detail) == ["8 days overdue · Home", "1 day overdue", "Added 9 days ago"],
+          "overdue and undated details: \(mixed?.map(\.detail) ?? [])")
+    check(asks?.allSatisfy { !$0.overdue } == true, "no reason (an older service) reads as undated")
 
     // Failures in plain words; the service's detail wins.
     check(StaleReminderAsk.failure(status: 409, detail: "Reminders hasn't synced recently; nothing was deleted.", deleting: true)

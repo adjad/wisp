@@ -652,6 +652,134 @@ def test_api_history_filtered_source_and_empty_search(world, monkeypatch):
         assert client.get('/memory/status').json()['investigations_enabled'] is False
 
 
+def test_queue_ready_observation_does_not_claim_or_advance_retries(world, monkeypatch):
+    import service.memory.queue as queue_module
+    _, sessions, q = world
+    now = 1000.0
+    monkeypatch.setattr(queue_module.time, 'time', lambda: now)
+    assert not q.has_ready()
+    sid = sessions.create_session()
+    sessions.add_turn(sid, 'user', 'I prefer tea.')
+    before = dict(sessions._db.execute('SELECT * FROM memory_jobs').fetchone())
+    changes = sessions._db.total_changes
+    assert q.has_ready() and q.has_ready()
+    assert sessions._db.total_changes == changes
+    assert dict(sessions._db.execute('SELECT * FROM memory_jobs').fetchone()) == before
+    job = q.next()
+    assert not q.has_ready()
+    q.finish(job, 'queued')
+    assert not q.has_ready()
+    now += 15
+    assert q.has_ready()
+    # A ready observation does not reserve a job against another claimant.
+    winner = q.next()
+    assert winner['attempts'] == 2 and not q.has_ready()
+    q.finish(winner)
+    assert not q.has_ready()
+
+
+@pytest.mark.parametrize('queue_state', ['empty', 'completed', 'delayed', 'paused'])
+def test_worker_skips_model_status_without_eligible_capture_work(world, monkeypatch, queue_state):
+    from service import idle
+    import service.memory.capture as capture
+    facts, sessions, q = world
+    if queue_state != 'empty':
+        sid = sessions.create_session()
+        sessions.add_turn(sid, 'user', 'I prefer tea.')
+        if queue_state in ('completed', 'delayed'):
+            q.finish(q.next(), 'done' if queue_state == 'completed' else 'queued')
+        else:
+            q.enable(False)
+    before = [dict(r) for r in sessions._db.execute('SELECT * FROM memory_jobs')]
+    worker = MemoryWorker(sessions, facts)
+    actual_sleep = asyncio.sleep
+    ticks = 0
+    async def three_ticks(delay):
+        nonlocal ticks
+        ticks += 1
+        if ticks > 3:
+            raise asyncio.CancelledError
+        await actual_sleep(0)
+    monkeypatch.setattr(capture.asyncio, 'sleep', three_ticks)
+    monkeypatch.setattr(idle, '_foreground_turns', 0)
+    monkeypatch.setattr(idle, '_in_flight', {})
+    class Client:
+        calls = 0
+        async def loaded_models(self):
+            self.calls += 1
+            return []
+    client = Client()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.run(client))
+    assert ticks == 4 and client.calls == 0
+    assert worker.state == ('paused' if queue_state == 'paused' else 'idle')
+    assert [dict(r) for r in sessions._db.execute('SELECT * FROM memory_jobs')] == before
+
+
+def test_worker_does_not_claim_ready_work_until_model_is_resident(world, monkeypatch):
+    from service import idle
+    import service.memory.capture as capture
+    facts, sessions, q = world
+    sid = sessions.create_session()
+    sessions.add_turn(sid, 'user', 'I prefer tea.')
+    worker = MemoryWorker(sessions, facts)
+    ticks = 0
+    async def one_tick(delay):
+        nonlocal ticks
+        ticks += 1
+        if ticks > 1:
+            raise asyncio.CancelledError
+    monkeypatch.setattr(capture.asyncio, 'sleep', one_tick)
+    monkeypatch.setattr(idle, '_foreground_turns', 0)
+    monkeypatch.setattr(idle, '_in_flight', {})
+    class Client:
+        calls = 0
+        async def loaded_models(self):
+            self.calls += 1
+            return []
+    client = Client()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.run(client))
+    row = dict(sessions._db.execute('SELECT * FROM memory_jobs').fetchone())
+    assert client.calls == 1 and worker.state == 'waiting for resident model'
+    assert row['status'] == 'queued' and row['attempts'] == 0 and row['claim'] == ''
+
+
+def test_investigation_runs_with_capture_paused_and_no_capture_jobs(world, monkeypatch):
+    from types import SimpleNamespace
+    from service import idle
+    import service.memory.capture as capture
+    import service.config.endpoints as endpoints
+    facts, _, q = world
+    facts.set_setting('investigations_enabled', True)
+    q.enable(False)
+    worker = MemoryWorker(q.sessions, facts)
+    investigation = worker.connections.create('Synthetic connection question')
+    monkeypatch.setattr(endpoints, 'role_target', lambda role:
+        SimpleNamespace(model='fixture-model', endpoint=SimpleNamespace(managed=True)))
+    monkeypatch.setattr(idle, '_foreground_turns', 0)
+    monkeypatch.setattr(idle, '_in_flight', {})
+    processed = []
+    async def process(job, client, model):
+        processed.append(job['id'])
+        worker.connections.set_status(job['id'], 'done')
+    monkeypatch.setattr(worker.connections, 'process', process)
+    ticks = 0
+    async def one_tick(delay):
+        nonlocal ticks
+        ticks += 1
+        if ticks > 1:
+            raise asyncio.CancelledError
+    monkeypatch.setattr(capture.asyncio, 'sleep', one_tick)
+    class Client:
+        async def loaded_models(self):
+            return ['fixture-model']
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.run(Client()))
+    assert processed == [investigation]
+    assert worker.connections.list()[0]['status'] == 'done'
+
+
 def test_foreground_preempts_worker_and_leaves_claim_retryable(world, monkeypatch):
     from service import idle
     import service.memory.capture as capture

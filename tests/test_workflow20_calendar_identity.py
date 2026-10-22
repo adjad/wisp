@@ -70,7 +70,7 @@ def test_actual_registry_keeps_distinct_native_occurrences(isolated, period):
     isolated.sync_source("calendar", [event("native.one", when=when),
         event("native.two", when=when, location="Room 202")])
     result = dispatch(period=period, calendar_only=True, query="physics test")
-    assert "Calendar events: 2" in result
+    assert ": 2 events" in result
     assert result.count("Physics Midterm") == 2
     assert "Room 101" in result and "Room 202" in result
 
@@ -80,7 +80,7 @@ def test_account_filter_cannot_lose_other_same_title_occurrence(isolated, period
     isolated.sync_source("calendar", [event("personal", account="home@example.test"),
         event("work", account="work@example.test", location="Work room")])
     result = dispatch(period=period, calendar_only=True, account="work@example.test")
-    assert "Calendar events: 1" in result and "Work room" in result
+    assert ": 1 event" in result and "Work room" in result
     assert "Room 101" not in result and "Nothing scheduled" not in result
 
 
@@ -138,7 +138,7 @@ def test_manual_reminder_mirror_collapse_is_unchanged():
 
 def test_raw_and_normal_read_duplicate_not_counted_twice(isolated):
     isolated.sync_source("calendar", [event("one")])
-    assert "Calendar events: 1" in dispatch(period="today", calendar_only=True)
+    assert ": 1 event" in dispatch(period="today", calendar_only=True)
 
 
 @pytest.mark.parametrize("period", ["", "today"])
@@ -147,7 +147,8 @@ def test_calendar_only_does_not_render_manual_winner_as_second_native_event(isol
     isolated.sync_source("calendar", [native])
     isolated.add_manual(native["title"], native["when_ts"])
     result = dispatch(period=period, calendar_only=True)
-    assert "Calendar events: 1" in result and "Wisp/Apple reminders: 0" in result
+    # A calendar-only read did not check Reminders, so it claims nothing about them.
+    assert result.split("\n", 1)[0].endswith(": 1 event")
     assert result.count("Physics Midterm") == 1 and "Room 101" in result
 
 
@@ -158,7 +159,7 @@ def test_mixed_read_still_collapses_manual_reminder_pair_and_sorts(isolated):
         "title": "Call dentist", "when_ts": when}])
     isolated.sync_source("calendar", [event("one"), event("two", location="Room 202")])
     result = dispatch()
-    assert "Calendar events: 2" in result and "Wisp/Apple reminders: 1" in result
+    assert ": 2 events, 1 reminder" in result
     assert result.count("Call dentist") == 1
     assert result.index("Physics Midterm") < result.index("Call dentist")
 
@@ -170,7 +171,7 @@ def test_default_days_preserves_inclusive_upper_boundary_and_clamp(isolated):
         event("edge.two", when=end, location="Other edge"),
         event("outside", when=end + timedelta(seconds=1), location="Outside")])
     result = dispatch(days=100, calendar_only=True)
-    assert "next 60 day(s)" in result and "Calendar events: 2" in result
+    assert result.startswith("Next 60 days: ") and ": 2 events" in result
     assert "Other edge" in result and "Outside" not in result
 
 
@@ -205,7 +206,7 @@ def test_pure_route_bound_calendar_read_reaches_actual_registry(isolated):
     assert "search_reminders" not in decision.tool_subset
     isolated.sync_source("calendar", [event("one"), event("two", location="Room 202")])
     result = dispatch(**decision.tool_argument_bindings["get_upcoming"])
-    assert "Calendar events: 2" in result
+    assert ": 2 events" in result
     assert "Room 101" in result and "Room 202" in result
 
 
@@ -231,7 +232,7 @@ def test_independent_legacy_calendar_read_cannot_mix_or_resurrect_generations(is
     if raw_empty:
         assert "Physics Midterm" not in result and "Nothing scheduled" in result
     else:
-        assert "Calendar events: 1" in result and "Captured room" in result
+        assert ": 1 event" in result and "Captured room" in result
 
 
 @pytest.mark.parametrize("period", ["", "today"])
@@ -244,6 +245,6 @@ def test_legacy_manual_calendar_provenance_is_not_a_native_contribution(isolated
     monkeypatch.setattr(isolated, "upcoming", lambda **kwargs: [secondary])
     monkeypatch.setattr(isolated, "active_between", lambda *args: [secondary])
     result = dispatch(period=period)
-    assert "Calendar events: 1; Wisp/Apple reminders: 1" in result
+    assert ": 1 event, 1 reminder" in result
     assert "Captured room" in result and result.count("Physics Midterm") == 2
     assert secondary["duplicate_sources"] == ["calendar", "reminders"]

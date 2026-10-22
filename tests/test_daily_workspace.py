@@ -233,6 +233,7 @@ def cached_sources(monkeypatch):
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
     db.executescript("CREATE TABLE today_source_sync(source TEXT,payload TEXT); CREATE TABLE commitments(id TEXT,source TEXT,source_id TEXT,title TEXT,when_ts REAL,kind TEXT,status TEXT);")
+    db.execute('CREATE TEMP VIEW scheduled_commitments AS SELECT *, 0 AS all_day, NULL AS due_date FROM commitments')
     db.execute("INSERT INTO today_source_sync VALUES('reminders',?)", (json.dumps(state()["sources"]["reminders"]),))
     class Store:
         view = dict(freshness="current", status="complete", total=0)
@@ -241,6 +242,12 @@ def cached_sources(monkeypatch):
         def transaction(self, write=False):
             assert write is False
             yield db
+        def hidden_commitment_ids(self, now=None):
+            return set()
+
+        def hide_stale_tasks(self, tasks, now=None):
+            return tasks
+
         def undated_listing(self):
             return self.view, self.undated
     store = Store()
@@ -248,11 +255,29 @@ def cached_sources(monkeypatch):
     monkeypatch.setattr(messages, "messages_sync_state", lambda: "unavailable")
     monkeypatch.setattr(messages, "summary_message_rows", lambda: [])
     monkeypatch.setattr(messages, "structured_messages_snapshot", lambda: dict(records=[], coverage={}))
+    monkeypatch.setattr(messages, "latest_outgoing_by_context", lambda: {})
     empty_note = SimpleNamespace(origin="none", body_started_at=0, body_received_at=0,
         latest_receipt=dict(available=False), records=(), omitted=0, malformed=0)
     monkeypatch.setattr(notes, "raw_notes_snapshot", lambda: empty_note)
     yield store, db, email, messages, notes
     db.close()
+
+
+def test_stale_hidden_overdue_reminders_leave_the_plan_and_its_counts(cached_sources):
+    """A reminder a week or more overdue that the user didn't keep is hidden from the
+    Day plan, along with its Wisp twin, and it isn't counted as omitted either."""
+    from service.assistant.daily_workspace import collect_evidence
+    store, db, *_ = cached_sources
+    db.executemany("INSERT INTO commitments VALUES(?,?,?,?,?,?,?)", [
+        ("r-old", "reminders", "old", "Get doordash order", at(17) - 16 * 86400, "reminder", "active"),
+        ("r-new", "reminders", "new", "Buy stamps", at(17), "reminder", "active"),
+        ("m-old", "manual", "m-old", "Get doordash order", at(11), "reminder", "active")])
+    store.view = dict(freshness="current", status="complete", stored=0, total=0)
+    store.undated = []
+    store.hidden_commitment_ids = lambda now=None: {"r-old", "m-old"}
+    reminders = collect_evidence(store, state(), DAY, ZONE, now=NOW)["reminders"]
+    assert [r["title"] for r in reminders["records"]] == ["Buy stamps"]
+    assert reminders["omitted"] == 0
 
 
 def test_native_reminder_cap_is_not_consumed_by_manual_rows_and_true_omissions_count(cached_sources):
@@ -311,6 +336,66 @@ def test_body_request_can_surface_old_received_mail_without_fabricating_a_due_da
     assert result["records"] and "Friday" in result["records"][0]["quote"]
     assessed = run(e={"email": result})
     assert assessed["attention"][0]["due_ts"] is None
+
+
+def test_communication_items_carry_who_and_when_never_more(cached_sources, monkeypatch):
+    """The notch Brief names who an email or text is from; a text's words stay in title/quote only."""
+    from types import SimpleNamespace
+    from service.assistant.daily_workspace import collect_evidence
+    store, _, email, messages, _ = cached_sources
+    person = dict(ts=NOW - 3600, account_id="a", message_id="m1", subject="Thesis meeting", sender="Prof. Lee",
+                  sender_address="lee@school.edu", body="Could we move the thesis meeting to Tuesday?", unread=True)
+    robot = dict(ts=NOW - 60, account_id="a", message_id="m2", subject="Your order shipped", sender="Shop",
+                 sender_address="no-reply@shop.example", body="Please confirm your address.", unread=True)
+    monkeypatch.setattr(email, "raw_email_snapshot", lambda: SimpleNamespace(rows=[person, robot]))
+    monkeypatch.setattr(messages, "messages_sync_state", lambda: "ready")
+    monkeypatch.setattr(messages, "summary_message_rows", lambda: [
+        (NOW - 600, "Priya", "Priya: Can you send the notes?"),
+        (NOW - 900, 'Group "Family"', "Mom: Can someone pick up milk?"),
+        (NOW - 1200, "Sam", "Sam: Can you call me?")])
+    monkeypatch.setattr(messages, "latest_outgoing_by_context", lambda: {"Sam": NOW - 1000, "Priya": NOW - 3600})
+    evidence = collect_evidence(store, state(), DAY, ZONE, now=NOW)
+    items = {i["title"]: i for i in run(e={"email": evidence["email"], "messages": evidence["messages"]})["attention"]}
+    lee = items["Thesis meeting"]
+    assert (lee["sender"], lee["person"], lee["received_ts"]) == ("Prof. Lee", True, NOW - 3600) and "gist" not in lee
+    shop = items["Your order shipped"]
+    assert shop["sender"] == "Shop" and shop["person"] is False and "gist" not in shop
+    priya, mom, sam = (items["Priya: Can you send the notes?"], items["Mom: Can someone pick up milk?"],
+                       items["Sam: Can you call me?"])
+    assert priya["sender"] == "Priya" and priya["replied"] is False and priya["received_ts"] == NOW - 600
+    assert mom["sender"] == "Mom in Family"
+    assert sam["replied"] is True
+
+
+@pytest.mark.parametrize("sender,address,shown", [
+    ("John Morada <john@example.edu>", "john@example.edu", "John Morada"),
+    ('"Morada, John" <john@example.edu>', "", "Morada, John"),
+    ("<john@example.edu>", "", "john@example.edu"),
+    ("", "john@example.edu", "john@example.edu"),
+    ("Prof. Lee", "lee@school.edu", "Prof. Lee"),
+    ("A Very Long Department Name " * 8 + "<dept@example.edu", "", ("A Very Long Department Name " * 8).strip()[:80]),
+    ("<dept@example.edu", "", "dept@example.edu"),
+])
+def test_senders_show_a_display_name_never_an_address_in_brackets(sender, address, shown):
+    from service.assistant.daily_workspace import display_name
+    assert display_name(sender, address) == shown
+
+
+def test_messages_without_full_disk_access_say_so(cached_sources, monkeypatch):
+    from service.assistant.daily_workspace import collect_evidence
+    store, _, _, messages, _ = cached_sources
+    monkeypatch.setattr(messages, "messages_unavailable_kind", lambda: "full_disk_access")
+    evidence = collect_evidence(store, state(), DAY, ZONE, now=NOW)["messages"]
+    assert evidence["blocked"] == "full_disk_access" and evidence["detail"] == "Messages need Full Disk Access."
+    coverage = {c["source"]: c for c in run(e={"messages": evidence})["source_coverage"]}
+    assert coverage["messages"]["blocked"] == "full_disk_access" and not coverage["messages"]["ready"]
+    # Another failure, or a reason that only mentions Full Disk Access, never
+    # sends the user to that setting: only the reader's classified kind does.
+    for kind in ("missing", "unreadable", ""):
+        monkeypatch.setattr(messages, "messages_unavailable_kind", lambda kind=kind: kind)
+        monkeypatch.setattr(messages, "messages_unavailable_reason", lambda: "chat.db not readable (Full Disk Access?)")
+        other = collect_evidence(store, state(), DAY, ZONE, now=NOW)["messages"]
+        assert "blocked" not in other and "blocked" not in {c["source"]: c for c in run(e={"messages": other})["source_coverage"]}["messages"]
 
 
 @pytest.mark.parametrize("title,quote", [("Study for the quiz", "Quiz on October 14 at 5pm"),

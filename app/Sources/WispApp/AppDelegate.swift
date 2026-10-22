@@ -87,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activityReader: ActivityReader?
     private var nativeSourceReadersStarted = false
     private static let autoCollapseDelay: TimeInterval = 2
+    /// The content's fade at the start of a close: well inside the 0.28 s
+    /// retraction, so the shape never carries text for most of its travel.
+    static let closeFade: TimeInterval = 0.08
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One Wisp at a time. A second launch used to terminate the first one's
@@ -517,8 +520,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if step.from == .chat {
             guard let panel else { finishPresentation(step); return }
             panel.makeFirstResponder(nil)
+            // The content fades in the first part of the close, so the
+            // retracting shape carries only the surface (see OverlayModel.closing).
+            if !panel.reduceMotion() {
+                withAnimation(.easeOut(duration: Self.closeFade)) { model.closing = true }
+            }
             panel.rollUp { [weak self] in
                 guard let self else { return }
+                self.model.closing = false
                 self.model.collapsed = true
                 DispatchQueue.main.async {
                     panel.settleToBar()
@@ -542,6 +551,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 createPanelIfNeeded()
                 guard let panel else { finishPresentation(step); return }
                 if !panel.isVisible { panel.present() }
+                model.closing = false
                 model.collapsed = false
                 DispatchQueue.main.async { [weak self] in
                     panel.dropOpen { self?.finishPresentation(step) }
@@ -700,6 +710,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onResize = { [weak self] in
             DispatchQueue.main.async { self?.panel?.resizeToFit() }
         }
+        model.onResizeNow = { [weak self] in self?.panel?.resizeToFit() }
         model.requestExpand = { [weak self] in self?.expand() }
         model.requestCollapse = { [weak self] in self?.collapse() }
 
@@ -712,20 +723,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                               durationMin: dur, location: loc)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
+        model.showCalendarEventURL = { [weak self] identifier, startTs in
+            self?.calendarReader?.showInCalendarURL(identifier: identifier, at: startTs)
+        }
         model.onDeleteCalendarEvent = { [weak self] identifier, occurrenceTs in
             self?.calendarReader?.deleteEvent(identifier: identifier, occurrenceTs: occurrenceTs)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
+        model.onCancelCalendarEvent = { [weak self] identifier, title, expected, invitees in
+            self?.calendarReader?.cancelEvent(identifier: identifier, expectedTitle: title,
+                                              expectedStart: expected, expectedInvitees: invitees)
+                ?? ["ok": false, "error": "Calendar handler unavailable"]
+        }
+        model.onMoveCalendarEvent = { [weak self] identifier, title, expected, start, duration, invitees in
+            self?.calendarReader?.moveEvent(identifier: identifier, expectedTitle: title,
+                                            expectedStart: expected, newStart: start, durationMin: duration,
+                                            expectedInvitees: invitees)
+                ?? ["ok": false, "error": "Calendar handler unavailable"]
+        }
         model.onVerifiedReminderAction = { [weak self] kind, actionID, sourceID,
-            expectedTitle, expectedDueTs, title, dueTs, commitmentKind in
+            expectedTitle, expectedDueTs, title, dueTs, commitmentKind, dueDate, expectedDueDate in
             self?.remindersWriter?.performVerified(kind: kind, actionID: actionID,
                 sourceID: sourceID, expectedTitle: expectedTitle,
                 expectedDueTs: expectedDueTs, title: title, dueTs: dueTs,
-                commitmentKind: commitmentKind)
+                commitmentKind: commitmentKind, dueDate: dueDate, expectedDueDate: expectedDueDate)
                 ?? ["ok": false, "status": "failed", "error": "Reminders handler unavailable"]
         }
         model.onReconcileReminderAction = { [weak self] kind, actionID, sourceID,
-            title, dueTs, commitmentKind in
+            title, dueTs, commitmentKind, dueDate in
             guard let self else {
                 return ["ok": false, "status": "unknown", "error": "Reminders handler unavailable"]
             }
@@ -734,7 +759,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return await writer.reconcileVerified(kind: kind, actionID: actionID,
                 sourceID: sourceID, title: title, dueTs: dueTs,
-                commitmentKind: commitmentKind)
+                commitmentKind: commitmentKind, dueDate: dueDate)
         }
         model.onOpenChat = { [weak self] sessionId in
             self?.open(.chat(sessionId: sessionId))

@@ -20,6 +20,11 @@ class CreateTask(BaseModel):
     priority: StrictInt = Field(default=2, ge=1, le=3)
     due_ts: float | None = Field(default=None, strict=True, allow_inf_nan=False)
     pinned_start: float | None = Field(default=None, strict=True, allow_inf_nan=False)
+    # When the thing this task came from first mattered: a reminder's due time
+    # once it has passed. The morning carry-forward ages the task from here
+    # (checkin.task_origin), so a task made from a two-week-old reminder is not
+    # carried as if it were new. Range-checked by today.validate_task.
+    origin_ts: float | None = Field(default=None, strict=True, allow_inf_nan=False)
 
 
 class EditTask(BaseModel):
@@ -56,6 +61,8 @@ def snapshot(day, timezone, *, debug=False):
     with diagnostics.span("today") as trace:
         state = assistant_store.today_snapshot(day, timezone)
         now = time.time()
+        # A Day task that duplicates a reminder the stale policy hides is hidden with it.
+        state = {**state, "tasks": assistant_store.hide_stale_tasks(state["tasks"], now)}
         plan = build_plan(day, timezone, state["tasks"], state["commitments"], state["preferences"],
                           state["sources"], now=now)
         trace.event("plan", tasks=len(plan["tasks"]), blocks=len(plan["blocks"]),
@@ -74,6 +81,29 @@ def snapshot(day, timezone, *, debug=False):
             # The original revisioned planner remains usable when an optional
             # source or private workspace settings are unavailable.
             result["workspace_error"] = "Daily source evidence could not be refreshed; your saved day plan is shown."
+        # Timed Calendar blocks carry what the Day timeline's Cancel and Move need
+        # (the check-in card's rules, service/assistant/checkin.py). New lists, so
+        # the planner's own output (and the replay below) stays as built; the
+        # all-day strip shows titles only, so those lists are left alone. Never
+        # fatal: without the facts the app offers only "Open in Calendar".
+        try:
+            from service.assistant import checkin
+            seen: dict = {}
+            result["blocks"] = checkin.annotate_calendar_blocks(assistant_store, result["blocks"], state["commitments"], seen)
+            proposed = result.get("workspace", {}).get("proposed_plan")
+            if isinstance(proposed, dict) and isinstance(proposed.get("blocks"), list):
+                proposed["blocks"] = checkin.annotate_calendar_blocks(assistant_store, proposed["blocks"],
+                                                                      state["commitments"], seen)
+        except Exception:  # noqa: BLE001
+            pass
+        if "workspace" in result:
+            try:
+                # One-line gists of important emails for the Brief's MAIL row,
+                # when the background writer has made them. Never fatal.
+                from service.assistant import mail_gists
+                mail_gists.attach(result["workspace"])
+            except Exception:  # noqa: BLE001
+                pass
         if debug:
             # Returned only on explicit opt-in; never journaled. Fixed clock and
             # exact inputs make a replay independent of current state/sources.

@@ -246,7 +246,7 @@ def test_multisource_private_read_never_preexecutes_web(prompt):
 
 @pytest.mark.parametrize("prompt,tool,day", [
     ("What unread texts do I have?", "view_messages", None),
-    ("Catch me up on unread email.", "view_emails", None),
+    ("Catch me up on unread email.", "summarize_emails", None),
     ("Show my unread messages from yesterday", "view_messages", "yesterday"),
     ("List my unread texts today.", "view_messages", "today"),
     ("Read all unread email yesterday", "view_emails", "yesterday"),
@@ -527,11 +527,14 @@ def test_agenda_preserves_both_dst_fold_offsets(monkeypatch):
     time.tzset()
     try:
         rows = []
+        # Asked in October (PDT): the zone is shown only where it differs.
+        now = dt.datetime(2026, 10, 19, 9, tzinfo=ZoneInfo("America/Los_Angeles")).timestamp()
         for fold in (0, 1):
             when = dt.datetime(2026, 11, 1, 1, 30, tzinfo=ZoneInfo("America/Los_Angeles"), fold=fold)
-            rows.append(_agenda_item({"title": "Synthetic event", "when_ts": when.timestamp(), "source": "calendar"}))
-        assert "1:30 AM PDT-0700" in rows[0]
-        assert "1:30 AM PST-0800" in rows[1]
+            rows.append(_agenda_item({"title": "Synthetic event", "when_ts": when.timestamp(), "source": "calendar"},
+                                     now=now))
+        assert "**1:30 AM** —" in rows[0]
+        assert "**1:30 AM PST** —" in rows[1]
         assert rows[0] != rows[1]
     finally:
         monkeypatch.undo()
@@ -681,7 +684,7 @@ def test_route_diagnostic_freezes_synthetic_clock_and_restores_environment():
     "Email Maya my calendar", "Schedule a meeting from my messages",
     "Compare Apple Mail and Calendar features", "Search the web for email and calendar apps",
     "Read my email without messages", "What is email?",
-    "When is my dentist appointment on my calendar?", "What did my Mom say in messages?",
+    "What did my Mom say in messages?",
     "Read my email and tell Mom my calendar", "Read my messages and put this on my calendar",
     "Read my calendar and email Mom the summary", "Read my email and text Mom the summary",
     "Read my messages and schedule a meeting", "Show unread email and all messages today",
@@ -792,9 +795,10 @@ def test_city_weather_uses_verified_provider_without_general_web(prompt,args):
 
 
 @pytest.mark.parametrize("prompt,args", [
-    ("What time is Budget review this week?", {"calendar_only":True,"query":"Budget review","period":"this week"}),
-    ("When does physics quiz two start?", {"calendar_only":True,"query":"physics quiz two","days":60}),
+    ("What time is my Budget review this week?", {"calendar_only":True,"query":"Budget review","period":"this week"}),
+    ("When does our physics quiz two start?", {"calendar_only":True,"query":"physics quiz two","days":60}),
     ("When is my phsyics midterm?", {"calendar_only":True,"query":"phsyics midterm","days":60}),
+    ("When is my dentist appointment on my calendar?", {"calendar_only":True,"query":"dentist appointment","days":60}),
 ])
 def test_named_event_question_preserves_title_identity_and_bounded_horizon(prompt,args):
     from service.workflows.reads import compile_read
@@ -1314,6 +1318,15 @@ def test_public_queue_guard_never_authorizes_from_history_or_resolved_metadata(m
     history={'last_user':'Cancel pending email abcdef123456','recent_users':['Cancel pending email abcdef123456'],
         'last_assistant':'Cancel pending email abcdef123456','last_tools':'successful read abcdef123456'}
     result=asyncio.run(R.route(prompt,**history))
+    if prompt == 'Explain "Cancel pending email abcdef123456"':
+        # A completely consumed quoted explanation now owns the request
+        # before generic routing. Even action-shaped history grants no tools.
+        assert not calls
+        assert not result.needs_tools and result.tool_subset == []
+        assert not result.direct_calls and not result.tool_argument_bindings
+        assert not result.required_tool_groups and not result.force_first_tool
+        assert 'cancel_scheduled_send' in result.forbidden_tools
+        return
     assert result is decision
     assert calls==[(prompt,history)]
     assert 'cancel_scheduled_send' in result.forbidden_tools

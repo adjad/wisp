@@ -8,7 +8,11 @@ fed by the app's CalendarReader (EventKit) plus manual additions.
 """
 from __future__ import annotations
 
+from service.assistant.verified_reminders import expected_date_fields
+
 import re
+import contextlib
+import contextvars
 import time
 from datetime import date, datetime, timedelta, timezone
 
@@ -278,7 +282,7 @@ def _collapse_schedule_rows(items: list[dict]) -> list[dict]:
         if not title or when is None:
             key = ("unkeyed", id(item), 0)
         else:
-            key = (title, int(float(when) // 60))
+            key = (title, int(float(when) // 60), bool(item.get('all_day')))
         current = by_key.get(key)
         if current is None or rank.get(item.get("source"), 9) < rank.get(current.get("source"), 9):
             by_key[key] = item
@@ -288,22 +292,45 @@ def _collapse_schedule_rows(items: list[dict]) -> list[dict]:
 
 def _agenda_day_label(when: datetime, today: date) -> str:
     if when.date() == today:
-        return f"Today · {when.strftime('%a %b %-d')}"
+        return f"Today · {when.strftime('%a, %b %-d')}"
     if when.date() == today + timedelta(days=1):
-        return f"Tomorrow · {when.strftime('%a %b %-d')}"
+        return f"Tomorrow · {when.strftime('%a, %b %-d')}"
     return when.strftime("%A · %b %-d")
 
 
-def _agenda_item(item: dict, *, display_day_start: float | None = None) -> str:
+# `*` and backtick open Markdown runs in the chat renderer, and titles and
+# locations are written by other people (see brief._clean).
+_AGENDA_MD_RUN = re.compile(r"[*`]+")
+
+
+def _agenda_text(value: object) -> str:
+    return _AGENDA_MD_RUN.sub("", " ".join(str(value or "").split())).strip()
+
+
+def _agenda_clock(when: datetime, now: float) -> str:
+    """A wall-clock time; the zone appears only when it differs from now's.
+
+    Every row is already local time, so "PDT-0700" on each line was noise.
+    Across a DST change it is a fact (it also separates the two 1:30 AMs of a
+    fall-back night), so it is kept exactly there.
+    """
+    current = datetime.fromtimestamp(now, tz=timezone.utc).astimezone().utcoffset()
+    clock = when.strftime("%-I:%M %p")
+    return clock if when.utcoffset() == current else f"{clock} {when.strftime('%Z')}"
+
+
+def _agenda_item(item: dict, *, now: float | None = None,
+                 display_day_start: float | None = None) -> str:
+    now = time.time() if now is None else now
     when = datetime.fromtimestamp(float(item["when_ts"]), tz=timezone.utc).astimezone()
     started_before_day = (display_day_start is not None
                           and float(item["when_ts"]) < display_day_start
                           and float(item.get("end_ts") or 0) > display_day_start)
     clock = ("All day" if item.get("all_day") else
-             f"Started {when.strftime('%a %-I:%M %p %Z%z')}" if started_before_day else
-             when.strftime("%-I:%M %p %Z%z"))
-    location = str(item.get("location") or "").strip()
-    suffix = f" @ {location}" if location else ""
+             f"Started {when.strftime('%a')} {_agenda_clock(when, now)}" if started_before_day else
+             _agenda_clock(when, now))
+    location = _agenda_text(item.get("location"))
+    suffix = f" · {location}" if location else ""
     if _is_wisp_only(item):
         suffix += " [Wisp-only; Apple status unverified]"
     continued = ""
@@ -311,14 +338,29 @@ def _agenda_item(item: dict, *, display_day_start: float | None = None) -> str:
         display_date = datetime.fromtimestamp(display_day_start).date()
         label = "today" if display_date == datetime.fromtimestamp(time.time()).date() else display_date.isoformat()
         continued = f" (continued into {label})"
-    return f"- {clock} — {item.get('title') or 'Untitled'}{suffix}{continued}"
+    return f"- **{clock}** — {_agenda_text(item.get('title')) or 'Untitled'}{suffix}{continued}"
+
+
+def _agenda_count(n: int, noun: str) -> str:
+    return f"no {noun}s" if not n else f"{n} {noun}" + ("" if n == 1 else "s")
 
 
 def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
                            apple_reminders_checked: bool = True,
                            display_day_start: float | None = None,
-                           title: str | None = None) -> str:
-    """Render an agenda for a schedule question, not a storage/debug dump."""
+                           reminders_read: bool = True) -> str:
+    """Render an agenda the user can read as-is.
+
+    Deterministic calendar reads (workflows.reads.execute_read) show this text
+    with no model pass, so it must not carry model-facing scaffolding: the old
+    "Upcoming — this week (9 item(s))" / "[Calendar event] and [Reminder] are
+    shown in separate sections." header reached the user verbatim. The summary
+    line still states both counts in words ("9 events, no reminders"), which
+    router._edit_reference_subset reads to scope a follow-up edit, and every
+    day keeps calendar events and reminders apart so neither reader takes an
+    event for a reminder. "no reminders" is said only when `reminders_read`:
+    a calendar-only or withheld Reminders read is not evidence of none.
+    """
     today = datetime.fromtimestamp(now).date()
     days: dict[date, dict[str, list[dict]]] = {}
     for item in items:
@@ -335,36 +377,37 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
     blocks: list[str] = []
     for day, bucket in days.items():
         heading = _agenda_day_label(datetime.combine(day, datetime.min.time()), today)
-        lines = [heading]
-        if bucket["events"]:
-            lines.append("  Calendar events")
-            lines.extend("  " + _agenda_item(item, display_day_start=display_day_start)
-                         for item in bucket["events"])
+        lines = [f"**{heading}**"]
+        lines.extend(_agenda_item(item, now=now, display_day_start=display_day_start)
+                     for item in bucket["events"])
         if bucket["reminders"]:
-            lines.append("  Reminders")
-            lines.extend("  " + _agenda_item(item, display_day_start=display_day_start)
+            if bucket["events"]:
+                lines.append("*Reminders*")
+            lines.extend(_agenda_item(item, now=now, display_day_start=display_day_start)
                          for item in bucket["reminders"])
         blocks.append("\n".join(lines))
     calendar_count = sum("calendar" in _schedule_sources(item) for item in items)
     reminder_count = sum(bool(_schedule_sources(item) & {"manual", "reminders"})
                          for item in items)
-    review_note = ""
+    counts = [_agenda_count(calendar_count, "event")]
+    if reminder_count or reminders_read:
+        counts.append(_agenda_count(reminder_count, "reminder"))
+    notes = []
     if any(_is_wisp_only(item) for item in items):
-        review_note = (
-            " Wisp-only items have no matching current Apple Reminders item; "
+        notes.append(
+            "Wisp-only items have no matching current Apple Reminders item; "
             "some may be older Apple mirrors and others live Wisp reminders. "
             "Keep them unless the user picks one exactly to delete."
             if apple_reminders_checked else
-            " Apple Reminders could not be checked, so Wisp reminders are "
+            "Apple Reminders could not be checked, so Wisp reminders are "
             "listed without a confirmed Apple copy; they may still be active.")
-    has_native = any("reminders" in _schedule_sources(item) for item in items)
-    native_note = (" Apple Reminders deletion status is not independently verified."
-                   if has_native else "")
-    title = title or ("Schedule" if display_day_start is not None else "Upcoming")
-    return (f"{title} — {window_label} ({len(items)} item(s))\n"
-            f"Calendar events: {calendar_count}; Wisp/Apple reminders: {reminder_count}. "
-            "[Calendar event] and [Reminder] are shown in separate sections."
-            + native_note + review_note + "\n\n" + "\n\n".join(blocks))
+    if any("reminders" in _schedule_sources(item) for item in items):
+        notes.append("Apple Reminders deletion status is not independently verified.")
+    window = re.sub(r"\bnext 1 day\(s\)", "next day", window_label)
+    window = window.replace("day(s)", "days")
+    header = f"{window[:1].upper()}{window[1:]}: {', '.join(counts)}"
+    return (header + "\n\n" + "\n\n".join(blocks)
+            + ("\n\n" + " ".join(notes) if notes else ""))
 
 
 def _match_schedule_query(rows: list[dict], query: str) -> list[dict]:
@@ -404,6 +447,29 @@ def _match_schedule_query(rows: list[dict], query: str) -> list[dict]:
     return results
 
 
+def _format_calendar_end_times(items: list[dict], *, window_label: str) -> str:
+    """Project scheduled endpoints without changing the normal agenda renderer."""
+    lines = [f"Scheduled Calendar end times ({window_label}); these do not verify actual completion."]
+    if len(items) > 1:
+        lines.append("Multiple matching events; each scheduled end is listed separately.")
+    for item in items:
+        title = item.get('title') or 'Untitled'
+        start = datetime.fromtimestamp(float(item['when_ts']), tz=timezone.utc).astimezone()
+        identity = start.strftime('%Y-%m-%d %-I:%M %p %Z%z')
+        end_ts = item.get('end_ts')
+        if end_ts is None or float(end_ts) < float(item['when_ts']):
+            end = 'scheduled end unknown (no valid end recorded)'
+        else:
+            endpoint = datetime.fromtimestamp(float(end_ts), tz=timezone.utc).astimezone()
+            if item.get('all_day'):
+                end = ('all-day event; exclusive scheduled end boundary ' +
+                       endpoint.strftime('%Y-%m-%d %-I:%M %p %Z%z') + '; no timed finish recorded')
+            else:
+                end = 'scheduled to end ' + endpoint.strftime('%Y-%m-%d %-I:%M %p %Z%z')
+        lines.append(f'- {title} (starts {identity}): {end}.')
+    return '\n'.join(lines)
+
+
 @register(
     "get_upcoming",
     "Read the user's upcoming schedule — calendar events, meetings, Canvas "
@@ -418,6 +484,7 @@ def _match_schedule_query(rows: list[dict], query: str) -> list[dict]:
                   "description": "how many days ahead to look (default 7, max 60)"},
          "period": {"type": "string", "description": "Exact calendar range, e.g. tomorrow, this week, this month. Overrides days."},
          "calendar_only": {"type": "boolean", "description": "Only actual calendar events, not preparation reminders."},
+         "boundary": {"type": "string", "enum": ["start", "end"], "description": "Named Calendar time question: end returns scheduled end timestamps, never actual completion. Requires calendar_only and query. Default start preserves the agenda."},
          "query": {"type": "string", "description": "Filter titles within the requested range; bounded subject typos and test/exam synonyms are supported. Multiple matches remain distinct; ask which instead of selecting one."},
          "account": {"type": "string",
                      "description": "only include this linked calendar account (only useful when more than one is linked)"},
@@ -428,10 +495,18 @@ def _match_schedule_query(rows: list[dict], query: str) -> list[dict]:
 )
 async def get_upcoming(days: int = 7, account: str | None = None,
                        include_holidays: bool = False, period: str = "",
-                       calendar_only: bool = False, query: str = "") -> str:
+                       calendar_only: bool = False, query: str = "",
+                       boundary: str = "start") -> str:
+    if boundary not in {"start", "end"} or (boundary == "end" and (not calendar_only or not query)):
+        return "(error: scheduled end projection requires a named Calendar-only query)"
     from service.assistant.sync_status import ensure_sources
     readiness = await ensure_sources(("calendar",) if calendar_only else
                                      ("calendar", "reminders"))
+    if boundary == "end":
+        calendar_sources = [source for source in readiness.get('sources', ())
+                            if source.get('id') == 'calendar']
+        if not calendar_sources or any(source.get('state') != 'ready' for source in calendar_sources):
+            return "Wisp could not verify Calendar readiness; no scheduled end time has been checked."
     # A Reminders round trip that has not posted back yet must not hide a
     # current Calendar answer. Its native rows are withheld (never shown from
     # the previous snapshot) and the answer says so.
@@ -511,16 +586,18 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     items = _collapse_schedule_rows(
         [item for item in items
          if float(item.get("when_ts") or 0) >= now
-         or (period and item.get("source") == "calendar")])
+         or ((period or boundary == "end") and item.get("source") == "calendar")])
     if not items:
         if notice or reminder_note:
             return (notice + "No scheduled items were found in the sources that could be checked."
                     + reminder_note)
         return f"Today is {today_str}. Nothing scheduled in {window_label}."
+    if boundary == "end":
+        return notice + _format_calendar_end_times(items, window_label=window_label)
     return notice + _format_forward_agenda(
         items, now=now, window_label=window_label,
         apple_reminders_checked="reminders" not in withheld,
-        title="Schedule" if today_period else "Upcoming",
+        reminders_read=not calendar_only and "reminders" not in withheld,
         display_day_start=max(start, today_start) if period else None) + reminder_note
 
 
@@ -584,6 +661,14 @@ def _reminder_due_time(when_iso: str) -> tuple[float, str]:
     from math import isfinite
     from service.tasks.temporal import unambiguous_local_time
 
+    # Preserve datetime.fromisoformat's clock formats (including a space
+    # separator), while refusing every date-only form it accepts as midnight.
+    try:
+        date.fromisoformat(when_iso)
+    except (TypeError, ValueError):
+        pass
+    else:
+        raise ValueError("timed reminders require an explicit clock; use all_day for a date")
     when = datetime.fromisoformat(when_iso)
     if when.tzinfo is None and not unambiguous_local_time(when):
         raise ValueError("invalid or ambiguous local reminder time")
@@ -605,7 +690,8 @@ def _reminder_due_time(when_iso: str) -> tuple[float, str]:
     "reminded of something, asks for an alarm/nudge, or to track a deadline. "
     "This creates a Wisp notification and requests an Apple Reminders mirror, "
     "not a ringing Clock alarm. A calendar appointment or saved memory is not "
-    "a reminder. Ask for the alert time if it wasn't specified.",
+    "a reminder. Use all_day=true with a YYYY-MM-DD date for an explicitly "
+    "all-day reminder; it has no timed alarm. Otherwise ask for an unspecified alert time.",
     {"type": "object",
      "properties": {
          "title": {"type": "string", "description": "what to remind about"},
@@ -614,26 +700,37 @@ def _reminder_due_time(when_iso: str) -> tuple[float, str]:
          "kind": {"type": "string",
                   "enum": ["reminder", "assignment", "exam", "meeting", "event"],
                   "description": "defaults to reminder"},
+         "all_day": {"type": "boolean", "description": "Explicit date-only reminder; when_iso must be YYYY-MM-DD. No clock alert."},
      },
      "required": ["title", "when_iso"]},
     category="assistant_write",
 )
-async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str:
+async def add_reminder(title: str, when_iso: str, kind: str = "reminder", all_day: bool = False) -> str:
+    from service.assistant.verified_reminders import valid_due_date, due_timestamp
+    if type(all_day) is not bool or (all_day and not valid_due_date(when_iso)):
+        return '(error: all-day reminders require an explicit YYYY-MM-DD date; nothing was added.)'
     try:
-        ts, when_str = _reminder_due_time(when_iso)
+        if all_day:
+            ts, when_str = due_timestamp({'all_day': True, 'due_date': when_iso}), ''
+        else:
+            ts, when_str = _reminder_due_time(when_iso)
     except (TypeError, ValueError, OverflowError, OSError):
         return (f"(bad when_iso {when_iso!r} — use a valid, unambiguous local ISO "
                 "time, e.g. 2026-07-13T16:00, or an explicit UTC offset; nothing was added.)")
-    if ts < time.time() - 60:
+    if ((datetime.fromisoformat(when_iso).date() < datetime.now().date()) if all_day
+            else ts < time.time() - 60):
         return f"({when_iso} is in the past — not added)"
-    clean_title = title.strip()
+    clean_title = title.strip() if isinstance(title, str) else ''
     if not clean_title:
         return "(error: a reminder title is required; nothing was added.)"
     if not isinstance(kind, str) or kind not in {"reminder", "assignment", "exam", "meeting", "event"}:
         return "(error: unsupported reminder kind; nothing was added.)"
     from service.assistant.outbox import app_connected, request as app_request
     from service.assistant.hub import hub
-    payload = {"title": clean_title, "due_ts": ts, "commitment_kind": kind}
+    if all_day:
+        when_str = datetime.fromisoformat(when_iso).strftime('%a %b %-d, %Y') + ' (all day; no timed alarm)'
+    payload = {"title": clean_title, "commitment_kind": kind,
+               **({'all_day': True, 'due_date': when_iso} if all_day else {'due_ts': ts})}
     if not await app_connected(via=hub):
         # Nothing is sent now, but an earlier attempt at this exact reminder
         # may already exist natively (unknown outcome or verified success). A
@@ -645,7 +742,8 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
                     "write for this reminder is unconfirmed or already exists; nothing was "
                     "added. Reopen Wisp to reconcile it.)")
         return await _add_local_reminder(
-            clean_title, ts, kind, when_str, "the Wisp app is not connected")
+            clean_title, ts, kind, when_str, "the Wisp app is not connected",
+            **({'all_day': True, 'due_date': when_iso} if all_day else {}))
     result = await app_request("create_reminder", payload)
     if result.get("ok") is not True:
         if result.get("status") == "failed":
@@ -654,16 +752,23 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
             # native item may exist, and a local twin would alert twice.
             return await _add_local_reminder(
                 clean_title, ts, kind, when_str,
-                str(result.get("error") or "Apple Reminders declined the write"))
+                str(result.get("error") or "Apple Reminders declined the write"),
+                **({'all_day': True, 'due_date': when_iso} if all_day else {}))
         return f"(error: {result.get('error') or 'Reminders creation was not verified'}; nothing was confirmed.)"
+    if all_day:
+        from service.assistant.verified_reminders import validate_result
+        try:
+            validate_result('create_reminder', payload, result)
+        except (KeyError, TypeError, ValueError):
+            return '(error: the all-day reminder date was not verified; check Reminders before retrying.)'
     await hub.publish({"type": "changed"})
     return f"Reminder set: “{clean_title}” — {when_str} in Apple Reminders and Wisp."
 
 
 async def _add_local_reminder(title: str, ts: float, kind: str, when_str: str,
-                              reason: str) -> str:
+                              reason: str, *, all_day: bool = False, due_date: str | None = None) -> str:
     from service.assistant.hub import hub
-    c = assistant_store.add_manual(title, ts, kind=kind)
+    c = assistant_store.add_manual(title, ts, kind=kind, **({'all_day': True, 'due_date': due_date} if all_day else {}))
     try:
         await hub.publish({"type": "changed"})
     except Exception:  # noqa: BLE001
@@ -703,7 +808,9 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
         return ("(error: pass when_iso, or day='today'/'tomorrow'; "
                 "the reminder was not changed.)")
 
-    candidates = reminders_matching("all", title)
+    # Rescheduling a hidden overdue reminder by name is allowed (it un-hides it by moving
+    # its due time); a list or search never shows it.
+    candidates = reminders_matching("all", title, include_stale=True)
     if expected_id:
         candidates = [c for c in candidates
                       if str(c.get("id") or "") == expected_id
@@ -736,8 +843,12 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
                                      c.get("updated_at") or 0.0,
                                      c.get("id") or ""))
 
+    from service.assistant.verified_reminders import valid_due_date, validate_result
+    date_only = bool(current.get('all_day')) and (not when_iso or valid_due_date(when_iso))
     old_when = float(current["when_ts"])
     if when_iso:
+        if valid_due_date(when_iso) and not date_only:
+            return '(error: a timed update requires a clock; nothing was changed.)'
         try:
             target = datetime.fromisoformat(when_iso)
         except ValueError:
@@ -749,7 +860,11 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
         target = target_day.replace(hour=old_local.hour, minute=old_local.minute)
 
     new_when = target.timestamp()
-    if new_when < time.time() - 60:
+    if date_only:
+        from service.assistant.verified_reminders import due_timestamp
+        new_when = due_timestamp({'all_day': True, 'due_date': target.date().isoformat()})
+        target = datetime.fromtimestamp(new_when)
+    if ((target.date() < datetime.now().date()) if date_only else new_when < time.time() - 60):
         return (f"(error: preserving the old time would put the reminder in the past "
                 f"({target:%a %b %-d at %-I:%M %p}); ask what time today to use. "
                 "The reminder was not changed.)")
@@ -758,6 +873,8 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
                          (assistant_store.get(cid)
                           for cid in current.get("duplicate_ids") or []) if row]
     final_title = new_title.strip() or current["title"]
+    when_label = target.strftime('%a %b %-d, %Y') + ' (all day; no timed alarm)' if date_only else target.strftime('%a %b %-d at %-I:%M %p')
+    date_flags = {'all_day': date_only, **({'due_date': target.date().isoformat()} if date_only else {})} if current.get('all_day') or date_only else {}
     reminder_rows = [row for row in group if row.get("source") == "reminders"]
     if not reminder_rows:
         # No native twin exists (a pre-A18 or Wisp-only reminder), so a local
@@ -765,11 +882,11 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
         manual_ids = [row["id"] for row in group if row.get("source") == "manual"]
         if not manual_ids:
             return "(error: this item is not a Wisp or Apple reminder; nothing was changed.)"
-        if assistant_store.update_schedule(manual_ids, new_when, final_title) < 1:
+        if assistant_store.update_schedule(manual_ids, new_when, final_title, **date_flags) < 1:
             return "(error: the reminder changed before it could be updated; try again.)"
         from service.assistant.hub import hub
         await hub.publish({"type": "changed"})
-        return f"Reminder updated: “{final_title}” — {target:%a %b %-d at %-I:%M %p} in Wisp."
+        return f"Reminder updated: “{final_title}” — {when_label} in Wisp."
     if len(reminder_rows) > 1:
         return "(error: several native reminders share this item; select an exact reminder before changing it.)"
     if any(not row.get("source_id") for row in reminder_rows):
@@ -777,18 +894,24 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
     from service.assistant.outbox import request as app_request
     from service.assistant.hub import hub
     for row in reminder_rows:
-        result = await app_request("update_reminder", {
+        payload = {
             "source_id": row["source_id"], "expected_title": row["title"],
-            "expected_due_ts": row["when_ts"], "title": final_title, "due_ts": new_when,
-        })
+            "expected_due_ts": row["when_ts"], **expected_date_fields(row), "title": final_title,
+            **({'all_day': True, 'due_date': target.date().isoformat()} if date_only else {'due_ts': new_when})}
+        result = await app_request("update_reminder", payload)
         if result.get("ok") is not True:
             return f"(error: {result.get('error') or 'Reminder update was not verified'}; check the exact reminder before another attempt.)"
+        if date_only:
+            try:
+                validate_result('update_reminder', payload, result)
+            except (KeyError, TypeError, ValueError):
+                return '(error: the updated all-day date was not verified; check Reminders before retrying.)'
     manual_ids = [row["id"] for row in group if row["source"] == "manual"]
     if manual_ids:
-        assistant_store.update_schedule(manual_ids, new_when, final_title)
+        assistant_store.update_schedule(manual_ids, new_when, final_title, **date_flags)
     await hub.publish({"type": "changed"})
 
-    return f"Reminder updated: “{final_title}” — {target:%a %b %-d at %-I:%M %p}."
+    return f"Reminder updated: “{final_title}” — {when_label}."
 
 
 @register(
@@ -835,36 +958,175 @@ async def add_calendar_event(title: str, when_iso: str,
 
 
 
+def event_move_plan(title: str, when_iso: str, duration_min: int | None = None,
+                    location: str = "", new_title: str = "", current_when_iso: str = "",
+                    *, now: float | None = None) -> dict:
+    """What update_event would do, without doing it: the exact synced occurrence, its
+    new start and length, and the native payload. {"error": text} when it can't run.
+
+    Shared by the tool and its confirmation card, so the card names the same event
+    and times the move will use."""
+    if (location or "").strip() or (new_title or "").strip():
+        return {"error": "Wisp can move an event to a new time, but it can't rename an "
+                         "event or change its location. Nothing was changed; edit that in Calendar."}
+    if problem := calendar_time_problem(when_iso):
+        return {"error": problem}
+    when, _ = _calendar_local_start(when_iso)
+    now = time.time() if now is None else now
+    if when.timestamp() < now - 60:
+        return {"error": f"({when_iso} is in the past — nothing was moved.)"}
+    if duration_min is not None and (type(duration_min) is not int or not 1 <= duration_min <= 10080):
+        return {"error": "(error: a new length must be 1–10080 minutes; nothing was moved.)"}
+    current = None
+    if (current_when_iso or "").strip():
+        if calendar_time_problem(current_when_iso):
+            return {"error": "(error: the event's current start time is invalid; nothing was moved.)"}
+        current = _calendar_local_start(current_when_iso)[0].timestamp()
+    found = assistant_store.calendar_move_target(title, now=now, current_start=current)
+    if "error" in found:
+        return {"error": found["error"]}
+    row = found["row"]
+    # A subscribed or otherwise read-only calendar: the app would refuse the write, so the
+    # confirmation card is never shown. 0/1 from the store, or None when the app didn't say.
+    if row.get("calendar_writable") is not None and not row["calendar_writable"]:
+        return {"error": f"“{row['title']}” is on a read-only calendar; Wisp can't change it from "
+                         "this Mac. Nothing was moved. Move it in Calendar if it is yours to move."}
+    # Invitees: only the organizer may move such an event, and Calendar then sends them
+    # the new time; the card says so. Unknown either way is refused, never guessed.
+    invitees, organizer = row.get("invitee_count"), row.get("organizer_is_user")
+    if invitees is None:
+        return {"error": f"Wisp can't tell yet whether “{row['title']}” has invitees (Calendar "
+                         "hasn't synced that); nothing was moved. Try again shortly or move it in Calendar."}
+    # Someone else's event never moves, whatever its invitee count (an invitation can list
+    # only the user as attendee). organizer_is_user is 0/1 from the store, or None.
+    if organizer is not None and not organizer:
+        return {"error": f"Only the organizer can move “{row['title']}”; nothing was moved. "
+                         "Ask them, or propose a new time in Calendar."}
+    if invitees and organizer is None:
+        return {"error": f"Wisp can't tell who organizes “{row['title']}”, so it won't move an "
+                         "event with invitees; nothing was moved. Move it in Calendar."}
+    if row["end_ts"] is not None and row["end_ts"] >= row["when_ts"]:
+        length = duration_min if duration_min is not None else max(1, round((row["end_ts"] - row["when_ts"]) / 60))
+    else:
+        length = duration_min
+    if abs(when.timestamp() - row["when_ts"]) < 60 and duration_min is None:
+        return {"error": f"“{row['title']}” already starts then; nothing was moved."}
+    return {"row": row, "when_ts": when.timestamp(), "length_min": length,
+            "payload": {"source_id": row["source_id"], "expected_title": row["title"],
+                        "expected_start_ts": row["when_ts"], "when_ts": when.timestamp(),
+                        "duration_min": duration_min, "invitee_count": invitees}}
+
+
+# The occurrence the user confirmed, set by the agent loop around the approved call
+# (see prepare_event_move). update_event then moves exactly that occurrence and never
+# re-resolves the title, so the card and the write can't name different events.
+_MOVE_BINDING: contextvars.ContextVar[dict | None] = contextvars.ContextVar("event_move_binding", default=None)
+
+
+@contextlib.contextmanager
+def bound_event_move(binding: dict | None):
+    token = _MOVE_BINDING.set(binding)
+    try:
+        yield
+    finally:
+        _MOVE_BINDING.reset(token)
+
+
+def prepare_event_move(args: dict) -> dict:
+    """Resolve an update_event call once, before its confirmation card.
+
+    Returns {"error": text} (no card: the text is the tool result) or {"args": args with
+    the start pinned to this Mac's UTC offset, "binding": the exact occurrence and native
+    payload, "preview": the card line}."""
+    if problem := calendar_time_problem(args.get("when_iso")):
+        return {"error": problem}
+    bound = {**args, "when_iso": bind_calendar_local_start(args["when_iso"])}
+    plan = event_move_plan(bound.get("title", ""), bound["when_iso"], bound.get("duration_min"),
+                           bound.get("location", ""), bound.get("new_title", ""),
+                           bound.get("current_when_iso", ""))
+    if "error" in plan:
+        return {"error": plan["error"]}
+    row = plan["row"]
+    old = datetime.fromtimestamp(row["when_ts"])
+    new = (calendar_interval_label(bound["when_iso"], plan["length_min"]) if plan["length_min"]
+           else datetime.fromtimestamp(plan["when_ts"]).strftime("%a %b %-d, %Y %-I:%M %p"))
+    once = " (this occurrence only)" if row["recurring"] else ""
+    invitees = plan["payload"]["invitee_count"]
+    notice = (f" Its {invitees} invitee{'s' if invitees != 1 else ''} will be notified of the new time."
+              if invitees else "")
+    return {"args": bound,
+            "binding": {"payload": plan["payload"], "title": row["title"], "recurring": row["recurring"]},
+            "preview": f"Move: {row['title']} — from {old:%a %b %-d %-I:%M %p} to {new}{once}.{notice}"}
+
+
 @register(
     "update_event",
-    "Unavailable: Wisp cannot safely preserve an existing calendar event's "
-    "details when changing it. No update will run; edit the event in Calendar.",
+    "Move an existing event in the user's macOS Calendar to a new time (reschedule "
+    "it). Matched by its title; pass `current_when_iso` only to pick one of several "
+    "same-titled events. Only the time changes: notes, location, attendees, alerts "
+    "and calendar are kept, and for a repeating event only that one occurrence moves. "
+    "The length stays the same unless `duration_min` is given. Always confirmed. It "
+    "cannot rename an event or change its location, and an event with invitees moves "
+    "only when the user organizes it (Calendar then notifies them).",
     {"type": "object",
      "properties": {
-         "title": {"type": "string", "description": "Existing title (compatibility only; updates are unavailable)."},
-         "when_iso": {"type": "string", "description": "Requested start (compatibility only; no change will run)."},
-         "duration_min": {"type": "integer", "description": "Compatibility only; ignored without changing the event."},
-         "location": {"type": "string", "description": "Compatibility only; ignored without changing the event."},
-         "new_title": {"type": "string", "description": "Compatibility only; ignored without changing the event."},
+         "title": {"type": "string", "description": "the event's current title (any distinctive part)"},
+         "when_iso": {"type": "string", "description": "NEW local start datetime, e.g. 2026-07-14T15:00"},
+         "duration_min": {"type": "integer",
+                          "description": "new length in minutes, only when the user asks for one; omit to keep it"},
+         "current_when_iso": {"type": "string",
+                              "description": "the event's CURRENT local start, only when several events share the title"},
+         "location": {"type": "string", "description": "not supported; leave empty"},
+         "new_title": {"type": "string", "description": "not supported; leave empty"},
      },
      "required": ["title", "when_iso"]},
     category="calendar_write",
     aliases=["move my dentist appointment to 3pm", "reschedule the meeting to tomorrow",
-             "push my lunch back an hour", "change the location of the standup"],
-    unavailable_reason=EVENT_UPDATE_UNAVAILABLE,
+             "push my lunch back an hour", "move the standup to 10am"],
     retrieval_description=(
-        "Change an existing calendar event's time, duration, or location — "
-        "reschedule it. Matched by part of its current title, same as "
-        "cancel_event. Implemented as cancel + recreate, so if the title should "
-        "ALSO change, pass `new_title`; otherwise the original title is kept."),
+        "Move an existing calendar event to a new time — reschedule it — keeping its "
+        "details. Matched by its current title, like cancel_event."),
 )
-async def update_event(title: str, when_iso: str, duration_min: int = 60,
-                       location: str = "", new_title: str = "") -> str:
-    # No safe executable path exists with the current synced metadata. Do not
-    # resolve a title through collapsed cross-source rows or cancel/recreate:
-    # either can retire Reminders and discard Calendar details. This guard
-    # also covers direct Python callers outside the registry/agent loop.
-    return EVENT_UPDATE_UNAVAILABLE
+async def update_event(title: str, when_iso: str, duration_min: int | None = None,
+                       location: str = "", new_title: str = "", current_when_iso: str = "") -> str:
+    # A native, verified move of one exact occurrence (CalendarReader.moveEvent): the app
+    # checks the event still has this title and start, changes only its start and end,
+    # and reads back that nothing else changed. Never cancel + recreate.
+    binding = _MOVE_BINDING.get()
+    if binding is not None:
+        # The approved call: move exactly the confirmed occurrence, if it is still there
+        # as the card showed it, to exactly the confirmed start.
+        payload, row = binding["payload"], binding
+        if (calendar_time_problem(when_iso)
+                or abs(_calendar_local_start(when_iso)[0].timestamp() - payload["when_ts"]) >= 1
+                or not assistant_store.calendar_occurrence_current(
+                    payload["source_id"], payload["expected_start_ts"], payload["expected_title"])):
+            return (f"(couldn't move “{binding['title']}”: it changed after you confirmed. "
+                    "Nothing was changed.)")
+    else:
+        # Only the agent loop's confirmed, bound call may move an event; any other caller
+        # (a direct run_tool, a workflow executor) gets the reason and nothing runs.
+        plan = event_move_plan(title, when_iso, duration_min, location, new_title, current_when_iso)
+        if "error" in plan:
+            return plan["error"]
+        return ("(error: a Calendar move needs the user's confirmation of the exact event; "
+                "nothing was moved.)")
+    from service.assistant.outbox import app_connected, request as app_request
+    if not await app_connected():
+        return EVENT_UPDATE_UNAVAILABLE
+    result = await app_request("move_calendar_event", payload)
+    if result.get("ok") is not True:
+        if result.get("status") == "unknown":
+            return (f"(not confirmed: Calendar may have moved “{row['title']}”; check it in "
+                    "Calendar before trying again.)")
+        return f"(couldn't move “{row['title']}”: {result.get('error') or 'Calendar did not confirm the move'}. Nothing was changed.)"
+    from service.assistant.hub import hub
+    await hub.publish({"type": "changed"})
+    start = datetime.fromtimestamp(result["when_ts"])
+    end = datetime.fromtimestamp(result["end_ts"])
+    once = " Only this occurrence moved." if row["recurring"] else ""
+    notified = " Invitees were notified of the new time." if payload["invitee_count"] else ""
+    return f"Moved “{row['title']}” to {start:%a %b %-d, %-I:%M %p}–{end:%-I:%M %p}.{once}{notified}"
 
 
 @register(
@@ -900,7 +1162,9 @@ async def cancel_event(title: str) -> str:
     # commitment over a stale one with the same name.
     matches = [c for c in assistant_store.upcoming(days=60) if q in c["title"].lower()]
     if not matches:
-        matches = [c for c in assistant_store.history(days=365)
+        # A reminder the stale policy hides is still cancellable by name: hiding an item
+        # must never stop the user removing it.
+        matches = [c for c in assistant_store.history(days=365, include_stale=True)
                    if q in c["title"].lower()]
     if not matches:
         return f"Nothing upcoming or past matches “{title}”."
@@ -948,7 +1212,7 @@ async def _retire(c: dict) -> str | None:
                 return "Reminders identity is incomplete; cancellation was not confirmed."
             result = await app_request("delete_reminder", {
                 "source_id": row["source_id"], "expected_title": row["title"],
-                "expected_due_ts": row["when_ts"]})
+                "expected_due_ts": row["when_ts"], **expected_date_fields(row)})
             if result.get("ok") is not True:
                 return str(result.get("error") or "Reminders cancellation was not confirmed")
     for row in group:
@@ -974,7 +1238,9 @@ def past_due_matching(query: str = "", days: int = 365) -> list[dict]:
     actually clear, so both read through here rather than each doing their own
     filtering.
     """
-    items = assistant_store.history(days=max(1, min(int(days or 365), 3650)))
+    # Includes reminders the stale policy hides: "clear my old reminders" is exactly how
+    # they should leave, and the confirmation card reads through this same helper.
+    items = assistant_store.history(days=max(1, min(int(days or 365), 3650)), include_stale=True)
     q = (query or "").lower().strip()
     if q:
         items = [c for c in items if q in c["title"].lower()]
@@ -1030,7 +1296,7 @@ _REMINDER_SCOPES = frozenset({"today", "tomorrow", "past_due", "upcoming", "all"
 
 
 def reminders_matching(scope: str = "all", query: str = "",
-                       *, now: float | None = None) -> list[dict]:
+                       *, now: float | None = None, include_stale: bool = False) -> list[dict]:
     """Active Wisp/Reminders.app items in a deterministic time scope.
 
     Calendar events are excluded. A Wisp reminder can carry a task-like kind,
@@ -1055,7 +1321,7 @@ def reminders_matching(scope: str = "all", query: str = "",
     else:
         start = end = None
 
-    items = assistant_store.active_between(start, end)
+    items = assistant_store.active_between(start, end, include_stale=include_stale)
     items = [c for c in items
              if c.get("source") in _REMINDER_SOURCES
              or bool(_REMINDER_SOURCES & set(c.get("duplicate_sources") or []))]
@@ -1242,7 +1508,9 @@ async def clear_reminders(scope: str, query: str = "",
     if normalized not in _REMINDER_SCOPES:
         return ("(error: scope must be today, tomorrow, past_due, upcoming, "
                 "or all — no reminders were deleted.)")
-    items = reminders_matching(normalized, query)
+    # A removal reaches reminders the stale policy hides; the confirmation previews in
+    # agent/loop.py read with the same flag, so the card and the deletion agree.
+    items = reminders_matching(normalized, query, include_stale=True)
     label = normalized.replace("_", " ")
     if expected_ids is not None:
         expected = {str(value) for value in expected_ids if value}

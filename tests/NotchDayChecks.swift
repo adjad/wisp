@@ -107,15 +107,39 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(item("block:pa2")?.columns == 2 && item("block:club")?.columns == 2
           && item("block:pa2")?.column == 0 && item("block:club")?.column == 1, "overlapping blocks sit side by side")
     check(item("block:task:t1")?.columns == 1, "a block on its own takes the full width")
+    let minute = 60.0
     let stacked = DayTimeline.arrange([
-        DayItem(id: "a", title: "a", detail: "", start: 0, end: 30, style: .calendar),
-        DayItem(id: "b", title: "b", detail: "", start: 10, end: 40, style: .calendar),
-        DayItem(id: "c", title: "c", detail: "", start: 20, end: 50, style: .calendar),
-        DayItem(id: "d", title: "d", detail: "", start: 35, end: 60, style: .calendar),
-        DayItem(id: "e", title: "e", detail: "", start: 70, end: 80, style: .calendar),
+        DayItem(id: "a", title: "a", detail: "", start: 0, end: 30 * minute, style: .calendar),
+        DayItem(id: "b", title: "b", detail: "", start: 10 * minute, end: 40 * minute, style: .calendar),
+        DayItem(id: "c", title: "c", detail: "", start: 20 * minute, end: 50 * minute, style: .calendar),
+        DayItem(id: "d", title: "d", detail: "", start: 35 * minute, end: 60 * minute, style: .calendar),
+        DayItem(id: "e", title: "e", detail: "", start: 70 * minute, end: 80 * minute, style: .calendar),
     ])
     check(stacked.map(\.column) == [0, 1, 2, 0, 0] && stacked.map(\.columns) == [3, 3, 3, 3, 1],
           "columns are reused within a cluster and reset after it: \(stacked.map(\.column)) \(stacked.map(\.columns))")
+    // Back-to-back 15-minute blocks are drawn 30 minutes tall, so they overlap on
+    // screen and must sit side by side, never on top of one another (the
+    // 2026-10-19 stack of seven "Review: …" blocks at noon).
+    let slivers = DayTimeline.arrange((0..<3).map {
+        DayItem(id: "r\($0)", title: "Review \($0)", detail: "", start: Double($0) * 15 * minute,
+                end: Double($0 + 1) * 15 * minute, style: .suggested)
+    })
+    // The first two overlap as drawn, so they share the width; the third starts
+    // where the first's drawn 30 minutes end, so it reuses the first column.
+    check(slivers.map(\.column) == [0, 1, 0] && slivers.allSatisfy { $0.columns == 2 },
+          "short back-to-back blocks sit side by side: \(slivers.map(\.column)) \(slivers.map(\.columns))")
+    let apart = DayTimeline.arrange([
+        DayItem(id: "x", title: "x", detail: "", start: 0, end: 15 * minute, style: .suggested),
+        DayItem(id: "y", title: "y", detail: "", start: 30 * minute, end: 45 * minute, style: .suggested),
+    ])
+    check(apart.allSatisfy { $0.columns == 1 }, "short blocks a drawn height apart keep the full width")
+    let grouped = window([DayBlockInput(id: "reviews", title: "Review 3 emails · Devarsh, Maya +1", start: at(14),
+                                        end: at(14.5), kind: "suggestion", evidenceID: "e1",
+                                        members: [DayMember(title: "Week 4", evidenceID: "e1"),
+                                                  DayMember(title: "Lab", evidenceID: "e2"),
+                                                  DayMember(title: "Budget", evidenceID: "e3")])], now: now)
+    check(grouped.items.first?.members.count == 3 && grouped.items.first?.detail == "Suggested · 3 to read · about 30 min",
+          "a grouped review says how many it covers: \(grouped.items.first?.detail ?? "none")")
 
     // Another day: the lane starts at working hours, and nothing is overdue.
     let other = DayTimeline.build(blocks: blocks, allDay: [], needs: needs, caught: [], now: dayStart - 30 * hour,
@@ -172,46 +196,113 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.lede(weekday: "Tuesday", isToday: true, load: .steady, dueToday: [], overdue: [],
                            next: (title: "Club", time: "3 PM"))
           == "A steady Tuesday. Next up: Club at 3 PM.", "lede with only the next event")
+    check(DayTimeline.lede(weekday: "Sunday", isToday: true, load: .free, dueToday: [], overdue: [], next: nil,
+                           othersNeedYou: true) == "A free Sunday.",
+          "lede never says nothing needs you while the Needs you line lists something")
+
+    // The Brief's Needs you line under the lede (daily_workspace.needs_you picks the items).
+    let picked = [
+        NeedsYouInput(kind: "overdue", text: "Pay rent", due: dayStart - 5 * hour),
+        NeedsYouInput(kind: "due", text: "PA 2", due: at(23.5)),
+        NeedsYouInput(kind: "due", text: "Library book", due: at(0), allDay: true),
+        NeedsYouInput(kind: "mail", text: "a deadline notice from Dr. Patel"),
+    ]
+    check(DayTimeline.needsYou(picked, more: 2, clock: clock)
+          == "Needs you today: Pay rent (overdue), PA 2 (due 23:30), Library book (due today), a deadline notice from Dr. Patel and 2 more.",
+          "needs-you line lists items with their due words and the rest as a count")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "text", text: "a text from Mom")], more: 0, clock: clock)
+          == "Needs you today: a text from Mom.", "needs-you line with one item")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "plan", text: "Finish slides"), NeedsYouInput(kind: "mail", text: "“Lab feedback” from Dr. Patel")],
+                               more: 0, clock: clock)
+          == "Needs you today: Finish slides and “Lab feedback” from Dr. Patel.", "needs-you line joins two with and")
+    check(DayTimeline.needsYou([], more: 0, clock: clock) == nil, "nothing to list: no line, not an empty header")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "due", text: "nothing", due: at(15))], more: 0, clock: clock) == nil,
+          "a junk title alone makes no line")
 
     // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!
     let light = DayLoad.assess(events: [], allDay: ["PA 2 [CSE-20-04]"], from: now, dayStart: dayStart, isToday: true, zone: utc)
+    func mailOf(_ titles: [String]) -> [BriefNeed] { titles.map { BriefNeed(title: $0) } }
     let lines = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []),
-                                       texts: (ready: true, needing: ["nothing", "Priya asked about dinner"]),
+                                       texts: (ready: true, needing: mailOf(["nothing"]) + [BriefNeed(title: "Priya: dinner at 7?", sender: "Priya")]),
                                        soon: .item(title: "UCSC startup club", when: "Wed 6 PM", source: "calendar"))
     check(lines.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"], "four rows in order")
     check(lines[0].text == "Light day: just PA 2 [CSE-20-04] (all day)" && lines[0].trailing == ""
-          && lines[1].text == "Nothing needs a reply" && lines[2].text == "Priya asked about dinner"
+          && lines[1].text == "Nothing needs a reply" && lines[2].text == "Priya is waiting on you"
           && lines[3].source == .calendar && lines[3].trailing == "Wed 6 PM", "row contents: \(lines.map(\.text))")
     check(!lines.contains(where: \.muted), "synced sources are never dim")
-    let quiet = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []), texts: (ready: true, needing: ["nothing"]),
+    let quiet = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []), texts: (ready: true, needing: mailOf(["nothing"])),
                                        soon: .nothing)
     check(quiet.map(\.text).suffix(2) == ["No texts need you", "Nothing in the next week"] && !quiet.contains(where: \.muted),
           "TEXTS and SOON stay with nothing to say")
-    let unsynced = DayTimeline.briefLines(calendar: nil, calendarUnsynced: true, mail: (ready: false, needing: ["x"]),
+    let unsynced = DayTimeline.briefLines(calendar: nil, calendarUnsynced: true, mail: (ready: false, needing: mailOf(["x"])),
                                           texts: (ready: false, needing: []), soon: .unknown)
     check(unsynced.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"] && unsynced.allSatisfy(\.muted)
           && unsynced.map(\.text) == ["Calendar hasn't synced yet", "Mail hasn't been checked yet",
                                       "Messages haven't been checked yet", "The week ahead hasn't loaded yet"],
           "unread sources keep the four rows, dim: \(unsynced.map(\.text))")
+    let noAccess = DayTimeline.briefLines(calendar: light, mail: nil, texts: (ready: false, needing: []), textsNeedAccess: true,
+                                          soon: .nothing)[2]
+    check(noAccess.text == "Texts need Full Disk Access" && !noAccess.muted, "missing Full Disk Access is said plainly, not 'not checked yet'")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: [
+        BriefNeed(title: "Office hours", sender: "John", received: 2), BriefNeed(title: "Canceled: Office hours", sender: "John", received: 1)]),
+        texts: nil, soon: .nothing)[1].text == "Canceled: John · Office hours ×2", "a cancellation isn't hidden by its original")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: [BriefNeed(title: "Private details omitted.")]),
+                                 texts: nil, soon: .nothing)[1].text == "1 private email not shown", "only private mail: counted")
     let unread = DayTimeline.briefLines(calendar: nil, mail: nil, texts: nil, soon: .nothing)
     check(unread.map(\.text) == ["Nothing on your calendar", "Mail hasn't been checked yet", "Messages haven't been checked yet",
                                  "Nothing in the next week"] && unread[1].muted && unread[2].muted,
           "no coverage (the workspace couldn't be read) is unknown, never off")
-    check(DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: ["Lab partner", "Advisor"]),
-                                 texts: (ready: true, needing: ["Mom", "Priya"]), soon: .nothing)
-          .map(\.text)[1...2] == ["2 emails need you", "2 texts need you"], "mail and text counts")
+    // MAIL says what the top email is about; TEXTS says who is waiting, never what they wrote.
+    let described = DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: [
+        BriefNeed(title: "Lab report", sender: "Lab partner", person: true, received: 100),
+        BriefNeed(title: "Thesis meeting", sender: "Prof. Lee", person: true, received: 200),
+        BriefNeed(title: "Tech Week starts today", sender: "UCSC Events", received: 300)]),
+        texts: (ready: true, needing: [BriefNeed(title: "Mom: call me", sender: "Mom", received: 50),
+                                       BriefNeed(title: "Priya: dinner?", sender: "Priya", received: 90)]), soon: .nothing)
+    check(described[1].text == "Prof. Lee · Thesis meeting" && described[1].trailing == "+2 more",
+          "MAIL from an older service leads with the newest person's email: \(described[1].text) \(described[1].trailing)")
+    // With overviews: the gist and how many need you / are waiting, with nothing trailing.
+    let overviewed = DayTimeline.briefLines(calendar: nil, mail: (ready: true, needing: [
+        BriefNeed(title: "Lab report", sender: "Lab partner", person: true, received: 100),
+        BriefNeed(title: "50% off everything", sender: "Shop", received: 300)]),
+        texts: (ready: true, needing: [BriefNeed(title: "Mom: call me", sender: "Mom", received: 50)]),
+        mailOverview: "Mostly lab work and promos", textsOverview: "Mostly family check-ins", soon: .nothing)
+    check(overviewed[1].text == "Mostly lab work and promos · 1 needs you" && overviewed[1].trailing.isEmpty
+          && overviewed[2].text == "Mostly family check-ins · 1 waiting on you",
+          "MAIL and TEXTS rows with overviews: \(overviewed[1].text) / \(overviewed[2].text)")
+    check(DayTimeline.briefLines(calendar: nil, mail: nil, texts: (ready: false, needing: []), textsNeedAccess: true,
+                                 textsOverview: "Quiet", soon: .nothing)[2].text == "Texts need Full Disk Access",
+          "Full Disk Access wins over an overview")
+    check(described[2].text == "Priya and Mom are waiting on you" && !described[2].text.contains("dinner"),
+          "TEXTS names who is waiting, newest first: \(described[2].text)")
     check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .item(title: "nothing", when: "Fri", source: "reminders"))[3]
           .text == "Nothing in the next week", "a placeholder is never what's coming")
+
+    // Plan time on an overdue reminder (the "Get doordash order" case): the task
+    // keeps the reminder's due time as its origin, and a second tap adds nothing.
+    let doordashDue = now - 16 * 86400
+    check(DayTimeline.planOrigin(due: doordashDue, now: now) == doordashDue, "an overdue reminder's task starts at its due time")
+    check(DayTimeline.planOrigin(due: now + 3600, now: now) == nil && DayTimeline.planOrigin(due: nil, now: now) == nil,
+          "a reminder not yet due, or undated, gives no origin")
+    check(DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "get  DoorDash order", active: true)])
+          && DayTimeline.alreadyPlanned("Reply to Priya", tasks: [(title: "Review: Reply to Priya", active: true)])
+          && !DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "Get doordash order", active: false)])
+          && !DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "Call the bank", active: true)]),
+          "Plan time isn't offered twice for the same need")
+    check(DayTimeline.plannedTitle("Reply to Priya", review: true) == "Review: Reply to Priya"
+          && DayTimeline.plannedTitle("PA 2", review: false) == "PA 2", "planned titles")
 
     // Unmistakable bulk mail never counts as needing you, and the row says it was left out.
     let inbox = ["You're subscribed: The Download", "Can you review my draft?", "50% off everything",
                  "Weekly digest: CSE 20", "Lab moved to Thursday", "nothing"]
     check(DayTimeline.mailNeedingYou(inbox) == ["Can you review my draft?", "Lab moved to Thursday"],
           "newsletters, promos and placeholders are left out: \(DayTimeline.mailNeedingYou(inbox))")
-    let promos = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: inbox), texts: nil, soon: .nothing)[1]
-    check(promos.text == "2 emails need you" && promos.trailing == "+3 promos", "the MAIL row counts real mail and names what it left out")
-    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: ["Can you review my draft?"]), texts: nil,
+    let promos = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: mailOf(inbox)), texts: nil, soon: .nothing)[1]
+    check(promos.text == "Can you review my draft?" && promos.trailing == "+1 more", "the MAIL row describes real mail: \(promos.text)")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: mailOf(["Can you review my draft?", "50% off everything"])),
+                                 texts: nil, soon: .nothing)[1].trailing == "+1 promo", "one email: the row names the promo it left out")
+    check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: mailOf(["Can you review my draft?"])), texts: nil,
                                  soon: .nothing)[1].trailing == "", "no promos, no note")
     for personal in ["Last chance to submit your thesis form", "Webinar slides for Thursday", "Tech Week starts today",
                      "Don't miss the lab meeting", "Re: project offer", "Meeting with Priya", "This week in CSE 20"] {

@@ -1,3 +1,5 @@
+import Foundation
+
 @main
 enum PromptQueueChecks {
     static func main() {
@@ -44,6 +46,89 @@ enum PromptQueueChecks {
         precondition(summary.beginDailySummary() == nil)
         precondition(summary.complete(summaryDispatch.id)?.work == .prompt(first))
 
-        print("PromptSubmissionState: 24 regression checks passed")
+        // A drop with prompts queued behind it holds them for the dropped one:
+        // they wait (even past a summary run meanwhile) until it is sent again.
+        var held = PromptSubmissionState()
+        let dropped = held.submit(first)!
+        precondition(held.submit(last) == nil && held.waiting == .reply)
+        precondition(held.dropForRetry(dropped.id) == first && held.held && held.waiting == .resend)
+        let summaryWhileHeld = held.beginDailySummary()!
+        precondition(held.waiting == .summary && held.complete(summaryWhileHeld.id) == nil, "held past a summary")
+        let resent = held.submit(first)!
+        precondition(!held.held && held.complete(resent.id)?.work == .prompt(last), "the queue follows the resend")
+
+        // Return on an empty box sends the held queue on.
+        var resume = PromptSubmissionState()
+        let lost = resume.submit(first)!
+        _ = resume.submit(last)
+        _ = resume.dropForRetry(lost.id)
+        precondition(resume.resume()?.work == .prompt(last) && !resume.held)
+        var empty = PromptSubmissionState()
+        precondition(empty.resume() == nil)
+
+        // Text typed meanwhile keeps the box; the dropped prompt goes first in line.
+        var typed = PromptSubmissionState()
+        let inFlight = typed.submit(first)!
+        _ = typed.submit(last)
+        precondition(typed.dropToQueue(inFlight.id) && typed.held && typed.queuedCount == 2)
+        let typedDispatch = typed.submit(image)!
+        precondition(typedDispatch.work == .prompt(image))
+        precondition(typed.complete(typedDispatch.id)?.work == .prompt(first), "the dropped prompt is next")
+
+        // A prompt set aside after a drop is only ever handed back, never sent:
+        // restoring it dispatches nothing, and a second drop keeps the first.
+        var aside = SetAsidePrompts()
+        var asideState = PromptSubmissionState()
+        let abandoned = asideState.submit(first)!
+        aside.push(asideState.dropForRetry(abandoned.id))
+        let abandonedAgain = asideState.submit(image)!
+        aside.push(asideState.dropForRetry(abandonedAgain.id))
+        aside.push(asideState.dropForRetry(abandonedAgain.id))
+        precondition(aside.count == 2, "a stale drop adds nothing and a second drop keeps the first")
+        precondition(aside.restore() == image && aside.restore() == first && aside.restore() == nil)
+        precondition(!asideState.isActive && asideState.queuedCount == 0 && !asideState.held, "restoring dispatches nothing")
+        aside.push(first)
+        aside.push(last)
+        aside.reset()
+        precondition(aside.count == 0 && aside.restore() == nil, "reset clears every set-aside prompt")
+
+        // What queued prompts wait on.
+        var waits = PromptSubmissionState()
+        precondition(waits.waiting == nil)
+        let researching = waits.submit(research)!
+        _ = waits.submit(first)
+        precondition(waits.waiting == .research)
+        _ = waits.complete(researching.id)
+        var summaryWait = PromptSubmissionState()
+        _ = summaryWait.beginDailySummary()
+        _ = summaryWait.submit(first)
+        precondition(summaryWait.waiting == .summary)
+
+        // Only a provably unsent request is sent again.
+        precondition(AgentSend.retryable(status: 503) && AgentSend.retryable(status: 500))
+        precondition(!AgentSend.retryable(status: 422) && !AgentSend.retryable(status: 413))
+        precondition(AgentSend.retryable(error: URLError(.cannotConnectToHost))
+                     && AgentSend.retryable(error: URLError(.networkConnectionLost)))
+        precondition(!AgentSend.retryable(error: URLError(.timedOut)) && !AgentSend.retryable(error: URLError(.cancelled))
+                     && !AgentSend.retryable(error: NSError(domain: "x", code: 1)))
+        precondition(AgentSend.unsent(status: 503)["unsent"] as? Bool == true
+                     && (AgentSend.unsent(status: 503)["message"] as? String ?? "").contains("503"))
+        precondition(AgentSend.unsent(error: URLError(.cannotConnectToHost))["message"] as? String == "Wisp isn't running right now.")
+        let notice = AgentSend.notice(message: "Couldn't reach Wisp.", unsent: true, queued: 2)
+        precondition(notice == "Couldn't reach Wisp. Your message is back in the box. Press Return to send it again. "
+                     + "2 queued messages will follow it.", notice)
+        precondition(AgentSend.notice(message: "socket closed", unsent: false, queued: 0)
+                     .hasPrefix("Wisp didn't answer. Your message is back in the box."))
+        precondition(AgentSend.notice(message: "", unsent: true, queued: 0, place: .queued).contains("first in line"))
+        // A prompt whose stream had begun is set aside, never queued to resend.
+        precondition(AgentSend.notice(message: "", unsent: false, queued: 1, place: .setAside)
+                     .contains("won't be sent again by itself"))
+        precondition(!AgentSend.notice(message: "", unsent: false, queued: 0, place: .setAside).contains("earlier"))
+        precondition(AgentSend.notice(message: "", unsent: false, queued: 0, place: .setAside, setAside: 3)
+                     .hasSuffix("2 earlier set-aside messages stay behind it."))
+        precondition(AgentSend.notice(message: "", unsent: false, queued: 0, place: .setAside, setAside: 2)
+                     .hasSuffix("1 earlier set-aside message stays behind it."))
+
+        print("PromptSubmissionState: 58 regression checks passed")
     }
 }

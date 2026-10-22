@@ -24,6 +24,11 @@ enum NotchQADriver {
         let dayStart = midnight.timeIntervalSince1970
         let today = TodayModel(now: { now }, timeZoneProvider: { zone }, transport: { request in
             let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }
+            if components?.path == "/assistant/daily_summary/latest" {
+                // No kept summary: the "brief" scenes use the live one, "brief-nosummary" shows the note.
+                return (Data(#"{"detail":"no composed summary for that day"}"#.utf8),
+                        HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+            }
             let body = components?.path == "/assistant/upcoming" ? try fixtureUpcoming(dayStart: dayStart)
                 : try fixturePlan(day: components?.queryItems?.first { $0.name == "day" }?.value ?? "", dayStart: dayStart)
             return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
@@ -40,16 +45,19 @@ enum NotchQADriver {
             return (try JSONSerialization.data(withJSONObject: ["asks": rows]),
                     HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
+        DayCards.qaUse(attention: attention, staleReminders: stale)
         let model = OverlayModel()
         model.qaShow(brief: fixtureBrief)
+        let unsummarized = OverlayModel()
         let width = SurfaceLayout.maxExpandedWidth
         for (name, tab, open) in [("brief", NotchTab.brief, nil), ("brief-open", NotchTab.brief, "MAIL"),
+                                  ("brief-texts", NotchTab.brief, "TEXTS"), ("brief-nosummary", NotchTab.brief, "MAIL"),
                                   ("day", NotchTab.day, nil)] as [(String, NotchTab, String?)] {
             let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 760),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let content = VStack(alignment: .leading, spacing: 0) {
-                if tab == .brief { NotchBriefView(model: model, today: today, open: open) }
-                else { NotchDayView(model: model, today: today, attention: attention, staleReminders: stale) }
+                if tab == .brief { NotchBriefView(model: name == "brief-nosummary" ? unsummarized : model, today: today, open: open) }
+                else { NotchDayView(model: model, today: today) }
             }
             .padding(EdgeInsets(top: 18, leading: 22, bottom: 16, trailing: 22))
             .frame(width: width, alignment: .topLeading)
@@ -121,9 +129,10 @@ enum NotchQADriver {
             if let evidence { b["evidence_id"] = evidence }
             return b
         }
-        func need(_ id: String, _ source: String, _ title: String, due: Double?) -> [String: Any] {
+        func need(_ id: String, _ source: String, _ title: String, due: Double?, extra: [String: Any] = [:]) -> [String: Any] {
             ["id": id, "source": source, "title": title, "reason": "", "quote": "", "due_ts": due.map { at($0) } ?? NSNull(),
              "priority": 1, "reference": source + ":" + id, "suggested_minutes": 25, "needs_review": source != "reminders"]
+                .merging(extra) { $1 }
         }
         let blocks = [
             block("lunch", "Lunch with Sam", 11.5, 12.5, "calendar"),
@@ -144,17 +153,36 @@ enum NotchQADriver {
                     need("pa2", "reminders", "PA 2", due: 23.98),
                     need("doordash", "reminders", "Get DoorDash order", due: -20),
                     need("junk", "reminders", "nothing", due: 12),
-                    need("priya", "messages", "Priya asked about dinner", due: nil),
+                    need("priya", "messages", "Priya: are we still on for dinner at 7?", due: nil,
+                         extra: ["sender": "Priya", "received_ts": at(12.6)]),
+                    need("priya-2", "messages", "Priya: lmk!", due: nil, extra: ["sender": "Priya", "received_ts": at(12.9)]),
+                    need("mom", "messages", "Mom: call me when you can", due: nil, extra: ["sender": "Mom", "received_ts": at(9.2)]),
+                    need("sam", "messages", "Sam: thanks!", due: nil,
+                         extra: ["sender": "Sam", "received_ts": at(10), "replied": true]),
                     need("club", "calendar", "UCSC startup club, E2-506", due: 24 * 4 + 18),
                     need("essay", "reminders", "Essay outline", due: 24 * 4 + 18),
-                    need("draft", "email", "Can you review my draft?", due: nil),
-                    need("techweek", "email", "Tech Week starts today", due: nil),
-                    need("subscribed", "email", "You're subscribed: The Download", due: nil),
+                    need("draft", "email", "Can you review my draft?", due: nil,
+                         extra: ["sender": "Jordan Kim", "person": true, "received_ts": at(11)]),
+                    need("thesis", "email", "Thesis meeting", due: nil,
+                         extra: ["sender": "Prof. Lee", "person": true, "received_ts": at(12.2)]),
+                    need("office-1", "email", "Dublin Community Office Hours", due: nil,
+                         extra: ["sender": "John Morada <john@example.edu>", "person": true, "received_ts": at(10.5)]),
+                    need("office-2", "email", "Canceled: Dublin Community Office Hours", due: nil,
+                         extra: ["sender": "John Morada <john@example.edu>", "person": true, "received_ts": at(10.4)]),
+                    need("private", "email", "Private details omitted.", due: nil,
+                         extra: ["sender": "Bank", "person": false, "received_ts": at(9)]),
+                    need("techweek", "email", "Tech Week starts today", due: nil,
+                         extra: ["sender": "UCSC Events", "person": false, "received_ts": at(8)]),
+                    need("subscribed", "email", "You're subscribed: The Download", due: nil,
+                         extra: ["sender": "MIT Technology Review", "person": false, "received_ts": at(7)]),
                 ],
                 "attention_omitted": 0,
                 "source_coverage": [["source": "email", "ready": true, "detail": "5 unread", "inspected": 5, "omitted": 0],
                                     ["source": "messages", "ready": true, "detail": "", "inspected": 3, "omitted": 0]],
                 "behavior_detail": "Tentative", "explanation": "",
+                "mail_overview": ["text": "Mostly event updates and tech-week promos", "source": "model"],
+                "texts_overview": ["text": "Mostly dinner plans and family check-ins", "source": "model"],
+                "mail_summary": ["text": "Prof. Lee moved your thesis meeting to Tuesday and Jordan Kim wants feedback on an essay draft by Monday. John Morada canceled Dublin Community Office Hours. The rest is Tech Week promos and newsletters.", "source": "model"],
                 "proposed_plan": ["blocks": blocks, "unscheduled": [],
                                   "warnings": ["Reminders are not current; some deadlines may be missing."]],
             ],
@@ -188,8 +216,9 @@ enum NotchQADriver {
     - Tech Week: starts today
 
     **💬 Messages**
-    **👤 Priya**
-    - Asked about dinner at 7; no reply yet.
+    - **Priya** · 2 messages, latest 12:54 PM — Priya: “lmk!”
+    - **Mom** · 1 message, latest 9:12 AM — “call me when you can”
+    - **Sam** · 2 messages, latest 10:00 AM — Me: “np”
 
     Let me know if you'd like me to dig into any of these or draft a reply.
     """

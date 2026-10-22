@@ -25,10 +25,10 @@ LEGACY_QUARANTINE_TABLE = "commitments_recovery_legacy"
 
 CURRENT_COLUMNS = (
     "id", "source", "source_id", "kind", "title", "context", "organizer",
-    "account", "when_ts", "all_day", "location", "url", "status",
+    "account", "when_ts", "all_day", "due_date", "location", "url", "status",
     "confidence", "created_at", "updated_at",
 )
-OPTIONAL_ADDITIVE_COLUMNS = {"organizer", "account"}
+OPTIONAL_ADDITIVE_COLUMNS = {"organizer", "account", "due_date"}
 
 
 class RecoveryRefused(RuntimeError):
@@ -96,6 +96,7 @@ def _create_merged_table(db: sqlite3.Connection) -> None:
             account TEXT,
             when_ts REAL,
             all_day INTEGER DEFAULT 0,
+            due_date TEXT,
             location TEXT,
             url TEXT,
             status TEXT DEFAULT 'active',

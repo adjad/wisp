@@ -5,7 +5,7 @@ import re
 from datetime import date, datetime, timedelta
 
 from service.router.router import calendar_is_excluded
-from service.utterance_shape import deliberate
+from service.utterance_shape import deliberate, quoted_spans
 from service.safety.policy import Tier, decide
 from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome
 from service.tasks.models import TaskExecution
@@ -226,7 +226,7 @@ def _calendar_read_args(text: str, period: str, today: date | None = None,
         r"(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:"
         r"what(?:[’']s|\s+is|\s+are)\s+(?:on|in)\s+|is\s+there\s+anything\s+(?:on|in)\s+|"
         r"(?:show(?:\s+me)?|check|list)\s+|(?:why\s+)?are\s+there\s+no\s+)"
-        r"(?:my\s+|the\s+)?(?:cal(?:endar)?(?:\s+events)?|schedule)\b(?P<tail>.*)",
+        r"(?:my\s+|the\s+)?(?P<source>cal(?:endar)?(?:\s+events)?|schedule)\b(?P<tail>.*)",
         text.strip(" .!?"), re.I)
     if not match:
         return None
@@ -235,18 +235,33 @@ def _calendar_read_args(text: str, period: str, today: date | None = None,
     # filter is fully represented. Other status predicates remain unresolved.
     tail = re.sub(r"^that\s+are\s+not\s+cancelled\b|^that\s+are\s+not\s+canceled\b",
                   "", tail, flags=re.I).strip()
-    exclusion = re.search(
-        r"(?:[,;]\s*|\s+)?(?:do\s+not\s+include|don[’']t\s+include|without|"
-        r"excluding|exclude|skip|leave\s+out|no)\s+reminders?\s*$", tail, re.I)
-    reminders_excluded = exclusion is not None
-    if exclusion:
-        tail = tail[:exclusion.start()].strip()
     title = re.search(
         r'''\b(?:named|titled|called)\s+(?:"(?P<double>[^"\n]+)"|“(?P<curly>[^”\n]+)”|'''
         r"'(?P<single>[^'\n]+)'|`(?P<backtick>[^`\n]+)`)", tail, re.I)
     query = next((v for v in title.groupdict().values() if v is not None), "") if title else ""
     if title:
         tail = (tail[:title.start()] + tail[title.end():]).strip()
+    # Interpret source clauses only after removing the literal title. Calendar
+    # never reads the web or Notes; excluding Reminders needs calendar_only.
+    # Consume complete trailing clauses, leaving unknown conditions or actions
+    # intact so they cannot accidentally authorize a narrower read.
+    reminders_excluded = False
+    while True:
+        exclusion = re.search(
+            r"(?:^|[,;]\s*|\s+)(?:but\s+)?(?:do\s+not\s+(?:include|use)|"
+            r"don[’']t\s+(?:include|use)|without|excluding|exclude|skip|leave\s+out|no)"
+            r"\s+reminders?\s*$", tail, re.I)
+        if exclusion:
+            reminders_excluded = True
+        else:
+            exclusion = re.search(
+                r"(?:^|[,;]\s*|\s+)(?:but\s+)?(?:do\s+not|don[’']t)\s+(?:"
+                r"browse(?:\s+(?:the\s+)?(?:web|internet))?|"
+                r"(?:use|search)\s+(?:the\s+)?(?:web|internet)|"
+                r"(?:use|read|search)\s+(?:my\s+|the\s+)?notes)\s*$", tail, re.I)
+        if not exclusion:
+            break
+        tail = tail[:exclusion.start()].strip()
     scope = re.sub(r"^(?:for|on)\s+", "", tail, flags=re.I).strip()
     numeric = re.fullmatch(r"(?:the\s+)?next\s+(\d+)\s+(days?|weeks?)", scope, re.I)
     if not scope:
@@ -272,7 +287,7 @@ def _calendar_read_args(text: str, period: str, today: date | None = None,
         return None
     if query:
         args["query"] = query
-    if reminders_excluded or re.search(r"\bcalendar\s+events\b", text, re.I):
+    if reminders_excluded or re.fullmatch(r"cal(?:endar)?\s+events", match["source"], re.I):
         args = {**args, "calendar_only": True}
     return args
 
@@ -297,9 +312,26 @@ def _sender_phrase(raw: str) -> str | None:
     return candidate
 
 
+def _normalize_calendar_request(text: str) -> str:
+    """Correct request syntax without changing a quoted event's identity."""
+    parts = []
+    cursor = 0
+    for start, end in quoted_spans(text):
+        parts.extend((_normalize(text[cursor:start]), text[start:end]))
+        cursor = end
+    parts.append(_normalize(text[cursor:]))
+    return "".join(parts)
+
+
 def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                  last_stock_response: str = ""):
     if deliberate(prompt) is not None:
+        return None
+    from service.calendar_time_intent import named_calendar_time
+    intent = named_calendar_time(prompt)
+    if intent is not None:
+        if intent.supported and intent.personal and not intent.no_calendar:
+            return [("get_upcoming", intent.calendar_args())], ""
         return None
     from service.workflows.workflow20 import mentioned_sources, personal_read
     read = personal_read(prompt)
@@ -309,7 +341,7 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
         return None
     # A fully consumed Calendar read can explicitly exclude Reminders. Check
     # that complete grammar before counting excluded nouns as another source.
-    calendar_text = _normalize(prompt).strip(" *_.?!")
+    calendar_text = _normalize_calendar_request(prompt).strip(" *_.?!")
     calendar_args = _calendar_read_args(calendar_text, _date_range(calendar_text))
     if calendar_args is not None:
         return [("get_upcoming", calendar_args)], ""

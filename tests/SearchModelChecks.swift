@@ -125,6 +125,8 @@ enum SearchModelChecks {
         await editsResetAndCaptureRetireWork()
         await blankAndCompletionClearProgress()
         await healthyDebounceAndFallback()
+        await partialFailuresKeepCompletedContent()
+        await explicitRetryCanRecover()
         await unreadablePageKeepsExplanation()
         await emptyGlobalFailureExplainsNoAnswer()
         print("SearchModel: \(checks) regression checks passed (synthetic transport only)")
@@ -275,6 +277,57 @@ enum SearchModelChecks {
         check(model.errorText == message, "explicit search preserves capture failure")
         model.reset()
         check(model.errorText.isEmpty, "reset clears old capture failure")
+    }
+
+    static func partialFailuresKeepCompletedContent() async {
+        let (model, client) = fixture()
+        let request = await start(model, client)
+        client.emit(request, "lexical", ["results": [["match": "violet", "start": 19, "end": 25]]])
+        client.emit(request, "answer_error")
+        await settle()
+        check(model.rows.first?.match == "violet", "answer failure retains successful search rows")
+        check(model.errorText == "Couldn't generate an answer.", "answer failure remains available beside rows")
+
+        client.emit(request, "answer", ["text": "The code is violet.", "scope": "span"])
+        await settle()
+        check(model.answer == "The code is violet.", "successful answer is retained")
+        check(model.errorText.isEmpty, "successful answer clears an obsolete warning")
+
+        client.emit(request, "error", ["message": "The connection was interrupted."])
+        await settle()
+        check(model.answer == "The code is violet.", "transport failure retains a completed answer")
+        check(model.errorText == "The connection was interrupted.", "transport failure remains visible with the answer")
+        client.finish(request)
+        await settle()
+        model.reset()
+    }
+
+    static func explicitRetryCanRecover() async {
+        let (model, client) = fixture()
+        let failed = await start(model, client)
+        client.emit(failed, "lexical", ["results": [["match": "violet", "start": 19, "end": 25]]])
+        client.emit(failed, "error", ["message": "The connection was interrupted."])
+        await settle()
+        check(model.rows.first?.match == "violet" && !model.errorText.isEmpty,
+              "failed request keeps partial results and its warning")
+
+        model.askAnyway() // Explicit ⌘↵ retry repeats the answer request for the same query.
+        await waitUntil("explicit retry starts") { client.requests.count == 2 }
+        check(client.requests[1].query == client.requests[0].query
+              && client.requests[1].forceAnswer,
+              "explicit retry uses the existing same-query answer semantics")
+        check(model.errorText.isEmpty, "new retry clears the previous warning")
+        client.emit(1, "answer", ["text": "The code is violet.", "scope": "span"])
+        await settle()
+        check(model.answer == "The code is violet." && model.errorText.isEmpty,
+              "successful retry replaces failure state with its answer")
+        client.emit(failed, "error", ["message": "STALE FAILURE"])
+        await settle()
+        check(model.answer == "The code is violet." && model.errorText.isEmpty,
+              "late failure from retried request cannot replace success")
+        client.finishAll()
+        await settle()
+        model.reset()
     }
 
     static func emptyGlobalFailureExplainsNoAnswer() async {

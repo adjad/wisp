@@ -7,12 +7,20 @@ struct DailyAttentionItem: Decodable, Identifiable {
     let reason: String
     let quote: String
     let due_ts: Double?
+    let all_day: Bool?
+    let due_date: String?
     let priority: Int
     let reference: String
     let suggested_minutes: Int
     let needs_review: Bool
     let task_kind: String?
     let ownership: String?
+    /// Email and Messages only: who it's from, whether that looks like a
+    /// person, when it came, and whether you've texted that conversation since.
+    let sender: String?
+    let person: Bool?
+    let received_ts: Double?
+    let replied: Bool?
 }
 
 struct DailySourceCoverage: Decodable, Identifiable {
@@ -21,6 +29,8 @@ struct DailySourceCoverage: Decodable, Identifiable {
     let detail: String
     let inspected: Int
     let omitted: Int
+    /// What the user must grant before this source can be read: "full_disk_access".
+    var blocked: String? = nil
     var id: String { source }
 }
 
@@ -37,6 +47,33 @@ struct DailyWorkspace: Decodable {
     let behavior_detail: String
     let proposed_plan: DailyProposal
     let explanation: String
+    /// The Brief's one-line MAIL and TEXTS overviews (service/assistant/mail_gists.py);
+    /// absent from an older service, or for a source that couldn't be read.
+    var mail_overview: DailyOverview? = nil
+    var texts_overview: DailyOverview? = nil
+    /// The written inbox summary under MAIL: a model's paragraph, or prose built without one.
+    var mail_summary: DailyOverview? = nil
+    /// The Brief's "Needs you today" line (daily_workspace.needs_you); absent
+    /// from an older service.
+    var needs_you: DailyNeedsYou? = nil
+}
+
+struct DailyNeedsYou: Decodable, Equatable {
+    struct Item: Decodable, Equatable {
+        let id: String
+        let kind: String
+        let text: String
+        let due_ts: Double?
+        let all_day: Bool?
+    }
+    let items: [Item]
+    let more: Int
+}
+
+struct DailyOverview: Decodable, Equatable {
+    let text: String
+    /// "model" for a gist, "summary" for the sentence built without one.
+    let source: String
 }
 
 struct DailyAttentionView: View {
@@ -83,8 +120,13 @@ struct DailyAttentionView: View {
                                         .font(.caption).frame(maxWidth: 330)
                                 }
                                 if let due = item.due_ts {
-                                    Text(Date(timeIntervalSince1970: due), format: .dateTime.month().day().hour().minute().timeZone())
-                                        .font(.caption).foregroundStyle(.secondary)
+                                    if item.all_day == true {
+                                        Text("All day · " + (item.due_date ?? Date(timeIntervalSince1970: due).formatted(.dateTime.month().day())))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        Text(Date(timeIntervalSince1970: due), format: .dateTime.month().day().hour().minute().timeZone())
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
                                 }
                                 DisclosureGroup("Source evidence") {
                                     VStack(alignment: .leading, spacing: 6) {

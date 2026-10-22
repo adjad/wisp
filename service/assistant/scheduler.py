@@ -234,6 +234,14 @@ async def run() -> None:
             schedule_tick()
         except Exception:  # optional daily self-plan delivery never delays the loop
             pass
+        # The Brief's MAIL and TEXTS overviews (mail_gists.py): one bounded
+        # background model call at a time, only while nobody is waiting, and
+        # only for a source whose mail or texts changed.
+        try:
+            from service.assistant import mail_gists
+            mail_gists.schedule_tick()
+        except Exception:  # noqa: BLE001 — a missing gist falls back to a plain sentence
+            pass
         # The chief-of-staff loop (service/assistant/checkin.py): carry
         # unfinished tasks onto today each morning, and in the evening ask how
         # the day went, once, when the app is listening. No model, no sends.

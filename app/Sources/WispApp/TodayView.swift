@@ -30,6 +30,13 @@ struct TodayTask: Decodable, Identifiable {
          "pinned_start": pin.map { $0.timeIntervalSince1970 as Any } ?? NSNull()]
     }
 }
+/// One email, message or note a grouped review suggestion covers.
+struct TodayBlockMember: Decodable {
+    let title: String
+    let evidence_id: String
+    let sender: String?
+}
+
 struct TodayBlock: Decodable, Identifiable {
     let id: String
     let title: String
@@ -41,6 +48,21 @@ struct TodayBlock: Decodable, Identifiable {
     let pattern_id: String?
     /// For a suggestion: the daily-workspace item it was made from.
     let evidence_id: String?
+    /// For a grouped review suggestion ("Review 3 emails"): the items it covers.
+    let members: [TodayBlockMember]?
+    /// For a Calendar block: which synced occurrence it is and what the Day
+    /// timeline's Cancel and Move need, the same facts as the check-in card's
+    /// rows (service/assistant/checkin.py annotate_calendar_blocks). All absent
+    /// from an older service, which then offers neither.
+    let source_id: String?
+    let all_day: Bool?
+    let invitee_count: Int?
+    let organizer_is_user: Bool?
+    let calendar_writable: Bool?
+    let cancel_blocked: String?
+    let move_blocked: String?
+    // TodayBlock.calendarEvent (CheckInView.swift) turns these into a CheckInEvent;
+    // it lives there because scripts/test_today_contract.sh compiles this file alone.
 
     var evidenceLabel: String {
         switch kind {
@@ -63,6 +85,8 @@ struct TodayDeadline: Decodable, Identifiable {
     let title: String
     let due_ts: Double
     let source: String
+    let all_day: Bool?
+    let due_date: String?
 }
 struct TodayUnscheduled: Decodable, Identifiable {
     let task_id: String
@@ -102,6 +126,38 @@ struct TodayPlan: Decodable {
     var displayWarnings: [String] { workspace?.proposed_plan.warnings ?? warnings }
 }
 
+/// A composed Daily Summary the service kept (`/assistant/daily_summary/latest`),
+/// read again after a relaunch, when the live event and Refresh are gone.
+struct StoredBrief: Equatable {
+    let text: String
+    let composedAt: Date
+    /// The day it was asked for, "yyyy-MM-dd".
+    let day: String
+
+    static func parse(_ obj: [String: Any], day: String) -> StoredBrief? {
+        guard let text = obj["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let at = (obj["composed_at"] as? NSNumber)?.doubleValue, at.isFinite, at > 0 else { return nil }
+        return StoredBrief(text: text, composedAt: Date(timeIntervalSince1970: at), day: day)
+    }
+
+    /// The newer of the brief this launch received and the stored one, among
+    /// those from `day` (per `sameDay`); nil when neither is.
+    static func newest(live: (text: String, at: Date)?, stored: StoredBrief?,
+                       sameDay: (Date) -> Bool) -> (text: String, at: Date)? {
+        let candidates = [live, stored.map { (text: $0.text, at: $0.composedAt) }].compactMap { $0 }.filter { sameDay($0.at) }
+        return candidates.max { $0.at < $1.at }
+    }
+
+    /// Whether the brief on screen is the one this launch received, so "Ask
+    /// about this" may continue its saved chat. When the Brief shows the stored
+    /// brief instead (newer, or the only one from today), the live one is a
+    /// different brief, and continuing it would answer about the wrong one.
+    static func shownIsLive(shown: (text: String, at: Date)?, live: (text: String, at: Date)?) -> Bool {
+        guard let shown, let live else { return false }
+        return shown.text == live.text && shown.at == live.at
+    }
+}
+
 @MainActor
 final class TodayModel: ObservableObject {
     // The one problem report about Today, shared by the notch's Day tab and
@@ -112,6 +168,12 @@ final class TodayModel: ObservableObject {
     /// reminders) for the notch Brief's SOON row, read with UpcomingItem.parseList.
     /// Nil until it has been read once.
     @Published private(set) var upcomingReply: [String: Any]?
+    /// The day's latest composed Daily Summary as the service kept it
+    /// (`/assistant/daily_summary/latest`), so the Brief shows it again after a
+    /// relaunch. Nil until read, or when none was composed that day.
+    @Published private(set) var storedBrief: StoredBrief?
+    /// The kept summary has been asked for at least once, so its absence is known.
+    @Published private(set) var storedBriefChecked = false
     @Published var error = ""
     @Published var busy = false
     @Published var capturePlannerDetails = false
@@ -300,6 +362,24 @@ final class TodayModel: ObservableObject {
         upcomingReply = reply
     }
 
+    /// Reads today's latest composed brief. A 404 means none was composed today;
+    /// any other failure keeps what was read before.
+    func refreshStoredBrief() async {
+        let day = Self.dayString(nowProvider(), in: timezone)
+        do {
+            let data = try await request("/assistant/daily_summary/latest?day=\(day)")
+            guard let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let brief = StoredBrief.parse(reply, day: day) else { return }
+            storedBrief = brief
+            storedBriefChecked = true
+        } catch {
+            let failure = error as NSError
+            if failure.domain == "Today", failure.code == 404 { storedBrief = nil }
+            // Any answer settles it: a service that can't say still shows the note.
+            storedBriefChecked = true
+        }
+    }
+
     func diagnosticSnapshot() -> (metadata: [String: Any], details: [String: Any]?) {
         (reportMetadata, capturePlannerDetails ? reportDetails : nil)
     }
@@ -345,11 +425,14 @@ final class TodayModel: ObservableObject {
         return failure == nil
     }
 
-    func add(title: String, kind: String, minutes: Int, priority: Int, due: Date?, pinned: Date? = nil) async -> Bool {
+    func add(title: String, kind: String, minutes: Int, priority: Int, due: Date?, pinned: Date? = nil,
+             origin: Double? = nil) async -> Bool {
         var body: [String: Any] = ["title": title, "day": day, "timezone": timezone.identifier, "kind": kind,
                                    "duration_minutes": minutes, "priority": priority]
         if let due { body["due_ts"] = due.timeIntervalSince1970 }
         if let pinned { body["pinned_start"] = pinned.timeIntervalSince1970 }
+        // When what it came from first mattered, so the morning carry-forward ages it from there.
+        if let origin { body["origin_ts"] = origin }
         return await mutate("/assistant/today/tasks", method: "POST", body: body)
     }
 
@@ -540,7 +623,7 @@ struct TodayView: View {
                             GroupBox("Deadlines · these do not reserve time") {
                                 VStack(alignment: .leading, spacing: 8) {
                                     ForEach(plan.deadlines) { item in
-                                        Text("\(model.clock(item.due_ts))  ·  \(item.title)  (\(item.source))")
+                                        Text("\((item.all_day == true ? "All day" : model.clock(item.due_ts)))  ·  \(item.title)  (\(item.source))")
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 }.padding(6)

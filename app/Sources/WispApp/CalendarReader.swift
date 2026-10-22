@@ -122,6 +122,13 @@ final class CalendarReader {
             if let o = ev.organizer, !o.isCurrentUser, let name = o.name {
                 row["organizer"] = name
             }
+            // For moves: an event with invitees may be moved only by its organizer
+            // (CalendarMove.refusal). No organizer_is_user key means "unknown".
+            row["invitee_count"] = Self.inviteeCount(ev)
+            if let o = ev.organizer { row["organizer_is_user"] = o.isCurrentUser }
+            // A subscribed or otherwise read-only calendar: the card then offers neither
+            // Cancel nor Move (CalendarMove.refusal would refuse them anyway).
+            row["calendar_writable"] = ev.calendar?.allowsContentModifications ?? false
             // `source` is the ACCOUNT this calendar belongs to (e.g. "iCloud",
             // or a Google account's own label) — distinct from `context`
             // (the calendar's own name within that account, e.g. "Work").
@@ -256,6 +263,110 @@ final class CalendarReader {
         } catch {
             return ["ok": false, "error": "Calendar delete failed: \(error.localizedDescription)"]
         }
+    }
+
+    // Move one exact occurrence to a new start (CalendarMove has the rules). The event is
+    // found by identifier AND its current start, like deleteEvent, and must still carry
+    // the title Wisp saw, and the invitee count the confirmation card stated. An event
+    // with invitees moves only when the user organizes it (Calendar then sends them the
+    // new time); a start another occurrence of the series already has is refused. Only startDate/endDate change, with span
+    // .thisEvent so a repeating series never moves. The saved event is read back and
+    // compared field by field; anything other than the requested move reads as
+    // "unknown", not done.
+    func moveEvent(identifier: String, expectedTitle: String, expectedStart: Double,
+                   newStart: Double, durationMin: Int?, expectedInvitees: Int) -> [String: Any] {
+        guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
+        guard let ev = occurrence(identifier, at: expectedStart) else {
+            return ["ok": false, "error": "That event is no longer at the time Wisp last read; nothing was moved"]
+        }
+        let before = Self.facts(ev)
+        let startTaken = abs(newStart - expectedStart) >= 1 && occurrence(identifier, at: newStart) != nil
+        if let reason = CalendarMove.refusal(before, expectedTitle: expectedTitle, expectedStart: expectedStart,
+                                              calendarWritable: ev.calendar?.allowsContentModifications ?? false,
+                                              invitees: Self.inviteeCount(ev), expectedInvitees: expectedInvitees,
+                                              organizerIsUser: ev.organizer?.isCurrentUser, startTaken: startTaken) {
+            return ["ok": false, "error": reason]
+        }
+        let newEnd = CalendarMove.newEnd(before, newStart: newStart, durationMin: durationMin)
+        ev.startDate = Date(timeIntervalSince1970: newStart)
+        ev.endDate = Date(timeIntervalSince1970: newEnd)
+        do {
+            try store.save(ev, span: .thisEvent, commit: true)
+        } catch {
+            ev.rollback()
+            return ["ok": false, "error": "Calendar didn't save the move: \(error.localizedDescription)"]
+        }
+        // A fresh lookup at the new start, else the saved object refreshed from the store.
+        let readBack = occurrence(identifier, at: newStart) ?? (ev.refresh() ? ev : nil)
+        return CalendarMove.savedResult(before: before, after: readBack.map(Self.facts),
+                                        newStart: newStart, newEnd: newEnd)
+    }
+
+    // Cancel one exact occurrence (a one-tap Cancel on the Day tab). Found by identifier
+    // AND start, with the title and invitee count the card showed as preconditions, and the
+    // same organizer rules as a move. Removed with span .thisEvent, so a repeating series
+    // keeps every other occurrence; then read back that this one is gone.
+    func cancelEvent(identifier: String, expectedTitle: String, expectedStart: Double,
+                     expectedInvitees: Int) -> [String: Any] {
+        guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
+        guard let ev = occurrence(identifier, at: expectedStart) else {
+            return ["ok": false, "error": "That event is no longer at the time Wisp last read; nothing was cancelled"]
+        }
+        if let reason = CalendarMove.cancelRefusal(Self.facts(ev), expectedTitle: expectedTitle,
+                                                    expectedStart: expectedStart,
+                                                    calendarWritable: ev.calendar?.allowsContentModifications ?? false,
+                                                    invitees: Self.inviteeCount(ev), expectedInvitees: expectedInvitees,
+                                                    organizerIsUser: ev.organizer?.isCurrentUser) {
+            return ["ok": false, "error": reason]
+        }
+        do {
+            try store.remove(ev, span: .thisEvent, commit: true)
+        } catch {
+            return ["ok": false, "error": "Calendar didn't cancel it: \(error.localizedDescription)"]
+        }
+        return CalendarMove.cancelledResult(stillThere: occurrence(identifier, at: expectedStart) != nil)
+    }
+
+    /// Attendees other than the user: who a move would notify. EventKit's list often
+    /// includes the user (as organizer), which must not be counted as an invitee.
+    static func inviteeCount(_ ev: EKEvent) -> Int {
+        (ev.attendees ?? []).filter { !$0.isCurrentUser }.count
+    }
+
+    /// A link that shows this occurrence in Calendar (its calendarItemIdentifier, which
+    /// Calendar's ical://ekevent URLs take), or nil when it is no longer in the store.
+    func showInCalendarURL(identifier: String, at ts: Double) -> URL? {
+        guard isAuthorized, let ev = occurrence(identifier, at: ts) else { return nil }
+        return CalendarMove.showURL(calendarItemIdentifier: ev.calendarItemIdentifier)
+    }
+
+    /// The occurrence of `identifier` starting at `ts` (to the second), or nil.
+    private func occurrence(_ identifier: String, at ts: Double) -> EKEvent? {
+        let pred = store.predicateForEvents(withStart: Date(timeIntervalSince1970: ts - 86400),
+                                            end: Date(timeIntervalSince1970: ts + 86400), calendars: nil)
+        return store.events(matching: pred).first {
+            $0.eventIdentifier == identifier && abs(($0.startDate?.timeIntervalSince1970 ?? .infinity) - ts) < 1
+        }
+    }
+
+    private static func facts(_ ev: EKEvent) -> CalendarEventFacts {
+        CalendarEventFacts(
+            title: ev.title ?? "(untitled)",
+            start: ev.startDate?.timeIntervalSince1970 ?? .nan,
+            end: ev.endDate?.timeIntervalSince1970 ?? .nan,
+            isAllDay: ev.isAllDay,
+            calendarID: ev.calendar?.calendarIdentifier ?? "",
+            timeZone: ev.timeZone?.identifier ?? "floating",
+            notes: ev.notes ?? "", url: ev.url?.absoluteString ?? "<none>", location: ev.location ?? "",
+            structuredLocation: ev.structuredLocation.map { place in
+                let geo = place.geoLocation.map { "\($0.coordinate.latitude),\($0.coordinate.longitude)" } ?? ""
+                return (place.title ?? "") + "|" + geo
+            } ?? "",
+            attendees: (ev.attendees ?? []).map { $0.url.absoluteString }.sorted(),
+            alarms: (ev.alarms ?? []).map { alarm in
+                alarm.absoluteDate.map { "absolute:\($0.timeIntervalSince1970)" } ?? "relative:\(alarm.relativeOffset)"
+            }.sorted(),
+            availability: ev.availability.rawValue)
     }
 
     private func post(events: [[String: Any]], diagnostics: [String: Any] = [:]) {

@@ -52,6 +52,14 @@ struct DayBlockInput: Equatable {
     var taskID: String? = nil
     var patternID: String? = nil
     var evidenceID: String? = nil
+    /// For a grouped review suggestion ("Review 3 emails"): what it covers.
+    var members: [DayMember] = []
+}
+
+/// One item a grouped review suggestion covers: an email, message or note.
+struct DayMember: Equatable {
+    var title: String
+    var evidenceID: String
 }
 
 /// One "Needs you" item from the daily workspace.
@@ -60,6 +68,15 @@ struct DayNeedInput: Equatable {
     var title: String
     var source: String
     var due: Double?
+}
+
+/// One item of the Brief's Needs you line, as the service phrased it.
+struct NeedsYouInput: Equatable {
+    /// "overdue", "due", "plan", "mail" or "text".
+    var kind: String
+    var text: String
+    var due: Double? = nil
+    var allDay = false
 }
 
 /// One "Caught for you" record from the attention runner.
@@ -92,6 +109,8 @@ struct DayItem: Identifiable, Equatable {
     var evidenceID: String? = nil
     /// "behavior_away" for a learned away window.
     var kind: String = ""
+    /// For a grouped review suggestion: the items one Keep plans together.
+    var members: [DayMember] = []
     /// Over before now, on today: drawn dim, inside the lane's two hours back.
     var past = false
 }
@@ -139,7 +158,9 @@ struct DayTimeline: Equatable {
                 detail = block.end == nil ? "From " + clock(block.start) : clock(block.start) + " – " + clock(end)
             case "suggestion":
                 style = .suggested
-                detail = "Suggested · about \(duration(minutes))"
+                detail = block.members.count > 1
+                    ? "Suggested · \(block.members.count) to read · about \(duration(minutes))"
+                    : "Suggested · about \(duration(minutes))"
             case "behavior":
                 style = .usual
                 detail = "Usually busy · not on your calendar"
@@ -153,7 +174,7 @@ struct DayTimeline: Equatable {
             items.append(DayItem(id: "block:" + block.id, title: block.title, detail: detail,
                                  start: block.start, end: end, style: style, blockID: block.id,
                                  taskID: block.taskID, patternID: block.patternID,
-                                 evidenceID: block.evidenceID, kind: block.kind))
+                                 evidenceID: block.evidenceID, kind: block.kind, members: block.members))
         }
 
         // A reminder that already has a suggested block is drawn once, as the suggestion.
@@ -200,10 +221,17 @@ struct DayTimeline: Equatable {
         return DayTimeline(from: from, to: to, items: arrange(items), allDay: allDay.filter { !isJunk($0) })
     }
 
-    /// Side by side where blocks overlap: each cluster of overlapping blocks
-    /// shares out columns, first free column first.
+    /// The shortest time a block is drawn as: the lane never draws one under 22
+    /// points at 44 points an hour, so a 15-minute block covers 30 minutes on
+    /// screen. Overlap is judged by that, or back-to-back short blocks would draw
+    /// on top of one another, their titles and borders running through each other.
+    static let minimumDrawn: Double = 30 * 60
+
+    /// Side by side where blocks overlap as drawn: each cluster of overlapping
+    /// blocks shares out columns, first free column first.
     static func arrange(_ input: [DayItem]) -> [DayItem] {
         var items = input.sorted { ($0.start, $0.end, $0.style, $0.id) < ($1.start, $1.end, $1.style, $1.id) }
+        let drawnEnd = { (item: DayItem) in max(item.end, item.start + minimumDrawn) }
         var cluster: [Int] = []
         var columnEnds: [Double] = []
         var clusterEnd = -Double.infinity
@@ -213,16 +241,17 @@ struct DayTimeline: Equatable {
             columnEnds = []
         }
         for index in items.indices {
+            let end = drawnEnd(items[index])
             if items[index].start >= clusterEnd { close() }
             if let free = columnEnds.firstIndex(where: { $0 <= items[index].start }) {
                 items[index].column = free
-                columnEnds[free] = items[index].end
+                columnEnds[free] = end
             } else {
                 items[index].column = columnEnds.count
-                columnEnds.append(items[index].end)
+                columnEnds.append(end)
             }
             cluster.append(index)
-            clusterEnd = max(clusterEnd, items[index].end)
+            clusterEnd = max(clusterEnd, end)
         }
         close()
         return items
@@ -371,8 +400,10 @@ struct DayTimeline: Equatable {
     /// The Brief's one sentence, from the day itself. It opens with the same
     /// verdict word as the CAL line ("A light Saturday." / "Light day: …"), so
     /// the two never disagree.
+    /// `othersNeedYou`: the Needs you line under it lists something (a person's
+    /// email or text, a plan task), so the lede never says nothing does.
     static func lede(weekday: String, isToday: Bool, load: DayLoad.Verdict?, dueToday: [String], overdue: [String],
-                     next: (title: String, time: String)?) -> String {
+                     next: (title: String, time: String)?, othersNeedYou: Bool = false) -> String {
         var parts: [String] = []
         let due = dueToday.filter { !isJunk($0) }
         let late = overdue.filter { !isJunk($0) }
@@ -386,9 +417,33 @@ struct DayTimeline: Equatable {
         let opening = load.map { $0.article + " " + weekday + "." } ?? "It's \(weekday)."
         if parts.isEmpty {
             if let next { return opening + " Next up: \(next.title) at \(next.time)." }
+            if othersNeedYou { return opening }
             return opening + (isToday ? " Nothing needs you right now." : " Nothing needs you that day.")
         }
         return opening + " " + parts.joined(separator: ", and ").capitalizedFirst + "."
+    }
+
+    /// The Brief's line under the lede: today's work that needs the user, as the
+    /// service picked it (daily_workspace.needs_you, from the same attention
+    /// items the Day tab's Needs you reads). "Needs you today: Pay rent
+    /// (overdue), PA 2 (due 11:59 PM), a text from Mom and 2 more." Nil when
+    /// nothing is listed: the lede already says so, and an empty header says nothing.
+    static func needsYou(_ items: [NeedsYouInput], more: Int, clock: (Double) -> String) -> String? {
+        let shown = items.filter { !isJunk($0.text) }
+        guard !shown.isEmpty else { return nil }
+        var phrases = shown.map { item -> String in
+            switch item.kind {
+            case "overdue": return item.text + " (overdue)"
+            case "due":
+                guard let due = item.due else { return item.text }
+                return item.text + (item.allDay ? " (due today)" : " (due \(clock(due)))")
+            default: return item.text
+            }
+        }
+        if more > 0 { phrases.append("\(more) more") }
+        let joined = phrases.count == 1 ? phrases[0]
+            : phrases.dropLast().joined(separator: ", ") + " and " + phrases[phrases.count - 1]
+        return "Needs you today: " + joined + "."
     }
 
     enum BriefSource: Equatable { case calendar, mail, messages, reminders }
@@ -425,8 +480,10 @@ struct DayTimeline: Equatable {
     /// Always four rows, CAL, MAIL, TEXTS and SOON, so the Brief keeps its shape.
     /// A source Wisp can't read yet shows a dim row saying so instead of disappearing.
     static func briefLines(calendar: DayLoad?, calendarUnsynced: Bool = false,
-                           mail: (ready: Bool, needing: [String])?,
-                           texts: (ready: Bool, needing: [String])?,
+                           mail: (ready: Bool, needing: [BriefNeed])?,
+                           texts: (ready: Bool, needing: [BriefNeed])?,
+                           textsNeedAccess: Bool = false,
+                           mailOverview: String? = nil, textsOverview: String? = nil,
                            soon: Soon) -> [BriefLine] {
         var lines: [BriefLine] = []
         if let calendar {
@@ -436,22 +493,35 @@ struct DayTimeline: Equatable {
                                    trailing: "", source: .calendar, muted: calendarUnsynced))
         }
         // No coverage entry means the workspace couldn't be read: unknown, not off.
-        if let mail, mail.ready {
-            let needing = mailNeedingYou(mail.needing)
-            let promos = mail.needing.filter { !isJunk($0) && isBulkMail($0) }.count
-            let text = needing.isEmpty ? "Nothing needs a reply"
-                : needing.count == 1 ? needing[0] : "\(needing.count) emails need you"
-            // Say when promos were left out, so a hidden email is never silent.
-            lines.append(BriefLine(tag: "MAIL", text: text, trailing: promos > 0 ? "+\(promos) promo\(promos == 1 ? "" : "s")" : "",
-                                   source: .mail))
+        if let mail, mail.ready, let mailOverview {
+            // What the inbox is about, and how many emails need you.
+            lines.append(BriefLine(tag: "MAIL", text: BriefMail.row(overview: mailOverview, needing: mail.needing),
+                                   trailing: "", source: .mail))
+        } else if let mail, mail.ready {
+            // An older service sends no overview: what the top email is about.
+            let shown = BriefMail.shown(mail.needing)
+            let promos = BriefMail.bulkCount(mail.needing)
+            let hidden = BriefMail.privateCount(mail.needing)
+            let text = shown.first?.rowLine
+                ?? (hidden > 0 ? "\(hidden) private email\(hidden == 1 ? "" : "s") not shown" : "Nothing needs a reply")
+            // Say when more mail or promos were left out, so a hidden email is never silent.
+            let trailing = shown.count > 1 ? "+\(shown.count - 1) more"
+                : promos > 0 ? "+\(promos) promo\(promos == 1 ? "" : "s")" : ""
+            lines.append(BriefLine(tag: "MAIL", text: text, trailing: trailing, source: .mail))
         } else {
             lines.append(BriefLine(tag: "MAIL", text: "Mail hasn't been checked yet", trailing: "", source: .mail, muted: true))
         }
-        if let texts, texts.ready {
-            let needing = texts.needing.filter { !isJunk($0) }
-            let text = needing.isEmpty ? "No texts need you"
-                : needing.count == 1 ? needing[0] : "\(needing.count) texts need you"
-            lines.append(BriefLine(tag: "TEXTS", text: text, trailing: "", source: .messages))
+        if textsNeedAccess {
+            // Not "haven't been checked yet": Wisp can't read them until the user grants access.
+            lines.append(BriefLine(tag: "TEXTS", text: "Texts need Full Disk Access", trailing: "", source: .messages))
+        } else if let texts, texts.ready, let textsOverview {
+            // What texts are about and how many people are waiting, never what they wrote.
+            lines.append(BriefLine(tag: "TEXTS", text: BriefTexts.row(overview: textsOverview, people: BriefTexts.waiting(texts.needing)),
+                                   trailing: "", source: .messages))
+        } else if let texts, texts.ready {
+            // Who is waiting on you, never what they wrote.
+            lines.append(BriefLine(tag: "TEXTS", text: BriefTexts.row(BriefTexts.waiting(texts.needing)), trailing: "",
+                                   source: .messages))
         } else {
             lines.append(BriefLine(tag: "TEXTS", text: "Messages haven't been checked yet", trailing: "", source: .messages, muted: true))
         }
@@ -464,6 +534,28 @@ struct DayTimeline: Equatable {
             lines.append(BriefLine(tag: "SOON", text: "The week ahead hasn't loaded yet", trailing: "", source: .reminders, muted: true))
         }
         return lines
+    }
+
+    /// The task Plan time makes from a need: "Review: …" for mail and texts.
+    static func plannedTitle(_ title: String, review: Bool) -> String {
+        review ? "Review: " + title : title
+    }
+
+    /// When a task made from a reminder first mattered: the reminder's due time
+    /// once it has passed. A reminder due two weeks ago makes a task two weeks
+    /// old on its first day, so the morning carry-forward leaves it behind
+    /// instead of carrying it as new. Nil for one not yet due or undated.
+    static func planOrigin(due: Double?, now: Double) -> Double? {
+        guard let due, due.isFinite, due > 0, due <= now else { return nil }
+        return due
+    }
+
+    /// Whether the day already has an active task for this need (its title, or
+    /// "Review: " and its title), so a second Plan time can't add a duplicate.
+    static func alreadyPlanned(_ title: String, tasks: [(title: String, active: Bool)]) -> Bool {
+        let key = { (s: String) in s.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased() }
+        let wanted: Set<String> = [key(title), key(plannedTitle(title, review: true))]
+        return tasks.contains { $0.active && wanted.contains(key($0.title)) }
     }
 
     /// Mail worth the MAIL row's count: no placeholders, newsletters or promos.
