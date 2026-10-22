@@ -1,8 +1,7 @@
 import Foundation
 
-// Only pure mapping methods are called. No EKEventStore, native reader, app or
-// live transport is instantiated by this executable.
-enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
+// Compile the readers' real dependencies, but only call pure mapping methods.
+// No EKEventStore, native reader, app or live transport is instantiated.
 
 @main struct HistoryReaderChecks {
     static func main() {
