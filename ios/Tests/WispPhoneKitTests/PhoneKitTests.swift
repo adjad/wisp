@@ -216,3 +216,542 @@ func pairingRejectsMalformedIPs(ip: String) {
     #expect(!ModelBundle(id: "ling", modelType: nil, totalBytes: 1,
                          files: [.init(name: "a.json", size: 1, sha256: "zz")]).isSafe)
 }
+
+// MARK: Ping challenge (gateway v2)
+
+struct StubReply: Sendable {
+    var status: Int
+    var headers: [String: String] = [:]
+    var body = Data()
+    /// Drop the connection after the body, as a flaky network would mid-download.
+    var dropAfterBody = false
+    /// Never finish after the body, like a slow multi-GB transfer.
+    var hangAfterBody = false
+}
+
+/// Answers requests for one port from a per-test handler, so parallel tests never share state.
+final class StubProtocol: URLProtocol, @unchecked Sendable {
+    typealias Handler = @Sendable (URLRequest) -> (Int, Data)?
+    typealias ReplyHandler = @Sendable (URLRequest) -> StubReply?
+    nonisolated(unsafe) private static var handlers: [Int: ReplyHandler] = [:]
+    nonisolated(unsafe) private static var seen: [Int: [URLRequest]] = [:]
+    private static let lock = NSLock()
+
+    static func session(port: Int, handler: @escaping Handler) -> URLSession {
+        URLSession(configuration: configuration(port: port) { request in
+            handler(request).map { StubReply(status: $0.0, body: $0.1) }
+        })
+    }
+    static func configuration(port: Int, reply: @escaping ReplyHandler) -> URLSessionConfiguration {
+        lock.withLock { handlers[port] = reply; seen[port] = seen[port] ?? [] }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubProtocol.self]
+        return config
+    }
+    static func requests(port: Int) -> [URLRequest] { lock.withLock { seen[port] ?? [] } }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        let port = request.url?.port ?? 0
+        let handler = Self.lock.withLock { Self.seen[port, default: []].append(request); return Self.handlers[port] }
+        guard let url = request.url, let reply = handler?(request) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost)); return
+        }
+        // A Content-Type, as the gateway sends, so URLSession doesn't hold the response back to sniff it.
+        let headers = ["Content-Type": "application/octet-stream"].merging(reply.headers) { $1 }
+        let response = HTTPURLResponse(url: url, statusCode: reply.status, httpVersion: nil, headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !reply.body.isEmpty { client?.urlProtocol(self, didLoad: reply.body) }
+        if reply.hangAfterBody { return }
+        if reply.dropAfterBody {
+            // Let the body reach the delegate first, as it would on a real connection.
+            let client = client
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+                client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            }
+        } else {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+}
+
+private func nonce(of request: URLRequest) -> String {
+    URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+        .queryItems?.first { $0.name == "nonce" }?.value ?? ""
+}
+
+private func pingAnswer(_ proofs: [String]) -> Data {
+    try! JSONSerialization.data(withJSONObject: ["wisp_gateway": 2, "proofs": proofs])
+}
+
+private func helloBody() -> Data {
+    Data(#"{"gateway_version":2,"mac_name":"Mac","device":{"id":"d1","name":"Phone"},"backend":{"reachable":true}}"#.utf8)
+}
+
+@Test func pingProofMatchesGatewayVector() {
+    // Same vector as tests/test_phone_gateway.py::test_ping_proof_known_vector.
+    #expect(GatewayProof.proof(token: token, nonce: "00112233445566778899aabbccddeeff")
+            == "2dd110115354b568036ae2d48dec99d6f038e6398e9e184e8a1c7c381c7f32ea")
+}
+@Test func pingNoncesAreFreshHex() {
+    let a = GatewayProof.newNonce(), b = GatewayProof.newNonce()
+    #expect(a.count == 64 && a.allSatisfy { $0.isHexDigit && !$0.isUppercase } && a != b)
+}
+@Test func pingVerificationNeedsTheRightTokenAndNonce() {
+    let nonce = GatewayProof.newNonce()
+    let good = GatewayProof.proof(token: token, nonce: nonce)
+    #expect(GatewayProof.verify(pingResponse: pingAnswer(["00", good]), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer([good]), token: token + "x", nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer([good]), token: token, nonce: GatewayProof.newNonce()))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer([]), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: Data(#"{"wisp_gateway":1}"#.utf8), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer([String(good.dropLast(2))]), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: Data("not json".utf8), token: token, nonce: nonce))
+}
+@Test func gatewaySendsTokenOnlyAfterProof() async throws {
+    let port = 18_801
+    let session = StubProtocol.session(port: port) { request in
+        if request.url!.path == "/phone/v1/ping" {
+            return (200, pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))]))
+        }
+        return (200, helloBody())
+    }
+    let pairing = MacPairing(host: "mac.tail1.ts.net", ip: nil, port: port, macName: "Mac", token: token)
+    let hello = try await GatewayClient(pairing: pairing, session: session).hello()
+    #expect(hello.macName == "Mac")
+    let seen = StubProtocol.requests(port: port)
+    #expect(seen.map { $0.url!.path } == ["/phone/v1/ping", "/phone/v1/hello"])
+    #expect(seen[0].value(forHTTPHeaderField: "Authorization") == nil)
+    #expect(nonce(of: seen[0]).count == 64)
+    #expect(seen[1].value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
+}
+@Test(arguments: ["plain", "wrongToken", "replayed"])
+func gatewayWithholdsTokenFromImpostor(kind: String) async {
+    let port = 18_802 + ["plain", "wrongToken", "replayed"].firstIndex(of: kind)!
+    let stale = GatewayProof.proof(token: token, nonce: GatewayProof.newNonce())
+    let session = StubProtocol.session(port: port) { request in
+        switch kind {
+        case "plain": return (200, Data(#"{"wisp_gateway":1}"#.utf8))  // a v1 ping, or anyone answering 200
+        case "wrongToken": return (200, pingAnswer([GatewayProof.proof(token: "other", nonce: nonce(of: request))]))
+        default: return (200, pingAnswer([stale]))  // a proof captured for some other nonce
+        }
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    await #expect(throws: GatewayError.unverified) {
+        try await GatewayClient(pairing: pairing, session: session).hello()
+    }
+    let seen = StubProtocol.requests(port: port)
+    #expect(seen.allSatisfy { $0.url!.path == "/phone/v1/ping" && $0.value(forHTTPHeaderField: "Authorization") == nil })
+}
+@Test func gatewayFallsBackToTheAddressThatProves() async throws {
+    // MagicDNS answers without a proof; the IP proves. Same port, so route by host.
+    let port = 18_810
+    let session = StubProtocol.session(port: port) { request in
+        let url = request.url!
+        guard url.path == "/phone/v1/ping" else { return url.host == "100.64.0.1" ? (200, helloBody()) : nil }
+        if url.host == "mac.tail1.ts.net" { return (200, pingAnswer([])) }
+        return (200, pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))]))
+    }
+    let pairing = MacPairing(host: "mac.tail1.ts.net", ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    _ = try await GatewayClient(pairing: pairing, session: session).hello()
+    let authed = StubProtocol.requests(port: port).filter { $0.value(forHTTPHeaderField: "Authorization") != nil }
+    #expect(authed.map { $0.url!.host } == ["100.64.0.1"])
+}
+@Test func gatewayUnreachableWhenNothingAnswers() async {
+    let session = StubProtocol.session(port: 18_811) { _ in nil }
+    let pairing = MacPairing(host: "mac.tail1.ts.net", ip: nil, port: 18_811, macName: "Mac", token: token)
+    await #expect(throws: GatewayError.unreachable) {
+        try await GatewayClient(pairing: pairing, session: session).hello()
+    }
+}
+@Test func cloudPlainHTTPOnlyToMagicDNSNames() throws {
+    for base in ["http://100.64.0.1:8000/v1", "http://100.100.1.2/v1", "http://127.0.0.1:8000/v1",
+                 "http://evil.com#.ts.net/v1"] {
+        #expect(throws: CloudSettings.Problem.self) {
+            try CloudSettings(provider: .custom, baseURL: base, model: "m").completionsURL()
+        }
+    }
+    #expect(throws: CloudSettings.Problem.insecureURL) {
+        try CloudSettings(provider: .custom, baseURL: "http://100.64.0.1:8000/v1", model: "m").completionsURL()
+    }
+    _ = try CloudSettings(provider: .custom, baseURL: "http://Box.Tail1.ts.net/v1", model: "m").completionsURL()
+    #expect(try CloudSettings(provider: .custom, baseURL: "https://100.64.0.1/v1", model: "m")
+        .completionsURL().scheme == "https")
+}
+
+/// A mutable value tests can flip while a client holds a reference.
+final class Box<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: T
+    init(_ value: T) { stored = value }
+    var value: T {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
+@Test func verifiedBaseExpiresAndIsProvedAgain() async throws {
+    // The Mac proves, then Tailscale drops and a stranger answers at the same address.
+    let port = 18_812
+    let impostor = Box(false), clock = Box(ContinuousClock.now)
+    let session = StubProtocol.session(port: port) { request in
+        if request.url!.path == "/phone/v1/ping" {
+            return impostor.value ? (200, Data(#"{"wisp_gateway":2,"proofs":[]}"#.utf8))
+                : (200, pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))]))
+        }
+        return (200, helloBody())
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: session, now: { clock.value })
+    _ = try await client.hello()
+    _ = try await client.hello()  // within the lifetime: no second ping
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path }
+            == ["/phone/v1/ping", "/phone/v1/hello", "/phone/v1/hello"])
+    impostor.value = true
+    clock.value = clock.value.advanced(by: .seconds(GatewayClient.proofLifetime + 1))
+    await #expect(throws: GatewayError.unverified) { try await client.hello() }
+    #expect(StubProtocol.requests(port: port).last?.value(forHTTPHeaderField: "Authorization") == nil)
+}
+@Test func httpErrorForgetsTheVerifiedBase() async throws {
+    let port = 18_813
+    let failHello = Box(true)
+    let session = StubProtocol.session(port: port) { request in
+        if request.url!.path == "/phone/v1/ping" {
+            return (200, pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))]))
+        }
+        return failHello.value ? (503, Data()) : (200, helloBody())
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: session)
+    await #expect(throws: GatewayError.http(503, "")) { try await client.hello() }
+    failHello.value = false
+    _ = try await client.hello()
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path }
+            == ["/phone/v1/ping", "/phone/v1/hello", "/phone/v1/ping", "/phone/v1/hello"])
+}
+@Test func malformedProofsAreRejected() {
+    let nonce = GatewayProof.newNonce()
+    let good = GatewayProof.proof(token: token, nonce: nonce)
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer([good + "0"]), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer(["zz" + good.dropFirst(2)]), token: token, nonce: nonce))
+    #expect(!GatewayProof.verify(pingResponse: pingAnswer(Array(repeating: "00", count: 1_024) + [good]),
+                                 token: token, nonce: nonce))
+}
+
+// MARK: Model downloads prove the Mac before every attempt (#341 audit P2)
+
+private let filePath = "/phone/v1/models/ling/files/model.safetensors"
+
+private func proved(_ request: URLRequest) -> StubReply {
+    StubReply(status: 200, body: pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))]))
+}
+
+private func download(_ client: GatewayClient, port: Int, maxBytes: Int64 = 11,
+                      reply: @escaping StubProtocol.ReplyHandler) async throws -> String {
+    let url = try await VerifiedFileDownloader.download(
+        gateway: client, model: "ling", file: "model.safetensors", maxBytes: maxBytes,
+        configuration: StubProtocol.configuration(port: port, reply: reply), backoff: { _ in }, progress: { _, _ in })
+    defer { try? FileManager.default.removeItem(at: url) }
+    return try String(contentsOf: url, encoding: .utf8)
+}
+
+@Test func downloadRetryProvesAgainAndResumesOnTheSameBase() async throws {
+    // The proof from hello() is still inside its window, and the retry still pings again.
+    let port = 18_820
+    let clock = Box(ContinuousClock.now), fileCalls = Box(0)
+    let reply: StubProtocol.ReplyHandler = { request in
+        switch request.url!.path {
+        case "/phone/v1/ping": return proved(request)
+        case "/phone/v1/hello": return StubReply(status: 200, body: helloBody())
+        default:
+            fileCalls.value += 1
+            if fileCalls.value == 1 { return StubReply(status: 200, body: Data("hello ".utf8), dropAfterBody: true) }
+            guard request.value(forHTTPHeaderField: "Range") == "bytes=6-" else { return StubReply(status: 400) }
+            return StubReply(status: 206, headers: ["Content-Range": "bytes 6-10/11"], body: Data("world".utf8))
+        }
+    }
+    let pairing = MacPairing(host: "mac.tail1.ts.net", ip: nil, port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)),
+                               now: { clock.value })
+    _ = try await client.hello()
+    #expect(try await download(client, port: port, reply: reply) == "hello world")
+    let seen = StubProtocol.requests(port: port)
+    #expect(seen.map { $0.url!.path } == ["/phone/v1/ping", "/phone/v1/hello",
+                                          "/phone/v1/ping", filePath, "/phone/v1/ping", filePath])
+    let nonces = seen.filter { $0.url!.path == "/phone/v1/ping" }.map(nonce(of:))
+    #expect(Set(nonces).count == 3)
+    #expect(seen.filter { $0.url!.path == filePath }.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)" })
+}
+
+@Test func downloadRetryStopsWhenTheProofExpiresAndFails() async throws {
+    // After the first attempt drops, the proof window has passed and a stranger answers.
+    let port = 18_821
+    let clock = Box(ContinuousClock.now), impostor = Box(false)
+    let reply: StubProtocol.ReplyHandler = { request in
+        if request.url!.path == "/phone/v1/ping" {
+            return impostor.value ? StubReply(status: 200, body: pingAnswer([])) : proved(request)
+        }
+        impostor.value = true
+        clock.value = clock.value.advanced(by: .seconds(GatewayClient.proofLifetime + 1))
+        return StubReply(status: 200, body: Data("hello ".utf8), dropAfterBody: true)
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)),
+                               now: { clock.value })
+    await #expect(throws: GatewayError.unverified) { _ = try await download(client, port: port, reply: reply) }
+    let seen = StubProtocol.requests(port: port)
+    #expect(seen.map { $0.url!.path } == ["/phone/v1/ping", filePath, "/phone/v1/ping"])
+    #expect(seen.last?.value(forHTTPHeaderField: "Authorization") == nil)
+}
+
+@Test func downloadRetryOnAChangedBaseStartsOver() async throws {
+    // MagicDNS serves half the file, then stops answering; the IP proves and serves it whole.
+    let port = 18_822
+    let dnsDown = Box(false)
+    let reply: StubProtocol.ReplyHandler = { request in
+        let fromDNS = request.url!.host == "mac.tail1.ts.net"
+        if fromDNS && dnsDown.value { return nil }
+        if request.url!.path == "/phone/v1/ping" { return proved(request) }
+        if fromDNS {
+            dnsDown.value = true
+            return StubReply(status: 200, body: Data("hello ".utf8), dropAfterBody: true)
+        }
+        guard request.value(forHTTPHeaderField: "Range") == nil else { return StubReply(status: 400) }
+        return StubReply(status: 200, body: Data("hello world".utf8))
+    }
+    let pairing = MacPairing(host: "mac.tail1.ts.net", ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    #expect(try await download(client, port: port, reply: reply) == "hello world")
+    let fileRequests = StubProtocol.requests(port: port).filter { $0.url!.path == filePath }
+    #expect(fileRequests.map { $0.url!.host } == ["mac.tail1.ts.net", "100.64.0.1"])
+    // The IP got the token only after its own ping proved it.
+    let seen = StubProtocol.requests(port: port).map { "\($0.url!.host!) \($0.url!.path)" }
+    let ipFile = seen.firstIndex(of: "100.64.0.1 \(filePath)")!
+    #expect(seen[..<ipFile].contains("100.64.0.1 /phone/v1/ping"))
+}
+
+@Test func downloadStopsPastTheListedSize() async throws {
+    let port = 18_823
+    let reply: StubProtocol.ReplyHandler = { request in
+        request.url!.path == "/phone/v1/ping" ? proved(request) : StubReply(status: 200, body: Data("hello world, and more".utf8))
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    await #expect(throws: VerifiedFileDownloader.Failure.oversized) { _ = try await download(client, port: port, reply: reply) }
+}
+
+@Test func downloadRejectsAResumeAtTheWrongOffset() async throws {
+    let port = 18_824
+    let fileCalls = Box(0)
+    let reply: StubProtocol.ReplyHandler = { request in
+        if request.url!.path == "/phone/v1/ping" { return proved(request) }
+        fileCalls.value += 1
+        if fileCalls.value == 1 { return StubReply(status: 200, body: Data("hello ".utf8), dropAfterBody: true) }
+        return StubReply(status: 206, headers: ["Content-Range": "bytes 0-10/11"], body: Data("hello world".utf8))
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    await #expect(throws: VerifiedFileDownloader.Failure.badRange) { _ = try await download(client, port: port, reply: reply) }
+}
+
+@Test func downloadCancellationStopsWithoutRetrying() async throws {
+    let port = 18_825
+    let reply: StubProtocol.ReplyHandler = { request in
+        request.url!.path == "/phone/v1/ping" ? proved(request)
+            : StubReply(status: 200, body: Data("hello ".utf8), hangAfterBody: true)
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    let task = Task { try await download(client, port: port, reply: reply) }
+    for _ in 0..<200 where !StubProtocol.requests(port: port).contains(where: { $0.url!.path == filePath }) {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    task.cancel()
+    await #expect(throws: CancellationError.self) { _ = try await task.value }
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path } == ["/phone/v1/ping", filePath])
+}
+
+@Test func backwardsInjectedClockForcesANewProof() async throws {
+    let port = 18_826
+    let clock = Box(ContinuousClock.now)
+    let session = StubProtocol.session(port: port) { request in
+        request.url!.path == "/phone/v1/ping"
+            ? (200, pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))])) : (200, helloBody())
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: session, now: { clock.value })
+    _ = try await client.hello()
+    clock.value = clock.value.advanced(by: .seconds(-10))
+    _ = try await client.hello()
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path }
+            == ["/phone/v1/ping", "/phone/v1/hello", "/phone/v1/ping", "/phone/v1/hello"])
+}
+
+@Test func failedAgentStreamForgetsTheVerifiedBase() async throws {
+    let port = 18_827
+    let reply: StubProtocol.ReplyHandler = { request in
+        switch request.url!.path {
+        case "/phone/v1/ping": return proved(request)
+        case "/phone/v1/agent":
+            return StubReply(status: 200, headers: ["Content-Type": "text/event-stream"],
+                             body: Data("data: {\"type\":\"delta\",\"text\":\"Hi\"}\n".utf8), dropAfterBody: true)
+        default: return StubReply(status: 200, body: helloBody())
+        }
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    var failed = false
+    do { for try await _ in client.agent(prompt: "hi", sessionId: nil) {} } catch { failed = true }
+    #expect(failed)
+    _ = try await client.hello()
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path }
+            == ["/phone/v1/ping", "/phone/v1/agent", "/phone/v1/ping", "/phone/v1/hello"])
+}
+
+// MARK: Transfer cancellation ordering (#341 audit P2, e044f54c)
+
+private func transferFixture(port: Int, reply: @escaping StubProtocol.ReplyHandler)
+    -> (VerifiedFileDownloader.Transfer, URLSession, URLRequest, URL) {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-transfer-\(UUID().uuidString)")
+    FileManager.default.createFile(atPath: file.path, contents: nil)
+    let transfer = VerifiedFileDownloader.Transfer(file: file, maxBytes: 11, progress: { _, _ in })
+    let session = URLSession(configuration: StubProtocol.configuration(port: port, reply: reply),
+                             delegate: transfer, delegateQueue: nil)
+    let request = URLRequest(url: URL(string: "http://100.64.0.1:\(port)\(filePath)")!)
+    return (transfer, session, request, file)
+}
+
+/// Resumes a continuation at most once, whichever caller gets there first.
+final class OneShot<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+    init(_ continuation: CheckedContinuation<T, Never>) { self.continuation = continuation }
+    func resume(_ value: T) {
+        let pending = lock.withLock { () -> CheckedContinuation<T, Never>? in
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: value)
+    }
+}
+
+/// `operation`'s result, or nil after `seconds`. The timeout resumes on its own: it never waits
+/// for the operation, so an operation that ignores cancellation can't hang the test. A stuck
+/// operation is cancelled best effort and left behind.
+private func finishes<T: Sendable>(within seconds: Double = 5,
+                                   _ operation: @escaping @Sendable () async throws -> T) async -> Result<T, Error>? {
+    await withCheckedContinuation { (continuation: CheckedContinuation<Result<T, Error>?, Never>) in
+        let shot = OneShot(continuation)
+        let work = Task {
+            do { shot.resume(.success(try await operation())) } catch { shot.resume(.failure(error)) }
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(seconds))
+            shot.resume(nil)
+            work.cancel()
+        }
+    }
+}
+
+@Test func transferCancelledBeforeRegistrationFinishesWithoutStarting() async throws {
+    // The cancel lands before the continuation exists: onCancel runs on entry to the handler.
+    let port = 18_830
+    let (transfer, session, request, file) = transferFixture(port: port) { _ in StubReply(status: 200, body: Data("x".utf8)) }
+    defer { session.invalidateAndCancel(); try? FileManager.default.removeItem(at: file) }
+    let outcome = await finishes {
+        try await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await transfer.run(session: session, request: request, offset: 0)
+        }.value
+    }
+    guard case .failure(let error)? = outcome else { Issue.record("hung or succeeded: \(String(describing: outcome))"); return }
+    #expect(error is CancellationError)
+    #expect(StubProtocol.requests(port: port).isEmpty)
+}
+
+@Test func transferCancelledBetweenRegistrationAndStartFinishes() async throws {
+    // The cancel lands after the continuation is registered but before the task is resumed.
+    let port = 18_831
+    let (transfer, session, request, file) = transferFixture(port: port) { _ in
+        StubReply(status: 200, body: Data("x".utf8), hangAfterBody: true)
+    }
+    defer { session.invalidateAndCancel(); try? FileManager.default.removeItem(at: file) }
+    transfer.beforeStart = { withUnsafeCurrentTask { $0?.cancel() } }
+    let outcome = await finishes { try await transfer.run(session: session, request: request, offset: 0) }
+    guard case .failure(let error)? = outcome else { Issue.record("hung or succeeded: \(String(describing: outcome))"); return }
+    #expect((error as? URLError)?.code == .cancelled || error is CancellationError)
+}
+
+@Test func transferCancelledWhileRunningFinishes() async throws {
+    let port = 18_832
+    let (transfer, session, request, file) = transferFixture(port: port) { _ in
+        StubReply(status: 200, body: Data("hello ".utf8), hangAfterBody: true)
+    }
+    defer { session.invalidateAndCancel(); try? FileManager.default.removeItem(at: file) }
+    let outcome = await finishes {
+        let task = Task { try await transfer.run(session: session, request: request, offset: 0) }
+        for _ in 0..<200 where StubProtocol.requests(port: port).isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        task.cancel()
+        return try await task.value
+    }
+    guard case .failure(let error)? = outcome else { Issue.record("hung or succeeded: \(String(describing: outcome))"); return }
+    #expect((error as? URLError)?.code == .cancelled || error is CancellationError)
+}
+
+@Test func transferRunsAgainAfterACancelledAttempt() async throws {
+    // A cancelled attempt leaves no state behind: the next run on the same Transfer completes.
+    let port = 18_833
+    let (transfer, session, request, file) = transferFixture(port: port) { _ in StubReply(status: 200, body: Data("hello".utf8)) }
+    defer { session.invalidateAndCancel(); try? FileManager.default.removeItem(at: file) }
+    _ = await finishes {
+        try await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await transfer.run(session: session, request: request, offset: 0)
+        }.value
+    }
+    let outcome = await finishes { try await transfer.run(session: session, request: request, offset: 0) }
+    guard case .success? = outcome else { Issue.record("second run: \(String(describing: outcome))"); return }
+    #expect(transfer.received == 5)
+}
+
+@Test(arguments: ["eof", "failed"])
+func uncleanAgentEndForgetsTheVerifiedBase(kind: String) async throws {
+    // A stream that closes without `done`, or reports an error, makes the next request prove again.
+    let port = kind == "eof" ? 18_834 : 18_835
+    let line = kind == "eof" ? #"data: {"type":"delta","text":"Hi"}"# : #"data: {"type":"error","message":"boom"}"#
+    let reply: StubProtocol.ReplyHandler = { request in
+        switch request.url!.path {
+        case "/phone/v1/ping": return proved(request)
+        case "/phone/v1/agent":
+            return StubReply(status: 200, headers: ["Content-Type": "text/event-stream"], body: Data((line + "\n").utf8))
+        default: return StubReply(status: 200, body: helloBody())
+        }
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    var events: [ChatEvent] = []
+    for try await event in client.agent(prompt: "hi", sessionId: nil) { events.append(event) }
+    #expect(events.contains { if case .failed = $0 { true } else { false } })
+    _ = try await client.hello()
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path }
+            == ["/phone/v1/ping", "/phone/v1/agent", "/phone/v1/ping", "/phone/v1/hello"])
+}
+
+@Test func cleanAgentEndKeepsTheVerifiedBase() async throws {
+    let port = 18_836
+    let reply: StubProtocol.ReplyHandler = { request in
+        switch request.url!.path {
+        case "/phone/v1/ping": return proved(request)
+        case "/phone/v1/agent":
+            return StubReply(status: 200, headers: ["Content-Type": "text/event-stream"], body: Data("data: {\"type\":\"done\"}\n".utf8))
+        default: return StubReply(status: 200, body: helloBody())
+        }
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    for try await _ in client.agent(prompt: "hi", sessionId: nil) {}
+    _ = try await client.hello()
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path } == ["/phone/v1/ping", "/phone/v1/agent", "/phone/v1/hello"])
+}

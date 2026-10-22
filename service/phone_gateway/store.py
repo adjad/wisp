@@ -72,6 +72,19 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+PING_PROOF_LABEL = b"wisp-phone-ping-v1:"
+
+
+def ping_proof(token_sha256: str, nonce: str) -> str:
+    """HMAC-SHA256 over the ping nonce, keyed by the raw SHA-256 of the device token.
+
+    The phone computes the same value from its token, so a gateway that answers
+    with it proves it holds the pairing without ever seeing the token.
+    """
+    key = bytes.fromhex(token_sha256)
+    return hmac.new(key, PING_PROOF_LABEL + nonce.encode("ascii"), hashlib.sha256).hexdigest()
+
+
 def new_token() -> str:
     """32 random bytes, base64url without padding (43 characters)."""
     return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
@@ -143,6 +156,16 @@ class DeviceStore:
             if hmac.compare_digest(probe, stored) and found is None:
                 found = device
         return found
+
+    def ping_proofs(self, nonce: str) -> list[str]:
+        """One proof per paired device, sorted so the order says nothing about pairing order."""
+        proofs = []
+        for device in self.devices():
+            try:
+                proofs.append(ping_proof(device["token_sha256"], nonce))
+            except ValueError:  # a hand-edited, non-hex hash simply proves nothing
+                continue
+        return sorted(proofs)
 
     # -- writing ----------------------------------------------------------
     def _save(self, devices: list[dict[str, Any]]) -> None:
