@@ -112,6 +112,7 @@ PROFILE_TESTS = {
         "tests/test_temporal_facts.py",
         "tests/test_daily_workspace.py",
         "tests/test_day_review_blocks.py",
+        "tests/test_brief_needs_you.py",
         "tests/test_day_timeline_event_fields.py",
         "tests/test_mail_gists.py",
         "tests/test_behavior_gmail_history.py",
@@ -241,6 +242,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_calendar_literal_entrypoint.py",
     # Pure named-time parsing, fictional stores and inert ASGI calls; no live sources.
     "tests/test_calendar_time_contract.py",
+    # Pure end-time formatter over fictional rows; no store, source or model.
+    "tests/test_calendar_end_time_format.py",
     # Scorer self-test on synthetic fixtures; tmp_path files only, no model or network.
     "tests/test_memory_eval_scorer.py",
     # Toolbench matchers/scorer/report on hand-built trajectories and fake-world
@@ -360,6 +363,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow_inline_delivery.py",
     "tests/test_router_everyday_prompts.py",
     "tests/test_user_facing_failure_text.py",
+    "tests/test_upcoming_agenda_and_tomorrow_prep.py",
     "tests/test_calendar_batch_approval_ids.py",
     # In-process fake engines bound to 127.0.0.1; no real app, Keychain or user data.
     "tests/test_local_provider_tools.py",
@@ -427,6 +431,8 @@ ADDITIONAL_FULL_TESTS = {
     # verified-self identity, fake policy/outbox and ASGI transport; no effects.
     "tests/test_daily_workspace.py",
     "tests/test_day_review_blocks.py",
+    # The Brief's "Needs you today" selection over synthetic attention items.
+    "tests/test_brief_needs_you.py",
     # Day timeline Cancel/Move fields: disposable AssistantStore, the planner and
     # today_api.snapshot in process; no model, app, hub or real ~/.moe.
     "tests/test_day_timeline_event_fields.py",

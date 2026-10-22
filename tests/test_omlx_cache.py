@@ -47,3 +47,18 @@ def test_sweep_removes_only_stale_files(tmp_path):
     assert not old.exists() and not tmp_old.exists()
     assert new.exists() and tmp_new.exists()
     assert oc.sweep_stale(tmp_path / "nowhere", now=now) == (0, 0)
+
+
+def test_trim_vision_evicts_least_recently_used_first(tmp_path):
+    now = time.time()
+    names = ("oldest", "middle", "newest")
+    for i, name in enumerate(names):
+        f = tmp_path / "c" / f"{name}.safetensors"
+        f.parent.mkdir(exist_ok=True)
+        f.write_bytes(b"x" * 100)
+        t = now - (3 - i) * 3600
+        os.utime(f, (t, t))
+    assert oc.trim_vision(tmp_path, max_bytes=150) == (2, 200)
+    assert [p.name for p in tmp_path.rglob("*.safetensors")] == ["newest.safetensors"]
+    assert oc.trim_vision(tmp_path, max_bytes=150) == (0, 0)
+    assert oc.trim_vision(tmp_path / "nowhere") == (0, 0)

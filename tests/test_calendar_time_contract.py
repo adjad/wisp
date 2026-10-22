@@ -289,8 +289,8 @@ def test_end_projection_uses_end_timestamp_and_retains_ongoing_without_changing_
     p.event('class end celebration', start=7200, end=10800)
     result = asyncio.run(p.A.get_upcoming(calendar_only=True, query='Physics class', boundary='end'))
     assert 'Physics class' in result and 'class end celebration' not in result
-    assert 'scheduled to end 2030-01-02 3:00 AM PST-0800' in result
-    assert 'actual completion' in result
+    assert '- Physics class (Today · Wed, Jan 2, 1:00 AM) ends at **3:00 AM**' in result
+    assert 'not a record of when anything actually ended' in result
     assert 'Physics class' not in asyncio.run(p.A.get_upcoming(calendar_only=True, query='Physics class'))
     p.readiness.assert_awaited_with(('calendar',))
 
@@ -302,10 +302,10 @@ def test_end_projection_missing_all_day_and_multiple_events_are_distinct(project
     p.event(start=180000, end=183600)
     result = asyncio.run(p.A.get_upcoming(calendar_only=True, query='Physics class', boundary='end'))
     assert result.count('- Physics class') == 3
-    assert 'Multiple matching events' in result
-    assert 'scheduled end unknown' in result
-    assert 'exclusive scheduled end boundary' in result and 'no timed finish recorded' in result
-    assert 'scheduled to end' in result
+    assert result.startswith('Next 7 days: 3 events\n')
+    assert 'has no end time on the calendar' in result
+    assert 'is all day, with no set finish time' in result
+    assert 'ends at **' in result
 
 
 @pytest.mark.parametrize('state', ['denied', 'stale', 'syncing', 'unavailable'])
@@ -340,7 +340,7 @@ def test_actual_calendar_end_endpoint_renders_fictional_scheduled_end(
         'When does my Physics class end? Do not browse.', 'web_search', {'query': 'not authorized'})
     text = ''.join(e.get('text', '') for e in record['events'])
     assert 'Physics class' in text and 'class end celebration' not in text
-    assert 'scheduled to end 2030-01-02 3:00 AM PST-0800' in text
+    assert 'Physics class (Today · Wed, Jan 2, 1:00 AM) ends at **3:00 AM**' in text
     assert not record['executed']  # get_upcoming used the synthetic store, not the inert recorder.
 
 @pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])
@@ -413,8 +413,8 @@ def test_end_projection_requested_period_and_account_preserve_exact_scope(projec
     result = asyncio.run(p.A.get_upcoming(calendar_only=True, query='Physics class',
                                           boundary='end', period='tomorrow', account='School'))
     assert result.count('- Physics class') == 1
-    assert 'scheduled to end 2030-01-03 3:00 AM PST-0800' in result
-    assert '2030-01-02' not in result and '2030-01-04' not in result
+    assert '- Physics class (Tomorrow · Thu, Jan 3, 2:00 AM) ends at **3:00 AM**' in result
+    assert 'Jan 2' not in result and 'Jan 4' not in result
 
 
 def test_end_projection_missing_readiness_is_not_a_calendar_verification(projection):
@@ -488,8 +488,8 @@ def test_actual_planner_cannot_execute_unavailable_personal_calendar(inert_entry
 def test_zero_duration_event_keeps_its_recorded_scheduled_end(projection):
     projection.event(start=3600, end=3600)
     result = asyncio.run(projection.A.get_upcoming(calendar_only=True, query='Physics class', boundary='end'))
-    assert 'scheduled to end 2030-01-02 3:00 AM PST-0800' in result
-    assert 'unknown' not in result
+    assert '- Physics class (Today · Wed, Jan 2, 3:00 AM) ends at **3:00 AM**' in result
+    assert 'no end time' not in result
 
 
 UNRELATED_WHEN = ['When does water boil?', 'When does a function return None?',

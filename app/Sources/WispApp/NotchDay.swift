@@ -70,6 +70,15 @@ struct DayNeedInput: Equatable {
     var due: Double?
 }
 
+/// One item of the Brief's Needs you line, as the service phrased it.
+struct NeedsYouInput: Equatable {
+    /// "overdue", "due", "plan", "mail" or "text".
+    var kind: String
+    var text: String
+    var due: Double? = nil
+    var allDay = false
+}
+
 /// One "Caught for you" record from the attention runner.
 struct DayCaughtInput: Equatable {
     var id: String
@@ -104,6 +113,15 @@ struct DayItem: Identifiable, Equatable {
     var members: [DayMember] = []
     /// Over before now, on today: drawn dim, inside the lane's two hours back.
     var past = false
+
+    /// Whether the block is drawn as over: dim, with nothing left to act on. A
+    /// block that ended keeps its controls while a cancel on it is still in its
+    /// Undo window or being sent: the person tapped Cancel while it was still
+    /// on, and the clock passing its end must not take Undo away mid-window
+    /// (or hide the spinner while the service works). The ⋯ menu never offers a
+    /// new Cancel on a past block (CheckInCancel.menuEntries), so this only
+    /// keeps a cancel that began in time.
+    func isOver(cancelActive: Bool) -> Bool { past && !cancelActive }
 }
 
 struct DayTimeline: Equatable {
@@ -391,8 +409,10 @@ struct DayTimeline: Equatable {
     /// The Brief's one sentence, from the day itself. It opens with the same
     /// verdict word as the CAL line ("A light Saturday." / "Light day: …"), so
     /// the two never disagree.
+    /// `othersNeedYou`: the Needs you line under it lists something (a person's
+    /// email or text, a plan task), so the lede never says nothing does.
     static func lede(weekday: String, isToday: Bool, load: DayLoad.Verdict?, dueToday: [String], overdue: [String],
-                     next: (title: String, time: String)?) -> String {
+                     next: (title: String, time: String)?, othersNeedYou: Bool = false) -> String {
         var parts: [String] = []
         let due = dueToday.filter { !isJunk($0) }
         let late = overdue.filter { !isJunk($0) }
@@ -406,9 +426,33 @@ struct DayTimeline: Equatable {
         let opening = load.map { $0.article + " " + weekday + "." } ?? "It's \(weekday)."
         if parts.isEmpty {
             if let next { return opening + " Next up: \(next.title) at \(next.time)." }
+            if othersNeedYou { return opening }
             return opening + (isToday ? " Nothing needs you right now." : " Nothing needs you that day.")
         }
         return opening + " " + parts.joined(separator: ", and ").capitalizedFirst + "."
+    }
+
+    /// The Brief's line under the lede: today's work that needs the user, as the
+    /// service picked it (daily_workspace.needs_you, from the same attention
+    /// items the Day tab's Needs you reads). "Needs you today: Pay rent
+    /// (overdue), PA 2 (due 11:59 PM), a text from Mom and 2 more." Nil when
+    /// nothing is listed: the lede already says so, and an empty header says nothing.
+    static func needsYou(_ items: [NeedsYouInput], more: Int, clock: (Double) -> String) -> String? {
+        let shown = items.filter { !isJunk($0.text) }
+        guard !shown.isEmpty else { return nil }
+        var phrases = shown.map { item -> String in
+            switch item.kind {
+            case "overdue": return item.text + " (overdue)"
+            case "due":
+                guard let due = item.due else { return item.text }
+                return item.text + (item.allDay ? " (due today)" : " (due \(clock(due)))")
+            default: return item.text
+            }
+        }
+        if more > 0 { phrases.append("\(more) more") }
+        let joined = phrases.count == 1 ? phrases[0]
+            : phrases.dropLast().joined(separator: ", ") + " and " + phrases[phrases.count - 1]
+        return "Needs you today: " + joined + "."
     }
 
     enum BriefSource: Equatable { case calendar, mail, messages, reminders }

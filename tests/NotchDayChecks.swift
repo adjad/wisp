@@ -63,6 +63,17 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                          DayBlockInput(id: "late", title: "Late", start: at(15), end: at(16), kind: "calendar")], now: now)
     check(recent.items.map(\.id) == ["block:coffee", "block:lunch", "block:late"], "the back window keeps what ended in it: \(recent.items.map(\.id))")
     check(recent.items.map(\.past) == [true, false, false], "only what is over is dim; a block running now is not")
+    // A block that ends while its Cancel is still in the 5-second Undo window (or
+    // in flight) stays live: Undo must not vanish because the clock passed its end.
+    let lunchOver = window([DayBlockInput(id: "lunch", title: "Lunch", start: at(12.5), end: at(13.5), kind: "calendar"),
+                            DayBlockInput(id: "late", title: "Late", start: at(15), end: at(16), kind: "calendar")], now: at(13.6))
+    let endedLunch = lunchOver.items.first { $0.id == "block:lunch" }
+    let upcomingLate = lunchOver.items.first { $0.id == "block:late" }
+    check(endedLunch?.past == true && upcomingLate?.past == false, "lunch ended at 13:30, late has not started")
+    check(endedLunch?.isOver(cancelActive: false) == true, "an ended block with nothing pending is over: dim, no controls")
+    check(endedLunch?.isOver(cancelActive: true) == false, "a cancel still undoable or in flight keeps the ended block live")
+    check(upcomingLate?.isOver(cancelActive: false) == false && upcomingLate?.isOver(cancelActive: true) == false,
+          "a block that has not ended is never over")
     check(DayTimeline.blurb(window([DayBlockInput(id: "coffee", title: "Coffee", start: at(11.25), end: at(11.75), kind: "calendar")], now: now),
                             needs: [], isToday: true, endOfDay: dayEnd, clock: clock) == "Nothing is planned for the rest of today.",
           "the blurb ignores what is already over")
@@ -196,6 +207,28 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.lede(weekday: "Tuesday", isToday: true, load: .steady, dueToday: [], overdue: [],
                            next: (title: "Club", time: "3 PM"))
           == "A steady Tuesday. Next up: Club at 3 PM.", "lede with only the next event")
+    check(DayTimeline.lede(weekday: "Sunday", isToday: true, load: .free, dueToday: [], overdue: [], next: nil,
+                           othersNeedYou: true) == "A free Sunday.",
+          "lede never says nothing needs you while the Needs you line lists something")
+
+    // The Brief's Needs you line under the lede (daily_workspace.needs_you picks the items).
+    let picked = [
+        NeedsYouInput(kind: "overdue", text: "Pay rent", due: dayStart - 5 * hour),
+        NeedsYouInput(kind: "due", text: "PA 2", due: at(23.5)),
+        NeedsYouInput(kind: "due", text: "Library book", due: at(0), allDay: true),
+        NeedsYouInput(kind: "mail", text: "a deadline notice from Dr. Patel"),
+    ]
+    check(DayTimeline.needsYou(picked, more: 2, clock: clock)
+          == "Needs you today: Pay rent (overdue), PA 2 (due 23:30), Library book (due today), a deadline notice from Dr. Patel and 2 more.",
+          "needs-you line lists items with their due words and the rest as a count")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "text", text: "a text from Mom")], more: 0, clock: clock)
+          == "Needs you today: a text from Mom.", "needs-you line with one item")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "plan", text: "Finish slides"), NeedsYouInput(kind: "mail", text: "“Lab feedback” from Dr. Patel")],
+                               more: 0, clock: clock)
+          == "Needs you today: Finish slides and “Lab feedback” from Dr. Patel.", "needs-you line joins two with and")
+    check(DayTimeline.needsYou([], more: 0, clock: clock) == nil, "nothing to list: no line, not an empty header")
+    check(DayTimeline.needsYou([NeedsYouInput(kind: "due", text: "nothing", due: at(15))], more: 0, clock: clock) == nil,
+          "a junk title alone makes no line")
 
     // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!

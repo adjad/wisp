@@ -71,12 +71,42 @@ enum ChatTheme {
         codeFill: glass, tableFill: glass, bodySize: 15)
 }
 
-/// The breathing droplet that stands for Wisp.
+/// The droplet is still at rest and breathes only while an answer is live.
 struct ChatOrb: View {
     var size: CGFloat = 22
     var thinking = false
-    @State private var breathe = false
+    @State private var mounted = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+#if WISP_ORB_QA
+    // The system environment is read-only. The isolated fixture supplies the
+    // same decision input without changing the user's accessibility setting.
+    var reducedMotionForQA: Bool? = nil
+#endif
+
+    private var animates: Bool {
+#if WISP_ORB_QA
+        if let reducedMotionForQA { return mounted && thinking && !reducedMotionForQA }
+#endif
+        return mounted && thinking && !reduceMotion
+    }
+
+    var body: some View {
+        ZStack {
+            if animates {
+                ChatOrbBreathing(size: size)
+            } else {
+                ChatOrbArtwork(size: size)
+            }
+        }
+        .frame(width: size, height: size)
+        .onAppear { mounted = true }
+        .onDisappear { mounted = false }
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ChatOrbArtwork: View {
+    var size: CGFloat
 
     var body: some View {
         Circle()
@@ -84,12 +114,23 @@ struct ChatOrb: View {
                                  startRadius: 0, endRadius: size * 0.78))
             .frame(width: size, height: size)
             .shadow(color: ChatTheme.orbGlow, radius: size * 0.45)
+    }
+}
+
+/// Removing this child disposes its repeating animation. A nil animation on
+/// an existing scale does not reliably stop SwiftUI's repeatForever clock.
+private struct ChatOrbBreathing: View {
+    var size: CGFloat
+    @State private var breathe = false
+
+    var body: some View {
+        ChatOrbArtwork(size: size)
             .scaleEffect(breathe ? 1.08 : 1.0)
             .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: thinking ? 1.3 : 5).repeatForever(autoreverses: true)) { breathe = true }
+                withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true)) {
+                    breathe = true
+                }
             }
-            .accessibilityHidden(true)
     }
 }
 

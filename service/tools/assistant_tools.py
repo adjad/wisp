@@ -292,22 +292,45 @@ def _collapse_schedule_rows(items: list[dict]) -> list[dict]:
 
 def _agenda_day_label(when: datetime, today: date) -> str:
     if when.date() == today:
-        return f"Today · {when.strftime('%a %b %-d')}"
+        return f"Today · {when.strftime('%a, %b %-d')}"
     if when.date() == today + timedelta(days=1):
-        return f"Tomorrow · {when.strftime('%a %b %-d')}"
+        return f"Tomorrow · {when.strftime('%a, %b %-d')}"
     return when.strftime("%A · %b %-d")
 
 
-def _agenda_item(item: dict, *, display_day_start: float | None = None) -> str:
+# `*` and backtick open Markdown runs in the chat renderer, and titles and
+# locations are written by other people (see brief._clean).
+_AGENDA_MD_RUN = re.compile(r"[*`]+")
+
+
+def _agenda_text(value: object) -> str:
+    return _AGENDA_MD_RUN.sub("", " ".join(str(value or "").split())).strip()
+
+
+def _agenda_clock(when: datetime, now: float) -> str:
+    """A wall-clock time; the zone appears only when it differs from now's.
+
+    Every row is already local time, so "PDT-0700" on each line was noise.
+    Across a DST change it is a fact (it also separates the two 1:30 AMs of a
+    fall-back night), so it is kept exactly there.
+    """
+    current = datetime.fromtimestamp(now, tz=timezone.utc).astimezone().utcoffset()
+    clock = when.strftime("%-I:%M %p")
+    return clock if when.utcoffset() == current else f"{clock} {when.strftime('%Z')}"
+
+
+def _agenda_item(item: dict, *, now: float | None = None,
+                 display_day_start: float | None = None) -> str:
+    now = time.time() if now is None else now
     when = datetime.fromtimestamp(float(item["when_ts"]), tz=timezone.utc).astimezone()
     started_before_day = (display_day_start is not None
                           and float(item["when_ts"]) < display_day_start
                           and float(item.get("end_ts") or 0) > display_day_start)
     clock = ("All day" if item.get("all_day") else
-             f"Started {when.strftime('%a %-I:%M %p %Z%z')}" if started_before_day else
-             when.strftime("%-I:%M %p %Z%z"))
-    location = str(item.get("location") or "").strip()
-    suffix = f" @ {location}" if location else ""
+             f"Started {when.strftime('%a')} {_agenda_clock(when, now)}" if started_before_day else
+             _agenda_clock(when, now))
+    location = _agenda_text(item.get("location"))
+    suffix = f" · {location}" if location else ""
     if _is_wisp_only(item):
         suffix += " [Wisp-only; Apple status unverified]"
     continued = ""
@@ -315,14 +338,29 @@ def _agenda_item(item: dict, *, display_day_start: float | None = None) -> str:
         display_date = datetime.fromtimestamp(display_day_start).date()
         label = "today" if display_date == datetime.fromtimestamp(time.time()).date() else display_date.isoformat()
         continued = f" (continued into {label})"
-    return f"- {clock} — {item.get('title') or 'Untitled'}{suffix}{continued}"
+    return f"- **{clock}** — {_agenda_text(item.get('title')) or 'Untitled'}{suffix}{continued}"
+
+
+def _agenda_count(n: int, noun: str) -> str:
+    return f"no {noun}s" if not n else f"{n} {noun}" + ("" if n == 1 else "s")
 
 
 def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
                            apple_reminders_checked: bool = True,
                            display_day_start: float | None = None,
-                           title: str | None = None) -> str:
-    """Render an agenda for a schedule question, not a storage/debug dump."""
+                           reminders_read: bool = True) -> str:
+    """Render an agenda the user can read as-is.
+
+    Deterministic calendar reads (workflows.reads.execute_read) show this text
+    with no model pass, so it must not carry model-facing scaffolding: the old
+    "Upcoming — this week (9 item(s))" / "[Calendar event] and [Reminder] are
+    shown in separate sections." header reached the user verbatim. The summary
+    line still states both counts in words ("9 events, no reminders"), which
+    router._edit_reference_subset reads to scope a follow-up edit, and every
+    day keeps calendar events and reminders apart so neither reader takes an
+    event for a reminder. "no reminders" is said only when `reminders_read`:
+    a calendar-only or withheld Reminders read is not evidence of none.
+    """
     today = datetime.fromtimestamp(now).date()
     days: dict[date, dict[str, list[dict]]] = {}
     for item in items:
@@ -339,36 +377,37 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
     blocks: list[str] = []
     for day, bucket in days.items():
         heading = _agenda_day_label(datetime.combine(day, datetime.min.time()), today)
-        lines = [heading]
-        if bucket["events"]:
-            lines.append("  Calendar events")
-            lines.extend("  " + _agenda_item(item, display_day_start=display_day_start)
-                         for item in bucket["events"])
+        lines = [f"**{heading}**"]
+        lines.extend(_agenda_item(item, now=now, display_day_start=display_day_start)
+                     for item in bucket["events"])
         if bucket["reminders"]:
-            lines.append("  Reminders")
-            lines.extend("  " + _agenda_item(item, display_day_start=display_day_start)
+            if bucket["events"]:
+                lines.append("*Reminders*")
+            lines.extend(_agenda_item(item, now=now, display_day_start=display_day_start)
                          for item in bucket["reminders"])
         blocks.append("\n".join(lines))
     calendar_count = sum("calendar" in _schedule_sources(item) for item in items)
     reminder_count = sum(bool(_schedule_sources(item) & {"manual", "reminders"})
                          for item in items)
-    review_note = ""
+    counts = [_agenda_count(calendar_count, "event")]
+    if reminder_count or reminders_read:
+        counts.append(_agenda_count(reminder_count, "reminder"))
+    notes = []
     if any(_is_wisp_only(item) for item in items):
-        review_note = (
-            " Wisp-only items have no matching current Apple Reminders item; "
+        notes.append(
+            "Wisp-only items have no matching current Apple Reminders item; "
             "some may be older Apple mirrors and others live Wisp reminders. "
             "Keep them unless the user picks one exactly to delete."
             if apple_reminders_checked else
-            " Apple Reminders could not be checked, so Wisp reminders are "
+            "Apple Reminders could not be checked, so Wisp reminders are "
             "listed without a confirmed Apple copy; they may still be active.")
-    has_native = any("reminders" in _schedule_sources(item) for item in items)
-    native_note = (" Apple Reminders deletion status is not independently verified."
-                   if has_native else "")
-    title = title or ("Schedule" if display_day_start is not None else "Upcoming")
-    return (f"{title} — {window_label} ({len(items)} item(s))\n"
-            f"Calendar events: {calendar_count}; Wisp/Apple reminders: {reminder_count}. "
-            "[Calendar event] and [Reminder] are shown in separate sections."
-            + native_note + review_note + "\n\n" + "\n\n".join(blocks))
+    if any("reminders" in _schedule_sources(item) for item in items):
+        notes.append("Apple Reminders deletion status is not independently verified.")
+    window = re.sub(r"\bnext 1 day\(s\)", "next day", window_label)
+    window = window.replace("day(s)", "days")
+    header = f"{window[:1].upper()}{window[1:]}: {', '.join(counts)}"
+    return (header + "\n\n" + "\n\n".join(blocks)
+            + ("\n\n" + " ".join(notes) if notes else ""))
 
 
 def _match_schedule_query(rows: list[dict], query: str) -> list[dict]:
@@ -408,27 +447,48 @@ def _match_schedule_query(rows: list[dict], query: str) -> list[dict]:
     return results
 
 
-def _format_calendar_end_times(items: list[dict], *, window_label: str) -> str:
-    """Project scheduled endpoints without changing the normal agenda renderer."""
-    lines = [f"Scheduled Calendar end times ({window_label}); these do not verify actual completion."]
-    if len(items) > 1:
-        lines.append("Multiple matching events; each scheduled end is listed separately.")
+def _format_calendar_end_times(items: list[dict], *, now: float, window_label: str) -> str:
+    """Scheduled end times the user can read as-is, in the agenda's style.
+
+    Like _format_forward_agenda, deterministic reads show this with no model
+    pass, so the old "Scheduled Calendar end times (...); these do not verify
+    actual completion." / "Multiple matching events; ..." lines and the
+    "%Y-%m-%d %-I:%M %p %Z%z" stamps reached the user verbatim. The summary
+    line keeps the agenda's "<window>: N events" shape, which
+    router._edit_reference_subset reads to scope a follow-up edit. Each row
+    still names its start so two same-titled events stay distinct, and the
+    caveat is one plain sentence: a calendar end is not proof it finished.
+    """
+    today = datetime.fromtimestamp(now).date()
+    lines = []
     for item in items:
-        title = item.get('title') or 'Untitled'
-        start = datetime.fromtimestamp(float(item['when_ts']), tz=timezone.utc).astimezone()
-        identity = start.strftime('%Y-%m-%d %-I:%M %p %Z%z')
-        end_ts = item.get('end_ts')
-        if end_ts is None or float(end_ts) < float(item['when_ts']):
-            end = 'scheduled end unknown (no valid end recorded)'
+        title = _agenda_text(item.get("title")) or "Untitled"
+        start = datetime.fromtimestamp(float(item["when_ts"]), tz=timezone.utc).astimezone()
+        start_day = _agenda_day_label(start, today)
+        end_ts = item.get("end_ts")
+        if item.get("all_day"):
+            starts = f"{start_day}, all day"
         else:
-            endpoint = datetime.fromtimestamp(float(end_ts), tz=timezone.utc).astimezone()
-            if item.get('all_day'):
-                end = ('all-day event; exclusive scheduled end boundary ' +
-                       endpoint.strftime('%Y-%m-%d %-I:%M %p %Z%z') + '; no timed finish recorded')
-            else:
-                end = 'scheduled to end ' + endpoint.strftime('%Y-%m-%d %-I:%M %p %Z%z')
-        lines.append(f'- {title} (starts {identity}): {end}.')
-    return '\n'.join(lines)
+            starts = f"{start_day}, {_agenda_clock(start, now)}"
+        if end_ts is None or float(end_ts) < float(item["when_ts"]):
+            ends = "has no end time on the calendar"
+        elif item.get("all_day"):
+            # The stored end is the exclusive midnight after the last day.
+            last = datetime.fromtimestamp(max(float(end_ts) - 1, float(item["when_ts"]))).date()
+            ends = "is all day, with no set finish time"
+            if last != start.date():
+                ends += f"; it runs through **{last.strftime('%a, %b %-d')}**"
+        else:
+            end = datetime.fromtimestamp(float(end_ts), tz=timezone.utc).astimezone()
+            clock = _agenda_clock(end, now)
+            ends = (f"ends at **{clock}**" if end.date() == start.date() else
+                    f"ends **{_agenda_day_label(end, today)}, {clock}**")
+        lines.append(f"- {title} ({starts}) {ends}")
+    window = re.sub(r"\bnext 1 day\(s\)", "next day", window_label).replace("day(s)", "days")
+    header = f"{window[:1].upper()}{window[1:]}: {_agenda_count(len(items), 'event')}"
+    caveat = ("These are scheduled end times from your calendar, not a record of "
+              "when anything actually ended.")
+    return header + "\n\n" + "\n".join(lines) + "\n\n" + caveat
 
 
 @register(
@@ -554,11 +614,11 @@ async def get_upcoming(days: int = 7, account: str | None = None,
                     + reminder_note)
         return f"Today is {today_str}. Nothing scheduled in {window_label}."
     if boundary == "end":
-        return notice + _format_calendar_end_times(items, window_label=window_label)
+        return notice + _format_calendar_end_times(items, now=now, window_label=window_label)
     return notice + _format_forward_agenda(
         items, now=now, window_label=window_label,
         apple_reminders_checked="reminders" not in withheld,
-        title="Schedule" if today_period else "Upcoming",
+        reminders_read=not calendar_only and "reminders" not in withheld,
         display_day_start=max(start, today_start) if period else None) + reminder_note
 
 
