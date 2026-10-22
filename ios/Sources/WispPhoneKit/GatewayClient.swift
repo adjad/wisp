@@ -151,11 +151,12 @@ public actor GatewayClient {
     private let session: URLSession
     /// How long a verified base is trusted before the next request re-proves it.
     public static let proofLifetime: TimeInterval = 60
-    private let now: @Sendable () -> Date
+    /// Monotonic, so changing the wall clock can't stretch or shorten the proof window.
+    private let now: @Sendable () -> ContinuousClock.Instant
     private var preferredBase: URL?
-    private var verifiedAt = Date.distantPast
+    private var verifiedAt: ContinuousClock.Instant?
 
-    public init(pairing: MacPairing, session: URLSession = .shared, now: @escaping @Sendable () -> Date = Date.init) {
+    public init(pairing: MacPairing, session: URLSession = .shared, now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }) {
         self.pairing = pairing
         self.session = session
         self.now = now
@@ -212,14 +213,16 @@ public actor GatewayClient {
                     let (bytes, response) = try await self.session.bytes(for: request)
                     try Self.check(response, body: nil)
                     var current = sessionId ?? ""
-                    var finished = false
+                    var finished = false, clean = false
                     for try await line in bytes.lines {
                         guard let event = GatewayEventDecoder.decode(line: line, sessionId: current) else { continue }
                         if case .session(let id) = event { current = id }
                         continuation.yield(event)
-                        if case .done = event { finished = true; break }
+                        if case .done = event { finished = true; clean = true; break }
                         if case .failed = event { finished = true; break }
                     }
+                    // Anything but a clean `done` makes the next request prove the Mac again.
+                    if !clean { await self.forgetBase() }
                     if !finished { continuation.yield(.failed("The connection to your Mac closed before Wisp finished.")) }
                     continuation.finish()
                 } catch is CancellationError {
@@ -261,9 +264,11 @@ public actor GatewayClient {
     /// Nothing carries the token until then: 100.64/10 is also carrier CGNAT space, so with
     /// Tailscale off, whoever answers at the Mac's address may be a stranger.
     func reachableBase() async throws -> URL {
-        // A negative age means the clock went backwards: fail closed rather than stretch the window.
-        let age = now().timeIntervalSince(verifiedAt)
-        if let preferredBase, age >= 0, age < Self.proofLifetime { return preferredBase }
+        // A negative age can only come from an injected clock; fail closed on it anyway.
+        if let preferredBase, let verifiedAt {
+            let age = verifiedAt.duration(to: now())
+            if age >= .zero, age < .seconds(Self.proofLifetime) { return preferredBase }
+        }
         preferredBase = nil
         var answered = false
         for base in pairing.baseURLs {
@@ -392,7 +397,14 @@ public enum VerifiedFileDownloader {
         private var written: Int64 = 0
         private var offset: Int64 = 0
         private var failure: Error?
+        // Cancellation, continuation registration and completion can arrive in any order. All three
+        // go through `lock`, and whichever finishes the attempt resumes the continuation exactly once.
         private var continuation: CheckedContinuation<Void, Error>?
+        private var task: URLSessionDataTask?
+        private var cancelled = false
+        /// Runs after the continuation is registered and before the task starts, so tests can
+        /// cancel inside that window.
+        var beforeStart: (@Sendable () -> Void)?
 
         init(file: URL, maxBytes: Int64, progress: @escaping Progress) {
             self.file = file
@@ -412,19 +424,41 @@ public enum VerifiedFileDownloader {
         }
 
         func run(session: URLSession, request: URLRequest, offset: Int64) async throws {
-            let task = session.dataTask(with: request)
+            lock.withLock {
+                self.offset = offset
+                failure = nil
+                cancelled = false
+                continuation = nil
+                task = nil
+            }
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    lock.withLock {
+                    // The task is created only after the continuation is registered, so its completion
+                    // always finds it. A cancel that arrived first means no task is ever created.
+                    let task: URLSessionDataTask? = lock.withLock {
+                        guard !cancelled else { return nil }
+                        let task = session.dataTask(with: request)
                         self.continuation = continuation
-                        self.offset = offset
-                        self.failure = nil
+                        self.task = task
+                        return task
                     }
+                    guard let task else { return continuation.resume(throwing: CancellationError()) }
+                    lock.withLock { beforeStart }?()
+                    // A cancel between registration and here already cancelled `task`; resuming it
+                    // then just delivers that cancellation to the delegate.
                     task.resume()
                 }
             } onCancel: {
-                task.cancel()
+                let task = lock.withLock {
+                    cancelled = true
+                    return self.task
+                }
+                task?.cancel()
             }
+        }
+
+        private func isCurrent(_ task: URLSessionTask) -> Bool {
+            lock.withLock { task === self.task }
         }
 
         private func fail(_ error: Error, _ task: URLSessionTask) {
@@ -434,6 +468,7 @@ public enum VerifiedFileDownloader {
 
         func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                         completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+            guard isCurrent(dataTask) else { return completionHandler(.cancel) }
             guard let http = response as? HTTPURLResponse else {
                 fail(GatewayError.badResponse, dataTask); return completionHandler(.cancel)
             }
@@ -465,6 +500,7 @@ public enum VerifiedFileDownloader {
         }
 
         func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            guard isCurrent(dataTask) else { return dataTask.cancel() }
             let total: Int64? = lock.withLock {
                 guard let handle, failure == nil else { return nil }
                 guard written + Int64(data.count) <= maxBytes else { return nil }
@@ -480,12 +516,14 @@ public enum VerifiedFileDownloader {
         }
 
         func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-            let (continuation, failure) = lock.withLock {
+            let (continuation, failure): (CheckedContinuation<Void, Error>?, Error?) = lock.withLock {
+                guard task === self.task else { return (nil, nil) }  // a stale task from an earlier attempt
                 try? handle?.close()
                 handle = nil
                 let pending = (self.continuation, self.failure)
                 self.continuation = nil
                 self.failure = nil
+                self.task = nil
                 return pending
             }
             if let failure {
