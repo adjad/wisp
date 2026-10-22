@@ -123,8 +123,12 @@ final class OnDeviceModel {
                 .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
                 .volumeAvailableCapacityForImportantUsage) ?? Int64.max
             // Sum the files rather than trusting the listing's total.
-            let totalBytes = bundle.files.reduce(Int64(0)) { $0 + $1.size }
-            guard free > totalBytes + 1_000_000_000 else {
+            // Saturating, so absurd listed sizes fail the space check instead of trapping.
+            let totalBytes = bundle.files.reduce(Int64(0)) { sum, file in
+                let (next, overflow) = sum.addingReportingOverflow(file.size)
+                return overflow ? .max : next
+            }
+            guard totalBytes < .max - 1_000_000_000, free > totalBytes + 1_000_000_000 else {
                 state = .failed("Not enough free space: Ling needs \(Self.format(totalBytes)) plus 1 GB.")
                 return
             }
