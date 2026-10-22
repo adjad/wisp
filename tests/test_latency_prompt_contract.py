@@ -85,9 +85,24 @@ def isolated_context(monkeypatch):
     monkeypatch.setattr(policy, "_FULL_ACCESS", False)
 
 
-def test_clock_style_and_safety_order_survive_context_fitting(monkeypatch):
+@pytest.mark.parametrize("test_mode", [False, True], ids=["ordinary", "isolated-dry-run"])
+def test_clock_style_and_safety_order_survive_context_fitting(monkeypatch, test_mode):
     clock = "\nThe current date and time is Tuesday, September 8, 2026 at 11:59 PM. Resolve relative dates/times against this."
     seen = []
+    context_loads = []
+    from service.memory import profile
+    import service.skills
+
+    def saved_context(name):
+        def load(*args, **kwargs):
+            context_loads.append(name)
+            return "\n" + name
+        return load
+
+    monkeypatch.setattr(identity, "identity_prompt_block", saved_context("IDENTITY"))
+    monkeypatch.setattr(profile, "profile_block", saved_context("PROFILE"))
+    monkeypatch.setattr(loop.prompt_blocks, "memory_block", saved_context("MEMORY"))
+    monkeypatch.setattr(service.skills, "skills_context_block", saved_context("SKILLS"))
 
     def now_line(*, resolve_hint=False):
         seen.append(resolve_hint)
@@ -100,17 +115,27 @@ def test_clock_style_and_safety_order_survive_context_fitting(monkeypatch):
                {"role": "user", "content": "Remind me about tomorrow's appointment."}]
     client = ScriptedClient()
     run(client, messages=history, tools=["get_upcoming", "add_reminder"],
-        style_hint="STYLE: Preserve the full detail.", test_mode=True,
+        style_hint="STYLE: Preserve the full detail.", test_mode=test_mode,
         reminder_action="clarify_time")
 
     messages = client.requests[0]["messages"]
     assert seen == [True]
     assert [m["role"] for m in messages[:2]] == ["system", "system"]
     stable, runtime = [m["content"] for m in messages[:2]]
-    assert stable.endswith("\nIDENTITY\nMEMORY\nSKILLS")
+    if test_mode:
+        # Isolation is host enforced: no saved loader is called, even though
+        # all context flags default to enabled in this direct loop call.
+        assert context_loads == []
+        assert not any("\n" + name in stable + runtime
+                       for name in ("IDENTITY", "PROFILE", "MEMORY", "SKILLS"))
+        assert runtime.index("STYLE:") < runtime.index(loop._TEST_MODE_SUFFIX)
+        assert runtime.index(loop._TEST_MODE_SUFFIX) < runtime.index("REMINDER TASK:")
+    else:
+        assert context_loads == ["IDENTITY", "PROFILE", "MEMORY", "SKILLS"]
+        assert stable.endswith("\nIDENTITY\nPROFILE\nMEMORY\nSKILLS")
+        assert loop._TEST_MODE_SUFFIX not in stable + runtime
     assert clock not in stable and runtime.startswith(clock)
-    assert runtime.index("STYLE:") < runtime.index(loop._TEST_MODE_SUFFIX)
-    assert runtime.index(loop._TEST_MODE_SUFFIX) < runtime.index("REMINDER TASK:")
+    assert runtime.index("STYLE:") < runtime.index("REMINDER TASK:")
     assert "Do not invent a time or claim a reminder was set" in runtime
     assert not any("OLD SUMMARY" in str(m.get("content")) for m in messages)
     assert history[-1] in messages
