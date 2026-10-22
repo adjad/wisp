@@ -128,15 +128,20 @@ enum ReleaseInteractionChecks {
     }
 
     @MainActor static func attachmentChecks() async throws {
+        var debugLoads = 0
         var debugWrites: [Bool] = []
         var recentReads = 0
         func model() -> OverlayModel {
-            OverlayModel(loadDebugMode: { false }, saveDebugMode: { debugWrites.append($0) },
+            OverlayModel(loadDebugMode: { debugLoads += 1; return true }, saveDebugMode: { debugWrites.append($0) },
                          recentChatsLoader: { _ in recentReads += 1; return [] })
         }
         let positive = model()
+        try check(debugLoads == 1 && positive.debugMode && debugWrites.isEmpty,
+                  "Debug load must run once, start true and never persist on initialization: loads=\(debugLoads), value=\(positive.debugMode), saves=\(debugWrites)")
+        positive.debugMode = false
+        try check(debugWrites == [false], "Explicit false mutation must save once: saves=\(debugWrites)")
         positive.debugMode = true
-        try check(debugWrites == [true], "Debug persistence must use the supplied fixture")
+        try check(debugWrites == [false, true], "Explicit true mutation must save once: saves=\(debugWrites)")
         let normal = positive.loadAttachment(name: "normal.png") { "data:image/png;base64,Zml4dHVyZQ==" }
         await normal.value
         try check(positive.attachedImageName == "normal.png", "Ordinary supplied image completion must attach")

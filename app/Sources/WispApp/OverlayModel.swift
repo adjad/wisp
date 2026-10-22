@@ -207,7 +207,7 @@ final class OverlayModel: ObservableObject {
          recentChatsLoader: ((Int) async -> [[String: Any]]?)? = nil) {
         self.saveDebugMode = saveDebugMode
         self.recentChatsLoader = recentChatsLoader
-        debugMode = loadDebugMode()
+        _debugMode = Published(initialValue: loadDebugMode())
         // Rows that show the report read it through this model, so redraw with it.
         reportObserver = report.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
