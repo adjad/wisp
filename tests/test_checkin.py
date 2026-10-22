@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import time
 from zoneinfo import ZoneInfo
 
@@ -315,6 +316,53 @@ def test_keeping_in_mind_names_carried_tasks_even_without_a_profile():
     text = P.keeping_in_mind(P.empty(), 0.0, carried_over=[{"title": "Old thing"}, {"title": "Essay"}])
     assert "2 tasks carried over from before: Old thing; Essay. Already on today's plan." in text
     assert P.keeping_in_mind(P.empty(), 0.0, carried_over=[]) == ""
+
+
+@pytest.mark.parametrize("patch", [
+    {"name": "A different name"},
+    {"tone": "direct"},
+    {"detail": "thorough"},
+    {"goals": ["  Finish the project  "], "tone": "gentle"},
+])
+def test_due_goal_pulse_survives_unrelated_and_unchanged_goal_saves(patch):
+    start = 1_800_000_000.0
+    due = start + 8 * 86400
+    P.update({"goals": ["Finish the project"]}, now=start)
+    expected = C.goal_pulse(P.load(), now=due)
+    assert expected is not None
+    P.update(patch, now=due - 60)
+    assert C.goal_pulse(P.load(), now=due) == expected
+
+
+def test_changed_goals_start_a_new_week_after_an_older_answer():
+    start = 1_800_000_000.0
+    P.update({"goals": ["Finish the project"]}, now=start)
+    P.set_goal_status("Finish the project", "behind", now=start + 8 * 86400)
+    changed = start + 20 * 86400
+    P.update({"goals": ["Finish the project", "Run farther"]}, now=changed)
+    assert P.load()["goal_status"]["Finish the project"]["status"] == "behind"
+    assert C.goal_pulse(P.load(), now=changed + 7 * 86400 - 1) is None
+    assert C.goal_pulse(P.load(), now=changed + 7 * 86400)["goal"] == "Finish the project"
+
+
+@pytest.mark.parametrize("previous_update", [None, 0.0, 1_800_000_000.0])
+def test_legacy_goal_clock_is_preserved_before_profile_edit(previous_update):
+    P.PROFILE_PATH.write_text(json.dumps({"goals": ["Finish the project"],
+                                         "updated_at": previous_update}))
+    due = 1_800_000_000.0 + 8 * 86400
+    expected = C.goal_pulse(P.load(), now=due)
+    assert expected is not None
+    P.update({"tone": "direct", "goals": ["Finish the project"]}, now=due - 60)
+    assert P.load()["updated_at"] == due - 60, "the profile's edit date remains accurate"
+    assert C.goal_pulse(P.load(), now=due) == expected
+
+
+def test_epoch_zero_goal_answer_is_not_replaced_by_a_later_profile_edit():
+    P.update({"goals": ["Finish the project"]}, now=0.0)
+    P.set_goal_status("Finish the project", "on_track", now=0.0)
+    P.update({"name": "A different name"}, now=86400.0)
+    assert C.goal_pulse(P.load(), now=7 * 86400 - 1) is None
+    assert C.goal_pulse(P.load(), now=7 * 86400) is not None
 
 
 # --- moving an event ---------------------------------------------------------------
