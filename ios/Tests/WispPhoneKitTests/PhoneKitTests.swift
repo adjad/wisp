@@ -225,6 +225,8 @@ struct StubReply: Sendable {
     var body = Data()
     /// Drop the connection after the body, as a flaky network would mid-download.
     var dropAfterBody = false
+    /// Never finish after the body, like a slow multi-GB transfer.
+    var hangAfterBody = false
 }
 
 /// Answers requests for one port from a per-test handler, so parallel tests never share state.
@@ -262,6 +264,7 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         let response = HTTPURLResponse(url: url, statusCode: reply.status, httpVersion: nil, headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         if !reply.body.isEmpty { client?.urlProtocol(self, didLoad: reply.body) }
+        if reply.hangAfterBody { return }
         if reply.dropAfterBody {
             // Let the body reach the delegate first, as it would on a real connection.
             let client = client
@@ -551,4 +554,58 @@ private func download(_ client: GatewayClient, port: Int, maxBytes: Int64 = 11,
     let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
     let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
     await #expect(throws: VerifiedFileDownloader.Failure.badRange) { _ = try await download(client, port: port, reply: reply) }
+}
+
+@Test func downloadCancellationStopsWithoutRetrying() async throws {
+    let port = 18_825
+    let reply: StubProtocol.ReplyHandler = { request in
+        request.url!.path == "/phone/v1/ping" ? proved(request)
+            : StubReply(status: 200, body: Data("hello ".utf8), hangAfterBody: true)
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    let task = Task { try await download(client, port: port, reply: reply) }
+    for _ in 0..<200 where !StubProtocol.requests(port: port).contains(where: { $0.url!.path == filePath }) {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    task.cancel()
+    await #expect(throws: CancellationError.self) { _ = try await task.value }
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path } == ["/phone/v1/ping", filePath])
+}
+
+@Test func clockRollbackForcesANewProof() async throws {
+    let port = 18_826
+    let clock = Box(Date(timeIntervalSince1970: 1_000))
+    let session = StubProtocol.session(port: port) { request in
+        request.url!.path == "/phone/v1/ping"
+            ? (200, pingAnswer([GatewayProof.proof(token: token, nonce: nonce(of: request))])) : (200, helloBody())
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: session, now: { clock.value })
+    _ = try await client.hello()
+    clock.value = clock.value.addingTimeInterval(-10)
+    _ = try await client.hello()
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path }
+            == ["/phone/v1/ping", "/phone/v1/hello", "/phone/v1/ping", "/phone/v1/hello"])
+}
+
+@Test func failedAgentStreamForgetsTheVerifiedBase() async throws {
+    let port = 18_827
+    let reply: StubProtocol.ReplyHandler = { request in
+        switch request.url!.path {
+        case "/phone/v1/ping": return proved(request)
+        case "/phone/v1/agent":
+            return StubReply(status: 200, headers: ["Content-Type": "text/event-stream"],
+                             body: Data("data: {\"type\":\"delta\",\"text\":\"Hi\"}\n".utf8), dropAfterBody: true)
+        default: return StubReply(status: 200, body: helloBody())
+        }
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    var failed = false
+    do { for try await _ in client.agent(prompt: "hi", sessionId: nil) {} } catch { failed = true }
+    #expect(failed)
+    _ = try await client.hello()
+    #expect(StubProtocol.requests(port: port).map { $0.url!.path }
+            == ["/phone/v1/ping", "/phone/v1/agent", "/phone/v1/ping", "/phone/v1/hello"])
 }

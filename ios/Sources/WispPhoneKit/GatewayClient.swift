@@ -261,7 +261,9 @@ public actor GatewayClient {
     /// Nothing carries the token until then: 100.64/10 is also carrier CGNAT space, so with
     /// Tailscale off, whoever answers at the Mac's address may be a stranger.
     func reachableBase() async throws -> URL {
-        if let preferredBase, now().timeIntervalSince(verifiedAt) < Self.proofLifetime { return preferredBase }
+        // A negative age means the clock went backwards: fail closed rather than stretch the window.
+        let age = now().timeIntervalSince(verifiedAt)
+        if let preferredBase, age >= 0, age < Self.proofLifetime { return preferredBase }
         preferredBase = nil
         var answered = false
         for base in pairing.baseURLs {
