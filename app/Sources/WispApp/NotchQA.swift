@@ -198,6 +198,12 @@ enum NotchQADriver {
                     ["id": "draft", "kind": "mail", "text": "“Can you review my draft?” from Jordan Kim", "due_ts": NSNull(), "all_day": false],
                 ], "more": 4],
                 "attention_omitted": 0,
+                "needs_you": ["items": [
+                    ["id": "doordash", "kind": "overdue", "text": "Get DoorDash order", "due_ts": at(-20), "all_day": false],
+                    ["id": "pa2", "kind": "due", "text": "PA 2", "due_ts": at(23.98), "all_day": false],
+                    ["id": "thesis", "kind": "mail", "text": "“Thesis meeting” from Prof. Lee", "due_ts": NSNull(), "all_day": false],
+                    ["id": "draft", "kind": "mail", "text": "“Can you review my draft?” from Jordan Kim", "due_ts": NSNull(), "all_day": false],
+                ], "more": 4],
                 "source_coverage": [["source": "email", "ready": true, "detail": "5 unread", "inspected": 5, "omitted": 0],
                                     ["source": "messages", "ready": true, "detail": "", "inspected": 3, "omitted": 0]],
                 "behavior_detail": "Tentative", "explanation": "",
