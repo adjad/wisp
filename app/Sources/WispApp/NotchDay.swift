@@ -421,24 +421,26 @@ struct DayTimeline: Equatable {
 
     // MARK: Brief
 
-    /// The Brief's one sentence, from the day itself. It opens with the same
-    /// verdict word as the CAL line ("A light Saturday." / "Light day: …"), so
-    /// the two never disagree.
+    /// The Brief's one sentence, from the day itself. The default opening shares
+    /// the CAL verdict. A current-day caller can supply a time-aware opening and
+    /// due reference without rewriting its factual clauses or empty state.
     /// `othersNeedYou`: the Needs you line under it lists something (a person's
     /// email or text, a plan task), so the lede never says nothing does.
     static func lede(weekday: String, isToday: Bool, load: DayLoad.Verdict?, dueToday: [String], overdue: [String],
-                     next: (title: String, time: String)?, othersNeedYou: Bool = false) -> String {
+                     next: (title: String, time: String)?, othersNeedYou: Bool = false,
+                     openingOverride: String? = nil, dueReference: String? = nil) -> String {
         var parts: [String] = []
         let due = dueToday.filter { !isJunk($0) }
         let late = overdue.filter { !isJunk($0) }
         if !due.isEmpty {
-            parts.append(list(due) + (due.count == 1 ? " is due " : " are due ") + (isToday ? "today" : "that day"))
+            parts.append(list(due) + (due.count == 1 ? " is due " : " are due ")
+                         + (dueReference ?? (isToday ? "today" : "that day")))
         }
         if !late.isEmpty {
             parts.append(late.count == 1 ? late[0] + " is still open" : "\(count(late.count)) overdue reminders are still open")
         }
         // Without a current calendar there's no verdict to give.
-        let opening = load.map { $0.article + " " + weekday + "." } ?? "It's \(weekday)."
+        let opening = openingOverride ?? (load.map { $0.article + " " + weekday + "." } ?? "It's \(weekday).")
         if parts.isEmpty {
             if let next { return opening + " Next up: \(next.title) at \(next.time)." }
             if othersNeedYou { return opening }

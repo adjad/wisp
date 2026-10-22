@@ -34,6 +34,14 @@ struct BriefTimeContext {
 
     var beforeDawn: Bool { period == .night && hour < 5 }
 
+    /// An aligned schedule anchor avoids waiting a full minute after a daypart
+    /// boundary when the view was opened partway through the preceding minute.
+    var minuteStart: Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timezone
+        return calendar.dateInterval(of: .minute, for: date)?.start ?? date
+    }
+
     /// The existing composer keeps responsibility for factual due/overdue clauses.
     /// A date selected outside today must continue to use its neutral wording.
     func duePhrase(isToday: Bool) -> String {
@@ -42,7 +50,7 @@ struct BriefTimeContext {
     }
 
     /// Nil lets the existing day-only wording describe a non-current selection.
-    func opening(weekday: String, isToday: Bool, load: DayLoad.Verdict?) -> String? {
+    func opening(weekday: String, isToday: Bool, load: DayLoad.Verdict?, events: [DayLoad.Event] = []) -> String? {
         guard isToday else { return nil }
         switch period {
         case .morning:
@@ -67,10 +75,26 @@ struct BriefTimeContext {
             return "Here's what's left of \(weekday)."
         case .night:
             if beforeDawn {
-                if load == .free || load == .light { return "A quiet start to \(weekday)." }
+                if (load == .free || load == .light) && !hasOvernightEvent(events) {
+                    return "A quiet start to \(weekday)."
+                }
                 return "A new \(weekday) is getting started."
             }
             return "Here's where \(weekday) stands tonight."
+        }
+    }
+
+    /// DayLoad measures booked hours in the workday; a light verdict can still
+    /// include an overnight meeting. Do not call that interval quiet.
+    private func hasOvernightEvent(_ events: [DayLoad.Event]) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timezone
+        guard let morning = calendar.date(bySettingHour: 5, minute: 0, second: 0, of: date) else { return true }
+        return events.contains { event in
+            guard event.start.isFinite, !DayTimeline.isJunk(event.title) else { return false }
+            let end = event.end.flatMap { $0.isFinite && $0 > event.start ? $0 : nil }
+                ?? event.start + DayLoad.assumedLength
+            return event.start < morning.timeIntervalSince1970 && end > date.timeIntervalSince1970
         }
     }
 
@@ -109,7 +133,9 @@ struct BriefTimeContext {
         case .night:
             let morningLabel = beforeDawn ? todayLabel : tomorrowLabel
             return [
-                suggestion("essentials", "Show today’s essentials", "Show the essential calendar items and deadlines for \(todayLabel), and any overdue items I should know about."),
+                beforeDawn
+                    ? suggestion("essentials", "Show today’s essentials", "Show the essential calendar items and deadlines for \(todayLabel), and any overdue items I should know about.")
+                    : suggestion("tonight", "What’s left tonight?", "What still needs my attention before midnight on \(todayLabel)? Include remaining calendar events, deadlines, and overdue items."),
                 suggestion("morning-plan", "Plan for the morning", "Help me prepare for the morning of \(morningLabel), using my calendar and deadlines."),
                 Suggestion(id: "capture-thought", title: "Save a thought", prompt: "I'd like to capture a thought for later: ")
             ]
