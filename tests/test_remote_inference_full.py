@@ -21,7 +21,7 @@ from fastapi import HTTPException  # noqa: E402
 from service.config.endpoints import EndpointConfigurationError  # noqa: E402
 from service.safety import grants, policy as safety  # noqa: E402
 from service.tools.registry import REGISTRY, run_tool  # noqa: E402
-from tests.test_remote_inference_main import selected  # noqa: E402
+from tests.test_remote_inference_main import evaluate_context_keyword, selected  # noqa: E402
 from tests.test_remote_inference_policy import EXAMPLE, FULL_LIMITS, RemoteFixture, policy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -262,7 +262,27 @@ class MainChecks(FullFixture):
     def test_history_and_memory_follow_the_mac_path(self):
         source = (ROOT / 'service/main.py').read_text()
         self.assertIn('messages = ([user_msg] if super_model_cloud else _tool_turn_messages(', source)
-        self.assertIn('include_memory_context=_agent_memory_context_allowed(', source)
+        # Execute the real host expression: an ordinary remote turn follows
+        # the same Mac memory policy, while a dry run never consults it.
+        namespace = {}
+        selected({'_agent_memory_context_allowed'}, namespace)
+        real_policy = namespace['_agent_memory_context_allowed']
+        for remote in (False, True):
+            for test_mode in (False, True):
+                with self.subTest(remote=remote, test_mode=test_mode):
+                    memory_policy = Mock(wraps=real_policy)
+                    decision = SimpleNamespace(verified_results_only=False, forbidden_tools=frozenset())
+                    bindings = {'test_mode': test_mode, 'model_led_turn': False,
+                                'decision': decision, 'super_model_cloud': False,
+                                'workflow_turn': None, 'schedule_read': False,
+                                '_agent_memory_context_allowed': memory_policy,
+                                'remote_only_profile': lambda: policy.remote_only_profile() if remote else None}
+                    self.assertIs(evaluate_context_keyword('include_memory_context', bindings), not test_mode)
+                    if test_mode:
+                        memory_policy.assert_not_called()
+                    else:
+                        memory_policy.assert_called_once_with(decision, cloud=False,
+                            grounded_workflow=False, schedule_read=False)
         self.assertNotIn('remote_read_only_mode', source)
         ns = {'remote_only_profile': policy.remote_only_profile}
         selected({'_history_budget'}, ns)
