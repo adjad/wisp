@@ -565,3 +565,124 @@ async def test_native_reminder_success_is_preserved_when_refresh_publish_fails(w
     monkeypatch.setattr(outbox, 'request', native)
     monkeypatch.setattr(w.wiring.hub, 'publish', broken)
     assert (await w.native_reminder(candidate, automatic=False))['status'] == 'succeeded'
+
+
+@pytest.mark.parametrize('text', [
+    'Our coffee next Thursday at 3pm. I practiced for 2 hours',
+    'I practiced for 2 hours. Our coffee next Thursday at 3pm',
+    'Our dinner next Friday at 6pm. The commute takes for 2 hours',
+    'The commute takes for 2 hours. Our dinner next Friday at 6pm',
+    'Our dinner next Friday at 6pm, and the commute takes for 2 hours',
+    'Our dinner next Friday at 6pm and the commute takes for 2 hours',
+    'Our dinner next Friday at 6pm, the commute takes for 2 hours',
+    'Our dinner next Friday at 6pm the commute takes for 2 hours',
+    'Our exam next Wednesday at 3pm, and practice lasts for 2 hours',
+    'Practice lasts for 2 hours; our exam next Wednesday at 3pm',
+])
+def test_unrelated_duration_never_supplies_event_length(text):
+    got = plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)])
+    assert len(got) == 1
+    assert got[0].start_ts is not None and got[0].duration_min is None
+    assert 'needs an end time' in got[0].when
+
+
+@pytest.mark.parametrize('text', [
+    'Our exam next Wednesday. Practice starts at 3pm for 2 hours',
+    'Practice starts at 3pm for 2 hours. Our exam next Wednesday',
+    'Our exam next Wednesday. Our meeting today is at 3pm for 1 hour',
+    'Our meeting today is at 3pm for 1 hour. Our exam next Wednesday',
+    'Our coffee next Thursday. Meeting today is 3pm to 4pm',
+    'Meeting today is 3pm to 4pm. Our coffee next Thursday',
+    'Our exam next Wednesday, but practice is at 3pm for 2 hours',
+    'Our exam next Wednesday and practice starts at 3pm for 2 hours',
+    'Our exam next Wednesday; practice starts at 3pm for 2 hours',
+    'Our exam next Wednesday. Practice is 3pm to 4pm',
+    'Practice is 3pm to 4pm. Our exam next Wednesday',
+])
+def test_distinct_event_clauses_never_mix_date_clock_or_range(text):
+    assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)]) == []
+
+
+@pytest.mark.parametrize('body', [
+    'My commute starts at 3pm for 2 hours',
+    'My commute is 3pm to 4pm',
+    'My commute took for 2 hours',
+])
+def test_school_date_only_subject_does_not_borrow_commute_time_or_duration(body):
+    got = plans([mail('STAT 5 Exam next Wednesday', body=body)])
+    assert len(got) == 1 and got[0].day == '2026-10-21'
+    assert got[0].start_ts is None and got[0].duration_min is None
+    assert got[0].calendar_plan(automatic=True)['all_day'] is True
+
+
+@pytest.mark.parametrize('body', ['Practice is 3pm to 4pm', 'Practice starts at 3pm for 2 hours'])
+def test_school_subject_and_separately_timed_practice_are_ambiguous(body):
+    assert plans([mail('STAT 5 Exam next Wednesday', body=body)]) == []
+
+
+@pytest.mark.parametrize('subject,body', [
+    ('My STAT 5 exam next Wednesday', ''),
+    ('STAT 5 exam next Wednesday', 'My brother has his exam next Wednesday.'),
+    ('STAT 5 exam next Wednesday', 'Your brother has an exam next Wednesday.'),
+    ('STAT 5 exam next Wednesday', 'I have my exam next Wednesday.'),
+])
+def test_institutional_domain_never_overrides_explicit_other_event_owner(subject, body):
+    assert plans([mail(subject, sender='Classmate <friend@school.edu>', body=body)]) == []
+
+
+def test_personalized_institutional_exam_remains_eligible():
+    got = plans([mail('STAT 5 exam next Wednesday', body='Your STAT 5 exam is next Wednesday')])
+    assert len(got) == 1 and got[0].automatic_eligible
+    assert got[0].start_ts is None and got[0].duration_min is None
+
+
+@pytest.mark.parametrize('text,minutes', [
+    ('Our coffee next Thursday at 3pm for 2 hours', 120),
+    ('Our coffee next Thursday for 2 hours at 3pm', 120),
+    ('Our coffee for 2 hours next Thursday at 3pm', 120),
+    ('Our coffee next Thursday at 3pm, for 2 hours', 120),
+    ('Our coffee next Thursday from 3pm to 4:30pm', 90),
+    ('Our coffee next Thursday from 3pm to 4:30pm for 90 minutes', 90),
+])
+def test_event_local_duration_and_range_controls_stay_exact(text, minutes):
+    got = plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)])
+    assert len(got) == 1 and got[0].duration_min == minutes
+    assert datetime.fromtimestamp(got[0].start_ts, ZONE).hour == 15
+
+
+def test_date_only_event_never_invents_clock_from_a_duration():
+    got = plans([mail('STAT 5 Exam next Wednesday for 2 hours')])
+    assert len(got) == 1 and got[0].start_ts is None and got[0].duration_min is None
+
+
+@pytest.mark.parametrize('text', [
+    'Our coffee next Thursday at 3pm. I ran from 4pm to 6pm',
+    'I ran from 4pm to 6pm. Our coffee next Thursday at 3pm',
+    'Our coffee next Thursday at 3pm; the commute is 4pm to 6pm',
+    'The commute is 4pm to 6pm; our coffee next Thursday at 3pm',
+    'Our coffee next Thursday at 3pm and the commute is 4pm to 6pm',
+])
+def test_unrelated_clock_range_never_supplies_event_interval(text):
+    got = plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)])
+    assert len(got) == 1 and got[0].duration_min is None
+    assert datetime.fromtimestamp(got[0].start_ts, ZONE).hour == 15
+    assert 'commute' not in got[0].quote and 'I ran' not in got[0].quote
+
+
+def test_two_matching_exam_clauses_keep_single_date_only_schedule():
+    got = plans([mail('STAT 5 Exam next Wednesday', body='Your STAT 5 exam is next Wednesday.')])
+    assert len(got) == 1 and got[0].start_ts is None
+
+
+def test_unsupported_compound_duration_never_shortens_event():
+    assert plans([mail('STAT 5 exam next Wednesday at 3pm for 1 hour and 30 minutes')]) == []
+
+
+@pytest.mark.parametrize('text', [
+    'Our exam next Wednesday commute starts at 3pm for 2 hours',
+    'Our exam next Wednesday commute is 3pm to 4pm',
+    'Our exam next Wednesday practice is 3pm to 4pm',
+    'Our exam next Wednesday meeting today starts at 3pm for 1 hour',
+])
+def test_missing_punctuation_does_not_link_another_activity_clock(text):
+    assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)]) == []
