@@ -25,6 +25,14 @@ enum ReleaseInteractionChecks {
         if !condition { throw Failure(description: message) }
     }
 
+    static func physicalPath(_ path: String) throws -> String {
+        guard let resolved = realpath(path, nil) else {
+            throw Failure(description: "Fixture physical path could not be resolved (errno \(errno))")
+        }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     static func isolationChecks() throws {
         // This MUST be first: a forged outer-isolation marker or an unconfined
         // invocation fails without constructing a model or probing the network.
@@ -44,14 +52,14 @@ enum ReleaseInteractionChecks {
               env["WISP_RELEASE_INTERACTIONS_REAL_HOME"] == foundationHome else {
             throw Failure(description: "Missing owned fixture and real-home denial configuration")
         }
-        let parent = URL(fileURLWithPath: rawParent).standardizedFileURL.resolvingSymlinksInPath().path
-        let root = URL(fileURLWithPath: rawRoot).standardizedFileURL.resolvingSymlinksInPath().path
+        let parent = try physicalPath(rawParent)
+        let root = try physicalPath(rawRoot)
         try check(parent == rawParent && root == rawRoot && root.hasPrefix(parent + "/wisp-release-interactions-"),
                   "Root must be a physical child of the supplied fixture TMPDIR")
         for directory in [parent, root, state, temporary] {
-            let url = URL(fileURLWithPath: directory).standardizedFileURL.resolvingSymlinksInPath()
-            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-            try check(url.path == directory && attributes[.type] as? FileAttributeType == .typeDirectory
+            let physical = try physicalPath(directory)
+            let attributes = try FileManager.default.attributesOfItem(atPath: physical)
+            try check(physical == directory && attributes[.type] as? FileAttributeType == .typeDirectory
                 && (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
                 "Fixture directories must be owned physical directories")
         }
