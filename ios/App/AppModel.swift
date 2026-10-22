@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import Security
 import SwiftUI
 
 @MainActor @Observable
@@ -259,8 +260,10 @@ final class AppModel {
     func confirmPairing() {
         guard let offer = pairingOffer else { return }
         pairingOffer = nil
-        guard Keychain.write(offer.token, for: .macToken) else {
-            macStatus = .problem("Couldn't save the pairing in the Keychain.")
+        let status = Keychain.write(offer.token, for: .macToken)
+        guard status == errSecSuccess else {
+            // -34018 (missing entitlement) means an unsigned build; sign it, even ad hoc.
+            macStatus = .problem("Couldn't save the pairing in the Keychain (error \(status)).")
             return
         }
         save(StoredPairing(host: offer.host, ip: offer.ip, port: offer.port, macName: offer.macName), key: Keys.pairing)
@@ -298,7 +301,7 @@ final class AppModel {
         if trimmed.isEmpty {
             Keychain.delete(.cloudKey)
         } else {
-            Keychain.write(trimmed, for: .cloudKey)
+            _ = Keychain.write(trimmed, for: .cloudKey)
         }
         hasCloudKey = Keychain.read(.cloudKey) != nil
     }

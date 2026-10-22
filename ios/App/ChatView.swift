@@ -82,7 +82,14 @@ struct ChatView: View {
                     .lineLimit(1...6)
                     .focused($composerFocused)
                     .submitLabel(.send)
-                    .onSubmit(submit)
+                    // A vertical-axis field inserts Return as a newline instead of submitting.
+                    // One new character that is a newline is Return, wherever the cursor was; a paste is left alone.
+                    .onChange(of: draft) { old, text in
+                        guard text.count == old.count + 1,
+                              text.filter({ $0 == "\n" }).count == old.filter({ $0 == "\n" }).count + 1 else { return }
+                        draft = old
+                        submit()
+                    }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 11)
                     .glassCard(cornerRadius: 22)
@@ -126,9 +133,19 @@ private struct EmptyChat: View {
         }
     }
 
+    /// Scrolls instead of overflowing, so the keyboard can't push the composer off screen.
     var body: some View {
+        GeometryReader { proxy in
+            ScrollView {
+                content.frame(maxWidth: .infinity, minHeight: proxy.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollDismissesKeyboard(.interactively)
+        }
+    }
+
+    private var content: some View {
         VStack(spacing: 18) {
-            Spacer()
             BreathingOrb(active: model.isSending, diameter: 120)
             Text("Hi, I'm Wisp")
                 .font(.title2.weight(.semibold))
@@ -153,8 +170,8 @@ private struct EmptyChat: View {
             }
             .padding(.horizontal, 24)
             .padding(.top, 8)
-            Spacer()
         }
+        .padding(.vertical, 16)
     }
 }
 
@@ -214,6 +231,7 @@ private struct MessageRow: View {
 private struct ApprovalCard: View {
     @Environment(AppModel.self) private var model
     let request: ApprovalRequest
+    @State private var previewHeight: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -223,13 +241,11 @@ private struct ApprovalCard: View {
                 Text(request.reason).font(.callout)
             }
             if !request.preview.isEmpty {
+                // A short preview takes its own height; only a long one scrolls inside the cap.
                 ScrollView {
-                    Text(request.preview)
-                        .font(.callout.monospaced())
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                    preview.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { previewHeight = $0 }
                 }
-                .frame(maxHeight: 140)
+                .frame(height: min(max(previewHeight, 20), 140))
                 .padding(10)
                 .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
             }
@@ -248,6 +264,14 @@ private struct ApprovalCard: View {
         }
         .padding(16)
         .glassCard(cornerRadius: 20, tint: Theme.teal)
+    }
+
+    private var preview: some View {
+        Text(request.preview)
+            .font(.callout.monospaced())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
     }
 }
 

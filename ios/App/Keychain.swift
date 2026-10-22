@@ -22,12 +22,13 @@ enum Keychain {
     }
 
     @discardableResult
-    static func write(_ value: String, for item: Item) -> Bool {
+    /// Returns the Security framework status; `errSecSuccess` means saved.
+    static func write(_ value: String, for item: Item) -> OSStatus {
         delete(item)
         var query = base(item)
         query[kSecValueData as String] = Data(value.utf8)
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        return SecItemAdd(query as CFDictionary, nil)
     }
 
     static func delete(_ item: Item) {

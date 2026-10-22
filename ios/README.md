@@ -65,7 +65,9 @@ team can't sign it, remove that key; Mac and Cloud modes don't need it.
 
 The Simulator runs Mac and Cloud modes. MLX needs a real GPU, so iPhone mode only
 works on a device. Simulator builds also accept a `127.0.0.1` pairing link, which
-reaches a gateway started with `serve --host 127.0.0.1`.
+reaches a gateway started with `serve --host 127.0.0.1`. Sign Simulator builds you
+run, even ad hoc (`CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=`):
+an unsigned app has no Keychain access, so saving a pairing or key fails with -34018.
 
 ## Tests
 
