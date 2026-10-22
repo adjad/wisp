@@ -443,6 +443,9 @@ async def _capture_reminder(candidate, *, automatic: bool) -> dict:
     """
     from service.assistant.outbox import request
     def before_dispatch():
+        from service.safety import read_only
+        if read_only():
+            return 'View-only mode: source-backed capture is disabled.'
         if not _capture_current(candidate, automatic=automatic):
             return 'The exact source or capture authorization changed; refresh the preview.'
         return _policy_block(title=candidate.title, kind='reminder')
@@ -466,6 +469,9 @@ async def _capture_reminder(candidate, *, automatic: bool) -> dict:
 def _capture_current(candidate, *, automatic: bool) -> bool:
     """Re-read admission around every effect and require the exact source preview."""
     try:
+        from service.safety import read_only
+        if read_only():
+            return False
         latest = load_settings(settings_path(MOE_DIR))
         if latest.mode == 'off' or (automatic and (latest.mode != 'live' or not latest.capture_events)):
             return False

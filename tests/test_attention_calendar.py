@@ -242,3 +242,45 @@ async def test_revocation_during_app_reconnect_prevents_publication(tmp_path, mo
         assert outbox._pending == {}
     finally:
         store._db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('automatic', [False, True])
+@pytest.mark.parametrize('authority', ['grant', 'full_access'])
+async def test_view_only_blocks_paired_reminder_despite_tool_authority(isolated, monkeypatch, automatic, authority):
+    from service.assistant import attention_runner as runner
+    settings, request = isolated
+    settings.mode, settings.capture_events = 'live', True
+    candidate = SimpleNamespace(source_id='fixture', review_fingerprint='exact', capture_key='capture:fixture',
+                                timezone='America/Los_Angeles', title='Your exam', due_ts=time.time() + 3600)
+    monkeypatch.setattr(runner, 'load_settings', lambda *a: settings)
+    monkeypatch.setattr(runner, 'capture_candidates', lambda *a: [candidate])
+    monkeypatch.setattr(runner, '_audit', lambda *a, **k: None)
+    monkeypatch.setattr(policy, '_READ_ONLY', True)
+    if authority == 'grant':
+        monkeypatch.setattr(grants, 'check', lambda *a: 'allow')
+    else:
+        monkeypatch.setattr(policy, '_FULL_ACCESS', True)
+    # The generic tool policy can permit a specific write; autonomous source
+    # interpretation still has a hard view-only boundary for both pair effects.
+    assert runner._policy_block() is None
+    assert runner._capture_current(candidate, automatic=automatic) is False
+    assert (await runner._capture_reminder(candidate, automatic=automatic))['status'] == 'blocked'
+    request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_paired_reminder_rechecks_view_only_after_native_reconnect(isolated, monkeypatch):
+    from service.assistant import attention_runner as runner
+    _, request = isolated
+    candidate = SimpleNamespace(title='Your exam', due_ts=time.time() + 3600, capture_key='capture:fixture')
+    monkeypatch.setattr(runner, '_capture_current', lambda *a, **k: True)
+    monkeypatch.setattr(runner, '_audit', lambda *a, **k: None)
+    monkeypatch.setattr(grants, 'check', lambda *a: 'allow')
+    async def reconnect(*args, **kwargs):
+        monkeypatch.setattr(policy, '_READ_ONLY', True)
+        reason = kwargs['before_dispatch']()
+        assert reason and 'View-only' in reason
+        return {'ok': False, 'status': 'blocked', 'error': reason}
+    request.side_effect = reconnect
+    assert (await runner._capture_reminder(candidate, automatic=True))['status'] == 'blocked'
