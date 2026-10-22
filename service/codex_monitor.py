@@ -13,6 +13,7 @@ schemas and fails closed with a useful availability message.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -116,7 +117,7 @@ class CodexMonitor:
         state_db = self._latest_db("state_*.sqlite")
         history_db = self._latest_db("thread_history_*.sqlite")
         try:
-            with self._connect(state_db) as state:
+            with closing(self._connect(state_db)) as state:
                 columns = self._columns(state, "threads")
                 required = {"id", "updated_at", "archived"}
                 if not required.issubset(columns):
@@ -134,29 +135,43 @@ class CodexMonitor:
                     "ORDER BY updated_at DESC"
                 ).fetchall()
 
-            with self._connect(history_db) as history:
-                turns = history.execute(
-                    "SELECT t.thread_id, t.status, COALESCE(t.completed_at, t.started_at, 0) AS activity "
-                    "FROM thread_turns t JOIN (SELECT thread_id, MAX(rollout_ordinal) AS ordinal "
-                    "FROM thread_turns GROUP BY thread_id) latest "
-                    "ON latest.thread_id=t.thread_id AND latest.ordinal=t.rollout_ordinal"
-                ).fetchall()
-                turn_by_thread = {row["thread_id"]: row for row in turns}
-                messages = history.execute(
-                    "SELECT i.thread_id, i.item_json, i.created_at_ms FROM thread_items i "
-                    "JOIN (SELECT thread_id, MAX(rollout_ordinal) AS ordinal FROM thread_items "
-                    "WHERE item_type='agentMessage' GROUP BY thread_id) latest "
-                    "ON latest.thread_id=i.thread_id AND latest.ordinal=i.rollout_ordinal"
-                ).fetchall()
-                message_by_thread = {row["thread_id"]: row for row in messages}
+            rows = [row for row in rows if include_subagents
+                    or str(row["thread_source"] or "") in USER_THREAD_SOURCES]
+            ids = [row["id"] for row in rows]
+
+            with closing(self._connect(history_db)) as history:
+                turn_by_thread = {}
+                message_by_thread = {}
+                # Exclude archived/internal histories before aggregation, not
+                # after reading their latest payloads. Keep old running chats
+                # in scope; a time cutoff would miss their eventual completion.
+                # One empty batch still validates the history schema without
+                # scanning it, preserving the usual availability errors.
+                batches = [ids[i:i + 500] for i in range(0, len(ids), 500)] or [[]]
+                for batch in batches:
+                    selected = ("thread_id IN (" + ",".join("?" for _ in batch) + ")"
+                                if batch else "0")
+                    turns = history.execute(
+                        "SELECT t.thread_id, t.status, COALESCE(t.completed_at, t.started_at, 0) AS activity "
+                        "FROM thread_turns t JOIN (SELECT thread_id, MAX(rollout_ordinal) AS ordinal "
+                        f"FROM thread_turns WHERE {selected} GROUP BY thread_id) latest "
+                        "ON latest.thread_id=t.thread_id AND latest.ordinal=t.rollout_ordinal",
+                        batch,
+                    ).fetchall()
+                    turn_by_thread.update((row["thread_id"], row) for row in turns)
+                    messages = history.execute(
+                        "SELECT i.thread_id, i.item_json, i.created_at_ms FROM thread_items i "
+                        "JOIN (SELECT thread_id, MAX(rollout_ordinal) AS ordinal FROM thread_items "
+                        f"WHERE item_type='agentMessage' AND {selected} GROUP BY thread_id) latest "
+                        "ON latest.thread_id=i.thread_id AND latest.ordinal=i.rollout_ordinal",
+                        batch,
+                    ).fetchall()
+                    message_by_thread.update((row["thread_id"], row) for row in messages)
         except sqlite3.Error as exc:
             raise CodexMonitorUnavailable(f"Codex's task index could not be read: {exc}") from exc
 
         result: list[CodexTask] = []
         for row in rows:
-            source = str(row["thread_source"] or "")
-            if not include_subagents and source not in USER_THREAD_SOURCES:
-                continue
             turn = turn_by_thread.get(row["id"])
             status = str(turn["status"] if turn else "unknown")
             updated = float(row["updated_at"] or 0)

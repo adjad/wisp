@@ -63,6 +63,17 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                          DayBlockInput(id: "late", title: "Late", start: at(15), end: at(16), kind: "calendar")], now: now)
     check(recent.items.map(\.id) == ["block:coffee", "block:lunch", "block:late"], "the back window keeps what ended in it: \(recent.items.map(\.id))")
     check(recent.items.map(\.past) == [true, false, false], "only what is over is dim; a block running now is not")
+    // A block that ends while its Cancel is still in the 5-second Undo window (or
+    // in flight) stays live: Undo must not vanish because the clock passed its end.
+    let lunchOver = window([DayBlockInput(id: "lunch", title: "Lunch", start: at(12.5), end: at(13.5), kind: "calendar"),
+                            DayBlockInput(id: "late", title: "Late", start: at(15), end: at(16), kind: "calendar")], now: at(13.6))
+    let endedLunch = lunchOver.items.first { $0.id == "block:lunch" }
+    let upcomingLate = lunchOver.items.first { $0.id == "block:late" }
+    check(endedLunch?.past == true && upcomingLate?.past == false, "lunch ended at 13:30, late has not started")
+    check(endedLunch?.isOver(cancelActive: false) == true, "an ended block with nothing pending is over: dim, no controls")
+    check(endedLunch?.isOver(cancelActive: true) == false, "a cancel still undoable or in flight keeps the ended block live")
+    check(upcomingLate?.isOver(cancelActive: false) == false && upcomingLate?.isOver(cancelActive: true) == false,
+          "a block that has not ended is never over")
     check(DayTimeline.blurb(window([DayBlockInput(id: "coffee", title: "Coffee", start: at(11.25), end: at(11.75), kind: "calendar")], now: now),
                             needs: [], isToday: true, endOfDay: dayEnd, clock: clock) == "Nothing is planned for the rest of today.",
           "the blurb ignores what is already over")

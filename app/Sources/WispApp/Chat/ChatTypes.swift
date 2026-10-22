@@ -67,8 +67,28 @@ struct ChatToolRow: Identifiable, Equatable {
     let id: String              // the server's call id; a unique value when absent
     var name: String
     var decision: String        // "allow" | "confirm" | "deny"
-    var result: String = ""
+    private var resultPreview: String
+    var result: String {
+        get { resultPreview }
+        set { resultPreview = Self.preview(newValue) }
+    }
     var finished = false
+
+    init(id: String, name: String, decision: String, result: String = "", finished: Bool = false) {
+        self.id = id
+        self.name = name
+        self.decision = decision
+        self.resultPreview = Self.preview(result)
+        self.finished = finished
+    }
+
+    /// These rows only display the first nonempty line. Keep one extra
+    /// character to preserve the 60-character detail's ellipsis, and copy it
+    /// into owned storage so a substring cannot retain a large tool response.
+    /// A Character can contain multiple Unicode scalars; this is not a byte cap.
+    private static func preview(_ text: String) -> String {
+        String(text.drop(while: { $0.isNewline }).prefix(61).prefix(while: { !$0.isNewline }))
+    }
 
     var kind: ChatToolKind { ChatToolKind.from(toolName: name) }
 

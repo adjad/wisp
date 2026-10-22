@@ -243,6 +243,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_calendar_literal_entrypoint.py",
     # Pure named-time parsing, fictional stores and inert ASGI calls; no live sources.
     "tests/test_calendar_time_contract.py",
+    # Pure end-time formatter over fictional rows; no store, source or model.
+    "tests/test_calendar_end_time_format.py",
     # Scorer self-test on synthetic fixtures; tmp_path files only, no model or network.
     "tests/test_memory_eval_scorer.py",
     # Toolbench matchers/scorer/report on hand-built trajectories and fake-world
