@@ -675,20 +675,40 @@ def test_ambiguous_city_with_a_state_never_repeats_the_suffix(location, monkeypa
     assert reply.startswith("More than one California city starts with Santa.")
 
 
-def test_ambiguous_city_examples_use_the_bare_city_only():
+@pytest.mark.parametrize("location", ["Riverside", "Santa", "Springfield, US"])
+def test_ambiguous_city_reply_never_invents_a_city_state_example(location, monkeypatch):
+    # "Santa" is a prefix, not a city, so a "Santa, CA" example would point
+    # at a place that does not exist.
     from service.workflows.reads import read_failure_reply
     raw = "(error: no unambiguous location — ambiguous city; ask the user for the city and state/country; do not guess one)"
-    _, bare = read_failure_reply("get_weather", {"location": "Riverside"}, raw)
-    assert bare.endswith('for example "Riverside, CA".')
-    _, suffixed = read_failure_reply("get_weather", {"location": "Springfield, US"}, raw)
-    assert suffixed.startswith("There's more than one Springfield.")
-    assert "for example" not in suffixed and "US, CA" not in suffixed
+    if location != "Springfield, US":
+        fake_weather(monkeypatch, payload())
+        raw = dispatch_weather(location=location)
+    _, reply = read_failure_reply("get_weather", {"location": location}, raw)
+    city = location.split(",")[0]
+    assert reply == (f"There's more than one {city}. Which one do you mean? "
+                     "Add the state or country after a comma.")
+
+
+@pytest.mark.parametrize("location", ["Fresno CA 93701", "CA Fresno"])
+def test_ambiguous_california_location_has_its_own_plain_question(location, monkeypatch):
+    from service.workflows.reads import read_failure_reply
+    calls = fake_weather(monkeypatch, payload())
+    raw = dispatch_weather(location=location)
+    assert "ambiguous California location" in raw and not calls
+    status, reply = read_failure_reply("get_weather", {"location": location}, raw)
+    assert (status, reply) == ("needs_input", (
+        f"I couldn't tell which California place {location} is. Give the full "
+        'city name followed by ", CA".'))
 
 
 @pytest.mark.parametrize("status,expected", [
     (404, "Check the spelling, or add the state or country."),
     (400, "Check the spelling, or add the state or country."),
+    (403, "try again in a moment"),
+    (408, "try again in a moment"),
     (429, "try again in a moment"),
+    (451, "try again in a moment"),
     (503, "try again in a moment"),
 ])
 def test_weather_http_errors_say_what_the_user_can_do(status, expected, monkeypatch):
