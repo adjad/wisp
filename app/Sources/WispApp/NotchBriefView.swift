@@ -84,16 +84,6 @@ struct NotchBriefView: View {
         }
         .environment(\.timeZone, today.timezone)
         .modifier(DayRefreshLoop(model: model, today: today))
-        .task {
-            // The week ahead changes slowly; SOON reads it while the Brief is open.
-            while !Task.isCancelled {
-                await today.refreshUpcoming()
-                // The composed summary the service kept: after a relaunch the
-                // live event and Refresh are gone, and the next run may be hours off.
-                await today.refreshStoredBrief()
-                do { try await Task.sleep(for: .seconds(120)) } catch { break }
-            }
-        }
     }
 
     /// Today's composed Daily Summary, when the Brief shows today: the newer of
