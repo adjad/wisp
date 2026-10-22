@@ -112,6 +112,15 @@ struct KnowYouChecks {
         check(envelope?.preview == ["I'll call you Adi."], "preview keeps strings only")
         check(ProfileEnvelope(json: ["profile": 1]) == nil, "a malformed envelope is refused")
         check(UserProfile(json: [:]).hasContent == false, "an empty profile has no content")
+        check(!UserProfile(json: ["tone": "warm", "detail": "short"]).hasContent,
+              "default choices alone keep a fresh profile empty")
+        let preferenceOnlyProfiles: [[String: Any]] = [["tone": "direct"], ["tone": "gentle"], ["detail": "thorough"]]
+        for choices in preferenceOnlyProfiles {
+            let styled = UserProfile(json: choices)
+            check(styled.hasContent, "a nondefault reply preference alone is profile content: \(choices)")
+            check(UserProfile(json: styled.fullPatch).hasContent,
+                  "About you preserves a preference-only profile when it saves")
+        }
 
         // The Mac account's name is offered, not saved.
         check(UserProfile.suggestedName(fullName: " Adi Jain ") == "Adi", "first name from the account")

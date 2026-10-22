@@ -67,7 +67,7 @@ def empty() -> dict:
             "people": [], "tone": "warm", "detail": "short",
             "boundaries": "", "notes": "", "completed_at": None, "updated_at": None,
             "dismissed_at": None, "dismiss_count": 0,
-            # Weekly goal pulse (service/assistant/checkin.py): one tap per goal.
+            # Weekly goal pulse: its clock starts at a goal change or an answer.
             "goal_status": {}, "goal_pulse_at": None}
 
 
@@ -229,12 +229,22 @@ def update(patch: dict, *, now: float | None = None) -> dict:
     cleaned = validate(patch)
     with _lock:
         profile = _read()
+        stamp = time.time() if now is None else now
+        goals = cleaned.get("goals", profile["goals"])
+        if goals != profile["goals"]:
+            profile["goal_pulse_at"] = stamp if goals else None
+        elif goals and cleaned and profile.get("goal_pulse_at") is None:
+            # Freeze a legacy profile's goal clock before updated_at advances.
+            # Without any recorded date its pulse was already due; an epoch
+            # anchor preserves that instead of postponing it on an unrelated edit.
+            previous = profile.get("updated_at")
+            profile["goal_pulse_at"] = previous if previous is not None else 0.0
         profile.update(cleaned)
         if "goals" in cleaned:
             profile["goal_status"] = {g: v for g, v in profile.get("goal_status", {}).items()
                                       if g in cleaned["goals"]}
         if cleaned:
-            profile["updated_at"] = time.time() if now is None else now
+            profile["updated_at"] = stamp
         _write(profile)
         return profile
 
@@ -291,8 +301,8 @@ def filled_fields(profile: dict) -> list[str]:
     out = []
     for field in EDITABLE:
         value = profile.get(field)
-        if field in ("tone", "detail"):
-            continue  # always hold a default; not evidence the user answered
+        if field in _DEFAULT_CHOICE and value == _DEFAULT_CHOICE[field]:
+            continue  # untouched defaults are not evidence the user answered
         if value:
             out.append(field)
     return out
