@@ -29,6 +29,7 @@ _EVENT = re.compile(r"\b(?:exam|quiz|midterm|final|appointment|interview|meeting
 _GENERIC_EVENT = re.compile(r"\b(?:we(?:['’]re|\s+are|\s+will)|let'?s|see\s+you|i(?:['’]ll|\s+will)\s+(?:join|meet|see|bring|pick\s+you))\b", re.I)
 _GENERIC_UNCERTAIN = re.compile(r"\b(?:wondering|hoping|hope|considering|thinking|maybe|might|could|would|if|unless|whether)\b", re.I)
 _EVENT_NEGATION = re.compile(r"\b(?:not|never|no)\b", re.I)
+_NEGATIVE_CONTRACTION = re.compile(r"\b(?:(?:is|are|do|does|did|would|could|have|has|had|should|must|was|were)n['’]t|won['’]t|can['’]t)\b", re.I)
 _COMMITTED = re.compile(r"\b(?:confirmed|scheduled|booked|we(?:'re|\s+are|\s+will)|i(?:'ll|\s+will)|see\s+you|let'?s|our|your|reminder|have|is|on\s+for)\b", re.I)
 _QUOTED = re.compile(r"(?im)^\s*(?:on .+wrote:|from:|>+|[-_]{3,}\s*(?:original|forwarded)|begin forwarded message:|forwarded message:)")
 _TYPOS = {"wenesday": "wednesday", "wensday": "wednesday", "thirsday": "thursday", "thurday": "thursday"}
@@ -154,8 +155,8 @@ def candidates(records: list[dict], rows: list[dict], *, now: float, tz: str,
         event_clause = text[before:min(ends) if ends else len(text)]
         # Known event nouns do not make a cancelled plan affirmative. Keep
         # positive reminders ("do not forget") without reviving "will not meet".
-        polarity = re.sub(r"\b(?:do\s+)?not\s+(?:forget|miss)\b", '', event_clause, flags=re.I)
-        if _EVENT_NEGATION.search(polarity):
+        polarity = re.sub(r"\b(?:(?:do\s+)?not|don['’]t)\s+(?:forget|miss)\b", '', event_clause, flags=re.I)
+        if _EVENT_NEGATION.search(polarity) or _NEGATIVE_CONTRACTION.search(polarity):
             continue
         if item.source == 'messages':
             # Participation must belong to the clause that supplied this event,

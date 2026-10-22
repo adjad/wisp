@@ -411,6 +411,10 @@ def test_explicit_joint_participation_qualifies():
     'We are considering coffee next Thursday', 'We are thinking about coffee next Thursday',
     'We are hoping for lunch next Thursday', 'Coffee next Thursday if the weather is good',
     'We will not meet next Friday', 'We are not having dinner next Friday',
+    "We don't meet next Friday", "We aren't having dinner next Friday",
+    "Our coffee isn't happening next Thursday", "Dinner next Friday isn't confirmed",
+    'We don’t meet next Friday', 'We aren’t having dinner next Friday',
+    'Our coffee isn’t happening next Thursday', 'Dinner next Friday isn’t confirmed',
 ])
 def test_event_nouns_never_override_uncertainty_or_negation(text):
     assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)]) == []
@@ -418,6 +422,7 @@ def test_event_nouns_never_override_uncertainty_or_negation(text):
 
 @pytest.mark.parametrize('text', ['Do not forget our exam next Wednesday',
                                  "Don't forget our coffee chat next Thursday",
+                                 'Don’t forget our coffee chat next Thursday',
                                  'Our dinner next Friday', 'See you next Friday'])
 def test_positive_confirmed_plan_controls_survive_negation_guard(text):
     assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)])
