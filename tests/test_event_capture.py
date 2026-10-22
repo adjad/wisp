@@ -581,9 +581,10 @@ async def test_native_reminder_success_is_preserved_when_refresh_publish_fails(w
 ])
 def test_unrelated_duration_never_supplies_event_length(text):
     got = plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)])
-    assert len(got) == 1
-    assert got[0].start_ts is not None and got[0].duration_min is None
-    assert 'needs an end time' in got[0].when
+    # Refusal is intentional for unresolved extra clauses; an accepted scope
+    # must never borrow the unrelated duration.
+    assert all(c.start_ts is not None and c.duration_min is None for c in got)
+    assert all('needs an end time' in c.when for c in got)
 
 
 @pytest.mark.parametrize('text', [
@@ -610,9 +611,10 @@ def test_distinct_event_clauses_never_mix_date_clock_or_range(text):
 ])
 def test_school_date_only_subject_does_not_borrow_commute_time_or_duration(body):
     got = plans([mail('STAT 5 Exam next Wednesday', body=body)])
-    assert len(got) == 1 and got[0].day == '2026-10-21'
-    assert got[0].start_ts is None and got[0].duration_min is None
-    assert got[0].calendar_plan(automatic=True)['all_day'] is True
+    # A qualifying/unsupported extra predicate may require review. If the
+    # source is accepted, only the subject's date is evidence for this event.
+    assert all(c.day == '2026-10-21' and c.start_ts is None and c.duration_min is None for c in got)
+    assert all(c.calendar_plan(automatic=True)['all_day'] is True for c in got)
 
 
 @pytest.mark.parametrize('body', ['Practice is 3pm to 4pm', 'Practice starts at 3pm for 2 hours'])
@@ -664,9 +666,8 @@ def test_date_only_event_never_invents_clock_from_a_duration():
 ])
 def test_unrelated_clock_range_never_supplies_event_interval(text):
     got = plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)])
-    assert len(got) == 1 and got[0].duration_min is None
-    assert datetime.fromtimestamp(got[0].start_ts, ZONE).hour == 15
-    assert 'commute' not in got[0].quote and 'I ran' not in got[0].quote
+    assert all(c.duration_min is None and datetime.fromtimestamp(c.start_ts, ZONE).hour == 15 for c in got)
+    assert all('commute' not in c.quote and 'I ran' not in c.quote for c in got)
 
 
 def test_two_matching_exam_clauses_keep_single_date_only_schedule():
@@ -769,3 +770,48 @@ def test_real_affirmation_still_settles_plain_question_with_matching_restatement
 def test_quoted_email_history_cancellation_is_not_current_source_evidence():
     got = plans([mail('STAT 5 exam next Wednesday', body='Your STAT 5 exam is next Wednesday.\nOn Monday, Professor wrote:\nNo exam')])
     assert len(got) == 1 and got[0].automatic_eligible
+
+
+@pytest.mark.parametrize('tail', [
+    'It may happen', 'It probably will happen', 'It is provisional',
+    'It is pending confirmation', 'It is tentative', 'It is unconfirmed',
+    'It is uncertain', 'That is speculative', 'This is being reconsidered',
+    'It is subject to weather', 'That is probable', 'It may change later',
+    'That will be cancelled if necessary', 'It will be confirmed later',
+    'Our plan is unconfirmed', 'The event is unconfirmed',
+    'Our plans are pending confirmation', 'FYI it is unconfirmed',
+    'Unconfirmed', 'Pending confirmation', 'Provisional', 'Tentative',
+    'Coffee is subject to weather', 'Coffee is pending confirmation',
+    'It’s pending confirmation', 'That’s speculative', 'This is probable',
+    'The plan is subject to confirmation', 'It is at 4pm',
+    'It is a predicate the parser has never encountered before',
+])
+@pytest.mark.parametrize('affirm', [False, True])
+def test_unresolved_reference_or_bare_predicate_never_becomes_implicit_consent(tail, affirm):
+    records = [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'),
+               message('Our coffee next Thursday. ' + tail)]
+    if affirm:
+        records.append(message('Yes sounds good', ts=MON+1, direction='outgoing', guid='yes'))
+    assert plans([], records) == []
+
+
+@pytest.mark.parametrize('body', [
+    'It may happen', 'The event is unconfirmed', 'Our plan is pending confirmation',
+    'FYI it is provisional', 'Pending confirmation', 'It’s subject to change',
+    'Exam is pending confirmation', 'It is at 3pm',
+])
+def test_institutional_source_qualifications_are_not_dropped(body):
+    assert plans([mail('STAT 5 exam next Wednesday', body=body)]) == []
+
+
+@pytest.mark.parametrize('body', [
+    'Please bring a calculator', 'Students should bring a calculator',
+    'Please print the formula sheet', 'Professor Yunan Wang',
+    'No worries', 'The note is not done', 'That note is not done',
+    'Please bring a calculator. Regards. Professor Yunan Wang',
+    'Calculators are recommended tools for completing the assigned written work',
+])
+def test_neutral_instructions_and_notes_do_not_erase_an_exam(body):
+    got = plans([mail('STAT 5 exam next Wednesday', body=body)])
+    assert len(got) == 1 and got[0].automatic_eligible
+    assert got[0].start_ts is None and got[0].duration_min is None

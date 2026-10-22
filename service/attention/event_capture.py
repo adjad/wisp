@@ -31,7 +31,11 @@ _GENERIC_UNCERTAIN = re.compile(r"\b(?:wondering|hoping|hope|considering|thinkin
 _EVENT_NEGATION = re.compile(r"\b(?:not|never|no)\b", re.I)
 _UNRESOLVED_CONDITION = re.compile(r"\b(?:if|unless|whether)\b", re.I)
 _SHORT_REVERSAL = re.compile(r"(?:no|not|never)(?:\s+(?:yet|confirmed|happening|sure|definitely|anymore))?", re.I)
-_LINKED_REFERENCE = re.compile(r"^(?:it|that|this|the\s+plan)\b", re.I)
+_LINKED_REFERENCE = re.compile(r"\b(?:it|that|this)\b|\b(?:(?:the|our|your)\s+plans?|the\s+event)\b", re.I)
+_BENIGN_NON_EVENT = re.compile(r"(?:no worries|thanks|thank you|hi|hello|hey|regards|best regards|sincerely)", re.I)
+_UNRELATED_NOTE = re.compile(r"(?:(?:the|that|this|a|my|your|our)\s+)?notes?\s+(?:(?:is|are|was|were)\s+)?not\s+done", re.I)
+_NEUTRAL_INSTRUCTION = re.compile(r"^(?:(?:please|kindly)\s+|(?:students?|you)\s+(?:should|must|can)\s+)?(?:bring|pack|carry|read|review|use|arrive|prepare|download|print|wear|submit)\b", re.I)
+_NEUTRAL_SIGNATURE = re.compile(r"^(?:Professor|Prof|Doctor|Dr)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}$")
 _NEGATIVE_CONTRACTION = re.compile(r"\b(?:(?:is|are|do|does|did|would|could|have|has|had|should|must|was|were)n['’]t|won['’]t|can['’]t)\b", re.I)
 _COMMITTED = re.compile(r"\b(?:confirmed|scheduled|booked|we(?:'re|\s+are|\s+will)|i(?:'ll|\s+will)|see\s+you|let'?s|our|your|reminder|have|is|on\s+for)\b", re.I)
 _QUOTED = re.compile(r"(?im)^\s*(?:on .+wrote:|from:|>+|[-_]{3,}\s*(?:original|forwarded)|begin forwarded message:|forwarded message:)")
@@ -79,11 +83,29 @@ def _scoped_event(text: str, arrival: datetime, tz: str, source_id: str, *, conf
         # A direct reversal can refer back to the plan without repeating its
         # event noun or time. Unrelated non-event notes remain outside this gate.
         plain = clause.strip(" \t\r\n'\"“”‘’()")
+        if not plain:
+            continue
+        if not event_words and not generic and _UNRELATED_NOTE.fullmatch(plain):
+            continue
+        # An unsupported predicate about 'it', 'our plan', etc. is not proof
+        # of an affirmative event. Never drop that qualification, even with a
+        # later generic yes or a clock we cannot attach to an event noun.
+        if _LINKED_REFERENCE.search(plain):
+            return None
         if not event_words and not generic:
-            if _SHORT_REVERSAL.fullmatch(plain):
+            if (_SHORT_REVERSAL.fullmatch(plain) or _UNRESOLVED_CONDITION.search(plain)
+                    or _GENERIC_UNCERTAIN.search(plain) or _TENTATIVE.search(plain)):
                 return None
-            if not _LINKED_REFERENCE.search(plain):
+            if (_BENIGN_NON_EVENT.fullmatch(plain) or _NEUTRAL_INSTRUCTION.search(plain)
+                    or _NEUTRAL_SIGNATURE.fullmatch(plain)):
                 continue
+            # Unknown short fragments can be bare qualifications, so they
+            # need review without an uncertainty synonym list. Longer neutral
+            # prose may remain context only if it carries no temporal signals.
+            if (len(plain.split()) <= 8 or _CLOCK.search(plain)
+                    or _DATE_CUE.search(plain) or _DURATION.search(plain)):
+                return None
+            continue
         # Check EVERY linked clause before dropping no-time clauses or merging
         # matching schedules. Generic assent cannot prove an external condition.
         polarity = re.sub(r"\b(?:(?:do\s+)?not|don['’]t)\s+(?:forget|miss)\b", '', clause, flags=re.I)
@@ -125,11 +147,9 @@ def _scoped_event(text: str, arrival: datetime, tz: str, source_id: str, *, conf
                       if stated_range else clause)
         resolved = resolve(start_text, arrival, tz, source_id)
         if resolved.blocked or resolved.day is None or resolved.guessed:
-            # A clause with no concrete date/clock cannot lend another event a
-            # duration. Other ambiguous temporal evidence makes the source unsafe.
-            if resolved.blocked not in ('no_time_stated', 'no_usable_time'):
-                return None
-            continue
+            # An unresolved event clause can qualify another clause's event;
+            # missing schedule evidence is not permission to drop its predicate.
+            return None
         if event_identity is not None and event_identity != core:
             return None
         event_identity = core
