@@ -407,6 +407,22 @@ def test_explicit_joint_participation_qualifies():
     assert len(got) == 1 and got[0].automatic_eligible
 
 
+@pytest.mark.parametrize('text', [
+    'We are considering coffee next Thursday', 'We are thinking about coffee next Thursday',
+    'We are hoping for lunch next Thursday', 'Coffee next Thursday if the weather is good',
+    'We will not meet next Friday', 'We are not having dinner next Friday',
+])
+def test_event_nouns_never_override_uncertainty_or_negation(text):
+    assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)]) == []
+
+
+@pytest.mark.parametrize('text', ['Do not forget our exam next Wednesday',
+                                 "Don't forget our coffee chat next Thursday",
+                                 'Our dinner next Friday', 'See you next Friday'])
+def test_positive_confirmed_plan_controls_survive_negation_guard(text):
+    assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)])
+
+
 def test_generic_institutional_event_needs_review_of_participation():
     got = plans([mail('School seminar next Wednesday', sender='Office <office@school.edu>')])
     assert len(got) == 1 and got[0].automatic_eligible is False

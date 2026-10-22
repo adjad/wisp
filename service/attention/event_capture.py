@@ -27,11 +27,12 @@ from service.attention.resolve import _CANCEL, _TENTATIVE, resolve
 HORIZON_DAYS = 31
 _EVENT = re.compile(r"\b(?:exam|quiz|midterm|final|appointment|interview|meeting|coffee(?:\s+chat)?|hangout|hang\s+out|lunch|dinner|breakfast|brunch|party|practice|rehearsal|concert|visit|reservation|flight|workshop|class|seminar|session|catch\s+up|meet(?:\s+up)?|see\s+you|come\s+over)\b", re.I)
 _GENERIC_EVENT = re.compile(r"\b(?:we(?:['’]re|\s+are|\s+will)|let'?s|see\s+you|i(?:['’]ll|\s+will)\s+(?:join|meet|see|bring|pick\s+you))\b", re.I)
-_GENERIC_UNCERTAIN = re.compile(r"\b(?:not|never|no|wondering|hoping|considering|thinking|maybe|might)\b", re.I)
+_GENERIC_UNCERTAIN = re.compile(r"\b(?:wondering|hoping|hope|considering|thinking|maybe|might|could|would|if|unless|whether)\b", re.I)
+_EVENT_NEGATION = re.compile(r"\b(?:not|never|no)\b", re.I)
 _COMMITTED = re.compile(r"\b(?:confirmed|scheduled|booked|we(?:'re|\s+are|\s+will)|i(?:'ll|\s+will)|see\s+you|let'?s|our|your|reminder|have|is|on\s+for)\b", re.I)
 _QUOTED = re.compile(r"(?im)^\s*(?:on .+wrote:|from:|>+|[-_]{3,}\s*(?:original|forwarded)|begin forwarded message:|forwarded message:)")
 _TYPOS = {"wenesday": "wednesday", "wensday": "wednesday", "thirsday": "thursday", "thurday": "thursday"}
-_NEGATED = re.compile(r"\b(?:no|not)\b[^.!?\n]{0,30}\b(?:exam|quiz|meeting|coffee|hangout|event|class|plans?)\b|\b(?:already|previously)\s+(?:attended|finished|happened)\b", re.I)
+_NEGATED = re.compile(r"\b(?:already|previously)\s+(?:attended|finished|happened)\b", re.I)
 _OTHER_OWNER = re.compile(r"\b(?:my|his|her|their)\b|\b(?:he|she|they)\s+(?:has|have|is|are|will)\b|\bi\s+(?:have|am|will|need)\b|\bi['’]m\b|\b[A-Za-z]+['’]s\s+(?:exam|appointment|meeting|interview)\b", re.I)
 _THIRD_OWNER = re.compile(r"\b(?:my|your|our|his|her|their)\s+(?:brother|sister|friend|partner|mother|father|son|daughter|roommate|boss|colleague)\b|\b(?:he|she|they)\s+(?:has|have|is|are|will)\b|\b[A-Za-z]+['’]s\s+(?:exam|appointment|meeting|interview)\b", re.I)
 _DIRECT_JOINT = re.compile(r"\bi\s+have\s+our\b|\bi(?:['’]ll|\s+will|['’]m)\s+(?:meet(?:ing)?|see(?:ing)?|join(?:ing)?)\s+you\b", re.I)
@@ -147,13 +148,18 @@ def candidates(records: list[dict], rows: list[dict], *, now: float, tz: str,
             range_minutes = int(gap)
         if r.blocked or r.day is None or r.guessed:
             continue
+        at = r.at or 0
+        before = max((text.rfind(mark, 0, at) for mark in '.!?\n;'), default=-1) + 1
+        ends = [index for mark in '.!?\n;' if (index := text.find(mark, at)) >= 0]
+        event_clause = text[before:min(ends) if ends else len(text)]
+        # Known event nouns do not make a cancelled plan affirmative. Keep
+        # positive reminders ("do not forget") without reviving "will not meet".
+        polarity = re.sub(r"\b(?:do\s+)?not\s+(?:forget|miss)\b", '', event_clause, flags=re.I)
+        if _EVENT_NEGATION.search(polarity):
+            continue
         if item.source == 'messages':
             # Participation must belong to the clause that supplied this event,
             # never an unrelated 'your notes look good' in the next sentence.
-            at = r.at or 0
-            before = max((text.rfind(mark, 0, at) for mark in '.!?\n;'), default=-1) + 1
-            ends = [index for mark in '.!?\n;' if (index := text.find(mark, at)) >= 0]
-            event_clause = text[before:min(ends) if ends else len(text)]
             if _THIRD_OWNER.search(event_clause):
                 continue
             if _OTHER_OWNER.search(event_clause) and not _DIRECT_JOINT.search(event_clause):
@@ -164,6 +170,8 @@ def candidates(records: list[dict], rows: list[dict], *, now: float, tz: str,
         later = [i for i in items if i.source == item.source and i.conversation == item.conversation
                  and i.direction == 'outgoing' and item.ts < i.ts <= min(now, item.ts + 6 * 3600)]
         confirmed = any(AFFIRM.search(i.text) and not DECLINE.search(i.text) for i in later)
+        if _GENERIC_UNCERTAIN.search(event_clause) and not confirmed:
+            continue
         if any(_CANCEL.search(i.text) or _WITHDRAW.search(i.text) or DECLINE.search(i.text)
                for i in snapshot.items if i.conversation == item.conversation and item.ts < i.ts <= now):
             continue
