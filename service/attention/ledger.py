@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-STATES = ("shadow", "claimed", "created", "failed", "unknown", "capped", "already_on_file", "undone")
+STATES = ("shadow", "claimed", "created", "failed", "unknown", "capped", "already_on_file", "undone", "partial")
 STALE_CLAIM_S = 300
 
 
@@ -72,10 +72,10 @@ class Ledger:
         with self._lock:
             cur = self._db.execute(
                 "UPDATE actions SET title=NULL, "
-                "detail=json_remove(detail,'$.quote','$.why','$.when','$.result.error') "
+                "detail=json_remove(detail,'$.quote','$.why','$.when','$.result.error','$.title','$.effects.calendar.error','$.effects.reminder.error') "
                 "WHERE decided_at<? AND (state!='created' OR due_ts IS NULL OR due_ts<?) "
                 "AND (title IS NOT NULL OR json_extract(detail,'$.quote') IS NOT NULL "
-                "OR json_extract(detail,'$.why') IS NOT NULL OR json_extract(detail,'$.result.error') IS NOT NULL)",
+                "OR json_extract(detail,'$.why') IS NOT NULL OR json_extract(detail,'$.result.error') IS NOT NULL OR json_extract(detail,'$.title') IS NOT NULL OR json_extract(detail,'$.effects.calendar.error') IS NOT NULL OR json_extract(detail,'$.effects.reminder.error') IS NOT NULL)",
                 (older_than, now))
             return cur.rowcount
 
@@ -128,6 +128,19 @@ class Ledger:
             return self._db.execute(
                 f"SELECT COUNT(*) FROM actions WHERE decided_at>=? AND state IN ({marks}) "
                 "AND source_id IS NOT ?", (since_ts, *states, exclude)).fetchone()[0]
+
+    def created_count_since(self, since_ts: float) -> int:
+        with self._lock:
+            return self._db.execute(
+                "SELECT COUNT(*) FROM actions WHERE decided_at>=? AND state='created' "
+                "AND source_id NOT LIKE 'preview:%'", (since_ts,)).fetchone()[0]
+
+    def capture_count_since(self, since_ts: float) -> int:
+        """Count pairs once; disposable preview mirrors never consume the cap."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT COUNT(*) FROM actions WHERE decided_at>=? AND source_id LIKE 'capture:%' "
+                "AND state IN ('created','partial','unknown','claimed','undone')", (since_ts,)).fetchone()[0]
 
     def rows_relevant(self, since_ts: float, upcoming_from: float, states: tuple[str, ...]) -> list[dict]:
         """Rows in any of `states` decided since `since_ts`, or whose event (or, with no clock,
