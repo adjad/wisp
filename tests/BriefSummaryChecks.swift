@@ -249,8 +249,8 @@ func briefTileChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Dou
     let long = BriefTiles.todayDetail(many, now: now, dayStart: dayStart, clock: clock)
     check(long.lines.count == BriefTiles.shown + 1 && long.lines.last?.text == "+3 more",
           "a long Today list says how many more, adding up to its count")
-    check(BriefTiles.todayDetail([], now: now, dayStart: dayStart, clock: clock).lines.map(\.text) == ["Nothing to do today"],
-          "a zero Today count opens on its empty state")
+    check(BriefTiles.todayDetail([], now: now, dayStart: dayStart, clock: clock).lines.map(\.text) == ["No tasks in the available plan"],
+          "a read empty Today list scopes its empty state to the available plan")
 
     // Events: today's calendar, then what's coming up; empty days say so.
     let calendar = BriefDetail.calendar(allDay: [], events: [(title: "Standup", start: now + 3600, end: nil)],
@@ -284,4 +284,128 @@ func briefTileChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Dou
     check(BriefTile.allCases.map(\.shortcut) == ["1", "2", "3", "4"]
             && BriefTile.allCases.map(\.title) == ["Today", "Mail", "Messages", "Events"],
           "tiles in order with 1–4")
+    briefTodayCoverageChecks(check, dayStart: dayStart, now: now)
+    briefTodayPlannedChecks(check)
+    briefTodayCivilDayChecks(check)
+}
+
+func briefTodayCoverageChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Double) {
+    let complete = BriefTodayCoverage(remindersReady: true, coverageReady: true, workspaceReady: true)
+    let known = [BriefTodo(id: "saved", title: "Saved Day task", start: now)]
+    func tile(_ todos: [BriefTodo], _ coverage: BriefTodayCoverage) -> BriefTileContent {
+        BriefTiles.todayContent(todos, coverage: coverage, now: now, dayStart: dayStart, clock: { _ in "1 PM" })
+    }
+    let empty = tile([], complete)
+    check(empty.count == 0 && empty.countText == "0" && !empty.incomplete
+          && empty.detail.lines.map(\.text) == ["No tasks in the available plan"],
+          "confirmed available-plan empty is distinct from unread or incomplete")
+    check(tile(known, complete).countText == "1" && tile(known, complete).detail.lines.map(\.text) == ["Saved Day task"],
+          "read nonempty plan count and list agree")
+    var incomplete: [(String, BriefTodayCoverage)] = [
+        ("unread reminders", BriefTodayCoverage(remindersReady: false, coverageReady: false, workspaceReady: true)),
+        ("plan readiness disagrees", BriefTodayCoverage(remindersReady: false, coverageReady: true, workspaceReady: true)),
+        ("missing coverage", BriefTodayCoverage(remindersReady: true, coverageReady: false, workspaceReady: true)),
+        ("missing or failed workspace", BriefTodayCoverage(remindersReady: true, coverageReady: true, workspaceReady: false)),
+    ]
+    var blocked = complete; blocked.blocked = true
+    incomplete.append(("blocked", blocked))
+    var sourcePartial = complete; sourcePartial.remindersOmitted = 2
+    incomplete.append(("source omissions", sourcePartial))
+    var bounded = complete; bounded.attentionOmitted = 3
+    incomplete.append(("bounded workspace", bounded))
+    var provisional = complete; provisional.provisional = true
+    incomplete.append(("provisional plan", provisional))
+    var warning = complete; warning.hasWarnings = true
+    incomplete.append(("planning warning", warning))
+    for detail in ["Current cached incomplete reminders; native completeness unverified", "Partial reminder read",
+                   "Truncated reminder read", "Reminders unavailable"] {
+        var limited = complete; limited.detail = detail
+        incomplete.append((detail, limited))
+    }
+    for (state, coverage) in incomplete {
+        let unknown = tile([], coverage), partial = tile(known, coverage)
+        check(unknown.count == nil && unknown.countText == "–" && unknown.incomplete
+              && unknown.detail.lines.map(\.text) == ["Today's tasks haven't been fully checked"],
+              "\(state): missing evidence must not look like a known zero or an empty day")
+        check(partial.count == 1 && partial.countText == "1+" && partial.incomplete
+              && partial.detail.lines.map(\.text) == ["Saved Day task", "Some tasks may be missing"],
+              "\(state): keep known tasks with an explicit incomplete count and coverage note")
+        check(unknown.countDescription("Today") == "Today, count incomplete"
+              && partial.countDescription("Today") == "Today, 1 known task, count incomplete",
+              "\(state): accessibility distinguishes incomplete evidence from not read yet")
+        check(BriefTiles.top(picked: [], todos: partial.detail.lines, next: nil).map(\.text) == ["Saved Day task"],
+              "\(state): only the known task, never its coverage note, enters the Top 3")
+    }
+    let many = (0..<11).map { BriefTodo(id: "partial-\($0)", title: "Saved task \($0)") }
+    let boundedTile = tile(many, sourcePartial)
+    check(boundedTile.countText == "11+" && boundedTile.detail.lines.suffix(2).map(\.text) == ["+3 more", "Some tasks may be missing"],
+          "partial long lists distinguish known overflow from unknown coverage")
+}
+
+func briefTodayPlannedChecks(_ check: (Bool, String) -> Void) {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+    let date = calendar.date(from: DateComponents(year: 2026, month: 10, day: 22, hour: 12))!
+    let bounds = calendar.dateInterval(of: .day, for: date)!
+    let start = bounds.start.timeIntervalSince1970, end = bounds.end.timeIntervalSince1970
+    let now = date.timeIntervalSince1970
+    let pin = calendar.date(bySettingHour: 15, minute: 0, second: 0, of: date)!.timeIntervalSince1970
+    let nextWeek = calendar.date(byAdding: .day, value: 7, to: date)!.timeIntervalSince1970
+    func planned(_ id: String, _ title: String, day: String = "2026-10-22", status: String = "active",
+                 due: Double? = nil, at: Double? = nil) -> BriefTodo? {
+        BriefTiles.plannedTask(id: id, title: title, day: day, selectedDay: "2026-10-22", status: status, due: due, start: at)
+    }
+    let tasks = [planned("essay", "Work on essay", due: nextWeek, at: pin),
+                 planned("future", "Future-day work", day: "2026-10-23", due: nextWeek, at: pin),
+                 planned("done", "Completed task", status: "done", due: now),
+                 planned("twin", "Review: PA 2", due: nextWeek, at: pin),
+                 planned("no-time", "Read chapter", due: nextWeek),
+                 planned("undated", "Stretch")].compactMap { $0 }
+    let due = BriefTodo(id: "due", title: "PA 2", due: now + 60)
+    let todos = BriefTiles.todo(dated: [due] + tasks, tasks: tasks, now: now, dayStart: start, dayEnd: end, isToday: true)
+    let lines = BriefTiles.todayDetail(todos, now: now, dayStart: start, clock: { $0 == pin ? "3 PM" : "12:01 PM" }).lines
+    check(todos.map(\.id) == ["due", "essay", "no-time", "undated"],
+          "due obligations precede today's planned future-deadline tasks; reminder twins count once: \(todos.map(\.id))")
+    check(lines.first?.leading == "Due 12:01 PM" && lines.first { $0.id == "todo-essay" }?.leading == "3 PM"
+          && lines.first { $0.id == "todo-no-time" }?.leading == "To do",
+          "planned work keeps its planned time, never a false due-today label: \(lines.map(\.leading))")
+    check(!todos.contains { ["future", "done", "twin"].contains($0.id) },
+          "future planned days and completed tasks stay out; reminder-derived planned duplicates stay collapsed")
+    check(BriefTiles.top(picked: [], todos: lines, next: nil).map(\.text) == ["PA 2", "Work on essay", "Read chapter"],
+          "today's planned work with a later deadline is eligible for the default Top 3")
+    let midnightTask = planned("midnight-plan", "Prepare tomorrow's submission", due: end, at: pin)!
+    let separate = BriefTiles.todo(dated: [midnightTask], tasks: [midnightTask], now: now,
+                                   dayStart: start, dayEnd: end, isToday: true)
+    check(separate.count == 1 && separate[0].due == nil
+          && BriefTiles.todayDetail(separate, now: now, dayStart: start, clock: { _ in "3 PM" }).lines[0].leading == "3 PM",
+          "a next-midnight deadline is excluded as due today but its separately planned task remains")
+}
+
+func briefTodayCivilDayChecks(_ check: (Bool, String) -> Void) {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+    for (month, day, hours) in [(3, 8, 23), (11, 1, 25), (10, 22, 24)] {
+        let midday = calendar.date(from: DateComponents(year: 2026, month: month, day: day, hour: 12))!
+        let interval = calendar.dateInterval(of: .day, for: midday)!
+        let start = interval.start.timeIntervalSince1970, end = interval.end.timeIntervalSince1970
+        let now = midday.timeIntervalSince1970
+        check(interval.duration / 3600 == Double(hours), "civil-day fixture covers the \(hours)-hour calendar day")
+        let dated = [BriefTodo(id: "before", title: "Previous day overdue", due: start - 1),
+                     BriefTodo(id: "start", title: "At midnight", due: start),
+                     BriefTodo(id: "last", title: "Last second", due: end - 1),
+                     BriefTodo(id: "next", title: "Next midnight", due: end),
+                     BriefTodo(id: "all-day", title: "All day today", due: start, allDay: true),
+                     BriefTodo(id: "next-all-day", title: "All day tomorrow", due: end, allDay: true)]
+        let today = BriefTiles.todo(dated: dated, tasks: [], now: now, dayStart: start, dayEnd: end, isToday: true)
+        let otherDay = BriefTiles.todo(dated: dated, tasks: [], now: now, dayStart: start, dayEnd: end, isToday: false)
+        check(Set(today.map(\.id)) == ["before", "start", "last", "all-day"],
+              "\(hours)-hour current day includes overdue/start/end-minus-one but excludes next midnight, including all-day")
+        check(Set(otherDay.map(\.id)) == ["start", "last", "all-day"],
+              "\(hours)-hour selected day is [start, end), with no previous-day overdue items")
+        let labels = BriefTiles.todayDetail(today, now: now, dayStart: start, clock: { _ in "time" }).lines
+        check(labels.first { $0.id == "todo-start" }?.leading == "Overdue"
+              && labels.first { $0.id == "todo-all-day" }?.leading == "Today"
+              && !labels.contains { $0.id == "todo-next-all-day" },
+              "\(hours)-hour day distinguishes a timed overdue item from an all-day item due today")
+    }
 }

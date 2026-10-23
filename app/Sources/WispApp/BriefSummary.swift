@@ -539,10 +539,42 @@ enum BriefTile: String, CaseIterable, Identifiable, Equatable {
     }
 }
 
-/// One tile: its count, nil while its source hasn't been read, and its list.
+/// One tile: its known count, nil when none is known, and its list.
 struct BriefTileContent: Equatable {
     let count: Int?
     let detail: BriefDetail
+    var incomplete = false
+
+    var countText: String { count.map { "\($0)" + (incomplete ? "+" : "") } ?? "–" }
+
+    func countDescription(_ title: String) -> String {
+        if incomplete {
+            return count.map { "\(title), \($0) known \($0 == 1 ? "task" : "tasks"), count incomplete" }
+                ?? "\(title), count incomplete"
+        }
+        return count.map { "\(title), \($0)" } ?? "\(title), not read yet"
+    }
+}
+
+/// Readiness of the available task plan, not a claim to have scanned every
+/// real-world obligation. A readable cache may still disclose partial evidence.
+struct BriefTodayCoverage: Equatable {
+    let remindersReady: Bool
+    let coverageReady: Bool
+    let workspaceReady: Bool
+    var blocked = false
+    var remindersOmitted = 0
+    var attentionOmitted = 0
+    var provisional = false
+    var hasWarnings = false
+    var detail = ""
+
+    var complete: Bool {
+        let limited = ["incomplete", "unverified", "partial", "truncated", "unavailable"]
+            .contains { detail.lowercased().contains($0) }
+        return remindersReady && coverageReady && workspaceReady && !blocked
+            && remindersOmitted == 0 && attentionOmitted == 0 && !provisional && !hasWarnings && !limited
+    }
 }
 
 /// One thing to do: a reminder or deadline with a due time, or a Day task.
@@ -559,8 +591,17 @@ enum BriefTiles {
     /// Most rows the Today list shows before "+N more".
     static let shown = 8
 
+    /// The Day tab's active work belongs to its planned day even when the
+    /// final deadline is later. Filter before adding it to either bucket.
+    static func plannedTask(id: String, title: String, day: String, selectedDay: String, status: String,
+                            due: Double?, start: Double?) -> BriefTodo? {
+        guard status == "active", day == selectedDay else { return nil }
+        return BriefTodo(id: id, title: title, due: due.flatMap { $0.isFinite ? $0 : nil },
+                         start: start.flatMap { $0.isFinite ? $0 : nil })
+    }
+
     /// What the user has to do today: what's overdue (today only), then what's
-    /// due by the end of the day by its time, then the Day tab's tasks. A Day
+    /// due before the next midnight by its time, then the Day tab's tasks. A Day
     /// task made from a reminder ("Review: …" too) is listed once. Something
     /// due all day today is due today, not overdue.
     static func todo(dated: [BriefTodo], tasks: [BriefTodo], now: Double, dayStart: Double, dayEnd: Double,
@@ -570,11 +611,19 @@ enum BriefTiles {
         let overdue = isToday ? dated.filter { usable($0) && late($0) }.sorted { $0.due! < $1.due! } : []
         let reference = isToday ? now : dayStart
         let due = dated.filter { t in
-            guard usable(t), let due = t.due, due <= dayEnd else { return false }
+            guard usable(t), let due = t.due, due.isFinite, due < dayEnd else { return false }
             return isToday ? !late(t) && (due >= now || (t.allDay && due >= dayStart)) : due >= reference
         }
         .sorted { $0.due! < $1.due! }
         let planned = tasks.filter(usable).sorted { ($0.start ?? .infinity) < ($1.start ?? .infinity) }
+            .map { task -> BriefTodo in
+                // Due/overdue obligations above win deduplication. Remaining
+                // work is planned today, not due today; label its planned time.
+                var planned = task
+                planned.due = nil
+                planned.allDay = false
+                return planned
+            }
         var seen = Set<String>()
         return (overdue + due + planned).filter { seen.insert(key($0.title)).inserted }
     }
@@ -588,15 +637,17 @@ enum BriefTiles {
 
     /// Past its due time, except something due all day today.
     static func isOverdue(_ todo: BriefTodo, now: Double, dayStart: Double) -> Bool {
-        guard let due = todo.due, due < now else { return false }
+        guard let due = todo.due, due.isFinite, due < now else { return false }
         return !(todo.allDay && due >= dayStart)
     }
 
     /// The Today tile's list: the label column says overdue, when it's due, or
     /// when a task is planned.
-    static func todayDetail(_ todos: [BriefTodo], now: Double, dayStart: Double, clock: (Double) -> String) -> BriefDetail {
+    static func todayDetail(_ todos: [BriefTodo], now: Double, dayStart: Double, complete: Bool = true,
+                            clock: (Double) -> String) -> BriefDetail {
         guard !todos.isEmpty else {
-            return BriefDetail(lines: [BriefDetail.Line(id: "empty", leading: "", text: "Nothing to do today", muted: true)],
+            return BriefDetail(lines: [BriefDetail.Line(id: "empty", leading: "",
+                                text: complete ? "No tasks in the available plan" : "Today's tasks haven't been fully checked", muted: true)],
                                source: .reminders)
         }
         var lines = todos.prefix(shown).map { todo -> BriefDetail.Line in
@@ -610,7 +661,18 @@ enum BriefTiles {
         if todos.count > shown {
             lines.append(BriefDetail.Line(id: "more", leading: "", text: "+\(todos.count - shown) more", muted: true))
         }
+        if !complete {
+            lines.append(BriefDetail.Line(id: "coverage", leading: "", text: "Some tasks may be missing", muted: true))
+        }
         return BriefDetail(lines: lines, source: .reminders)
+    }
+
+    static func todayContent(_ todos: [BriefTodo], coverage: BriefTodayCoverage, now: Double, dayStart: Double,
+                             clock: (Double) -> String) -> BriefTileContent {
+        let complete = coverage.complete
+        return BriefTileContent(count: complete || !todos.isEmpty ? todos.count : nil,
+                                detail: todayDetail(todos, now: now, dayStart: dayStart, complete: complete, clock: clock),
+                                incomplete: !complete)
     }
 
     /// The Events tile's list: today's calendar, then what's coming up this week.

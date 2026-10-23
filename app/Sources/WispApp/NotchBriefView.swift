@@ -79,7 +79,7 @@ struct NotchBriefView: View {
                         tileList(tile, shown.detail).id(tile.rawValue)
                             .transition(reduceMotion ? .identity : .opacity)
                     } else {
-                        topList(brief.top).id("top")
+                        topList(brief.top, incomplete: brief.tiles[.today]?.incomplete == true).id("top")
                             .transition(reduceMotion ? .identity : .opacity)
                     }
                 }
@@ -115,7 +115,7 @@ struct NotchBriefView: View {
     private func tileStrip(_ brief: BriefContent) -> some View {
         HStack(spacing: 8) {
             ForEach(BriefTile.allCases) { tile in
-                tileButton(tile, count: brief.tiles[tile]?.count)
+                tileButton(tile, content: brief.tiles[tile])
             }
         }
         // Arrow keys move between tiles; Tab and Shift-Tab do too, natively.
@@ -132,7 +132,8 @@ struct NotchBriefView: View {
         return .handled
     }
 
-    private func tileButton(_ tile: BriefTile, count: Int?) -> some View {
+    private func tileButton(_ tile: BriefTile, content: BriefTileContent?) -> some View {
+        let count = content?.count
         let isOpen = open == tile
         let isFocused = focused == tile
         let quiet = (count ?? 0) == 0
@@ -141,7 +142,7 @@ struct NotchBriefView: View {
                 Text(tile.title.uppercased())
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(isOpen ? Theme.textSecondary : Theme.textMuted)
-                Text(count.map(String.init) ?? "–")
+                Text(content?.countText ?? "–")
                     .font(.system(size: 20, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(quiet && !isOpen ? Theme.textSecondary : Theme.textPrimary)
             }
@@ -161,7 +162,7 @@ struct NotchBriefView: View {
         .onKeyPress(.return) { toggle(tile); return .handled }
         .keyboardShortcut(KeyEquivalent(tile.shortcut), modifiers: [])
         .help(isOpen ? "Back to the Top 3 (\(tile.shortcut))" : "Show \(tile.title) (\(tile.shortcut))")
-        .accessibilityLabel(count.map { "\(tile.title), \($0)" } ?? "\(tile.title), not read yet")
+        .accessibilityLabel(content?.countDescription(tile.title) ?? "\(tile.title), not read yet")
         .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
         .accessibilityHint(isOpen ? "Shows the Top 3 again" : "Shows the \(tile.title) list in place of the Top 3")
     }
@@ -190,12 +191,14 @@ struct NotchBriefView: View {
 
     // MARK: - Rows
 
-    private func topList(_ lines: [BriefDetail.Line]) -> some View {
+    private func topList(_ lines: [BriefDetail.Line], incomplete: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("TOP 3").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 .accessibilityAddTraits(.isHeader)
             if lines.isEmpty {
-                row(BriefDetail.Line(id: "empty", leading: "", text: "Nothing needs you right now", muted: true), width: Self.labelWidth(lines))
+                row(BriefDetail.Line(id: "empty", leading: "",
+                                    text: incomplete ? "Today's tasks haven't been fully checked" : "Nothing needs you right now",
+                                    muted: true), width: Self.labelWidth(lines))
             } else {
                 ForEach(lines) { row($0, width: Self.labelWidth(lines)) }
             }
@@ -363,7 +366,7 @@ struct BriefContent {
         let load = DayLoad.assess(events: loadEvents,
                                   allDay: plan.all_day.map(\.title), from: reference, dayStart: dayStart,
                                   isToday: isToday, zone: zone, locale: today.clockLocale)
-        let dueToday = needs.filter { ($0.due_ts ?? .infinity) >= reference && ($0.due_ts ?? .infinity) <= dayEnd }
+        let dueToday = needs.filter { ($0.due_ts ?? .infinity) >= reference && ($0.due_ts ?? .infinity) < dayEnd }
             .sorted { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }.map(\.title)
         let overdue = isToday ? needs.filter { ($0.due_ts ?? .infinity) < now }.map(\.title) : []
         let next = calendarBlocks.first { $0.start > reference }.map { (title: $0.title, time: today.clock($0.start)) }
@@ -416,14 +419,24 @@ struct BriefContent {
             .map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts, allDay: $0.all_day == true) }
         let deadlines: [BriefTodo] = plan.deadlines.map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts, allDay: $0.all_day == true) }
         let dated = reminders + deadlines
-        let active = plan.tasks.filter { $0.status == "active" && $0.day == plan.day }
-        let datedTasks = active.filter { ($0.due_ts ?? .nan).isFinite }
-            .map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts) }
-        let undated = active.filter { !($0.due_ts ?? .nan).isFinite }
-            .map { BriefTodo(id: $0.id, title: $0.title, start: $0.pinned_start) }
-        let todos = BriefTiles.todo(dated: dated + datedTasks, tasks: undated, now: now, dayStart: dayStart,
+        let planned = plan.tasks.compactMap {
+            BriefTiles.plannedTask(id: $0.id, title: $0.title, day: $0.day, selectedDay: plan.day, status: $0.status,
+                                   due: $0.due_ts, start: $0.pinned_start)
+        }
+        let todos = BriefTiles.todo(dated: dated + planned, tasks: planned, now: now, dayStart: dayStart,
                                     dayEnd: dayEnd, isToday: isToday)
-        let todayDetail = BriefTiles.todayDetail(todos, now: now, dayStart: dayStart, clock: today.clock)
+        let reminderCoverage = coverage("reminders")
+        let taskCoverage = BriefTodayCoverage(
+            remindersReady: plan.sources["reminders"]?.ready == true,
+            coverageReady: reminderCoverage?.ready == true,
+            workspaceReady: plan.workspace != nil && (plan.workspace_error ?? "").isEmpty,
+            blocked: !(reminderCoverage?.blocked ?? "").isEmpty,
+            remindersOmitted: reminderCoverage?.omitted ?? 0,
+            attentionOmitted: plan.workspace?.attention_omitted ?? 0,
+            provisional: plan.provisional,
+            hasWarnings: !plan.warnings.isEmpty || !plan.displayWarnings.isEmpty,
+            detail: reminderCoverage?.detail ?? "")
+        let todayTile = BriefTiles.todayContent(todos, coverage: taskCoverage, now: now, dayStart: dayStart, clock: today.clock)
 
         // Mail and Messages: the counts their lists give, and the regular
         // summaries the rows' dropdowns always showed.
@@ -445,7 +458,7 @@ struct BriefContent {
                                                    soon: upcoming.flatMap { $0.isEmpty && !weekRead ? nil : $0 }, when: when)
 
         tiles = [
-            .today: BriefTileContent(count: todos.count, detail: todayDetail),
+            .today: todayTile,
             .mail: BriefTileContent(count: mailReady ? BriefMail.shown(mailNeeds).count + BriefMail.privateCount(mailNeeds) : nil,
                                     detail: mailDetail),
             .messages: BriefTileContent(count: textsReady ? BriefTexts.waiting(textNeeds).count : nil, detail: textsDetail),
@@ -454,7 +467,7 @@ struct BriefContent {
         let nextEvent = isToday ? calendarBlocks.first { $0.start > now }.map {
             BriefDetail.Line(id: "next-" + $0.id, leading: today.clock($0.start), text: $0.title)
         } : nil
-        top = BriefTiles.top(picked: needsList?.rows ?? [], todos: todayDetail.lines, next: nextEvent)
+        top = BriefTiles.top(picked: needsList?.rows ?? [], todos: todayTile.detail.lines, next: nextEvent)
         summary = composed?.cutDown ?? []
     }
 }
