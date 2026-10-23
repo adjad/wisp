@@ -264,6 +264,8 @@ ADDITIONAL_FULL_TESTS = {
     # Fake streaming client in test mode over a tmp_path journal; audit stubbed,
     # no memory/identity context, model, network or tool execution.
     "tests/test_model_step_trace.py",
+    # Pure switch parsing over monkeypatched env/config; no model, store or network.
+    "tests/test_model_only_switch.py",
     "tests/test_wisp_cowork.py",
     # Bounded public-manifest JS fixtures only; no DOM, browser or network access.
     "tests/browser_dom/test_page_extractor.py",

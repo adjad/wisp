@@ -92,6 +92,7 @@ from service.agent.planner import enabled_from_env as planner_enabled_from_env
 # Imported here, not lazily in _model_led_preload: reranker binds the tool
 # registry at import time, so it must load with the real registry.
 from service.router import reranker as _reranker
+from service.model_only import model_only_enabled
 from service.router.model_led import (continuation_requires_baseline,
                                       model_led_enabled, needs_effect_owner,
                                       fresh_personal_obligation, memory_excluded, opaque_effect, personal_communication_request,
@@ -1633,9 +1634,12 @@ async def agent(body: dict[str, Any]):
             # A completed multi-reminder task does not identify which item an
             # "it" correction means. End the turn before any inference or
             # planner/shadow adaptation can reopen an implicit last-item write.
+            # Test switch (service/router/model_led.model_only_enabled): the
+            # model answers every turn; no deterministic layer answers first.
+            model_only = model_only_enabled()
             from service.tasks.engine import prepare_batch_correction_guard
             batch_guard = (prepare_batch_correction_guard(store, sid, prompt)
-                           if sess and not literal_envelope else None)
+                           if sess and not literal_envelope and not model_only else None)
             if batch_guard:
                 await emit({"type": "task_plan", "event": batch_guard.event,
                             "task": batch_guard.plan.to_dict(), "trace": batch_guard.trace})
@@ -1657,9 +1661,10 @@ async def agent(body: dict[str, Any]):
             # queued-send review) is data, and a behavior question is answered
             # only by its exact behavior tool. Those turns use the legacy route.
             from service.router.router import behavior_route_claim
-            deterministic_claim = literal_envelope or behavior_route_claim(prompt, last_tools)
+            deterministic_claim = (not model_only
+                                   and (literal_envelope or behavior_route_claim(prompt, last_tools)))
             if (remote_only_profile() is None and not deterministic_claim
-                    and model_led_enabled(os.environ.get("WISP_MODEL_LED_ROUTING"))):
+                    and (model_only or model_led_enabled(os.environ.get("WISP_MODEL_LED_ROUTING")))):
                 proposed_target = role_target("agent")
                 if (proposed_target.endpoint.managed
                         and proposed_target.endpoint.name == "local"
@@ -1792,7 +1797,7 @@ async def agent(body: dict[str, Any]):
             task_owner_admission = None
             task_owner_verdict = "none"
             if (model_led_turn and existing_task and not pending_model_effects
-                    and not recovery_excluded):
+                    and not recovery_excluded and not model_only):
                 from service.tasks.engine import owner_only_new_request
                 from service.tasks.models import TaskPlan
                 from service.tasks.reply_engine import interpret_owner_continuation
@@ -1808,7 +1813,7 @@ async def agent(body: dict[str, Any]):
                     task_owner_admission, task_owner_verdict = await interpret_owner_continuation(
                         turn_client, model_led_target.model, existing_task, prompt,
                         last_assistant or "", **no_thinking_kwargs(model_led_target.model))
-            task_turn = None if literal_envelope else (await prepare_task_turn_async(
+            task_turn = None if (literal_envelope or model_only) else (await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
                 persist=not test_mode and not typed_shadow_only,
                 allow_native=not test_mode and not typed_shadow_only,
@@ -1880,7 +1885,7 @@ async def agent(body: dict[str, Any]):
             # task's source, channel and recipient through clarifications, so a
             # reply like "Messages" or "yes" advances the existing plan
             # instead of being classified as a new isolated request.
-            workflow_turn = None if literal_envelope else (prepare_turn(
+            workflow_turn = None if (literal_envelope or model_only) else (prepare_turn(
                 store, sid, prompt, persist=not test_mode, owner_only=model_led_turn)
                 if not model_led_turn or (latest_workflow and not pending_model_effects and not recovery_excluded) else None)
             # Only a turn that starts execution owns its revision; a response-only
@@ -2263,7 +2268,8 @@ async def agent(body: dict[str, Any]):
                                         include_identity_context=not test_mode,
                                         force_first_tool=force_tool,
                                         expect_tool_first=decision.expect_tool_first,
-                                        short_circuit_tools=_PRESYNTHESIZED_TOOLS,
+                                        short_circuit_tools=(frozenset() if model_only
+                                                             else _PRESYNTHESIZED_TOOLS),
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
                                         model_led_discovery=model_led_turn,
