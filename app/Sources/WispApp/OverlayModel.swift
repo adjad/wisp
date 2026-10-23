@@ -131,6 +131,8 @@ final class OverlayModel: ObservableObject {
     #if WISP_NOTCH_EVALUATION
     // The evaluation input adapter; told of each turn's start, confirmation and end.
     weak var evaluationObserver: NotchEvaluationTurnObserver?
+    // This turn's displayed events in order, for the evaluation transcript.
+    private var evaluationEvents: [[String: Any]] = []
     #endif
     @Published var answer = ""
     @Published var reasoning = ""
@@ -608,6 +610,7 @@ final class OverlayModel: ObservableObject {
             completeSubmission(dispatch.id)
             return
         }
+        evaluationEvents = []
         evaluationObserver?.evaluationStarted(dispatch: dispatch.id,
                                               inputSHA256: NotchEvaluationLedger.sha256(submission.text))
         #endif
@@ -1189,6 +1192,9 @@ final class OverlayModel: ObservableObject {
         }
         #endif
         guard submissionState.isCurrent(dispatchID) else { return }
+        #if WISP_NOTCH_EVALUATION
+        recordEvaluationEvent(ev)
+        #endif
         if let traceID = ev.payload["trace_id"] as? String { turnTraceID = traceID }
         // Any event other than another `status` means whatever it was
         // narrating (a model load/swap — see ensure_only) is over or was
@@ -1429,6 +1435,43 @@ final class OverlayModel: ObservableObject {
     #if WISP_NOTCH_EVALUATION
     /// A finalized turn for the evaluation adapter. Response model ids come
     /// from the engine's own replies (raw_model_io), not the route request.
+    /// Bounded copy of one tool result or text for the transcript.
+    private static func evaluationText(_ text: String, limit: Int = 65_536) -> [String: Any] {
+        text.utf8.count <= limit ? ["text": text]
+            : ["text": String(decoding: Array(text.utf8.prefix(limit)), as: UTF8.self), "truncated_from": text.utf8.count]
+    }
+
+    /// What the notch shows for this event, in order. Streamed answer deltas
+    /// and heartbeats are not listed; the full final answer is the turn text.
+    private func recordEvaluationEvent(_ ev: WispClient.Event) {
+        var entry: [String: Any] = ["type": ev.type, "at": Date().timeIntervalSince1970]
+        switch ev.type {
+        case "status", "clear_answer", "done", "error":
+            for key in ["text", "error", "message"] where !ev.str(key).isEmpty { entry[key] = ev.str(key) }
+        case "routed":
+            entry["role"] = ev.str("role"); entry["model"] = ev.str("model")
+            entry["route_source"] = ev.str("route_source"); entry["reason"] = ev.str("reason")
+            entry["needs_tools"] = ev.bool("needs_tools")
+        case "tool_call":
+            entry["id"] = ev.str("id"); entry["name"] = ev.str("name")
+            entry["args"] = Self.prettyJSON(ev.payload["args"])
+            entry["decision"] = ev.str("decision"); entry["reason"] = ev.str("reason")
+        case "tool_result":
+            entry["id"] = ev.str("id")
+            entry["result"] = Self.evaluationText(ev.str("result"))
+        case "confirm":
+            entry["tool"] = ev.str("tool"); entry["reason"] = ev.str("reason")
+            entry["preview"] = ev.str("preview"); entry["grantable"] = ev.payload["grantable"] as? Bool ?? false
+        case "confirm_timeout":
+            entry["id"] = ev.str("id")
+        case "message_draft":
+            entry["to"] = ev.str("to"); entry["text"] = ev.str("text")
+        default:
+            return
+        }
+        evaluationEvents.append(entry)
+    }
+
     private func evaluationTurn(_ t: Turn, outcome: String, dispatch: UInt64) -> NotchEvaluationTurn {
         let served = t.rawIO.compactMap { io -> String? in
             if let data = io.responseJSON.data(using: .utf8),
@@ -1437,14 +1480,15 @@ final class OverlayModel: ObservableObject {
             return nil
         }
         let tools: [[String: Any]] = t.toolCalls.map {
-            ["name": $0.name, "decision": $0.decision, "reason": $0.decisionReason,
+            ["name": $0.name, "args": $0.argsJSON, "decision": $0.decision, "reason": $0.decisionReason,
              "result": String($0.result.prefix(4000))]
         }
         return NotchEvaluationTurn(outcome: outcome, dispatch: dispatch, text: t.text, model: t.model,
                                    routeRole: t.routeRole, routeSource: t.routeSource, routeReason: t.routeReason,
                                    tools: tools, responseModels: served, startedAt: t.startedAt,
                                    firstTokenAt: t.firstTokenAt, finishedAt: t.finishedAt,
-                                   session: sessionId, traceID: t.traceID)
+                                   session: sessionId, traceID: t.traceID,
+                                   events: evaluationEvents, activity: t.activity, reasoning: t.reasoningText)
     }
     #endif
 

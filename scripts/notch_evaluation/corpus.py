@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ENTRY = re.compile(r"^(\d+)\. `\[([RWS])\]` (.+)$")
+SECTION = re.compile(r"^## \d+\. (.+?)(?: \(\d+\))?$")
 TURN_SEPARATOR = " → "
 SEGMENTATION_APPROVAL = "corpus-format: entries join turns with ' → ' (Count line of the corpus)"
 
@@ -45,6 +46,7 @@ class Case:
     risk_tag: str
     text: str
     segments: tuple[str, ...]
+    section: str = ""
 
     @property
     def entry_sha256(self) -> str:
@@ -60,7 +62,11 @@ def parse(path: str | os.PathLike, *, expected_sha256: str, expected_cases: int 
     if sha256_file(path) != expected_sha256:
         raise CorpusError("the corpus does not match its recorded digest")
     cases: list[Case] = []
+    section = ""
     for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if heading := SECTION.match(line):
+            section = heading.group(1).strip()
+            continue
         match = ENTRY.match(line)
         if not match:
             continue
@@ -68,7 +74,7 @@ def parse(path: str | os.PathLike, *, expected_sha256: str, expected_cases: int 
         segments = tuple(part.strip() for part in text.split(TURN_SEPARATOR))
         if any(not part for part in segments):
             raise CorpusError(f"case {match.group(1)} has an empty turn")
-        cases.append(Case(int(match.group(1)), match.group(2), text, segments))
+        cases.append(Case(int(match.group(1)), match.group(2), text, segments, section))
     ids = [c.case_id for c in cases]
     if ids != list(range(1, expected_cases + 1)):
         raise CorpusError(f"expected ids 1..{expected_cases} once each, in order; found {len(ids)}")
@@ -108,6 +114,18 @@ def initialize(run_dir: str | os.PathLike, cases: list[Case], *, corpus_sha256: 
         ledger_cases.append(entry)
     _private_write(ledger_path, {"schema_version": 1, "corpus_sha256": corpus_sha256, "cases": ledger_cases})
     return {"initialized": True, "cases": len(cases)}
+
+
+def write_sections(run_dir: str | os.PathLike, cases: list[Case]) -> bool:
+    """sections.json (case id -> corpus section) for the transcript viewer, once.
+
+    Kept apart from cases.json and the ledger, which are never rewritten.
+    """
+    path = Path(run_dir, "sections.json")
+    if path.exists():
+        return False
+    _private_write(path, {str(c.case_id): c.section for c in cases})
+    return True
 
 
 def load_cases(run_dir: str | os.PathLike, *, corpus_sha256: str) -> list[Case]:

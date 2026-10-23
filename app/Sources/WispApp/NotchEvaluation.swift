@@ -702,6 +702,11 @@ struct NotchEvaluationTurn {
     let finishedAt: Date?
     let session: String
     let traceID: String?
+    /// What the notch displayed, in order (status lines, routing, tool calls
+    /// with args, tool results, confirmation cards), and its step lines.
+    var events: [[String: Any]] = []
+    var activity: [String] = []
+    var reasoning: String = ""
 }
 
 /// What OverlayModel tells the input adapter, on the main actor.
@@ -857,6 +862,7 @@ final class NotchEvaluationInputAdapter: NotchEvaluationTurnObserver {
                 "status": "terminal", "case": current.request.caseID, "dispatch": turn.dispatch,
                 "outcome": turn.outcome, "text": turn.text, "tools": turn.tools,
                 "response_models": turn.responseModels, "session": turn.session,
+                "events": turn.events, "activity": turn.activity, "reasoning": turn.reasoning,
                 "input_sha256": current.started?.inputSHA256 ?? "",
             ]
             for (key, value) in [("model", turn.model), ("route_role", turn.routeRole), ("route_source", turn.routeSource),

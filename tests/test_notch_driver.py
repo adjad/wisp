@@ -44,6 +44,7 @@ def test_corpus_parses_tags_turns_and_refuses_another_corpus(tmp_path):
     cases = corpus.parse(path, expected_sha256=sha, expected_cases=6)
     assert [c.risk_tag for c in cases] == ["R", "W", "R", "S", "R", "R"]
     assert cases[2].segments == ("Show SYNTHETIC-B", "No, the other one.")
+    assert {c.section for c in cases} == {"Section"}
     with pytest.raises(corpus.CorpusError, match="digest"):
         corpus.parse(path, expected_sha256="0" * 64, expected_cases=6)
     (tmp_path / "broken").mkdir()
@@ -64,6 +65,9 @@ def test_initialize_keeps_text_private_and_the_ledger_hash_only(tmp_path):
     assert ledger.segments(ledger.by_id[3]) == [corpus.sha256_text("Show SYNTHETIC-B"),
                                                  corpus.sha256_text("No, the other one.")]
     assert not corpus.initialize(run, cases, corpus_sha256=sha)["initialized"]   # resume leaves it alone
+    assert corpus.write_sections(run, cases) and not corpus.write_sections(run, cases)
+    assert json.loads((run / "sections.json").read_text())["3"] == "Section"
+    assert oct((run / "sections.json").stat().st_mode & 0o777) == "0o600"
     with pytest.raises(corpus.CorpusError):
         corpus.initialize(run, cases, corpus_sha256="f" * 64)
 
@@ -97,7 +101,11 @@ def _terminal(request, text="SYNTHETIC answer", **extra):
             "input_sha256": corpus.sha256_text(request["text"]), "model": "SYNTH-MODEL",
             "response_models": ["SYNTH-MODEL"], "route_role": "agent", "route_source": "rules",
             "tools": [], "started_at": 100.0, "first_token_at": 100.5, "finished_at": 102.0,
-            "session": "s1", "trace_id": "t1", **extra}
+            "session": "s1", "trace_id": "t1",
+            "events": [{"type": "status", "text": "SYNTHETIC status"},
+                       {"type": "tool_call", "id": "c1", "name": "search_notes", "args": "{}", "decision": "allow"},
+                       {"type": "tool_result", "id": "c1", "result": {"text": "SYNTHETIC result"}}],
+            "activity": ["search_notes — ok"], **extra}
 
 
 @pytest.fixture
@@ -158,6 +166,12 @@ def test_driver_records_every_class_and_resumes(harness):
     records = {r["case_id"]: r for r in _records(run)}
     assert records[1]["failure_class"] == "OK" and records[1]["turns"][0]["final_text"] == "SYNTHETIC answer"
     assert records[1]["model"] == "SYNTH-MODEL" and records[1]["latency_s"] == 2.0
+    shown = records[1]["turns"][0]
+    assert [e["type"] for e in shown["events"]] == ["status", "tool_call", "tool_result"]
+    assert shown["activity"] == ["search_notes — ok"]
+    page = run / "transcripts.html"                        # regenerated after each case
+    assert page.exists() and oct(page.stat().st_mode & 0o777) == "0o600"
+    assert "SYNTHETIC answer" in page.read_text(encoding="utf-8")
     assert records[2]["failure_class"] == "CONFIRMATION_DECLINED"
     assert records[3]["turns_delivered"] == 2
     asks = [r for r in adapter.seen if r["op"] == "ask" and r["case"].startswith("3-")]

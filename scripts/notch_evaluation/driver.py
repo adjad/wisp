@@ -30,7 +30,7 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from scripts.notch_evaluation import corpus  # noqa: E402
+from scripts.notch_evaluation import corpus, transcripts  # noqa: E402
 
 RESULTS = "results.jsonl"
 SOCKET = "app-input.sock"
@@ -75,6 +75,14 @@ def read_results(run: Path) -> list[dict]:
             except ValueError:
                 records.append({"case_id": None, "failure_class": "UNREADABLE_RECORD"})
     return records
+
+
+def render_viewer(run: Path) -> None:
+    """Rewrite transcripts.html; a viewer failure never stops the run."""
+    try:
+        transcripts.render(run)
+    except Exception as exc:  # noqa: BLE001 — results.jsonl stays the record
+        print(json.dumps({"viewer_error": type(exc).__name__}), flush=True)
 
 
 def append_result(run: Path, record: dict) -> None:
@@ -229,7 +237,11 @@ def _turn_record(segment: str, reply: dict, failure: str) -> dict:
             "tools": reply.get("tools") or [], "confirmation": reply.get("confirmation"),
             "latency_s": latency, "ttft_s": ttft, "session": reply.get("session"),
             "trace_id": reply.get("trace_id"),
-            "dispatch": reply.get("dispatch"), "error": reply.get("error")}
+            "dispatch": reply.get("dispatch"), "error": reply.get("error"),
+            # What the notch displayed, in order: status lines, routing, each
+            # tool call (args) and result, confirmation cards; and its steps.
+            "events": reply.get("events") or [], "activity": reply.get("activity") or [],
+            "reasoning": reply.get("reasoning") or ""}
 
 
 def run_case(case: corpus.Case, *, owned: Path, token: str, engine: str, model: str,
@@ -273,7 +285,9 @@ def run_case(case: corpus.Case, *, owned: Path, token: str, engine: str, model: 
 def cmd_init(args) -> int:
     run = private_dir(args.run_dir)
     cases = corpus.parse(args.corpus, expected_sha256=args.corpus_sha256)
-    print(json.dumps(corpus.initialize(run, cases, corpus_sha256=args.corpus_sha256)))
+    result = corpus.initialize(run, cases, corpus_sha256=args.corpus_sha256)
+    result["sections_written"] = corpus.write_sections(run, cases)
+    print(json.dumps(result))
     return 0
 
 
@@ -323,6 +337,7 @@ def cmd_run(args) -> int:
         record.update(attempt=attempt, label=args.label, candidate_sha=args.candidate_sha,
                       recorded_at=time.time())
         append_result(run, record)
+        render_viewer(run)
         state.setdefault(case.case_id, {"attempts": 0, "done": False, "last": None})["attempts"] = attempt
         print(json.dumps({"case_id": case.case_id, "risk": case.risk_tag, "class": record["failure_class"],
                           "latency_s": record["latency_s"]}), flush=True)
