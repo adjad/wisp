@@ -41,11 +41,18 @@ TURN_TIMEOUT_S = 240.0
 BLOCKED_MARKER = "EVALUATION_BLOCKED"
 # A case with one of these is tried again on resume (up to MAX_ATTEMPTS).
 RETRYABLE = frozenset({"TIMEOUT", "NOT_SUBMITTED", "HOST_BUSY", "DROPPED", "ENGINE_NOT_READY",
-                       "HOST_UNAVAILABLE", "INTERRUPTED"})
+                       "ENGINE_REFUSED", "HOST_UNAVAILABLE", "INTERRUPTED"})
 # These stop the run: continuing would record nothing meaningful.
-STOPPING = frozenset({"ENGINE_NOT_READY", "HOST_UNAVAILABLE", "EVIDENCE_UNHEALTHY", "INTERRUPTED"})
+STOPPING = frozenset({"ENGINE_NOT_READY", "ENGINE_REFUSED", "HOST_UNAVAILABLE", "EVIDENCE_UNHEALTHY",
+                      "INTERRUPTED"})
+# An error turn whose answer is one of these is the engine being refused (the
+# transport's attribution headline, or the host's readiness refusal), not
+# Wisp's answer: it is retried, and it stops the run. Kept in step with
+# service/inference/attributed_transport.REFUSED_MESSAGE and host.py by a test.
+ENGINE_REFUSALS = ("Wisp couldn't verify the local AI engine (oMLX)",
+                   "the evaluation engine is not ready; starting it is not permitted")
 # Worst first: a case's class is its worst turn's.
-SEVERITY = ("EVIDENCE_UNHEALTHY", "HOST_UNAVAILABLE", "ENGINE_NOT_READY", "INTERRUPTED", "INPUT_MISMATCH",
+SEVERITY = ("EVIDENCE_UNHEALTHY", "HOST_UNAVAILABLE", "ENGINE_NOT_READY", "ENGINE_REFUSED", "INTERRUPTED", "INPUT_MISMATCH",
             "NOT_SUBMITTED", "HOST_BUSY", "TIMEOUT", "DROPPED", "MODEL_MISMATCH", "ERROR_TURN",
             "EMPTY_ANSWER", "EFFECT_BLOCKED", "CONFIRMATION_DECLINED", "OK")
 
@@ -230,7 +237,8 @@ def classify_turn(reply: dict, *, segment: str, model: str) -> str:
     if served and any(m != model for m in served):
         return "MODEL_MISMATCH"
     if outcome == "error":
-        return "ERROR_TURN"
+        text = str(reply.get("text") or "") + " " + str(reply.get("error") or "")
+        return "ENGINE_REFUSED" if any(r in text for r in ENGINE_REFUSALS) else "ERROR_TURN"
     if not (reply.get("text") or "").strip():
         return "EMPTY_ANSWER"
     if any(BLOCKED_MARKER in str(t.get("result", "")) for t in reply.get("tools") or []):

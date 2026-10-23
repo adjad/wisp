@@ -254,3 +254,22 @@ def test_a_run_directory_holds_one_source_mode(tmp_path):
     (owned / "host-config.json").write_text(json.dumps({"token": "t", "source_mode": "live"}))
     with pytest.raises(ValueError, match="holds snapshot results"):
         driver.bind_source_mode(run, owned)
+
+
+def test_an_engine_refusal_is_retried_and_stops_the_run_not_scored_as_an_answer():
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    transport = (root / "service" / "inference" / "attributed_transport.py").read_text(encoding="utf-8")
+    host_source = (root / "scripts" / "notch_evaluation" / "host.py").read_text(encoding="utf-8")
+    headline = re.search(r'REFUSED_MESSAGE = \("([^"]+)"', transport).group(1)
+    assert headline.startswith(driver.ENGINE_REFUSALS[0])            # in step with production
+    assert driver.ENGINE_REFUSALS[1] in host_source
+    base = {"status": "terminal", "input_sha256": corpus.sha256_text("SYNTHETIC"), "outcome": "error",
+            "response_models": []}
+    for text in (headline + " This is usually momentary.", "Error: " + driver.ENGINE_REFUSALS[1]):
+        assert driver.classify_turn({**base, "text": text}, segment="SYNTHETIC", model="M") == "ENGINE_REFUSED"
+    assert driver.classify_turn({**base, "text": "Something else failed."}, segment="SYNTHETIC",
+                                model="M") == "ERROR_TURN"
+    assert "ENGINE_REFUSED" in driver.RETRYABLE and "ENGINE_REFUSED" in driver.STOPPING
+    assert driver.worst(["OK", "ENGINE_REFUSED", "ERROR_TURN"]) == "ENGINE_REFUSED"

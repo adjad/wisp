@@ -206,7 +206,7 @@ ul.md{margin:4px 0;padding-left:20px}
 (function () {
   "use strict";
   var data = JSON.parse(document.getElementById("data").textContent);
-  var BAD = {EVIDENCE_UNHEALTHY:1, HOST_UNAVAILABLE:1, ENGINE_NOT_READY:1, INTERRUPTED:1, INPUT_MISMATCH:1,
+  var BAD = {EVIDENCE_UNHEALTHY:1, HOST_UNAVAILABLE:1, ENGINE_NOT_READY:1, ENGINE_REFUSED:1, INTERRUPTED:1, INPUT_MISMATCH:1,
              MODEL_MISMATCH:1, ERROR_TURN:1, TIMEOUT:1, DROPPED:1, NOT_SUBMITTED:1, HOST_BUSY:1};
   function el(tag, cls, text) {
     var node = document.createElement(tag);
