@@ -36,7 +36,7 @@ except ImportError:
     # every connection takes the unchanged legacy path.
     AttestationStore = StoreLimits = None
 from .local_peer import (AuthRefused, ManagedOmlx, NativeAnomaly, native_connection_owner, process_bsdinfo,
-                         process_identity, process_path, read_private, tcp_listeners)
+                         process_command, process_identity, process_path, read_private, tcp_listeners)
 
 
 # Plain-language headline for every attribution refusal. The precise reason
@@ -54,8 +54,8 @@ TRANSIENT_INSPECTION_REASONS = frozenset({
 
 
 # The independent inspections of one `DesktopOmlx._listener` run (two listener
-# lookups; then ps, the executable path and the signature check for the server and for
-# its parent) wait on child processes, so they are overlapped on a small private
+# lookups; then the native process row, executable path and signature check for
+# the server and its parent) are overlapped on a small private
 # pool.  This is scheduling only: every call still goes through the module-level
 # `inspect_command` / `tcp_listeners` (or the instance's own `_process`,
 # `_executable`, `_signed_process`), and the results are evaluated afterwards in
@@ -292,6 +292,11 @@ class DesktopOmlx:
             raise AuthRefused('desktop_signature_unqualified')
 
     def _process(self, pid):
+        # Only the fixed official desktop mode changes inspection primitives.
+        # BundledOmlx inherits this method and historically ignores command;
+        # preserve its exact old row reader. This is never a failure fallback.
+        if self.port == 8000:
+            return process_command(pid, self.uid)
         raw = inspect_command(['/bin/ps', '-ww', '-p', str(pid),
                                '-o', 'ppid=,uid=,comm='])
         try:
@@ -459,7 +464,7 @@ class DesktopOmlx:
                         != [('127.0.0.1', self.port)]):
                 raise AuthRefused('desktop_listener_unqualified')
             pid = int(rows[0][1:])
-            # Only a pid that passed both listener checks is inspected.  Its ps, executable
+            # Only a pid that passed both listener checks is inspected. Its native row, executable
             # path and signature check are independent of each other.
             server_process = inspections.run(self._process, pid)
             server_lookup = inspections.run(self._executable, pid)
@@ -467,7 +472,7 @@ class DesktopOmlx:
             parent_pid, uid, command = server_process.result()
             if uid != self.uid or command != 'omlx-server':
                 raise AuthRefused('desktop_process_unqualified')
-            # The parent pid is used only after the server's ps row passed its checks.
+            # The parent pid is used only after the server's process row passed its checks.
             parent_process = inspections.run(self._process, parent_pid)
             parent_lookup = inspections.run(self._executable, parent_pid)
             parent_signature = inspections.run(self._signed_process, parent_pid, 'app.omlx')

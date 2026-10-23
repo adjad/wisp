@@ -804,6 +804,9 @@ def test_desktop_omlx_requires_qualified_server_and_parent(
         st_uid = os.getuid()
 
     monkeypatch.setattr(attributed_transport, "inspect_command", inspect)
+    monkeypatch.setattr(attributed_transport, "process_command",
+                        lambda pid, uid: (77, uid, child_command) if pid == 321
+                        else (1, uid, parent_command))
     monkeypatch.setattr(attributed_transport, "process_path",
                         lambda pid: child if pid == 321 else parent)
     monkeypatch.setattr(attributed_transport, "tcp_listeners",
@@ -859,6 +862,9 @@ def test_desktop_omlx_rejects_unsafe_server_entry_and_extra_listener(monkeypatch
         st_mode = stat.S_IFREG | 0o755
 
     monkeypatch.setattr(attributed_transport, "inspect_command", inspect)
+    monkeypatch.setattr(attributed_transport, "process_command",
+                        lambda pid, uid: (77, uid, "omlx-server") if pid == 321
+                        else (1, uid, parent))
     monkeypatch.setattr(attributed_transport, "process_path",
                         lambda pid: child if pid == 321 else parent)
     monkeypatch.setattr(attributed_transport.DesktopOmlx, "_manifest_absent", lambda self: None)
