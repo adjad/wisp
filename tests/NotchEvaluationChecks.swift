@@ -4,6 +4,7 @@
 // redirect refusal, single-shot failure, native sink denial, receipt health
 // and hash-only receipts. Forwarded requests are answered by an in-process
 // stub backend: nothing reaches a socket.
+import AppKit
 import Darwin
 import Foundation
 
@@ -55,6 +56,63 @@ struct NotchEvaluationChecks {
     static func check(_ condition: Bool, _ label: String) {
         guard condition else { print("FAIL: \(label)"); exit(1) }
         passed += 1
+    }
+
+    /// Every NSWorkspace open/launch is refused and recorded. Each method is
+    /// confirmed replaced BEFORE it is called, so a broken guard fails here
+    /// instead of opening anything. The targets do not exist either way.
+    static func workspaceGuardChecks() {
+        let ledger = NotchEvaluationLedger(directory: nil)
+        NotchEvaluationWorkspaceGuard.install(ledger: ledger)
+        check(NotchEvaluationWorkspaceGuard.isInstalled, "the workspace guard installs")
+        for (name, _) in NotchEvaluationWorkspaceGuard.guarded {
+            guard NotchEvaluationWorkspaceGuard.isGuarded(name) else {
+                print("FAIL: \(name) is not guarded; not calling it"); exit(1)
+            }
+        }
+        check(NotchEvaluationWorkspaceGuard.installed.count >= 4, "the four current open APIs are guarded")
+        let ws = NSWorkspace.shared
+        let url = URL(string: "https://wisp-evaluation.invalid/never")!
+        let app = URL(fileURLWithPath: "/nonexistent/WispEvaluationNever.app")
+        let file = "/nonexistent/wisp-evaluation-never.txt"
+        let configuration = NSWorkspace.OpenConfiguration()
+        var completions: [Bool] = []
+        func recorded(_ selector: String) -> Bool {
+            ledger.entries.contains { $0["kind"] as? String == "blocked" && $0["selector"] as? String == selector }
+        }
+        check(!ws.open(url) && recorded("openURL:"), "open(_:) is refused and recorded")
+        ws.open(url, configuration: configuration) { app, error in completions.append(app == nil && error != nil) }
+        check(recorded("openURL:configuration:completionHandler:"), "open(_:configuration:) is recorded")
+        ws.openApplication(at: app, configuration: configuration) { app, error in completions.append(app == nil && error != nil) }
+        check(recorded("openApplicationAtURL:configuration:completionHandler:"), "openApplication(at:) is recorded")
+        ws.open([url], withApplicationAt: app, configuration: configuration) { app, error in
+            completions.append(app == nil && error != nil)
+        }
+        check(recorded("openURLs:withApplicationAtURL:configuration:completionHandler:"), "open(_:withApplicationAt:) is recorded")
+        check(completions == [true, true, true], "each completion is called with an error and no app")
+        check(!ws.launchApplication("WispEvaluationNever") && recorded("launchApplication:"), "launchApplication is refused")
+        check(!ws.openFile(file) && recorded("openFile:"), "openFile is refused")
+        check(!ws.openFile(file, withApplication: "WispEvaluationNever") && recorded("openFile:withApplication:"),
+              "openFile(_:withApplication:) is refused")
+        check(!ws.openFile(file, withApplication: nil, andDeactivate: true)
+              && recorded("openFile:withApplication:andDeactivate:"), "openFile(_:withApplication:andDeactivate:) is refused")
+        var launched: NSRunningApplication?
+        var thrown: Error?
+        do { launched = try ws.launchApplication(at: app, options: [], configuration: [:]) } catch { thrown = error }
+        check(launched == nil && thrown != nil && recorded("launchApplicationAtURL:options:configuration:error:"),
+              "launchApplication(at:options:) throws and is recorded")
+        check(!ws.open([url], withAppBundleIdentifier: "com.example.never", options: [], additionalEventParamDescriptor: nil,
+                       launchIdentifiers: nil)
+              && recorded("openURLs:withAppBundleIdentifier:options:additionalEventParamDescriptor:launchIdentifiers:"),
+              "open(_:withAppBundleIdentifier:) is refused")
+        check(!ws.launchApplication(withBundleIdentifier: "com.example.never", options: [], additionalEventParamDescriptor: nil,
+                                    launchIdentifier: nil)
+              && recorded("launchAppWithBundleIdentifier:options:additionalEventParamDescriptor:launchIdentifier:"),
+              "launchApplication(withBundleIdentifier:) is refused")
+        check(!ws.selectFile(file, inFileViewerRootedAtPath: "") && recorded("selectFile:inFileViewerRootedAtPath:"),
+              "selectFile is refused")
+        ws.activateFileViewerSelecting([URL(fileURLWithPath: file)])
+        check(recorded("activateFileViewerSelectingURLs:"), "activateFileViewerSelecting is recorded")
     }
 
     static func configJSON(_ overrides: [String: Any] = [:], root: String) -> Data {
@@ -387,6 +445,7 @@ struct NotchEvaluationChecks {
         for i in 0..<NotchEvaluationLedger.maxMemoryEntries { memory.record("fill", ["i": i]) }
         check(memory.healthy && !memory.record("over", [:]) && !memory.healthy, "exhausted retention is a sticky failure")
 
+        workspaceGuardChecks()
         print("NotchEvaluation: \(passed) checks passed")
     }
 }

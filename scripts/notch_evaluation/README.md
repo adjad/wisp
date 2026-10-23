@@ -47,6 +47,12 @@ sources, and nothing else; every effect stays blocked at its sink.
   lexical: it vets the readers' fixed scripts, and it is not a parser for
   arbitrary AppleScript. `tests/test_notch_script_policy.py` applies it to
   every script in the live readers.
+- **Launch Services lookups are allowed** in both modes, because AppKit
+  cannot start without them. That would also let the app ask Launch Services
+  to open URLs, files or apps, so `NotchEvaluationWorkspaceGuard` replaces
+  every NSWorkspace open and launch entry point before NSApplication starts.
+  Each one records the call and refuses it, and the app will not start
+  without the guard. The native checks call each one.
 - A wedged main thread cannot handle the quit request. Stop then reports
   `APP_STILL_RUNNING`; the off-main identity watchdog exits the app within
   about 30 seconds of the backend being retired.

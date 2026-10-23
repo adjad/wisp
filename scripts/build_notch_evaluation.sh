@@ -63,8 +63,9 @@ cmd_build() {
   echo "built: $app"
 }
 
-# The app's OS profile. AppKit and WindowServer work; AppleEvents, Launch
-# Services opens, notifications and the pasteboard are refused; the network is
+# The app's OS profile. AppKit and WindowServer work; AppleEvents,
+# notifications and the pasteboard are refused, and Launch Services opens are
+# refused in-app by NotchEvaluationWorkspaceGuard; the network is
 # the evaluation backend only; files under the home are readable only in the
 # owned root, its source roots and the app bundle; writes go only to the owned
 # root (TMPDIR is inside it) and this bundle's own caches. Native QA qualifies
@@ -72,8 +73,8 @@ cmd_build() {
 #
 # A live-source run (the user approved it and grants this bundle's own
 # permissions) differs in exactly these ways: AppleEvents may go to Mail and
-# Notes only, for the readers' fixed read scripts; the AppleEvents and Launch
-# Services lookups those need are not refused; Mail, Messages and the Notes
+# Notes only, for the readers' fixed read scripts; the AppleEvents lookup
+# they need is not refused; Mail, Messages and the Notes
 # store are readable (never writable); and this bundle's own preferences file
 # is writable. The app applies the profile to itself (see
 # NotchEvaluationSelfSandbox), because it is launched through Launch Services.
@@ -89,8 +90,10 @@ app_profile() {
 # can render both modes for a synthetic home and compare them.
 app_profile_text() {
   local owned="$1" image="$2" bundle="$3" live="$4" home="$5" cache="$6"
+  # Launch Services lookups are allowed in both modes: AppKit cannot start
+  # without them (NSApplication registers with launchservicesd). Opening
+  # anything through them is refused in-app (NotchEvaluationWorkspaceGuard).
   local lookups='(global-name "com.apple.coreservices.appleevents")
-  (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.lsd.mapdb")
   ' reads="" prefs="" events=""
   if [[ -n "$live" ]]; then
     lookups=""

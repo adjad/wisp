@@ -17,7 +17,9 @@ BUNDLE_ID = "com.wisp.notch-evaluation.dev"
 PLACES = {"owned": "/private/tmp/wisp-notch-run-SYNTH", "image": "/SYNTH/Eval.app/Contents/MacOS/WispNotchEvaluation",
           "bundle": "/SYNTH/Eval.app", "home": "/Users/synthetic", "cache": "/private/var/folders/sy/nth/C/"}
 
-SNAPSHOT = """(version 1)
+# The snapshot profile as reviewed at 82c5d06a. It denied the Launch Services
+# lookups, which AppKit needs to start at all (NSApplication aborts).
+PRIOR_SNAPSHOT = """(version 1)
 (allow default)
 (deny appleevent-send)
 
@@ -36,6 +38,10 @@ SNAPSHOT = """(version 1)
   (subpath "{home}/Library/Saved Application State/com.wisp.notch-evaluation.dev.savedState")
   (subpath "{cache}com.wisp.notch-evaluation.dev") )))
 """
+LS_LOOKUPS = ('  (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.lsd.mapdb")\n')
+# Approved change: those two lookups are allowed in both modes; every
+# Launch Services open is refused in-app (NotchEvaluationWorkspaceGuard).
+SNAPSHOT = PRIOR_SNAPSHOT.replace(LS_LOOKUPS, "", 1)
 
 
 def _function(name: str) -> str:
@@ -53,8 +59,14 @@ def render(live: bool) -> str:
                           capture_output=True, text=True).stdout
 
 
-def test_snapshot_profile_is_the_reviewed_text():
-    assert render(live=False) == SNAPSHOT.format(**PLACES)
+def test_snapshot_profile_is_the_reviewed_text_minus_only_the_ls_lookups():
+    snapshot = render(live=False)
+    assert snapshot == SNAPSHOT.format(**PLACES)
+    prior = PRIOR_SNAPSHOT.format(**PLACES)
+    assert LS_LOOKUPS in prior and prior.replace(LS_LOOKUPS, "", 1) == snapshot     # the only change
+    assert "launchservicesd" not in snapshot and "lsd.mapdb" not in snapshot
+    assert '(global-name "com.apple.coreservices.appleevents")' in snapshot          # still denied here
+    assert "(deny appleevent-send)" in snapshot and "(allow appleevent-send" not in snapshot
 
 
 def test_live_profile_differs_by_exactly_the_approved_deltas():
@@ -80,8 +92,8 @@ def test_live_profile_differs_by_exactly_the_approved_deltas():
     expected = expected.replace(
         "(deny mach-lookup (global-name",
         '(deny mach-lookup (global-name "com.apple.coreservices.appleevents")\n'
-        '  (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.lsd.mapdb")\n'
         '  (global-name', 1)
-    assert expected == snapshot
+    assert expected == snapshot          # nothing else differs between the modes
+    assert "launchservicesd" not in live and "lsd.mapdb" not in live
     for lookup in ("com.apple.usernoted.client", "com.apple.pasteboard.1", "com.apple.coreservices.quarantine-resolver"):
         assert lookup in live

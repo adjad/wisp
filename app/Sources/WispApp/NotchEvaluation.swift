@@ -1,7 +1,9 @@
 #if WISP_NOTCH_EVALUATION || WISP_NOTCH_EVALUATION_CHECKS
+import AppKit
 import CryptoKit
 import Darwin
 import Foundation
+import ObjectiveC
 
 // The contained Notch evaluation build. Compiled only with
 // -DWISP_NOTCH_EVALUATION (the development host, scripts/build_notch_evaluation.sh)
@@ -561,6 +563,109 @@ enum NotchEvaluationScriptPolicy {
     }
 }
 
+/// Refuses every NSWorkspace open and launch in this process. The OS profile
+/// must allow the Launch Services lookups (AppKit cannot start without them),
+/// which would also let the app open URLs, files or other apps; each such
+/// NSWorkspace entry point is replaced here, before NSApplication starts, with
+/// one that records the call and refuses it: false, nil with an error, or the
+/// completion handler called with an error. Nothing is handed to the OS.
+enum NotchEvaluationWorkspaceGuard {
+    /// Selector, and how its replacement refuses.
+    enum Shape { case bool1, bool2, bool3Flag, void3Completion, void4Completion, void1,
+                 launchURLOptions, openBundleIDs, launchBundleID }
+    static let guarded: [(String, Shape)] = [
+        ("openURL:", .bool1),
+        ("openURL:configuration:completionHandler:", .void3Completion),
+        ("openApplicationAtURL:configuration:completionHandler:", .void3Completion),
+        ("openURLs:withApplicationAtURL:configuration:completionHandler:", .void4Completion),
+        ("launchApplication:", .bool1),
+        ("openFile:", .bool1),
+        ("openFile:withApplication:", .bool2),
+        ("openFile:withApplication:andDeactivate:", .bool3Flag),
+        ("launchApplicationAtURL:options:configuration:error:", .launchURLOptions),
+        ("openURLs:withAppBundleIdentifier:options:additionalEventParamDescriptor:launchIdentifiers:", .openBundleIDs),
+        ("launchAppWithBundleIdentifier:options:additionalEventParamDescriptor:launchIdentifier:", .launchBundleID),
+        ("selectFile:inFileViewerRootedAtPath:", .bool2),
+        ("activateFileViewerSelectingURLs:", .void1),
+    ]
+    /// Selector name -> the refusing implementation installed for it.
+    nonisolated(unsafe) private(set) static var installed: [String: IMP] = [:]
+    nonisolated(unsafe) static var ledger: NotchEvaluationLedger?
+    private static let lock = NSLock()
+
+    static var isInstalled: Bool { lock.lock(); defer { lock.unlock() }; return !installed.isEmpty }
+
+    static func refusal() -> NSError {
+        NSError(domain: "WispNotchEvaluation", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "EVALUATION_BLOCKED: the contained evaluation build never opens or launches anything"])
+    }
+
+    private static func refuse(_ selector: String) {
+        var fields: [String: Any] = [:]
+        NotchEvaluationLedger.identifier("sink", "workspace-" + selector.split(separator: ":").first.map(String.init)!,
+                                         into: &fields)
+        fields["selector"] = selector
+        ledger?.record("blocked", fields)
+    }
+
+    /// Replaces every guarded method NSWorkspace implements. Idempotent.
+    static func install(ledger: NotchEvaluationLedger) {
+        lock.lock(); defer { lock.unlock() }
+        self.ledger = ledger
+        guard installed.isEmpty, let cls = NSClassFromString("NSWorkspace") else { return }
+        typealias Completion = @convention(block) (AnyObject?, NSError?) -> Void
+        for (name, shape) in guarded {
+            let selector = NSSelectorFromString(name)
+            guard let method = class_getInstanceMethod(cls, selector) else { continue }
+            let block: Any
+            switch shape {
+            case .bool1:
+                block = { (_: AnyObject, _: AnyObject?) -> Bool in refuse(name); return false } as @convention(block) (AnyObject, AnyObject?) -> Bool
+            case .bool2:
+                block = { (_: AnyObject, _: AnyObject?, _: AnyObject?) -> Bool in refuse(name); return false } as @convention(block) (AnyObject, AnyObject?, AnyObject?) -> Bool
+            case .bool3Flag:
+                block = { (_: AnyObject, _: AnyObject?, _: AnyObject?, _: Bool) -> Bool in refuse(name); return false } as @convention(block) (AnyObject, AnyObject?, AnyObject?, Bool) -> Bool
+            case .void1:
+                block = { (_: AnyObject, _: AnyObject?) in refuse(name) } as @convention(block) (AnyObject, AnyObject?) -> Void
+            case .void3Completion:
+                block = { (_: AnyObject, _: AnyObject?, _: AnyObject?, completion: AnyObject?) in
+                    refuse(name)
+                    if let completion { unsafeBitCast(completion, to: Completion.self)(nil, refusal()) }
+                } as @convention(block) (AnyObject, AnyObject?, AnyObject?, AnyObject?) -> Void
+            case .void4Completion:
+                block = { (_: AnyObject, _: AnyObject?, _: AnyObject?, _: AnyObject?, completion: AnyObject?) in
+                    refuse(name)
+                    if let completion { unsafeBitCast(completion, to: Completion.self)(nil, refusal()) }
+                } as @convention(block) (AnyObject, AnyObject?, AnyObject?, AnyObject?, AnyObject?) -> Void
+            case .launchURLOptions:
+                block = { (_: AnyObject, _: AnyObject?, _: UInt, _: AnyObject?,
+                           error: AutoreleasingUnsafeMutablePointer<NSError?>?) -> AnyObject? in
+                    refuse(name); error?.pointee = refusal(); return nil
+                } as @convention(block) (AnyObject, AnyObject?, UInt, AnyObject?, AutoreleasingUnsafeMutablePointer<NSError?>?) -> AnyObject?
+            case .openBundleIDs:
+                block = { (_: AnyObject, _: AnyObject?, _: AnyObject?, _: UInt, _: AnyObject?, _: OpaquePointer?) -> Bool in
+                    refuse(name); return false
+                } as @convention(block) (AnyObject, AnyObject?, AnyObject?, UInt, AnyObject?, OpaquePointer?) -> Bool
+            case .launchBundleID:
+                block = { (_: AnyObject, _: AnyObject?, _: UInt, _: AnyObject?, _: OpaquePointer?) -> Bool in
+                    refuse(name); return false
+                } as @convention(block) (AnyObject, AnyObject?, UInt, AnyObject?, OpaquePointer?) -> Bool
+            }
+            let refusing = imp_implementationWithBlock(block)
+            method_setImplementation(method, refusing)
+            installed[name] = refusing
+        }
+    }
+
+    /// True when the method NSWorkspace would run for this selector is ours.
+    static func isGuarded(_ name: String) -> Bool {
+        guard let cls = NSClassFromString("NSWorkspace"),
+              let method = class_getInstanceMethod(cls, NSSelectorFromString(name)) else { return true }
+        lock.lock(); defer { lock.unlock() }
+        return installed[name].map { method_getImplementation(method) == $0 } ?? false
+    }
+}
+
 /// The configured run, for WispClient.baseURL. A missing or invalid config
 /// stops the process: an evaluation build never falls back to production.
 enum NotchEvaluationEnvironment {
@@ -937,6 +1042,13 @@ enum NotchEvaluationHost {
         // run unconfined.
         if environment[NotchEvaluationSelfSandbox.launchFlag] != nil, !NotchEvaluationSelfSandbox.applied {
             fatalError("A Launch Services launch must apply its evaluation profile")
+        }
+        // Before NSApplication: the profile allows the Launch Services lookups
+        // AppKit needs, so every NSWorkspace open/launch is refused in-app.
+        NotchEvaluationWorkspaceGuard.install(ledger: NotchEvaluationEnvironment.ledger)
+        guard NotchEvaluationWorkspaceGuard.isInstalled,
+              NotchEvaluationWorkspaceGuard.guarded.allSatisfy({ NotchEvaluationWorkspaceGuard.isGuarded($0.0) }) else {
+            fatalError("The evaluation workspace guard is not installed")
         }
         EvaluationGuardProtocol.config = config
         EvaluationGuardProtocol.ledger = NotchEvaluationEnvironment.ledger
