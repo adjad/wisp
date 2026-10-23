@@ -18,6 +18,11 @@ final class ScriptedBackend: ChatBackend {
     var savedExport: (markdown: String, csv: String)?
     var liveRuns: [String] = []
     var normalRuns: [String] = []
+    var promptsCommands: [CorpusPromptsCommand] = []
+    /// Answers in turn; the last one repeats.
+    var promptsStatuses: [CorpusPromptsStatus] = []
+    var promptResults: [CorpusPromptsResult] = []
+    var promptsExport: (markdown: String, csv: String)?
     var caseDelayMs: UInt64 = 0
     var liveDelayMs: UInt64 = 0
     var draftSends = 0
@@ -64,6 +69,12 @@ final class ScriptedBackend: ChatBackend {
         return liveCases // deliberately return even after cancellation
     }
     func savedCorpusExport() async throws -> (markdown: String, csv: String)? { savedExport }
+    func corpusPrompts(_ command: CorpusPromptsCommand) async throws -> CorpusPromptsStatus {
+        promptsCommands.append(command)
+        return promptsStatuses.count > 1 ? promptsStatuses.removeFirst() : promptsStatuses[0]
+    }
+    func corpusPromptsResults(limit: Int) async throws -> [CorpusPromptsResult] { promptResults }
+    func corpusPromptsExport() async throws -> (markdown: String, csv: String)? { promptsExport }
     func runLiveCorpusCase(id: String, token: String, normal: Bool,
                            onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
         if normal { normalRuns.append(id) }
@@ -203,6 +214,79 @@ struct ChatStoreChecks {
             await settle(200)
             check(notch.isPresented && notch.exported?.saved == true && notch.notice.isEmpty
                     && backend.liveRuns == ["LIVE-001"], "the notch's /corpus export writes the files and runs nothing")
+            try? FileManager.default.removeItem(at: scratch)
+        }
+        // /corpus prompts …: the user's own prompts file, run by the service.
+        do {
+            func prompts(_ text: String) -> CorpusPromptsCommand? {
+                if case .prompts(let command)? = try? AssistantTaskCorpusCommand.resolve(text) { return command }
+                return nil
+            }
+            check(prompts("/corpus prompts") == .status && prompts("/corpus prompts status") == .status,
+                  "/corpus prompts alone shows progress")
+            check(prompts("/corpus prompts batch-3") == .start("batch-3") && prompts("/corpus prompts all") == .start("all")
+                    && prompts("/corpus prompts 17") == .start("17") && prompts("/corpus prompts P-17") == .start("p-17")
+                    && prompts("/corpus prompts section 4") == .start("section 4"), "prompts selectors")
+            check(prompts("/corpus prompts resume") == .resume && prompts("/corpus prompts stop") == .stop
+                    && prompts("/corpus prompts export") == .export, "prompts verbs")
+            check(prompts("/corpus prompts import ~/Desktop/my prompts.md") == .importFile("~/Desktop/my prompts.md")
+                    && prompts("/corpus prompts import \"/tmp/a b.md\"") == .importFile("/tmp/a b.md"),
+                  "import keeps the whole path, spaces and all")
+            for bad in ["/corpus prompts go", "/corpus prompts section x", "/corpus prompts import", "/corpus prompts batch-1 now"] {
+                do {
+                    _ = try AssistantTaskCorpusCommand.resolve(bad)
+                    check(false, "\(bad) must be refused")
+                } catch {
+                    check(error.localizedDescription.contains("/corpus prompts import"), "\(bad) explains the prompts commands")
+                }
+            }
+            check(AssistantTaskCorpusCommand.helpText.contains("/corpus prompts import <path>")
+                    && AssistantTaskCorpusCommand.helpText.contains("8–15 hours")
+                    && AssistantTaskCorpusCommand.helpText.contains("batches of 100"), "help sets expectations for 1,000 prompts")
+            check(CorpusPromptsStatus.eta(nil) == nil && CorpusPromptsStatus.eta(90) == "about 2 min"
+                    && CorpusPromptsStatus.eta(3600) == "about 1 h" && CorpusPromptsStatus.eta(7_800) == "about 2 h 10 min",
+                  "ETA reads in minutes and hours")
+            func status(_ json: String) -> CorpusPromptsStatus {
+                try! JSONDecoder().decode(CorpusPromptsStatus.self, from: Data(json.utf8))
+            }
+            let imported = #"{"sha256":"abc","cases":6,"imported_at":"x","sections":[{"number":1,"title":"Reading","count":3}]}"#
+            let running = status(#"{"imported":\#(imported),"run":{"run_id":"prompts-1","selector":"batch-1","status":"running","started_at":"x","error":"","total":100,"completed":40,"ok":30,"declined":8,"errors":2,"remaining":60,"eta_s":1800,"waiting_for_idle":false,"current":{"case_id":"P-41","section":"3. Mail","tag":"W","prompt":"Email Example Person","turns":2,"turn":1,"elapsed_s":4.2}}}"#)
+            let finished = status(#"{"imported":\#(imported),"run":{"run_id":"prompts-1","selector":"batch-1","status":"finished","started_at":"x","error":"","total":100,"completed":100,"ok":80,"declined":15,"errors":5,"remaining":0,"eta_s":null,"waiting_for_idle":false,"current":null}}"#)
+            check(running.summary.contains("40/100 done · 30 OK · 8 declined · 2 errors · Running · about 30 min left")
+                    && running.summary.contains("Now: P-41 (3. Mail) Email Example Person"), "the summary reads as progress")
+            check(status(#"{"imported":null,"run":null}"#).summary.contains("/corpus prompts import"),
+                  "without a file, the summary says how to import one")
+            let result = try! JSONDecoder().decode(CorpusPromptsResult.self, from: Data(#"{"case_id":"P-3","category":"1. Reading","tag":"R","status":"done","prompt":"A → B","answer":"b","model":"ling","latency_s":12.5,"error":"","confirmations":[{"tool":"send_email","reason":"r"}],"turns":[{"prompt":"A","answer":"a"},{"prompt":"B","answer":"b"}]}"#.utf8))
+            check(result.exchanges.map(\.prompt) == ["A", "B"] && result.outcome == "would ask to confirm send_email",
+                  "a multi-turn result shows each turn, and its declined confirmation")
+            let backend = ScriptedBackend()
+            backend.promptsStatuses = [running, running, finished]
+            backend.promptResults = [result]
+            backend.promptsExport = ("# prompts run", "case_id\r\n")
+            let store = ChatStore(backend: backend)
+            let scratch = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory(),
+                              isDirectory: true).appendingPathComponent("prompts-export-\(UUID().uuidString)")
+            store.exportDirectory = { scratch }
+            let notch = NotchCorpusController(store: store)
+            notch.pollInterval = 20_000_000
+            notch.submit("/corpus prompts batch-1")
+            await settle(400)
+            check(backend.promptsCommands.first == .start("batch-1") && backend.liveRuns.isEmpty && backend.runs.isEmpty,
+                  "the notch asks the service to start the job and runs nothing itself")
+            check(notch.isPresented && notch.prompts?.run?.status == "finished" && notch.promptResults == [result]
+                    && !notch.busy, "it follows progress until the job finishes, with the full answers")
+            check(backend.promptsCommands.dropFirst().allSatisfy { $0 == .status }, "following only reads status")
+            notch.submit("/corpus prompts export")
+            await settle(200)
+            check(notch.exported?.markdown.lastPathComponent.hasPrefix("wisp-prompts-") == true
+                    && (try? String(contentsOf: notch.exported!.markdown, encoding: .utf8)) == "# prompts run",
+                  "export writes the prompts run to Downloads")
+            backend.promptsStatuses = [finished]
+            store.submit("/corpus prompts stop")
+            await settle(200)
+            check(backend.promptsCommands.last == .stop
+                    && store.selected?.messages.last?.text.contains("100/100 done · 80 OK · 15 declined · 5 errors · Finished") == true,
+                  "the window sends the command and shows the progress as text")
             try? FileManager.default.removeItem(at: scratch)
         }
         // /corpus … normal: the same cases through the ordinary Ask path.

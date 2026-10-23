@@ -92,6 +92,7 @@ PROFILE_TESTS = {
         "tests/test_email_digest_presentation.py",
         "tests/test_email_scoping.py",
         "tests/test_live_corpus.py",
+        "tests/test_corpus_prompts.py",
         "tests/test_gmail_source.py",
         "tests/test_google_workspace.py",
         "tests/test_linked_documents.py",

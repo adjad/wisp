@@ -429,8 +429,10 @@ def export_markdown(lines):
     for line in lines:
         latency = line.get("latency_s")
         verified = line.get("inference_verified")
+        turns = line.get("turns") or []
         out += [f"## {line['case_id']} · {line.get('category', '')} · {line.get('status', '')}", "",
-                f"**Mode:** {line.get('mode', 'bounded')}", "",
+                f"**Mode:** {line.get('mode', 'bounded')}"
+                + (f" · **Tag:** {line['tag']}" if line.get("tag") else ""), "",
                 f"**Prompt:** {_one_line(line.get('prompt', ''), 2000)}", "",
                 f"**Model:** {line.get('model') or 'unknown'} ({line.get('role') or '-'}, {line.get('route_source') or '-'})"
                 f" · {'%.1f s' % latency if isinstance(latency, (int, float)) else 'time unknown'}"
@@ -443,17 +445,30 @@ def export_markdown(lines):
                 out.append(f"  > {_one_line(tool['result'], 400)}")
         for asked in line.get("confirmations") or []:
             out.append(f"- Would ask to confirm `{asked.get('tool', '')}`: {_one_line(asked.get('reason', ''), 300)} (declined)")
-        out += ["", "**Answer:**", ""]
-        answer = str(line.get("answer") or "").strip()
-        out += [("> " + row) if row else ">" for row in answer.splitlines()] if answer else ["> (no answer)"]
+        # A multi-turn case: every turn's request and Wisp's whole answer.
+        shown = turns if len(turns) > 1 else [{"prompt": "", "answer": line.get("answer")}]
+        for number, turn in enumerate(shown, 1):
+            if len(turns) > 1:
+                out += ["", f"**Turn {number}:** {_one_line(turn.get('prompt', ''), 2000)}"]
+            out += ["", "**Answer:**", ""]
+            answer = str(turn.get("answer") or "").strip()
+            out += [("> " + row) if row else ">" for row in answer.splitlines()] if answer else ["> (no answer)"]
         if line.get("error"):
             out += ["", f"**Error:** {line['error']}"]
         out.append("")
     return "\n".join(out)
 
 
-CSV_COLUMNS = ["run_id", "started_at", "mode", "case_id", "category", "status", "latency_s", "inference_verified",
-               "model", "tools", "would_confirm", "prompt", "answer", "error", "session_id"]
+CSV_COLUMNS = ["run_id", "started_at", "mode", "case_id", "category", "tag", "status", "latency_s",
+               "inference_verified", "model", "route_source", "tools", "would_confirm", "turns", "prompt",
+               "answer", "error", "session_id"]
+
+
+def _answers(line):
+    turns = line.get("turns") or []
+    if len(turns) < 2:
+        return line.get("answer", "")
+    return "\n\n".join(f"Turn {n}: {t.get('answer', '')}" for n, t in enumerate(turns, 1))
 
 
 def export_csv(lines):
@@ -463,12 +478,14 @@ def export_csv(lines):
     for line in lines:
         verified = line.get("inference_verified")
         writer.writerow([line.get("run_id", ""), line.get("started_at", ""), line.get("mode", "bounded"),
-                         line.get("case_id", ""), line.get("category", ""), line.get("status", ""),
-                         line.get("latency_s", ""), "not tracked" if verified is None else "yes" if verified else "no",
-                         line.get("model", ""), "; ".join(t.get("name", "") for t in line.get("tools") or []),
+                         line.get("case_id", ""), line.get("category", ""), line.get("tag", ""),
+                         line.get("status", ""), line.get("latency_s", ""),
+                         "not tracked" if verified is None else "yes" if verified else "no",
+                         line.get("model", ""), line.get("route_source", ""),
+                         "; ".join(t.get("name", "") for t in line.get("tools") or []),
                          "; ".join(c.get("tool", "") for c in line.get("confirmations") or []),
-                         line.get("prompt", ""), line.get("answer", ""), line.get("error", ""),
-                         line.get("session_id", "")])
+                         len(line.get("turns") or []) or 1, line.get("prompt", ""), _answers(line),
+                         line.get("error", ""), line.get("session_id", "")])
     return buffer.getvalue()
 
 
@@ -501,8 +518,6 @@ async def run_normal_case(case, emit):
     identity and routing, saved as a normal chat. Inside review_scope, anything
     but a read asks first and the approver declines it, so nothing changes."""
     from service import idle
-    from service.main import agent
-    from service.safety.policy import review_scope
     # Never start under the user's own turn: this one may swap models.
     deadline = time.monotonic() + BUSY_WAIT_S
     while idle.foreground_busy():
@@ -511,12 +526,28 @@ async def run_normal_case(case, emit):
             return
         await asyncio.sleep(0.5)
     prompt = case["conversation"][-1]["content"]
-    # Created and titled before /agent saves a turn, so the chat is marked as
-    # a corpus chat before the memory queue sees its prompt.
+    title = case_title({"case_id": case["id"], "prompt": prompt})
+    sid = await open_session(title, emit)
+    await agent_turn(prompt, sid, emit, title)
+    await emit({"type": "done"})
+
+
+async def open_session(title, emit):
+    """Created and titled before /agent saves a turn, so the chat is marked as
+    a corpus chat before the memory queue sees its prompt."""
     store = _session_store()
     sid = store.create_session()
-    store.set_title(sid, case_title({"case_id": case["id"], "prompt": prompt}))
+    store.set_title(sid, title)
     await emit({"type": "corpus_session", "id": sid})
+    return sid
+
+
+async def agent_turn(prompt, sid, emit, title):
+    """One turn of `sid` through /agent in a review run. Forwards its events
+    except `session` and `done`; raises if the turn never finished. A session
+    /agent adopts instead is titled at once, so it is marked as a corpus chat."""
+    from service.main import agent
+    from service.safety.policy import review_scope
     finished = False
     with review_scope():
         response = await agent({"prompt": prompt, "session_id": sid, "debug": False})
@@ -534,6 +565,7 @@ async def run_normal_case(case, emit):
                         # Not forwarded: the runner's chat must not adopt it.
                         if event.get("id") and event["id"] != sid:
                             sid = str(event["id"])
+                            _session_store().set_title(sid, title)
                             await emit({"type": "corpus_session", "id": sid})
                     elif kind == "done":
                         finished = True
@@ -543,7 +575,7 @@ async def run_normal_case(case, emit):
             await frames.aclose()
     if not finished:
         raise RuntimeError("The normal-mode turn ended without finishing.")
-    await emit({"type": "done"})
+    return sid
 
 
 @router.post("/run")
