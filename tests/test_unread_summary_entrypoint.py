@@ -16,7 +16,8 @@ from tests.test_fast_path_intent import inert_endpoint  # noqa: F401
 # accepts exactly this shape; a bare address alone is not host evidence).
 CONTACT_RECEIPT = "Mom: recipient@example.invalid"
 DIGEST = "SYNTHETIC-DIGEST-7: 3 emails, 1 unread."
-OUTBOUND_TOOL = re.compile(r"send|draft|reply|forward|contact|schedule_send", re.I)
+OUTBOUND_TOOL = re.compile(
+    r"send_\w+|draft_\w+|reply_to_\w+|forward_\w+|schedule_send|cancel_scheduled_send|lookup_contact|list_contacts")
 FORCED_LOOKUP = "You must call the lookup_contact tool"
 
 
@@ -86,9 +87,14 @@ async def test_unread_stream_preserves_summary_or_raw_presentation(tmp_path, mon
 
 
 def _outbound_names():
+    """Canonical contact/send/draft/forward/schedule tools plus THEIR aliases.
+
+    An alias of a read tool (summarize_emails answers "anything to reply to")
+    is not an outbound effect, so aliases count only for outbound tools.
+    """
     from service.tools.registry import REGISTRY
-    return {name for name, tool in REGISTRY.items()
-            if OUTBOUND_TOOL.search(name) or any(OUTBOUND_TOOL.search(a) for a in tool.aliases)}
+    canonical = {name for name in REGISTRY if OUTBOUND_TOOL.fullmatch(name)}
+    return canonical | {alias for name in canonical for alias in REGISTRY[name].aliases}
 
 
 async def _post(prompt, session_id=None):

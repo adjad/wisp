@@ -22,6 +22,11 @@ _STANDALONE_READ = re.compile(
     r"do\s+i\s+have|any\s+(?:new\s+|unread\s+)?(?:e-?mails?|mail|messages?|texts?|reminders?|events?|meetings?|news)|how\s+many)\b", re.I)
 
 
+_BARE_REPORT_NOUN = re.compile(
+    r"(?:(?:please|can\s+you|could\s+you)\s+)?(?:e-?mail|text|message|dm)s?\s+"
+    r"(?:summary|summaries|digest|recap|overview)\s*[.?!]*", re.I)
+
+
 def _save(store, sid: str, plan: WorkflowPlan, event: str,
           payload: dict | None = None) -> bool:
     expected = plan.revision
@@ -165,6 +170,12 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True,
         prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
         last_assistant=(store.last_assistant_turn(sid) or "") if persist else "",
         prior_display=prior_display)
+    # "text summary" / "message summary" name a digest to read. The verb reading
+    # opens a delivery with no recipient and answers with the canned question.
+    # A pending workflow or a named recipient keeps its own ownership.
+    if (new_plan is not None and active is None and not new_plan.recipient
+            and _BARE_REPORT_NOUN.fullmatch(prompt.strip())):
+        new_plan = None
     # A self-contained question is not an answer to a pending delivery question.
     # Release an unaddressed pending delivery (no recipient or channel yet) so a
     # stray clarification cannot swallow every later request.

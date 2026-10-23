@@ -1057,3 +1057,38 @@ def test_claimed_delivery_blocks_an_unrelated_read_and_closes_only_on_cancel():
         assert closed.plan.status == "cancelled"
         assert store.workflow_events(first.plan.id)[-1]["event"] == "uncertain_delivery_closed"
         assert prepare_turn(store, sid, "what do I have to do tmrow") is None
+
+
+@pytest.mark.parametrize("prompt", [
+    "text summary", "Text summary", "message summary", "text digest", "email summary",
+    "please text summary", "text summaries"])
+def test_bare_report_noun_is_not_opened_as_a_delivery(prompt):
+    temp, store = _store()
+    with temp:
+        assert prepare_turn(store, "bare", prompt) is None, prompt
+        assert store.latest_workflow("bare", max_age_seconds=21600) is None
+
+
+@pytest.mark.parametrize("prompt,recipient,channel", [
+    ("text Mom my calendar tomorrow", "Mom", "messages"),
+    ("email Mom a summary of my unread emails", "Mom", "email"),
+])
+def test_explicit_sends_are_still_opened_as_deliveries(prompt, recipient, channel):
+    temp, store = _store()
+    with temp:
+        turn = prepare_turn(store, "explicit", prompt)
+        assert turn is not None and turn.plan.status == "running"
+        assert (turn.plan.recipient, turn.plan.channel) == (recipient, channel)
+
+
+def test_bare_report_noun_after_text_it_does_not_replace_the_pending_workflow():
+    temp, store = _store()
+    with temp:
+        first = prepare_turn(store, "pending", "text Mom it")
+        second = prepare_turn(store, "pending", "text summary")
+        # A pending recipient keeps ownership of the reply: the seam must not
+        # null the plan the delivery flow is building for Mom.
+        assert first is not None and first.plan.recipient == "Mom"
+        assert second is not None and second.event != "superseded"
+        assert (second.plan.recipient, second.plan.channel) == ("Mom", "messages")
+        assert store.latest_workflow("pending", max_age_seconds=21600)["status"] != "superseded"
