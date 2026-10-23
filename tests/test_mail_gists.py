@@ -417,12 +417,12 @@ def test_summary_input_describes_people_and_counts_the_rest():
     assert lines[1] == "- From Devarsh Krishnan: Application Update — Thanks for applying. Interviews start Friday."
     assert not any("Every Monday" in l for l in lines), "a cancellation stands in for what it cancels"
     assert lines[2] == "- Also 3 newsletters, alerts and promos, from Katia Ameri, Vercel"
-    assert lines[3] == "- 1 email with private details (not shown)"
+    assert lines[3] == "- 1 more email whose content is withheld (sign-in codes, security notices; not shown)"
     assert not any("Private details" in l for l in lines)
 
 
 def test_the_prose_fallback_reads_as_a_summary():
-    assert G.mail_prose(INBOX) == ("John Morada canceled “Office Hours”. Devarsh Krishnan wrote about “Application Update”. "
+    assert G.mail_prose(INBOX) == ("John Morada canceled “Office Hours” (2 emails). Devarsh Krishnan wrote about “Application Update”. "
                                    "The rest is 3 newsletters, alerts and promos.")
     assert G.mail_prose([]) == "No new mail today."
     assert G.mail_prose(INBOX[4:]) == "Just 3 newsletters, alerts and promos; nothing from people."
@@ -497,3 +497,98 @@ def test_auditor_notes_on_299_broadcast_is_narrow_and_the_summary_is_grounded(is
     assert G.mail_prose([mail_row(8, "Declined: Lunch", "Priya Shah", "priya@example.com")]) == "Priya Shah declined “Lunch”."
     assert G.mail_prose([mail_row(8, "Deadline notice (private details omitted).", "Bank", "bank@example.com")]) \
         == "Nothing from people today."
+
+
+# --- private mail is used, kept compact, and stays on this Mac -----------------------------
+
+
+def test_private_mail_reaches_the_summary_input_but_a_sign_in_code_does_not(monkeypatch):
+    from service.tools import imessage_tools
+    # The redactor withholds these as "private" (a schedule change, an order id);
+    # the summary reads them. The sign-in code is the only thing it still hides.
+    private = mail_row(11, "Rescheduled: Dublin Community Office Hours to Oct 28", "John Morada", "john@dublin.example",
+                       "Moving to 5pm. Order ZX9K2Q81 stays the same.")
+    code = mail_row(12, "Your sign in code is 482913", "Acme Bank", "alerts@bank.example", "Use 482913 to verify.")
+    private_row = mail_row(13, "Private details omitted.", "Someone", "someone@example.com")
+    assert imessage_tools.redact_summary_codes(private["body"]) != private["body"], "the redactor does withhold this body"
+    lines = G.summary_lines([private, code, private_row])
+    text = "\n".join(lines)
+    assert "Rescheduled: Dublin Community Office Hours to Oct 28" in text and "Moving to 5pm" in text
+    assert "482913" not in text and "sign in code" not in text
+    assert lines[-1].startswith("- 2 more emails whose content is withheld")
+
+
+def test_a_promo_with_a_list_footer_is_mass_mail_even_under_a_persons_name():
+    promo = mail_row(21, "Learn AR with SPECS: $2,500 in prizes, no glasses needed", "Darlyze Team", "sam@darlyze.example",
+                     "Join the build weekend.\n\nYou are receiving this because you signed up. Unsubscribe here.")
+    viewer = mail_row(22, "Hackathon", "Sam", "sam2@darlyze.example", "Big news. View this email in your browser.")
+    plain = mail_row(23, "Lunch?", "Priya Shah", "priya@example.com", "Are you free Thursday?")
+    assert G.is_mass_mail(promo) and G.is_mass_mail(viewer) and not G.is_mass_mail(plain)
+    people, bulk, _, _ = G._people_mail([promo, viewer, plain])
+    assert [p[0] for p in people] == ["Priya Shah"] and sum(bulk.values()) == 2
+    assert "SPECS" not in "\n".join(G.summary_lines([promo, viewer, plain]))
+    # A calendar change under a footer is still described.
+    change = mail_row(24, "Canceled: Office Hours", "Ann", "ann@example.com", "Unsubscribe here.")
+    assert not G.is_mass_mail(change)
+
+
+def test_a_reply_that_is_an_input_line_is_rejected_and_the_prose_stands():
+    lines = ["- From Darlyze: Learn AR with SPECS: $2,500 in prizes — Join the build weekend"]
+    assert not G.summary_ok("From Darlyze: Learn AR with SPECS: $2,500 in prizes, no glasses needed. The rest is job alerts.", lines)
+    assert not G.summary_ok("Learn AR with SPECS: $2,500 in prizes — Join the build weekend and more. Rest is promos.", lines)
+    assert G.echoes_input("- From Ann: Lunch") and G.echoes_input("Also 3 newsletters, alerts and promos, from X")
+    lines = ["- From John Morada: Canceled: Office Hours — We'll meet Monday instead."]
+    assert G.summary_ok("John Morada canceled office hours and will meet Monday instead.", lines)
+
+
+def test_an_echoed_summary_already_cached_gives_way_to_the_prose(isolated):
+    G._load()["summary"] = {"gist": "From Darlyze: Learn AR with SPECS: $2,500 in prizes. The rest is job alerts and newsletters.",
+                            "at": NOW - 60, "key": "k"}
+    assert G.overview("summary", "Prose.", NOW, reject=G.echoes_input) == {"text": "Prose.", "source": "summary"}
+    assert G.overview("summary", "Prose.", NOW)["source"] == "model", "no check, no change"
+
+
+def test_the_prose_fallback_covers_private_mail_compactly():
+    morada = [mail_row(i, s, "John Morada", "john@dublin.example", ago=100.0 * i) for i, s in
+              enumerate(["Canceled: Dublin Community Office Hours", "Re: Dublin Community Office Hours",
+                         "Dublin Community Office Hours"], 1)]
+    assert G.mail_prose(morada) == "John Morada canceled “Dublin Community Office Hours” (3 emails)."
+    one = mail_row(9, "Rescheduled: Dublin Office Hours to Oct 28", "John Morada", "john@dublin.example", "Moving to 5pm.")
+    assert G.mail_prose([one]) == "John Morada wrote about “Rescheduled: Dublin Office Hours to Oct 28”."
+
+
+def test_private_summary_input_carries_no_number_the_model_may_not_repeat():
+    lines = G.summary_lines([mail_row(31, "Rescheduled: Office Hours to Oct 28", "John Morada", "john@dublin.example")])
+    assert G.summary_ok("John Morada moved office hours to Oct 28.", lines)
+    assert not G.summary_ok("John Morada moved office hours to Oct 29.", lines)
+
+
+def test_the_summary_request_goes_only_to_the_local_fast_model(monkeypatch, model):
+    """Private mail is in the input: the request is the resident-reply path, to the
+    fast role on a loopback engine. Remote-only mode, or an engine that isn't this
+    Mac's, gets nothing sent."""
+    import inspect
+    from service.inference import remote_policy
+    client = use(monkeypatch, FakeClient(["fast"], content="John canceled office hours. The rest is quiet."))
+    assert asyncio.run(G._resident_reply("sys", "mail", lambda: False)) is not None and client.requests[0][0] == "fast"
+    # remote-only profile on: stand down before any request, even with a "local" client object
+    remote = use(monkeypatch, FakeClient(["fast"]))
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
+    assert asyncio.run(G._resident_reply("sys", "mail", lambda: False)) is None and remote.requests == []
+    monkeypatch.undo()
+    # a non-loopback engine
+    far = FakeClient(["fast"])
+    far.managed = False
+    from service.assistant import brief
+    import service.config as config
+    monkeypatch.setattr(brief, "_c", lambda: far)
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast")
+    assert asyncio.run(G._resident_reply("sys", "mail", lambda: False)) is None and far.requests == []
+    # the module has no other way to reach a model: no HTTP or cloud imports, no client of its own
+    import ast
+    tree = ast.parse(inspect.getsource(G))
+    imported = {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | \
+               {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    assert not [m for m in imported if any(w in m for w in ("httpx", "requests", "urllib", "cloud", "omlx_client", "delegat"))], imported
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert not names & {"OMLXClient", "cloud_super_model_target", "cloud_provider_settings", "chat_cloud"}
