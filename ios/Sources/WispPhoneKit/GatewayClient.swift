@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct GatewayHello: Decodable, Equatable, Sendable {
@@ -75,6 +76,7 @@ public struct ModelBundle: Decodable, Equatable, Identifiable, Sendable {
 
 public enum GatewayError: Error, Equatable, LocalizedError {
     case unreachable
+    case unverified
     case unauthorized
     case backendDown
     case http(Int, String)
@@ -84,6 +86,8 @@ public enum GatewayError: Error, Equatable, LocalizedError {
         switch self {
         case .unreachable:
             "Can't reach your Mac. Check that Tailscale is connected on both devices and the gateway is running."
+        case .unverified:
+            "Something answered at your Mac's address but couldn't prove it's your Mac, so the app didn't send your pairing token. Update Wisp on your Mac, or pair again from Settings."
         case .unauthorized:
             "Your Mac no longer recognizes this iPhone. Pair again from Settings."
         case .backendDown:
@@ -96,15 +100,66 @@ public enum GatewayError: Error, Equatable, LocalizedError {
     }
 }
 
+/// The ping challenge (gateway v2): the Mac proves it holds this phone's pairing before
+/// the phone sends its token. proof = HMAC-SHA256(key: SHA-256(token), "wisp-phone-ping-v1:" + nonce).
+public enum GatewayProof {
+    static let label = "wisp-phone-ping-v1:"
+
+    /// 32 random bytes as lowercase hex. The system generator is cryptographically secure.
+    public static func newNonce() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return (0..<32).map { _ in String(format: "%02x", UInt8.random(in: .min ... .max, using: &generator)) }.joined()
+    }
+
+    public static func proof(token: String, nonce: String) -> String {
+        let code = HMAC<SHA256>.authenticationCode(for: Data((label + nonce).utf8), using: key(token))
+        return Data(code).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// True when any proof in the ping answer is this token's proof for `nonce`. Constant-time compare.
+    public static func verify(pingResponse data: Data, token: String, nonce: String) -> Bool {
+        struct Ping: Decodable { var proofs: [String]? }
+        guard let proofs = (try? JSONDecoder().decode(Ping.self, from: data))?.proofs, proofs.count <= 1024 else {
+            return false
+        }
+        let message = Data((label + nonce).utf8)
+        return proofs.contains { candidate in
+            guard let bytes = hexBytes(candidate), bytes.count == SHA256.byteCount else { return false }
+            return HMAC<SHA256>.isValidAuthenticationCode(bytes, authenticating: message, using: key(token))
+        }
+    }
+
+    private static func key(_ token: String) -> SymmetricKey {
+        SymmetricKey(data: Data(SHA256.hash(data: Data(token.utf8))))
+    }
+
+    private static func hexBytes(_ text: String) -> Data? {
+        let chars = Array(text.utf8)
+        guard chars.count.isMultiple(of: 2) else { return nil }
+        var out = Data(capacity: chars.count / 2)
+        for i in stride(from: 0, to: chars.count, by: 2) {
+            guard let byte = UInt8(String(decoding: chars[i...i + 1], as: UTF8.self), radix: 16) else { return nil }
+            out.append(byte)
+        }
+        return out
+    }
+}
+
 /// Talks to the Mac's phone gateway (see ios/docs/PHONE_GATEWAY.md).
 public actor GatewayClient {
     public nonisolated let pairing: MacPairing
     private let session: URLSession
+    /// How long a verified base is trusted before the next request re-proves it.
+    public static let proofLifetime: TimeInterval = 60
+    /// Monotonic, so changing the wall clock can't stretch or shorten the proof window.
+    private let now: @Sendable () -> ContinuousClock.Instant
     private var preferredBase: URL?
+    private var verifiedAt: ContinuousClock.Instant?
 
-    public init(pairing: MacPairing, session: URLSession = .shared) {
+    public init(pairing: MacPairing, session: URLSession = .shared, now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }) {
         self.pairing = pairing
         self.session = session
+        self.now = now
     }
 
     // MARK: Requests
@@ -128,8 +183,11 @@ public actor GatewayClient {
         _ = try await send(path: "phone/v1/agent/approve", method: "POST", body: body, timeout: 15)
     }
 
-    /// A request for one model file, for a URLSession download task.
+    /// A request for one model file, against a base proved by a ping made just now, never the
+    /// cached one. A download can outlive the proof window by minutes, so VerifiedFileDownloader
+    /// calls this before every attempt.
     public func fileRequest(model: String, file: String) async throws -> URLRequest {
+        preferredBase = nil
         let base = try await reachableBase()
         var request = URLRequest(url: base.appendingPathComponent("phone/v1/models/\(model)/files/\(file)"))
         request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
@@ -155,19 +213,22 @@ public actor GatewayClient {
                     let (bytes, response) = try await self.session.bytes(for: request)
                     try Self.check(response, body: nil)
                     var current = sessionId ?? ""
-                    var finished = false
+                    var finished = false, clean = false
                     for try await line in bytes.lines {
                         guard let event = GatewayEventDecoder.decode(line: line, sessionId: current) else { continue }
                         if case .session(let id) = event { current = id }
                         continuation.yield(event)
-                        if case .done = event { finished = true; break }
+                        if case .done = event { finished = true; clean = true; break }
                         if case .failed = event { finished = true; break }
                     }
+                    // Anything but a clean `done` makes the next request prove the Mac again.
+                    if !clean { await self.forgetBase() }
                     if !finished { continuation.yield(.failed("The connection to your Mac closed before Wisp finished.")) }
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish()
                 } catch {
+                    await self.forgetBase()
                     continuation.finish(throwing: Self.map(error))
                 }
             }
@@ -192,28 +253,45 @@ public actor GatewayClient {
             let (data, response) = try await session.data(for: request)
             let http = try Self.check(response, body: data)
             return (data, http)
-        } catch let error as GatewayError {
-            throw error
         } catch {
+            // Any failure, an HTTP error included, makes the next request prove the Mac again.
             preferredBase = nil
             throw Self.map(error)
         }
     }
 
-    /// The first base URL that answers the unauthenticated ping, MagicDNS name first.
-    private func reachableBase() async throws -> URL {
-        if let preferredBase { return preferredBase }
+    /// The first base URL whose ping proves it holds this pairing, MagicDNS name first.
+    /// Nothing carries the token until then: 100.64/10 is also carrier CGNAT space, so with
+    /// Tailscale off, whoever answers at the Mac's address may be a stranger.
+    func reachableBase() async throws -> URL {
+        // A negative age can only come from an injected clock; fail closed on it anyway.
+        if let preferredBase, let verifiedAt {
+            let age = verifiedAt.duration(to: now())
+            if age >= .zero, age < .seconds(Self.proofLifetime) { return preferredBase }
+        }
+        preferredBase = nil
+        var answered = false
         for base in pairing.baseURLs {
-            var request = URLRequest(url: base.appendingPathComponent("phone/v1/ping"))
+            let nonce = GatewayProof.newNonce()
+            guard var components = URLComponents(url: base.appendingPathComponent("phone/v1/ping"),
+                                                 resolvingAgainstBaseURL: false) else { continue }
+            components.queryItems = [URLQueryItem(name: "nonce", value: nonce)]
+            guard let url = components.url else { continue }
+            var request = URLRequest(url: url)
             request.timeoutInterval = 4
-            if let (_, response) = try? await session.data(for: request),
-               (response as? HTTPURLResponse)?.statusCode == 200 {
+            guard let (data, response) = try? await session.data(for: request),
+                  (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
+            answered = true
+            if GatewayProof.verify(pingResponse: data, token: pairing.token, nonce: nonce) {
                 preferredBase = base
+                verifiedAt = now()
                 return base
             }
         }
-        throw GatewayError.unreachable
+        throw answered ? GatewayError.unverified : GatewayError.unreachable
     }
+
+    private func forgetBase() { preferredBase = nil }
 
     @discardableResult
     private static func check(_ response: URLResponse, body: Data?) throws -> HTTPURLResponse {
@@ -239,5 +317,222 @@ public actor GatewayClient {
             }
         }
         return error
+    }
+}
+
+/// One model-file download from the Mac with progress and automatic retry (multi-GB files over
+/// Tailscale can drop mid-way). Returns a temporary file the caller must move or delete.
+///
+/// Every attempt, the first included, gets its request from `GatewayClient.fileRequest`, which
+/// proves the Mac with a fresh ping first. A download can outlive the proof window by minutes,
+/// and Tailscale may drop between attempts, so no retry reuses an earlier request or the opaque
+/// resume data URLSession keeps. A retry resumes with an explicit `Range` request rebuilt for the
+/// freshly proved base, and only when that base is the one the partial bytes came from.
+/// Otherwise it starts over.
+public enum VerifiedFileDownloader {
+    public typealias Progress = @Sendable (Int64, Int64) -> Void
+
+    public enum Failure: Error, Equatable, LocalizedError {
+        case oversized
+        case badRange
+
+        public var errorDescription: String? {
+            switch self {
+            case .oversized: "Your Mac sent more than the file's listed size, so the download was stopped."
+            case .badRange: "Your Mac resumed the download at the wrong place. Try the download again."
+            }
+        }
+    }
+
+    /// Stops as soon as more than `maxBytes` arrive, so a bad listing can't fill the disk.
+    public static func download(
+        gateway: GatewayClient, model: String, file: String, maxBytes: Int64, attempts: Int = 4,
+        configuration: URLSessionConfiguration = .default,
+        backoff: @escaping @Sendable (Int) async throws -> Void = { try await Task.sleep(for: .seconds(2 * $0)) },
+        progress: @escaping Progress
+    ) async throws -> URL {
+        let partial = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-download-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: partial.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+        let transfer = Transfer(file: partial, maxBytes: maxBytes, progress: progress)
+        let session = URLSession(configuration: configuration, delegate: transfer, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        do {
+            var lastOrigin: String?
+            var lastError: Error = URLError(.unknown)
+            for attempt in 0..<max(attempts, 1) {
+                try Task.checkCancellation()
+                if attempt > 0 { try await backoff(attempt) }
+                do {
+                    var request = try await gateway.fileRequest(model: model, file: file)
+                    let origin = request.url.map { "\($0.scheme ?? "")://\($0.host ?? ""):\($0.port ?? -1)" }
+                    if origin != lastOrigin { try transfer.restart() }
+                    lastOrigin = origin
+                    let offset = transfer.received
+                    if offset > 0 { request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range") }
+                    try await transfer.run(session: session, request: request, offset: offset)
+                    return partial
+                } catch GatewayError.unreachable {
+                    // No proof, so nothing was sent; Tailscale may be reconnecting.
+                    lastError = GatewayError.unreachable
+                } catch let error as URLError where error.code != .cancelled && error.code != .userAuthenticationRequired {
+                    lastError = error
+                }
+            }
+            throw lastError
+        } catch {
+            try? FileManager.default.removeItem(at: partial)
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
+    }
+
+    /// Writes one attempt's bytes onto the partial file. Delegate callbacks arrive on the
+    /// session's serial queue; the lock covers the reads from `download`.
+    final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private let file: URL
+        private let maxBytes: Int64
+        private let progress: Progress
+        private let lock = NSLock()
+        private var handle: FileHandle?
+        private var written: Int64 = 0
+        private var offset: Int64 = 0
+        private var failure: Error?
+        // Cancellation, continuation registration and completion can arrive in any order. All three
+        // go through `lock`, and whichever finishes the attempt resumes the continuation exactly once.
+        private var continuation: CheckedContinuation<Void, Error>?
+        private var task: URLSessionDataTask?
+        private var cancelled = false
+        /// Runs after the continuation is registered and before the task starts, so tests can
+        /// cancel inside that window.
+        var beforeStart: (@Sendable () -> Void)?
+
+        init(file: URL, maxBytes: Int64, progress: @escaping Progress) {
+            self.file = file
+            self.maxBytes = maxBytes
+            self.progress = progress
+        }
+
+        var received: Int64 { lock.withLock { written } }
+
+        func restart() throws {
+            try lock.withLock {
+                let handle = try FileHandle(forWritingTo: file)
+                defer { try? handle.close() }
+                try handle.truncate(atOffset: 0)
+                written = 0
+            }
+        }
+
+        func run(session: URLSession, request: URLRequest, offset: Int64) async throws {
+            lock.withLock {
+                self.offset = offset
+                failure = nil
+                cancelled = false
+                continuation = nil
+                task = nil
+            }
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    // The task is created only after the continuation is registered, so its completion
+                    // always finds it. A cancel that arrived first means no task is ever created.
+                    let task: URLSessionDataTask? = lock.withLock {
+                        guard !cancelled else { return nil }
+                        let task = session.dataTask(with: request)
+                        self.continuation = continuation
+                        self.task = task
+                        return task
+                    }
+                    guard let task else { return continuation.resume(throwing: CancellationError()) }
+                    lock.withLock { beforeStart }?()
+                    // A cancel between registration and here already cancelled `task`; resuming it
+                    // then just delivers that cancellation to the delegate.
+                    task.resume()
+                }
+            } onCancel: {
+                let task = lock.withLock {
+                    cancelled = true
+                    return self.task
+                }
+                task?.cancel()
+            }
+        }
+
+        private func isCurrent(_ task: URLSessionTask) -> Bool {
+            lock.withLock { task === self.task }
+        }
+
+        private func fail(_ error: Error, _ task: URLSessionTask) {
+            lock.withLock { failure = error }
+            task.cancel()
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+            guard isCurrent(dataTask) else { return completionHandler(.cancel) }
+            guard let http = response as? HTTPURLResponse else {
+                fail(GatewayError.badResponse, dataTask); return completionHandler(.cancel)
+            }
+            do {
+                let requested = lock.withLock { offset }
+                switch http.statusCode {
+                case 200:
+                    // A whole file, even if a range was asked for: start the partial over.
+                    try restart()
+                case 206:
+                    let range = http.value(forHTTPHeaderField: "Content-Range") ?? ""
+                    guard requested > 0, range.hasPrefix("bytes \(requested)-") else {
+                        try? restart()
+                        fail(Failure.badRange, dataTask); return completionHandler(.cancel)
+                    }
+                case 401:
+                    fail(GatewayError.unauthorized, dataTask); return completionHandler(.cancel)
+                default:
+                    fail(GatewayError.http(http.statusCode, "The Mac refused the model download."), dataTask)
+                    return completionHandler(.cancel)
+                }
+                let handle = try FileHandle(forWritingTo: file)
+                try handle.seekToEnd()
+                lock.withLock { self.handle = handle }
+                completionHandler(.allow)
+            } catch {
+                fail(error, dataTask); completionHandler(.cancel)
+            }
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            guard isCurrent(dataTask) else { return dataTask.cancel() }
+            let total: Int64? = lock.withLock {
+                guard let handle, failure == nil else { return nil }
+                guard written + Int64(data.count) <= maxBytes else { return nil }
+                do { try handle.write(contentsOf: data) } catch { failure = error; return nil }
+                written += Int64(data.count)
+                return written
+            }
+            guard let total else {
+                if received + Int64(data.count) > maxBytes { fail(Failure.oversized, dataTask) } else { dataTask.cancel() }
+                return
+            }
+            progress(total, maxBytes)
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            let (continuation, failure): (CheckedContinuation<Void, Error>?, Error?) = lock.withLock {
+                guard task === self.task else { return (nil, nil) }  // a stale task from an earlier attempt
+                try? handle?.close()
+                handle = nil
+                let pending = (self.continuation, self.failure)
+                self.continuation = nil
+                self.failure = nil
+                self.task = nil
+                return pending
+            }
+            if let failure {
+                continuation?.resume(throwing: failure)
+            } else if let error {
+                continuation?.resume(throwing: error)
+            } else {
+                continuation?.resume()
+            }
+        }
     }
 }

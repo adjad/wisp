@@ -252,6 +252,8 @@ ADDITIONAL_FULL_TESTS = {
     # Toolbench matchers/scorer/report on hand-built trajectories and fake-world
     # tools called directly; temp WISP_HOME, no model, network or tool execution.
     "tests/test_toolbench.py",
+    # Frozen synthetic data and temporary stub runners; no model or network.
+    "tests/test_mellum_r2_source_contracts.py",
     # Planner eval --dry-run in a temp HOME/WISP_HOME: builds menus, no model, oMLX or tool execution.
     "tests/test_eval_planner_dry_run.py",
     # Inert bounded attestation store; supplied facts and manual interleavings only.
@@ -890,6 +892,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/brief-time-contract",
             [TRUSTED_BASH, "scripts/test_brief_time.sh"],
+        ),
+        (
+            "native/release-interactions-contract",
+            [TRUSTED_BASH, "scripts/test_release_interactions.sh", "--outer-isolation"],
         ),
         (
             "native/markdown-contract",

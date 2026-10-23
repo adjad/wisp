@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import os
 import stat
@@ -19,7 +20,7 @@ from service.phone_gateway import qr as qrmod
 from service.phone_gateway import tailscale
 from service.phone_gateway.app import create_app
 from service.phone_gateway.models import ModelCatalog
-from service.phone_gateway.store import DeviceStore, hash_token, new_token
+from service.phone_gateway.store import DeviceStore, hash_token, new_token, ping_proof
 
 SSE_CHUNKS = [
     b'data: {"type":"session","id":"s1"}\n\n',
@@ -111,8 +112,58 @@ def env(tmp_path, monkeypatch):
 def test_ping_is_unauthenticated_and_minimal(env):
     r = env.client.get("/phone/v1/ping")
     assert r.status_code == 200
-    assert r.json() == {"wisp_gateway": 1}
+    assert r.json() == {"wisp_gateway": 2}
     assert env.upstream.requests == []
+
+
+# ---------------------------------------------------------------- ping challenge
+
+NONCE = "00112233445566778899aabbccddeeff"
+
+
+def test_ping_proof_known_vector():
+    # Shared with ios/Tests (pingProofMatchesGatewayVector): both sides must agree byte for byte.
+    assert ping_proof(hash_token("A" * 43), NONCE) == (
+        "2dd110115354b568036ae2d48dec99d6f038e6398e9e184e8a1c7c381c7f32ea")
+
+
+def test_ping_with_nonce_proves_the_pairing(env):
+    r = env.client.get("/phone/v1/ping", params={"nonce": NONCE})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["wisp_gateway"] == 2
+    expected = hmac.new(hashlib.sha256(env.token.encode()).digest(),
+                        b"wisp-phone-ping-v1:" + NONCE.encode(), hashlib.sha256).hexdigest()
+    assert body["proofs"] == [expected]
+    assert env.token not in r.text and hash_token(env.token) not in r.text
+    assert env.upstream.requests == []
+
+
+def test_ping_proofs_depend_on_nonce_and_token(env):
+    other = env.client.get("/phone/v1/ping", params={"nonce": "f" * 64}).json()["proofs"]
+    first = env.client.get("/phone/v1/ping", params={"nonce": NONCE}).json()["proofs"]
+    assert other != first
+    assert ping_proof(hash_token(new_token()), NONCE) not in first
+
+
+def test_ping_proofs_cover_every_device_sorted(env):
+    second = new_token()
+    env.store.add("iPad", second)
+    proofs = env.client.get("/phone/v1/ping", params={"nonce": NONCE}).json()["proofs"]
+    assert proofs == sorted([ping_proof(hash_token(env.token), NONCE), ping_proof(hash_token(second), NONCE)])
+
+
+def test_revoked_device_gets_no_proof(env):
+    assert env.store.revoke(env.device["id"])
+    assert env.client.get("/phone/v1/ping", params={"nonce": NONCE}).json() == {
+        "wisp_gateway": 2, "proofs": []}
+
+
+@pytest.mark.parametrize("nonce", ["", "abc", "0" * 31, "0" * 129, "G" * 32, "AB" * 16, NONCE + " "])
+def test_ping_rejects_malformed_nonce(env, nonce):
+    r = env.client.get("/phone/v1/ping", params={"nonce": nonce})
+    assert r.status_code == 422
+    assert "proofs" not in r.text
 
 
 @pytest.mark.parametrize("path", ["/phone/v1/hello", "/phone/v1/sessions", "/phone/v1/today",
@@ -290,7 +341,7 @@ def test_hello(env):
     r = env.client.get("/phone/v1/hello", headers=env.auth)
     assert r.status_code == 200
     assert r.json() == {
-        "gateway_version": 1, "mac_name": "Test Mac",
+        "gateway_version": 2, "mac_name": "Test Mac",
         "device": {"id": env.device["id"], "name": "Test iPhone"},
         "backend": {"reachable": True, "mode": {"mode": "production"}}}
     assert env.upstream.requests[-1].url.path == "/mode"

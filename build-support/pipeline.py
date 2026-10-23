@@ -303,7 +303,8 @@ def simulation_profile(scratch, python, *, local_signing=False, node_runtime=Non
     fixture_prefix = "wispqa-" + scratch.name.rsplit("-", 1)[-1]
     replacements = json.dumps("^" + re.escape(str(native_temp)) + "/NSIRD_" + re.escape(fixture_prefix) + "-[^/]+_[^/]+(/|$)")
     executables = [python, "/bin/bash", "/bin/sh", "/bin/ls", "/bin/cat", "/bin/pwd",
-                   "/bin/echo", "/bin/rm", "/usr/bin/dirname", "/usr/bin/mktemp",
+                   "/bin/echo", "/bin/rm", "/bin/mv", "/bin/date", "/usr/bin/tee", "/usr/bin/grep",
+                   "/usr/bin/dirname", "/usr/bin/mktemp",
                    "/usr/bin/env", "/usr/bin/git", "/usr/bin/swiftc", "/usr/bin/swift", "/usr/bin/xcrun",
                    "/usr/bin/osacompile", "/usr/bin/head", "/usr/bin/tail", "/usr/bin/wc",
                    "/usr/bin/uname", "/usr/bin/sandbox-exec", "/usr/bin/openssl"]
