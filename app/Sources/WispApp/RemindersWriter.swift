@@ -294,6 +294,11 @@ final class RemindersWriter {
                          expectedTitle: String = "", expectedDueTs: Double? = nil,
                          title: String = "", dueTs: Double = 0,
                          commitmentKind: String = "reminder", dueDate: String = "", expectedDueDate: String = "") -> [String: Any] {
+        #if WISP_NOTCH_EVALUATION
+        // The contained evaluation build only reads Reminders (start, sync).
+        _ = NotchEvaluationSinks.blocked("reminders-write", ledger: NotchEvaluationEnvironment.ledger)
+        fatalError("EVALUATION_BLOCKED: the contained evaluation build never writes Reminders")
+        #endif
         guard isAuthorized else { return failure("Reminders access is unavailable") }
         guard !actionID.isEmpty, actionID.count <= 128,
               actionID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "._:-".contains($0)) })
@@ -421,6 +426,10 @@ final class RemindersWriter {
     func reconcileVerified(kind: String, actionID: String, sourceID: String = "",
                            title: String = "", dueTs: Double = 0,
                            commitmentKind expectedKind: String = "reminder", dueDate: String = "") async -> [String: Any] {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("reminders-reconcile", ledger: NotchEvaluationEnvironment.ledger)
+        fatalError("EVALUATION_BLOCKED: the contained evaluation build never reconciles Reminders writes")
+        #endif
         guard isAuthorized else { return failure("Reminders access is unavailable", uncertain: true) }
         if kind == "create_reminder" {
             let found: [EKReminder]? = await withCheckedContinuation { continuation in

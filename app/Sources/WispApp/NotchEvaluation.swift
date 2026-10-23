@@ -612,10 +612,20 @@ enum NotchEvaluationScriptPolicy {
             }
             rest = after
         }
-        let text = stripped(lowered)
-        if text.range(of: #"current\s+application"#, options: .regularExpression) != nil {
+        guard let kept = stripped(lowered) else { return "a non-ASCII character outside a string" }
+        if kept.range(of: #"current\s+application"#, options: .regularExpression) != nil {
             return "current application"
         }
+        // Every application reference, not only a tell's, names Mail or Notes.
+        var scan = Substring(kept)
+        while let found = scan.range(of: #"(?<![a-z0-9_])application(?![a-z0-9_])"#, options: .regularExpression) {
+            let after = scan[found.upperBound...]
+            guard let name = after.range(of: #"^\s+"(mail|notes)""#, options: .regularExpression) else {
+                return "an application other than Mail or Notes"
+            }
+            scan = after[name.upperBound...]
+        }
+        let text = kept.replacingOccurrences(of: #""(mail|notes)""#, with: #""""#, options: .regularExpression)
         // The only possessive the readers use is AppleScript's text item
         // delimiters; any other (an AppleScriptObjC call, say) is refused.
         if text.replacingOccurrences(of: #"applescript\s*['\x{2019}]s\s+text\s+item\s+delimiters"#, with: "",
@@ -646,27 +656,42 @@ enum NotchEvaluationScriptPolicy {
         return w.count >= 5 && w[0] == "applescript" && w[1] == "s" && w[2] == "text" && w[3] == "item"
             && w[4] == "delimiters"
     }
-    /// Removes AppleScript string literals and comments.
-    static func stripped(_ text: String) -> String {
-        var out = "", chars = Array(text), i = 0, depth = 0
-        while i < chars.count {
-            let c = chars[i], next: Character? = i + 1 < chars.count ? chars[i + 1] : nil
+    /// Removes AppleScript comments and string literals; a literal that is
+    /// exactly Mail or Notes is kept, for the application rule. Works on
+    /// Unicode scalars, so a CRLF cannot hide a line: a comment ends at CR or
+    /// LF. Returns nil for any non-ASCII scalar outside a string literal
+    /// (U+2028/U+2029 line breaks, zero-width characters, homoglyphs), so
+    /// none of them reaches the word rules.
+    static func stripped(_ text: String) -> String? {
+        let s = Array(text.unicodeScalars)
+        var out = String.UnicodeScalarView(), i = 0, depth = 0
+        while i < s.count {
+            let c = s[i], next: Unicode.Scalar? = i + 1 < s.count ? s[i + 1] : nil
             if depth > 0 {
+                guard c.isASCII else { return nil }
                 if c == "(", next == "*" { depth += 1; i += 2 } else if c == "*", next == ")" { depth -= 1; i += 2 } else { i += 1 }
             } else if c == "(", next == "*" {
                 depth = 1; i += 2
             } else if (c == "-" && next == "-") || c == "#" {
-                while i < chars.count, chars[i] != "\n" { i += 1 }
+                while i < s.count, s[i] != "\n", s[i] != "\r" {
+                    guard s[i].isASCII else { return nil }
+                    i += 1
+                }
             } else if c == "\"" {
                 i += 1
-                while i < chars.count, chars[i] != "\"" { i += chars[i] == "\\" ? 2 : 1 }
+                var literal = String.UnicodeScalarView()
+                while i < s.count, s[i] != "\"" {
+                    if s[i] == "\\" { literal.append(s[i]); if i + 1 < s.count { literal.append(s[i + 1]) }; i += 2 } else { literal.append(s[i]); i += 1 }
+                }
                 i += 1
-                out += " \"\" "
+                let content = String(literal)
+                out.append(contentsOf: (content == "mail" || content == "notes" ? " \"\(content)\" " : " \"\" ").unicodeScalars)
             } else {
+                guard c.isASCII else { return nil }
                 out.append(c); i += 1
             }
         }
-        return out
+        return String(out)
     }
 }
 

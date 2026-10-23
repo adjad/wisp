@@ -41,7 +41,10 @@ PRIOR_SNAPSHOT = """(version 1)
 LS_LOOKUPS = ('  (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.lsd.mapdb")\n')
 # Approved change: those two lookups are allowed in both modes; every
 # Launch Services open is refused in-app (NotchEvaluationWorkspaceGuard).
-SNAPSHOT = PRIOR_SNAPSHOT.replace(LS_LOOKUPS, "", 1)
+# Approved change: the input adapter may bind its own socket, by literal path.
+OUTBOUND = '(allow network-outbound (remote ip "localhost:18891"))\n'
+BIND = '(allow network-bind (local unix-socket (path-literal "{owned}/app-input.sock")))\n'
+SNAPSHOT = PRIOR_SNAPSHOT.replace(LS_LOOKUPS, "", 1).replace(OUTBOUND, OUTBOUND + BIND, 1)
 
 
 def _function(name: str) -> str:
@@ -59,11 +62,16 @@ def render(live: bool) -> str:
                           capture_output=True, text=True).stdout
 
 
-def test_snapshot_profile_is_the_reviewed_text_minus_only_the_ls_lookups():
+def test_snapshot_profile_is_the_reviewed_text_with_only_the_approved_changes():
     snapshot = render(live=False)
     assert snapshot == SNAPSHOT.format(**PLACES)
     prior = PRIOR_SNAPSHOT.format(**PLACES)
-    assert LS_LOOKUPS in prior and prior.replace(LS_LOOKUPS, "", 1) == snapshot     # the only change
+    bind = BIND.format(**PLACES)
+    assert LS_LOOKUPS in prior and bind not in prior
+    # The only changes: the LS lookups removed, and exactly one line added.
+    assert prior.replace(LS_LOOKUPS, "", 1) == snapshot.replace(bind, "", 1)
+    added = [line for line in snapshot.splitlines() if line not in prior.splitlines()]
+    assert added == [bind.rstrip("\n")]
     assert "launchservicesd" not in snapshot and "lsd.mapdb" not in snapshot
     assert '(global-name "com.apple.coreservices.appleevents")' in snapshot          # still denied here
     assert "(deny appleevent-send)" in snapshot and "(allow appleevent-send" not in snapshot
@@ -95,5 +103,20 @@ def test_live_profile_differs_by_exactly_the_approved_deltas():
         '  (global-name', 1)
     assert expected == snapshot          # nothing else differs between the modes
     assert "launchservicesd" not in live and "lsd.mapdb" not in live
+    assert expected.count(BIND.format(**PLACES)) == 1
     for lookup in ("com.apple.usernoted.client", "com.apple.pasteboard.1", "com.apple.coreservices.quarantine-resolver"):
         assert lookup in live
+
+
+def test_the_only_bind_is_the_input_socket_by_literal_path():
+    for live in (False, True):
+        text = render(live=live)
+        binds = re.findall(r"\(allow network-bind.*", text)
+        assert binds == [f'(allow network-bind (local unix-socket (path-literal "{PLACES["owned"]}/app-input.sock")))']
+        rule = binds[0]
+        assert "subpath" not in rule and "regex" not in rule and "prefix" not in rule and "*" not in rule
+        assert text.count("network-bind") == 1 and text.count("(allow network") == 2
+    # The rule's root is the owned root the launcher validated (0700, owned, fresh).
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert 'owned="$("${LIFECYCLE[@]}" preflight --create "$owned_arg")"' in script
+    assert 'app_profile "$owned" ' in script

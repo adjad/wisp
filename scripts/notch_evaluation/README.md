@@ -44,17 +44,26 @@ sources, and nothing else; every effect stays blocked at its sink.
   `current application`, possessive (`'s`) calls other than AppleScript's
   text item delimiters, and words like send, delete, make, move, use, load,
   write, display, do and perform are refused. Every word must be one the
-  readers use, every `tell` must name Mail or Notes, and every `set` must
-  assign one of the readers' own locals. A script that fails is refused,
+  readers use, every `application "X"` (in a `tell` or not) must name Mail or
+  Notes, and every `set` must assign one of the readers' own locals. Comments
+  end at CR or LF, and any non-ASCII character outside a string literal
+  (Unicode line breaks, zero-width characters, homoglyphs) is refused. A script that fails is refused,
   recorded as `script_refused`, and not run. The check is lexical: it vets
   the readers' fixed scripts, and it is not a parser for arbitrary
   AppleScript. `tests/test_notch_script_policy.py` collects every
   multi-line and single-line script literal in the readers and requires the
   allowlists to match them exactly.
-- **No other AppleScript is compiled in.** `OutboundSender` is replaced by a
+- **No other AppleScript or process runs.** `OutboundSender` is replaced by a
   stub in the evaluation build; any call records `outbound-*` and stops the
-  app with `EVALUATION_BLOCKED`. `ScriptRunner` stops before any script or
-  launch.
+  app with `EVALUATION_BLOCKED`. `ScriptRunner`, `BackendManager` and
+  `PortGuard` stop before any script or process. The test scans every app
+  source for NSAppleScript, OSAScript, user script tasks, `Process(` and
+  `osascript`.
+- **Reminders and Calendar are read only.** Every EventKit save, remove and
+  commit (`RemindersWriter`, `CalendarReader`) stops the evaluation build
+  with `EVALUATION_BLOCKED`; only the readers' fetches run.
+- **The one socket bind** the profile allows is the input adapter's
+  `app-input.sock`, by literal path in the validated owned root.
 - **Launch Services lookups are allowed** in both modes, because AppKit
   cannot start without them. That would also let the app ask Launch Services
   to open URLs, files or apps, so `NotchEvaluationWorkspaceGuard` replaces

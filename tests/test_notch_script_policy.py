@@ -40,11 +40,17 @@ DATE_PARTS = _swift_set("dateParts")
 APPLICATIONS = _swift_set("applications")
 
 
-def _stripped(text: str) -> str:
+def _stripped(text: str) -> str | None:
+    """Comments and literals removed; a literal that is exactly mail/notes is kept.
+
+    None when a non-ASCII character appears outside a string literal.
+    """
     out, i, depth = [], 0, 0
     while i < len(text):
         c, nxt = text[i], text[i + 1] if i + 1 < len(text) else ""
         if depth:
+            if not c.isascii():
+                return None
             if c == "(" and nxt == "*":
                 depth, i = depth + 1, i + 2
             elif c == "*" and nxt == ")":
@@ -54,22 +60,30 @@ def _stripped(text: str) -> str:
         elif c == "(" and nxt == "*":
             depth, i = 1, i + 2
         elif (c == "-" and nxt == "-") or c == "#":
-            while i < len(text) and text[i] != "\n":
+            while i < len(text) and text[i] not in "\n\r":
+                if not text[i].isascii():
+                    return None
                 i += 1
         elif c == '"':
             i += 1
+            start = i
             while i < len(text) and text[i] != '"':
                 i += 2 if text[i] == "\\" else 1
+            content = text[start:i]
             i += 1
-            out.append(' "" ')
+            out.append(f' "{content}" ' if content in ("mail", "notes") else ' "" ')
         else:
+            if not c.isascii():
+                return None
             out.append(c)
             i += 1
     return "".join(out)
 
 
 def _words(text: str) -> list[str]:
-    return re.findall(r"[^\W]+", _stripped(text.lower()))
+    kept = _stripped(text.lower())
+    assert kept is not None, text
+    return re.findall(r"[^\W]+", re.sub(r'"(mail|notes)"', '""', kept))
 
 
 def _allowed_set(w: list[str]) -> bool:
@@ -90,9 +104,15 @@ def refusal(source: str) -> str | None:
         target = re.match(r'application\s+"([a-z]+)"', lowered[match.end():])
         if not target or target.group(1) not in APPLICATIONS:
             return "tell"
-    text = _stripped(lowered)
-    if re.search(r"current\s+application", text):
+    kept = _stripped(lowered)
+    if kept is None:
+        return "non-ascii"
+    if re.search(r"current\s+application", kept):
         return "current application"
+    for match in re.finditer(r"(?<![a-z0-9_])application(?![a-z0-9_])", kept):
+        if not re.match(r'\s+"(mail|notes)"', kept[match.end():]):
+            return "application"
+    text = re.sub(r'"(mail|notes)"', '""', kept)
     rest = re.sub(r"applescript\s*['’]s\s+text\s+item\s+delimiters", "", text)
     if re.search(r"['’]\s*s\b", rest):
         return "possessive"
@@ -171,10 +191,21 @@ def test_the_review_list_is_refused_and_never_allowed():
         ("set brandnew to 1", "set"),
         ("set end of themessages_x to 1", "word:themessages_x"),
         ("mark m", "word:mark"),
+        ('set n to count of application "Finder"', "application"),
+        ('set n to count of (every item of application id "com.apple.finder")', "application"),
+        ("set n to 1 -- note\rdelete m", "delete"),                       # CR ends a comment
+        ("set n to 1 -- note\r\ndelete m", "delete"),                     # so does CRLF
+        ("set n to 1 -- note\u2028delete m", "non-ascii"),                # U+2028 is refused
+        ("set n to 1\u2029delete m", "non-ascii"),
+        ("del\u200bete m", "non-ascii"),                                  # zero-width split
+        ("s\u0435nd m", "non-ascii"),                                      # Cyrillic e
+        ("set n to 1 # x\u200b", "non-ascii"),                            # even in a comment
     ]:
         assert refusal(mail.format(body)) is not None, (body, why)
     assert refusal('tell application "Finder"\n get name\nend tell') == "tell"
-    assert refusal(mail.format('set capName to "Delete -- send é"')) is None
+    assert refusal(mail.format('set capName to "Delete -- send é\u200b\u2028"')) is None   # inside a string
+    assert refusal(mail.format('set n to count of messages of inbox -- fine\r\nset n to 1')) is None
+    assert refusal(mail.format('set n to name of application "Notes"')) is None
 
 
 def test_every_reader_script_call_site_is_checked():
@@ -188,19 +219,67 @@ def test_every_reader_script_call_site_is_checked():
     assert notes.index("NotchEvaluationReaders.refuseScript") < notes.index("NSAppleScript(source:")
 
 
-def test_no_other_applescript_is_compiled_into_the_evaluation_build():
-    """OutboundSender is compiled out; ScriptRunner stops before any script."""
+LAUNCH = re.compile(r"OSAScript|NSUserAppleScriptTask|NSUserUnixTask|NSUserScriptTask|NSUserAutomatorTask|NSTask"
+                    r"|(?<![A-Za-z])Process\(|osascript|NSAppleScript\(|posix_spawn|\bexecv|(?<![.\w])system\(|popen\(")
+EVENTKIT_WRITE = re.compile(r"\.(?:save|remove)\([^)\n]*(?:commit|span):|(?<!CATransaction)\.commit\(\)")
+GUARD = re.compile(r"#if WISP_NOTCH_EVALUATION\n(?:(?!#endif).)*?(?:fatalError\(\"EVALUATION_BLOCKED|return\b)", re.S)
+
+
+def _hits(pattern):
+    for path in sorted(APP.rglob("*.swift")):
+        text = path.read_text(encoding="utf-8")
+        for match in pattern.finditer(text):
+            line = text[text.rfind("\n", 0, match.start()) + 1:text.find("\n", match.start())]
+            if not line.lstrip().startswith("//"):
+                yield path.name, text, match.start(), line.strip()
+
+
+def _guarded(text: str, pos: int) -> bool:
+    """The enclosing function stops (fatalError or return) under the evaluation flag before pos."""
+    head = text[text.rfind("func ", 0, pos):pos]
+    return bool(GUARD.search(head))
+
+
+def test_no_other_script_or_process_runs_in_the_evaluation_build():
+    """Every AppleScript, OSA, user-script-task or process launch is checked or stopped first."""
     sender = (APP / "OutboundSender.swift").read_text(encoding="utf-8")
     real, stub = sender.split("#else", 1)
     assert real.lstrip().startswith("import Foundation") and "#if !WISP_NOTCH_EVALUATION" in real
-    assert "NSAppleScript" in real and "NSAppleScript" not in stub
+    assert "NSAppleScript" in real and not LAUNCH.search(stub)
     assert stub.count("refuse(") >= 11 and "fatalError" in stub
+    unchecked = []
+    for name, text, pos, line in _hits(LAUNCH):
+        if name in LIVE_READERS and line.startswith("guard let s = NSAppleScript(source:"):
+            continue                    # the policy check runs first (test above)
+        if name == "OutboundSender.swift" and pos < len(real):
+            continue                    # compiled out under the evaluation flag
+        if name == "ScriptRunner.swift" and line.startswith('case "applescript", "osascript": return .terminal('):
+            continue                    # an interpreter name; only runInTerminal uses it, and it stops
+        if not _guarded(text, pos):
+            unchecked.append((name, line))
+    assert unchecked == []
     runner = (APP / "ScriptRunner.swift").read_text(encoding="utf-8")
-    for function in ("static func perform(", "private static func runInTerminal(",
-                     "private static func openWithApp("):
+    for function, call in (("private static func runInTerminal(", "NSAppleScript(source:"),
+                           ("private static func openWithApp(", "Process()"),
+                           ("private static func chmodExecutable(", "Process()")):
         body = runner.split(function, 1)[1]
-        assert body.index("#if WISP_NOTCH_EVALUATION") < body.index("\n    }\n")
-    others = [p.name for p in APP.rglob("*.swift")
-              if "NSAppleScript(source" in p.read_text(encoding="utf-8")
-              and p.name not in {"MailReader.swift", "NotesReader.swift", "OutboundSender.swift", "ScriptRunner.swift"}]
-    assert others == []
+        guard = body.index("#if WISP_NOTCH_EVALUATION")
+        assert guard < body.index(call) < body.index("\n    }\n")
+        assert "fatalError(\"EVALUATION_BLOCKED" in body[guard:body.index("#endif")]
+    perform = runner.split("static func perform(", 1)[1]
+    assert perform.index("#if WISP_NOTCH_EVALUATION") < perform.index("\n    }\n")
+
+
+def test_eventkit_write_paths_stop_in_the_evaluation_build():
+    """Reminders and Calendar only read here: every save, remove and commit stops first."""
+    hits = list(_hits(EVENTKIT_WRITE))
+    assert {name for name, *_ in hits} == {"RemindersWriter.swift", "CalendarReader.swift"}
+    assert len(hits) >= 8
+    assert [(name, line) for name, text, pos, line in hits if not _guarded(text, pos)] == []
+    writer = (APP / "RemindersWriter.swift").read_text(encoding="utf-8")
+    for function in ("func performVerified(", "func reconcileVerified("):
+        body = writer.split(function, 1)[1]
+        assert body.index("#if WISP_NOTCH_EVALUATION") < body.index("guard isAuthorized")
+    for function in ("func start()", "func sync()"):           # the reads stay
+        body = writer.split(function, 1)[1].split("\n    }\n", 1)[0]
+        assert "WISP_NOTCH_EVALUATION" not in body

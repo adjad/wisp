@@ -114,6 +114,7 @@ $events
   (global-name "com.apple.coreservices.quarantine-resolver"))
 (deny network*)
 (allow network-outbound (remote ip "localhost:$LISTEN_PORT"))
+(allow network-bind (local unix-socket (path-literal "$owned/app-input.sock")))
 (deny file-read-data (require-all (subpath "$home")
   (require-not (require-any (subpath "$owned") (subpath "$bundle") $reads))))
 (deny file-write* (require-not (require-any (subpath "$owned") (literal "/dev/null")

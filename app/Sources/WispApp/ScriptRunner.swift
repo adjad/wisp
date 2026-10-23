@@ -127,6 +127,9 @@ enum ScriptRunner {
     }
 
     private static func chmodExecutable(_ path: String) {
+        #if WISP_NOTCH_EVALUATION
+        fatalError("EVALUATION_BLOCKED: the evaluation build never runs a process")
+        #endif
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/chmod")
         p.arguments = ["+x", path]

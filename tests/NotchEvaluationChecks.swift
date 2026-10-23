@@ -311,6 +311,8 @@ struct NotchEvaluationChecks {
         let allowedScripts = [
             "tell application \"Notes\"\n set refDate to current date\n set year of refDate to 2001\n set output to \"\"\n repeat with nt in notes\n  set output to output & (name of nt)\n end repeat\n return output\nend tell",
             "tell application \"Mail\"\n set FS to ASCII character 1\n set capName to \"Delete Me -- move\" -- send later (* make *)\n set end of toAddrs to (address of r)\n set AppleScript's text item delimiters to linefeed\n if (read status of m) then set readFlag to \"R\"\nend tell",
+            "tell application \"Mail\"\r\n set n to count of messages of inbox -- CRLF lines\r\n set capName to \"caf\u{00E9} \u{200B}\u{2028}\"\r\nend tell",
+            "tell application \"Notes\"\n set n to count of notes\nend tell\nset n to name of application \"Notes\"",
         ]
         for (index, script) in allowedScripts.enumerated() {
             check(NotchEvaluationScriptPolicy.refusal(script) == nil, "allows read script \(index)")
@@ -337,6 +339,15 @@ struct NotchEvaluationChecks {
             ("tell application \"Notes\"\n set name of nt to \"x\"\nend tell", "an app property set"),
             ("tell application \"Mail\"\n set brandNew to 1\nend tell", "a set of an unknown local"),
             ("tell application \"Mail\"\n mark m\nend tell", "a word the readers do not use"),
+            ("tell application \"Mail\"\n set n to count of application \"Finder\"\nend tell", "an application reference to Finder"),
+            ("tell application \"Mail\"\n set n to count of (every item of application id \"com.apple.finder\")\nend tell",
+             "an application id reference"),
+            ("tell application \"Mail\"\n set n to 1 -- note\rdelete m\nend tell", "a command after a CR-ended comment"),
+            ("tell application \"Mail\"\n set n to 1 -- note\r\ndelete m\nend tell", "a command after a CRLF"),
+            ("tell application \"Mail\"\n set n to 1 -- note\u{2028}delete m\nend tell", "a U+2028 line break"),
+            ("tell application \"Mail\"\n set n to 1\u{2029}delete m\nend tell", "a U+2029 line break"),
+            ("tell application \"Mail\"\n del\u{200B}ete m\nend tell", "a zero-width split"),
+            ("tell application \"Mail\"\n s\u{0435}nd m\nend tell", "a homoglyph"),
         ]
         for (script, label) in refusedScripts {
             check(NotchEvaluationScriptPolicy.refusal(script) != nil, "refuses a script with \(label)")

@@ -392,7 +392,7 @@ final class MailReader {
                     set AppleScript's text item delimiters to oldDelims
                     -- message id (the RFC Message-ID header) is the only stable
                     -- handle a tool can use to come back and act on THIS
-                    -- message later — reply to it, mark it read, archive it.
+                    -- message later: reply to it, mark it read, archive it.
                     -- Index position can't serve: the inbox reorders on every
                     -- new arrival, so a stored index silently points at a
                     -- different message minutes later. Wrapped in its own try

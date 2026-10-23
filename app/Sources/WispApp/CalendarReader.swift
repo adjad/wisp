@@ -240,6 +240,10 @@ final class CalendarReader {
     }
 
     private func verifiedCreation(_ event: EKEvent) -> [String: Any] {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("calendar-verifiedCreation", ledger: NotchEvaluationEnvironment.ledger)
+        fatalError("EVALUATION_BLOCKED: the contained evaluation build never writes Calendar")
+        #endif
         let expected = CalendarCreationFacts(title: event.title, start: event.startDate.timeIntervalSince1970,
             end: event.endDate.timeIntervalSince1970, allDay: event.isAllDay)
         return CalendarCreationReceipt.perform(expected: expected, save: {
@@ -260,6 +264,10 @@ final class CalendarReader {
     // meant. Searching a narrow window around the occurrence's own start time
     // and matching the identifier there finds the exact instance.
     func deleteEvent(identifier: String, occurrenceTs: Double? = nil) -> [String: Any] {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("calendar-deleteEvent", ledger: NotchEvaluationEnvironment.ledger)
+        fatalError("EVALUATION_BLOCKED: the contained evaluation build never writes Calendar")
+        #endif
         guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
         let target: EKEvent?
         if let ts = occurrenceTs {
@@ -298,6 +306,10 @@ final class CalendarReader {
     // "unknown", not done.
     func moveEvent(identifier: String, expectedTitle: String, expectedStart: Double,
                    newStart: Double, durationMin: Int?, expectedInvitees: Int) -> [String: Any] {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("calendar-moveEvent", ledger: NotchEvaluationEnvironment.ledger)
+        fatalError("EVALUATION_BLOCKED: the contained evaluation build never writes Calendar")
+        #endif
         guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
         guard let ev = occurrence(identifier, at: expectedStart) else {
             return ["ok": false, "error": "That event is no longer at the time Wisp last read; nothing was moved"]
@@ -331,6 +343,10 @@ final class CalendarReader {
     // keeps every other occurrence; then read back that this one is gone.
     func cancelEvent(identifier: String, expectedTitle: String, expectedStart: Double,
                      expectedInvitees: Int) -> [String: Any] {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("calendar-cancelEvent", ledger: NotchEvaluationEnvironment.ledger)
+        fatalError("EVALUATION_BLOCKED: the contained evaluation build never writes Calendar")
+        #endif
         guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
         guard let ev = occurrence(identifier, at: expectedStart) else {
             return ["ok": false, "error": "That event is no longer at the time Wisp last read; nothing was cancelled"]
