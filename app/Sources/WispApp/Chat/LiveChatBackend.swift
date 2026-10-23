@@ -68,6 +68,10 @@ final class LiveChatBackend: ChatBackend {
         try await client.liveCorpusCases(selector: selector)
     }
 
+    func savedCorpusExport() async throws -> (markdown: String, csv: String)? {
+        try await client.latestCorpusExport()
+    }
+
     func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
         await client.runAgent(prompt: "", image: nil, corpusCaseID: id, corpusToken: token) { event in
             onEvent(ChatEvent(type: event.type, payload: event.payload))

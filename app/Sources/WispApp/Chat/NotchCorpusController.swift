@@ -10,6 +10,9 @@ final class NotchCorpusController: ObservableObject {
     @Published private(set) var isPresented = false
     @Published private(set) var loading = false
     @Published private(set) var notice = ""
+    /// The last export's files, shown with Reveal in Finder.
+    @Published private(set) var exported: CorpusExportFiles?
+    @Published private(set) var exporting = false
     var canStart: () -> Bool = { true }
     var onStateChanged: (_ busy: Bool, _ presented: Bool) -> Void = { _, _ in }
     private var loadTask: Task<Void, Never>?
@@ -21,6 +24,11 @@ final class NotchCorpusController: ObservableObject {
     var busy: Bool { loading || conversation?.corpusRunning == true || conversation?.busy == true }
 
     func submit(_ command: String) {
+        if case .export? = try? AssistantTaskCorpusCommand.resolve(command) {
+            isPresented = true
+            export()
+            return
+        }
         if busy { isPresented = true; publishState(); return }
         guard canStart() else { return }
         isPresented = true
@@ -51,6 +59,28 @@ final class NotchCorpusController: ObservableObject {
             self.publishState()
         }
     }
+
+    /// Saves the latest run to Downloads as Markdown and CSV.
+    func export() {
+        guard !exporting else { return }
+        exporting = true
+        notice = ""
+        publishState()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                self.exported = try await self.store.exportCorpus()
+            } catch {
+                self.exported = nil
+                self.notice = error.localizedDescription
+            }
+            self.exporting = false
+            self.publishState()
+        }
+    }
+
+    /// The run on screen as Markdown, for Copy results; nil without one.
+    var resultsMarkdown: String? { store.corpusMarkdown(conversation ?? store.latestCorpusConversation) }
 
     func stop() {
         requestID = UUID()
