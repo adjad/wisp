@@ -1295,15 +1295,41 @@ def _injected_queue_decision(target='abcdef123456', *, broad=False):
 
 
 def test_public_route_body_signature_and_single_await_are_preserved():
-    import ast,hashlib,inspect,textwrap
+    import ast,copy,hashlib,inspect,textwrap
     implementation=ast.parse(textwrap.dedent(inspect.getsource(R._route_impl))).body[0]
     wrapper=ast.parse(textwrap.dedent(inspect.getsource(R.route))).body[0]
     body=ast.dump(ast.Module(body=implementation.body,type_ignores=[]),include_attributes=False)
-    signature=ast.dump(wrapper.args,include_attributes=False)
     assert hashlib.sha256(body.encode()).hexdigest()=='f4c3e7684b0777be41a0a1a2392247c6eb50e5205a2ea49bd760547764dbc05f'
-    assert hashlib.sha256(signature.encode()).hexdigest()=='edcb3e9f9d06ef15a39eb04dadef72be9995af5c66f86b8f0bb19290f1e00c02'
-    assert inspect.signature(R.route)==inspect.signature(R._route_impl)
+    original_signature='edcb3e9f9d06ef15a39eb04dadef72be9995af5c66f86b8f0bb19290f1e00c02'
+    implementation_args=ast.dump(implementation.args,include_attributes=False)
+    assert hashlib.sha256(implementation_args.encode()).hexdigest()==original_signature
+
+    # Host policy extends only the wrapper. Existing callers and the pinned
+    # implementation retain their original arguments, defaults and annotations.
+    flags={'test_mode':False,'allow_skill_context':True,'allow_profile_context':True}
+    legacy_names=[arg.arg for arg in implementation.args.kwonlyargs]
+    assert [arg.arg for arg in wrapper.args.kwonlyargs]==legacy_names+list(flags)
+    public_signature=inspect.signature(R.route)
+    for arg,default in zip(wrapper.args.kwonlyargs[-3:],wrapper.args.kw_defaults[-3:]):
+        assert isinstance(arg.annotation,ast.Name) and arg.annotation.id=='bool'
+        assert isinstance(default,ast.Constant) and default.value is flags[arg.arg]
+        parameter=public_signature.parameters[arg.arg]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is flags[arg.arg]
+    legacy_args=copy.deepcopy(wrapper.args)
+    legacy_args.kwonlyargs=legacy_args.kwonlyargs[:-3]
+    legacy_args.kw_defaults=legacy_args.kw_defaults[:-3]
+    legacy_dump=ast.dump(legacy_args,include_attributes=False)
+    assert legacy_dump==implementation_args
+    assert hashlib.sha256(legacy_dump.encode()).hexdigest()==original_signature
+    legacy_parameters=[parameter for name,parameter in public_signature.parameters.items() if name not in flags]
+    assert public_signature.replace(parameters=legacy_parameters)==inspect.signature(R._route_impl)
     assert len([n for n in ast.walk(wrapper) if isinstance(n,ast.Await)])==1
+    calls=[n for n in ast.walk(wrapper) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='_route_impl']
+    assert len(calls)==1
+    assert len(calls[0].args)==1 and isinstance(calls[0].args[0],ast.Name) and calls[0].args[0].id=='text'
+    assert [keyword.arg for keyword in calls[0].keywords]==legacy_names
+    assert all(isinstance(keyword.value,ast.Name) and keyword.value.id==keyword.arg for keyword in calls[0].keywords)
 
 
 @pytest.mark.parametrize('prompt', ["What's queued to send",'yes','go ahead','Cancel Maya agenda email',
