@@ -2,17 +2,16 @@ import SwiftUI
 import AppKit
 
 private extension Theme {
-    static let needsYouAccent = Color(red: 1.0, green: 0.77, blue: 0.47)
-    static let needsYouAlert = Color(red: 1.0, green: 0.58, blue: 0.45)
-    static let needsYouWash = needsYouAccent.opacity(0.07)
-    static let needsYouBorder = needsYouAccent.opacity(0.22)
+    static let tileOpenFill = Color.white.opacity(0.14)
+    static let tileOpenStroke = Color.white.opacity(0.32)
+    static let tileFocusStroke = Color.white.opacity(0.6)
 }
 
 /// The notch's Brief tab: what's going on, read only. One sentence about the
-/// day, a short version of today's composed Daily Summary (what Wisp is keeping
-/// in mind and today's events, without the mail and messages write-ups), then
-/// four rows: CAL, MAIL, TEXTS and SOON. Clicking a row opens its details in
-/// place, ending with a link to the app. Doing things belongs to Ask and Day.
+/// day, then four count tiles (Today, Mail, Messages, Events) over one list:
+/// the Top 3 by default, or the open tile's list in its place, so opening a
+/// tile never pushes the tab past one list's height. What Wisp is keeping in
+/// mind closes the tab. Doing things belongs to Ask and Day.
 ///
 /// Everything comes from the day's plan, the composed brief the service already
 /// sent, and the week's upcoming items (`NotchDay.swift`, `BriefSummary.swift`),
@@ -21,9 +20,28 @@ private extension Theme {
 struct NotchBriefView: View {
     @ObservedObject var model: OverlayModel
     @ObservedObject var today: TodayModel
-    /// The row whose details are open; one at a time.
-    @State var open: String? = nil
+    /// The open tile; one at a time. None shows the Top 3.
+    @State var open: BriefTile? = nil
+    @FocusState private var focused: BriefTile?
+    /// The focus ring shows only once the keyboard is in use, so the tile that
+    /// takes focus when the tab opens doesn't look selected.
+    @State private var keyboardNav = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(model: OverlayModel, today: TodayModel, open: String? = nil) {
+        self.model = model
+        self.today = today
+        // The QA driver names the old rows; each maps to the tile that holds it.
+        _open = State(initialValue: open.flatMap { tag in
+            switch tag {
+            case "TODAY": return .today
+            case "MAIL": return .mail
+            case "TEXTS": return .messages
+            case "CAL", "SOON": return .events
+            default: return BriefTile(rawValue: tag)
+            }
+        })
+    }
 
     private var plan: TodayPlan? { today.currentPlan }
 
@@ -56,23 +74,20 @@ struct NotchBriefView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-                if let needsYou = brief.needsYou { needsYouSection(needsYou) }
-                if !brief.summary.isEmpty || !brief.agenda.isEmpty { summary(brief) }
-                VStack(alignment: .leading, spacing: 9) {
-                    ForEach(brief.lines) { line in
-                        // Each row and its detail clip together, so the detail is
-                        // uncovered and covered by the group's own edge while the
-                        // rows below glide; nothing draws over a neighbouring row.
-                        VStack(alignment: .leading, spacing: 9) {
-                            lineRow(line, isOpen: open == line.tag)
-                            if open == line.tag, let detail = brief.details[line.tag] {
-                                detailView(detail)
-                                    .transition(reduceMotion ? .identity : .opacity)
-                            }
-                        }
-                        .clipped()
+                tileStrip(brief)
+                // The Top 3 and a tile's list take the same place, cross-fading;
+                // the area clips so neither draws past it while the panel resizes.
+                ZStack(alignment: .topLeading) {
+                    if let tile = open, let shown = brief.tiles[tile] {
+                        tileList(tile, shown.detail).id(tile.rawValue)
+                            .transition(reduceMotion ? .identity : .opacity)
+                    } else {
+                        topList(brief.top, glance: brief.glance).id("top")
+                            .transition(reduceMotion ? .identity : .opacity)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .clipped()
                 if !brief.suggestions.isEmpty { suggestionsRow(brief.suggestions) }
                 HStack(spacing: 8) {
                     NotchChrome.chip("Ask about this", icon: "bubble.left", help: "Continue from this in Ask") {
@@ -91,10 +106,180 @@ struct NotchBriefView: View {
                         model.tab = .day
                     }
                 }
+                if !brief.summary.isEmpty { goalLines(brief.summary) }
             } else if today.error.isEmpty {
                 ProcessingRow(label: "Loading your day…")
             }
         }
+    }
+
+    // MARK: - Tiles
+
+    private func tileStrip(_ brief: BriefContent) -> some View {
+        HStack(spacing: 8) {
+            ForEach(BriefTile.allCases) { tile in
+                tileButton(tile, count: brief.tiles[tile]?.count)
+            }
+        }
+        // Arrow keys move between tiles; Tab and Shift-Tab do too, natively.
+        .onKeyPress(.leftArrow) { moveFocus(-1) }
+        .onKeyPress(.rightArrow) { moveFocus(1) }
+        .onKeyPress(.upArrow) { moveFocus(-1) }
+        .onKeyPress(.downArrow) { moveFocus(1) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Today at a glance")
+    }
+
+    private func moveFocus(_ offset: Int) -> KeyPress.Result {
+        keyboardNav = true
+        focused = (focused ?? open ?? .today).moved(offset)
+        return .handled
+    }
+
+    private func tileButton(_ tile: BriefTile, count: Int?) -> some View {
+        let isOpen = open == tile
+        let isFocused = focused == tile && keyboardNav
+        let quiet = (count ?? 0) == 0
+        let hint: String = isOpen ? "Back to the Top 3 (\(tile.shortcut))" : "Show \(tile.title) (\(tile.shortcut))"
+        return Button { keyboardNav = false; toggle(tile) } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(tile.title.uppercased())
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(isOpen ? Theme.textSecondary : Theme.textMuted)
+                Text(count.map(String.init) ?? "–")
+                    .font(.system(size: 20, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(quiet && !isOpen ? Theme.textSecondary : Theme.textPrimary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8).fill(isOpen ? Theme.tileOpenFill : Theme.chipFill))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(isFocused ? Theme.tileFocusStroke : isOpen ? Theme.tileOpenStroke : Theme.chipStroke,
+                        lineWidth: isFocused ? 1.5 : 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focused, equals: tile)
+        .onKeyPress(.space) { keyboardNav = true; toggle(tile); return .handled }
+        .onKeyPress(.return) { keyboardNav = true; toggle(tile); return .handled }
+        .onKeyPress(.tab) { keyboardNav = true; return .ignored }
+        .keyboardShortcut(KeyEquivalent(tile.shortcut), modifiers: [])
+        .help(hint)
+        .accessibilityLabel(count.map { "\(tile.title), \($0)" } ?? "\(tile.title), not read yet")
+        .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
+        .accessibilityHint(isOpen ? "Shows the Top 3 again" : "Shows the \(tile.title) list in place of the Top 3")
+    }
+
+    /// Opening a tile swaps the list under the strip. A taller list grows the
+    /// panel before it fades in, so it never renders clipped; a shorter one
+    /// leaves the window as it is until the old list has gone
+    /// (OverlayPanel.resizeToFit holds a shrink for the animation).
+    private func toggle(_ tile: BriefTile) {
+        let next = open == tile ? nil : tile
+        if reduceMotion {
+            open = next
+            model.onResizeNow()
+            model.onResize()
+            return
+        }
+        withAnimation(.easeOut(duration: Self.rowAnimation)) { open = next }
+        // Measure in this run-loop turn, before the first animated frame, and
+        // again once SwiftUI has laid the change out.
+        model.onResizeNow()
+        model.onResize()
+    }
+
+    /// The list swap. Kept under OverlayPanel.shrinkSettle.
+    static let rowAnimation: TimeInterval = 0.18
+
+    // MARK: - Rows
+
+    /// The default view: the Top 3, then what mail and texts are about.
+    private func topList(_ lines: [BriefDetail.Line], glance: [BriefDetail.Line]) -> some View {
+        let width = Self.labelWidth(lines + glance)
+        return VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("TOP 3").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                    .accessibilityAddTraits(.isHeader)
+                if lines.isEmpty {
+                    row(BriefDetail.Line(id: "empty", leading: "", text: "Nothing needs you right now", muted: true), width: width)
+                } else {
+                    ForEach(lines) { row($0, width: width) }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Top 3")
+            if !glance.isEmpty {
+                // A hairline keeps a Top 3 mail item from reading as the summary's first line.
+                Rectangle().fill(Theme.hairline).frame(height: 1).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(glance) { row($0, width: width) }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Mail and texts")
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    private func tileList(_ tile: BriefTile, _ detail: BriefDetail) -> some View {
+        let width = Self.labelWidth(detail.lines)
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(tile.title.uppercased()).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(detail.lines) { row($0, width: width) }
+            Button {
+                if let action = detail.action, let url = URL(string: action.url) { NSWorkspace.shared.open(url) }
+                else { NotchChrome.open(detail.source) }
+            } label: {
+                Text(detail.action?.label ?? "Open \(NotchChrome.appName(detail.source)) ↗").font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(Theme.textPrimary).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, width + Self.labelGap)
+            .padding(.top, 2)
+        }
+        .textSelection(.enabled)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(tile.title)
+    }
+
+    /// What Wisp is keeping in mind (the day's goal among it), last in the tab.
+    private func goalLines(_ lines: [String]) -> some View {
+        let rows = lines.enumerated().map { BriefDetail.Line(id: "goal-\($0.offset)", leading: $0.offset == 0 ? "In mind" : "", text: $0.element) }
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(rows) { row($0, width: Self.labelWidth(rows), secondary: true) }
+        }
+        .textSelection(.enabled)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Keeping in mind")
+    }
+
+    /// The tab's one row style: a mono label column, then the text. A row
+    /// without a label keeps the column, so every list's text lines up.
+    private func row(_ line: BriefDetail.Line, width: CGFloat, secondary: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Self.labelGap) {
+            // An empty label still sets a baseline; an empty Text doesn't, and
+            // throws the row's first-baseline alignment off.
+            Text(line.leading.isEmpty ? " " : line.leading.uppercased())
+                .font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                .frame(width: width, alignment: .leading)
+            Text(line.text).font(.system(size: line.paragraph ? 14 : 13.5))
+                .foregroundStyle(line.muted ? Theme.textMuted : secondary ? Theme.textSecondary : Theme.textPrimary)
+                .lineLimit(line.paragraph ? nil : 2).fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, line.paragraph ? 3 : 0)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    static let labelGap: CGFloat = 10
+
+    /// Room for "DUE 11:59 PM"; for "10:00 AM–11:30 AM" only when a row has a span.
+    static func labelWidth(_ lines: [BriefDetail.Line]) -> CGFloat {
+        lines.contains { $0.leading.contains("–") } ? 118 : 78
     }
 
     private func suggestionsRow(_ suggestions: [BriefTimeContext.Suggestion]) -> some View {
@@ -132,138 +317,6 @@ struct NotchBriefView: View {
         composedBrief.map { ComposedBrief.parse($0.text) }
     }
 
-    /// The service-selected attention items, kept as separate readable rows.
-    private func needsYouSection(_ list: NeedsYouList) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Capsule().fill(Theme.needsYouAccent).frame(width: 3, height: 19)
-                Text("What needs you today")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-            }
-            .accessibilityAddTraits(.isHeader)
-
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(list.rows.enumerated()), id: \.element.id) { index, row in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        if let label = row.label {
-                            Text(label)
-                                .font(.system(size: 10.5, weight: .bold, design: .rounded))
-                                .foregroundStyle(row.overdue ? Theme.needsYouAlert : Theme.needsYouAccent)
-                                .frame(width: 84, alignment: .leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Text(row.text)
-                            .font(.system(size: 14.5, weight: .medium))
-                            .foregroundStyle(Theme.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.vertical, 7)
-                    .accessibilityElement(children: .combine)
-
-                    if index < list.rows.count - 1 || list.more > 0 {
-                        Rectangle().fill(Theme.hairline).frame(height: 0.5)
-                    }
-                }
-                if list.more > 0 {
-                    Text(list.more == 1 ? "1 more item" : "\(list.more) more items")
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                        .padding(.top, 7)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 3)
-            .background(Theme.needsYouWash)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.needsYouBorder, lineWidth: 1))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .textSelection(.enabled)
-        .accessibilityElement(children: .contain)
-    }
-
-    /// The cut-down Daily Summary: what Wisp keeps in mind, then today's events.
-    private func summary(_ brief: BriefContent) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            ForEach(Array(brief.summary.enumerated()), id: \.offset) { _, line in
-                Text(line).font(.system(size: 13.5)).foregroundStyle(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            ForEach(brief.agenda) { line in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(line.leading).font(.system(size: 12.5)).foregroundStyle(Theme.textMuted).monospacedDigit()
-                        .frame(width: Self.timeWidth(brief.agenda), alignment: .leading)
-                    Text(line.text).font(.system(size: 13.5)).foregroundStyle(line.muted ? Theme.textMuted : Theme.textSecondary)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(.leading, 10)
-        .overlay(alignment: .leading) { Rectangle().fill(Theme.hairline).frame(width: 2) }
-        .textSelection(.enabled)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Daily summary")
-    }
-
-    /// Wide enough for "10:00 AM–11:30 AM" only when a line has a span.
-    private static func timeWidth(_ lines: [BriefDetail.Line]) -> CGFloat {
-        lines.contains { $0.leading.contains("–") } ? 118 : 64
-    }
-
-    /// Opening grows the panel as the details start to fade in, so they never
-    /// render clipped; closing leaves the window as it is until they have gone
-    /// (OverlayPanel.resizeToFit holds a shrink for the animation), so it never
-    /// snaps smaller under them. Rapid toggles coalesce in the panel.
-    private func toggle(_ tag: String) {
-        let next = open == tag ? nil : tag
-        if reduceMotion {
-            open = next
-            model.onResizeNow()
-            model.onResize()
-            return
-        }
-        withAnimation(.easeOut(duration: Self.rowAnimation)) { open = next }
-        // Measure in this run-loop turn, before the first animated frame, and
-        // again once SwiftUI has laid the change out.
-        model.onResizeNow()
-        model.onResize()
-    }
-
-    /// Brief row open/close. Kept under OverlayPanel.shrinkSettle.
-    static let rowAnimation: TimeInterval = 0.18
-
-    private func detailView(_ detail: BriefDetail) -> some View {
-        let timed = detail.lines.contains { !$0.leading.isEmpty }
-        return VStack(alignment: .leading, spacing: 5) {
-            ForEach(detail.lines) { line in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    if timed {
-                        Text(line.leading).font(.system(size: 12.5)).foregroundStyle(Theme.textMuted).monospacedDigit()
-                            .frame(width: Self.timeWidth(detail.lines), alignment: .leading)
-                    }
-                    Text(line.text).font(.system(size: line.paragraph ? 14 : 13.5))
-                        .foregroundStyle(line.muted ? Theme.textMuted : line.paragraph ? Theme.textPrimary : Theme.textSecondary)
-                        .lineLimit(line.paragraph ? nil : 2).fixedSize(horizontal: false, vertical: true)
-                        .padding(.bottom, line.paragraph ? 3 : 0)
-                }
-            }
-            Button {
-                if let action = detail.action, let url = URL(string: action.url) { NSWorkspace.shared.open(url) }
-                else { NotchChrome.open(detail.source) }
-            } label: {
-                Text(detail.action?.label ?? "Open \(NotchChrome.appName(detail.source)) ↗").font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(Theme.textPrimary).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 2)
-        }
-        .padding(.leading, 50).padding(.bottom, 4)
-        .textSelection(.enabled)
-        .accessibilityElement(children: .contain)
-    }
-
     private var heading: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(today.selectedDate, format: .dateTime.weekday(.wide).month(.abbreviated).day())
@@ -295,47 +348,25 @@ struct NotchBriefView: View {
         guard let brief = composedBrief else { return planned }
         return max(brief.at, planned ?? brief.at)
     }
-
-    private func lineRow(_ line: DayTimeline.BriefLine, isOpen: Bool) -> some View {
-        Button { toggle(line.tag) } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(line.tag).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
-                    .frame(width: 40, alignment: .leading)
-                Text(line.text).font(.system(size: 15)).foregroundStyle(line.muted ? Theme.textMuted : Theme.textPrimary)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                if !line.trailing.isEmpty {
-                    Text(line.trailing).font(.system(size: 13)).foregroundStyle(Theme.textSecondary).lineLimit(1)
-                }
-                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Theme.textMuted)
-                    .rotationEffect(.degrees(isOpen ? 90 : 0))
-                    .frame(width: 12)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(isOpen ? "Hide details" : "Show details")
-        .accessibilityLabel(line.trailing.isEmpty ? "\(line.tag), \(line.text)" : "\(line.tag), \(line.text), \(line.trailing)")
-        .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
-        .accessibilityHint(isOpen ? "Hides the details" : "Shows the details")
-    }
 }
 
-/// The Brief's sentence, summary, rows and row details for one plan.
+/// The Brief's sentence, tiles, Top 3 and closing lines for one plan.
 @MainActor
 struct BriefContent {
     let lede: String
     let suggestions: [BriefTimeContext.Suggestion]
-    /// Service-selected, structured needs-you rows under the lede, on today only.
+    /// Service-selected, structured needs-you rows, on today only: the first
+    /// candidates for the Top 3.
     let needsYou: NeedsYouList?
-    /// The composed Daily Summary's short version; empty without one from today.
+    /// What Wisp is keeping in mind, from today's composed Daily Summary
+    /// (the day's goal among it); empty without one.
     let summary: [String]
-    /// The rest of today's events under the summary; empty without a composed brief.
-    let agenda: [BriefDetail.Line]
-    let lines: [DayTimeline.BriefLine]
-    /// What opens under each row, by its tag.
-    let details: [String: BriefDetail]
+    /// Each tile's count and list, from the same lists.
+    let tiles: [BriefTile: BriefTileContent]
+    /// The three things that matter most, shown while no tile is open.
+    let top: [BriefDetail.Line]
+    /// What mail and texts are about, under the Top 3.
+    let glance: [BriefDetail.Line]
 
     init(plan: TodayPlan, today: TodayModel, composed: ComposedBrief?) {
         let now = today.now.timeIntervalSince1970
@@ -394,25 +425,7 @@ struct BriefContent {
         }
         // "Nothing in the next week" only once calendar and reminders are read.
         let weekRead = calendarKnown && coverage("reminders")?.ready == true
-        let soon: DayTimeline.Soon
-        if let upcoming {
-            soon = upcoming.first.map { .item(title: $0.title, when: when($0), source: $0.isReminder ? "reminders" : $0.source) }
-                ?? (weekRead ? .nothing : .unknown)
-        } else if let need = needs.filter({ ($0.due_ts ?? 0) > dayEnd }).min(by: { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }) {
-            // Before the week has been read, a dated need after today still counts.
-            soon = .item(title: need.title, when: need.all_day == true ? "All day" : NotchChrome.dayClock(need.due_ts ?? 0, zone: zone, locale: today.clockLocale), source: need.source)
-        } else {
-            soon = .unknown
-        }
-        lines = DayTimeline.briefLines(
-            calendar: calendarKnown ? load : nil, calendarUnsynced: !calendarKnown,
-            mail: coverage("email").map { (ready: $0.ready, needing: mailNeeds) },
-            texts: coverage("messages").map { (ready: $0.ready, needing: textNeeds) },
-            textsNeedAccess: coverage("messages")?.blocked == "full_disk_access",
-            mailOverview: plan.workspace?.mail_overview?.text, textsOverview: plan.workspace?.texts_overview?.text,
-            soon: soon)
-
-        // Today's section of the composed summary; nil (the dropdown says none
+        // Today's section of the composed summary; nil (the list says none
         // came yet) only once the kept summary has been checked, so a relaunch
         // doesn't flash the note before it loads.
         func summarySection(_ kind: ComposedBrief.Kind) -> [String]? {
@@ -420,31 +433,59 @@ struct BriefContent {
             if let composed { return composed.lines(kind) }
             return today.storedBriefChecked ? nil : []
         }
-        let events = calendarBlocks.map { (title: $0.title, start: $0.start, end: $0.end) }
-        let allDay = plan.all_day.map(\.title)
-        let calendarDetail = BriefDetail.calendar(allDay: allDay, events: events, unsynced: !calendarKnown, clock: today.clock)
-        details = [
-            "CAL": calendarDetail,
-            "MAIL": BriefDetail.mail(needing: mailNeeds, ready: coverage("email")?.ready == true,
-                                     summary: summarySection(.mail), prose: isToday ? plan.workspace?.mail_summary?.text : nil),
-            "TEXTS": BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
-                                       needsAccess: coverage("messages")?.blocked == "full_disk_access",
-                                       summary: summarySection(.messages),
-                                       age: { BriefTexts.age($0, now: now) }),
-            "SOON": BriefDetail.soon(upcoming.flatMap { $0.isEmpty && !weekRead ? nil : $0 }, when: when),
-        ]
 
+        // Today: reminders and deadlines due by the end of the day (and what's
+        // overdue), then the Day tab's tasks, each once.
+        let reminders: [BriefTodo] = needs.filter { ["reminders", "wisp"].contains($0.source) && ($0.due_ts ?? .nan).isFinite }
+            .map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts, allDay: $0.all_day == true) }
+        let deadlines: [BriefTodo] = plan.deadlines.map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts, allDay: $0.all_day == true) }
+        let dated = reminders + deadlines
+        let active = plan.tasks.filter { $0.status == "active" && $0.day == plan.day }
+        let datedTasks = active.filter { ($0.due_ts ?? .nan).isFinite }
+            .map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts) }
+        let undated = active.filter { !($0.due_ts ?? .nan).isFinite }
+            .map { BriefTodo(id: $0.id, title: $0.title, start: $0.pinned_start) }
+        let todos = BriefTiles.todo(dated: dated + datedTasks, tasks: undated, now: now, dayStart: dayStart,
+                                    dayEnd: dayEnd, isToday: isToday)
+        let todayDetail = BriefTiles.todayDetail(todos, now: now, dayStart: dayStart, clock: today.clock)
+
+        // Mail and Messages: the counts their lists give, and the regular
+        // summaries the rows' dropdowns always showed.
+        let mailReady = coverage("email")?.ready == true
+        let textsBlocked = coverage("messages")?.blocked == "full_disk_access"
+        let textsReady = coverage("messages")?.ready == true && !textsBlocked
+        let mailDetail = BriefDetail.mail(needing: mailNeeds, ready: mailReady, summary: summarySection(.mail),
+                                          prose: isToday ? plan.workspace?.mail_summary?.text : nil)
+        let textsDetail = BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
+                                            needsAccess: textsBlocked, summary: summarySection(.messages),
+                                            age: { BriefTexts.age($0, now: now) })
+
+        // Events: today's calendar, then what's coming up this week.
+        let events = calendarBlocks.map { (title: $0.title, start: $0.start, end: $0.end) }
+        let allDay = plan.all_day.map(\.title).filter { !DayTimeline.isJunk($0) }
+        let todayEvents = allDay.isEmpty && events.isEmpty ? []
+            : BriefDetail.calendar(allDay: allDay, events: events, unsynced: false, clock: today.clock).lines
+        let eventsDetail = BriefTiles.eventsDetail(today: todayEvents, unsynced: !calendarKnown,
+                                                   soon: upcoming.flatMap { $0.isEmpty && !weekRead ? nil : $0 }, when: when)
+
+        tiles = [
+            .today: BriefTileContent(count: todos.count, detail: todayDetail),
+            .mail: BriefTileContent(count: mailReady ? BriefMail.shown(mailNeeds).count + BriefMail.privateCount(mailNeeds) : nil,
+                                    detail: mailDetail),
+            .messages: BriefTileContent(count: textsReady ? BriefTexts.waiting(textNeeds).count : nil, detail: textsDetail),
+            .events: BriefTileContent(count: calendarKnown ? todayEvents.count : nil, detail: eventsDetail),
+        ]
+        let nextEvent = isToday ? calendarBlocks.first { $0.start > now }.map {
+            BriefDetail.Line(id: "next-" + $0.id, leading: today.clock($0.start), text: $0.title)
+        } : nil
+        top = BriefTiles.top(picked: needsList?.rows ?? [], todos: todayDetail.lines, next: nextEvent)
+        let rows = DayTimeline.briefLines(calendar: nil,
+                                          mail: coverage("email").map { (ready: $0.ready, needing: mailNeeds) },
+                                          texts: coverage("messages").map { (ready: $0.ready, needing: textNeeds) },
+                                          textsNeedAccess: textsBlocked,
+                                          mailOverview: plan.workspace?.mail_overview?.text,
+                                          textsOverview: plan.workspace?.texts_overview?.text, soon: .unknown)
+        glance = BriefTiles.glance(rows, mailProse: isToday ? plan.workspace?.mail_summary?.text : nil)
         summary = composed?.cutDown ?? []
-        if composed != nil, calendarKnown {
-            // The rest of today: all-day first, then what hasn't ended.
-            let left = BriefDetail.calendar(allDay: allDay,
-                                            events: events.filter { !isToday || ($0.end ?? $0.start + 3600) > now },
-                                            unsynced: false, clock: today.clock).lines
-            agenda = left.count > 4
-                ? Array(left.prefix(3)) + [BriefDetail.Line(id: "more", leading: "", text: "+\(left.count - 3) more today", muted: true)]
-                : left
-        } else {
-            agenda = []
-        }
     }
 }

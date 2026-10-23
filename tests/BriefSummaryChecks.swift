@@ -216,4 +216,103 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
           "SOON details open the first item's app")
     check(BriefDetail.soon(nil, when: { _ in "" }).lines.first?.muted == true
           && BriefDetail.soon([], when: { _ in "" }).lines.map(\.text) == ["Nothing in the next week"], "SOON details when unknown or empty")
+    briefTileChecks(check, dayStart: dayStart, now: now, soon: soon)
+}
+
+/// The Brief's count tiles: a tile's number is what its list holds.
+func briefTileChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Double, soon: [UpcomingItem]) {
+    let dayEnd = dayStart + 86400
+    let clock = { (t: Double) in t == now + 3600 ? "3 PM" : "9 AM" }
+    // Today: overdue first, then due today by time, then Day tasks; a task
+    // made from a reminder ("Review: …" too) is listed once; later due dates
+    // and junk titles stay out.
+    let dated = [
+        BriefTodo(id: "late", title: "Return library book", due: now - 7200),
+        BriefTodo(id: "pa2", title: "PA 2", due: now + 3600),
+        BriefTodo(id: "allday", title: "Pay rent", due: dayStart + 1, allDay: true),
+        BriefTodo(id: "next-week", title: "Essay outline", due: dayEnd + 3 * 86400),
+        BriefTodo(id: "junk", title: "…", due: now + 60),
+    ]
+    let tasks = [BriefTodo(id: "t1", title: "Review: PA 2"), BriefTodo(id: "t2", title: "Call the bank", start: now + 3600),
+                 BriefTodo(id: "t3", title: "Stretch")]
+    let todos = BriefTiles.todo(dated: dated, tasks: tasks, now: now, dayStart: dayStart, dayEnd: dayEnd, isToday: true)
+    check(todos.map(\.id) == ["late", "allday", "pa2", "t2", "t3"],
+          "Today: overdue, then due today, then tasks, each once: \(todos.map(\.id))")
+    check(BriefTiles.todo(dated: dated, tasks: [], now: now, dayStart: dayStart, dayEnd: dayEnd, isToday: false)
+            .map(\.id) == ["allday", "late", "pa2"],
+          "another day has nothing overdue: what's due that day, by time")
+    let todayList = BriefTiles.todayDetail(todos, now: now, dayStart: dayStart, clock: clock)
+    check(todayList.lines.map(\.leading) == ["Overdue", "Today", "Due 3 PM", "3 PM", "To do"]
+            && todayList.lines.count == todos.count,
+          "Today's list holds exactly its count, labelled: \(todayList.lines.map(\.leading))")
+    let many = (0..<11).map { BriefTodo(id: "m\($0)", title: "Task \($0)") }
+    let long = BriefTiles.todayDetail(many, now: now, dayStart: dayStart, clock: clock)
+    check(long.lines.count == BriefTiles.shown + 1 && long.lines.last?.text == "+3 more",
+          "a long Today list says how many more, adding up to its count")
+    check(BriefTiles.todayDetail([], now: now, dayStart: dayStart, clock: clock).lines.map(\.text) == ["Nothing to do today"],
+          "a zero Today count opens on its empty state")
+
+    // Events: today's calendar, then what's coming up; empty days say so.
+    let calendar = BriefDetail.calendar(allDay: [], events: [(title: "Standup", start: now + 3600, end: nil)],
+                                        unsynced: false, clock: clock).lines
+    let events = BriefTiles.eventsDetail(today: calendar, unsynced: false, soon: soon, when: { _ in "Mon" })
+    check(events.lines.first?.text == "Standup" && events.lines.contains { $0.id == "soon-header" }
+            && events.lines.filter { $0.id.hasPrefix("soon-") && $0.id != "soon-header" }.count == soon.count
+            && events.source == .calendar,
+          "Events lists today's calendar, then what's coming up")
+    let empty = BriefTiles.eventsDetail(today: [], unsynced: false, soon: [], when: { _ in "" })
+    check(empty.lines.map(\.text) == ["Nothing scheduled today"] && empty.lines[0].leading.isEmpty,
+          "a zero Events count opens on Nothing scheduled today")
+    check(BriefTiles.eventsDetail(today: [], unsynced: true, soon: nil, when: { _ in "" }).lines.map(\.text)
+            == ["Calendar hasn't synced yet"], "an unsynced calendar says so instead of claiming an empty day")
+
+    // Top 3: the service's pick first, then to-dos, then the next event, each once.
+    let picked = [NeedsYouRow(id: "a", label: "OVERDUE", text: "Return library book", overdue: true),
+                  NeedsYouRow(id: "b", label: "MAIL", text: "“Thesis” from Advisor", overdue: false)]
+    let top = BriefTiles.top(picked: picked, todos: todayList.lines,
+                             next: BriefDetail.Line(id: "next", leading: "3 PM", text: "Standup"))
+    check(top.map(\.text) == ["Return library book", "“Thesis” from Advisor", "Pay rent"],
+          "Top 3 names each thing once, the service's pick first: \(top.map(\.text))")
+    check(BriefTiles.top(picked: [], todos: [], next: BriefDetail.Line(id: "next", leading: "3 PM", text: "Standup"))
+            .map(\.text) == ["Standup"], "a quiet day's Top 3 is the next event")
+    check(BriefTiles.top(picked: [], todos: BriefTiles.todayDetail([], now: now, dayStart: dayStart, clock: clock).lines, next: nil).isEmpty,
+          "an empty state is never a Top 3 item")
+
+    // Under the Top 3: the regular MAIL and TEXTS summaries, nothing new.
+    let inbox = [BriefNeed(title: "Thesis meeting", sender: "Prof. Lee", person: true, received: now - 3600)]
+    let chats = [BriefNeed(title: "dinner?", sender: "Priya", person: true, received: now - 600)]
+    let prose = "Prof. Lee moved your thesis meeting to Tuesday. The rest is newsletters."
+    func rows(mailReady: Bool?, textsReady: Bool?, access: Bool = false, overviews: Bool = true) -> [DayTimeline.BriefLine] {
+        DayTimeline.briefLines(calendar: nil, mail: mailReady.map { (ready: $0, needing: inbox) },
+                               texts: textsReady.map { (ready: $0, needing: chats) }, textsNeedAccess: access,
+                               mailOverview: overviews ? "Mostly event updates" : nil,
+                               textsOverview: overviews ? "Mostly dinner plans" : nil, soon: .unknown)
+    }
+    let glance = BriefTiles.glance(rows(mailReady: true, textsReady: true), mailProse: "  " + prose + "\n")
+    check(glance.map(\.leading) == ["Mail", "Texts"] && glance.map(\.id) == ["glance-MAIL", "glance-TEXTS"],
+          "the default view shows MAIL then TEXTS, and no other row: \(glance.map(\.leading))")
+    check(glance.first?.text == prose && glance.allSatisfy { !$0.muted && !$0.paragraph },
+          "MAIL shows the written inbox summary, as a short line the row style cuts to two")
+    check(glance.last?.text == BriefTexts.row(overview: "Mostly dinner plans", people: BriefTexts.waiting(chats))
+            && !glance.last!.text.contains("dinner?"),
+          "TEXTS is the regular overview row and never what anyone wrote: \(glance.last?.text ?? "")")
+    let noProse = BriefTiles.glance(rows(mailReady: true, textsReady: true), mailProse: " ")
+    check(noProse.first?.text == BriefMail.row(overview: "Mostly event updates", needing: inbox),
+          "without a written summary MAIL is the overview row: \(noProse.first?.text ?? "")")
+    let older = BriefTiles.glance(rows(mailReady: true, textsReady: true, overviews: false), mailProse: nil)
+    check(older.count == 2 && older.allSatisfy { !$0.text.isEmpty && !$0.muted },
+          "an older service with no overviews still gets a MAIL and TEXTS line: \(older.map(\.text))")
+    let unread = BriefTiles.glance(rows(mailReady: nil, textsReady: false), mailProse: prose)
+    check(unread.map(\.text) == ["Mail hasn't been checked yet", "Messages haven't been checked yet"]
+            && unread.allSatisfy(\.muted),
+          "a source not read yet is one dim line, never an old summary: \(unread.map(\.text))")
+    check(BriefTiles.glance(rows(mailReady: true, textsReady: true, access: true), mailProse: nil).last?.text
+            == "Texts need Full Disk Access", "TEXTS says when it needs Full Disk Access")
+
+    // Keyboard order wraps; each tile has its own digit.
+    check(BriefTile.today.moved(-1) == .events && BriefTile.events.moved(1) == .today && BriefTile.mail.moved(1) == .messages,
+          "arrow keys wrap around the four tiles")
+    check(BriefTile.allCases.map(\.shortcut) == ["1", "2", "3", "4"]
+            && BriefTile.allCases.map(\.title) == ["Today", "Mail", "Messages", "Events"],
+          "tiles in order with 1–4")
 }

@@ -503,3 +503,156 @@ enum BriefTexts {
         }
     }
 }
+
+/// The Brief's four count tiles: Today, Mail, Messages and Events. Each tile's
+/// count and the list it opens come from one place, so the number on a tile
+/// is always what its list holds.
+enum BriefTile: String, CaseIterable, Identifiable, Equatable {
+    case today, mail, messages, events
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .today: return "Today"
+        case .mail: return "Mail"
+        case .messages: return "Messages"
+        case .events: return "Events"
+        }
+    }
+
+    /// The digit that toggles it from the keyboard.
+    var shortcut: Character {
+        switch self {
+        case .today: return "1"
+        case .mail: return "2"
+        case .messages: return "3"
+        case .events: return "4"
+        }
+    }
+
+    /// The tile `offset` places from this one, wrapping, for arrow keys.
+    func moved(_ offset: Int) -> BriefTile {
+        let all = Self.allCases
+        let at = all.firstIndex(of: self) ?? 0
+        return all[((at + offset) % all.count + all.count) % all.count]
+    }
+}
+
+/// One tile: its count, nil while its source hasn't been read, and its list.
+struct BriefTileContent: Equatable {
+    let count: Int?
+    let detail: BriefDetail
+}
+
+/// One thing to do: a reminder or deadline with a due time, or a Day task.
+struct BriefTodo: Equatable {
+    let id: String
+    let title: String
+    var due: Double? = nil
+    var allDay = false
+    /// A Day task's planned start, when it has one.
+    var start: Double? = nil
+}
+
+enum BriefTiles {
+    /// Most rows the Today list shows before "+N more".
+    static let shown = 8
+
+    /// What the user has to do today: what's overdue (today only), then what's
+    /// due by the end of the day by its time, then the Day tab's tasks. A Day
+    /// task made from a reminder ("Review: …" too) is listed once. Something
+    /// due all day today is due today, not overdue.
+    static func todo(dated: [BriefTodo], tasks: [BriefTodo], now: Double, dayStart: Double, dayEnd: Double,
+                     isToday: Bool) -> [BriefTodo] {
+        let usable = { (t: BriefTodo) in !DayTimeline.isJunk(t.title) }
+        let late = { (t: BriefTodo) in isOverdue(t, now: now, dayStart: dayStart) }
+        let overdue = isToday ? dated.filter { usable($0) && late($0) }.sorted { $0.due! < $1.due! } : []
+        let reference = isToday ? now : dayStart
+        let due = dated.filter { t in
+            guard usable(t), let due = t.due, due <= dayEnd else { return false }
+            return isToday ? !late(t) && (due >= now || (t.allDay && due >= dayStart)) : due >= reference
+        }
+        .sorted { $0.due! < $1.due! }
+        let planned = tasks.filter(usable).sorted { ($0.start ?? .infinity) < ($1.start ?? .infinity) }
+        var seen = Set<String>()
+        return (overdue + due + planned).filter { seen.insert(key($0.title)).inserted }
+    }
+
+    /// The same thing to do, however it's titled: "Review: PA 2" is "pa 2".
+    static func key(_ title: String) -> String {
+        var text = title.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("Review: ") { text = String(text.dropFirst("Review: ".count)) }
+        return text.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
+    }
+
+    /// Past its due time, except something due all day today.
+    static func isOverdue(_ todo: BriefTodo, now: Double, dayStart: Double) -> Bool {
+        guard let due = todo.due, due < now else { return false }
+        return !(todo.allDay && due >= dayStart)
+    }
+
+    /// The Today tile's list: the label column says overdue, when it's due, or
+    /// when a task is planned.
+    static func todayDetail(_ todos: [BriefTodo], now: Double, dayStart: Double, clock: (Double) -> String) -> BriefDetail {
+        guard !todos.isEmpty else {
+            return BriefDetail(lines: [BriefDetail.Line(id: "empty", leading: "", text: "Nothing to do today", muted: true)],
+                               source: .reminders)
+        }
+        var lines = todos.prefix(shown).map { todo -> BriefDetail.Line in
+            let label: String
+            if isOverdue(todo, now: now, dayStart: dayStart) { label = "Overdue" }
+            else if let due = todo.due { label = todo.allDay ? "Today" : "Due " + clock(due) }
+            else if let start = todo.start { label = clock(start) }
+            else { label = "To do" }
+            return BriefDetail.Line(id: "todo-" + todo.id, leading: label, text: todo.title)
+        }
+        if todos.count > shown {
+            lines.append(BriefDetail.Line(id: "more", leading: "", text: "+\(todos.count - shown) more", muted: true))
+        }
+        return BriefDetail(lines: lines, source: .reminders)
+    }
+
+    /// The Events tile's list: today's calendar, then what's coming up this week.
+    /// Today's part says so when it's empty, so the tile opens on a zero count.
+    static func eventsDetail(today: [BriefDetail.Line], unsynced: Bool, soon: [UpcomingItem]?,
+                             when: (UpcomingItem) -> String) -> BriefDetail {
+        var lines = today.isEmpty
+            ? [BriefDetail.Line(id: "empty", leading: "", text: unsynced ? "Calendar hasn't synced yet" : "Nothing scheduled today",
+                                muted: true)]
+            : today
+        if let soon, !soon.isEmpty {
+            lines.append(BriefDetail.Line(id: "soon-header", leading: "", text: "Coming up", muted: true))
+            lines += soon.map { BriefDetail.Line(id: "soon-" + $0.id, leading: when($0), text: $0.title) }
+        }
+        return BriefDetail(lines: lines, source: .calendar)
+    }
+
+    /// The default list under the tiles: the three things that matter most,
+    /// from the service's pick (overdue, due, planned, then mail and texts from
+    /// people), then today's to-dos, then the next event, each named once.
+    /// The MAIL and TEXTS lines under the Top 3: the regular summaries
+    /// (DayTimeline.briefLines), with the written inbox summary in place of
+    /// MAIL's one-liner when there is one. A source not read yet stays a dim
+    /// line; the row style cuts each to two lines, and the tiles hold the rest.
+    static func glance(_ lines: [DayTimeline.BriefLine], mailProse: String?) -> [BriefDetail.Line] {
+        let prose = mailProse?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return lines.filter { $0.tag == "MAIL" || $0.tag == "TEXTS" }.map { line in
+            let text = line.tag == "MAIL" && !line.muted && !prose.isEmpty ? prose
+                : line.trailing.isEmpty ? line.text : "\(line.text) · \(line.trailing)"
+            return BriefDetail.Line(id: "glance-" + line.tag, leading: line.tag == "MAIL" ? "Mail" : "Texts",
+                                    text: text, muted: line.muted)
+        }
+    }
+
+    static func top(picked: [NeedsYouRow], todos: [BriefDetail.Line], next: BriefDetail.Line?, limit: Int = 3) -> [BriefDetail.Line] {
+        var seen = Set<String>()
+        var out: [BriefDetail.Line] = []
+        let candidates = picked.map { BriefDetail.Line(id: "top-" + $0.id, leading: $0.label ?? "", text: $0.text) }
+            + todos.filter { !$0.muted } + [next].compactMap { $0 }
+        for line in candidates where out.count < limit && seen.insert(key(line.text)).inserted {
+            out.append(line)
+        }
+        return out
+    }
+}
