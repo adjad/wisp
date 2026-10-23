@@ -9,6 +9,8 @@ import fnmatch
 import os
 import re
 import shlex
+from contextlib import contextmanager
+from contextvars import ContextVar
 from itertools import chain
 from dataclasses import dataclass
 from enum import Enum
@@ -601,7 +603,39 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
     return None
 
 
+# A review run (the corpus runner's normal mode) uses the user's ordinary path
+# but must change nothing. Inside review_scope(), whatever would run without
+# asking, except a read, asks instead; the approver then declines it and
+# records that Wisp would have asked (agent/approver.py). Per task, so a review
+# run never loosens or tightens the user's own concurrent turns.
+_REVIEW: ContextVar[bool] = ContextVar("wisp_policy_review", default=False)
+_REVIEW_ALLOWED_CATEGORIES = {"compute"}
+
+
+def review_only() -> bool:
+    return _REVIEW.get()
+
+
+@contextmanager
+def review_scope():
+    token = _REVIEW.set(True)
+    try:
+        yield
+    finally:
+        _REVIEW.reset(token)
+
+
 def decide(category: str, args: dict, tool: str | None = None) -> Decision:
+    """Return the policy decision for a tool action (see _decide). In a review
+    run, only reads run without asking."""
+    decision = _decide(category, args, tool)
+    if (_REVIEW.get() and decision.tier is Tier.ALLOW
+            and not (str(category).endswith("_read") or category in _REVIEW_ALLOWED_CATEGORIES)):
+        return Decision(Tier.CONFIRM, f"review run: Wisp would ask before {tool or category}")
+    return decision
+
+
+def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     """Return the policy decision for a tool action.
 
     `category` is the tool's safety category (shell, fs_read, fs_write,

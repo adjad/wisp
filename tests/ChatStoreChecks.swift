@@ -17,6 +17,7 @@ final class ScriptedBackend: ChatBackend {
     var liveCases: [AssistantTaskCorpusCase] = []
     var savedExport: (markdown: String, csv: String)?
     var liveRuns: [String] = []
+    var normalRuns: [String] = []
     var caseDelayMs: UInt64 = 0
     var liveDelayMs: UInt64 = 0
     var draftSends = 0
@@ -63,7 +64,9 @@ final class ScriptedBackend: ChatBackend {
         return liveCases // deliberately return even after cancellation
     }
     func savedCorpusExport() async throws -> (markdown: String, csv: String)? { savedExport }
-    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
+    func runLiveCorpusCase(id: String, token: String, normal: Bool,
+                           onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
+        if normal { normalRuns.append(id) }
         liveRuns.append(id)
         if liveDelayMs > 0 { try? await Task.sleep(nanoseconds: liveDelayMs * 1_000_000) }
         for event in script(id) { onEvent(event) }
@@ -201,6 +204,45 @@ struct ChatStoreChecks {
             check(notch.isPresented && notch.exported?.saved == true && notch.notice.isEmpty
                     && backend.liveRuns == ["LIVE-001"], "the notch's /corpus export writes the files and runs nothing")
             try? FileManager.default.removeItem(at: scratch)
+        }
+        // /corpus … normal: the same cases through the ordinary Ask path.
+        do {
+            if case .liveNormal(let selector)? = try! AssistantTaskCorpusCommand.resolve("/corpus batch-2 normal") {
+                check(selector == "batch-2", "/corpus batch-2 normal keeps its selector")
+            } else { check(false, "/corpus batch-2 normal must resolve to normal mode") }
+            if case .live? = try! AssistantTaskCorpusCommand.resolve("/corpus all") {
+                check(true, "the bounded mode stays the default")
+            } else { check(false, "/corpus all must stay bounded") }
+            check((try? AssistantTaskCorpusCommand.resolve("/corpus all loud")) == nil, "only normal is a mode word")
+            check(AssistantTaskCorpusCommand.helpText.contains("/corpus all normal")
+                    && AssistantTaskCorpusCommand.helpText.contains("would ask to confirm"),
+                  "help explains normal mode and its declined confirmations")
+            let backend = ScriptedBackend()
+            let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"messages","difficulty":"basic","target":"Example Person","token":"t1","conversation":[{"role":"user","content":"Read my recent messages with Example Person."}],"setup":"local","expected":{"tools":["view_messages"],"behavior":["Verify the source quote."]},"risk":"read_only"}"#.utf8)
+            backend.liveCases = [try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)]
+            backend.script = { _ in [
+                ev("routed", ["model": "ling", "role": "agent", "needs_tools": true]),
+                ev("corpus_session", ["id": "abc"]),
+                ev("tool_call", ["id": "w", "name": "add_reminder", "decision": "confirm"]),
+                ev("corpus_declined", ["id": "w", "tool": "add_reminder", "reason": "review run"]),
+                ev("tool_result", ["id": "w", "result": "User denied add_reminder."]),
+                ev("text", ["text": "The full answer, as Wisp says it."]), ev("done")
+            ] }
+            let store = ChatStore(backend: backend)
+            store.submit("/corpus smoke normal")
+            await settle(500)
+            let run = store.selected!
+            let reply = run.messages.first { $0.corpusEvaluation != nil }!
+            check(backend.normalRuns == ["LIVE-001"] && backend.runs.isEmpty, "normal mode asks the service for the ordinary path")
+            check(reply.corpusEvaluation?.normalMode == true && reply.corpusEvaluation?.completed == true,
+                  "the case card knows its mode")
+            check(run.sessionId.isEmpty && reply.approval == nil, "no session is adopted and no card is offered")
+            check(run.messages.last?.text.contains("Normal-mode corpus finished: 1/1") == true, "the summary counts answered cases")
+            let exported = CorpusExport.cases(from: run.messages)
+            check(exported.first?.mode == "normal" && exported.first?.answer == "The full answer, as Wisp says it."
+                    && exported.first?.verified == false, "the export carries the mode and the full answer")
+            check(CorpusExport.markdown(exported, title: run.title).contains("**Mode:** normal")
+                    && CorpusExport.csv(exported).contains("normal,LIVE-001"), "Markdown and CSV both name the mode")
         }
         // The notch shares guarded execution and pins its own conversation.
         do {

@@ -126,6 +126,16 @@ class SessionStore:
                 # process, which owns this file, applies the migration.
                 if "readonly" not in str(e).lower():
                     raise
+        if "title" not in columns:
+            # Additive and nullable, no backfill: NULL keeps the old title (the
+            # first user turn), and an older Wisp reading this file ignores it.
+            try:
+                self._db.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+            except sqlite3.OperationalError as e:
+                if "readonly" not in str(e).lower():
+                    raise
+        # A read-only opener of an older file may not have the column.
+        self._has_title = "title" in {row[1] for row in self._db.execute("PRAGMA table_info(sessions)")}
         turn_columns = {row[1] for row in self._db.execute("PRAGMA table_info(turns)")}
         if "display_content" not in turn_columns:
             # Nullable/additive: old turns and their indices remain untouched.
@@ -173,6 +183,16 @@ class SessionStore:
                 "UPDATE sessions SET active_skill=? WHERE id=?", (name or "", sid))
             self._db.commit()
 
+    def set_title(self, sid: str, title: str) -> None:
+        """Name a conversation in the chat list (the corpus runner's cases).
+        An empty title clears it back to the first user turn."""
+        if not self._has_title:
+            return
+        with self._lock:
+            self._db.execute("UPDATE sessions SET title=? WHERE id=?",
+                             (" ".join(str(title).split()) or None, sid))
+            self._db.commit()
+
     def list_sessions(self, limit: int = 50) -> list[dict]:
         with self._lock:
             rows = self._db.execute(
@@ -183,7 +203,8 @@ class SessionStore:
     def list_chats(self, limit: int = 100) -> list[dict]:
         """Sessions with at least one user turn, newest first, for a chat sidebar.
 
-        title is the first user turn (whitespace-collapsed, at most 60 chars
+        title is the session's own title when one was set (set_title), else
+        the first user turn (whitespace-collapsed, at most 60 chars
         including a trailing ellipsis when cut); preview is the latest
         assistant turn (collapsed, at most 120 chars, empty when none). Turn
         content is read from `content`, which add_turn has already credential-
@@ -195,11 +216,13 @@ class SessionStore:
                 return text
             return text[:cap - 1].rstrip() + "\u2026" if ellipsis else text[:cap]
 
+        first_user = ("(SELECT t.content FROM turns t WHERE t.session_id=s.id "
+                      "AND t.role='user' ORDER BY t.idx ASC LIMIT 1)")
+        title = f"COALESCE(s.title, {first_user})" if self._has_title else first_user
         with self._lock:
             rows = self._db.execute(
                 "SELECT s.id AS id, s.created_at AS created_at, s.last_used AS last_used, "
-                "(SELECT t.content FROM turns t WHERE t.session_id=s.id AND t.role='user' "
-                " ORDER BY t.idx ASC LIMIT 1) AS title, "
+                f"{title} AS title, "
                 "(SELECT t.content FROM turns t WHERE t.session_id=s.id AND t.role='assistant' "
                 " ORDER BY t.idx DESC LIMIT 1) AS preview, "
                 "(SELECT COUNT(*) FROM turns t WHERE t.session_id=s.id) AS turn_count "

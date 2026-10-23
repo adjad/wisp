@@ -9,7 +9,9 @@ protocol ChatBackend: AnyObject {
     func loadChat(id: String) async -> [ChatMessage]?
     func deleteChat(id: String) async -> Bool
     func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase]
-    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async
+    /// `normal` runs the case through the ordinary Ask path instead of the bounded scope.
+    func runLiveCorpusCase(id: String, token: String, normal: Bool,
+                           onEvent: @escaping @Sendable (ChatEvent) -> Void) async
     /// The newest saved corpus run as Markdown and CSV; nil when none is saved.
     func savedCorpusExport() async throws -> (markdown: String, csv: String)?
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
@@ -27,7 +29,8 @@ extension ChatBackend {
     func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase] {
         throw AssistantTaskCorpusCommand.CommandError.resourceUnavailable
     }
-    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
+    func runLiveCorpusCase(id: String, token: String, normal: Bool,
+                           onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
         onEvent(ChatEvent(type: "error", payload: ["message": "This backend does not support live corpus evaluation."]))
     }
     func savedCorpusExport() async throws -> (markdown: String, csv: String)? { nil }
@@ -56,6 +59,8 @@ final class ChatConversation: ObservableObject, Identifiable {
     @Published var busy = false
     @Published fileprivate(set) var corpusRunning = false
     @Published fileprivate(set) var corpusTotal = 0
+    /// This run's cases go through the ordinary Ask path (/corpus … normal).
+    fileprivate(set) var corpusNormal = false
     /// Text to put back in the composer after a dropped request.
     @Published var restoredInput: String?
 
@@ -340,6 +345,10 @@ final class ChatStore: ObservableObject {
             let cases = try await backend.liveCorpusCases(selector: selector)
             try Task.checkCancellation()
             return runCorpus(label: selector, cases: cases, command: command)
+        case .liveNormal(let selector):
+            let cases = try await backend.liveCorpusCases(selector: selector)
+            try Task.checkCancellation()
+            return runCorpus(label: "\(selector) normal", cases: cases, command: command, normal: true)
         case .catalog, .profile:
             let cases = try await backend.liveCorpusCases(selector: "all")
             try Task.checkCancellation()
@@ -385,7 +394,7 @@ final class ChatStore: ObservableObject {
             reply.corpusEvaluation = ChatCorpusEvaluation(
                 caseID: corpusCase.id, split: corpusCase.split, category: corpusCase.category,
                 expectedTools: corpusCase.expected.tools, behavior: corpusCase.expected.behavior,
-                usesLiveData: corpusCase.usesLiveData)
+                usesLiveData: corpusCase.usesLiveData, normalMode: conversation.corpusNormal)
         }
         conversation.messages.append(contentsOf: [user, reply])
         conversation.lastUsed = Date()
@@ -396,6 +405,7 @@ final class ChatStore: ObservableObject {
         let runID = UUID()
         conversation.runID = runID
         let sid = conversation.sessionId
+        let corpusNormal = conversation.corpusNormal
         // The Chat window never shows debug records, and the service streams them
         // in full (about 1.6 MB a turn), so ask for none.
         let wantsDebug = false
@@ -408,7 +418,8 @@ final class ChatStore: ObservableObject {
                 }
             }
             if let corpusCase, corpusCase.usesLiveData {
-                await self.backend.runLiveCorpusCase(id: corpusCase.id, token: corpusCase.token ?? "", onEvent: receive)
+                await self.backend.runLiveCorpusCase(id: corpusCase.id, token: corpusCase.token ?? "",
+                                                     normal: corpusNormal, onEvent: receive)
             } else {
                 await self.backend.run(prompt: prompt, image: image, sessionId: sid, debug: wantsDebug,
                                        testMode: testMode, onEvent: receive)
@@ -416,7 +427,8 @@ final class ChatStore: ObservableObject {
         }
     }
 
-    private func runCorpus(label: String, cases: [AssistantTaskCorpusCase], command: String) -> ChatConversation {
+    private func runCorpus(label: String, cases: [AssistantTaskCorpusCase], command: String,
+                           normal: Bool = false) -> ChatConversation {
         guard !cases.isEmpty else {
             _ = newChat()
             return appendLocalNotice("No corpus cases were found for `\(label)`. Check the bundled corpus and try again.")
@@ -425,7 +437,10 @@ final class ChatStore: ObservableObject {
         conversation.title = "Assistant corpus · \(label)"
         conversation.messages.append(ChatMessage(role: .user, text: command))
         let live = cases.allSatisfy(\.usesLiveData)
-        let intro = live
+        conversation.corpusNormal = normal && live
+        let intro = conversation.corpusNormal
+            ? "Running \(cases.count) cases the way you use Wisp: the normal Ask path, with your memory, identity and tools. Anything that would change or send something is declined and noted as \"would ask to confirm\". Each case is saved in your chat list as \"Corpus · <case> · <request>\"."
+            : live
             ? "Running \(cases.count) live cases with the local agent model and bounded reads of your real Wisp data. Expand source results and review each answer. Completed model calls are counted from inference responses. Writes and sends are blocked. Each case starts without chat history."
             : "Running \(cases.count) synthetic routing plans. Tools are not executed; deterministic routes may skip the model. These plans do not evaluate real-data answers."
         conversation.messages.append(ChatMessage(role: .assistant, text: intro))
@@ -438,6 +453,7 @@ final class ChatStore: ObservableObject {
             var matched = 0
             var reviewed = 0
             var modelCompleted = 0
+            var answered = 0
             for corpusCase in cases {
                 guard !Task.isCancelled else { break }
                 self.send(corpusCase.requestPrompt, in: conversation, testMode: !live, corpusCase: corpusCase)
@@ -447,6 +463,7 @@ final class ChatStore: ObservableObject {
                 guard !Task.isCancelled else { break }
                 if let evaluation = conversation.messages.last(where: { $0.role == .assistant })?.corpusEvaluation,
                    evaluation.completed {
+                    answered += 1
                     if evaluation.toolPathMatches == true { matched += 1 } else { reviewed += 1 }
                     if evaluation.modelCalls > 0 { modelCompleted += 1 }
                 } else {
@@ -457,7 +474,9 @@ final class ChatStore: ObservableObject {
             conversation.corpusRunning = false
             conversation.corpusTask = nil
             if !wasCancelled {
-                let summary = live ? "Live corpus finished: \(modelCompleted)/\(cases.count) cases completed with verified model inference. Review the answers against each card's source results and checklist. Live answers are not automatically graded; a model call alone does not prove correctness."
+                let summary = conversation.corpusNormal
+                    ? "Normal-mode corpus finished: \(answered)/\(cases.count) cases answered through the ordinary Ask path. Each is in your chat list as \"Corpus · <case> · <request>\". Review the answers; they are not automatically graded."
+                    : live ? "Live corpus finished: \(modelCompleted)/\(cases.count) cases completed with verified model inference. Review the answers against each card's source results and checklist. Live answers are not automatically graded; a model call alone does not prove correctness."
                 : """
                 Corpus run finished: \(matched) tool path\(matched == 1 ? "" : "s") matched the expected list; \(reviewed) need review. This compares tool names only. Review the behavior rubric and Wisp's streamed response for each case.
                 """

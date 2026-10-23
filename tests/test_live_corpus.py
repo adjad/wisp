@@ -17,6 +17,15 @@ def saved_runs(tmp_path, monkeypatch):
     return directory
 
 
+@pytest.fixture(autouse=True)
+def chats(tmp_path, monkeypatch):
+    """Cases are saved as chats in a scratch sessions.db, never ~/.moe."""
+    from service.memory.store import SessionStore
+    store = SessionStore(tmp_path / "sessions.db")
+    monkeypatch.setattr(corpus, "_session_store", lambda: store)
+    return store
+
+
 def example(category="messages", target="Example Person"):
     return {"category": category, "target": target}
 
@@ -760,9 +769,116 @@ def test_runs_list_and_export_the_latest_run(saved_runs):
     import csv as csv_module, io
     rows = list(csv_module.reader(io.StringIO(corpus.export_csv_route("2026-10-23").body.decode())))
     assert rows[0] == corpus.CSV_COLUMNS
-    assert [row[2] for row in rows[1:]] == ["LIVE-001", "LIVE-002"]
-    assert rows[1][8] == "view_messages" and rows[1][10] == 'Mom asked about dinner.\n\nShe said 7, "maybe".'
+    column = {name: i for i, name in enumerate(corpus.CSV_COLUMNS)}
+    assert [row[column["case_id"]] for row in rows[1:]] == ["LIVE-001", "LIVE-002"]
+    assert rows[1][column["tools"]] == "view_messages"
+    assert rows[1][column["answer"]] == 'Mom asked about dinner.\n\nShe said 7, "maybe".'
     from fastapi import HTTPException
     for date, run_id in (("2026-10-24", None), ("../etc", None), ("2026-10-23", "../x"), ("2026-10-23", "missing")):
         with pytest.raises(HTTPException):
             corpus.export_md(date, run_id=run_id)
+
+
+def test_bounded_case_is_saved_as_a_titled_chat(monkeypatch, chats, saved_runs):
+    case, events = stream_fake_case(monkeypatch, FAKE_EVENTS)
+    listed = chats.list_chats()
+    assert len(listed) == 1
+    title = f"Corpus · {case['id']} · {case['conversation'][-1]['content']}"
+    assert listed[0]["title"] == (title if len(title) <= 60 else title[:59].rstrip() + "\u2026")
+    turns = chats.display_turns_from(listed[0]["id"], 0)
+    assert [(t["role"], t["content"]) for t in turns] == [
+        ("user", case["conversation"][-1]["content"]), ("assistant", "Example Person is in your contacts.")]
+    line = json.loads(next(saved_runs.glob("*.jsonl")).read_text())
+    assert line["session_id"] == listed[0]["id"] and line["mode"] == "bounded"
+    assert not any(e["type"] == "session" for e in events)
+
+
+def test_normal_mode_uses_the_agent_path_and_declines_every_change(monkeypatch, chats, saved_runs):
+    import sys
+    from types import SimpleNamespace
+    from service.agent.approver import InteractiveApprover
+    from service.safety import policy
+    from service.safety.policy import Tier
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    # Precondition: under full access this write would run without asking.
+    assert policy.decide("assistant_write", {"title": "x"}, "add_reminder").tier is Tier.ALLOW
+    profile = {"contacts": ["Example Person"], "mail_queries": []}
+    monkeypatch.setattr(corpus, "load_profile", lambda: profile)
+    case = corpus.live_cases(profile)[0]
+    answer = "Here is what I found.\n\n" + "A long, real answer. " * 60 + "\nI would ask before adding that reminder."
+    seen = {}
+
+    async def agent(body):
+        seen["body"] = body
+        sid = chats.create_session()
+
+        async def frames():
+            yield f"data: {json.dumps({'type': 'session', 'id': sid})}\n\n"
+            yield 'data: {"type": "routed", "model": "ling", "role": "agent", "route_source": "router"}\n\n'
+            decision = policy.decide("assistant_write", {"title": "x"}, "add_reminder")
+            seen["tier"] = decision.tier
+            emitted = []
+            async def collect(event):
+                emitted.append(event)
+            approved = await InteractiveApprover(collect).confirm(
+                {"id": "c1", "tool": "add_reminder", "reason": decision.reason, "args": {"title": "x"}})
+            seen["approved"] = approved
+            yield f"data: {json.dumps({'type': 'tool_call', 'id': 'c1', 'name': 'add_reminder', 'args': {'title': 'x'}})}\n\n"
+            for event in emitted:
+                yield f"data: {json.dumps(event)}\n\n"
+            yield f"data: {json.dumps({'type': 'tool_result', 'id': 'c1', 'result': 'User denied add_reminder.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'text', 'text': answer})}\n\n"
+            yield 'data: {"type": "done"}\n\n'
+            # /agent saves the turn after `done`; the runner must still be reading.
+            chats.add_turn(sid, "user", body["prompt"])
+            chats.add_turn(sid, "assistant", answer, tool_digest="add_reminder")
+            seen["saved"] = True
+        return SimpleNamespace(body_iterator=frames())
+
+    monkeypatch.setitem(sys.modules, "service.main", SimpleNamespace(agent=agent))
+    monkeypatch.setattr(corpus, "run_case", lambda *a: pytest.fail("bounded runner used in normal mode"))
+
+    async def collect():
+        response = await corpus.run({"case_id": case["id"], "token": case["token"], "mode": "normal"})
+        return [json.loads(frame.removeprefix("data: ")) async for frame in response.body_iterator]
+    events = asyncio.run(collect())
+    assert seen["body"] == {"prompt": case["conversation"][-1]["content"], "debug": False}
+    assert seen["tier"] is Tier.CONFIRM and seen["approved"] is False and seen["saved"]
+    assert not any(e["type"] in ("session", "confirm") for e in events)
+    assert any(e["type"] == "corpus_declined" and e["tool"] == "add_reminder" for e in events)
+    assert events[-1]["type"] == "done" and sum(e["type"] == "done" for e in events) == 1
+    # The scope ends with the case: the user's own turns are untouched.
+    assert policy.decide("assistant_write", {"title": "x"}, "add_reminder").tier is Tier.ALLOW
+    line = json.loads(next(saved_runs.glob("*.jsonl")).read_text())
+    assert line["mode"] == "normal" and line["status"] == "done" and line["answer"] == answer
+    assert line["confirmations"] == [{"tool": "add_reminder", "reason": seen_reason(policy)}]
+    assert line["inference_verified"] is None
+    listed = chats.list_chats()
+    assert [c["id"] for c in listed] == [line["session_id"]]
+    assert listed[0]["title"].startswith(f"Corpus · {case['id']} · ")
+    assert [t["content"] for t in chats.display_turns_from(line["session_id"], 0)] == [
+        case["conversation"][-1]["content"], answer]
+    markdown = corpus.export_md(line["date"]).body.decode()
+    assert "**Mode:** normal" in markdown and "inference not tracked" in markdown
+    assert "- Would ask to confirm `add_reminder`:" in markdown and "(declined)" in markdown
+    assert "\n".join("> " + row if row else ">" for row in answer.splitlines()) in markdown
+    import csv as csv_module, io
+    rows = list(csv_module.reader(io.StringIO(corpus.export_csv_route(line["date"]).body.decode())))
+    column = {name: i for i, name in enumerate(corpus.CSV_COLUMNS)}
+    assert rows[1][column["answer"]] == answer and rows[1][column["mode"]] == "normal"
+    assert rows[1][column["would_confirm"]] == "add_reminder"
+    assert rows[1][column["session_id"]] == line["session_id"]
+
+
+def seen_reason(policy):
+    return "review run: Wisp would ask before add_reminder"
+
+
+def test_unknown_mode_is_refused(monkeypatch):
+    from fastapi import HTTPException
+    profile = {"contacts": ["Example Person"], "mail_queries": []}
+    monkeypatch.setattr(corpus, "load_profile", lambda: profile)
+    case = corpus.live_cases(profile)[0]
+    with pytest.raises(HTTPException):
+        asyncio.run(corpus.run({"case_id": case["id"], "token": case["token"], "mode": "unbounded"}))

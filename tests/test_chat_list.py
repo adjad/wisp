@@ -115,3 +115,62 @@ def _main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_main())
+
+
+def _pre_title_db(path: Path) -> None:
+    """A sessions.db as Wisp wrote it before sessions had a title column."""
+    import sqlite3
+    db = sqlite3.connect(str(path))
+    db.executescript("""
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at REAL, last_used REAL,
+            summary TEXT DEFAULT '', summarized_idx INTEGER DEFAULT 0, pinned_role TEXT,
+            pinned_model TEXT, active_skill TEXT DEFAULT '');
+        CREATE TABLE turns (session_id TEXT, idx INTEGER, role TEXT, content TEXT, tool_digest TEXT,
+            display_content TEXT, display_kind TEXT, created_at REAL, PRIMARY KEY (session_id, idx));
+        INSERT INTO sessions (id, created_at, last_used) VALUES ('old', 1, 2);
+        INSERT INTO turns VALUES ('old', 0, 'user', 'what is on my calendar', NULL, NULL, NULL, 1);
+        INSERT INTO turns VALUES ('old', 1, 'assistant', 'Two meetings.', NULL, NULL, NULL, 2);
+    """)
+    db.commit()
+    db.close()
+
+
+def test_title_migration_is_additive_and_keeps_old_titles(tmp_path):
+    import shutil
+    import sqlite3
+    fixture = Path(tmp_path) / "fixture.db"
+    _pre_title_db(fixture)
+    copy = Path(tmp_path) / "sessions.db"
+    shutil.copyfile(fixture, copy)  # the migration only ever sees a copy
+    store = SessionStore(copy)
+    columns = {row[1]: row for row in store._db.execute("PRAGMA table_info(sessions)")}
+    assert "title" in columns and columns["title"][3] == 0 and columns["title"][4] is None  # nullable, no default
+    assert store._db.execute("SELECT title FROM sessions WHERE id='old'").fetchone()[0] is None
+    chat = store.list_chats()[0]
+    assert chat["title"] == "what is on my calendar" and chat["turn_count"] == 2
+    store.set_title("old", "  Corpus ·  LIVE-001 · what is on my calendar ")
+    assert store.list_chats()[0]["title"] == "Corpus · LIVE-001 · what is on my calendar"
+    store.set_title("old", "")
+    assert store.list_chats()[0]["title"] == "what is on my calendar"
+    store.set_title("old", "Corpus · LIVE-001")
+    # Idempotent: reopening migrates nothing and keeps the title.
+    again = SessionStore(copy)
+    assert [r[1] for r in again._db.execute("PRAGMA table_info(sessions)")].count("title") == 1
+    assert again.list_chats()[0]["title"] == "Corpus · LIVE-001"
+    # An older Wisp reading the migrated file: its own list query still works.
+    old = sqlite3.connect(str(copy))
+    rows = old.execute(
+        "SELECT s.id, (SELECT t.content FROM turns t WHERE t.session_id=s.id AND t.role='user' "
+        "ORDER BY t.idx ASC LIMIT 1) FROM sessions s ORDER BY s.last_used DESC").fetchall()
+    assert rows == [("old", "what is on my calendar")]
+    # The fixture itself was never touched.
+    assert "title" not in {r[1] for r in sqlite3.connect(str(fixture)).execute("PRAGMA table_info(sessions)")}
+
+
+def test_a_store_without_the_column_lists_by_first_turn(tmp_path):
+    store = _store(tmp_path)
+    sid = store.create_session()
+    store.add_turn(sid, "user", "hello there")
+    store._has_title = False  # a read-only opener of an older file
+    store.set_title(sid, "ignored")
+    assert store.list_chats()[0]["title"] == "hello there"
