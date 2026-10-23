@@ -608,7 +608,7 @@ class PipelineTests(unittest.TestCase):
                                "except PermissionError:\n pass\nelse:\n raise AssertionError('network was not denied')"])
         self.assertEqual(network.returncode, 0, network.stdout + network.stderr)
         for profile in (normal, signing):
-            for denied in ("/usr/bin/security", "/bin/date"):
+            for denied in ("/usr/bin/security", "/usr/bin/true"):
                 result = run(profile, ["-c", "import subprocess; subprocess.run([" + repr(denied) + "],check=True)"])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("PermissionError", result.stderr)
