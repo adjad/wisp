@@ -174,3 +174,28 @@ def test_a_store_without_the_column_lists_by_first_turn(tmp_path):
     store._has_title = False  # a read-only opener of an older file
     store.set_title(sid, "ignored")
     assert store.list_chats()[0]["title"] == "hello there"
+
+
+def test_a_concurrent_opener_adding_the_column_first_is_tolerated(tmp_path, monkeypatch):
+    import shutil
+    import sqlite3
+    store_module = sys.modules["service.memory.store"]
+    fixture, copy = tmp_path / "fixture.db", tmp_path / "copy.db"
+    _pre_title_db(fixture)
+    shutil.copyfile(fixture, copy)
+
+    class Racing(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql.startswith("ALTER TABLE sessions ADD COLUMN title"):
+                # Another opener added it between this one's check and ALTER.
+                super().execute(sql, *args)
+                raise sqlite3.OperationalError("duplicate column name: title")
+            return super().execute(sql, *args)
+
+    connect = sqlite3.connect
+    monkeypatch.setattr(store_module.sqlite3, "connect",
+                        lambda path, **kw: connect(path, factory=Racing, **kw))
+    store = SessionStore(copy)
+    assert store._has_title
+    store.set_title("old", "Corpus · LIVE-001")
+    assert store.is_corpus_session("old")

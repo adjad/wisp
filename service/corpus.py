@@ -36,6 +36,10 @@ RUN_GAP_S = 90
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _RUN_ID = re.compile(r"[A-Za-z0-9-]{1,64}")
 _RUN_LOCK = asyncio.Lock()
+# A normal-mode case waits this long for the user's own turn, then refuses.
+BUSY_WAIT_S = 60
+BUSY_MESSAGE = ("Wisp is busy with another request, so this normal-mode case did not start "
+                "(it could swap models under it). Run it again when Wisp is idle.")
 _run_state = {"id": "", "last": 0.0}
 # bounded: fixed read-only scope on the local agent model (the default).
 # normal: the user's own Ask path, with nothing it would change allowed to run.
@@ -303,23 +307,30 @@ def _session_store():
 
 
 def case_title(line):
-    return f"Corpus · {line['case_id']} · {_one_line(line.get('prompt', ''), 200)}"
+    from service.memory.store import CORPUS_TITLE
+    return f"{CORPUS_TITLE}{line['case_id']} · {_one_line(line.get('prompt', ''), 200)}"
 
 
 def save_session(line):
     """The case as a chat in the window's list. A normal-mode case was already
     saved by /agent itself; a bounded one is saved here, prompt and answer as
-    displayed. Never fails the case."""
+    displayed. Never fails the case.
+
+    The title, set before any turn, marks it as a corpus chat, which memory,
+    behaviour and conversation search leave out (SessionStore.is_corpus_session)."""
     try:
         store = _session_store()
         if not line.get("session_id"):
             sid = store.create_session()
+            store.set_title(sid, case_title(line))
             store.add_turn(sid, "user", line["prompt"])
             answer = line.get("answer") or line.get("error") or "This case ended without an answer."
             digest = ", ".join(dict.fromkeys(t["name"] for t in line.get("tools") or [] if t.get("name"))) or None
             store.add_turn(sid, "assistant", answer, tool_digest=digest)
             line["session_id"] = sid
         store.set_title(line["session_id"], case_title(line))
+        # The turn trigger queues every user turn; a test prompt is not one.
+        store.drop_memory_jobs(line["session_id"])
     except Exception as exc:
         log.warning("Corpus case %s was not saved as a chat (%s)", line.get("case_id"), type(exc).__name__)
 
@@ -489,12 +500,26 @@ async def run_normal_case(case, emit):
     """The user's own path: /agent with its ordinary system prompt, memory,
     identity and routing, saved as a normal chat. Inside review_scope, anything
     but a read asks first and the approver declines it, so nothing changes."""
+    from service import idle
     from service.main import agent
     from service.safety.policy import review_scope
-    sid = ""
+    # Never start under the user's own turn: this one may swap models.
+    deadline = time.monotonic() + BUSY_WAIT_S
+    while idle.foreground_busy():
+        if time.monotonic() >= deadline:
+            await emit({"type": "error", "message": BUSY_MESSAGE})
+            return
+        await asyncio.sleep(0.5)
+    prompt = case["conversation"][-1]["content"]
+    # Created and titled before /agent saves a turn, so the chat is marked as
+    # a corpus chat before the memory queue sees its prompt.
+    store = _session_store()
+    sid = store.create_session()
+    store.set_title(sid, case_title({"case_id": case["id"], "prompt": prompt}))
+    await emit({"type": "corpus_session", "id": sid})
     finished = False
     with review_scope():
-        response = await agent({"prompt": case["conversation"][-1]["content"], "debug": False})
+        response = await agent({"prompt": prompt, "session_id": sid, "debug": False})
         frames = response.body_iterator
         try:
             # Read to the end: /agent saves the turn after its `done`.
@@ -507,8 +532,9 @@ async def run_normal_case(case, emit):
                     kind = event.get("type")
                     if kind == "session":
                         # Not forwarded: the runner's chat must not adopt it.
-                        sid = str(event.get("id", ""))
-                        await emit({"type": "corpus_session", "id": sid})
+                        if event.get("id") and event["id"] != sid:
+                            sid = str(event["id"])
+                            await emit({"type": "corpus_session", "id": sid})
                     elif kind == "done":
                         finished = True
                     else:

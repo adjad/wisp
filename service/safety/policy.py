@@ -610,6 +610,9 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
 # run never loosens or tightens the user's own concurrent turns.
 _REVIEW: ContextVar[bool] = ContextVar("wisp_policy_review", default=False)
 _REVIEW_ALLOWED_CATEGORIES = {"compute"}
+# An MCP server labels its own tools; its claim that one only reads is not
+# trusted in a review run.
+_REVIEW_UNTRUSTED_READS = {"mcp_read"}
 
 
 def review_only() -> bool:
@@ -630,7 +633,8 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
     run, only reads run without asking."""
     decision = _decide(category, args, tool)
     if (_REVIEW.get() and decision.tier is Tier.ALLOW
-            and not (str(category).endswith("_read") or category in _REVIEW_ALLOWED_CATEGORIES)):
+            and not ((str(category).endswith("_read") and category not in _REVIEW_UNTRUSTED_READS)
+                     or category in _REVIEW_ALLOWED_CATEGORIES)):
         return Decision(Tier.CONFIRM, f"review run: Wisp would ask before {tool or category}")
     return decision
 

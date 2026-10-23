@@ -811,7 +811,7 @@ def test_normal_mode_uses_the_agent_path_and_declines_every_change(monkeypatch, 
 
     async def agent(body):
         seen["body"] = body
-        sid = chats.create_session()
+        sid = body.get("session_id") or chats.create_session()
 
         async def frames():
             yield f"data: {json.dumps({'type': 'session', 'id': sid})}\n\n"
@@ -843,7 +843,10 @@ def test_normal_mode_uses_the_agent_path_and_declines_every_change(monkeypatch, 
         response = await corpus.run({"case_id": case["id"], "token": case["token"], "mode": "normal"})
         return [json.loads(frame.removeprefix("data: ")) async for frame in response.body_iterator]
     events = asyncio.run(collect())
-    assert seen["body"] == {"prompt": case["conversation"][-1]["content"], "debug": False}
+    # Wisp's own session, made and titled by the runner before any turn is saved.
+    assert seen["body"] == {"prompt": case["conversation"][-1]["content"], "debug": False,
+                            "session_id": seen["body"]["session_id"]}
+    assert chats.is_corpus_session(seen["body"]["session_id"])
     assert seen["tier"] is Tier.CONFIRM and seen["approved"] is False and seen["saved"]
     assert not any(e["type"] in ("session", "confirm") for e in events)
     assert any(e["type"] == "corpus_declined" and e["tool"] == "add_reminder" for e in events)
@@ -882,3 +885,152 @@ def test_unknown_mode_is_refused(monkeypatch):
     case = corpus.live_cases(profile)[0]
     with pytest.raises(HTTPException):
         asyncio.run(corpus.run({"case_id": case["id"], "token": case["token"], "mode": "unbounded"}))
+
+
+def test_a_corpus_chat_stays_out_of_memory_behaviour_and_search(monkeypatch, chats, saved_runs):
+    """A test prompt is not something the user said: no memory extraction job,
+    no wisp_ask observation, no conversation search or recall hit."""
+    from types import SimpleNamespace
+    from service.assistant.behavior_runtime import BehaviorRuntime
+    from service.memory.queue import MemoryQueue
+
+    class NoFacts:
+        def suppressed_source(self, *a): return False
+        def suppressed_text(self, *a): return False
+
+    def jobs(sid=None):
+        with chats._lock:
+            return chats._db.execute("SELECT session_id FROM memory_jobs" + (" WHERE session_id=?" if sid else ""),
+                                     (sid,) if sid else ()).fetchall()
+
+    case, _ = stream_fake_case(monkeypatch, FAKE_EVENTS)
+    prompt = case["conversation"][-1]["content"]
+    corpus_sid = chats.list_chats()[0]["id"]
+    assert chats.is_corpus_session(corpus_sid) and jobs(corpus_sid) == []
+    # The user's own chat with the same words is still remembered and found.
+    own = chats.create_session()
+    chats.add_turn(own, "user", prompt)
+    assert not chats.is_corpus_session(own) and len(jobs(own)) == 1
+    queue = MemoryQueue(chats)
+    found = queue.search(prompt, NoFacts(), 15)
+    assert found and {r["session_id"] for r in found} == {own}
+    assert queue.source_context(corpus_sid, 0, NoFacts()) is None
+    # A job queued for a corpus chat later (the trigger fires on every user
+    # turn) is never claimed, and startup recovery removes it.
+    chats.add_turn(corpus_sid, "user", "I prefer tea.")
+    assert len(jobs(corpus_sid)) == 1
+    claimed = queue.next()
+    assert claimed["session_id"] == own
+    assert queue.next() is None and not queue.has_ready()
+    queue.recover()
+    assert jobs(corpus_sid) == [] and len(jobs(own)) == 1
+    assert queue.pilot() == 0
+    observed = []
+    fake = SimpleNamespace(_session_db_fn=lambda: chats,
+                           call=lambda name, obs: observed.extend(obs) or True)
+    import time
+    assert BehaviorRuntime._ingest_asks(fake, time.time() + 1)
+    assert {o.id.split(":")[1] for o in observed} == {own}
+
+
+def test_review_scope_policy_matrix_under_full_access_and_a_standing_grant(monkeypatch):
+    """The real decide(): under full access AND an "always allow" grant for
+    every tool, a review run asks before anything that is not a trusted read."""
+    from service.safety import grants, policy
+    from service.safety.policy import Tier, review_scope
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(grants, "check", lambda tool, args: "allow")
+    changes = [("email_send", "send_email", {"to": "person@example.com", "body": "hi"}),
+               ("fs_delete", "delete_file", {"path": "/Users/example/Documents/old.txt"}),
+               ("calendar_write", "add_event", {"title": "x"}),
+               ("shell", "run_shell", {"cmd": "echo hi"}),
+               ("app_control", "open_app", {"name": "Notes"}),
+               ("mcp_action", "mcp__server__do", {}),
+               ("mcp_read", "mcp__server__list", {}),
+               ("assistant_write", "add_reminder", {"title": "x"}),
+               ("fs_write", "write_file", {"path": "/Users/example/Documents/a.txt", "content": "x"})]
+    reads = [("fs_read", "read_file", {"path": "/Users/example/Documents/a.txt"}),
+             ("assistant_read", "get_upcoming", {}), ("compute", "calculate", {"expr": "1+1"})]
+    outside = {tool: policy.decide(c, a, tool).tier for c, tool, a in changes}
+    # Precondition: most of these would run unasked for this user.
+    assert sum(t is Tier.ALLOW for t in outside.values()) >= 5, outside
+    with review_scope():
+        for category, tool, args in changes:
+            decision = policy.decide(category, args, tool)
+            assert decision.tier is Tier.CONFIRM, (category, decision)
+        for category, tool, args in reads:
+            assert policy.decide(category, args, tool).tier is Tier.ALLOW, category
+    assert {tool: policy.decide(c, a, tool).tier for c, tool, a in changes} == outside
+
+
+def test_the_real_approver_declines_in_a_review_run_without_a_card():
+    from service.agent.approver import InteractiveApprover
+    from service.safety.policy import review_scope
+    emitted = []
+
+    async def emit(event):
+        emitted.append(event)
+
+    async def ask():
+        approver = InteractiveApprover(emit, timeout=0.5, request_id="r1")
+        with review_scope():
+            return await approver.confirm({"id": "a1", "tool": "send_email", "reason": "sends",
+                                           "args": {"to": "person@example.com"}, "preview": "x" * 900})
+    assert asyncio.run(ask()) is False
+    assert [e["type"] for e in emitted] == ["corpus_declined"]
+    assert emitted[0]["tool"] == "send_email" and emitted[0]["request_id"] == "r1"
+    assert len(emitted[0]["preview"]) == 400
+
+
+def test_review_scope_does_not_reach_a_concurrent_turn(monkeypatch):
+    """The user's own turn, running while a review case runs, keeps its access."""
+    from service.safety import policy
+    from service.safety.policy import Tier, review_only, review_scope
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+
+    async def main():
+        started, reviewing = asyncio.Event(), asyncio.Event()
+
+        async def users_turn():
+            started.set()
+            await reviewing.wait()
+            return review_only(), policy.decide("assistant_write", {"title": "x"}, "add_reminder").tier
+
+        async def review_case():
+            with review_scope():
+                # A task the review case starts inherits the scope.
+                inner = asyncio.create_task(asyncio.sleep(0, result=review_only()))
+                await started.wait()
+                reviewing.set()
+                await asyncio.sleep(0)
+                return await inner, policy.decide("assistant_write", {"title": "x"}, "add_reminder").tier
+
+        user = asyncio.create_task(users_turn())
+        review = asyncio.create_task(review_case())
+        return await user, await review
+    (user_scoped, user_tier), (inner_scoped, review_tier) = asyncio.run(main())
+    assert user_scoped is False and user_tier is Tier.ALLOW
+    assert inner_scoped is True and review_tier is Tier.CONFIRM
+
+
+def test_normal_mode_waits_for_the_users_turn_then_refuses(monkeypatch, chats, saved_runs):
+    import sys
+    from types import SimpleNamespace
+    from service import idle
+    profile = {"contacts": ["Example Person"], "mail_queries": []}
+    monkeypatch.setattr(corpus, "load_profile", lambda: profile)
+    monkeypatch.setattr(corpus, "BUSY_WAIT_S", 0.6)
+    monkeypatch.setattr(idle, "foreground_busy", lambda: True)
+    monkeypatch.setitem(sys.modules, "service.main",
+                        SimpleNamespace(agent=lambda body: pytest.fail("started under the user's turn")))
+    case = corpus.live_cases(profile)[0]
+
+    async def collect():
+        response = await corpus.run({"case_id": case["id"], "token": case["token"], "mode": "normal"})
+        return [json.loads(frame.removeprefix("data: ")) async for frame in response.body_iterator]
+    events = asyncio.run(collect())
+    assert events[-1] == {"type": "error", "message": corpus.BUSY_MESSAGE}
+    line = json.loads(next(saved_runs.glob("*.jsonl")).read_text())
+    assert line["status"] == "error" and line["error"] == corpus.BUSY_MESSAGE

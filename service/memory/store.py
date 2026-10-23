@@ -103,6 +103,11 @@ CREATE TABLE IF NOT EXISTS workflow_events (
 """
 
 
+# The corpus runner's chats are titled "Corpus · <case> · <request>".
+CORPUS_TITLE = "Corpus · "
+_CORPUS_TITLE_SQL = f"title LIKE '{CORPUS_TITLE}%'"
+
+
 class SessionStore:
     def __init__(self, path: Path = DB_PATH) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,7 +137,8 @@ class SessionStore:
             try:
                 self._db.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
             except sqlite3.OperationalError as e:
-                if "readonly" not in str(e).lower():
+                # Read-only, or another opener added it first.
+                if not any(k in str(e).lower() for k in ("readonly", "duplicate column")):
                     raise
         # A read-only opener of an older file may not have the column.
         self._has_title = "title" in {row[1] for row in self._db.execute("PRAGMA table_info(sessions)")}
@@ -191,6 +197,29 @@ class SessionStore:
         with self._lock:
             self._db.execute("UPDATE sessions SET title=? WHERE id=?",
                              (" ".join(str(title).split()) or None, sid))
+            self._db.commit()
+
+    def is_corpus_session(self, sid: str) -> bool:
+        """A /corpus test case saved as a chat (set_title with CORPUS_TITLE).
+        Its prompts are test input, not something the user said, so memory
+        extraction, behaviour observations and conversation search skip it."""
+        if not self._has_title:
+            return False
+        with self._lock:
+            return self._db.execute(
+                "SELECT 1 FROM sessions WHERE id=? AND " + _CORPUS_TITLE_SQL,
+                (sid,)).fetchone() is not None
+
+    def not_corpus_sql(self, column: str = "session_id") -> str:
+        """A WHERE condition on `column` that leaves corpus chats out."""
+        if not self._has_title:
+            return "1"
+        return f"{column} NOT IN (SELECT id FROM sessions WHERE {_CORPUS_TITLE_SQL})"
+
+    def drop_memory_jobs(self, sid: str) -> None:
+        """Remove a corpus chat's queued memory extraction jobs."""
+        with self._lock:
+            self._db.execute("DELETE FROM memory_jobs WHERE session_id=?", (sid,))
             self._db.commit()
 
     def list_sessions(self, limit: int = 50) -> list[dict]:
