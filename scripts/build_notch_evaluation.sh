@@ -7,9 +7,11 @@
 #   scripts/build_notch_evaluation.sh stop   <owned_root>
 #
 # Never installs, signs as, replaces or opens Wisp.app; never uses port 8765,
-# 8000 or 8001; never reads or writes ~/.moe. `launch` runs the backend and the
-# app each under its own sandbox-exec profile and records both pids in the
-# owned root, which `stop` uses to end exactly those processes.
+# 8000 or 8001; never reads or writes ~/.moe. Both directories must be fresh
+# scratch under the system temporary area; they are validated before anything
+# is created (scripts/notch_evaluation/lifecycle.py preflight). `launch` hands
+# both processes to an owned-child supervisor; `stop` asks that supervisor to
+# retire them and never signals a pid read from a file.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -17,26 +19,16 @@ APP_NAME="Wisp Notch Evaluation (DEV)"
 BUNDLE_ID="com.wisp.notch-evaluation.dev"
 PYTHON="${WISP_EVALUATION_PYTHON:-$ROOT/.venv/bin/python}"
 LISTEN_PORT="${WISP_EVALUATION_PORT:-18891}"
+LIFECYCLE=("$PYTHON" -I -B "$ROOT/scripts/notch_evaluation/lifecycle.py")
 
 die() { echo "build_notch_evaluation: $*" >&2; exit 1; }
 
-refuse_installed_paths() {
-  local path
-  path="$(cd "$1" 2>/dev/null && pwd -P || echo "$1")"
-  case "$path" in
-    /Applications*|"$HOME/Applications"*|"$HOME/.moe"*) die "refusing $path: outside a development scratch location" ;;
-  esac
-}
-
 cmd_build() {
-  local out="${1:?out_dir}"
-  mkdir -p "$out"
-  refuse_installed_paths "$out"
-  out="$(cd "$out" && pwd -P)"
+  local out
+  out="$("${LIFECYCLE[@]}" preflight --create "${1:?out_dir}")" || die "refusing the build directory"
   /usr/bin/swift build --disable-sandbox --package-path "$ROOT/app" --scratch-path "$out/swift-build" \
     -Xswiftc -DWISP_NOTCH_EVALUATION -q
   local app="$out/$APP_NAME.app"
-  rm -rf "$app"
   mkdir -p "$app/Contents/MacOS"
   cp "$out/swift-build/debug/WispApp" "$app/Contents/MacOS/WispNotchEvaluation"
   /usr/bin/plutil -create xml1 "$app/Contents/Info.plist"
@@ -50,32 +42,40 @@ cmd_build() {
   echo "built: $app"
 }
 
-# The app's OS profile: AppKit and WindowServer work, but no AppleEvents,
-# Launch Services opens, notifications or pasteboard; network only to the
-# evaluation backend; writes only to the owned root and the app's own caches.
+# The app's OS profile. AppKit and WindowServer work; AppleEvents, Launch
+# Services opens, notifications and the pasteboard are refused; the network is
+# the evaluation backend only; files under the home are readable only in the
+# owned root, its source roots and the app bundle; writes go only to the owned
+# root (TMPDIR is inside it) and this bundle's own caches. Native QA qualifies
+# this profile before any corpus use.
 app_profile() {
-  local owned="$1" home
+  local owned="$1" image="$2" bundle="$3" home cache
   home="$(/usr/bin/dscl . -read "/Users/$(/usr/bin/id -un)" NFSHomeDirectory | /usr/bin/awk '{print $2}')"
+  cache="$(/usr/bin/getconf DARWIN_USER_CACHE_DIR)"
+  cache="$(cd "$cache" && pwd -P)"
   cat <<PROFILE
 (version 1)
 (allow default)
 (deny appleevent-send)
-(deny process-exec (require-not (literal "$2")))
+(deny process-exec (require-not (literal "$image")))
 (deny process-fork)
 (deny mach-lookup (global-name "com.apple.coreservices.appleevents")
+  (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.lsd.mapdb")
   (global-name "com.apple.usernoted.client") (global-name "com.apple.pasteboard.1")
   (global-name "com.apple.coreservices.quarantine-resolver"))
 (deny network*)
 (allow network-outbound (remote ip "localhost:$LISTEN_PORT"))
+(deny file-read-data (require-all (subpath "$home")
+  (require-not (require-any (subpath "$owned") (subpath "$bundle")))))
 (deny file-write* (require-not (require-any (subpath "$owned") (literal "/dev/null")
   (subpath "$home/Library/Caches/$BUNDLE_ID")
   (subpath "$home/Library/Saved Application State/$BUNDLE_ID.savedState")
-  (regex #"^/private/var/folders/"))))
+  (subpath "$cache$BUNDLE_ID"))))
 PROFILE
 }
 
 cmd_launch() {
-  local out="${1:?out_dir}" owned="${2:?owned_root}"; shift 2
+  local out_arg="${1:?out_dir}" owned_arg="${2:?owned_root}"; shift 2
   local inference="" models=()
   while (($#)); do
     case "$1" in
@@ -84,63 +84,42 @@ cmd_launch() {
       *) die "unknown option $1" ;;
     esac
   done
-  out="$(cd "$out" && pwd -P)"
+  local out owned
+  out="$(cd "$out_arg" && pwd -P)" || die "no build directory"
   local app="$out/$APP_NAME.app/Contents/MacOS/WispNotchEvaluation"
-  [[ -x "$app" ]] || die "build first: $app is missing"
-  mkdir -p "$owned"; chmod 700 "$owned"
-  owned="$(cd "$owned" && pwd -P)"
-  refuse_installed_paths "$owned"
-  [[ ! -e "$owned/host.pid" ]] || die "$owned already has a running or unstopped host"
+  [[ -x "$app" && ! -L "$app" ]] || die "build first: $app is missing"
+  # Validated as a fresh scratch root BEFORE it is created or written.
+  owned="$("${LIFECYCLE[@]}" preflight --create "$owned_arg")" || die "refusing the owned root"
   local run_id token nonce
   run_id="notch-$(/bin/date +%Y%m%d%H%M%S)"
-  token="$(/usr/bin/openssl rand -hex 32)"
-  nonce="$(/usr/bin/openssl rand -hex 16)"
+  token="$("${LIFECYCLE[@]}" secret --bytes 32)"
+  nonce="$("${LIFECYCLE[@]}" secret --bytes 16)"
   local models_json="[]"
   if ((${#models[@]})); then models_json="$(printf '"%s",' "${models[@]}")"; models_json="[${models_json%,}]"; fi
-  (umask 077
+  (umask 077; set -o noclobber
    printf '{"run_id":"%s","owned_root":"%s","listen_port":%s,"token":"%s","nonce":"%s","source_roots":["%s/home"],"allowed_models":%s%s}\n' \
      "$run_id" "$owned" "$LISTEN_PORT" "$token" "$nonce" "$owned" "$models_json" \
-     "${inference:+,\"inference_url\":\"$inference\"}" > "$owned/host-config.json")
-  "$PYTHON" -I -B "$ROOT/scripts/notch_evaluation/host.py" --config "$owned/host-config.json" \
-    --print-profile "$PYTHON" > "$owned/host.sb"
-  # A clean environment: nothing inherited reaches the backend, which starts
-  # in the owned root (the protected home is not even a working directory).
-  cd "$owned"
-  /usr/bin/env -i LANG=C.UTF-8 PYTHONHASHSEED=0 /usr/bin/sandbox-exec -f "$owned/host.sb" \
-    "$PYTHON" -I -B "$ROOT/scripts/notch_evaluation/host.py" --config "$owned/host-config.json" \
-    > "$owned/host.log" 2>&1 &
-  local backend=$!
-  echo "$backend" > "$owned/host.pid"
-  local tries=0
-  until /usr/bin/curl -sf -H "x-wisp-evaluation-token: $token" "http://127.0.0.1:$LISTEN_PORT/evaluation/identity" \
-      -o "$owned/identity.json" 2>/dev/null; do
-    tries=$((tries + 1)); ((tries < 100)) || { kill "$backend" 2>/dev/null; die "backend did not answer; see $owned/host.log"; }
-    kill -0 "$backend" 2>/dev/null || die "backend exited; see $owned/host.log"
-    /bin/sleep 0.1
+     "${inference:+,\"inference_url\":\"$inference\"}" > "$owned/host-config.json"
+   "$PYTHON" -I -B "$ROOT/scripts/notch_evaluation/host.py" --config "$owned/host-config.json" \
+     --print-profile "$PYTHON" > "$owned/host.sb"
+   app_profile "$owned" "$app" "$out/$APP_NAME.app" > "$owned/app.sb")
+  # The supervisor owns both children for the life of the run; it starts the
+  # backend in the owned root with a clean environment, checks its identity,
+  # then starts the app with TMPDIR inside the owned root.
+  (cd "$owned" && /usr/bin/nohup "${LIFECYCLE[@]}" supervise "$owned" --python "$PYTHON" \
+     --host "$ROOT/scripts/notch_evaluation/host.py" --app "$app" > /dev/null 2>&1 &)
+  local tries=0 state=""
+  while ((tries < 400)); do
+    state="$(/usr/bin/plutil -extract state raw "$owned/lifecycle.json" 2>/dev/null || true)"
+    [[ "$state" == running || "$state" == failed || "$state" == ended ]] && break
+    tries=$((tries + 1)); /bin/sleep 0.1
   done
-  grep -q "\"nonce\": \"$nonce\"" "$owned/identity.json" || { kill "$backend"; die "identity mismatch"; }
-  (umask 077
-   printf '{"run_id":"%s","owned_root":"%s","listen_port":%s,"token":"%s","nonce":"%s","backend_pid":%s}\n' \
-     "$run_id" "$owned" "$LISTEN_PORT" "$token" "$nonce" "$backend" > "$owned/native-config.json")
-  app_profile "$owned" "$(cd "$(dirname "$app")" && pwd -P)/$(basename "$app")" > "$owned/app.sb"
-  /usr/bin/env -i HOME="$HOME" LANG=C.UTF-8 WISP_NOTCH_EVALUATION_CONFIG="$owned/native-config.json" \
-    /usr/bin/sandbox-exec -f "$owned/app.sb" "$app" > "$owned/app.log" 2>&1 &
-  echo $! > "$owned/app.pid"
-  echo "run $run_id: backend pid $backend, app pid $(cat "$owned/app.pid"), evidence in $owned/evidence"
+  /bin/cat "$owned/lifecycle.json" 2>/dev/null || true
+  [[ "$state" == running ]] || die "launch did not reach running (state: ${state:-unknown}); see $owned"
 }
 
 cmd_stop() {
-  local owned="${1:?owned_root}"
-  for name in app host; do
-    if [[ -f "$owned/$name.pid" ]]; then
-      local pid; pid="$(cat "$owned/$name.pid")"
-      kill "$pid" 2>/dev/null || true
-      for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; /bin/sleep 0.1; done
-      kill -9 "$pid" 2>/dev/null || true
-      rm -f "$owned/$name.pid"
-    fi
-  done
-  echo "stopped"
+  "${LIFECYCLE[@]}" stop "${1:?owned_root}"
 }
 
 case "${1:-}" in

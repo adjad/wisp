@@ -48,11 +48,20 @@ enum ScriptRunner {
     }
 
     static func copy(_ text: String) {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("pasteboard_copy", ledger: NotchEvaluationEnvironment.ledger)
+        return
+        #endif
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
 
     static func perform(_ target: RunTarget, code: String) {
+        #if WISP_NOTCH_EVALUATION
+        // No Terminal, Safari or Pages run, and no temporary file is written.
+        _ = NotchEvaluationSinks.blocked("run_code", ledger: NotchEvaluationEnvironment.ledger)
+        return
+        #endif
         switch target {
         case .terminal(let interpreter, let ext):
             runInTerminal(code, interpreter: interpreter, ext: ext)
@@ -97,6 +106,9 @@ enum ScriptRunner {
     }
 
     private static func writeTemp(_ content: String, ext: String) -> String? {
+        #if WISP_NOTCH_EVALUATION
+        return nil
+        #endif
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisp-\(UUID().uuidString).\(ext)")
         do {

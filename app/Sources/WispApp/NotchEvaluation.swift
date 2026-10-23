@@ -26,6 +26,9 @@ struct NotchEvaluationConfig: Equatable {
     let token: String
     let nonce: String
     let backendPID: Int32
+    /// Canonical directories inside the owned root that hold the snapshot's
+    /// documents. The only places an attachment may be read from.
+    let sourceRoots: [String]
 
     var baseURL: URL { URL(string: "http://127.0.0.1:\(listenPort)")! }
     var evidence: URL { ownedRoot.appendingPathComponent("evidence/native", isDirectory: true) }
@@ -55,83 +58,197 @@ struct NotchEvaluationConfig: Equatable {
         }
         guard let root = object["owned_root"] as? String, root.hasPrefix("/") else { throw Problem.badField("owned_root") }
         var rootInfo = stat()
-        guard lstat(root, &rootInfo) == 0, (rootInfo.st_mode & S_IFMT) == S_IFDIR, rootInfo.st_uid == owner else {
+        guard lstat(root, &rootInfo) == 0, (rootInfo.st_mode & S_IFMT) == S_IFDIR, rootInfo.st_uid == owner,
+              rootInfo.st_mode & 0o022 == 0, let canonicalRoot = NotchEvaluationSources.canonical(root),
+              canonicalRoot == root else {
             throw Problem.badField("owned_root")
         }
         guard let port = object["listen_port"] as? Int, (1025..<65536).contains(port),
               !productionPorts.contains(port) else { throw Problem.badField("listen_port") }
         guard let token = object["token"] as? String, token.count >= 32 else { throw Problem.badField("token") }
         guard let nonce = object["nonce"] as? String, nonce.count >= 16 else { throw Problem.badField("nonce") }
-        guard let pid = object["backend_pid"] as? Int, pid > 1, pid != Int(getpid()) else {
+        // A JSON number need not fit a pid: refuse, never trap, outside Int32.
+        guard let number = object["backend_pid"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let pid = Int32(exactly: number.doubleValue), pid > 1, pid != getpid() else {
             throw Problem.badField("backend_pid")
         }
+        var sources: [String] = []
+        for raw in object["source_roots"] as? [Any] ?? [] {
+            guard let text = raw as? String, let real = NotchEvaluationSources.canonical(text),
+                  real.hasPrefix(root + "/"), NotchEvaluationSources.isDirectory(real) else {
+                throw Problem.badField("source_roots")
+            }
+            sources.append(real)
+        }
         return NotchEvaluationConfig(runID: runID, ownedRoot: URL(fileURLWithPath: root, isDirectory: true),
-                                     listenPort: port, token: token, nonce: nonce, backendPID: Int32(pid))
+                                     listenPort: port, token: token, nonce: nonce, backendPID: pid,
+                                     sourceRoots: sources)
+    }
+}
+
+/// Where the native surface may read a file from: only the snapshot's
+/// source roots. Pure, so the checks exercise exactly what the model enforces.
+enum NotchEvaluationSources {
+    static func canonical(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    static func isDirectory(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR
+    }
+
+    /// The resolved file to read, or nil when `url` is not a regular file
+    /// inside a source root (after resolving every link).
+    static func admit(_ url: URL, config: NotchEvaluationConfig) -> URL? {
+        guard url.isFileURL, let real = canonical(url.path) else { return nil }
+        var info = stat()
+        guard lstat(real, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        guard config.sourceRoots.contains(where: { real.hasPrefix($0 + "/") }) else { return nil }
+        return URL(fileURLWithPath: real)
     }
 }
 
 /// Per-attempt native receipts. Hashes and identifiers only: the typed text
 /// and the visible answer are never written, so the ledger cannot leak them.
+///
+/// The receipts are mandatory evidence. The file must be a private regular
+/// file this user owns; once a receipt cannot be persisted (or the retention
+/// bound is reached) the ledger is unhealthy for good, and the host stops
+/// sending requests and starting turns.
 final class NotchEvaluationLedger {
-    private let url: URL?
-    private let lock = NSLock()
-    private(set) var entries: [[String: Any]] = []
+    static let maxBytes = 64 * 1024 * 1024
+    static let maxMemoryEntries = 10_000
 
-    init(directory: URL?) {
-        if let directory {
-            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                                     attributes: [.posixPermissions: 0o700])
-            url = directory.appendingPathComponent("native-receipts.jsonl")
-        } else {
-            url = nil
+    private let lock = NSLock()
+    private var fd: Int32 = -1
+    private var written = 0
+    private var started: Set<UInt64> = []
+    private var finalized: Set<UInt64> = []
+    private(set) var entries: [[String: Any]] = []
+    private var _failure: String?
+
+    /// `directory` nil keeps receipts in memory only (the checks).
+    init(directory: URL?, owner: uid_t = getuid()) {
+        guard let directory else { return }
+        let path = directory.path
+        var info = stat()
+        if lstat(path, &info) != 0 {
+            guard mkdir(path, 0o700) == 0 || errno == EEXIST else {
+                _failure = "the receipt directory could not be created"; return
+            }
         }
+        guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == owner,
+              info.st_mode & 0o077 == 0 else {
+            _failure = "the receipt directory is not a private directory"; return
+        }
+        let file = path + "/native-receipts.jsonl"
+        let handle = open(file, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard handle >= 0 else { _failure = "the receipt file could not be opened"; return }
+        guard fstat(handle, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == owner,
+              info.st_mode & 0o077 == 0, info.st_nlink == 1 else {
+            close(handle)
+            _failure = "the receipt file is not a private regular file"; return
+        }
+        fd = handle
     }
+
+    deinit { if fd >= 0 { close(fd) } }
+
+    var healthy: Bool { lock.lock(); defer { lock.unlock() }; return _failure == nil }
+    var failure: String? { lock.lock(); defer { lock.unlock() }; return _failure }
 
     static func sha256(_ text: String) -> String {
         SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    func record(_ kind: String, _ fields: [String: Any]) {
+    /// An untrusted identifier kept as itself only when it is a short safe
+    /// token; anything else is kept as `<key>_sha256`.
+    static func identifier(_ key: String, _ value: String, into fields: inout [String: Any]) {
+        let safe = (1...64).contains(value.utf8.count)
+            && value.utf8.allSatisfy { $0 < 128 && (isalnum(Int32($0)) != 0 || $0 == 0x5F || $0 == 0x2D) }
+        if safe { fields[key] = value } else { fields[key + "_sha256"] = sha256(value) }
+    }
+
+    /// False when the receipt was not persisted; the ledger is then unhealthy.
+    @discardableResult
+    func record(_ kind: String, _ fields: [String: Any]) -> Bool {
         var entry = fields
         entry["kind"] = kind
         entry["at"] = Date().timeIntervalSince1970
         lock.lock(); defer { lock.unlock() }
-        entries.append(entry)
-        guard let url, let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]) else { return }
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        guard _failure == nil else { return false }
+        guard let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]) else {
+            _failure = "a receipt could not be encoded"; return false
         }
-        guard let handle = try? FileHandle(forWritingTo: url) else { return }
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: data + Data("\n".utf8))
+        if entries.count < Self.maxMemoryEntries { entries.append(entry) }
+        else if fd < 0 { _failure = "receipt retention is exhausted and there is no receipt file"; return false }
+        guard fd >= 0 else { return true }
+        let line = data + Data("\n".utf8)
+        guard written + line.count <= Self.maxBytes else {
+            _failure = "the receipt file reached its retention bound"; return false
+        }
+        let count = line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        guard count == line.count else { _failure = "a receipt could not be persisted"; return false }
+        written += count
+        return true
     }
 
     /// The Ask field's text exactly as submitted: hashed, so the coordinator
     /// can match it against the case's original prompt hash.
-    func input(_ prompt: String, dispatch: UInt64, session: String) {
-        record("input", ["dispatch": dispatch, "session": session, "input_sha256": Self.sha256(prompt),
-                         "input_length": prompt.count])
+    @discardableResult
+    func input(_ prompt: String, dispatch: UInt64, session: String) -> Bool {
+        var fields: [String: Any] = ["dispatch": dispatch, "input_sha256": Self.sha256(prompt),
+                                     "input_length": prompt.count]
+        if !session.isEmpty { Self.identifier("session", session, into: &fields) }
+        let ok = record("input", fields)
+        if ok { lock.lock(); started.insert(dispatch); lock.unlock() }
+        return ok
     }
 
-    func event(type: String, payload: [String: Any], dispatch: UInt64) {
-        var fields: [String: Any] = ["dispatch": dispatch, "event": type]
+    /// Raw stream telemetry, current or late. Never a visible-result claim.
+    @discardableResult
+    func event(type: String, payload: [String: Any], dispatch: UInt64, current: Bool) -> Bool {
+        var fields: [String: Any] = ["dispatch": dispatch, "current": current]
+        Self.identifier("event", type, into: &fields)
         for key in ["trace_id", "id", "name", "decision", "request_id"] {
-            if let value = payload[key] as? String { fields[key] = value }
+            if let value = payload[key] as? String { Self.identifier(key, value, into: &fields) }
         }
         if type == "text", let text = payload["text"] as? String { fields["text_length"] = text.count }
-        record("event", fields)
+        return record("event", fields)
     }
 
-    func visible(answer: String, dispatch: UInt64) {
-        record("visible", ["dispatch": dispatch, "answer_sha256": Self.sha256(answer), "answer_length": answer.count])
+    /// The finalized result a dispatch displayed, captured at its terminal
+    /// event before the answer is cleared or a queued turn starts. Exactly one
+    /// per started dispatch; a stale (no longer current) terminal is recorded
+    /// as late telemetry and never labels a visible result.
+    @discardableResult
+    func terminal(_ outcome: String, visible: String, dispatch: UInt64, current: Bool,
+                  session: String, trace: String?) -> Bool {
+        var fields: [String: Any] = ["dispatch": dispatch, "outcome": outcome]
+        guard current else { return record("late_terminal", fields) }
+        lock.lock()
+        let fresh = started.contains(dispatch) && !finalized.contains(dispatch)
+        if fresh { finalized.insert(dispatch) }
+        lock.unlock()
+        guard fresh else { record("terminal_refused", fields); return false }
+        fields["answer_sha256"] = Self.sha256(visible)
+        fields["answer_length"] = visible.count
+        fields["rendered"] = !visible.isEmpty
+        if !session.isEmpty { Self.identifier("session", session, into: &fields) }
+        if let trace, !trace.isEmpty { Self.identifier("trace_id", trace, into: &fields) }
+        return record("visible", fields)
     }
 }
 
 /// Native effect sinks in the evaluation build: every one refuses and records.
 enum NotchEvaluationSinks {
     static func blocked(_ what: String, ledger: NotchEvaluationLedger?) -> [String: Any] {
-        ledger?.record("blocked", ["sink": what])
+        var fields: [String: Any] = [:]
+        NotchEvaluationLedger.identifier("sink", what.replacingOccurrences(of: ":", with: "-"), into: &fields)
+        ledger?.record("blocked", fields)
         return ["ok": false, "status": "blocked", "evaluation_blocked": true,
                 "error": "EVALUATION_BLOCKED: \(what) is not performed in the contained evaluation build"]
     }
@@ -144,13 +261,13 @@ enum EvaluationGuard {
     static let nonceHeader = "x-wisp-evaluation-nonce"
     static let pidHeader = "x-wisp-evaluation-pid"
 
-    enum Refusal: Error, Equatable { case origin(String), identity(String), redirect }
+    enum Refusal: Error, Equatable { case origin(String), identity(String), redirect, evidence, incomplete }
 
     /// The request to forward, with the run token, or why it is refused.
     static func admit(_ request: URLRequest, config: NotchEvaluationConfig) -> Result<URLRequest, Refusal> {
         guard let url = request.url, url.scheme == "http", url.host == "127.0.0.1",
               url.port == config.listenPort, url.user == nil, url.password == nil else {
-            return .failure(.origin(request.url?.absoluteString.prefix(120).description ?? "<none>"))
+            return .failure(.origin(request.url?.absoluteString ?? "<none>"))
         }
         var forwarded = request
         forwarded.setValue(config.token, forHTTPHeaderField: tokenHeader)
@@ -172,6 +289,17 @@ enum EvaluationGuard {
         return nil
     }
 
+    /// A refusal as a receipt: URLs are hashed, never stored.
+    static func receipt(_ refusal: Refusal) -> [String: Any] {
+        switch refusal {
+        case .origin(let url): return ["reason": "origin", "url_sha256": NotchEvaluationLedger.sha256(url)]
+        case .identity(let what): return ["reason": "identity", "what": what]
+        case .redirect: return ["reason": "redirect"]
+        case .evidence: return ["reason": "evidence"]
+        case .incomplete: return ["reason": "incomplete"]
+        }
+    }
+
     static func constantTimeEqual(_ a: String, _ b: String) -> Bool {
         let x = Array(a.utf8), y = Array(b.utf8)
         guard x.count == y.count else { return false }
@@ -182,6 +310,11 @@ enum EvaluationGuard {
 /// Intercepts every URLSession.shared request (and any session using the
 /// default protocol classes) and forwards only admitted ones over its own
 /// ephemeral session, streaming the body through so SSE behaves as before.
+///
+/// Every request ends exactly once: a refusal, a connection that closes
+/// before an accepted response, and a cancellation each produce one
+/// sanitized failure (or none after stopLoading), and nothing reaches the
+/// client after that.
 final class EvaluationGuardProtocol: URLProtocol, URLSessionDataDelegate, @unchecked Sendable {
     nonisolated(unsafe) static var config: NotchEvaluationConfig?
     nonisolated(unsafe) static var ledger: NotchEvaluationLedger?
@@ -189,8 +322,10 @@ final class EvaluationGuardProtocol: URLProtocol, URLSessionDataDelegate, @unche
     /// loopback socket); the checks answer forwarded requests in-process.
     nonisolated(unsafe) static var forwardingProtocols: [AnyClass] = []
     private static let forwardedKey = "WispEvaluationForwarded"
+    private let stateLock = NSLock()
     private var session: URLSession?
     private var accepted = false
+    private var finished = false
 
     override class func canInit(with request: URLRequest) -> Bool {
         property(forKey: forwardedKey, in: request) == nil
@@ -198,21 +333,38 @@ final class EvaluationGuardProtocol: URLProtocol, URLSessionDataDelegate, @unche
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    /// Marks the request finished; true only for the first caller.
+    private func finish() -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        if finished { return false }
+        finished = true
+        return true
+    }
+
+    private var isLive: Bool { stateLock.lock(); defer { stateLock.unlock() }; return !finished }
+    private var isAccepted: Bool { stateLock.lock(); defer { stateLock.unlock() }; return accepted && !finished }
+
     private func fail(_ refusal: EvaluationGuard.Refusal) {
-        Self.ledger?.record("refused", ["reason": "\(refusal)"])
+        guard finish() else { return }
+        Self.ledger?.record("refused", EvaluationGuard.receipt(refusal))
+        // A fixed, content-free error: no URL, header or body reaches the caller.
         client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+        session?.invalidateAndCancel()
     }
 
     override func startLoading() {
         guard let config = Self.config else { return fail(.identity("unconfigured")) }
+        // Without healthy evidence nothing more is sent.
+        guard Self.ledger?.healthy ?? false else { return fail(.evidence) }
         switch EvaluationGuard.admit(request, config: config) {
         case .failure(let refusal):
             fail(refusal)
         case .success(let admitted):
             let marked = (admitted as NSURLRequest).mutableCopy() as! NSMutableURLRequest
             URLProtocol.setProperty(true, forKey: Self.forwardedKey, in: marked)
-            Self.ledger?.record("request", ["method": admitted.httpMethod ?? "GET",
-                                            "path": admitted.url?.path ?? ""])
+            guard Self.ledger?.record("request", ["method": admitted.httpMethod ?? "GET",
+                                                  "path_sha256": NotchEvaluationLedger.sha256(admitted.url?.path ?? "")]) == true
+            else { return fail(.evidence) }
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = Self.forwardingProtocols
             configuration.connectionProxyDictionary = [:]
@@ -224,6 +376,8 @@ final class EvaluationGuardProtocol: URLProtocol, URLSessionDataDelegate, @unche
     }
 
     override func stopLoading() {
+        // The loader cancelled: it expects no further callbacks.
+        _ = finish()
         session?.invalidateAndCancel()
         session = nil
     }
@@ -232,30 +386,39 @@ final class EvaluationGuardProtocol: URLProtocol, URLSessionDataDelegate, @unche
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
         fail(.redirect)
-        task.cancel()
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard isLive else { return completionHandler(.cancel) }
         guard let config = Self.config, let http = response as? HTTPURLResponse else {
             completionHandler(.cancel); return fail(.identity("response"))
         }
         if let refusal = EvaluationGuard.accept(http, config: config) {
             completionHandler(.cancel); return fail(refusal)
         }
-        accepted = true
+        stateLock.lock(); accepted = true; stateLock.unlock()
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        if accepted { client?.urlProtocol(self, didLoad: data) }
+        if isAccepted { client?.urlProtocol(self, didLoad: data) }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard accepted else { return }
-        if let error { client?.urlProtocol(self, didFailWithError: error) }
-        else { client?.urlProtocolDidFinishLoading(self) }
+        guard isAccepted else {
+            // Closed, refused or failed before an accepted response: one failure.
+            return fail(.incomplete)
+        }
+        guard finish() else { return }
+        if let error {
+            let code = (error as? URLError)?.code ?? .networkConnectionLost
+            client?.urlProtocol(self, didFailWithError: URLError(code))
+        } else {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        session.finishTasksAndInvalidate()
     }
 }
 
@@ -306,9 +469,16 @@ enum NotchEvaluationHost {
         retained = [model, research, today, settings, setup, corpus]
         // No onCorpusCommand: the /corpus surface reports itself unavailable.
         // No native calendar/reminder/research/sync callbacks: each stays nil.
+        let ledger = NotchEvaluationEnvironment.ledger
         let panel = OverlayPanel {
             OverlayView(model: model, corpus: corpus, researchModel: research, todayModel: today,
                         settings: settings, setup: setup, onClose: {}, onDismiss: {})
+                // No link leaves the surface: Markdown links and any openURL
+                // action are refused and recorded, never handed to the OS.
+                .environment(\.openURL, OpenURLAction { _ in
+                    _ = NotchEvaluationSinks.blocked("open_url", ledger: ledger)
+                    return .discarded
+                })
         }
         panel.isCompact = { model.collapsed }
         model.onResize = { DispatchQueue.main.async { panel.resizeToFit() } }
@@ -319,7 +489,10 @@ enum NotchEvaluationHost {
         model.collapsed = false
         model.closing = false
         Self.panel = panel
-        NotchEvaluationEnvironment.ledger.record("host_ready", [
+        guard ledger.healthy else {
+            fatalError("Notch evaluation receipts are unavailable: \(ledger.failure ?? "unknown")")
+        }
+        ledger.record("host_ready", [
             "run_id": config.runID, "pid": Int(getpid()), "backend_pid": Int(config.backendPID),
             "listen_port": config.listenPort, "surface": "OverlayPanel+OverlayView+OverlayModel",
         ])

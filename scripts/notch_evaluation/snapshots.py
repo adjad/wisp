@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -45,6 +46,10 @@ REFUSED_NAMES = frozenset({"config.yaml", "grants.json", "mcp.json", "gmail.json
 REFUSED_SUFFIXES = (".key", ".pem", ".p12", ".token", ".app", ".dylib", ".so", ".sh", ".command", ".py",
                     ".scpt", ".workflow", ".plist")
 MAX_FILE_BYTES = 64 * 1024 * 1024
+# The installed source layout: every file under these is a captured file.
+INSTALLED_PARTS = ("wisp", "home", "sync")
+# How far ahead of this clock a capture time may be before it is refused.
+CLOCK_SKEW_S = 300.0
 
 # Native sync push bodies a snapshot may hold, by source, with the fields each
 # ingestion handler accepts. Contacts, browser history and any other field are
@@ -111,19 +116,42 @@ def payload_shape_problems(source: str, record) -> list[str]:
     content = body.get(SYNC_CONTENT_FIELD[source])
     if content is not None and not isinstance(content, str):
         problems.append(f"{SYNC_CONTENT_FIELD[source]} must be text")
-    if not isinstance(provenance.get("captured_at"), (int, float)) or not isinstance(provenance.get("reader"), str):
-        problems.append("provenance needs captured_at and reader")
+    if not _timestamp(provenance.get("captured_at")) or not isinstance(provenance.get("reader"), str):
+        problems.append("provenance needs a finite captured_at and a reader")
     if type(provenance.get("complete")) is not bool:
         problems.append("provenance.complete must be observed true or false")
     return problems
 
 
-def payload_problems(source: str, record) -> list[str]:
-    """Why this record may NOT be hydrated as a ready source ([] when it may)."""
+def _timestamp(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def freshness_problem(stamp, *, now: float, max_age_s: float | None, what: str) -> str | None:
+    """Why ``stamp`` is not a current capture time, or None."""
+    if not _timestamp(stamp):
+        return f"{what} has no finite capture time"
+    if stamp > now + CLOCK_SKEW_S:
+        return f"{what} was captured in the future"
+    if max_age_s is not None and now - stamp > max_age_s:
+        return f"{what} is older than the allowed age"
+    return None
+
+
+def payload_problems(source: str, record, *, now: float | None = None,
+                     max_age_s: float | None = None) -> list[str]:
+    """Why this record may NOT be hydrated as a ready source ([] when it may).
+
+    The native capture time is judged itself: a fresh outer snapshot never
+    makes an old native read current.
+    """
     problems = payload_shape_problems(source, record)
     if problems:
         return problems
     body, provenance = record["body"], record["provenance"]
+    if problem := freshness_problem(provenance["captured_at"], now=time.time() if now is None else now,
+                                    max_age_s=max_age_s, what="the native read"):
+        problems.append(problem)
     diagnostics = body.get("diagnostics") if isinstance(body.get("diagnostics"), dict) else {}
     if provenance["complete"] is not True:
         problems.append("the capturing reader did not observe a complete read")
@@ -290,6 +318,23 @@ class Verification:
     problems: list[str] = field(default_factory=list)
     manifest_sha256: str = ""
     age_s: float | None = None
+    # Relative path -> sha256 of every verified captured file.
+    files: dict[str, str] = field(default_factory=dict)
+    # True only for a root that holds no source state and no manifest.
+    empty: bool = False
+
+
+def _provenance_problems(manifest: dict, *, now: float, max_age_s: float | None) -> list[str]:
+    """The outer capture time and every recorded native capture time must be current."""
+    problems = []
+    if problem := freshness_problem(manifest.get("finished_at"), now=now, max_age_s=max_age_s, what="the snapshot"):
+        problems.append(problem)
+    coverage = manifest.get("coverage") if isinstance(manifest.get("coverage"), dict) else {}
+    for key, value in sorted(coverage.items()):
+        if key.startswith("sync:") and isinstance(value, dict):
+            if problem := freshness_problem(value.get("captured_at"), now=now, max_age_s=max_age_s, what=key):
+                problems.append(problem)
+    return problems
 
 
 def verify(dest_root: str | os.PathLike, *, max_age_s: float | None = None) -> Verification:
@@ -322,12 +367,11 @@ def verify(dest_root: str | os.PathLike, *, max_age_s: float | None = None) -> V
             problems.append(f"{rel} is missing")
         elif sha256_file(present[rel]) != entry["sha256"]:
             problems.append(f"{rel} changed since capture")
-    age = None
-    if isinstance(manifest.get("finished_at"), (int, float)):
-        age = time.time() - manifest["finished_at"]
-        if max_age_s is not None and age > max_age_s:
-            problems.append("snapshot is older than the allowed age")
-    return Verification(not problems, problems, recorded, age)
+    now = time.time()
+    problems += _provenance_problems(manifest, now=now, max_age_s=max_age_s)
+    age = now - manifest["finished_at"] if _timestamp(manifest.get("finished_at")) else None
+    files = {rel: e["sha256"] for rel, e in expected.items()}
+    return Verification(not problems, problems, recorded, age, files if not problems else {})
 
 
 def install(dest_root: str | os.PathLike, owned_root: str | os.PathLike) -> None:
@@ -344,33 +388,80 @@ def install(dest_root: str | os.PathLike, owned_root: str | os.PathLike) -> None
         _copy(path, owned / path.relative_to(src))
     (owned / "evidence").mkdir(parents=True, exist_ok=True, mode=0o700)
     shutil.copyfile(src / MANIFEST, owned / "evidence" / MANIFEST)
+    os.chmod(owned / "evidence" / MANIFEST, 0o600)
 
 
-def verify_installed(owned_root: str | os.PathLike, *, max_age_s: float | None = None) -> Verification | None:
-    """Check an installed snapshot before any service import touches it.
+def _installed_files(owned: Path) -> tuple[dict[str, Path], list[str]]:
+    """Every file under the installed source layout, and any link found there."""
+    files: dict[str, Path] = {}
+    problems: list[str] = []
+    for part in INSTALLED_PARTS:
+        top = owned / part
+        if top.is_symlink():
+            problems.append(f"{part}/ is a link")
+            continue
+        if not top.exists():
+            continue
+        if not top.is_dir():
+            problems.append(f"{part} is not a directory")
+            continue
+        for base, dirs, names in os.walk(top, followlinks=False):
+            for name in [*dirs, *names]:
+                path = Path(base) / name
+                rel = str(path.relative_to(owned))
+                if path.is_symlink():
+                    problems.append(f"{rel} is a link")
+                elif name in names:
+                    if path.is_file():
+                        files[rel] = path
+                    else:
+                        problems.append(f"{rel} is not a regular file")
+    return files, problems
 
-    None when the root holds no snapshot. Service state written later (new
-    sessions, migrations) is not compared; only the captured files are.
+
+def verify_installed(owned_root: str | os.PathLike, *, max_age_s: float | None = None,
+                     expected_manifest_sha256: str = "") -> Verification:
+    """Check the complete installed source layout before any service import.
+
+    Runs before the host imports or migrates anything, so every file under
+    wisp/, home/ and sync/ must be a captured file listed in the installed
+    manifest, unchanged and unlinked. A root with no manifest is accepted
+    only when that layout holds no files at all (an explicitly empty
+    synthetic root); populated state without a manifest is refused. When the
+    coordinator bound a manifest digest, the installed one must match it.
     """
     owned = Path(owned_root)
+    present, problems = _installed_files(owned)
     path = owned / "evidence" / MANIFEST
-    if not path.exists():
-        return None
+    if not path.exists() and not path.is_symlink():
+        if expected_manifest_sha256:
+            problems.append("the coordinator bound a snapshot but none is installed")
+        if present:
+            problems.append("source state is present without an installed manifest")
+        return Verification(not problems, problems, "", None, {}, empty=not problems)
     try:
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
+            return Verification(False, problems + ["installed manifest is not a private regular file"])
         manifest = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError:
-        return Verification(False, ["installed manifest is unreadable"])
+    except (OSError, ValueError):
+        return Verification(False, problems + ["installed manifest is unreadable"])
     recorded = manifest.pop("manifest_sha256", "")
-    problems = []
     if hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest() != recorded:
         problems.append("installed manifest was altered")
-    for entry in manifest.get("files", []):
-        target = owned / entry["path"]
-        if target.is_symlink() or not target.is_file():
-            problems.append(f"{entry['path']} is missing or not a regular file")
-        elif sha256_file(target) != entry["sha256"]:
-            problems.append(f"{entry['path']} changed since capture")
-    age = time.time() - manifest["finished_at"] if isinstance(manifest.get("finished_at"), (int, float)) else None
-    if max_age_s is not None and (age is None or age > max_age_s):
-        problems.append("snapshot is older than the allowed age")
-    return Verification(not problems, problems, recorded, age)
+    if expected_manifest_sha256 and recorded != expected_manifest_sha256:
+        problems.append("installed manifest is not the one the coordinator bound")
+    if manifest.get("label") != LABEL:
+        problems.append("installed manifest is not labelled as a snapshot")
+    expected = {e.get("path"): e.get("sha256") for e in manifest.get("files", []) if isinstance(e, dict)}
+    for rel in sorted(set(present) - set(expected)):
+        problems.append(f"{rel} is not in the installed manifest")
+    for rel, digest in sorted(expected.items()):
+        if rel not in present:
+            problems.append(f"{rel} is missing or not a regular file")
+        elif sha256_file(present[rel]) != digest:
+            problems.append(f"{rel} changed since capture")
+    now = time.time()
+    problems += _provenance_problems(manifest, now=now, max_age_s=max_age_s)
+    age = now - manifest["finished_at"] if _timestamp(manifest.get("finished_at")) else None
+    return Verification(not problems, problems, recorded, age, dict(expected) if not problems else {})

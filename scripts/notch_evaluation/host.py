@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:      # stdlib-only siblings; never service code here
+    sys.path.insert(0, str(ROOT))
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # Ports the real app and engine own. The evaluation host never listens on them.
 PRODUCTION_PORTS = frozenset({8765, 8000, 8001})
@@ -87,6 +89,8 @@ _ENV_KEEP = ("LANG", "LC_ALL", "PYTHONHASHSEED")
 
 
 _PRE_GUARD_MODULES = frozenset({"service", "service.paths"})
+# The snapshot verified before import; hydration reads only its files.
+_INSTALLED = None
 
 
 class GuardViolation(PermissionError):
@@ -109,6 +113,9 @@ class HostConfig:
     read_roots: tuple[str, ...] = field(default_factory=tuple)
     # An installed snapshot older than this is refused before serving.
     snapshot_max_age_s: float | None = 7 * 24 * 3600
+    # The installed manifest digest the coordinator reviewed; "" for a root
+    # the coordinator declared empty.
+    snapshot_manifest_sha256: str = ""
 
     @property
     def inference_port(self) -> int | None:
@@ -124,8 +131,23 @@ class HostConfig:
             raise ValueError("run_id must be 4-64 safe characters")
         if not os.path.isabs(self.owned_root):
             raise ValueError("owned_root must be absolute")
+        from scripts.notch_evaluation import lifecycle
+        try:
+            # Location and ownership only: a running root already holds the
+            # launcher's files. Freshness is checked by the launcher's preflight.
+            canonical = lifecycle.validate_root(self.owned_root, fresh=False, allowed_entries=None)
+        except lifecycle.RootError as exc:
+            raise ValueError(f"owned_root: {exc}") from None
+        if not os.path.isdir(canonical):
+            raise ValueError("owned_root must already exist")
+        for root in self.source_roots:
+            real = os.path.realpath(root)
+            if not real.startswith(canonical.rstrip(os.sep) + os.sep):
+                raise ValueError("source roots must be inside the owned root")
         if not 1024 < self.listen_port < 65536 or self.listen_port in PRODUCTION_PORTS:
             raise ValueError("listen_port must be an unprivileged, non-production port")
+        if self.snapshot_manifest_sha256 and not re.fullmatch(r"[0-9a-f]{64}", self.snapshot_manifest_sha256):
+            raise ValueError("snapshot_manifest_sha256 must be a sha256 digest")
         if len(self.token) < 32 or len(self.nonce) < 16:
             raise ValueError("token and nonce must be long random values")
         port = self.inference_port
@@ -330,15 +352,62 @@ def install_http_guard(config: HostConfig) -> None:
             raise GuardViolation(f"evaluation guard refused HTTP {method} {url.host}{url.path[:80]}")
 
     async_send, sync_send = httpx.AsyncClient.send, httpx.Client.send
+    allowed_models = frozenset(config.allowed_models)
+
+    def refuse(model: str, reason: str):
+        from service import evaluation_boundary
+        if evaluation_boundary.active():
+            evaluation_boundary._record("blocked", "inference", {"model": model[:120], "reason": reason})
+        raise GuardViolation(f"evaluation guard refused a completion: {reason}")
+
+    def completion_model(request) -> str | None:
+        """The model a completion names, or None when it is not a plain completion."""
+        if request.method.upper() != "POST" or not request.url.path.endswith("/chat/completions"):
+            return None
+        try:
+            body = json.loads(request.content)
+        except Exception:  # noqa: BLE001 — an unreadable or streamed body is refused
+            refuse("?", "the completion body could not be read")
+        model = body.get("model") if isinstance(body, dict) else None
+        if not isinstance(model, str) or not model:
+            refuse("?", "the completion names no model")
+        if model not in allowed_models:
+            refuse(model, "the model is not a reviewed evaluation model")
+        return model
+
+    def status_request(client, request):
+        return client.build_request("GET", request.url.copy_with(path="/v1/models/status", query=None))
+
+    def resident(model: str, response) -> bool:
+        try:
+            rows = response.json().get("models")
+        except Exception:  # noqa: BLE001
+            return False
+        return isinstance(rows, list) and any(isinstance(r, dict) and r.get("id") == model
+                                              and r.get("loaded") is True for r in rows)
 
     async def guarded_async_send(self, request, *args, **kwargs):
         check(request)
         kwargs["follow_redirects"] = False
+        if (model := completion_model(request)) is not None:
+            # Every completion, direct or nested, names a reviewed model that
+            # is already resident; generating would otherwise load it.
+            probe = status_request(self, request)
+            check(probe)
+            answer = await async_send(self, probe, follow_redirects=False)
+            if answer.status_code != 200 or not resident(model, answer):
+                refuse(model, "the model is not resident; loading it is not permitted")
         return await async_send(self, request, *args, **kwargs)
 
     def guarded_sync_send(self, request, *args, **kwargs):
         check(request)
         kwargs["follow_redirects"] = False
+        if (model := completion_model(request)) is not None:
+            probe = status_request(self, request)
+            check(probe)
+            answer = sync_send(self, probe, follow_redirects=False)
+            if answer.status_code != 200 or not resident(model, answer):
+                refuse(model, "the model is not resident; loading it is not permitted")
         return sync_send(self, request, *args, **kwargs)
 
     httpx.AsyncClient.send = guarded_async_send
@@ -417,11 +486,17 @@ class IdentityMiddleware:
         if not hmac.compare_digest(token, self.config.token.encode()):
             return await self._refuse(send, 401, "missing or wrong evaluation token")
         method, path = scope["method"].upper(), scope["path"]
+        from service import evaluation_boundary
+        if (failure := evaluation_boundary.evidence_failure()) and path != "/evaluation/identity":
+            # Mandatory evidence can no longer be kept: the batch is
+            # inconclusive and nothing more is served.
+            return await self._refuse(send, 503, f"evaluation evidence unavailable: {failure}")
         if not any(method == m and re.fullmatch(p, path) for m, p in ENDPOINTS):
             return await self._refuse(send, 403, f"{method} {path[:80]} is not an evaluated endpoint")
         if path == "/evaluation/identity":
             body = json.dumps({"service": "wisp-notch-evaluation", "run_id": self.config.run_id,
-                               "pid": os.getpid(), "nonce": self.config.nonce}).encode()
+                               "pid": os.getpid(), "nonce": self.config.nonce,
+                               "evidence_failure": evaluation_boundary.evidence_failure()}).encode()
             await send({"type": "http.response.start", "status": 200,
                         "headers": [(b"content-type", b"application/json"), *self.stamp]})
             return await send({"type": "http.response.body", "body": body})
@@ -518,7 +593,13 @@ def _scheduled_receipt(db_path: Path, source: str) -> tuple[dict | None, int]:
         return None, int(count)
 
 
-async def hydrate_sources(config: HostConfig) -> dict:
+def _fresh(stamp, now: float, max_age_s: float | None) -> bool:
+    import math
+    return (isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and math.isfinite(stamp)
+            and stamp <= now + 300 and (max_age_s is None or now - stamp <= max_age_s))
+
+
+async def hydrate_sources(config: HostConfig, installed=None) -> dict:
     """Give the normal reads exactly the readiness native sync would have.
 
     Runs before the first request, in-process, with no publication, no
@@ -540,12 +621,21 @@ async def hydrate_sources(config: HostConfig) -> dict:
     from service.assistant import scheduler
     from service.assistant.sync_status import source_status
     owned = Path(config.owned_root)
-    report: dict = {"hydrated_at": time.time(), "label": snapshots.LABEL, "sources": {}}
+    installed = installed if installed is not None else _INSTALLED
+    listed = dict(getattr(installed, "files", None) or {})
+    now = time.time()
+    report: dict = {"hydrated_at": now, "label": snapshots.LABEL, "sources": {},
+                    "installed_manifest": getattr(installed, "manifest_sha256", "")}
     for source in _SCHEDULED_SOURCES:
-        receipt, count = _scheduled_receipt(owned / "wisp" / "assistant.db", source)
+        # Readiness only for a captured assistant.db that was in the verified
+        # snapshot; its receipt must be complete and its capture time current.
+        receipt, count = (_scheduled_receipt(owned / "wisp" / "assistant.db", source)
+                          if "wisp/assistant.db" in listed else (None, 0))
+        stamp = (receipt.get("snapshot_started_at") or receipt.get("last_sync")) if isinstance(receipt, dict) else None
         complete = (isinstance(receipt, dict) and receipt.get("available") is True and not receipt.get("syncing")
                     and (receipt.get("diagnostics") or {}).get("partial") is not True
-                    and (receipt.get("diagnostics") or {}).get("complete") is not False)
+                    and (receipt.get("diagnostics") or {}).get("complete") is not False
+                    and _fresh(stamp, now, config.snapshot_max_age_s))
         if complete:
             reason = "complete native read captured"
             scheduler.record_sync(source, count, diagnostics={
@@ -561,15 +651,18 @@ async def hydrate_sources(config: HostConfig) -> dict:
     handlers = {"emails": main.assistant_sync_emails, "messages": main.assistant_sync_messages,
                 "notes": main.assistant_sync_notes}
     for source, status_id in _PUSHED_SOURCES.items():
-        path = owned / "sync" / f"{source}.json"
+        rel = f"sync/{source}.json"
+        path = owned / rel
         record = None
-        if path.exists() and not path.is_symlink():
-            try:
-                record = json.loads(path.read_text(encoding="utf-8"))
-            except ValueError:
-                record = None
-        problems = (snapshots.payload_problems(source, record) if record is not None
-                    else ["not in this evaluation snapshot"])
+        if rel in listed and path.is_file() and not path.is_symlink():
+            # Re-hashed now: the file must still be the verified capture.
+            if snapshots.sha256_file(path) == listed[rel]:
+                try:
+                    record = json.loads(path.read_text(encoding="utf-8"))
+                except ValueError:
+                    record = None
+        problems = (snapshots.payload_problems(source, record, now=now, max_age_s=config.snapshot_max_age_s)
+                    if record is not None else ["not in this verified evaluation snapshot"])
         if not problems:
             body = dict(record["body"])
             if source == "notes":
@@ -651,16 +744,22 @@ def start(config: HostConfig, *, client_factory=None):
         sys.path.insert(0, str(ROOT))
     # Before any service import: migrations would otherwise touch the copy.
     from scripts.notch_evaluation import snapshots
-    verified = snapshots.verify_installed(config.owned_root, max_age_s=config.snapshot_max_age_s)
-    if verified is not None and not verified.ok:
+    global _INSTALLED
+    verified = snapshots.verify_installed(config.owned_root, max_age_s=config.snapshot_max_age_s,
+                                          expected_manifest_sha256=config.snapshot_manifest_sha256)
+    if not verified.ok:
         raise GuardViolation("installed snapshot failed verification: " + "; ".join(verified.problems))
+    _INSTALLED = verified
     install_http_guard(config)
     latch_boundary(config)
     return build_app(config, client_factory=client_factory)
 
 
 # Top-level outcome and the separately counted dimensions of every case.
-STATUSES = ("NOT_RUN", "PASSED", "FAILED", "BLOCKED")
+STATUSES = ("NOT_RUN", "IN_PROGRESS", "PASSED", "FAILED", "BLOCKED")
+TERMINAL = ("PASSED", "FAILED", "BLOCKED")
+# A multi-segment case ends at its worst segment outcome.
+_SEVERITY = {"PASSED": 0, "BLOCKED": 1, "FAILED": 2}
 DIMENSIONS = {
     "input_delivered": ("YES", "NO"),
     "response_contract": ("PASS", "FAIL", "UNVERIFIED"),
@@ -669,6 +768,7 @@ DIMENSIONS = {
     "source_coverage": ("COVERED", "PARTIAL", "MISSING", "NOT_NEEDED"),
     "safety": ("PASS", "FAIL", "UNVERIFIED"),
 }
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 class LedgerError(ValueError):
@@ -683,6 +783,12 @@ class CaseLedger:
     the file is replaced atomically after every write. The text the native
     Ask field received is checked against the case's prompt hash, so a
     rewritten or substituted prompt cannot be recorded as that case.
+
+    A case delivered as several turns needs its segmentation approved once,
+    bound to the original whole-entry hash, before any attempt; the expected
+    segment hashes and the next turn come from that record, never the caller.
+    A case is terminal only when every segment was delivered (or it was
+    explicitly abandoned), so a resumed run continues a partial case.
     """
 
     def __init__(self, path: str | os.PathLike, *, corpus_sha256: str, expected_cases: int) -> None:
@@ -694,8 +800,26 @@ class CaseLedger:
         ids = [c.get("case_id") for c in cases or []]
         if len(ids) != expected_cases or len(set(ids)) != expected_cases:
             raise LedgerError("ledger must hold every case id exactly once")
+        for case in cases:
+            if case.get("status") not in STATUSES or not _HEX64.fullmatch(str(case.get("prompt_sha256", ""))):
+                raise LedgerError(f"case {case.get('case_id')} has an invalid status or prompt hash")
+            seg = case.get("segmentation")
+            if seg is not None and (seg.get("entry_sha256") != case["prompt_sha256"]
+                                    or not self._valid_segments(seg.get("segments"))):
+                raise LedgerError(f"case {case['case_id']} has a segmentation not bound to its entry")
         self.data = data
         self.by_id = {c["case_id"]: c for c in cases}
+
+    @staticmethod
+    def _valid_segments(segments) -> bool:
+        return (isinstance(segments, list) and len(segments) >= 2
+                and all(isinstance(h, str) and _HEX64.fullmatch(h) for h in segments))
+
+    def _case(self, case_id: int) -> dict:
+        case = self.by_id.get(case_id)
+        if case is None:
+            raise LedgerError(f"unknown case {case_id}")
+        return case
 
     def _save(self) -> None:
         tmp = self.path.with_name(self.path.name + ".tmp")
@@ -703,23 +827,52 @@ class CaseLedger:
         os.chmod(tmp, 0o600)
         os.replace(tmp, self.path)
 
+    @staticmethod
+    def segments(case: dict) -> list[str]:
+        seg = case.get("segmentation")
+        return list(seg["segments"]) if seg else [case["prompt_sha256"]]
+
+    def approve_segmentation(self, case_id: int, *, entry_sha256: str, segment_hashes: list[str],
+                             approved_by: str) -> dict:
+        """Record, once and before any attempt, how a case's entry is split into turns."""
+        case = self._case(case_id)
+        if case.get("segmentation") is not None:
+            raise LedgerError(f"case {case_id} already has an approved segmentation")
+        if case.get("attempts"):
+            raise LedgerError(f"case {case_id} already has attempts; segmentation comes first")
+        if entry_sha256 != case["prompt_sha256"]:
+            raise LedgerError("segmentation must be bound to the case's original entry hash")
+        if not self._valid_segments(list(segment_hashes)) or not approved_by:
+            raise LedgerError("a segmentation needs two or more segment hashes and an approver")
+        case["segmentation"] = {"entry_sha256": entry_sha256, "segments": list(segment_hashes),
+                                "approved_by": approved_by, "approved_at": time.time()}
+        self._save()
+        return case["segmentation"]
+
+    def next_turn(self, case_id: int) -> int | None:
+        """The turn a resumed run delivers next, or None when the case is terminal."""
+        case = self._case(case_id)
+        return None if case["status"] in TERMINAL else int(case.get("delivered_turns", 0))
+
     def record_attempt(self, case_id: int, *, run_id: str, attempt_id: str, delivered_sha256: str,
                        receipts: dict, status: str, dimensions: dict[str, str],
-                       turn_index: int = 0, multiturn_hashes: tuple[str, ...] = ()) -> dict:
-        case = self.by_id.get(case_id)
-        if case is None:
-            raise LedgerError(f"unknown case {case_id}")
-        if status not in STATUSES[1:]:
-            raise LedgerError(f"status must be one of {STATUSES[1:]}")
+                       turn_index: int = 0) -> dict:
+        case = self._case(case_id)
+        if case["status"] in TERMINAL:
+            raise LedgerError(f"case {case_id} is already {case['status']}")
+        if status not in TERMINAL:
+            raise LedgerError(f"status must be one of {TERMINAL}")
         if set(dimensions) != set(DIMENSIONS) or any(
                 dimensions[k] not in allowed for k, allowed in DIMENSIONS.items()):
             raise LedgerError("every dimension needs one allowed value")
-        if any(a["attempt_id"] == attempt_id for a in case.get("attempts", [])):
+        if any(a["attempt_id"] == attempt_id for c in self.by_id.values() for a in c.get("attempts", [])):
             raise LedgerError(f"attempt {attempt_id} is already recorded")
-        # A multi-turn case delivers its segments in order; a single-turn
-        # case must deliver exactly the original entry.
-        expected = multiturn_hashes[turn_index] if multiturn_hashes else case["prompt_sha256"]
-        delivered_ok = delivered_sha256 == expected
+        segments = self.segments(case)
+        delivered_turns = int(case.get("delivered_turns", 0))
+        # Turns go in order; only the next undelivered turn may be (re)tried.
+        if type(turn_index) is not int or turn_index != delivered_turns:
+            raise LedgerError(f"case {case_id} expects turn {delivered_turns}, not {turn_index!r}")
+        delivered_ok = delivered_sha256 == segments[turn_index]
         if not delivered_ok and dimensions["input_delivered"] == "YES":
             raise LedgerError("delivered text does not match the case's original input")
         if case.get("risk_tag") in ("W", "S") and dimensions["requested_effect"] == "NOT_REQUESTED":
@@ -738,14 +891,35 @@ class CaseLedger:
                    "status": status, "dimensions": dict(dimensions), "receipts": dict(receipts),
                    "recorded_at": time.time()}
         case.setdefault("attempts", []).append(attempt)
-        case["status"] = status
+        if delivered_ok and dimensions["input_delivered"] == "YES":
+            case["delivered_turns"] = delivered_turns + 1
+            case.setdefault("segment_status", []).append(status)
+        # Terminal only once every segment arrived; the worst segment decides.
+        if case.get("delivered_turns", 0) == len(segments):
+            case["status"] = max(case["segment_status"], key=_SEVERITY.__getitem__)
+        else:
+            case["status"] = "IN_PROGRESS"
         self._save()
         return attempt
 
+    def abandon_case(self, case_id: int, *, status: str, reason: str) -> dict:
+        """End a case that cannot deliver its remaining turns; never PASSED."""
+        case = self._case(case_id)
+        if case["status"] in TERMINAL:
+            raise LedgerError(f"case {case_id} is already {case['status']}")
+        if status not in ("FAILED", "BLOCKED") or not reason:
+            raise LedgerError("an abandoned case is FAILED or BLOCKED, with a reason")
+        prior = case.get("segment_status", [])
+        case["status"] = max([*prior, status], key=_SEVERITY.__getitem__)
+        case["abandoned"] = {"reason": reason[:200], "at_turn": int(case.get("delivered_turns", 0)),
+                             "at": time.time()}
+        self._save()
+        return case
+
     def next_case(self) -> int | None:
-        """The first case still NOT_RUN, in corpus order: where a resumed run continues."""
+        """The first case not yet terminal, in corpus order: where a resumed run continues."""
         for case_id in sorted(self.by_id):
-            if self.by_id[case_id]["status"] == "NOT_RUN":
+            if self.by_id[case_id]["status"] not in TERMINAL:
                 return case_id
         return None
 
@@ -757,7 +931,7 @@ class CaseLedger:
             totals["status"][case["status"]] += 1
             attempts = case.get("attempts", [])
             totals["attempts"] += len(attempts)
-            if attempts:
+            if attempts and case["status"] in TERMINAL:
                 for key, value in attempts[-1]["dimensions"].items():
                     totals["dimensions"][key][value] += 1
         assert sum(totals["status"].values()) == totals["cases"]

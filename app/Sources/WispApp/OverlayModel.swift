@@ -150,6 +150,13 @@ final class OverlayModel: ObservableObject {
     @Published var tab: NotchTab = .ask {
         didSet {
             guard tab != oldValue else { return }
+            #if WISP_NOTCH_EVALUATION
+            // Ask only: Brief, Day and Research read and act on sources the
+            // evaluation does not cover. Assigning in didSet does not re-enter it.
+            _ = NotchEvaluationSinks.blocked("tab_" + "\(tab)", ledger: NotchEvaluationEnvironment.ledger)
+            tab = .ask
+            return
+            #endif
             // A research plan holds the prompt queue only while it is on screen.
             // Leaving the tab lets a question asked in Ask, or a brief, run.
             if oldValue == .research { releaseResearchDispatch() }
@@ -584,6 +591,20 @@ final class OverlayModel: ObservableObject {
 
     private func start(_ dispatch: PromptDispatch) {
         guard case .prompt(let submission) = dispatch.work else { return }
+        #if WISP_NOTCH_EVALUATION
+        // Research mode, or a turn whose input receipt cannot be kept, never
+        // runs: the dispatch is retired without sending anything.
+        let ledger = NotchEvaluationEnvironment.ledger
+        if submission.researchMode || !ledger.healthy
+            || !ledger.input(submission.text, dispatch: dispatch.id, session: sessionId) {
+            _ = NotchEvaluationSinks.blocked(submission.researchMode ? "research" : "turn_without_evidence",
+                                             ledger: ledger)
+            showTransientNotice(submission.researchMode ? "Research is off in the evaluation build."
+                                : "Evaluation evidence is unavailable, so nothing more is sent.", duration: 12)
+            completeSubmission(dispatch.id)
+            return
+        }
+        #endif
         // Includes empty-Return recovery and queued dispatches, not just typed
         // prompts: their answers must not render behind the corpus surface.
         onHideCorpus()
@@ -596,9 +617,6 @@ final class OverlayModel: ObservableObject {
             return
         }
         let prompt = submission.text
-        #if WISP_NOTCH_EVALUATION
-        NotchEvaluationEnvironment.ledger.input(prompt, dispatch: dispatch.id, session: sessionId)
-        #endif
         turns.append(Turn(role: "user", text: prompt))
         answer = ""; reasoning = ""; showReasoning = false; activity = []
         role = ""; modelAbbrev = ""; routeSource = ""; statusText = ""
@@ -889,6 +907,16 @@ final class OverlayModel: ObservableObject {
     }
 
     func loadAttachment(url: URL) {
+        #if WISP_NOTCH_EVALUATION
+        // Only a regular file inside the snapshot's source roots, read from
+        // its resolved path so a link swapped in later cannot redirect it.
+        guard let admitted = NotchEvaluationSources.admit(url, config: NotchEvaluationEnvironment.config) else {
+            _ = NotchEvaluationSinks.blocked("attachment_outside_sources", ledger: NotchEvaluationEnvironment.ledger)
+            showTransientNotice("Only files from the evaluation snapshot can be attached.")
+            return
+        }
+        let url = admitted
+        #endif
         let ext = url.pathExtension.lowercased()
         let mime = (ext == "jpg" || ext == "jpeg") ? "jpeg" : ext
         loadAttachment(name: url.lastPathComponent) {
@@ -917,6 +945,11 @@ final class OverlayModel: ObservableObject {
     }
 
     func attach(name: String, dataURL: String) {
+        #if WISP_NOTCH_EVALUATION
+        // Pasted or dropped data has no source-root provenance.
+        _ = NotchEvaluationSinks.blocked("attach_data", ledger: NotchEvaluationEnvironment.ledger)
+        return
+        #endif
         cancelAttachmentRead()
         attachedImageName = name
         attachedImage = dataURL
@@ -1140,12 +1173,13 @@ final class OverlayModel: ObservableObject {
 
     private func handle(_ ev: WispClient.Event, dispatchID: UInt64) {
         #if WISP_NOTCH_EVALUATION
-        // Recorded before the currency check, so late events are visible too.
-        NotchEvaluationEnvironment.ledger.event(type: ev.type, payload: ev.payload, dispatch: dispatchID)
-        defer {
-            if ev.type == "done" || ev.type == "error" {
-                NotchEvaluationEnvironment.ledger.visible(answer: answer, dispatch: dispatchID)
-            }
+        // Raw telemetry before the currency check, so late events are kept;
+        // a stale terminal never claims a visible result (see terminal()).
+        let ledger = NotchEvaluationEnvironment.ledger
+        let current = submissionState.isCurrent(dispatchID)
+        ledger.event(type: ev.type, payload: ev.payload, dispatch: dispatchID, current: current)
+        if !current && (ev.type == "done" || ev.type == "error") {
+            ledger.terminal(ev.type, visible: "", dispatch: dispatchID, current: false, session: sessionId, trace: nil)
         }
         #endif
         guard submissionState.isCurrent(dispatchID) else { return }
@@ -1285,6 +1319,11 @@ final class OverlayModel: ObservableObject {
             flushPendingDelta()
             let gotNothing = answer.isEmpty && activity.isEmpty && role.isEmpty
             if ev.bool("dropped") && gotNothing {
+                #if WISP_NOTCH_EVALUATION
+                // Nothing was displayed for this dispatch; its prompt goes back.
+                ledger.terminal("dropped", visible: "", dispatch: dispatchID, current: true,
+                                session: sessionId, trace: turnTraceID)
+                #endif
                 lastDroppedReport = ["surface": "chat", "client_outcome": "connection_dropped", "journal_available": false]
                 if let id = turnTraceID { lastDroppedReport?["trace_id"] = id }
                 // One key per dropped turn, so reopening its report keeps the note.
@@ -1330,6 +1369,11 @@ final class OverlayModel: ObservableObject {
                 t.errorDetail = detail.isEmpty ? nil : detail
                 applyDebugFields(to: &t)
                 turns.append(t)
+                #if WISP_NOTCH_EVALUATION
+                // Exactly the error turn just displayed, for this dispatch.
+                ledger.terminal("error", visible: t.text, dispatch: dispatchID, current: true,
+                                session: sessionId, trace: turnTraceID)
+                #endif
                 answer = ""; activity = []
                 completedDispatch = true
             }
@@ -1338,6 +1382,12 @@ final class OverlayModel: ObservableObject {
             // in the throttle buffer (up to ~60ms worth) would be silently
             // dropped instead of appearing in the finished reply.
             flushPendingDelta()
+            #if WISP_NOTCH_EVALUATION
+            // The complete flushed reply, before it is cleared and before a
+            // queued turn can start.
+            ledger.terminal("done", visible: answer, dispatch: dispatchID, current: true,
+                            session: sessionId, trace: turnTraceID)
+            #endif
             // Move the finished reply into the conversation history so the next
             // turn renders below it. Carry this turn's tool-call activity along
             // with it (and clear the live copy) — previously `activity` was

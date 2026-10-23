@@ -15,6 +15,11 @@ function object and code object sealed from the registry after import, not by
 its name, category or any metadata a tool declares about itself. Path
 arguments must resolve inside the evaluation's source roots.
 
+Receipts are mandatory evidence. Their file must be a private regular file
+inside the owned root; if a receipt cannot be persisted, or the retention
+bound is reached, the boundary records a sticky evidence failure and from then
+on blocks every dispatch, so a run never continues without its evidence.
+
 This is an in-process control. Arbitrary code in the same process could still
 reach native I/O, which is why the host also runs under an OS sandbox profile
 and an irreversible audit hook. The boundary never grants authority that
@@ -32,7 +37,8 @@ import types
 from dataclasses import dataclass, field
 
 BLOCKED_MARKER = "EVALUATION_BLOCKED"
-_MAX_RECEIPTS = 10_000
+_MAX_RECEIPTS = 10_000             # in-memory copy only; the file is the record
+_MAX_RECEIPT_BYTES = 64 * 1024 * 1024
 # Hub events that carry no effect and no private content. Everything else is refused.
 _INERT_EVENTS = frozenset({"changed", "heartbeat", "hello"})
 
@@ -79,6 +85,9 @@ class _State:
     sealed: dict[str, _Sealed] | None = None
     receipts: list[dict] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    fd: int | None = None
+    written: int = 0
+    failure: str | None = None
 
 
 _state: _State | None = None
@@ -96,10 +105,35 @@ def latch(context: Context) -> None:
         raise EvaluationBlockedError("evaluation boundary is already latched")
     if not isinstance(context, Context) or not context.run_id or not os.path.isabs(context.owned_root):
         raise ValueError("an evaluation context needs a run id and an absolute owned root")
-    _state = _State(context=context)
+    fd = _open_receipts(context.receipts_path, context.owned_root) if context.receipts_path else None
+    _state = _State(context=context, fd=fd)
     _Module._frozen = True
     _record("latched", "boundary", {"run_id": context.run_id,
                                     "reads": sorted(b.tool for b in context.reads)})
+
+
+def _open_receipts(path: str, owned_root: str) -> int:
+    """A private, regular, append-only receipt file inside the owned root."""
+    import stat
+    owned = os.path.realpath(owned_root)
+    parent = os.path.realpath(os.path.dirname(path))
+    if not os.path.isabs(path) or not (parent == owned or parent.startswith(owned.rstrip(os.sep) + os.sep)):
+        raise ValueError("the receipt file must be inside the owned root")
+    try:
+        fd = os.open(os.path.join(parent, os.path.basename(path)),
+                     os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), 0o600)
+    except OSError as exc:
+        raise ValueError(f"the receipt file cannot be opened: {exc.strerror}") from None
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+        os.close(fd)
+        raise ValueError("the receipt file must be a private regular file owned by this user")
+    return fd
+
+
+def evidence_failure() -> str | None:
+    """Why mandatory evidence can no longer be kept, or None. Sticky once set."""
+    return None if _state is None else _state.failure
 
 
 def active() -> bool:
@@ -160,16 +194,22 @@ def _record(outcome: str, sink: str, detail: dict) -> dict:
                "outcome": outcome, "sink": sink, "at": time.time(), **detail}
     if _state is None:
         return receipt
+    line = (json.dumps(receipt, sort_keys=True, default=str) + "\n").encode("utf-8", "replace")
     with _state.lock:
         if len(_state.receipts) < _MAX_RECEIPTS:
             _state.receipts.append(receipt)
-        path = _state.context.receipts_path
-    if path:
-        try:
-            with open(path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(receipt, sort_keys=True, default=str) + "\n")
-        except OSError:
-            pass  # the in-memory ledger still holds it; the host checks both
+        elif _state.fd is None and _state.failure is None:
+            _state.failure = "receipt retention is exhausted and there is no receipt file"
+        if _state.fd is not None and _state.failure is None:
+            if _state.written + len(line) > _MAX_RECEIPT_BYTES:
+                _state.failure = "the receipt file reached its retention bound"
+            else:
+                try:
+                    if os.write(_state.fd, line) != len(line):
+                        raise OSError("short write")
+                    _state.written += len(line)
+                except OSError as exc:
+                    _state.failure = f"a receipt could not be persisted ({exc})"[:200]
     return receipt
 
 
@@ -196,7 +236,9 @@ def tool_dispatch_problem(tool, args: dict) -> str | None:
     reason = None
     sealed = (_state.sealed or {}).get(name)
     func = getattr(tool, "func", None)
-    if _state.sealed is None:
+    if _state.failure is not None:
+        reason = "evaluation evidence can no longer be kept"
+    elif _state.sealed is None:
         reason = "reviewed reads are not sealed"
     elif sealed is None:
         reason = "not a reviewed read"

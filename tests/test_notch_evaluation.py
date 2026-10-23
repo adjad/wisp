@@ -37,6 +37,7 @@ from scripts.notch_evaluation import snapshots  # noqa: E402
 SCRIPT: dict = {"tool": None, "args": {}}
 ENGINE_LOG: list[tuple[str, str]] = []
 MODELS: list[str] = []
+NOT_RESIDENT: set[str] = set()
 
 
 def _synthetic_client():
@@ -47,6 +48,8 @@ def _synthetic_client():
     from service.inference.omlx_client import OMLXClient
 
     MODELS[:] = sorted({role_to_model(role) for role in ("agent", "fast", "general")})
+    # The roster must be reviewed: the guard refuses any other completion.
+    assert set(MODELS) <= set(CONFIG.allowed_models), (MODELS, CONFIG.allowed_models)
 
     def handler(request):
         path = request.url.path
@@ -54,7 +57,7 @@ def _synthetic_client():
         if path == "/v1/models":
             return httpx.Response(200, json={"data": [{"id": m} for m in MODELS]})
         if path == "/v1/models/status":
-            return httpx.Response(200, json={"models": [{"id": m, "loaded": True} for m in MODELS]})
+            return httpx.Response(200, json={"models": [{"id": m, "loaded": m not in NOT_RESIDENT} for m in MODELS]})
         if path == "/health":
             return httpx.Response(200, json={"status": "ok"})
         body = json.loads(request.content)
@@ -88,7 +91,8 @@ def _synthetic_client():
 CONFIG = evaluation_host.HostConfig(
     run_id="qualify-offline", owned_root=str(OWNED), listen_port=PORT, token=TOKEN, nonce=NONCE,
     source_roots=(str(OWNED / "home"),), inference_url=f"http://127.0.0.1:{ENGINE_PORT}",
-    allowed_models=("Ling-3.0-tiny-oQ6e", "Ornith-1.0-9B"))
+    # Empty synthetic state resolves every text role to the oQ4e default.
+    allowed_models=("Ling-3.0-tiny-oQ4e", "Ling-3.0-tiny-oQ6e", "Ornith-1.0-9B"))
 APP = evaluation_host.start(CONFIG, client_factory=_synthetic_client)
 
 from service import evaluation_boundary as boundary  # noqa: E402
@@ -412,7 +416,7 @@ def test_ask_turns_read_continue_and_block():
                                                          "debug": False}))
             kinds = [e["type"] for e in first]
             assert kinds[0] == "session" and kinds[-1] == "done"
-            assert any(e["type"] == "tool_result" and "SYNTHETIC-BRIEF-7" in str(e.get("result")) for e in first), [(e["type"], e.get("name"), str(e.get("result") or e.get("text"))[:80]) for e in first]
+            assert any(e["type"] == "tool_result" and "SYNTHETIC-BRIEF-7" in str(e.get("result")) for e in first), first
             sid = first[0]["id"]
             SCRIPT.update(tool="read_file", args={"path": "/etc/hosts"})
             second = events(await call("POST", "/agent", {"prompt": "now read /etc/hosts", "session_id": sid,
@@ -537,22 +541,37 @@ def test_snapshot_capture_is_scoped_consistent_and_verified():
         snapshots.capture(source, state, out, scope)
 
 
-def test_ledger_binds_inputs_and_counts_dimensions_separately():
+def _sha(text: str) -> str:
     import hashlib
-    sha = lambda text: hashlib.sha256(text.encode()).hexdigest()  # noqa: E731
-    cases = [{"case_id": i, "risk_tag": tag, "prompt_sha256": sha(f"synthetic prompt {i}"), "status": "NOT_RUN",
-              "attempts": []} for i, tag in ((1, "R"), (2, "W"), (3, "R"))]
-    path = OWNED / "evidence" / "synthetic-ledger.json"
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+GOOD = {"input_delivered": "YES", "response_contract": "PASS", "factual_correctness": "UNVERIFIED",
+        "requested_effect": "NOT_REQUESTED", "source_coverage": "COVERED", "safety": "PASS"}
+
+
+def _ledger(name: str, tags) -> Path:
+    cases = [{"case_id": i, "risk_tag": tag, "prompt_sha256": _sha(f"synthetic prompt {i}"), "status": "NOT_RUN",
+              "attempts": []} for i, tag in enumerate(tags, start=1)]
+    path = OWNED / "evidence" / name
     path.write_text(json.dumps({"schema_version": 1, "corpus_sha256": "c" * 64, "cases": cases}))
+    return path
+
+
+def test_ledger_binds_inputs_and_counts_dimensions_separately():
+    sha = _sha
+    path = _ledger("synthetic-ledger.json", ("R", "W", "R"))
     with pytest.raises(evaluation_host.LedgerError):
         evaluation_host.CaseLedger(path, corpus_sha256="d" * 64, expected_cases=3)
     ledger = evaluation_host.CaseLedger(path, corpus_sha256="c" * 64, expected_cases=3)
-    good = {"input_delivered": "YES", "response_contract": "PASS", "factual_correctness": "UNVERIFIED",
-            "requested_effect": "NOT_REQUESTED", "source_coverage": "COVERED", "safety": "PASS"}
+    good = GOOD
     ledger.record_attempt(1, run_id="r", attempt_id="1-a", delivered_sha256=sha("synthetic prompt 1"),
                           receipts={"session": "s1"}, status="PASSED", dimensions=good)
+    with pytest.raises(evaluation_host.LedgerError):        # a terminal case takes no more attempts
+        ledger.record_attempt(1, run_id="r", attempt_id="1-b", delivered_sha256=sha("synthetic prompt 1"),
+                              receipts={}, status="PASSED", dimensions=good)
     with pytest.raises(evaluation_host.LedgerError):        # duplicate attempt id
-        ledger.record_attempt(1, run_id="r", attempt_id="1-a", delivered_sha256=sha("synthetic prompt 1"),
+        ledger.record_attempt(3, run_id="r", attempt_id="1-a", delivered_sha256=sha("synthetic prompt 3"),
                               receipts={}, status="PASSED", dimensions=good)
     with pytest.raises(evaluation_host.LedgerError):        # substituted input
         ledger.record_attempt(3, run_id="r", attempt_id="3-a", delivered_sha256=sha("rewritten prompt"),
@@ -569,8 +588,73 @@ def test_ledger_binds_inputs_and_counts_dimensions_separately():
     resumed = evaluation_host.CaseLedger(path, corpus_sha256="c" * 64, expected_cases=3)
     assert resumed.next_case() == 3
     counts = resumed.counts()
-    assert counts["status"] == {"NOT_RUN": 1, "PASSED": 1, "FAILED": 0, "BLOCKED": 1}
+    assert counts["status"] == {"NOT_RUN": 1, "IN_PROGRESS": 0, "PASSED": 1, "FAILED": 0, "BLOCKED": 1}
     assert counts["dimensions"]["requested_effect"]["BLOCKED"] == 1 and counts["attempts"] == 2
+
+
+def test_multiturn_segments_are_bound_once_and_complete_only_when_all_arrive():
+    path = _ledger("synthetic-multiturn.json", ("R", "R", "R"))
+    ledger = evaluation_host.CaseLedger(path, corpus_sha256="c" * 64, expected_cases=3)
+    seg = [_sha("segment one"), _sha("segment two")]
+    # A caller cannot opt a single-turn case into arbitrary hashes: the
+    # parameter no longer exists, and only the approved record counts.
+    with pytest.raises(TypeError):
+        ledger.record_attempt(1, run_id="r", attempt_id="x", delivered_sha256=_sha("rewritten"),
+                              receipts={}, status="PASSED", dimensions=GOOD, multiturn_hashes=(_sha("rewritten"),))
+    with pytest.raises(evaluation_host.LedgerError):        # not bound to the original entry
+        ledger.approve_segmentation(1, entry_sha256=_sha("another entry"), segment_hashes=seg, approved_by="coord")
+    with pytest.raises(evaluation_host.LedgerError):        # one segment is not a segmentation
+        ledger.approve_segmentation(1, entry_sha256=_sha("synthetic prompt 1"), segment_hashes=seg[:1],
+                                    approved_by="coord")
+    ledger.approve_segmentation(1, entry_sha256=_sha("synthetic prompt 1"), segment_hashes=seg, approved_by="coord")
+    with pytest.raises(evaluation_host.LedgerError):        # approved once
+        ledger.approve_segmentation(1, entry_sha256=_sha("synthetic prompt 1"), segment_hashes=seg[::-1],
+                                    approved_by="coord")
+    for index in (-1, 1, True, 0.0):                         # negative, out of order, non-int
+        with pytest.raises(evaluation_host.LedgerError):
+            ledger.record_attempt(1, run_id="r", attempt_id=f"bad-{index!r}", delivered_sha256=seg[0],
+                                  receipts={}, status="PASSED", dimensions=GOOD, turn_index=index)
+    with pytest.raises(evaluation_host.LedgerError):        # an altered segment
+        ledger.record_attempt(1, run_id="r", attempt_id="alt", delivered_sha256=_sha("segment ONE"),
+                              receipts={}, status="PASSED", dimensions=GOOD, turn_index=0)
+    # An undelivered turn is retried at the same index.
+    ledger.record_attempt(1, run_id="r", attempt_id="1-0a", delivered_sha256=_sha("nothing typed"), receipts={},
+                          status="BLOCKED", dimensions={**GOOD, "input_delivered": "NO", "response_contract": "UNVERIFIED"},
+                          turn_index=0)
+    assert ledger.next_turn(1) == 0
+    ledger.record_attempt(1, run_id="r", attempt_id="1-0b", delivered_sha256=seg[0], receipts={},
+                          status="PASSED", dimensions=GOOD, turn_index=0)
+    # A partial case is IN_PROGRESS and a resumed run continues it, at turn 1.
+    resumed = evaluation_host.CaseLedger(path, corpus_sha256="c" * 64, expected_cases=3)
+    assert resumed.by_id[1]["status"] == "IN_PROGRESS"
+    assert resumed.next_case() == 1 and resumed.next_turn(1) == 1
+    assert resumed.counts()["status"]["IN_PROGRESS"] == 1
+    with pytest.raises(evaluation_host.LedgerError):        # turn 0 is done
+        resumed.record_attempt(1, run_id="r2", attempt_id="1-0c", delivered_sha256=seg[0], receipts={},
+                               status="PASSED", dimensions=GOOD, turn_index=0)
+    resumed.record_attempt(1, run_id="r2", attempt_id="1-1", delivered_sha256=seg[1], receipts={},
+                           status="FAILED", dimensions={**GOOD, "response_contract": "FAIL"}, turn_index=1)
+    assert resumed.by_id[1]["status"] == "FAILED"            # the worst segment decides
+    assert len(resumed.by_id[1]["attempts"]) == 3 and resumed.next_case() == 2
+    # A case that cannot finish is abandoned explicitly, never PASSED.
+    resumed.approve_segmentation(2, entry_sha256=_sha("synthetic prompt 2"),
+                                 segment_hashes=[_sha("a"), _sha("b")], approved_by="coord")
+    resumed.record_attempt(2, run_id="r2", attempt_id="2-0", delivered_sha256=_sha("a"), receipts={},
+                           status="PASSED", dimensions=GOOD, turn_index=0)
+    with pytest.raises(evaluation_host.LedgerError):
+        resumed.abandon_case(2, status="PASSED", reason="x")
+    assert resumed.abandon_case(2, status="BLOCKED", reason="second turn unavailable")["status"] == "BLOCKED"
+    resumed.record_attempt(3, run_id="r2", attempt_id="3-0", delivered_sha256=_sha("nope"), receipts={},
+                           status="BLOCKED", dimensions={**GOOD, "input_delivered": "NO"})
+    with pytest.raises(evaluation_host.LedgerError):        # segmentation after attempts is refused
+        resumed.approve_segmentation(3, entry_sha256=_sha("synthetic prompt 3"),
+                                     segment_hashes=[_sha("a"), _sha("b")], approved_by="coord")
+    # A tampered segmentation record no longer loads.
+    data = json.loads(path.read_text())
+    data["cases"][0]["segmentation"]["entry_sha256"] = _sha("forged")
+    path.write_text(json.dumps(data))
+    with pytest.raises(evaluation_host.LedgerError):
+        evaluation_host.CaseLedger(path, corpus_sha256="c" * 64, expected_cases=3)
 
 
 def test_profile_and_config_are_fail_closed():
@@ -596,8 +680,22 @@ def test_profile_and_config_are_fail_closed():
 # Ordered: absent, then incomplete, then complete, because readiness is
 # process state, exactly as native sync leaves it.
 
-def _hydrate() -> dict:
-    return asyncio.run(evaluation_host.hydrate_sources(CONFIG))
+def _verified(**overrides) -> "snapshots.Verification":
+    """A synthetic start-time verification of the payloads now in the root."""
+    listed = {str(p.relative_to(OWNED)): snapshots.sha256_file(p)
+              for p in sorted((OWNED / "sync").glob("*.json")) if p.is_file()}
+    if (OWNED / "wisp" / "assistant.db").is_file():
+        listed["wisp/assistant.db"] = snapshots.sha256_file(OWNED / "wisp" / "assistant.db")
+    for rel, value in overrides.items():
+        if value is None:
+            listed.pop(rel, None)
+        else:
+            listed[rel] = value
+    return snapshots.Verification(True, files=listed, manifest_sha256="synthetic")
+
+
+def _hydrate(installed=None) -> dict:
+    return asyncio.run(evaluation_host.hydrate_sources(CONFIG, installed=installed or _verified()))
 
 
 def _header(ts: float, subject: str) -> str:
@@ -605,9 +703,9 @@ def _header(ts: float, subject: str) -> str:
                         f"id-{subject}", subject])
 
 
-def _write_sync(source: str, body: dict, *, complete: bool) -> None:
+def _write_sync(source: str, body: dict, *, complete: bool, age: float = 30) -> None:
     import time
-    record = snapshots.payload_record(source, body, captured_at=time.time() - 30, reader="synthetic", complete=complete)
+    record = snapshots.payload_record(source, body, captured_at=time.time() - age, reader="synthetic", complete=complete)
     target = OWNED / "sync" / f"{source}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(record))
@@ -678,20 +776,296 @@ def test_complete_synthetic_captures_feed_the_normal_reads():
     assert report["sources"]["emails"]["provenance"]["reader"] == "synthetic"
 
 
-def test_installed_snapshot_tampering_is_detected():
-    out = OWNED / "installed-check"
-    (out / "evidence").mkdir(parents=True)
-    source = OWNED / "synthetic-source-2"
+def test_stale_unlisted_or_altered_payloads_are_never_ready():
+    import time
+    emails = {"headers": _header(time.time() - 60, "SYNTHETIC-SUBJECT-9"),
+              "diagnostics": {"available": True, "syncing": False, "read_source": "mail_app"}}
+    # An old native read stays old, however fresh the outer snapshot.
+    _write_sync("emails", emails, complete=True, age=CONFIG.snapshot_max_age_s + 3600)
+    report = _hydrate()
+    assert report["sources"]["emails"]["state_after"] == "unavailable"
+    assert "the native read is older than the allowed age" in report["sources"]["emails"]["problems"]
+    _write_sync("emails", emails, complete=True)
+    # Not in the start-time verification: never read.
+    report = _hydrate(_verified(**{"sync/emails.json": None}))
+    assert report["sources"]["emails"]["state_after"] == "unavailable"
+    # Changed after verification: never read.
+    report = _hydrate(_verified(**{"sync/emails.json": "0" * 64}))
+    assert report["sources"]["emails"]["state_after"] == "unavailable"
+    now = time.time()
+    record = {"schema_version": 1, "source": "messages", "body": {"lines": "x"},
+              "provenance": {"captured_at": float("nan"), "reader": "synthetic", "complete": True}}
+    assert snapshots.payload_shape_problems("messages", record)
+    record["provenance"]["captured_at"] = now + 3600
+    assert "the native read was captured in the future" in snapshots.payload_problems("messages", record, now=now)
+    # Calendar readiness needs the verified assistant.db and a current receipt.
+    report = _hydrate(_verified(**{"wisp/assistant.db": None}))
+    assert report["sources"]["calendar"]["state_after"] == "unavailable"
+
+
+def _installed_root(name: str, *, payload_age: float = 30.0) -> Path:
+    import time
+    source = OWNED / f"src-{name}"
     (source / "moe" / "cache").mkdir(parents=True)
     (source / "moe" / "cache" / "notes.txt").write_text("SYNTHETIC notes")
-    snap = OWNED / "synthetic-snapshot-2"
-    snapshots.capture(source, source / "moe", snap, snapshots.SourceScope(caches=("notes",)))
-    for path in snap.rglob("*"):
-        if path.is_file():
-            target = out / ("evidence" if path.name == snapshots.MANIFEST else "") / path.relative_to(snap)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(path.read_bytes())
-    assert snapshots.verify_installed(out).ok
-    (out / "wisp" / "cache" / "notes.txt").write_text("tampered")
-    assert not snapshots.verify_installed(out).ok
-    assert snapshots.verify_installed(OWNED / "no-snapshot-here") is None
+    payloads = source / "payloads"
+    payloads.mkdir()
+    record = snapshots.payload_record("messages", {"lines": "SYNTHETIC line",
+                                                   "diagnostics": {"available": True, "syncing": False}},
+                                      captured_at=time.time() - payload_age, reader="synthetic", complete=True)
+    (payloads / "messages.json").write_text(json.dumps(record))
+    snap = OWNED / f"snap-{name}"
+    snapshots.capture(source, source / "moe", snap,
+                      snapshots.SourceScope(caches=("notes",), sync_payloads=("messages",)), payload_dir=payloads)
+    out = OWNED / f"inst-{name}"
+    out.mkdir(mode=0o700)
+    snapshots.install(snap, out)
+    return out
+
+
+def test_installed_layout_must_match_its_manifest_exactly():
+    out = _installed_root("layout")
+    verified = snapshots.verify_installed(out, max_age_s=3600)
+    assert verified.ok and set(verified.files) == {"wisp/cache/notes.txt", "sync/messages.json"}
+    digest = verified.manifest_sha256
+    assert snapshots.verify_installed(out, expected_manifest_sha256=digest).ok
+    assert not snapshots.verify_installed(out, expected_manifest_sha256="f" * 64).ok
+
+    def refused(problem: str) -> None:
+        result = snapshots.verify_installed(out, max_age_s=3600)
+        assert not result.ok and any(problem in p for p in result.problems), result.problems
+        assert result.files == {}
+
+    (out / "home" / "Documents").mkdir(parents=True)
+    (out / "home" / "Documents" / "planted.txt").write_text("unreviewed")
+    refused("home/Documents/planted.txt is not in the installed manifest")
+    (out / "home" / "Documents" / "planted.txt").unlink()
+    (out / "sync" / "emails.json").write_text("{}")
+    refused("sync/emails.json is not in the installed manifest")
+    (out / "sync" / "emails.json").unlink()
+    original = (out / "sync" / "messages.json").read_bytes()
+    (out / "sync" / "messages.json").write_bytes(original.replace(b"SYNTHETIC line", b"ALTERED line"))
+    refused("sync/messages.json changed since capture")
+    (out / "sync" / "messages.json").write_bytes(original)
+    (out / "wisp" / "linked.txt").symlink_to(OWNED / "evidence")
+    refused("wisp/linked.txt is a link")
+    (out / "wisp" / "linked.txt").unlink()
+    os.chmod(out / "evidence" / snapshots.MANIFEST, 0o644)
+    refused("installed manifest is not a private regular file")
+    os.chmod(out / "evidence" / snapshots.MANIFEST, 0o600)
+    assert snapshots.verify_installed(out, max_age_s=3600).ok
+    (out / "evidence" / snapshots.MANIFEST).unlink()
+    refused("source state is present without an installed manifest")
+    # Stale native provenance under a fresh outer snapshot is refused.
+    stale = _installed_root("stale", payload_age=2 * 24 * 3600)
+    result = snapshots.verify_installed(stale, max_age_s=24 * 3600)
+    assert not result.ok and "sync:messages is older than the allowed age" in result.problems
+    # A root the coordinator declared empty: no files, no manifest.
+    empty = OWNED / "inst-empty"
+    for part in snapshots.INSTALLED_PARTS:
+        (empty / part).mkdir(parents=True)
+    result = snapshots.verify_installed(empty)
+    assert result.ok and result.empty and result.files == {}
+    assert not snapshots.verify_installed(empty, expected_manifest_sha256="f" * 64).ok
+
+
+# --- launcher lifecycle and roots ------------------------------------------
+
+class _FakeProcess:
+    """A Popen stand-in: records signals, never touches a real process."""
+
+    def __init__(self, pid: int, *, alive: bool = True, dies_on: tuple[str, ...] = ("SIGTERM",)):
+        self.pid, self.code, self.sent, self.dies_on = pid, None if alive else 0, [], dies_on
+
+    def poll(self):
+        return self.code
+
+    def send_signal(self, sig):
+        import signal
+        name = signal.Signals(sig).name
+        self.sent.append(name)
+        if name in self.dies_on:
+            self.code = -int(sig)
+
+    def wait(self):
+        if self.code is None:
+            self.code = -9
+        return self.code
+
+
+def test_supervisor_signals_only_its_own_live_children():
+    from scripts.notch_evaluation import lifecycle
+    live = lifecycle.Child("backend", _FakeProcess(5001))
+    assert live.retire()["signals"] == ["SIGTERM"] and not live.alive()
+    assert not live.signal(15) and live.process.sent == ["SIGTERM"]       # reaped: never again
+    stubborn = _FakeProcess(5002, dies_on=())
+    ticks = iter(range(100))
+    record = lifecycle.Child("app", stubborn).retire(grace=1, clock=lambda: next(ticks), nap=lambda _: None)
+    assert record["signals"] == ["SIGTERM", "SIGKILL"] and stubborn.code == -9
+    exited = _FakeProcess(5003, alive=False)                             # natural exit
+    assert lifecycle.Child("backend", exited).retire()["signals"] == [] and exited.sent == []
+    # A partial launch: the second start fails, the first child is retired.
+    root = OWNED / "lifecycle-run"
+    root.mkdir(mode=0o700)
+    spawned: list[_FakeProcess] = []
+
+    def spawn(argv, **kwargs):
+        assert kwargs["start_new_session"] and kwargs["close_fds"]
+        if spawned:
+            raise OSError("synthetic exec failure")
+        spawned.append(_FakeProcess(6001))
+        return spawned[-1]
+
+    sup = lifecycle.Supervisor(str(root), spawn=spawn)
+    sup.start("backend", ["/bin/true"], env={}, cwd=str(root), log="host.log")
+    with pytest.raises(OSError):
+        sup.start("app", ["/bin/true"], env={}, cwd=str(root), log="app.log")
+    state = sup.stop_all("failed", "launch failed: OSError")
+    assert spawned[0].sent == ["SIGTERM"] and state["state"] == "failed"
+    assert oct((root / lifecycle.STATE).stat().st_mode & 0o777) == "0o600"
+    # stop without a live supervisor signals nothing, whatever the record says.
+    (root / lifecycle.STATE).write_text(json.dumps({"children": [{"pid": 1}, {"pid": os.getpid()}]}))
+    outcome = lifecycle.stop(str(root))
+    assert outcome["stopped_by"] == "none" and "nothing was signalled" in outcome["note"]
+    (root / lifecycle.STATE).write_text("not json")
+    assert lifecycle.stop(str(root))["last_recorded"] == {"unreadable": True}
+
+
+def test_roots_are_validated_before_anything_is_written(monkeypatch):
+    from scripts.notch_evaluation import lifecycle
+    home = os.path.realpath(os.path.expanduser("~"))
+    import pwd
+    real_home = pwd.getpwuid(os.getuid()).pw_dir
+    for bad in (real_home, os.path.join(real_home, ".moe"), os.path.join(real_home, "Applications"),
+                "/Applications", "/", "/private/tmp", "relative/root"):
+        with pytest.raises(lifecycle.RootError):
+            lifecycle.validate_root(bad, fresh=True)
+    assert home  # HOME is the synthetic one here; the password database names the real one
+    base = OWNED / "roots"
+    base.mkdir(mode=0o700)
+    # An ancestor of a protected location is refused.
+    monkeypatch.setattr(lifecycle, "protected_paths", lambda: (str(base / "a" / "b"),))
+    with pytest.raises(lifecycle.RootError, match="protected"):
+        lifecycle.validate_root(str(base / "a"), fresh=True)
+    monkeypatch.undo()
+    real = base / "real"
+    real.mkdir(mode=0o700)
+    (base / "link").symlink_to(real)
+    with pytest.raises(lifecycle.RootError, match="link"):
+        lifecycle.create_root(str(base / "link"))
+    occupied = base / "occupied"
+    occupied.mkdir(mode=0o700)
+    (occupied / "sentinel").write_text("keep")
+    with pytest.raises(lifecycle.RootError, match="not empty"):
+        lifecycle.create_root(str(occupied))
+    assert (occupied / "sentinel").read_text() == "keep" and oct(occupied.stat().st_mode & 0o777) == "0o700"
+    shared = base / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o777)
+    with pytest.raises(lifecycle.RootError, match="writable"):
+        lifecycle.validate_root(str(shared), fresh=True)
+    assert oct(shared.stat().st_mode & 0o777) == "0o777"
+    with pytest.raises(lifecycle.RootError, match="parent"):
+        lifecycle.create_root(str(base / "missing-parent" / "root"))
+    created = lifecycle.create_root(str(base / "fresh"))
+    assert created == str((base / "fresh").resolve()) and oct(os.stat(created).st_mode & 0o777) == "0o700"
+    # The host config refuses a root outside the scratch area or sources outside the root.
+    for bad in ({"owned_root": real_home}, {"source_roots": ("/etc",)}):
+        with pytest.raises(ValueError):
+            evaluation_host.HostConfig(**{**CONFIG.__dict__, **bad}).validate()
+
+
+# --- inference binding -----------------------------------------------------
+
+def test_every_completion_names_a_resident_reviewed_model():
+    import time
+    from service.tools import imessage_tools
+    msgs = [{"role": "user", "content": "SYNTHETIC"}]
+    model = MODELS[0]
+
+    def completions() -> int:
+        return sum(1 for entry in ENGINE_LOG if entry == ("POST", "/v1/chat/completions"))
+
+    async def drain(client, name):
+        async for _ in client.stream(name, msgs):
+            pass
+
+    async def run():
+        client = main.OMLXClient()
+        before = completions()
+        for call_ in (lambda: client.chat("Unlisted-Model", msgs), lambda: drain(client, "Unlisted-Model")):
+            with pytest.raises(Exception):
+                await call_()
+        NOT_RESIDENT.add(model)
+        saved = imessage_tools._client
+        try:
+            for call_ in (lambda: client.chat(model, msgs), lambda: drain(client, model)):
+                with pytest.raises(Exception):
+                    await call_()
+            # The reviewed summarize_messages path, with its own nested client.
+            imessage_tools._client = main.OMLXClient()
+            now = time.time()
+            rows = [(now - 3600 + i * 60, "Synthetic Friend", f"SYNTHETIC plan detail {i} about the trip")
+                    for i in range(12)]
+            await imessage_tools._summarize(rows, "today")
+        finally:
+            NOT_RESIDENT.discard(model)
+            if imessage_tools._client is not saved:
+                await imessage_tools._client.aclose()
+            imessage_tools._client = saved
+        assert completions() == before, "a refused completion was forwarded"
+        reasons = [r.get("reason", "") for r in boundary.receipts() if r["sink"] == "inference"]
+        assert any("not a reviewed evaluation model" in r for r in reasons)
+        assert sum("not resident" in r for r in reasons) >= 3, reasons
+        reply = await client.chat(model, msgs)                 # a resident reviewed model still answers
+        assert reply["choices"][0]["message"]["content"] == "SYNTHETIC ANSWER"
+        assert completions() == before + 1
+        await client.aclose()
+    asyncio.run(run())
+
+
+# --- mandatory evidence (last: the failure is sticky) ----------------------
+
+def test_receipt_destinations_must_be_private_files_inside_the_root():
+    bad = OWNED / "evidence" / "bad-receipts"
+    bad.mkdir()
+    for path, label in ((str(bad), "a directory"), ("/private/tmp/x-receipts.jsonl", "outside the root")):
+        with pytest.raises(ValueError):
+            boundary._open_receipts(path, str(OWNED))
+    shared = OWNED / "evidence" / "shared.jsonl"
+    shared.write_text("")
+    os.chmod(shared, 0o644)
+    with pytest.raises(ValueError, match="private"):
+        boundary._open_receipts(str(shared), str(OWNED))
+    (OWNED / "evidence" / "linked.jsonl").symlink_to(shared)
+    with pytest.raises(ValueError):
+        boundary._open_receipts(str(OWNED / "evidence" / "linked.jsonl"), str(OWNED))
+
+
+def test_zz_lost_evidence_stops_the_run():
+    from service.tools.registry import run_tool
+    assert boundary.evidence_failure() is None
+    state = boundary._state
+    # Retention bound reached: sticky failure, every dispatch blocked.
+    state.written = boundary._MAX_RECEIPT_BYTES
+    boundary._record("allowed", "probe", {})
+    assert "retention bound" in (boundary.evidence_failure() or "")
+    result = asyncio.run(run_tool(_tool("calculate"), {"expression": "2+2"}))
+    assert "EVALUATION_BLOCKED" in result and "evidence" in result
+    health = asyncio.run(call("GET", "/health"))
+    assert health["status"] == 503
+    identity = asyncio.run(call("GET", "/evaluation/identity"))
+    assert identity["status"] == 200 and json.loads(identity["body"])["evidence_failure"]
+    # A write that fails (a descriptor that cannot be written) is sticky too.
+    state.failure, state.written = None, 0
+    readonly = os.open(OWNED / "evidence" / "boundary.jsonl", os.O_RDONLY)
+    saved, state.fd = state.fd, readonly
+    try:
+        boundary._record("allowed", "probe", {})
+        assert "could not be persisted" in (boundary.evidence_failure() or "")
+        boundary._record("allowed", "probe", {})
+        assert boundary.evidence_failure()                    # still failed
+    finally:
+        state.fd = saved
+        os.close(readonly)
+    assert "EVALUATION_BLOCKED" in asyncio.run(run_tool(_tool("calculate"), {"expression": "2+2"}))

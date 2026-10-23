@@ -64,6 +64,19 @@ struct MarkdownView: View {
     }
 
     var body: some View {
+        #if WISP_NOTCH_EVALUATION
+        // Links in a reply are never opened from the evaluation build, in
+        // whatever window this renders.
+        rendered.environment(\.openURL, OpenURLAction { _ in
+            _ = NotchEvaluationSinks.blocked("markdown_link", ledger: NotchEvaluationEnvironment.ledger)
+            return .discarded
+        })
+        #else
+        rendered
+        #endif
+    }
+
+    private var rendered: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(blocks().enumerated()), id: \.offset) { _, b in
                 switch b.kind {
