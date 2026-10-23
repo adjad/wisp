@@ -14,6 +14,10 @@ protocol ChatBackend: AnyObject {
                            onEvent: @escaping @Sendable (ChatEvent) -> Void) async
     /// The newest saved corpus run as Markdown and CSV; nil when none is saved.
     func savedCorpusExport() async throws -> (markdown: String, csv: String)?
+    /// One /corpus prompts command, answered with the job's progress.
+    func corpusPrompts(_ command: CorpusPromptsCommand) async throws -> CorpusPromptsStatus
+    func corpusPromptsResults(limit: Int) async throws -> [CorpusPromptsResult]
+    func corpusPromptsExport() async throws -> (markdown: String, csv: String)?
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
              testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async
@@ -34,6 +38,11 @@ extension ChatBackend {
         onEvent(ChatEvent(type: "error", payload: ["message": "This backend does not support live corpus evaluation."]))
     }
     func savedCorpusExport() async throws -> (markdown: String, csv: String)? { nil }
+    func corpusPrompts(_ command: CorpusPromptsCommand) async throws -> CorpusPromptsStatus {
+        throw AssistantTaskCorpusCommand.CommandError.resourceUnavailable
+    }
+    func corpusPromptsResults(limit: Int) async throws -> [CorpusPromptsResult] { [] }
+    func corpusPromptsExport() async throws -> (markdown: String, csv: String)? { nil }
 }
 
 /// Where an export landed.
@@ -317,20 +326,15 @@ final class ChatStore: ObservableObject {
             }
         }
         guard let contents else { throw AssistantTaskCorpusCommand.CommandError.nothingToExport }
-        let directory = exportDirectory()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let stem = CorpusExport.fileStem(now)
-        let markdown = directory.appendingPathComponent(stem + ".md")
-        let csv = directory.appendingPathComponent(stem + ".csv")
-        try Data(contents.markdown.utf8).write(to: markdown, options: .withoutOverwriting)
-        try Data(contents.csv.utf8).write(to: csv, options: .withoutOverwriting)
-        return CorpusExportFiles(markdown: markdown, csv: csv, saved: contents.saved)
+        return try writeExport((contents.markdown, contents.csv), stem: CorpusExport.fileStem(now), saved: contents.saved)
     }
 
     private func performCorpus(_ selection: AssistantTaskCorpusCommand.Selection,
                                command: String) async throws -> ChatConversation {
         // Exporting starts nothing, so it doesn't wait for a run to finish.
         if case .export = selection { return try await exportNotice() }
+        // A prompts command only talks to the service's job, so no window run blocks it.
+        if case .prompts(let command) = selection { return try await promptsNotice(command) }
         guard !loadingCorpus, !conversations.contains(where: { $0.corpusRunning }) else {
             throw AssistantTaskCorpusCommand.CommandError.busy
         }
@@ -364,7 +368,45 @@ final class ChatStore: ObservableObject {
             return runCorpus(label: label, cases: cases, command: command)
         case .export:
             return try await exportNotice()
+        case .prompts(let command):
+            return try await promptsNotice(command)
         }
+    }
+
+    /// The window shows the prompts job's progress as text; the notch shows it live.
+    private func promptsNotice(_ command: CorpusPromptsCommand) async throws -> ChatConversation {
+        if command == .export {
+            let files = try await exportPrompts()
+            return appendLocalNotice("Exported prompts results:\n\(files.markdown.path)\n\(files.csv.path)")
+        }
+        return appendLocalNotice(try await backend.corpusPrompts(command).summary)
+    }
+
+    /// The prompts job, for the notch's live panel.
+    func corpusPrompts(_ command: CorpusPromptsCommand) async throws -> CorpusPromptsStatus {
+        try await backend.corpusPrompts(command)
+    }
+
+    func corpusPromptsResults(limit: Int = 50) async throws -> [CorpusPromptsResult] {
+        try await backend.corpusPromptsResults(limit: limit)
+    }
+
+    /// Writes the current prompts run to Downloads as Markdown and CSV.
+    func exportPrompts(now: Date = Date()) async throws -> CorpusExportFiles {
+        guard let contents = try await backend.corpusPromptsExport() else {
+            throw AssistantTaskCorpusCommand.CommandError.nothingToExport
+        }
+        return try writeExport(contents, stem: CorpusExport.fileStem(now).replacingOccurrences(of: "wisp-corpus-", with: "wisp-prompts-"), saved: true)
+    }
+
+    private func writeExport(_ contents: (markdown: String, csv: String), stem: String, saved: Bool) throws -> CorpusExportFiles {
+        let directory = exportDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let markdown = directory.appendingPathComponent(stem + ".md")
+        let csv = directory.appendingPathComponent(stem + ".csv")
+        try Data(contents.markdown.utf8).write(to: markdown, options: .withoutOverwriting)
+        try Data(contents.csv.utf8).write(to: csv, options: .withoutOverwriting)
+        return CorpusExportFiles(markdown: markdown, csv: csv, saved: saved)
     }
 
     private func exportNotice() async throws -> ChatConversation {
