@@ -29,6 +29,9 @@ struct NotchEvaluationConfig: Equatable {
     /// Canonical directories inside the owned root that hold the snapshot's
     /// documents. The only places an attachment may be read from.
     let sourceRoots: [String]
+    /// True only for a run the user approved with live, read-only native
+    /// readers (Mail, Messages, Notes, Calendar, Reminders, Contacts).
+    var liveSources: Bool = false
 
     var baseURL: URL { URL(string: "http://127.0.0.1:\(listenPort)")! }
     var evidence: URL { ownedRoot.appendingPathComponent("evidence/native", isDirectory: true) }
@@ -80,9 +83,13 @@ struct NotchEvaluationConfig: Equatable {
             }
             sources.append(real)
         }
+        let live = object["live_sources"] ?? false
+        guard let liveSources = live as? Bool, CFGetTypeID(live as CFTypeRef) == CFBooleanGetTypeID() else {
+            throw Problem.badField("live_sources")
+        }
         return NotchEvaluationConfig(runID: runID, ownedRoot: URL(fileURLWithPath: root, isDirectory: true),
                                      listenPort: port, token: token, nonce: nonce, backendPID: pid,
-                                     sourceRoots: sources)
+                                     sourceRoots: sources, liveSources: liveSources)
     }
 }
 
@@ -670,6 +677,26 @@ final class NotchEvaluationInputAdapter: NotchEvaluationTurnObserver {
     }
 }
 
+/// The live, read-only native readers of an approved real-data run.
+@MainActor
+final class NotchEvaluationReaders {
+    let calendar = CalendarReader()
+    let mail = MailReader()
+    let messages = MessagesReader()
+    let reminders = RemindersWriter()
+    let notes = NotesReader()
+    let contacts = ContactsReader()
+
+    func start() {
+        calendar.start()
+        mail.start()
+        messages.start()
+        reminders.start()
+        notes.start()
+        contacts.start()
+    }
+}
+
 /// Mounts the real notch Ask surface against the evaluation backend.
 @MainActor
 enum NotchEvaluationHost {
@@ -687,8 +714,9 @@ enum NotchEvaluationHost {
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
         let client = WispClient()
-        let model = OverlayModel(loadDebugMode: { defaults.bool(forKey: "wisp.debugMode") },
-                                 saveDebugMode: { defaults.set($0, forKey: "wisp.debugMode") })
+        // Debug mode on: the backend then reports each completion's raw reply,
+        // so every case records the model id the engine actually served.
+        let model = OverlayModel(loadDebugMode: { true }, saveDebugMode: { _ in })
         let research = ResearchModel(client: client)
         let today = TodayModel()
         let settings = SettingsLoader()
@@ -698,6 +726,17 @@ enum NotchEvaluationHost {
         // No onCorpusCommand: the /corpus surface reports itself unavailable.
         // No native calendar/reminder/research/sync callbacks: each stays nil.
         let ledger = NotchEvaluationEnvironment.ledger
+        if config.liveSources {
+            // The app's own readers, read-only: each opens its store read-only
+            // or runs a fixed read script, and pushes this launch's read to the
+            // evaluation backend. Every write path stays refused (OverlayModel
+            // seams and the backend boundary); Browser History and Activity are
+            // not sources of this run.
+            let readers = NotchEvaluationReaders()
+            readers.start()
+            retained.append(readers)
+            ledger.record("live_readers_started", [:])
+        }
         let panel = OverlayPanel {
             OverlayView(model: model, corpus: corpus, researchModel: research, todayModel: today,
                         settings: settings, setup: setup, onClose: {}, onDismiss: {})

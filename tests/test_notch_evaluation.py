@@ -428,7 +428,10 @@ def test_endpoint_identity_fails_closed():
         for method, path in (("POST", "/unload_all"), ("POST", "/config"), ("GET", "/assistant/events"),
                              ("POST", "/corpus/run"), ("POST", "/assistant/send_message_draft"),
                              ("POST", "/shutdown_omlx"), ("DELETE", "/sessions/abcdef12"),
-                             ("POST", "/sessions/abcdef12/effects/resolve")):
+                             ("POST", "/sessions/abcdef12/effects/resolve"),
+                             # Reader pushes exist only in an approved live run.
+                             ("POST", "/assistant/sync/emails"), ("GET", "/assistant/sync/status"),
+                             ("POST", "/behavior/history/calendar/batch")):
             result = await call(method, path, {})
             assert result["status"] == 403, (method, path, result["status"])
             assert result["headers"][evaluation_host.NONCE_HEADER] == NONCE

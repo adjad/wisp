@@ -56,6 +56,12 @@ ENGINE_OPS = (("GET", r"/health"), ("GET", r"/v1/models"), ("GET", r"/v1/models/
 ENDPOINTS = (("POST", r"/agent"), ("POST", r"/agent/approve"), ("GET", r"/chats"),
              ("GET", r"/sessions/[0-9a-f]{8,64}"), ("GET", r"/health"),
              ("GET", r"/evaluation/identity"))
+# Live source mode only: the native readers' own push and status endpoints.
+# Each ingests a read the app made in this launch into the isolated store.
+LIVE_SOURCE_ENDPOINTS = (("POST", r"/assistant/sync/(calendar|emails|notes|messages)"),
+                         ("GET", r"/assistant/sync/(status|messages)"),
+                         ("POST", r"/assistant/today/workspace/email/identity(/begin)?"))
+SOURCE_MODES = ("snapshot", "live")
 
 # Reviewed builtin reads: registry name -> (module, qualname, path arguments).
 # Each reads only the isolated store, the snapshot files or pure computation.
@@ -116,6 +122,9 @@ class HostConfig:
     # The installed manifest digest the coordinator reviewed; "" for a root
     # the coordinator declared empty.
     snapshot_manifest_sha256: str = ""
+    # "snapshot": sources come only from the verified snapshot. "live": the
+    # evaluation app's native readers push this launch's reads (read-only).
+    source_mode: str = "snapshot"
 
     @property
     def inference_port(self) -> int | None:
@@ -146,6 +155,8 @@ class HostConfig:
                 raise ValueError("source roots must be inside the owned root")
         if not 1024 < self.listen_port < 65536 or self.listen_port in PRODUCTION_PORTS:
             raise ValueError("listen_port must be an unprivileged, non-production port")
+        if self.source_mode not in SOURCE_MODES:
+            raise ValueError(f"source_mode must be one of {SOURCE_MODES}")
         if self.snapshot_manifest_sha256 and not re.fullmatch(r"[0-9a-f]{64}", self.snapshot_manifest_sha256):
             raise ValueError("snapshot_manifest_sha256 must be a sha256 digest")
         if len(self.token) < 32 or len(self.nonce) < 16:
@@ -176,6 +187,10 @@ class HostConfig:
         config = cls(**raw)
         config.validate()
         return config
+
+    @property
+    def endpoints(self) -> tuple:
+        return ENDPOINTS + (LIVE_SOURCE_ENDPOINTS if self.source_mode == "live" else ())
 
     def paths(self) -> dict[str, str]:
         root = Path(self.owned_root)
@@ -538,7 +553,7 @@ class IdentityMiddleware:
             # Mandatory evidence can no longer be kept: the batch is
             # inconclusive and nothing more is served.
             return await self._refuse(send, 503, f"evaluation evidence unavailable: {failure}")
-        if not any(method == m and re.fullmatch(p, path) for m, p in ENDPOINTS):
+        if not any(method == m and re.fullmatch(p, path) for m, p in self.config.endpoints):
             return await self._refuse(send, 403, f"{method} {path[:80]} is not an evaluated endpoint")
         if path == "/evaluation/identity":
             body = json.dumps({"service": "wisp-notch-evaluation", "run_id": self.config.run_id,
@@ -753,7 +768,13 @@ def build_app(config: HostConfig, *, client_factory=None):
         from service.inference.omlx_client import OMLXClient
         main.client = (client_factory() if client_factory is not None
                        else OMLXClient(base_url=config.inference_url) if config.inference_url else OMLXClient())
-        report = await hydrate_sources(config)
+        if config.source_mode == "live":
+            # Readiness comes only from the native readers' pushes in this
+            # launch; a source they cannot read stays unavailable.
+            report = {"mode": "live", "hydrated_at": time.time(),
+                      "note": "no snapshot hydration; native readers push read-only reads"}
+        else:
+            report = await hydrate_sources(config)
         (Path(config.paths()["evidence"]) / "hydration.json").write_text(
             json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
         try:
@@ -766,7 +787,8 @@ def build_app(config: HostConfig, *, client_factory=None):
     evidence = Path(config.paths()["evidence"])
     (evidence / "host.json").write_text(json.dumps({
         "run_id": config.run_id, "pid": os.getpid(), "listen_port": config.listen_port,
-        "sealed_reads": sealed, "endpoints": [list(e) for e in ENDPOINTS],
+        "sealed_reads": sealed, "endpoints": [list(e) for e in config.endpoints],
+        "source_mode": config.source_mode,
         "engine_ops": [list(o) for o in ENGINE_OPS], "allowed_models": sorted(config.allowed_models),
         "lifespan": "minimal: no warmup, scheduler, replay, skills, MCP, nodes, memory worker, maintenance",
     }, indent=2, sort_keys=True), encoding="utf-8")

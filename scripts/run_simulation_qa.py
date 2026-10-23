@@ -154,6 +154,7 @@ PROFILE_TESTS = {
         # synthetic engine transport only; never a corpus result.
         "tests/test_notch_evaluation.py",
         "tests/test_notch_driver.py",
+        "tests/test_notch_capture.py",
     "tests/test_cloud_provider_settings.py",
     "tests/test_local_provider_settings.py",
     "tests/test_setup_guide.py",

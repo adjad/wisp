@@ -251,7 +251,8 @@ def supervise(args) -> int:
         _private_json(Path(root, "native-config.json"), {
             "run_id": config["run_id"], "owned_root": root, "listen_port": config["listen_port"],
             "token": config["token"], "nonce": config["nonce"], "backend_pid": pid,
-            "source_roots": config.get("source_roots", [])})
+            "source_roots": config.get("source_roots", []),
+            "live_sources": config.get("source_mode") == "live"})
         tmp = Path(root, "tmp-app")
         os.mkdir(tmp, 0o700)
         sup.start("app", ["/usr/bin/sandbox-exec", "-f", str(Path(root, "app.sb")), args.app],
@@ -361,6 +362,23 @@ def retire(root: str, into: str) -> str:
     return target
 
 
+def install_snapshot(snapshot: str, root: str) -> str:
+    """Install a verified snapshot into a fresh owned root; return its manifest digest.
+
+    The digest goes into the host config, so the backend refuses any other
+    installed state before it imports service code.
+    """
+    canonical = validate_root(root, fresh=True)
+    if __package__ in (None, ""):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from scripts.notch_evaluation import snapshots
+    verified = snapshots.verify(snapshot)
+    if not verified.ok:
+        raise RootError("the snapshot failed verification: " + "; ".join(verified.problems))
+    snapshots.install(snapshot, canonical)
+    return verified.manifest_sha256
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -378,6 +396,9 @@ def main(argv: list[str] | None = None) -> int:
     keep = sub.add_parser("retire", help="move a finished run's root into a private archive")
     keep.add_argument("root")
     keep.add_argument("--into", required=True)
+    place = sub.add_parser("install-snapshot", help="install a verified snapshot into a fresh root")
+    place.add_argument("snapshot")
+    place.add_argument("root")
     secrets_cmd = sub.add_parser("secret", help="print a random token")
     secrets_cmd.add_argument("--bytes", type=int, default=32)
     args = parser.parse_args(argv)
@@ -389,6 +410,9 @@ def main(argv: list[str] | None = None) -> int:
             return supervise(args)
         if args.command == "stop":
             print(json.dumps(stop(args.root), indent=1, sort_keys=True))
+            return 0
+        if args.command == "install-snapshot":
+            print(install_snapshot(args.snapshot, args.root))
             return 0
         if args.command == "retire":
             print(retire(args.root, args.into))

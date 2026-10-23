@@ -131,6 +131,11 @@ struct NotchEvaluationChecks {
         try? FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
         check((try? NotchEvaluationConfig.load(path: link.path)) == nil, "refuses a symlinked config")
         check(config.sourceRoots == [home.path] && config.backendPID == 4242, "source roots and pid parse")
+        check(!config.liveSources, "live sources are off unless the config says so")
+        let live = try? NotchEvaluationConfig.parse(configJSON(["live_sources": true], root: root.path))
+        check(live?.liveSources == true, "live sources parse")
+        check((try? NotchEvaluationConfig.parse(configJSON(["live_sources": 1], root: root.path))) == nil,
+              "refuses a non-boolean live_sources")
 
         // Attachments: only regular files inside a source root, links resolved.
         let inside = home.appendingPathComponent("photo.png")
