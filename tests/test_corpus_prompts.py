@@ -192,7 +192,7 @@ def wisp(monkeypatch, chats, tmp_path):
         return SimpleNamespace(body_iterator=frames())
 
     monkeypatch.setitem(sys.modules, "service.main", SimpleNamespace(agent=agent))
-    return SimpleNamespace(executed=executed, bodies=bodies)
+    return SimpleNamespace(executed=executed, bodies=bodies, chats=chats)
 
 
 async def _until(predicate, timeout=10):
@@ -308,6 +308,9 @@ def test_resume_skips_finished_cases_and_stop_leaves_the_rest(private, wisp, mon
     assert [b["prompt"] for b in wisp.bodies[started:]] == [
         'Summarise the fixture inbox – the "important" part.', "Who is Example Person?", "And when did we last talk?"]
     assert lines["P-2"]["failure_class"] == "INTERRUPTED"
+    # The stopped case's first chat was replaced, not left as a duplicate.
+    titles = [c["title"] for c in wisp.chats.list_chats(limit=50)]
+    assert sum(t.startswith("Corpus · P-2 ") for t in titles) == 1 and len(titles) == 3
 
 
 def test_the_job_waits_for_the_users_turn(private, wisp, monkeypatch):
@@ -359,3 +362,129 @@ def test_import_explains_a_folder_wisp_may_not_read(private, monkeypatch):
     with pytest.raises(HTTPException, match="Files and Folders"):
         corpus_prompts.import_route({"path": str(private)})
     assert not corpus_prompts.PROMPTS_FILE.exists()
+
+
+def test_every_turn_waits_for_the_users_turn(private, wisp, monkeypatch):
+    """A follow-up turn waits too: the user's turn never shares oMLX with the job."""
+    from service import idle
+    corpus_prompts.import_file(str(private))
+    busy = {"on": False}
+    monkeypatch.setattr(idle, "foreground_busy", lambda: busy["on"])
+    real = corpus.agent_turn
+
+    async def first_turn_then_user(prompt, sid, emit, title):
+        sid = await real(prompt, sid, emit, title)
+        busy["on"] = True   # the user starts asking something
+        return sid
+    monkeypatch.setattr(corpus, "agent_turn", first_turn_then_user)
+
+    async def run():
+        await corpus_prompts.start_route({"selector": "P-3"})
+        await _until(lambda: corpus_prompts.status()["run"]["waiting_for_idle"])
+        await asyncio.sleep(0.1)
+        assert [b["prompt"] for b in wisp.bodies] == ["Who is Example Person?"]
+        busy["on"] = False
+        monkeypatch.setattr(corpus, "agent_turn", real)
+        await corpus_prompts._job.task
+    asyncio.run(run())
+    assert [b["prompt"] for b in wisp.bodies] == ["Who is Example Person?", "And when did we last talk?"]
+
+
+def test_review_scope_reaches_the_agents_tasks_and_threads(chats, monkeypatch):
+    """/agent runs its turn in a task it creates while the body is read, and
+    plain tools in threads: both must see the review run, and a task started
+    outside it must not."""
+    from service.safety.policy import review_only
+    seen = {}
+
+    async def agent(body):
+        async def frames():
+            seen["started"].set()   # the outside task reads its scope now, mid-turn
+            await asyncio.sleep(0.02)
+            # As /agent's stream() does: the runner task starts on first read.
+            runner = asyncio.create_task(asyncio.sleep(0, result=review_only()))
+            seen["task"] = await runner
+            seen["thread"] = await asyncio.to_thread(review_only)
+            yield 'data: {"type": "done"}\n\n'
+        return SimpleNamespace(body_iterator=frames())
+    monkeypatch.setitem(sys.modules, "service.main", SimpleNamespace(agent=agent))
+
+    async def main():
+        seen["started"] = asyncio.Event()
+
+        async def users_turn():
+            await seen["started"].wait()
+            return review_only()
+        outside = asyncio.create_task(users_turn())
+        sid = chats.create_session()
+
+        async def emit(event):
+            pass
+        await corpus.agent_turn("Hello", sid, emit, "Corpus · P-1 · Hello")
+        seen["after"] = await asyncio.create_task(asyncio.sleep(0, result=review_only()))
+        seen["outside_task"] = await outside
+        del seen["started"]
+    asyncio.run(main())
+    assert seen == {"task": True, "thread": True, "outside_task": False, "after": False}
+    assert review_only() is False
+
+
+def test_retry_failed_runs_only_failed_cases_and_replaces_their_chats(private, wisp, monkeypatch):
+    from fastapi import HTTPException
+    corpus_prompts.import_file(str(private))
+    real = corpus.agent_turn
+    failing = {"inbox"}
+
+    async def flaky(prompt, sid, emit, title):
+        if any(word in prompt for word in failing):
+            raise ConnectionError("engine went away")
+        return await real(prompt, sid, emit, title)
+    monkeypatch.setattr(corpus, "agent_turn", flaky)
+
+    async def first():
+        await corpus_prompts.start_route({"selector": "section 1"})
+        await corpus_prompts._job.task
+    asyncio.run(first())
+    run = corpus_prompts.status()["run"]
+    assert (run["completed"], run["ok"], run["errors"]) == (3, 2, 1)
+    line = corpus_prompts.run_lines(run["run_id"])["P-2"]
+    assert line["status"] == "error" and line["failure_class"] == "ERROR_TURN"
+    assert "ConnectionError" in line["error"] and "engine went away" not in line["error"]
+    failing.clear()
+    started = len(wisp.bodies)
+
+    async def retry():
+        await corpus_prompts.retry_failed_route()
+        await corpus_prompts._job.task
+    asyncio.run(retry())
+    assert [b["prompt"] for b in wisp.bodies[started:]] == ['Summarise the fixture inbox – the "important" part.']
+    run = corpus_prompts.status()["run"]
+    assert (run["status"], run["completed"], run["ok"], run["errors"], run["retrying"]) == ("finished", 3, 3, 0, 0)
+    titles = [c["title"] for c in wisp.chats.list_chats(limit=50)]
+    assert sum(t.startswith("Corpus · P-2 ") for t in titles) == 1 and len(titles) == 3
+    with pytest.raises(HTTPException, match="nothing to retry"):
+        asyncio.run(corpus_prompts.retry_failed_route())
+
+
+def test_a_case_cut_off_by_a_restart_replaces_its_chat(private, wisp):
+    """No line was saved for it, but the chat it opened was recorded first."""
+    corpus_prompts.import_file(str(private))
+    chats = wisp.chats
+    orphan = chats.create_session()
+    chats.set_title(orphan, "Corpus · P-1 · What is on the fixture calendar today?")
+    chats.add_turn(orphan, "user", "What is on the fixture calendar today?")
+    own = chats.create_session()
+    chats.add_turn(own, "user", "My own chat")
+    _, digest = corpus_prompts.load()
+    corpus_prompts._save_state({"run_id": "prompts-x", "selector": "P-1", "corpus_sha256": digest,
+                                "case_ids": ["P-1"], "started_at": "x", "status": "running",
+                                "open": {"case_id": "P-1", "session_id": orphan}})
+    assert corpus_prompts.status()["run"]["status"] == "interrupted"
+
+    async def resume():
+        await corpus_prompts.resume_route()
+        await corpus_prompts._job.task
+    asyncio.run(resume())
+    ids = {c["id"] for c in chats.list_chats(limit=50)}
+    assert orphan not in ids and own in ids and len(ids) == 2
+    assert "open" not in json.loads(corpus_prompts.JOB_FILE.read_text())

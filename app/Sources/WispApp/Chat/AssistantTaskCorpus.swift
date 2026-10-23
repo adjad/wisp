@@ -77,7 +77,8 @@ enum AssistantTaskCorpusCommand {
     /corpus prompts batch-1  Run 100 of your prompts the way you use Wisp; also all, batch-N,
                         section N, or one prompt (17). Sends and changes are declined.
                         /corpus prompts shows progress; stop pauses, resume continues (even
-                        after a restart), export saves Markdown and CSV. Each prompt takes
+                        after a restart), retry-failed runs failed ones again, export saves
+                        Markdown and CSV. Each prompt takes
                         about 10–60 s, so all 1,000 take roughly 8–15 hours: run batches of 100.
     /corpus synthetic smoke  Run the original synthetic routing dry run.
 
@@ -140,6 +141,7 @@ enum AssistantTaskCorpusCommand {
             case "resume": return .resume
             case "stop": return .stop
             case "export": return .export
+            case "retry-failed": return .retryFailed
             default:
                 if verb == "all" || verb.range(of: #"^(batch-\d{1,3}|p-\d{1,5}|\d{1,5})$"#, options: .regularExpression) != nil {
                     return .start(verb)
@@ -185,7 +187,7 @@ enum AssistantTaskCorpusCommand {
             switch self {
             case .usage: return "Use /corpus smoke, contacts, messages, mail, all, batch-1 through batch-10, LIVE-001, list, profile, export, or help. Add normal (/corpus all normal) to use the ordinary Ask path. For synthetic plans use /corpus synthetic smoke."
             case .nothingToExport: return "There is no corpus run to export yet. Run /corpus smoke first."
-            case .promptsUsage: return "Use /corpus prompts import <path>, batch-1, all, section 3, 17, resume, stop, export, or /corpus prompts alone for progress."
+            case .promptsUsage: return "Use /corpus prompts import <path>, batch-1, all, section 3, 17, resume, stop, retry-failed, export, or /corpus prompts alone for progress."
             case .busy: return "Stop the current corpus run before starting another."
             case .resourceUnavailable: return "The bundled assistant task corpus could not be loaded."
             }
@@ -296,6 +298,8 @@ enum CorpusExport {
 /// (service/corpus_prompts.py) through the normal Ask path, sends and changes declined.
 enum CorpusPromptsCommand: Equatable {
     case status, resume, stop, export
+    /// Runs again the cases whose last result failed or timed out.
+    case retryFailed
     /// "all", "batch-3", "section 4" or one prompt ("17").
     case start(String)
     case importFile(String)
@@ -333,6 +337,8 @@ struct CorpusPromptsStatus: Decodable, Equatable {
         let ok: Int
         let declined: Int
         let errors: Int
+        /// Failed cases being run again (/corpus prompts retry-failed).
+        let retrying: Int?
         let remaining: Int
         let eta_s: Double?
         let current: Current?
@@ -342,7 +348,9 @@ struct CorpusPromptsStatus: Decodable, Equatable {
         /// "running", "stopped", "interrupted" (the app restarted), "finished" or "failed".
         var statusLabel: String {
             switch status {
-            case "running": return waiting_for_idle ? "Waiting while you use Wisp" : "Running"
+            case "running":
+                if waiting_for_idle { return "Waiting while you use Wisp" }
+                return (retrying ?? 0) > 0 ? "Retrying \(retrying ?? 0) failed" : "Running"
             case "interrupted": return "Interrupted · /corpus prompts resume to continue"
             case "stopped": return "Stopped · /corpus prompts resume to continue"
             case "finished": return "Finished"
@@ -371,7 +379,7 @@ struct CorpusPromptsStatus: Decodable, Equatable {
             lines.append("No prompts file yet. Use /corpus prompts import <path>.")
         }
         if let run {
-            lines.append("Run \(run.selector): \(run.completed)/\(run.total) done · \(run.ok) OK · \(run.declined) declined · \(run.errors) errors · \(run.statusLabel)"
+            lines.append("Run \(run.selector): \(run.completed)/\(run.total) done · \(run.ok) OK · \(run.declined) declined · \(run.errors) failed · \(run.statusLabel)"
                          + (Self.eta(run.eta_s).map { " · \($0) left" } ?? ""))
             if let current = run.current {
                 lines.append("Now: \(current.case_id) (\(current.section)) \(current.prompt)")

@@ -228,7 +228,8 @@ struct ChatStoreChecks {
                     && prompts("/corpus prompts 17") == .start("17") && prompts("/corpus prompts P-17") == .start("p-17")
                     && prompts("/corpus prompts section 4") == .start("section 4"), "prompts selectors")
             check(prompts("/corpus prompts resume") == .resume && prompts("/corpus prompts stop") == .stop
-                    && prompts("/corpus prompts export") == .export, "prompts verbs")
+                    && prompts("/corpus prompts export") == .export
+                    && prompts("/corpus prompts retry-failed") == .retryFailed, "prompts verbs")
             check(prompts("/corpus prompts import ~/Desktop/my prompts.md") == .importFile("~/Desktop/my prompts.md")
                     && prompts("/corpus prompts import \"/tmp/a b.md\"") == .importFile("/tmp/a b.md"),
                   "import keeps the whole path, spaces and all")
@@ -252,8 +253,10 @@ struct ChatStoreChecks {
             let imported = #"{"sha256":"abc","cases":6,"imported_at":"x","sections":[{"number":1,"title":"Reading","count":3}]}"#
             let running = status(#"{"imported":\#(imported),"run":{"run_id":"prompts-1","selector":"batch-1","status":"running","started_at":"x","error":"","total":100,"completed":40,"ok":30,"declined":8,"errors":2,"remaining":60,"eta_s":1800,"waiting_for_idle":false,"current":{"case_id":"P-41","section":"3. Mail","tag":"W","prompt":"Email Example Person","turns":2,"turn":1,"elapsed_s":4.2}}}"#)
             let finished = status(#"{"imported":\#(imported),"run":{"run_id":"prompts-1","selector":"batch-1","status":"finished","started_at":"x","error":"","total":100,"completed":100,"ok":80,"declined":15,"errors":5,"remaining":0,"eta_s":null,"waiting_for_idle":false,"current":null}}"#)
-            check(running.summary.contains("40/100 done · 30 OK · 8 declined · 2 errors · Running · about 30 min left")
+            check(running.summary.contains("40/100 done · 30 OK · 8 declined · 2 failed · Running · about 30 min left")
                     && running.summary.contains("Now: P-41 (3. Mail) Email Example Person"), "the summary reads as progress")
+            let retrying = status(#"{"imported":null,"run":{"run_id":"r","selector":"all","status":"running","started_at":"x","error":"","total":10,"completed":10,"ok":7,"declined":1,"errors":2,"retrying":2,"remaining":2,"eta_s":60,"waiting_for_idle":false,"current":null}}"#)
+            check(retrying.run?.statusLabel == "Retrying 2 failed", "a retry says how many failed cases it is running again")
             check(status(#"{"imported":null,"run":null}"#).summary.contains("/corpus prompts import"),
                   "without a file, the summary says how to import one")
             let result = try! JSONDecoder().decode(CorpusPromptsResult.self, from: Data(#"{"case_id":"P-3","category":"1. Reading","tag":"R","status":"done","prompt":"A → B","answer":"b","model":"ling","latency_s":12.5,"error":"","confirmations":[{"tool":"send_email","reason":"r"}],"turns":[{"prompt":"A","answer":"a"},{"prompt":"B","answer":"b"}]}"#.utf8))
@@ -285,7 +288,7 @@ struct ChatStoreChecks {
             store.submit("/corpus prompts stop")
             await settle(200)
             check(backend.promptsCommands.last == .stop
-                    && store.selected?.messages.last?.text.contains("100/100 done · 80 OK · 15 declined · 5 errors · Finished") == true,
+                    && store.selected?.messages.last?.text.contains("100/100 done · 80 OK · 15 declined · 5 failed · Finished") == true,
                   "the window sends the command and shows the progress as text")
             try? FileManager.default.removeItem(at: scratch)
         }

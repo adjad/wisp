@@ -118,7 +118,7 @@ private struct NotchPromptsPanel: View {
                 HStack(spacing: 12) {
                     Text("\(run.ok) OK")
                     Text("\(run.declined) declined")
-                    Text("\(run.errors) errors")
+                    Text("\(run.errors) failed")
                     Spacer()
                     if let eta = CorpusPromptsStatus.eta(run.eta_s), run.active { Text("\(eta) left") }
                 }.font(.system(size: 10.5, design: .monospaced)).foregroundStyle(Theme.textSecondary)
@@ -133,8 +133,13 @@ private struct NotchPromptsPanel: View {
                 HStack(spacing: 16) {
                     if run.active {
                         Button("Stop prompts") { controller.runPrompts(.stop) }
-                    } else if run.status != "finished" {
-                        Button("Resume") { controller.runPrompts(.resume) }
+                    } else {
+                        if run.status != "finished" {
+                            Button("Resume") { controller.runPrompts(.resume) }
+                        }
+                        if run.errors > 0 {
+                            Button("Retry \(run.errors) failed") { controller.runPrompts(.retryFailed) }
+                        }
                     }
                     Button(controller.exporting ? "Exporting…" : "Export prompts") { controller.runPrompts(.export) }
                         .disabled(controller.exporting || run.completed == 0)

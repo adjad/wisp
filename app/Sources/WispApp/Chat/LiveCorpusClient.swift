@@ -46,8 +46,9 @@ extension WispClient {
         switch command {
         case .status, .export:
             request = URLRequest(url: base.appendingPathComponent("status"))
-        case .resume, .stop:
-            request = URLRequest(url: base.appendingPathComponent(command == .resume ? "resume" : "stop"))
+        case .resume, .stop, .retryFailed:
+            let name = command == .resume ? "resume" : command == .stop ? "stop" : "retry-failed"
+            request = URLRequest(url: base.appendingPathComponent(name))
             request.httpMethod = "POST"
         case .start(let selector):
             request = URLRequest(url: base.appendingPathComponent("start"))

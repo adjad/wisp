@@ -375,8 +375,29 @@ async def _wait_until_idle() -> None:
         await asyncio.sleep(IDLE_POLL_S if quiet_since is None else min(IDLE_POLL_S, IDLE_SETTLE_S))
 
 
-async def run_case(case: PromptCase, run_id: str) -> dict:
+def _drop_orphans(case_id: str, run_id: str, state: dict | None) -> None:
+    """A case run again (resumed after a stop or restart, or retried) replaces
+    its earlier chat instead of leaving a second "Corpus · P-n"."""
+    sids = set()
+    previous = run_lines(run_id).get(case_id)
+    if previous and previous.get("session_id"):
+        sids.add(previous["session_id"])
+    opened = (state or {}).get("open") or {}
+    if opened.get("case_id") == case_id and opened.get("session_id"):
+        sids.add(opened["session_id"])   # cut off before its line was saved
+    store = corpus._session_store()
+    for sid in sids:
+        try:
+            if store.is_corpus_session(sid):
+                store.delete_session(sid)
+        except Exception as exc:
+            log.warning("Earlier chat for %s was not removed (%s)", case_id, type(exc).__name__)
+
+
+async def run_case(case: PromptCase, run_id: str, state: dict | None = None) -> dict:
     """One case, every turn in one chat, saved once whatever ends it."""
+    await _wait_until_idle()
+    _drop_orphans(case.id, run_id, state)
     record = PromptRecord(case, run_id)
     _job.current = {"case_id": case.id, "section": record.line["category"], "tag": case.tag,
                     "prompt": corpus._one_line(case.text, 300), "turns": len(case.segments), "turn": 0,
@@ -387,6 +408,10 @@ async def run_case(case: PromptCase, run_id: str) -> dict:
             record.observe(event)
         except Exception as exc:
             log.warning("Prompts event not recorded (%s)", type(exc).__name__)
+        if event.get("type") == "corpus_session" and state is not None:
+            # Saved before any turn, so a restart mid-case can still find this chat.
+            state["open"] = {"case_id": case.id, "session_id": str(event.get("id", ""))}
+            _save_state(state)
 
     stopped = timed_out = False
     try:
@@ -395,6 +420,9 @@ async def run_case(case: PromptCase, run_id: str) -> dict:
         sid = await corpus.open_session(title, emit)
         for number, segment in enumerate(case.segments, 1):
             _job.current["turn"] = number
+            if number > 1:
+                # Every turn, follow-ups too, waits for the user's own turn to finish.
+                await _wait_until_idle()
             record.begin_turn(segment)
             async with asyncio.timeout(TURN_TIMEOUT_S):
                 sid = await corpus.agent_turn(segment, sid, emit, title)
@@ -414,6 +442,12 @@ async def run_case(case: PromptCase, run_id: str) -> dict:
         corpus.save_session(line)
         corpus.persist(line)
         _job.current = None
+        if state is not None:
+            state.pop("open", None)
+            # A retried case is retried once, even across a stop and resume.
+            if case.id in state.get("retry", []):
+                state["retry"].remove(case.id)
+            _save_state(state)
     return line
 
 
@@ -423,13 +457,13 @@ async def _run(state: dict) -> None:
         if digest != state["corpus_sha256"]:
             raise PromptsError("The prompts file changed since this run started. Start a new run.")
         by_id = {c.id: c for c in cases}
-        done = {cid for cid, line in run_lines(state["run_id"]).items() if _finished(line)}
+        retry = set(state.get("retry", []))
+        done = {cid for cid, line in run_lines(state["run_id"]).items() if _finished(line)} - retry
         for case_id in state["case_ids"]:
             if case_id in done or case_id not in by_id:
                 continue
-            await _wait_until_idle()
             async with corpus._RUN_LOCK:
-                await run_case(by_id[case_id], state["run_id"])
+                await run_case(by_id[case_id], state["run_id"], state)
         state.update(status="finished", ended_at=time.time())
     except asyncio.CancelledError:
         state.update(status="stopped", ended_at=time.time())
@@ -468,7 +502,9 @@ def status() -> dict:
     declined = sum(line["status"] == "done" and bool(line.get("confirmations")) for line in finished)
     errors = sum(line["status"] == "error" for line in finished)
     total = len(state["case_ids"])
-    remaining = total - len(finished)
+    # Cases being retried count as still to do.
+    retrying = len(state.get("retry", [])) if state.get("status") == "running" and _job.running else 0
+    remaining = total - len(finished) + retrying
     times = [line["latency_s"] for line in finished if isinstance(line.get("latency_s"), (int, float))]
     run_status = state.get("status", "stopped")
     if run_status == "running" and not _job.running:
@@ -480,6 +516,7 @@ def status() -> dict:
         "run_id": state["run_id"], "selector": state.get("selector", ""), "status": run_status,
         "started_at": state.get("started_at", ""), "error": state.get("error", ""),
         "total": total, "completed": len(finished), "ok": ok, "declined": declined, "errors": errors,
+        "retrying": retrying,
         "remaining": remaining, "eta_s": round(sum(times) / len(times) * remaining) if times and remaining else None,
         "current": current, "waiting_for_idle": _job.waiting and _job.running}}
 
@@ -530,6 +567,27 @@ async def resume_route():
     state = _read_json(JOB_FILE)
     if not state:
         raise HTTPException(400, "There is no prompts run to resume. Start one with /corpus prompts batch-1.")
+    _launch(state)
+    return status()
+
+
+def _failed(line: dict) -> bool:
+    return line.get("status") == "error"
+
+
+@router.post("/retry-failed")
+async def retry_failed_route():
+    """Runs again the cases of the current run whose last result failed or timed out."""
+    if _job.running:
+        raise HTTPException(409, "A prompts run is already going. Use /corpus prompts stop first.")
+    state = _read_json(JOB_FILE)
+    if not state:
+        raise HTTPException(400, "There is no prompts run to retry.")
+    lines = run_lines(state["run_id"])
+    failed = [cid for cid in state["case_ids"] if cid in lines and _failed(lines[cid])]
+    if not failed:
+        raise HTTPException(400, "No prompt in this run failed, so there is nothing to retry.")
+    state["retry"] = failed
     _launch(state)
     return status()
 
