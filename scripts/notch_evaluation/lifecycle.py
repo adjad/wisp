@@ -27,7 +27,6 @@ import socket
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -45,9 +44,23 @@ def _home() -> str:
     return os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
 
 
+# confstr(_CS_DARWIN_USER_TEMP_DIR): this user's system temporary folder.
+_CS_DARWIN_USER_TEMP_DIR = 65537
+
+
 def scratch_bases() -> tuple[str, ...]:
-    """Where evaluation roots may live: the system temporary areas only."""
-    bases = {os.path.realpath("/private/tmp"), os.path.realpath(tempfile.gettempdir())}
+    """Where evaluation roots may live: the system temporary areas only.
+
+    Asked of the OS, never read from TMPDIR or tempfile: the host redirects
+    both into its owned root, and an inherited TMPDIR could name any folder.
+    """
+    bases = {os.path.realpath("/private/tmp")}
+    try:
+        user_temp = os.confstr(_CS_DARWIN_USER_TEMP_DIR)
+    except (ValueError, OSError):
+        user_temp = None
+    if user_temp and os.path.isabs(user_temp):
+        bases.add(os.path.realpath(user_temp))
     return tuple(sorted(bases))
 
 

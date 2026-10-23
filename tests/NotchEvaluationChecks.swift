@@ -65,6 +65,17 @@ struct NotchEvaluationChecks {
         return try! JSONSerialization.data(withJSONObject: object)
     }
 
+    /// A file written in place with one open(2): no atomic temporary item
+    /// in a shared folder, which the CI fixture sandbox refuses.
+    @discardableResult
+    static func writeFile(_ path: String, _ data: Data, mode: mode_t) -> Bool {
+        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        let count = data.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        return count == data.count && fchmod(fd, mode) == 0
+    }
+
     static func refusals(_ ledger: NotchEvaluationLedger, _ reason: String) -> Int {
         ledger.entries.filter { $0["kind"] as? String == "refused" && $0["reason"] as? String == reason }.count
     }
@@ -112,8 +123,7 @@ struct NotchEvaluationChecks {
             check((try? NotchEvaluationConfig.parse(configJSON(override, root: root.path))) == nil, "refuses \(label)")
         }
         let file = root.appendingPathComponent("config.json")
-        FileManager.default.createFile(atPath: file.path, contents: configJSON(root: root.path),
-                                       attributes: [.posixPermissions: 0o644])
+        check(writeFile(file.path, configJSON(root: root.path), mode: 0o644), "fixture file written")
         check((try? NotchEvaluationConfig.load(path: file.path)) == nil, "refuses a readable-by-others config")
         chmod(file.path, 0o600)
         check((try? NotchEvaluationConfig.load(path: file.path)) == config, "loads a private config")
@@ -124,9 +134,9 @@ struct NotchEvaluationChecks {
 
         // Attachments: only regular files inside a source root, links resolved.
         let inside = home.appendingPathComponent("photo.png")
-        FileManager.default.createFile(atPath: inside.path, contents: Data("SYNTHETIC".utf8))
+        check(writeFile(inside.path, Data("SYNTHETIC".utf8), mode: 0o600), "fixture file written")
         let outside = root.appendingPathComponent("outside.png")
-        FileManager.default.createFile(atPath: outside.path, contents: Data("SYNTHETIC".utf8))
+        check(writeFile(outside.path, Data("SYNTHETIC".utf8), mode: 0o600), "fixture file written")
         let escape = home.appendingPathComponent("escape.png")
         try? FileManager.default.createSymbolicLink(at: escape, withDestinationURL: outside)
         check(NotchEvaluationSources.admit(inside, config: config)?.path == inside.path, "admits a source-root file")
@@ -285,8 +295,7 @@ struct NotchEvaluationChecks {
         check(!NotchEvaluationLedger(directory: bad2).healthy, "refuses a linked receipt file")
         let bad3 = root.appendingPathComponent("bad3")
         try? FileManager.default.createDirectory(at: bad3, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        FileManager.default.createFile(atPath: bad3.appendingPathComponent("native-receipts.jsonl").path, contents: nil,
-                                       attributes: [.posixPermissions: 0o644])
+        check(writeFile(bad3.appendingPathComponent("native-receipts.jsonl").path, Data(), mode: 0o644), "fixture file written")
         check(!NotchEvaluationLedger(directory: bad3).healthy, "refuses a receipt file others can read")
         let bad4 = root.appendingPathComponent("bad4")
         try? FileManager.default.createDirectory(at: bad4, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])

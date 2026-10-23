@@ -197,6 +197,44 @@ def test_guard_refuses_process_network_and_foreign_files():
     assert owned_file.read_text() == "owned state is writable"
 
 
+def test_guard_judges_entries_and_dir_fd_names_where_they_really_are():
+    import shutil
+    outside = ROOT / "README.md"                      # a real file outside the owned root; never touched
+    before = outside.stat()
+    work = OWNED / "guard-entries"
+    (work / "sub").mkdir(parents=True)
+    (work / "sub" / "escape.txt").symlink_to(outside)
+    # Changing what a link names is refused, through the link or not.
+    with pytest.raises(PermissionError):
+        os.chmod(work / "sub" / "escape.txt", 0o600)
+    with pytest.raises(PermissionError):
+        os.utime(work / "sub" / "escape.txt")
+    # Removing the link entry itself is inside the root and leaves the target alone.
+    fd = os.open(work / "sub", os.O_RDONLY)
+    try:
+        (work / "sub" / "plain.txt").write_text("synthetic")
+        os.unlink("plain.txt", dir_fd=fd)              # resolved against the directory, not the cwd
+        os.unlink("escape.txt", dir_fd=fd)
+    finally:
+        os.close(fd)
+    assert not (work / "sub" / "escape.txt").exists() and outside.stat().st_mtime == before.st_mtime
+    # A dir_fd naming a directory outside the root is refused, whatever the name.
+    fd = os.open(ROOT, os.O_RDONLY)
+    try:
+        with pytest.raises(PermissionError):
+            os.unlink("README.md", dir_fd=fd)
+    finally:
+        os.close(fd)
+    assert outside.exists()
+    # The fd-based tree removal pytest and tempfile use at exit works inside the root.
+    (work / "tree" / "deep").mkdir(parents=True)
+    (work / "tree" / "deep" / "link").symlink_to(outside)
+    shutil.rmtree(work / "tree")
+    assert not (work / "tree").exists() and outside.exists()
+    with pytest.raises(PermissionError):
+        shutil.rmtree(ROOT / "no-such-tree-outside")
+
+
 def test_http_guard_allows_only_reviewed_engine_operations():
     import httpx
     seen = []
@@ -941,6 +979,10 @@ def test_roots_are_validated_before_anything_is_written(monkeypatch):
         with pytest.raises(lifecycle.RootError):
             lifecycle.validate_root(bad, fresh=True)
     assert home  # HOME is the synthetic one here; the password database names the real one
+    # The scratch area comes from the OS, not from the TMPDIR the host redirected.
+    import tempfile
+    assert os.path.realpath(tempfile.gettempdir()) not in lifecycle.scratch_bases()
+    assert any(str(OWNED).startswith(base + os.sep) for base in lifecycle.scratch_bases())
     base = OWNED / "roots"
     base.mkdir(mode=0o700)
     # An ancestor of a protected location is refused.

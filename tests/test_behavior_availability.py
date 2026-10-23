@@ -1154,6 +1154,8 @@ _PUBLIC_PLANNING_SOURCES = (
     'service/discovery/__init__.py',
     'service/discovery/contracts.py',
     'service/discovery/store.py',
+    # Inert outside the contained evaluation host; registry imports it.
+    'service/evaluation_boundary.py',
     'service/inference/__init__.py',
     'service/message_content.py',
     'service/paths.py',

@@ -199,11 +199,18 @@ class AuditGuard:
     """Irreversible audit-hook policy. ``sys.addaudithook`` cannot be removed."""
 
     _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
-    _PATH_EVENTS = {"os.remove": (0,), "os.rmdir": (0,), "os.mkdir": (0,), "os.rename": (0, 1),
-                    "os.symlink": (1,), "os.link": (0, 1), "os.chmod": (0,), "os.chown": (0,),
-                    "os.utime": (0,), "os.truncate": (0,), "shutil.rmtree": (0,), "shutil.move": (0, 1),
-                    "shutil.copyfile": (1,), "shutil.copytree": (1,), "os.chflags": (0,),
-                    "os.setxattr": (0,), "os.removexattr": (0,)}
+    # event -> ((path index, dir_fd index or None), ...). A relative name with
+    # a dir_fd is resolved against that directory, never the working directory.
+    _PATH_EVENTS = {"os.remove": ((0, 1),), "os.rmdir": ((0, 1),), "os.mkdir": ((0, 2),),
+                    "os.rename": ((0, 2), (1, 3)), "os.symlink": ((1, 2),), "os.link": ((0, 2), (1, 3)),
+                    "os.chmod": ((0, 2),), "os.chown": ((0, 3),), "os.utime": ((0, 3),),
+                    "os.truncate": ((0, None),), "shutil.rmtree": ((0, 1),), "shutil.move": ((0, None), (1, None)),
+                    "shutil.copyfile": ((1, None),), "shutil.copytree": ((1, None),), "os.chflags": ((0, None),),
+                    "os.setxattr": ((0, None),), "os.removexattr": ((0, None),)}
+    # Events that act on a directory entry itself, not on what a link names:
+    # the entry's own location decides. Every other event may follow a link,
+    # so both the entry and its resolved target must be inside the owned root.
+    _ENTRY_EVENTS = frozenset({"os.remove", "os.rmdir", "os.rename", "os.symlink", "shutil.rmtree"})
     _EXEC_EVENTS = {"subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn",
                     "os.fork", "os.forkpty", "pty.spawn", "os.startfile"}
 
@@ -238,6 +245,45 @@ class AuditGuard:
         except (TypeError, ValueError):
             return "<unresolvable>"
 
+    @staticmethod
+    def _fd_directory(fd: int) -> str | None:
+        """The directory an open descriptor names (macOS F_GETPATH), or None."""
+        import fcntl
+        try:
+            raw = fcntl.fcntl(fd, getattr(fcntl, "F_GETPATH", 50), bytes(1024))
+        except (OSError, ValueError):
+            return None
+        return os.fsdecode(raw.split(b"\0", 1)[0]) or None
+
+    def _locations(self, event: str, value, dir_fd) -> list[str] | None:
+        """Where a path event writes: the entry, and its target if it may follow a link."""
+        if isinstance(value, int) or value is None:
+            return None
+        try:
+            text = os.fsdecode(value)
+        except (TypeError, ValueError):
+            return ["<unresolvable>"]
+        if not os.path.isabs(text):
+            if isinstance(dir_fd, int) and not isinstance(dir_fd, bool):
+                base = self._fd_directory(dir_fd)
+                if base is None:
+                    return ["<unresolvable dir_fd>"]
+                text = os.path.join(base, text)
+            else:
+                text = os.path.abspath(text)
+        head, name = os.path.split(text.rstrip(os.sep) or os.sep)
+        entry = os.path.join(os.path.realpath(head or os.sep), name)
+        if event in self._ENTRY_EVENTS:
+            return [entry]
+        return [entry, os.path.realpath(text)]
+
+    def _check_path_event(self, event: str, value, dir_fd) -> None:
+        for path in self._locations(event, value, dir_fd) or ():
+            if path in ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"):
+                continue
+            if not _under(path, self.write_roots):
+                self._deny(event, path)
+
     def _check_write(self, event: str, value) -> None:
         path = self._path(value)
         if path is None or path in ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"):
@@ -267,9 +313,10 @@ class AuditGuard:
                 isinstance(flags, int) and flags & self._WRITE_FLAGS)
             (self._check_write if writes else self._check_read)(event, path)
         elif event in self._PATH_EVENTS:
-            for index in self._PATH_EVENTS[event]:
+            for index, fd_index in self._PATH_EVENTS[event]:
                 if index < len(args):
-                    self._check_write(event, args[index])
+                    dir_fd = args[fd_index] if fd_index is not None and fd_index < len(args) else None
+                    self._check_path_event(event, args[index], dir_fd)
         elif event in ("os.listdir", "os.scandir"):
             if args:
                 self._check_read(event, args[0])
