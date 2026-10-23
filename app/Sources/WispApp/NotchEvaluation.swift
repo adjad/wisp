@@ -422,6 +422,55 @@ final class EvaluationGuardProtocol: URLProtocol, URLSessionDataDelegate, @unche
     }
 }
 
+/// The evaluation input adapter's wire format: one JSON line in, one out,
+/// over a private Unix socket in the owned root. Pure, so the checks cover it.
+enum NotchEvaluationInput {
+    static let socketName = "app-input.sock"
+    static let maxRequestBytes = 64 * 1024
+    static let maxTextLength = 8000
+
+    struct Request: Equatable {
+        let op: String
+        let caseID: String
+        let text: String
+        let newChat: Bool
+        let timeout: TimeInterval
+    }
+
+    enum Problem: Error, Equatable { case malformed, unauthorized, badField(String) }
+
+    static func isSafeID(_ value: String) -> Bool {
+        (1...32).contains(value.utf8.count)
+            && value.utf8.allSatisfy { $0 < 128 && (isalnum(Int32($0)) != 0 || $0 == 0x5F || $0 == 0x2D) }
+    }
+
+    /// The request, or why it is refused. The run token is checked first.
+    static func parse(_ data: Data, token: String) throws -> Request {
+        guard data.count <= maxRequestBytes,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw Problem.malformed
+        }
+        guard let given = object["token"] as? String, EvaluationGuard.constantTimeEqual(given, token) else {
+            throw Problem.unauthorized
+        }
+        guard let op = object["op"] as? String, ["ask", "ping"].contains(op) else { throw Problem.badField("op") }
+        if op == "ping" { return Request(op: op, caseID: "", text: "", newChat: false, timeout: 0) }
+        guard let caseID = object["case"] as? String, isSafeID(caseID) else { throw Problem.badField("case") }
+        guard let text = object["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              text.count <= maxTextLength else { throw Problem.badField("text") }
+        let newChat = object["new_chat"] as? Bool ?? true
+        let timeout = (object["timeout_s"] as? NSNumber)?.doubleValue ?? 240
+        guard timeout.isFinite, (1...1800).contains(timeout) else { throw Problem.badField("timeout_s") }
+        return Request(op: op, caseID: caseID, text: text, newChat: newChat, timeout: timeout)
+    }
+
+    static func encode(_ object: [String: Any]) -> Data {
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+            ?? Data(#"{"status":"refused","error":"unencodable reply"}"#.utf8)
+        return data + Data("\n".utf8)
+    }
+}
+
 /// The configured run, for WispClient.baseURL. A missing or invalid config
 /// stops the process: an evaluation build never falls back to production.
 enum NotchEvaluationEnvironment {
@@ -441,6 +490,202 @@ enum NotchEvaluationEnvironment {
 #if WISP_NOTCH_EVALUATION
 import AppKit
 import SwiftUI
+
+/// A finalized turn exactly as OverlayModel displayed it.
+struct NotchEvaluationTurn {
+    let outcome: String
+    let dispatch: UInt64
+    let text: String
+    let model: String?
+    let routeRole: String?
+    let routeSource: String?
+    let routeReason: String?
+    let tools: [[String: Any]]
+    let responseModels: [String]
+    let startedAt: Date?
+    let firstTokenAt: Date?
+    let finishedAt: Date?
+    let session: String
+    let traceID: String?
+}
+
+/// What OverlayModel tells the input adapter, on the main actor.
+@MainActor
+protocol NotchEvaluationTurnObserver: AnyObject {
+    func evaluationStarted(dispatch: UInt64, inputSHA256: String)
+    func evaluationConfirmation(tool: String, grantable: Bool)
+    func evaluationTerminal(_ turn: NotchEvaluationTurn)
+}
+
+/// Types each corpus turn into the real Ask field. The driver sends one
+/// request; the adapter sets OverlayModel.input, calls the normal submit,
+/// declines any confirmation card through the card's own resolve path, and
+/// answers with the finalized turn once the terminal event has been shown.
+@MainActor
+final class NotchEvaluationInputAdapter: NotchEvaluationTurnObserver {
+    private struct Waiter {
+        let request: NotchEvaluationInput.Request
+        let reply: (Data) -> Void
+        var started: (dispatch: UInt64, inputSHA256: String)?
+        var confirmation: [String: Any]?
+        var timeout: DispatchWorkItem?
+    }
+
+    private let model: OverlayModel
+    private let config: NotchEvaluationConfig
+    private let ledger: NotchEvaluationLedger
+    weak var panel: NSPanel?
+    private var waiter: Waiter?
+
+    init(model: OverlayModel, config: NotchEvaluationConfig, ledger: NotchEvaluationLedger) {
+        self.model = model
+        self.config = config
+        self.ledger = ledger
+    }
+
+    /// Bind the private socket and accept on a background thread.
+    func start() throws {
+        let path = config.ownedRoot.appendingPathComponent(NotchEvaluationInput.socketName).path
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { throw NotchEvaluationConfig.Problem.badField("socket path") }
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: bytes)
+            raw[bytes.count] = 0
+        }
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard listener >= 0 else { throw NotchEvaluationConfig.Problem.unreadable }
+        let old = umask(0o177)
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        umask(old)
+        guard bound == 0, listen(listener, 4) == 0 else {
+            close(listener)
+            throw NotchEvaluationConfig.Problem.badField("socket")
+        }
+        ledger.record("input_adapter_ready", [:])
+        let thread = Thread { [weak self] in
+            while true {
+                let client = accept(listener, nil, nil)
+                if client < 0 { continue }
+                var data = Data()
+                var buffer = [UInt8](repeating: 0, count: 4096)
+                while data.count <= NotchEvaluationInput.maxRequestBytes {
+                    let count = read(client, &buffer, buffer.count)
+                    if count <= 0 { break }
+                    data.append(buffer, count: count)
+                    if buffer[count - 1] == 0x0A { break }
+                }
+                let reply: @Sendable (Data) -> Void = { payload in
+                    _ = payload.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
+                    close(client)
+                }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self?.handle(data, reply: reply) ?? reply(NotchEvaluationInput.encode(["status": "refused"])) }
+                }
+            }
+        }
+        thread.name = "wisp-evaluation-input"
+        thread.start()
+    }
+
+    private func handle(_ data: Data, reply: @escaping (Data) -> Void) {
+        let request: NotchEvaluationInput.Request
+        do {
+            request = try NotchEvaluationInput.parse(data, token: config.token)
+        } catch {
+            ledger.record("input_refused", ["reason": "\(error)"])
+            return reply(NotchEvaluationInput.encode(["status": "refused", "error": "\(error)"]))
+        }
+        if request.op == "ping" {
+            return reply(NotchEvaluationInput.encode([
+                "status": ledger.healthy ? "ready" : "unhealthy", "settled": model.conversationSettled]))
+        }
+        guard ledger.healthy else { return reply(NotchEvaluationInput.encode(["status": "unhealthy"])) }
+        guard waiter == nil else { return reply(NotchEvaluationInput.encode(["status": "busy"])) }
+        if request.newChat {
+            model.newChat()
+        } else if !model.conversationSettled {
+            return reply(NotchEvaluationInput.encode(["status": "busy"]))
+        }
+        model.tab = .ask
+        waiter = Waiter(request: request, reply: reply)
+        model.input = request.text
+        model.submit()
+        guard waiter?.started != nil else {
+            waiter = nil
+            return reply(NotchEvaluationInput.encode(["status": "not_submitted", "case": request.caseID]))
+        }
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, let current = self.waiter, current.request.caseID == request.caseID else { return }
+            self.waiter = nil
+            current.reply(NotchEvaluationInput.encode([
+                "status": "timeout", "case": request.caseID,
+                "dispatch": current.started?.dispatch ?? 0, "partial_text": self.model.answer]))
+        }
+        waiter?.timeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + request.timeout, execute: timeout)
+    }
+
+    func evaluationStarted(dispatch: UInt64, inputSHA256: String) {
+        if waiter != nil, waiter?.started == nil { waiter?.started = (dispatch, inputSHA256) }
+    }
+
+    func evaluationConfirmation(tool: String, grantable: Bool) {
+        guard waiter != nil else { return }
+        waiter?.confirmation = ["tool": tool, "grantable": grantable, "declined": true]
+        ledger.record("confirmation_declined", [:])
+        // Declined once through the card's own path, after it has rendered.
+        DispatchQueue.main.async { [weak self] in self?.model.resolve(false) }
+    }
+
+    func evaluationTerminal(_ turn: NotchEvaluationTurn) {
+        guard let current = waiter, current.started?.dispatch == turn.dispatch else { return }
+        current.timeout?.cancel()
+        waiter = nil
+        // Let the finished turn render before it is captured and reported.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+            var result: [String: Any] = [
+                "status": "terminal", "case": current.request.caseID, "dispatch": turn.dispatch,
+                "outcome": turn.outcome, "text": turn.text, "tools": turn.tools,
+                "response_models": turn.responseModels, "session": turn.session,
+                "input_sha256": current.started?.inputSHA256 ?? "",
+            ]
+            for (key, value) in [("model", turn.model), ("route_role", turn.routeRole), ("route_source", turn.routeSource),
+                                 ("route_reason", turn.routeReason), ("trace_id", turn.traceID)] {
+                if let value { result[key] = value }
+            }
+            for (key, value) in [("started_at", turn.startedAt), ("first_token_at", turn.firstTokenAt),
+                                 ("finished_at", turn.finishedAt)] {
+                if let value { result[key] = value.timeIntervalSince1970 }
+            }
+            if let confirmation = current.confirmation { result["confirmation"] = confirmation }
+            if let screenshot = self.capture(current.request.caseID) { result["screenshot"] = screenshot }
+            current.reply(NotchEvaluationInput.encode(result))
+        }
+    }
+
+    /// The panel's own rendering (no Screen Recording needed), into evidence.
+    private func capture(_ caseID: String) -> String? {
+        guard let view = panel?.contentView, view.bounds.width > 0,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        let dir = config.evidence.appendingPathComponent("screens").path
+        if mkdir(dir, 0o700) != 0 && errno != EEXIST { return nil }
+        let path = dir + "/" + caseID + ".png"
+        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        let written = png.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        return written == png.count ? path : nil
+    }
+}
 
 /// Mounts the real notch Ask surface against the evaluation backend.
 @MainActor
@@ -489,6 +734,11 @@ enum NotchEvaluationHost {
         model.collapsed = false
         model.closing = false
         Self.panel = panel
+        let adapter = NotchEvaluationInputAdapter(model: model, config: config, ledger: ledger)
+        adapter.panel = panel
+        model.evaluationObserver = adapter
+        do { try adapter.start() } catch { fatalError("The evaluation input adapter could not start: \(error)") }
+        retained.append(adapter)
         guard ledger.healthy else {
             fatalError("Notch evaluation receipts are unavailable: \(ledger.failure ?? "unknown")")
         }

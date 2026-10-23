@@ -147,6 +147,29 @@ struct NotchEvaluationChecks {
         check(NotchEvaluationSources.admit(URL(string: "https://example.com/a.png")!, config: config) == nil,
               "refuses a remote URL")
 
+        // The input adapter's wire format: token first, then strict fields.
+        func inputRequest(_ fields: [String: Any]) -> Data { try! JSONSerialization.data(withJSONObject: fields) }
+        let tokenField: [String: Any] = ["token": config.token]
+        let ask = try? NotchEvaluationInput.parse(inputRequest(tokenField.merging(
+            ["op": "ask", "case": "17-0", "text": "SYNTHETIC question", "new_chat": false, "timeout_s": 90]) { a, _ in a }),
+            token: config.token)
+        check(ask == NotchEvaluationInput.Request(op: "ask", caseID: "17-0", text: "SYNTHETIC question",
+                                                   newChat: false, timeout: 90), "parses an ask")
+        check((try? NotchEvaluationInput.parse(inputRequest(["op": "ping", "token": config.token]), token: config.token))?.op == "ping",
+              "parses a ping")
+        for (fields, label) in [(["op": "ask", "case": "1", "text": "x", "token": "wrong"], "a wrong token"),
+                                (["op": "ask", "case": "1", "text": "x"], "no token"),
+                                (["op": "shell", "case": "1", "text": "x", "token": config.token], "an unknown op"),
+                                (["op": "ask", "case": "../1", "text": "x", "token": config.token], "an unsafe case id"),
+                                (["op": "ask", "case": "1", "text": "   ", "token": config.token], "blank text"),
+                                (["op": "ask", "case": "1", "text": String(repeating: "x", count: 8001), "token": config.token], "oversized text"),
+                                (["op": "ask", "case": "1", "text": "x", "timeout_s": 0, "token": config.token], "a zero timeout")]
+                                as [([String: Any], String)] {
+            check((try? NotchEvaluationInput.parse(inputRequest(fields), token: config.token)) == nil, "the adapter refuses \(label)")
+        }
+        check((try? NotchEvaluationInput.parse(Data("not json".utf8), token: config.token)) == nil, "the adapter refuses non-JSON")
+        check(NotchEvaluationInput.encode(["status": "ready"]).last == 0x0A, "replies are one line")
+
         // Admission: exact origin only; the token is added.
         for raw in ["http://127.0.0.1:8765/agent", "https://127.0.0.1:18891/agent", "http://localhost:18891/agent",
                     "http://u:p@127.0.0.1:18891/agent", "https://example.com/?q=private", "http://127.0.0.1:18892/v1/models"] {

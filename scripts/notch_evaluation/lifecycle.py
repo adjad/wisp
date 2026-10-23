@@ -327,6 +327,40 @@ def stop(root: str, *, timeout: float = 30.0) -> dict:
                 "last_recorded": recorded}
 
 
+def retire(root: str, into: str) -> str:
+    """Move a finished run's root into a private archive directory.
+
+    Only a root whose supervisor is gone and whose last recorded state is
+    terminal moves; nothing is deleted. ``into`` must be an existing private
+    directory this user owns. Returns the new location.
+    """
+    canonical = validate_root(root, fresh=False, allowed_entries=None)
+    control = Path(canonical, CONTROL)
+    if control.exists() or control.is_symlink():
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                conn.settimeout(2)
+                conn.connect(str(control))
+            raise RootError("the run's supervisor is still answering; stop it first")
+        except (ConnectionRefusedError, FileNotFoundError):
+            pass
+    try:
+        state = json.loads(Path(canonical, STATE).read_text(encoding="utf-8")).get("state")
+    except (OSError, ValueError):
+        state = None
+    if state not in ("stopped", "ended", "failed"):
+        raise RootError(f"the run is not finished (state: {state})")
+    target_dir = os.path.realpath(into)
+    info = os.lstat(target_dir)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise RootError("the archive must be an existing private directory")
+    target = os.path.join(target_dir, os.path.basename(canonical))
+    if os.path.lexists(target):
+        raise RootError("the archive already holds a root of that name")
+    os.rename(canonical, target)
+    return target
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -341,6 +375,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--ready-timeout", type=float, default=30.0)
     end = sub.add_parser("stop", help="ask the supervisor to retire its children")
     end.add_argument("root")
+    keep = sub.add_parser("retire", help="move a finished run's root into a private archive")
+    keep.add_argument("root")
+    keep.add_argument("--into", required=True)
     secrets_cmd = sub.add_parser("secret", help="print a random token")
     secrets_cmd.add_argument("--bytes", type=int, default=32)
     args = parser.parse_args(argv)
@@ -352,6 +389,9 @@ def main(argv: list[str] | None = None) -> int:
             return supervise(args)
         if args.command == "stop":
             print(json.dumps(stop(args.root), indent=1, sort_keys=True))
+            return 0
+        if args.command == "retire":
+            print(retire(args.root, args.into))
             return 0
         print(secrets.token_hex(args.bytes))
         return 0

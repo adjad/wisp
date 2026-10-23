@@ -128,6 +128,10 @@ final class OverlayModel: ObservableObject {
     var onOpenCorpus: () -> Void = {}
 
     @Published var input = ""
+    #if WISP_NOTCH_EVALUATION
+    // The evaluation input adapter; told of each turn's start, confirmation and end.
+    weak var evaluationObserver: NotchEvaluationTurnObserver?
+    #endif
     @Published var answer = ""
     @Published var reasoning = ""
     @Published var showReasoning = false
@@ -604,6 +608,8 @@ final class OverlayModel: ObservableObject {
             completeSubmission(dispatch.id)
             return
         }
+        evaluationObserver?.evaluationStarted(dispatch: dispatch.id,
+                                              inputSHA256: NotchEvaluationLedger.sha256(submission.text))
         #endif
         // Includes empty-Return recovery and queued dispatches, not just typed
         // prompts: their answers must not render behind the corpus surface.
@@ -1251,6 +1257,10 @@ final class OverlayModel: ObservableObject {
                               scopeHint: ev.str("scope_hint"),
                               preview: ev.str("preview"))
             phase = .confirming
+            #if WISP_NOTCH_EVALUATION
+            evaluationObserver?.evaluationConfirmation(tool: ev.str("tool"),
+                                                       grantable: ev.payload["grantable"] as? Bool ?? false)
+            #endif
         case "message_draft":
             messageDraft = MessageDraft(to: ev.str("to"), text: ev.str("text"))
             phase = .streaming
@@ -1323,6 +1333,9 @@ final class OverlayModel: ObservableObject {
                 // Nothing was displayed for this dispatch; its prompt goes back.
                 ledger.terminal("dropped", visible: "", dispatch: dispatchID, current: true,
                                 session: sessionId, trace: turnTraceID)
+                var dropped = Turn(role: "assistant", text: "")
+                applyDebugFields(to: &dropped)
+                evaluationObserver?.evaluationTerminal(evaluationTurn(dropped, outcome: "dropped", dispatch: dispatchID))
                 #endif
                 lastDroppedReport = ["surface": "chat", "client_outcome": "connection_dropped", "journal_available": false]
                 if let id = turnTraceID { lastDroppedReport?["trace_id"] = id }
@@ -1373,6 +1386,7 @@ final class OverlayModel: ObservableObject {
                 // Exactly the error turn just displayed, for this dispatch.
                 ledger.terminal("error", visible: t.text, dispatch: dispatchID, current: true,
                                 session: sessionId, trace: turnTraceID)
+                evaluationObserver?.evaluationTerminal(evaluationTurn(t, outcome: "error", dispatch: dispatchID))
                 #endif
                 answer = ""; activity = []
                 completedDispatch = true
@@ -1387,6 +1401,9 @@ final class OverlayModel: ObservableObject {
             // queued turn can start.
             ledger.terminal("done", visible: answer, dispatch: dispatchID, current: true,
                             session: sessionId, trace: turnTraceID)
+            var finished = Turn(role: "assistant", text: answer, activity: activity)
+            applyDebugFields(to: &finished)
+            evaluationObserver?.evaluationTerminal(evaluationTurn(finished, outcome: "done", dispatch: dispatchID))
             #endif
             // Move the finished reply into the conversation history so the next
             // turn renders below it. Carry this turn's tool-call activity along
@@ -1408,6 +1425,28 @@ final class OverlayModel: ObservableObject {
         onResize()
         if completedDispatch { completeSubmission(dispatchID) }
     }
+
+    #if WISP_NOTCH_EVALUATION
+    /// A finalized turn for the evaluation adapter. Response model ids come
+    /// from the engine's own replies (raw_model_io), not the route request.
+    private func evaluationTurn(_ t: Turn, outcome: String, dispatch: UInt64) -> NotchEvaluationTurn {
+        let served = t.rawIO.compactMap { io -> String? in
+            if let data = io.responseJSON.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let model = object["model"] as? String { return model }
+            return nil
+        }
+        let tools: [[String: Any]] = t.toolCalls.map {
+            ["name": $0.name, "decision": $0.decision, "reason": $0.decisionReason,
+             "result": String($0.result.prefix(4000))]
+        }
+        return NotchEvaluationTurn(outcome: outcome, dispatch: dispatch, text: t.text, model: t.model,
+                                   routeRole: t.routeRole, routeSource: t.routeSource, routeReason: t.routeReason,
+                                   tools: tools, responseModels: served, startedAt: t.startedAt,
+                                   firstTokenAt: t.firstTokenAt, finishedAt: t.finishedAt,
+                                   session: sessionId, traceID: t.traceID)
+    }
+    #endif
 
     private func completeSubmission(_ dispatchID: UInt64) {
         let next = submissionState.complete(dispatchID)

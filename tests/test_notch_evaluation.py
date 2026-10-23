@@ -235,6 +235,14 @@ def test_guard_judges_entries_and_dir_fd_names_where_they_really_are():
         shutil.rmtree(ROOT / "no-such-tree-outside")
 
 
+def test_roster_is_pinned_to_the_reviewed_model_before_import():
+    from service.config import role_to_model
+    pinned = json.loads((OWNED / "wisp" / "config.yaml").read_text())
+    assert pinned == {"roles": {role: CONFIG.allowed_models[0] for role in evaluation_host.TEXT_ROLES}}
+    assert oct((OWNED / "wisp" / "config.yaml").stat().st_mode & 0o777) == "0o600"
+    assert all(role_to_model(role) == CONFIG.allowed_models[0] for role in evaluation_host.TEXT_ROLES)
+
+
 def test_http_guard_allows_only_reviewed_engine_operations():
     import httpx
     seen = []
@@ -967,6 +975,14 @@ def test_supervisor_signals_only_its_own_live_children():
     assert outcome["stopped_by"] == "none" and "nothing was signalled" in outcome["note"]
     (root / lifecycle.STATE).write_text("not json")
     assert lifecycle.stop(str(root))["last_recorded"] == {"unreadable": True}
+    # Retire moves only a finished run, into a private archive; nothing is deleted.
+    archive = OWNED / "archive"
+    archive.mkdir(mode=0o700)
+    with pytest.raises(lifecycle.RootError, match="not finished"):
+        lifecycle.retire(str(root), str(archive))
+    (root / lifecycle.STATE).write_text(json.dumps({"state": "stopped"}))
+    moved = lifecycle.retire(str(root), str(archive))
+    assert moved == str(archive / root.name) and not root.exists() and (archive / root.name / "host.log").exists()
 
 
 def test_roots_are_validated_before_anything_is_written(monkeypatch):

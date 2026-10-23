@@ -797,9 +797,34 @@ def start(config: HostConfig, *, client_factory=None):
     if not verified.ok:
         raise GuardViolation("installed snapshot failed verification: " + "; ".join(verified.problems))
     _INSTALLED = verified
+    pin_roster(config)
     install_http_guard(config)
     latch_boundary(config)
     return build_app(config, client_factory=client_factory)
+
+
+# The text roles models.yaml binds. Embedding and reranker roles are left
+# alone: their requests are not reviewed engine operations and are refused.
+TEXT_ROLES = ("fast", "router", "coding", "reasoning", "agent", "general")
+
+
+def pin_roster(config: HostConfig) -> dict | None:
+    """Bind every text role to the first reviewed model, before any import.
+
+    Without it a fresh state directory resolves roles to the repository's
+    fresh-install default, which the engine may not have resident, and the
+    guard would refuse every completion. Written after snapshot verification
+    (it is generated, not captured) and only the ``roles`` map: no other user
+    setting is copied.
+    """
+    if not config.allowed_models:
+        return None
+    roles = {role: config.allowed_models[0] for role in TEXT_ROLES}
+    path = os.path.join(config.paths()["wisp"], "config.yaml")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump({"roles": roles}, handle)   # JSON is YAML
+    return roles
 
 
 # Top-level outcome and the separately counted dimensions of every case.
