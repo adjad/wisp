@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from service.memory.store import SessionStore
-from service.workflows.compiler import compile_decision, compile_new
+from service.workflows.compiler import CONTENT_QUESTION, compile_decision, compile_new
 from service.workflows.engine import finish_workflow, prepare_turn
 
 
@@ -975,11 +975,16 @@ def test_bare_answers_are_not_mistaken_for_reads():
         assert turn is not None  # still handled inside the delivery flow
 
 
-@pytest.mark.parametrize("prompt", [
-    "what do I have to do tmrow",
-    "what do i have to do tomorrow",
-    "when is my next class",
-])
+
+STALE_READS = ["what do I have to do tmrow", "what do i have to do tomorrow", "when is my next class"]
+
+
+def _identity(plan):
+    return (plan.id, plan.recipient, plan.channel, plan.delivery, tuple(plan.sources),
+            plan.date_range, plan.artifact_text, plan.status)
+
+
+@pytest.mark.parametrize("prompt", STALE_READS)
 def test_stale_channel_only_content_question_releases_unrelated_read(prompt):
     temp, store = _store()
     with temp:
@@ -988,16 +993,67 @@ def test_stale_channel_only_content_question_releases_unrelated_read(prompt):
         assert first is not None and first.plan.status == "waiting_for_content"
         assert first.plan.channel == "messages" and not first.plan.recipient
         assert prepare_turn(store, sid, prompt) is None, prompt
+        released = store.latest_workflow(sid, max_age_seconds=21600)
+        assert released["id"] == first.plan.id and released["status"] == "superseded"
         assert store.active_workflow(sid) is None
+        assert not store.workflow_effect_claimed(first.plan.id)
+        # The released question is not replayed by a later unrelated read.
+        assert prepare_turn(store, sid, prompt) is None
 
 
-def test_known_recipient_content_answer_stays_in_the_workflow():
+@pytest.mark.parametrize("prompt", ["what is on my calendar tomorrow"] + STALE_READS[:1])
+def test_known_recipient_content_question_stays_owned_by_the_same_workflow(prompt):
     temp, store = _store()
     with temp:
         sid = "known-recipient"
         first = prepare_turn(store, sid, "text Mom it")
-        if first is None or not first.plan.recipient:
-            pytest.skip("compiler does not keep a recipient for this phrasing")
+        # The precondition is asserted, not skipped: a compiler that stops
+        # keeping the recipient must fail here instead of dropping this positive.
+        assert first is not None and first.event == "created"
         assert first.plan.status == "waiting_for_content"
-        second = prepare_turn(store, sid, "what is on my calendar tomorrow")
-        assert second is not None
+        assert (first.plan.recipient, first.plan.channel, first.plan.delivery) == (
+            "Mom", "messages", "send")
+        assert not first.plan.sources and not first.plan.artifact_text
+        before = _identity(first.plan)
+        second = prepare_turn(store, sid, prompt)
+        assert second is not None and second.event == "clarification_repeated"
+        assert second.response == first.response == CONTENT_QUESTION
+        assert _identity(second.plan) == before
+        held = store.latest_workflow(sid, max_age_seconds=21600)
+        assert (held["id"], held["status"]) == (first.plan.id, "waiting_for_content")
+        assert store.active_workflow(sid) is None or store.active_workflow(sid)["id"] == first.plan.id
+        # Nothing delivered, claimed or queued by holding the question.
+        assert not store.workflow_effect_claimed(first.plan.id)
+
+
+def test_cancel_after_stale_release_or_hold_never_replays():
+    temp, store = _store()
+    with temp:
+        sid = "cancel-no-replay"
+        first = prepare_turn(store, sid, "text Mom it")
+        assert first is not None and first.plan.recipient == "Mom"
+        cancelled = prepare_turn(store, sid, "never mind")
+        assert cancelled.plan.status == "cancelled" and cancelled.plan.id == first.plan.id
+        assert store.workflow_events(first.plan.id)[-1]["event"] == "cancelled"
+        assert prepare_turn(store, sid, "what do I have to do tmrow") is None
+        assert store.latest_workflow(sid, max_age_seconds=21600)["status"] == "cancelled"
+        assert store.active_workflow(sid) is None
+
+
+def test_claimed_delivery_blocks_an_unrelated_read_and_closes_only_on_cancel():
+    temp, store = _store()
+    with temp:
+        sid = store.create_session()
+        first = prepare_turn(store, sid, "Send Mom my calendar summary via Messages")
+        assert first is not None and first.plan.status == "running"
+        assert store.claim_workflow_effect(
+            sid, first.plan.id, f"workflow_effect:{first.plan.id}", revision=first.plan.revision)
+        blocked = prepare_turn(store, sid, "what do I have to do tmrow")
+        assert blocked is not None and blocked.event == "uncertain_delivery_blocked"
+        assert blocked.plan.id == first.plan.id and blocked.plan.status == "running"
+        assert "may already have happened" in blocked.response
+        assert store.workflow_effect_claimed(first.plan.id)
+        closed = prepare_turn(store, sid, "cancel")
+        assert closed.plan.status == "cancelled"
+        assert store.workflow_events(first.plan.id)[-1]["event"] == "uncertain_delivery_closed"
+        assert prepare_turn(store, sid, "what do I have to do tmrow") is None
