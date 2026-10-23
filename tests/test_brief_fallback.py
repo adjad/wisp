@@ -498,3 +498,20 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+def test_brief_clock_follows_the_macs_24_hour_setting(tmp_path, monkeypatch):
+    # The app shows 15:05 on a 24-hour Mac; the brief's own times must agree.
+    import plistlib
+    from datetime import datetime
+    from pathlib import Path
+    from service.assistant import brief
+    prefs = tmp_path / "Library" / "Preferences"
+    prefs.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    when = datetime(2026, 10, 18, 15, 5)
+    for setting, expected in (({"AppleLocale": "en_US"}, "3:05 PM"),
+                              ({"AppleLocale": "en_GB"}, "15:05"),
+                              ({"AppleLocale": "en_US", "AppleICUForce24HourTime": True}, "15:05"),
+                              ({"AppleLocale": "de_DE", "AppleICUForce12HourTime": True}, "3:05 PM")):
+        (prefs / ".GlobalPreferences.plist").write_bytes(plistlib.dumps(setting))
+        monkeypatch.setattr(brief, "_clock_pref", (0.0, False))
+        assert brief._hm(when) == expected, setting

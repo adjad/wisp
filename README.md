@@ -157,8 +157,7 @@ export instead of the headline. Debug Mode captures tool-internal model calls
 
 1. Download the latest macOS ZIP from [GitHub Releases](https://github.com/adjad/wisp/releases).
 2. Extract it and move `Wisp.app` to `/Applications`.
-3. Open Wisp. Because the public build is ad-hoc signed rather than notarized, macOS
-   may require **System Settings → Privacy & Security → Open Anyway** on first launch.
+3. Open Wisp (see **First launch** below).
 4. Let Wisp's **setup guide** walk you through the engine and model choices. Compatible
    Macs can use the included private oMLX engine. If oMLX is already installed, Wisp
    preserves that choice; older systems need an engine build compatible with their OS
@@ -171,6 +170,21 @@ export instead of the headline. Debug Mode captures tool-internal model calls
 The release contains `Wisp.app`, its backend, Python runtimes, and a private copy of
 oMLX. Model weights are separate. The bundled engine has its own settings and model
 directory and does not change an installed oMLX app's settings.
+
+### First launch
+
+The public build is ad-hoc signed, not notarized, so macOS Gatekeeper blocks the first
+open. Control-click `Wisp.app` and choose **Open**, or go to **System Settings → Privacy
+& Security → Open Anyway**. If macOS still refuses, clear the quarantine flag once:
+`xattr -dr com.apple.quarantine /Applications/Wisp.app`.
+
+Wisp's built-in engine needs macOS 26.2 or newer, and oMLX 0.7+ needs macOS 26. On an
+older Mac the setup guide says so and points to Ollama, LM Studio, llama.cpp (Wisp tests
+that the model can call tools) or the remote-only mode. Wisp asks for notifications,
+Calendar and Reminders at first launch. macOS asks for Screen Recording and Accessibility
+the first time a feature uses them. Full Disk Access (for Messages, Mail and Notes) can't
+be requested by an app: right-click the menu-bar icon → **Grant More Access…** asks for
+the rest and opens its Settings pane.
 
 ### The setup guide
 
@@ -191,24 +205,25 @@ It checks this Mac and shows one page with what to do next:
 
 For catalog entries with a verified public repository, the bundled engine supports
 downloads with progress, cancellation and explicit retry. External engines have a
-manual download path. The selected merged Mellum build has no verified public download:
-add its existing local folder to the engine's model directory, choose **Check again**,
-then **Use this model**. Wisp does not download a different model in its place.
+manual download path. The optional merged Mellum build downloads from
+[`Neo-Arid/Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e`](https://huggingface.co/Neo-Arid/Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e);
+an existing local folder in the engine's model directory works too (**Check again**,
+then **Use this model**).
 
 ### Which model for which Mac
 
-Fresh text roles use **`Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e`**. Existing
-role overrides are preserved. The catalog marks this local build as validation
-pending; being the default is not a claim that it passed inference on this release.
-The guide ranks memory fit separately from test status:
+Fresh text roles use **`Ling-3.0-tiny-oQ4e`** as a conservative fallback. Guided
+setup recommends the Ling build below for this Mac's memory. Existing role
+overrides and working models are preserved. Mellum remains an optional choice,
+marked validation pending. The guide ranks memory fit separately from test status:
 
 | Memory | Recommended | Download | Notes |
 | --- | --- | --- | --- |
-| 24 GB or more | Merged Mellum oQ4e | Existing local folder, about 7.14 GB | Current default; catalog validation is pending. |
+| 24 GB or more | `Ling-3.0-tiny-oQ6e` | 6.6 GB from Hugging Face | Public 6-bit build recommended by guided setup. |
 | 16 GB | `Ling-3.0-tiny-oQ5e`, else `Ling-3.0-tiny-oQ4e` | oQ4e 4.6 GB | Sized to leave room for your other apps. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). No public oQ5e build was found; use it if you already have one. |
 | Under 16 GB | `Ling-3.0-tiny-oQ4e` | 4.6 GB | The smallest build that keeps tool selection reliable. Untested on Macs this small: expect it to be tight, and close heavy apps. |
 
-Legacy Ling sizes are the published files' sizes on Hugging Face
+Ling sizes are the published files' sizes on Hugging Face
 (`mlx-works/Ling-3.0-tiny-oQ6e`, `mlx-works/Ling-3.0-tiny-oQ4e`). For Smart Search, also
 install `mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ` (0.35 GB). Any other model oMLX
 serves can be selected, but it is marked untested. Memory-fit rankings are estimates,

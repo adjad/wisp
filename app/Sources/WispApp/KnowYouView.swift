@@ -19,22 +19,33 @@ final class KnowYouModel: ObservableObject {
     @Published var busy = false
     @Published var error = ""
     @Published var goalDraft = ""
+    /// The service didn't answer the first read. The flow stays hidden behind a
+    /// Retry, so a failed load never shows (or saves) default answers.
+    @Published var loadFailed = false
 
     private let client: WispClient
     /// Called when the flow ends, with a short notice for the panel or nil.
     var onClose: (String?) -> Void = { _ in }
     /// "Show my brief" on the last screen.
     var onShowBrief: () -> Void = {}
+    /// Set once the flow has reported its ending to the service (Later,
+    /// Done, or leaving), so one gesture can never count twice.
+    private var ended = false
 
     init(client: WispClient) { self.client = client }
 
     func load() async {
         guard !loaded else { return }
-        if let envelope = await client.profile() {
-            profile = envelope.profile
-            preview = envelope.preview
-            flow = KnowYouFlow.resume(for: envelope.profile)
+        loadFailed = false
+        guard let envelope = await client.profile() else {
+            loadFailed = true
+            error = "Wisp's service isn't answering yet."
+            return
         }
+        error = ""
+        profile = envelope.profile
+        preview = envelope.preview
+        flow = KnowYouFlow.resume(for: envelope.profile)
         if profile.name.isEmpty {
             profile.name = UserProfile.suggestedName(fullName: NSFullUserName())
         }
@@ -49,22 +60,31 @@ final class KnowYouModel: ObservableObject {
     func skip() { error = ""; flow.advance() }
 
     func later() async {
+        guard !busy, !ended else { return }
+        ended = true
         busy = true
-        _ = await client.dismissProfile()
+        let saved = await client.dismissProfile() != nil
         busy = false
-        onClose(nil)
+        // Later is best effort: a down service just means Wisp asks again.
+        onClose(saved ? nil : "Wisp's service isn't answering, so I couldn't note that. I may ask again.")
     }
 
     /// The panel moved on (a tab, the X) before Done. Nothing answered is lost;
     /// the service counts it as Later, so it offers once more in a few days.
+    /// Reaching the last screen counts as complete even if Done wasn't pressed.
+    /// It never calls onClose: the panel has already dropped this flow.
     func leave() async {
-        if profile.completedAt == nil && !flow.isDone {
+        guard !ended, loaded else { return }
+        ended = true
+        if flow.isDone {
+            _ = await client.completeProfile()
+        } else if profile.completedAt == nil {
             _ = await client.dismissProfile()
         }
-        onClose(nil)
     }
 
     func saveAndContinue() async {
+        guard canContinue, !busy, !ended else { return }
         if flow.step == .goals { addGoal() }
         busy = true
         defer { busy = false }
@@ -79,20 +99,33 @@ final class KnowYouModel: ObservableObject {
     }
 
     func finish() async {
+        guard !busy, !ended else { return }
         busy = true
-        if let envelope = await client.completeProfile() {
-            profile = envelope.profile
-            preview = envelope.preview
+        defer { busy = false }
+        guard let envelope = await client.completeProfile() else {
+            error = "Couldn't save that just now. Your answers are still here; try Done again."
+            return
         }
-        busy = false
+        ended = true
+        profile = envelope.profile
+        preview = envelope.preview
         onClose(profile.name.isEmpty ? "Thank you. I'll put this to work."
                 : "Thank you, \(profile.name). I'll put this to work.")
     }
 
     func showBrief() async {
+        guard !busy, !ended else { return }
         busy = true
-        _ = await client.completeProfile()
-        busy = false
+        defer { busy = false }
+        // Same as Done: if the answers weren't saved, say so and stay here,
+        // or the questionnaire would quietly come back later.
+        guard let envelope = await client.completeProfile() else {
+            error = "Couldn't save that just now. Your answers are still here; try again."
+            return
+        }
+        ended = true
+        profile = envelope.profile
+        preview = envelope.preview
         onShowBrief()
     }
 
@@ -141,7 +174,15 @@ struct KnowYouView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             progressRow
-            if !model.loaded {
+            if model.loadFailed {
+                Text(model.error).font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                HStack(spacing: 10) {
+                    Button("Later") { Task { await model.later() } }
+                        .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    Spacer()
+                    primaryButton("Retry") { Task { await model.load(); focused = true } }
+                }
+            } else if !model.loaded {
                 ProcessingRow(label: "One moment…")
             } else {
                 question
@@ -152,10 +193,17 @@ struct KnowYouView: View {
             }
         }
         .padding(.top, 12)
-        .task { await model.load(); focused = true }
+        .task { await model.load(); await refocus() }
         .onAppear { breathe = true }
-        .onChange(of: model.flow) { _, _ in focused = true }
+        .onChange(of: model.flow) { _, _ in Task { await refocus() } }
         .animation(.easeInOut(duration: 0.18), value: model.flow)
+    }
+
+    /// The new field is not in the hierarchy until the step's animation lands, so
+    /// hop a beat before asking for focus.
+    private func refocus() async {
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        focused = true
     }
 
     // MARK: Progress
@@ -218,7 +266,10 @@ struct KnowYouView: View {
             switch step {
             case .welcome: EmptyView()
             case .name: nameField
-            case .goals: goalsField
+            case .goals:
+                // Short displays: the footer must never be pushed off the panel.
+                ScrollView(.vertical, showsIndicators: false) { goalsField }
+                    .frame(maxHeight: 230)
             case .tone: toneField
             case .done: summary
             }

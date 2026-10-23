@@ -47,7 +47,7 @@ struct NotchBriefView: View {
                 if let progress = model.dailySyncProgress {
                     SourceSyncTip(label: model.dailySyncLabel, progress: progress, sources: model.sourceSyncStatuses)
                 }
-                ProcessingRow(label: "Building your daily summary…")
+                ProcessingRow(label: "Building your brief…")
             }
             if let plan {
                 let brief = BriefContent(plan: plan, today: today, composed: composedToday)
@@ -355,7 +355,7 @@ struct BriefContent {
         let loadEvents = calendarBlocks.map { DayLoad.Event(title: $0.title, start: $0.start, end: $0.end) }
         let load = DayLoad.assess(events: loadEvents,
                                   allDay: plan.all_day.map(\.title), from: reference, dayStart: dayStart,
-                                  isToday: isToday, zone: zone)
+                                  isToday: isToday, zone: zone, locale: today.clockLocale)
         let dueToday = needs.filter { ($0.due_ts ?? .infinity) >= reference && ($0.due_ts ?? .infinity) <= dayEnd }
             .sorted { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }.map(\.title)
         let overdue = isToday ? needs.filter { ($0.due_ts ?? .infinity) < now }.map(\.title) : []
@@ -390,7 +390,7 @@ struct BriefContent {
         }
         func when(_ item: UpcomingItem) -> String {
             item.allDay ? Date(timeIntervalSince1970: item.when).formatted(Date.FormatStyle(timeZone: zone).weekday(.abbreviated))
-                : NotchChrome.dayClock(item.when, zone: zone)
+                : NotchChrome.dayClock(item.when, zone: zone, locale: today.clockLocale)
         }
         // "Nothing in the next week" only once calendar and reminders are read.
         let weekRead = calendarKnown && coverage("reminders")?.ready == true
@@ -400,7 +400,7 @@ struct BriefContent {
                 ?? (weekRead ? .nothing : .unknown)
         } else if let need = needs.filter({ ($0.due_ts ?? 0) > dayEnd }).min(by: { ($0.due_ts ?? 0) < ($1.due_ts ?? 0) }) {
             // Before the week has been read, a dated need after today still counts.
-            soon = .item(title: need.title, when: need.all_day == true ? "All day" : NotchChrome.dayClock(need.due_ts ?? 0, zone: zone), source: need.source)
+            soon = .item(title: need.title, when: need.all_day == true ? "All day" : NotchChrome.dayClock(need.due_ts ?? 0, zone: zone, locale: today.clockLocale), source: need.source)
         } else {
             soon = .unknown
         }

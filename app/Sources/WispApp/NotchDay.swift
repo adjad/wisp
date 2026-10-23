@@ -684,7 +684,9 @@ struct DayLoad: Equatable {
     ///   - from: now on the current day, the day's start otherwise; earlier events are over.
     ///   - dayStart: the day's midnight, for the 9–6 window.
     static func assess(events: [Event], allDay: [String], from: Double, dayStart: Double, isToday: Bool,
-                       zone: TimeZone) -> DayLoad {
+                       zone: TimeZone, locale: Locale = WispClock.fixedLocale) -> DayLoad {
+        func clock(_ t: Double, zone: TimeZone) -> String { DayLoad.clock(t, zone: zone, locale: locale) }
+        func span(_ a: Double, _ b: Double, zone: TimeZone) -> String { DayLoad.span(a, b, zone: zone, locale: locale) }
         let windowStart = at(9, dayStart, zone), windowEnd = at(18, dayStart, zone)
         // An event with no end, or an end before its start, counts as an hour and reads "about".
         func end(_ e: Event) -> Double { e.end.flatMap { $0 > e.start ? $0 : nil } ?? e.start + assumedLength }
@@ -810,16 +812,55 @@ struct DayLoad: Equatable {
         return (m == 0 ? "\(shown)" : String(format: "%d:%02d", shown, m), h >= 12)
     }
 
-    /// "3 PM", "3:30 PM".
-    static func clock(_ t: Double, zone: TimeZone) -> String {
+    /// "3 PM", "3:30 PM"; "15:00", "15:30" in a 24-hour locale.
+    static func clock(_ t: Double, zone: TimeZone, locale: Locale = WispClock.fixedLocale) -> String {
+        if WispClock.uses24Hour(locale) {
+            let (h, m) = parts(t, zone: zone)
+            return String(format: "%02d:%02d", h, m)
+        }
         let b = bare(t, zone: zone)
         return b.text + (b.pm ? " PM" : " AM")
     }
 
-    /// "1–5 PM", "10 AM–4 PM".
-    static func span(_ a: Double, _ b: Double, zone: TimeZone) -> String {
+    /// "1–5 PM", "10 AM–4 PM"; "13:00–17:00" in a 24-hour locale.
+    static func span(_ a: Double, _ b: Double, zone: TimeZone, locale: Locale = WispClock.fixedLocale) -> String {
+        if WispClock.uses24Hour(locale) { return clock(a, zone: zone, locale: locale) + "–" + clock(b, zone: zone, locale: locale) }
         let x = bare(a, zone: zone), y = bare(b, zone: zone)
-        return x.pm == y.pm ? x.text + "–" + y.text + (y.pm ? " PM" : " AM") : clock(a, zone: zone) + "–" + clock(b, zone: zone)
+        return x.pm == y.pm ? x.text + "–" + y.text + (y.pm ? " PM" : " AM")
+            : clock(a, zone: zone, locale: locale) + "–" + clock(b, zone: zone, locale: locale)
+    }
+}
+
+/// Whether the person's locale shows 12- or 24-hour time. Views pass
+/// `.autoupdatingCurrent`; checks keep the fixed en_US default so they are
+/// deterministic on any host.
+enum WispClock {
+    static let fixedLocale = Locale(identifier: "en_US")
+
+    /// Asks the locale's own hour pattern: "H"/"k" is a 24-hour clock. (Testing
+    /// for the "a" marker misreads locales whose day period is "B".)
+    static func uses24Hour(_ locale: Locale) -> Bool {
+        let format = DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: locale) ?? "h a"
+        let unquoted = format.split(separator: "'", omittingEmptySubsequences: false)
+            .enumerated().filter { $0.offset % 2 == 0 }.map(\.element).joined()
+        return unquoted.contains("H") || unquoted.contains("k")
+    }
+
+    /// An hour of the day as a whole-hour label: "3 PM" or "15:00".
+    static func hour(_ hour: Int, locale: Locale) -> String {
+        let h = ((hour % 24) + 24) % 24
+        if uses24Hour(locale) { return String(format: "%02d:00", h) }
+        return "\(h % 12 == 0 ? 12 : h % 12) \(h < 12 ? "AM" : "PM")"
+    }
+
+    /// A time of day: "3:05 PM" or "15:05".
+    static func time(_ t: Double, zone: TimeZone, locale: Locale) -> String {
+        let f = DateFormatter()
+        let h24 = uses24Hour(locale)
+        f.locale = Locale(identifier: h24 ? "en_GB" : "en_US_POSIX")
+        f.timeZone = zone
+        f.dateFormat = h24 ? "HH:mm" : "h:mm a"
+        return f.string(from: Date(timeIntervalSince1970: t))
     }
 }
 

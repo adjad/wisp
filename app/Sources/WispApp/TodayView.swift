@@ -176,6 +176,10 @@ final class TodayModel: ObservableObject {
     @Published private(set) var storedBriefChecked = false
     @Published var error = ""
     @Published var busy = false
+    /// When the plan last loaded, so Brief and Day can skip a refresh right after one.
+    private(set) var lastRefreshed: Date?
+    /// The person's locale decides 12- or 24-hour clocks; checks pin a fixed one.
+    var clockLocale: Locale = .autoupdatingCurrent
     @Published var capturePlannerDetails = false
     private var reportMetadata: [String: Any] = ["surface": "today", "client_outcome": "not_loaded"]
     private var reportDetails: [String: Any]?
@@ -321,11 +325,7 @@ final class TodayModel: ObservableObject {
     }
 
     func clock(_ timestamp: Double) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timezone
-        formatter.dateFormat = "h:mm a"
-        return formatter.string(from: Date(timeIntervalSince1970: timestamp))
+        WispClock.time(timestamp, zone: timezone, locale: clockLocale)
     }
 
     /// The shown day's midnight-to-midnight bounds.
@@ -336,9 +336,11 @@ final class TodayModel: ObservableObject {
             ?? DateInterval(start: calendar.startOfDay(for: Date()), duration: 86400)
     }
 
-    static func workingHourLabel(_ hour: Int) -> String {
+    static func workingHourLabel(_ hour: Int, locale: Locale = .autoupdatingCurrent) -> String {
         let displayHour = hour % 12 == 0 ? 12 : hour % 12
-        return "\(displayHour):00 \(hour % 24 < 12 ? "AM" : "PM")" + (hour == 24 ? " (next day)" : "")
+        let label = WispClock.uses24Hour(locale) ? String(format: "%02d:00", hour % 24)
+            : "\(displayHour):00 \(hour % 24 < 12 ? "AM" : "PM")"
+        return label + (hour == 24 ? " (next day)" : "")
     }
 
     nonisolated static func defaultDeadline(for day: String, in zone: TimeZone) -> Date? {
@@ -391,6 +393,7 @@ final class TodayModel: ObservableObject {
             let next = try JSONDecoder().decode(TodayPlan.self, from: data)
             guard ticket == generation, selected == currentKey, !Task.isCancelled else { return }
             plan = next
+            lastRefreshed = Date()
             reportMetadata = ["surface": "today", "client_outcome": "completed", "revision": next.revision,
                               "task_count": next.tasks.count, "block_count": next.blocks.count,
                               "unscheduled_count": next.unscheduled.count, "provisional": next.provisional,
@@ -620,7 +623,7 @@ struct TodayView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading) {
-                    Text("Daily Summary").font(.largeTitle.bold())
+                    Text("Today").font(.largeTitle.bold())
                     Text("What matters, and a realistic plan for it.").foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -820,7 +823,7 @@ struct TodayView: View {
                         if !deadline.usesDefault {
                             Button("Reset to day end") {
                                 deadline.resetToDefault(day: model.day, zone: model.timezone)
-                            }.help("Use 12:00 AM at the end of the selected day")
+                            }.help("Use midnight at the end of the selected day")
                         }
                     }
                     Spacer()
@@ -984,7 +987,7 @@ enum TodayWindow {
         if window == nil {
             let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 800),
                                    styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            created.title = "Wisp · Daily Summary"
+            created.title = "Wisp · Today"
             created.contentView = NSHostingView(rootView: TodayView(model: model ?? TodayModel(),
                                                                     onPresentation: onPresentation, initialTab: initialTab))
             created.isReleasedWhenClosed = false

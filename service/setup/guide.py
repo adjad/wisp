@@ -5,6 +5,7 @@ the same logic serves the first-run guide, Settings, and tests.
 """
 from __future__ import annotations
 
+import platform
 import re
 import shlex
 from dataclasses import dataclass
@@ -17,7 +18,9 @@ from .hardware import Hardware
 TEXT_ROLES = ("fast", "general", "coding", "reasoning")
 ROLE_LABELS = {"fast": "Fast & routing", "general": "General & agentic",
                "coding": "Coding", "reasoning": "Reasoning"}
-OMLX_MIN_MACOS = 15
+# oMLX 0.7.0 and later need macOS 26. The bundled engine's own (fractional)
+# requirement is reported separately in bundled_engine.minimum_macos.
+OMLX_MIN_MACOS = 26
 # Legacy major-only wire field. The packaged engine's authoritative fractional
 # requirement is reported separately in bundled_engine.minimum_macos.
 # Same wording as Settings' local-provider panel. Loopback proves the app is on this
@@ -57,6 +60,12 @@ def visible_test_answer(payload: object) -> str:
     return content
 
 
+def host_macos_major() -> int | None:
+    """This Mac's major macOS version, or None when it can't be read."""
+    match = re.match(r"\d+", platform.mac_ver()[0] or "")
+    return int(match.group()) if match else None
+
+
 @dataclass(frozen=True)
 class OmlxState:
     installed: bool
@@ -65,16 +74,22 @@ class OmlxState:
     admin_url: str = "http://127.0.0.1:8000/admin"
 
 
-def _entry(model_id: str, hardware: Hardware, tool_capable: list[str]) -> dict:
+def _entry(model_id: str, hardware: Hardware, tool_capable: list[str],
+           installed: list[str] | None = None) -> dict:
     known = catalog.by_id(model_id)
     if known:
         return {"id": model_id, "label": f"{known.label} · {known.quant}",
-                "size_gb": known.size_gb, "fit": catalog.fit(known, hardware.ram_gb),
+                "size_gb": known.size_gb, "fit": catalog.fit(known, hardware.ram_gb, installed),
                 "tested": known.tested, "note": known.note}
     return {"id": model_id, "label": model_id, "size_gb": None, "fit": "unknown",
             "tested": model_id in tool_capable,
             "note": "Not one of Wisp's tested models." if model_id not in tool_capable
                     else "Qualified for Wisp's tool loop."}
+
+
+def _label(model_id: str) -> str:
+    known = catalog.by_id(model_id)
+    return f"{known.label} · {known.quant}" if known else model_id
 
 
 def download_info(model_id: str | None, model_dir: str | None) -> dict | None:
@@ -95,13 +110,13 @@ def download_info(model_id: str | None, model_dir: str | None) -> dict | None:
 def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                  models_source: str, roles: dict[str, dict], externals: list[EngineState],
                  tool_capable: list[str]) -> dict:
-    ranked = [m.id for m in catalog.ranked_for(hardware.ram_gb)]
+    ranked = [m.id for m in catalog.ranked_for(hardware.ram_gb, installed)]
     rec = catalog.recommend(hardware.ram_gb, installed)
     chat_models = [m for m in installed if m != catalog.EMBEDDING_MODEL.id
                    and "embedding" not in m.lower() and "rerank" not in m.lower()]
     # Catalog models first in recommended order, then everything else.
     ordered = sorted(chat_models, key=lambda m: (ranked.index(m) if m in ranked else len(ranked), m))
-    entries = [_entry(m, hardware, tool_capable) for m in ordered]
+    entries = [_entry(m, hardware, tool_capable, installed) for m in ordered]
     engine = main_engine_profile()
     built_in = engine is BUNDLED
 
@@ -120,6 +135,14 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
         checks.append({"id": "engine", "state": "warn", "title": "oMLX isn't running",
                        "detail": "It is installed. Start it and Wisp can use it.",
                        "action": "start_engine"})
+    elif (host := host_macos_major()) is not None and host < OMLX_MIN_MACOS:
+        # Neither the built-in engine nor a current oMLX can run here; sending the
+        # user to download oMLX would only strand them.
+        checks.append({"id": "engine", "state": "todo", "title": "This Mac can't run Wisp's built-in engine or oMLX",
+                       "detail": (f"Both need a newer macOS than this Mac has (macOS {host}). You can instead connect "
+                                  "Ollama, LM Studio or llama.cpp (Wisp tests that the model can call tools), "
+                                  "or use Wisp's remote-only mode in Settings."),
+                       "action": "unsupported_macos"})
     else:
         checks.append({"id": "engine", "state": "todo", "title": "Install oMLX",
                        "detail": "Install an oMLX build compatible with this Mac, then open it once.",
@@ -167,7 +190,8 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                  # oMLX's own admin page has a Model Downloader for Hugging Face repos.
                  "admin_url": f"http://127.0.0.1:{engine.port}/admin" if built_in else omlx.admin_url},
         "models": {"source": models_source, "installed": entries,
-                   "recommended": rec["first_choice"], "use": rec["use"], "warning": rec["warning"],
+                   "recommended": rec["first_choice"],
+                   "recommended_label": _label(rec["first_choice"]), "use": rec["use"], "warning": rec["warning"],
                    "download": download_info(rec["get"], omlx.model_dir),
                    "embedding_download": None if embedder.id in installed
                                          else download_info(embedder.id, omlx.model_dir)},

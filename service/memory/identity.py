@@ -57,7 +57,16 @@ def user_emails() -> list[str]:
         return []
 
 
-def identity_block(*, with_date: bool = True) -> str:
+def _preferred_name() -> str:
+    """What the user asked to be called (Getting to know you), or ''."""
+    try:
+        from service.memory.profile import load
+        return str(load().get("name") or "").strip()
+    except Exception:  # noqa: BLE001 - a missing or unreadable profile never breaks a prompt
+        return ""
+
+
+def identity_block(*, with_date: bool = True, preferred_name: bool = True) -> str:
     """Ground-truth identity facts. Empty string if nothing is known.
 
     Deliberately name + addresses only — a full saved-contact roster (100+
@@ -73,6 +82,14 @@ def identity_block(*, with_date: bool = True) -> str:
     if name:
         lines.append(f"- Name: {name}. Use exactly this spelling; do not expand, "
                      "translate, or invent variants of it.")
+    # The chosen name comes from profile.json, which stays off endpoints the
+    # profile itself is kept from (an external local app): those pass False.
+    called = _preferred_name() if preferred_name else ""
+    if called and called.casefold() != (name or "").casefold():
+        # Their own answer to "what should I call you" decides how they are
+        # addressed; the account name above still identifies whose data it is.
+        lines.append(f"- They asked to be called {called}: address them as {called}, "
+                     f"and answer {called} when they ask their name.")
     if emails:
         # Verified failure 2026-08-19: a memory fact wrongly attributed one of
         # these addresses to the user's MOM, and stayed wrong for weeks because
@@ -156,7 +173,7 @@ def attribution_rules(shape: str) -> str:
 
 
 def identity_prompt_block(*, messages: bool = True, with_date: bool = True,
-                          shape: str = "directed") -> str:
+                          shape: str = "directed", preferred_name: bool = True) -> str:
     """The full identity preamble for a summarizer's system prompt.
 
     `messages=False` drops the message-line attribution rules for consumers
@@ -166,6 +183,6 @@ def identity_prompt_block(*, messages: bool = True, with_date: bool = True,
     the common case, and consumers of the verbatim record (the agent loop,
     which relays view_messages output) pass "verbatim" explicitly.
     """
-    parts = [p for p in (identity_block(with_date=with_date),
+    parts = [p for p in (identity_block(with_date=with_date, preferred_name=preferred_name),
                          attribution_rules(shape) if messages else "") if p]
     return ("\n\n" + "\n\n".join(parts)) if parts else ""

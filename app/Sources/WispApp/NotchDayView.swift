@@ -24,6 +24,7 @@ struct NotchDayView: View {
     @ObservedObject private var attention = DayCards.attention
     @State private var minutes = 45
     @State private var addingTask = false
+    @FocusState private var taskFieldFocused: Bool
     @State private var ignoredCaught = IgnoredCaught.load()
     // Evening check-in and weekly goal pulse (CheckInView.swift): one tap per
     // task at the end of the day, so tomorrow's plan starts honest.
@@ -49,7 +50,15 @@ struct NotchDayView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let notice = model.transientNotice { NotchChrome.notice(notice) }
-            if !today.error.isEmpty { NotchChrome.notice(today.error) }
+            if !today.error.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    NotchChrome.notice(today.error)
+                    NotchChrome.chip("Try again", icon: "arrow.clockwise", help: "Reload your day") {
+                        Task { await today.refresh() }
+                    }
+                    .disabled(today.busy)
+                }
+            }
             if !today.followsToday { otherDayRow }
             if today.isShowingCurrentDay {
                 CheckInSection(model: checkIn, day: today.day, timezone: today.timezone,
@@ -230,7 +239,7 @@ struct NotchDayView: View {
             workStart: dayStart + Double(plan.preferences.start_minute * 60),
             workEnd: dayStart + Double(plan.preferences.end_minute * 60),
             isToday: today.isShowingCurrentDay, clock: today.clock,
-            dayClock: { NotchChrome.dayClock($0, zone: today.timezone) })
+            dayClock: { NotchChrome.dayClock($0, zone: today.timezone, locale: today.clockLocale) })
     }
 
     /// The day's first planner warning, in plain words.
@@ -344,13 +353,12 @@ struct NotchDayView: View {
         CGFloat((t - timeline.from) / 3600) * hourHeight
     }
 
-    /// "1 PM" on the first and noon rows, the bare hour on the rest.
+    /// "1 PM" on the first and noon rows, the bare hour on the rest; "13:00" on every row in a 24-hour locale.
     private func hourLabel(_ t: Double, first: Bool) -> String {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = today.timezone
-        let hour = calendar.component(.hour, from: Date(timeIntervalSince1970: t))
-        let shown = hour % 12 == 0 ? 12 : hour % 12
-        return first || hour == 12 || hour == 0 ? "\(shown) \(hour < 12 ? "AM" : "PM")" : "\(shown)"
+        return NotchChrome.hourLabel(calendar.component(.hour, from: Date(timeIntervalSince1970: t)),
+                                     first: first, locale: today.clockLocale)
     }
 
     private func nowLine(_ now: Double) -> some View {
@@ -662,7 +670,9 @@ struct NotchDayView: View {
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
+                .focused($taskFieldFocused)
                 .onSubmit(addTask)
+                .onAppear { taskFieldFocused = true }
             Menu {
                 ForEach([15, 30, 45, 60, 90, 120], id: \.self) { value in
                     Button("\(value) min") { minutes = value }
@@ -927,14 +937,22 @@ enum NotchChrome {
         (date.timeIntervalSince1970 / 300).rounded(.up) * 300
     }
 
-    /// "Wed 6 PM" style, for a time on another day.
-    static func dayClock(_ timestamp: Double, zone: TimeZone) -> String {
+    /// "Wed 6 PM" style (or "Wed 18:00"), for a time on another day.
+    static func dayClock(_ timestamp: Double, zone: TimeZone, locale: Locale = WispClock.fixedLocale) -> String {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
+        let h24 = WispClock.uses24Hour(locale)
+        formatter.locale = Locale(identifier: h24 ? "en_GB" : "en_US_POSIX")
         formatter.timeZone = zone
-        formatter.dateFormat = "EEE h:mm a"
+        formatter.dateFormat = h24 ? "EEE HH:mm" : "EEE h:mm a"
         return formatter.string(from: Date(timeIntervalSince1970: timestamp))
             .replacingOccurrences(of: ":00 ", with: " ")
+    }
+
+    /// A lane row's hour label, as the person's locale writes it.
+    static func hourLabel(_ hour: Int, first: Bool, locale: Locale) -> String {
+        if WispClock.uses24Hour(locale) { return WispClock.hour(hour, locale: locale) }
+        let shown = hour % 12 == 0 ? 12 : hour % 12
+        return first || hour == 12 || hour == 0 ? WispClock.hour(hour, locale: locale) : "\(shown)"
     }
 
     static func appName(_ source: DayTimeline.BriefSource) -> String {
