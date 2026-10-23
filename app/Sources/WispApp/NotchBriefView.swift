@@ -23,6 +23,9 @@ struct NotchBriefView: View {
     /// The open tile; one at a time. None shows the Top 3.
     @State var open: BriefTile? = nil
     @FocusState private var focused: BriefTile?
+    /// The focus ring shows only once the keyboard is in use, so the tile that
+    /// takes focus when the tab opens doesn't look selected.
+    @State private var keyboardNav = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(model: OverlayModel, today: TodayModel, open: String? = nil) {
@@ -79,7 +82,7 @@ struct NotchBriefView: View {
                         tileList(tile, shown.detail).id(tile.rawValue)
                             .transition(reduceMotion ? .identity : .opacity)
                     } else {
-                        topList(brief.top).id("top")
+                        topList(brief.top, glance: brief.glance).id("top")
                             .transition(reduceMotion ? .identity : .opacity)
                     }
                 }
@@ -128,15 +131,17 @@ struct NotchBriefView: View {
     }
 
     private func moveFocus(_ offset: Int) -> KeyPress.Result {
+        keyboardNav = true
         focused = (focused ?? open ?? .today).moved(offset)
         return .handled
     }
 
     private func tileButton(_ tile: BriefTile, count: Int?) -> some View {
         let isOpen = open == tile
-        let isFocused = focused == tile
+        let isFocused = focused == tile && keyboardNav
         let quiet = (count ?? 0) == 0
-        return Button { toggle(tile) } label: {
+        let hint: String = isOpen ? "Back to the Top 3 (\(tile.shortcut))" : "Show \(tile.title) (\(tile.shortcut))"
+        return Button { keyboardNav = false; toggle(tile) } label: {
             VStack(alignment: .leading, spacing: 3) {
                 Text(tile.title.uppercased())
                     .font(.system(size: 10, design: .monospaced))
@@ -157,10 +162,11 @@ struct NotchBriefView: View {
         .focusable()
         .focusEffectDisabled()
         .focused($focused, equals: tile)
-        .onKeyPress(.space) { toggle(tile); return .handled }
-        .onKeyPress(.return) { toggle(tile); return .handled }
+        .onKeyPress(.space) { keyboardNav = true; toggle(tile); return .handled }
+        .onKeyPress(.return) { keyboardNav = true; toggle(tile); return .handled }
+        .onKeyPress(.tab) { keyboardNav = true; return .ignored }
         .keyboardShortcut(KeyEquivalent(tile.shortcut), modifiers: [])
-        .help(isOpen ? "Back to the Top 3 (\(tile.shortcut))" : "Show \(tile.title) (\(tile.shortcut))")
+        .help(hint)
         .accessibilityLabel(count.map { "\(tile.title), \($0)" } ?? "\(tile.title), not read yet")
         .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
         .accessibilityHint(isOpen ? "Shows the Top 3 again" : "Shows the \(tile.title) list in place of the Top 3")
@@ -190,19 +196,32 @@ struct NotchBriefView: View {
 
     // MARK: - Rows
 
-    private func topList(_ lines: [BriefDetail.Line]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("TOP 3").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
-                .accessibilityAddTraits(.isHeader)
-            if lines.isEmpty {
-                row(BriefDetail.Line(id: "empty", leading: "", text: "Nothing needs you right now", muted: true), width: Self.labelWidth(lines))
-            } else {
-                ForEach(lines) { row($0, width: Self.labelWidth(lines)) }
+    /// The default view: the Top 3, then what mail and texts are about.
+    private func topList(_ lines: [BriefDetail.Line], glance: [BriefDetail.Line]) -> some View {
+        let width = Self.labelWidth(lines + glance)
+        return VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("TOP 3").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                    .accessibilityAddTraits(.isHeader)
+                if lines.isEmpty {
+                    row(BriefDetail.Line(id: "empty", leading: "", text: "Nothing needs you right now", muted: true), width: width)
+                } else {
+                    ForEach(lines) { row($0, width: width) }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Top 3")
+            if !glance.isEmpty {
+                // A hairline keeps a Top 3 mail item from reading as the summary's first line.
+                Rectangle().fill(Theme.hairline).frame(height: 1).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(glance) { row($0, width: width) }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Mail and texts")
             }
         }
         .textSelection(.enabled)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Top 3")
     }
 
     private func tileList(_ tile: BriefTile, _ detail: BriefDetail) -> some View {
@@ -242,7 +261,10 @@ struct NotchBriefView: View {
     /// without a label keeps the column, so every list's text lines up.
     private func row(_ line: BriefDetail.Line, width: CGFloat, secondary: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Self.labelGap) {
-            Text(line.leading.uppercased()).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+            // An empty label still sets a baseline; an empty Text doesn't, and
+            // throws the row's first-baseline alignment off.
+            Text(line.leading.isEmpty ? " " : line.leading.uppercased())
+                .font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 .frame(width: width, alignment: .leading)
             Text(line.text).font(.system(size: line.paragraph ? 14 : 13.5))
                 .foregroundStyle(line.muted ? Theme.textMuted : secondary ? Theme.textSecondary : Theme.textPrimary)
@@ -343,6 +365,8 @@ struct BriefContent {
     let tiles: [BriefTile: BriefTileContent]
     /// The three things that matter most, shown while no tile is open.
     let top: [BriefDetail.Line]
+    /// What mail and texts are about, under the Top 3.
+    let glance: [BriefDetail.Line]
 
     init(plan: TodayPlan, today: TodayModel, composed: ComposedBrief?) {
         let now = today.now.timeIntervalSince1970
@@ -455,6 +479,13 @@ struct BriefContent {
             BriefDetail.Line(id: "next-" + $0.id, leading: today.clock($0.start), text: $0.title)
         } : nil
         top = BriefTiles.top(picked: needsList?.rows ?? [], todos: todayDetail.lines, next: nextEvent)
+        let rows = DayTimeline.briefLines(calendar: nil,
+                                          mail: coverage("email").map { (ready: $0.ready, needing: mailNeeds) },
+                                          texts: coverage("messages").map { (ready: $0.ready, needing: textNeeds) },
+                                          textsNeedAccess: textsBlocked,
+                                          mailOverview: plan.workspace?.mail_overview?.text,
+                                          textsOverview: plan.workspace?.texts_overview?.text, soon: .unknown)
+        glance = BriefTiles.glance(rows, mailProse: isToday ? plan.workspace?.mail_summary?.text : nil)
         summary = composed?.cutDown ?? []
     }
 }

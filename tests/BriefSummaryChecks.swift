@@ -278,6 +278,37 @@ func briefTileChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Dou
     check(BriefTiles.top(picked: [], todos: BriefTiles.todayDetail([], now: now, dayStart: dayStart, clock: clock).lines, next: nil).isEmpty,
           "an empty state is never a Top 3 item")
 
+    // Under the Top 3: the regular MAIL and TEXTS summaries, nothing new.
+    let inbox = [BriefNeed(title: "Thesis meeting", sender: "Prof. Lee", person: true, received: now - 3600)]
+    let chats = [BriefNeed(title: "dinner?", sender: "Priya", person: true, received: now - 600)]
+    let prose = "Prof. Lee moved your thesis meeting to Tuesday. The rest is newsletters."
+    func rows(mailReady: Bool?, textsReady: Bool?, access: Bool = false, overviews: Bool = true) -> [DayTimeline.BriefLine] {
+        DayTimeline.briefLines(calendar: nil, mail: mailReady.map { (ready: $0, needing: inbox) },
+                               texts: textsReady.map { (ready: $0, needing: chats) }, textsNeedAccess: access,
+                               mailOverview: overviews ? "Mostly event updates" : nil,
+                               textsOverview: overviews ? "Mostly dinner plans" : nil, soon: .unknown)
+    }
+    let glance = BriefTiles.glance(rows(mailReady: true, textsReady: true), mailProse: "  " + prose + "\n")
+    check(glance.map(\.leading) == ["Mail", "Texts"] && glance.map(\.id) == ["glance-MAIL", "glance-TEXTS"],
+          "the default view shows MAIL then TEXTS, and no other row: \(glance.map(\.leading))")
+    check(glance.first?.text == prose && glance.allSatisfy { !$0.muted && !$0.paragraph },
+          "MAIL shows the written inbox summary, as a short line the row style cuts to two")
+    check(glance.last?.text == BriefTexts.row(overview: "Mostly dinner plans", people: BriefTexts.waiting(chats))
+            && !glance.last!.text.contains("dinner?"),
+          "TEXTS is the regular overview row and never what anyone wrote: \(glance.last?.text ?? "")")
+    let noProse = BriefTiles.glance(rows(mailReady: true, textsReady: true), mailProse: " ")
+    check(noProse.first?.text == BriefMail.row(overview: "Mostly event updates", needing: inbox),
+          "without a written summary MAIL is the overview row: \(noProse.first?.text ?? "")")
+    let older = BriefTiles.glance(rows(mailReady: true, textsReady: true, overviews: false), mailProse: nil)
+    check(older.count == 2 && older.allSatisfy { !$0.text.isEmpty && !$0.muted },
+          "an older service with no overviews still gets a MAIL and TEXTS line: \(older.map(\.text))")
+    let unread = BriefTiles.glance(rows(mailReady: nil, textsReady: false), mailProse: prose)
+    check(unread.map(\.text) == ["Mail hasn't been checked yet", "Messages haven't been checked yet"]
+            && unread.allSatisfy(\.muted),
+          "a source not read yet is one dim line, never an old summary: \(unread.map(\.text))")
+    check(BriefTiles.glance(rows(mailReady: true, textsReady: true, access: true), mailProse: nil).last?.text
+            == "Texts need Full Disk Access", "TEXTS says when it needs Full Disk Access")
+
     // Keyboard order wraps; each tile has its own digit.
     check(BriefTile.today.moved(-1) == .events && BriefTile.events.moved(1) == .today && BriefTile.mail.moved(1) == .messages,
           "arrow keys wrap around the four tiles")

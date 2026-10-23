@@ -631,6 +631,20 @@ enum BriefTiles {
     /// The default list under the tiles: the three things that matter most,
     /// from the service's pick (overdue, due, planned, then mail and texts from
     /// people), then today's to-dos, then the next event, each named once.
+    /// The MAIL and TEXTS lines under the Top 3: the regular summaries
+    /// (DayTimeline.briefLines), with the written inbox summary in place of
+    /// MAIL's one-liner when there is one. A source not read yet stays a dim
+    /// line; the row style cuts each to two lines, and the tiles hold the rest.
+    static func glance(_ lines: [DayTimeline.BriefLine], mailProse: String?) -> [BriefDetail.Line] {
+        let prose = mailProse?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return lines.filter { $0.tag == "MAIL" || $0.tag == "TEXTS" }.map { line in
+            let text = line.tag == "MAIL" && !line.muted && !prose.isEmpty ? prose
+                : line.trailing.isEmpty ? line.text : "\(line.text) · \(line.trailing)"
+            return BriefDetail.Line(id: "glance-" + line.tag, leading: line.tag == "MAIL" ? "Mail" : "Texts",
+                                    text: text, muted: line.muted)
+        }
+    }
+
     static func top(picked: [NeedsYouRow], todos: [BriefDetail.Line], next: BriefDetail.Line?, limit: Int = 3) -> [BriefDetail.Line] {
         var seen = Set<String>()
         var out: [BriefDetail.Line] = []
