@@ -185,6 +185,8 @@ struct ChatCorpusEvaluation: Equatable {
     var observedTools: [String] = []
     var completed = false
     var stopped = false
+    /// Run through the ordinary Ask path (/corpus … normal), not the bounded scope.
+    var normalMode = false
 
     var toolPathMatches: Bool? {
         guard completed, !stopped, !usesLiveData else { return nil }

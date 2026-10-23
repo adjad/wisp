@@ -544,7 +544,7 @@ final class WispClient {
     func runAgent(prompt: String, image: String?, sessionId: String = "",
                   debug: Bool = false,
                   testMode: Bool = false,
-                  corpusCaseID: String? = nil, corpusToken: String? = nil,
+                  corpusCaseID: String? = nil, corpusToken: String? = nil, corpusNormal: Bool = false,
                   onEvent: @escaping @Sendable (Event) -> Void) async {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent(corpusCaseID == nil ? "agent" : "corpus/run"))
         req.httpMethod = "POST"
@@ -561,7 +561,9 @@ final class WispClient {
         if testMode { body["test_mode"] = true }
         if !testMode && !sessionId.isEmpty { body["session_id"] = sessionId }
         if let image { body["image"] = image }
-        if let corpusCaseID { body = ["case_id": corpusCaseID, "token": corpusToken ?? ""] }
+        if let corpusCaseID {
+            body = ["case_id": corpusCaseID, "token": corpusToken ?? "", "mode": corpusNormal ? "normal" : "bounded"]
+        }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         // The request goes out at most twice, and the second time only when the
         // server provably never ran the turn (AgentSend.retryable): no

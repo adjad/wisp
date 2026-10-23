@@ -13,6 +13,12 @@ final class NotchCorpusController: ObservableObject {
     /// The last export's files, shown with Reveal in Finder.
     @Published private(set) var exported: CorpusExportFiles?
     @Published private(set) var exporting = false
+    /// The service's prompts job (/corpus prompts …), polled while the notch is open.
+    @Published private(set) var prompts: CorpusPromptsStatus?
+    @Published private(set) var promptResults: [CorpusPromptsResult] = []
+    @Published private(set) var promptsBusy = false
+    var pollInterval: UInt64 = 3_000_000_000
+    private var pollTask: Task<Void, Never>?
     var canStart: () -> Bool = { true }
     var onStateChanged: (_ busy: Bool, _ presented: Bool) -> Void = { _, _ in }
     private var loadTask: Task<Void, Never>?
@@ -27,6 +33,11 @@ final class NotchCorpusController: ObservableObject {
         if case .export? = try? AssistantTaskCorpusCommand.resolve(command) {
             isPresented = true
             export()
+            return
+        }
+        if case .prompts(let prompts)? = try? AssistantTaskCorpusCommand.resolve(command) {
+            isPresented = true
+            runPrompts(prompts)
             return
         }
         if busy { isPresented = true; publishState(); return }
@@ -79,6 +90,67 @@ final class NotchCorpusController: ObservableObject {
         }
     }
 
+    /// Sends a prompts command to the service's job and follows its progress.
+    /// The job runs in the service, so closing the notch never stops it.
+    func runPrompts(_ command: CorpusPromptsCommand) {
+        if command == .export { exportPrompts(); return }
+        guard !promptsBusy else { return }
+        promptsBusy = true
+        notice = ""
+        publishState()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                self.prompts = try await self.store.corpusPrompts(command)
+                await self.refreshPromptResults()
+                self.followPrompts()
+            } catch {
+                self.notice = error.localizedDescription
+            }
+            self.promptsBusy = false
+            self.publishState()
+        }
+    }
+
+    /// Polls progress while the notch shows it and the job is running.
+    private func followPrompts() {
+        pollTask?.cancel()
+        guard prompts?.run?.active == true else { return }
+        pollTask = Task { [weak self] in
+            while let self, !Task.isCancelled, self.isPresented {
+                try? await Task.sleep(nanoseconds: self.pollInterval)
+                guard !Task.isCancelled, let status = try? await self.store.corpusPrompts(.status) else { continue }
+                let finishedMore = status.run?.completed != self.prompts?.run?.completed
+                self.prompts = status
+                if finishedMore { await self.refreshPromptResults() }
+                self.publishState()
+                if status.run?.active != true { break }
+            }
+        }
+    }
+
+    private func refreshPromptResults() async {
+        if let results = try? await store.corpusPromptsResults(limit: 50) { promptResults = results }
+    }
+
+    func exportPrompts() {
+        guard !exporting else { return }
+        exporting = true
+        notice = ""
+        publishState()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                self.exported = try await self.store.exportPrompts()
+            } catch {
+                self.exported = nil
+                self.notice = error.localizedDescription
+            }
+            self.exporting = false
+            self.publishState()
+        }
+    }
+
     /// The run on screen as Markdown, for Copy results; nil without one.
     var resultsMarkdown: String? { store.corpusMarkdown(conversation ?? store.latestCorpusConversation) }
 
@@ -92,7 +164,12 @@ final class NotchCorpusController: ObservableObject {
         publishState()
     }
 
-    func hide() { isPresented = false; publishState() }
+    func hide() {
+        isPresented = false
+        pollTask?.cancel()
+        pollTask = nil
+        publishState()
+    }
     func stopAndHide() { stop(); hide() }
 
     /// An in-memory handoff: corpus runs have no saved backend session ID.
