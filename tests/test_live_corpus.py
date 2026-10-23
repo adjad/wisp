@@ -779,6 +779,31 @@ def test_runs_list_and_export_the_latest_run(saved_runs):
             corpus.export_md(date, run_id=run_id)
 
 
+def test_read_day_preserves_unicode_line_separators_in_jsonl_values(saved_runs):
+    separators = "\u0085\u2028\u2029"
+    line = {"run_id": "run-unicode", "date": "2026-10-23", "started_at": "2026-10-23T11:00:00-07:00",
+            "case_id": "LIVE-UNICODE-001", "category": "messages", "prompt": f"Before{separators}after",
+            "model": "local-test", "role": "agent", "route_source": "corpus_live_model", "tools": [],
+            "answer": f"First{separators}last", "status": "done", "error": "", "latency_s": 1.5,
+            "model_calls": 1, "inference_verified": True}
+
+    path = corpus.persist(line)
+
+    assert path.read_bytes().count(b"\n") == 1
+    assert corpus.read_day("2026-10-23") == [line]
+    assert corpus.run_lines("2026-10-23", "run-unicode") == [line]
+    assert corpus.list_runs() == [{"run_id": "run-unicode", "date": "2026-10-23",
+                                  "started_at": "2026-10-23T11:00:00-07:00", "cases": 1,
+                                  "done": 1, "errors": 0, "verified": 1}]
+
+    markdown = corpus.export_md("2026-10-23", run_id="run-unicode").body.decode()
+    assert "1 cases · 1 done · 0 errors · 1 with verified inference" in markdown
+    assert "**Prompt:** Before after" in markdown
+    csv_text = corpus.export_csv_route("2026-10-23", run_id="run-unicode").body.decode()
+    assert separators in csv_text
+    assert "LIVE-UNICODE-001" in csv_text
+
+
 def test_bounded_case_is_saved_as_a_titled_chat(monkeypatch, chats, saved_runs):
     case, events = stream_fake_case(monkeypatch, FAKE_EVENTS)
     listed = chats.list_chats()
