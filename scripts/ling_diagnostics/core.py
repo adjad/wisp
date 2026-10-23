@@ -180,7 +180,9 @@ def decode_message(response, model):
     if len(content or "") > MAX_TEXT:
         raise ValueError("Completion content too long")
     reason = choice.get("finish_reason")
-    raw_calls = message.get("tool_calls") or []
+    raw_calls = message.get("tool_calls")
+    if raw_calls is None:
+        raw_calls = []
     if not isinstance(raw_calls, list) or len(raw_calls) > 8:
         raise ValueError("Invalid or excessive tool calls")
     if raw_calls and reason != "tool_calls":

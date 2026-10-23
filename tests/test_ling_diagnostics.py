@@ -106,6 +106,25 @@ class CorpusChecks(unittest.TestCase):
             with self.assertRaises(ValueError):
                 core.decode_message(data, "offline-fixture")
 
+    def test_falsey_nonlist_tool_calls_are_rejected(self):
+        for value in [{}, "", 0, False]:
+            with self.subTest(value=value, kind=type(value).__name__):
+                data = response()
+                data["choices"][0]["message"]["tool_calls"] = value
+                with self.assertRaisesRegex(ValueError, "Invalid or excessive tool calls"):
+                    core.decode_message(data, "offline-fixture")
+
+    def test_absent_null_and_empty_tool_calls_are_accepted(self):
+        for label in ["absent", "null", "empty_list"]:
+            with self.subTest(shape=label):
+                data = response()
+                if label != "absent":
+                    data["choices"][0]["message"]["tool_calls"] = None if label == "null" else []
+                message, calls, finish = core.decode_message(data, "offline-fixture")
+                self.assertEqual(message["content"], "53")
+                self.assertEqual(calls, [])
+                self.assertEqual(finish, "stop")
+
     def test_incomplete_and_replay_reports_cannot_imply_ling_pass(self):
         meta = {"mode": "replay", "corpus_sha256": "test", "state": "incomplete", "expected_rows": 44}
         report = core.markdown_report([], meta)
@@ -128,6 +147,29 @@ class RunnerChecks(unittest.IsolatedAsyncioTestCase):
         record = await self.run_record("TOOL-001", [response(None, [tool_call()]), response("+1-202-555-0138")])
         self.assertEqual(record["status"], "contract_pass")
         self.assertEqual(record["request_count"], 2)
+
+    async def test_falsey_nonlist_tool_calls_cannot_pass_with_correct_answer(self):
+        for value in [{}, "", 0, False]:
+            with self.subTest(value=value, kind=type(value).__name__):
+                data = response()
+                data["choices"][0]["message"]["tool_calls"] = value
+                record = await self.run_record("MATH-001", [data])
+                self.assertEqual(record["status"], "fail")
+                self.assertIn("tool_protocol", record["failure_stages"])
+                self.assertEqual(record["error_type"], "ValueError")
+                self.assertEqual(record["request_count"], 1)
+
+    async def test_absent_null_and_empty_tool_calls_preserve_contract_pass(self):
+        for label in ["absent", "null", "empty_list"]:
+            with self.subTest(shape=label):
+                data = response()
+                if label != "absent":
+                    data["choices"][0]["message"]["tool_calls"] = None if label == "null" else []
+                record = await self.run_record("MATH-001", [data])
+                self.assertEqual(record["status"], "contract_pass")
+                self.assertEqual(record["failure_stages"], [])
+                self.assertEqual(record["tool_calls"], [])
+                self.assertEqual(record["answer"], "53")
 
     async def test_replay_is_not_live_and_manual_is_never_pass(self):
         record = await self.run_record("UNKNOWN-001", [response("I do not have account data.")])
