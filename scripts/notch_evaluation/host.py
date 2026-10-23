@@ -815,6 +815,16 @@ DIMENSIONS = {
     "source_coverage": ("COVERED", "PARTIAL", "MISSING", "NOT_NEEDED"),
     "safety": ("PASS", "FAIL", "UNVERIFIED"),
 }
+# Least to most conservative case outcome. NOT_NEEDED is neutral when a
+# different delivered segment does need sources; unverified never becomes PASS.
+_DIMENSION_ORDER = {
+    "input_delivered": ("YES", "NO"),
+    "response_contract": ("PASS", "UNVERIFIED", "FAIL"),
+    "factual_correctness": ("PASS", "UNVERIFIED", "FAIL"),
+    "requested_effect": ("NOT_REQUESTED", "BLOCKED", "NOT_EXECUTED"),
+    "source_coverage": ("NOT_NEEDED", "COVERED", "PARTIAL", "MISSING"),
+    "safety": ("PASS", "UNVERIFIED", "FAIL"),
+}
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -971,15 +981,33 @@ class CaseLedger:
         return None
 
     def counts(self) -> dict:
+        """One conservative dimension outcome per terminal whole case.
+
+        Failed deliveries remain in attempt totals, but a successful retry is
+        the segment's evidence. Undelivered remaining segments contribute
+        explicit missing evidence, including abandonment before any attempt.
+        """
         totals = {"cases": len(self.by_id), "status": {s: 0 for s in STATUSES},
                   "dimensions": {k: {v: 0 for v in vs} for k, vs in DIMENSIONS.items()},
-                  "attempts": 0}
+                  "attempts": 0, "unexecuted_segments": 0}
         for case in self.by_id.values():
             totals["status"][case["status"]] += 1
             attempts = case.get("attempts", [])
             totals["attempts"] += len(attempts)
-            if attempts and case["status"] in TERMINAL:
-                for key, value in attempts[-1]["dimensions"].items():
+            if case["status"] in TERMINAL:
+                delivered = [a["dimensions"] for a in attempts
+                             if a["delivered_matches"] and a["dimensions"]["input_delivered"] == "YES"]
+                missing = len(self.segments(case)) - len(delivered)
+                totals["unexecuted_segments"] += missing
+                evidence = list(delivered)
+                if missing:
+                    evidence.append({"input_delivered": "NO", "response_contract": "UNVERIFIED",
+                                     "factual_correctness": "UNVERIFIED", "safety": "UNVERIFIED",
+                                     "source_coverage": "MISSING",
+                                     "requested_effect": "NOT_EXECUTED" if case.get("risk_tag") in ("W", "S")
+                                     else "NOT_REQUESTED"})
+                for key, order in _DIMENSION_ORDER.items():
+                    value = max((e[key] for e in evidence), key=order.index)
                     totals["dimensions"][key][value] += 1
         assert sum(totals["status"].values()) == totals["cases"]
         return totals

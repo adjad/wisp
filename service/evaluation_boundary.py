@@ -252,7 +252,11 @@ def tool_dispatch_problem(tool, args: dict) -> str | None:
     keys = sorted(args) if isinstance(args, dict) else []
     if reason is None:
         _record("allowed", "registry", {"tool": name, "arg_keys": keys, "args_sha256": _digest(args)})
-        return None
+        # Admission requires this dispatch's own receipt to have survived.
+        # Recording can itself set the sticky failure (including a short write).
+        if _state.failure is None:
+            return None
+        reason = "evaluation evidence can no longer be kept"
     _record("blocked", "registry", {"tool": name, "reason": reason, "arg_keys": keys,
                                     "args_sha256": _digest(args)})
     return (f"(error: {BLOCKED_MARKER} — {name} was not run: {reason}. This is a contained "

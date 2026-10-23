@@ -33,6 +33,8 @@ from pathlib import Path
 
 STATE = "lifecycle.json"
 CONTROL = "control.sock"
+# Darwin's sockaddr_un has 104 bytes, including the trailing NUL.
+_MAX_CONTROL_PATH_BYTES = 103
 STOP_GRACE_S = 5.0
 
 
@@ -197,9 +199,18 @@ class Supervisor:
         return child
 
     def stop_all(self, state: str, reason: str = "") -> dict:
+        errors = list(self.state.get("cleanup_errors", []))
+        interrupted = None
         for child in reversed(self.children):
-            child.retire()
-        self.write(state=state, reason=reason)
+            try:
+                child.retire()
+            except BaseException as exc:  # visit every owned handle, even on interruption
+                errors.append({"role": child.role, "error": type(exc).__name__})
+                if not isinstance(exc, Exception) and interrupted is None:
+                    interrupted = exc
+        self.write(state="failed" if errors else state, reason=reason, cleanup_errors=errors)
+        if interrupted is not None:
+            raise interrupted
         return self.state
 
 
@@ -227,12 +238,21 @@ def _private_json(path: Path, data: dict) -> None:
         json.dump(data, handle)
 
 
+def _control_path(root: str | Path) -> str:
+    path = str(Path(root) / CONTROL)
+    if len(os.fsencode(path)) > _MAX_CONTROL_PATH_BYTES:
+        raise RootError("the root is too long for the control socket")
+    return path
+
+
 def supervise(args) -> int:
     root = validate_root(args.root, fresh=False, allowed_entries=frozenset({
         "home", "wisp", "sync", "evidence", "host-config.json", "host.sb", "app.sb"}))
+    _control_path(root)  # Refuse an unusable control channel before starting either child.
     sup = Supervisor(root)
-    sup.write(state="starting")
+    result = 2
     try:
+        sup.write(state="starting")
         config = json.loads(Path(root, "host-config.json").read_text(encoding="utf-8"))
         host_env = {"LANG": "C.UTF-8", "PYTHONHASHSEED": "0"}
         backend = sup.start("backend", ["/usr/bin/sandbox-exec", "-f", str(Path(root, "host.sb")),
@@ -241,12 +261,12 @@ def supervise(args) -> int:
                             env=host_env, cwd=root, log="host.log")
         pid = _identity(config["listen_port"], config["token"], config["nonce"], args.ready_timeout)
         if pid is None or not backend.alive():
-            sup.stop_all("failed", "backend did not answer with this run's identity")
+            sup.state.update(state="failed", reason="backend did not answer with this run's identity")
             return 2
         # The backend runs under sandbox-exec, which execs the interpreter in
         # place, so the answering pid is the supervised child itself.
         if pid != backend.process.pid:
-            sup.stop_all("failed", "the answering backend is not the supervised child")
+            sup.state.update(state="failed", reason="the answering backend is not the supervised child")
             return 2
         _private_json(Path(root, "native-config.json"), {
             "run_id": config["run_id"], "owned_root": root, "listen_port": config["listen_port"],
@@ -259,23 +279,31 @@ def supervise(args) -> int:
                        "WISP_NOTCH_EVALUATION_CONFIG": str(Path(root, "native-config.json"))},
                   cwd=root, log="app.log")
         sup.write(state="running")
-    except Exception as exc:  # noqa: BLE001 — every partial launch is retired and reported
-        sup.stop_all("failed", f"launch failed: {type(exc).__name__}")
-        return 2
-    return serve_control(sup)
+        result = serve_control(sup)
+    except Exception as exc:  # noqa: BLE001 — launch and control failures share cleanup
+        sup.state.update(state="failed", reason=f"supervision failed: {type(exc).__name__}")
+    finally:
+        state = sup.state["state"]
+        if state not in ("failed", "ended", "stopped"):
+            state = "failed"
+            sup.state.update(reason="supervisor ended before a terminal state")
+        sup.stop_all(state, sup.state.get("reason", ""))
+    return 2 if sup.state["state"] == "failed" else result
 
 
 def serve_control(sup: Supervisor) -> int:
-    path = str(sup.root / CONTROL)
+    path = _control_path(sup.root)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    old = os.umask(0o177)
+    bound = False
     try:
-        server.bind(path)
-    finally:
-        os.umask(old)
-    server.listen(1)
-    server.settimeout(0.5)
-    try:
+        old = os.umask(0o177)
+        try:
+            server.bind(path)
+            bound = True
+        finally:
+            os.umask(old)
+        server.listen(1)
+        server.settimeout(0.5)
         while True:
             for child in sup.children:
                 if not child.alive():
@@ -291,14 +319,17 @@ def serve_control(sup: Supervisor) -> int:
                 if request == "stop":
                     state = sup.stop_all("stopped", "stop requested")
                     conn.sendall(json.dumps(state).encode())
-                    return 0
+                    return 2 if state["state"] == "failed" else 0
                 conn.sendall(json.dumps(sup.state).encode())
     finally:
-        server.close()
         try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
+            server.close()
+        finally:
+            if bound:
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
 
 
 def stop(root: str, *, timeout: float = 30.0) -> dict:

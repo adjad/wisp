@@ -99,6 +99,13 @@ from service import evaluation_boundary as boundary  # noqa: E402
 from service import main  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def synthetic_identity(monkeypatch):
+    # Agent prompts must use fixture identity, never the host's `id -F` probe.
+    from service.memory import identity
+    monkeypatch.setattr(identity, "_full_name", "Synthetic User")
+
+
 def _scope(method: str, path: str, headers: list) -> dict:
     return {"type": "http", "method": method, "path": path, "headers": headers, "query_string": b"",
             "scheme": "http", "server": ("127.0.0.1", PORT), "client": ("127.0.0.1", 50000),
@@ -165,32 +172,32 @@ def test_boundary_is_latched_and_cannot_be_reset():
 
 
 def test_guard_refuses_process_network_and_foreign_files():
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         subprocess.run(["/bin/echo", "never"], check=False)
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         os.system("/usr/bin/true")
     probe = socket.socket()
     try:
-        with pytest.raises(PermissionError):
+        with pytest.raises(evaluation_host.GuardViolation):
             probe.connect(("192.0.2.1", 9))           # TEST-NET; refused before any packet
-        with pytest.raises(PermissionError):
+        with pytest.raises(evaluation_host.GuardViolation):
             probe.connect(("127.0.0.1", 8765))        # the production backend port
     finally:
         probe.close()
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         socket.getaddrinfo("example.com", 443)
     real_home = Path(evaluation_host._real_home())
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         open(real_home / ".wisp-evaluation-probe-never-created", "w")
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         open(real_home / ".ssh" / "config")
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         open("/private/var/tmp/wisp-evaluation-probe", "w")
     import ctypes
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         ctypes.CDLL(str(OWNED / "never.dylib"))
     import webbrowser
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         webbrowser.open("https://example.com")
     owned_file = OWNED / "evidence" / "scratch.txt"
     owned_file.write_text("owned state is writable")
@@ -205,9 +212,9 @@ def test_guard_judges_entries_and_dir_fd_names_where_they_really_are():
     (work / "sub").mkdir(parents=True)
     (work / "sub" / "escape.txt").symlink_to(outside)
     # Changing what a link names is refused, through the link or not.
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         os.chmod(work / "sub" / "escape.txt", 0o600)
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         os.utime(work / "sub" / "escape.txt")
     # Removing the link entry itself is inside the root and leaves the target alone.
     fd = os.open(work / "sub", os.O_RDONLY)
@@ -221,7 +228,7 @@ def test_guard_judges_entries_and_dir_fd_names_where_they_really_are():
     # A dir_fd naming a directory outside the root is refused, whatever the name.
     fd = os.open(ROOT, os.O_RDONLY)
     try:
-        with pytest.raises(PermissionError):
+        with pytest.raises(evaluation_host.GuardViolation):
             os.unlink("README.md", dir_fd=fd)
     finally:
         os.close(fd)
@@ -231,7 +238,7 @@ def test_guard_judges_entries_and_dir_fd_names_where_they_really_are():
     (work / "tree" / "deep" / "link").symlink_to(outside)
     shutil.rmtree(work / "tree")
     assert not (work / "tree").exists() and outside.exists()
-    with pytest.raises(PermissionError):
+    with pytest.raises(evaluation_host.GuardViolation):
         shutil.rmtree(ROOT / "no-such-tree-outside")
 
 
@@ -695,6 +702,73 @@ def test_multiturn_segments_are_bound_once_and_complete_only_when_all_arrive():
         evaluation_host.CaseLedger(path, corpus_sha256="c" * 64, expected_cases=3)
 
 
+@pytest.mark.parametrize("reverse", (False, True))
+def test_case_dimensions_keep_every_segment_and_missing_remainder(reverse):
+    path = _ledger(f"whole-case-{reverse}.json", ("R", "R", "W", "R", "R"))
+    ledger = evaluation_host.CaseLedger(path, corpus_sha256="c" * 64, expected_cases=5)
+    good = {**GOOD, "factual_correctness": "PASS"}
+    bad = {**good, "response_contract": "FAIL", "factual_correctness": "FAIL",
+           "source_coverage": "MISSING", "safety": "FAIL"}
+    uncertain = {**good, "response_contract": "UNVERIFIED", "factual_correctness": "UNVERIFIED",
+                 "source_coverage": "PARTIAL", "safety": "UNVERIFIED"}
+    for case_id, first in ((1, bad), (2, uncertain)):
+        segments = [_sha(f"case {case_id} turn {i}") for i in range(2)]
+        ledger.approve_segmentation(case_id, entry_sha256=_sha(f"synthetic prompt {case_id}"),
+                                     segment_hashes=segments, approved_by="synthetic")
+        outcomes = [("FAILED", first), ("PASSED", good)]
+        if reverse:
+            outcomes.reverse()
+        for turn, (status, dimensions) in enumerate(outcomes):
+            ledger.record_attempt(case_id, run_id="synthetic", attempt_id=f"{case_id}-{turn}",
+                                  delivered_sha256=segments[turn], receipts={}, status=status,
+                                  dimensions=dimensions, turn_index=turn)
+        assert ledger.by_id[case_id]["status"] == "FAILED"
+    # A passing prefix cannot verify the missing suffix. Effects remain unexecuted.
+    segments = [_sha("write prefix"), _sha("write suffix")]
+    ledger.approve_segmentation(3, entry_sha256=_sha("synthetic prompt 3"),
+                                 segment_hashes=segments, approved_by="synthetic")
+    ledger.record_attempt(3, run_id="synthetic", attempt_id="3-0", delivered_sha256=segments[0],
+                          receipts={}, status="BLOCKED", dimensions={**good, "requested_effect": "BLOCKED"})
+    ledger.abandon_case(3, status="BLOCKED", reason="synthetic unavailable suffix")
+    ledger.abandon_case(4, status="BLOCKED", reason="synthetic unavailable whole case")
+    # Undelivered retries remain attempts, without overwriting delivered evidence.
+    ledger.record_attempt(5, run_id="synthetic", attempt_id="5-missed", delivered_sha256=_sha("missed"),
+                          receipts={}, status="BLOCKED", dimensions={**bad, "input_delivered": "NO"})
+    ledger.record_attempt(5, run_id="synthetic", attempt_id="5-retry", delivered_sha256=_sha("synthetic prompt 5"),
+                          receipts={}, status="PASSED", dimensions=good)
+    attempts = json.loads(json.dumps([c["attempts"] for c in ledger.by_id.values()]))
+    counts = ledger.counts()
+    assert counts["attempts"] == 7 and counts["unexecuted_segments"] == 2
+    assert counts["status"]["FAILED"] == 2 and counts["status"]["PASSED"] == 1
+    assert counts["status"]["BLOCKED"] == 2
+    for dimension in ("response_contract", "factual_correctness", "safety"):
+        assert counts["dimensions"][dimension] == {"PASS": 1, "FAIL": 1, "UNVERIFIED": 3}
+    assert counts["dimensions"]["input_delivered"] == {"YES": 3, "NO": 2}
+    assert counts["dimensions"]["source_coverage"] == {"COVERED": 1, "PARTIAL": 1, "MISSING": 3, "NOT_NEEDED": 0}
+    assert counts["dimensions"]["requested_effect"] == {"NOT_REQUESTED": 4, "BLOCKED": 0, "NOT_EXECUTED": 1}
+    assert all(sum(values.values()) == 5 for values in counts["dimensions"].values())
+    assert [c["attempts"] for c in ledger.by_id.values()] == attempts  # reporting never rewrites attempts
+    resumed = evaluation_host.CaseLedger(path, corpus_sha256="c" * 64, expected_cases=5)
+    assert resumed.counts() == counts and resumed.next_case() is None
+
+
+def test_source_not_needed_is_neutral_and_unverified_stays_unverified():
+    path = _ledger("source-neutral.json", ("R", "R"))
+    ledger = evaluation_host.CaseLedger(path, corpus_sha256="c" * 64, expected_cases=2)
+    for case_id in (1, 2):
+        segments = [_sha(f"neutral {case_id}-{i}") for i in range(2)]
+        ledger.approve_segmentation(case_id, entry_sha256=_sha(f"synthetic prompt {case_id}"),
+                                     segment_hashes=segments, approved_by="synthetic")
+        for turn in range(2):
+            coverage = "COVERED" if case_id == 1 and turn == 0 else "NOT_NEEDED"
+            ledger.record_attempt(case_id, run_id="synthetic", attempt_id=f"neutral-{case_id}-{turn}",
+                                  delivered_sha256=segments[turn], receipts={}, status="PASSED",
+                                  dimensions={**GOOD, "source_coverage": coverage}, turn_index=turn)
+    assert ledger.counts()["dimensions"]["source_coverage"] == {
+        "COVERED": 1, "PARTIAL": 0, "MISSING": 0, "NOT_NEEDED": 1}
+    assert ledger.counts()["dimensions"]["factual_correctness"]["UNVERIFIED"] == 2
+
+
 def test_profile_and_config_are_fail_closed():
     profile = evaluation_host.sandbox_profile(CONFIG, sys.executable)
     assert "(deny appleevent-send)" in profile and "(deny process-fork)" in profile
@@ -969,6 +1043,123 @@ def test_supervisor_signals_only_its_own_live_children():
     assert lifecycle.stop(str(root))["last_recorded"] == {"unreadable": True}
 
 
+@pytest.mark.parametrize("failure", ("bind", "listen", "accept", "recv", "send", "stop-send", "close", "interrupt", None))
+def test_supervision_retires_owned_children_through_control_lifetime(monkeypatch, failure):
+    from types import SimpleNamespace
+    from scripts.notch_evaluation import lifecycle
+    root = OWNED / f"control-{failure or 'success'}"
+    root.mkdir(mode=0o700)
+    (root / "host-config.json").write_text(json.dumps({
+        "listen_port": PORT, "token": TOKEN, "nonce": NONCE, "run_id": "synthetic-control"}))
+    processes = [_FakeProcess(7101), _FakeProcess(7102)]
+    factory = lifecycle.Supervisor
+    sup = factory(str(root), spawn=lambda *a, **kw: processes[len(sup.children)])
+    monkeypatch.setattr(lifecycle, "Supervisor", lambda _: sup)
+    monkeypatch.setattr(lifecycle, "_identity", lambda *a: processes[0].pid)
+    closed = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            closed.append("connection")
+
+        def recv(self, size):
+            if failure == "recv":
+                raise OSError("synthetic recv failure")
+            return b"stop" if failure in (None, "close", "stop-send") else b"status"
+
+        def sendall(self, data):
+            if failure in ("send", "stop-send"):
+                raise OSError("synthetic send failure")
+
+    class Server:
+        def bind(self, path):
+            # A failed bind must not unlink somebody else's existing entry.
+            Path(path).write_text("synthetic existing entry" if failure == "bind" else "owned socket stand-in")
+            if failure == "bind":
+                raise OSError("synthetic bind failure")
+
+        def listen(self, backlog):
+            if failure == "listen":
+                raise OSError("synthetic listen failure")
+
+        def settimeout(self, seconds):
+            pass
+
+        def accept(self):
+            if failure == "accept":
+                raise OSError("synthetic accept failure")
+            if failure == "interrupt":
+                raise KeyboardInterrupt("synthetic interruption")
+            return Connection(), None
+
+        def close(self):
+            closed.append("server")
+            if failure == "close":
+                raise OSError("synthetic close failure")
+
+    monkeypatch.setattr(lifecycle.socket, "socket", lambda *a: Server())
+    args = SimpleNamespace(root=str(root), python="synthetic-python", host="synthetic-host",
+                           app="synthetic-app", ready_timeout=1)
+    if failure == "interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            lifecycle.supervise(args)
+    else:
+        assert lifecycle.supervise(args) == (0 if failure is None else 2)
+    assert all(p.sent == ["SIGTERM"] and p.code == -15 for p in processes)
+    state = json.loads((root / lifecycle.STATE).read_text())
+    assert state["state"] == ("stopped" if failure is None else "failed")
+    assert all(not child["alive"] for child in state["children"])
+    assert "server" in closed
+    assert (root / lifecycle.CONTROL).exists() == (failure == "bind")
+
+
+@pytest.mark.parametrize("interrupt", (False, True))
+def test_cleanup_visits_all_handles_even_when_one_retirement_raises(interrupt):
+    from scripts.notch_evaluation import lifecycle
+    root = OWNED / f"cleanup-error-{interrupt}"
+    root.mkdir(mode=0o700)
+    sup = lifecycle.Supervisor(str(root))
+    healthy = _FakeProcess(7201)
+    broken = lifecycle.Child("app", _FakeProcess(7202))
+
+    def fail():
+        raise KeyboardInterrupt() if interrupt else OSError("synthetic retirement error")
+
+    broken.retire = fail
+    sup.children = [lifecycle.Child("backend", healthy), broken]
+    if interrupt:
+        with pytest.raises(KeyboardInterrupt):
+            sup.stop_all("stopped", "synthetic cleanup")
+    else:
+        sup.stop_all("stopped", "synthetic cleanup")
+    assert healthy.sent == ["SIGTERM"] and not sup.children[0].alive()
+    recorded = json.loads((root / lifecycle.STATE).read_text())
+    assert recorded["state"] == "failed" and recorded["children"][1]["alive"]
+    assert recorded["cleanup_errors"] == [{"role": "app", "error": "KeyboardInterrupt" if interrupt else "OSError"}]
+
+
+def test_control_path_limit_refuses_before_spawn_or_state_writes(monkeypatch):
+    from types import SimpleNamespace
+    from scripts.notch_evaluation import lifecycle
+    root = OWNED / ("long-control-" + "x" * 100)
+    root.mkdir(mode=0o700)
+    def unexpected(*a, **kw):
+        pytest.fail("no supervisor, socket or child may be created for a long control path")
+    monkeypatch.setattr(lifecycle, "Supervisor", unexpected)
+    monkeypatch.setattr(lifecycle.socket, "socket", unexpected)
+    with pytest.raises(lifecycle.RootError, match="control socket"):
+        lifecycle.supervise(SimpleNamespace(root=str(root)))
+    assert list(root.iterdir()) == []
+    # The bound is bytes, not characters; exactly 103 bytes fits including the name.
+    prefix = "/" + "x" * (lifecycle._MAX_CONTROL_PATH_BYTES - len(lifecycle.CONTROL) - 2)
+    assert len(os.fsencode(lifecycle._control_path(prefix))) == lifecycle._MAX_CONTROL_PATH_BYTES
+    with pytest.raises(lifecycle.RootError):
+        lifecycle._control_path(prefix + "é")
+
+
 def test_roots_are_validated_before_anything_is_written(monkeypatch):
     from scripts.notch_evaluation import lifecycle
     home = os.path.realpath(os.path.expanduser("~"))
@@ -1084,30 +1275,45 @@ def test_receipt_destinations_must_be_private_files_inside_the_root():
         boundary._open_receipts(str(OWNED / "evidence" / "linked.jsonl"), str(OWNED))
 
 
-def test_zz_lost_evidence_stops_the_run():
+def test_zz_lost_evidence_stops_the_run(monkeypatch):
     from service.tools.registry import run_tool
     assert boundary.evidence_failure() is None
     state = boundary._state
-    # Retention bound reached: sticky failure, every dispatch blocked.
-    state.written = boundary._MAX_RECEIPT_BYTES
-    boundary._record("allowed", "probe", {})
-    assert "retention bound" in (boundary.evidence_failure() or "")
-    result = asyncio.run(run_tool(_tool("calculate"), {"expression": "2+2"}))
-    assert "EVALUATION_BLOCKED" in result and "evidence" in result
-    health = asyncio.run(call("GET", "/health"))
-    assert health["status"] == 503
-    identity = asyncio.run(call("GET", "/evaluation/identity"))
-    assert identity["status"] == 200 and json.loads(identity["body"])["evidence_failure"]
-    # A write that fails (a descriptor that cannot be written) is sticky too.
-    state.failure, state.written = None, 0
+    invoked = []
+
+    async def dispatch_spy(func, *args, **kwargs):
+        invoked.append(func)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", dispatch_spy)
     readonly = os.open(OWNED / "evidence" / "boundary.jsonl", os.O_RDONLY)
-    saved, state.fd = state.fd, readonly
+    saved = state.fd
     try:
-        boundary._record("allowed", "probe", {})
-        assert "could not be persisted" in (boundary.evidence_failure() or "")
-        boundary._record("allowed", "probe", {})
-        assert boundary.evidence_failure()                    # still failed
+        for kind in ("retention", "write-error", "short-write", "memory-retention"):
+            # Independent injected failures in this final test's synthetic state.
+            # The first dispatch, without a preceding probe receipt, must fail.
+            state.failure, state.written = None, 0
+            state.fd = readonly if kind == "write-error" else saved
+            if kind == "retention":
+                state.written = boundary._MAX_RECEIPT_BYTES
+            if kind == "memory-retention":
+                state.fd = None
+                state.receipts[:] = [{}] * boundary._MAX_RECEIPTS
+            with monkeypatch.context() as patch:
+                if kind == "short-write":
+                    original_write = os.write
+                    patch.setattr(os, "write", lambda fd, data: len(data) - 1 if fd == saved
+                                  else original_write(fd, data))
+                result = asyncio.run(run_tool(_tool("calculate"), {"expression": "2+2"}))
+            assert "EVALUATION_BLOCKED" in result and "evidence" in result, kind
+            assert not invoked, f"the tool ran on its own receipt failure: {kind}"
+            failure = boundary.evidence_failure()
+            assert failure and ("retention" in failure if "retention" in kind else "could not be persisted" in failure)
+            assert "EVALUATION_BLOCKED" in asyncio.run(run_tool(_tool("calculate"), {"expression": "2+2"}))
+            assert boundary.evidence_failure() == failure and not invoked
+            assert asyncio.run(call("GET", "/health"))["status"] == 503
+            identity = asyncio.run(call("GET", "/evaluation/identity"))
+            assert identity["status"] == 200 and json.loads(identity["body"])["evidence_failure"]
     finally:
         state.fd = saved
         os.close(readonly)
-    assert "EVALUATION_BLOCKED" in asyncio.run(run_tool(_tool("calculate"), {"expression": "2+2"}))
