@@ -55,6 +55,8 @@ def test_only_the_exact_re_read_request_reaches_a_subscriber_transiently():
             {"type": "sync_assistant_sources_now", "sources": "email"},
             {"type": "sync_assistant_sources_now", "sources": ["email"], "action_id": "a"},
             {"type": "sync_assistant_sources_now"},
+            {"type": "sync_assistant_sources_now", "sources": [["email"]]},      # unhashable: refused, not TypeError
+            {"type": "sync_assistant_sources_now", "sources": [{"x": 1}, "email"]},
         ]
         for event in refused:
             with pytest.raises(boundary.EvaluationBlockedError):

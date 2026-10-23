@@ -478,6 +478,89 @@ enum NotchEvaluationInput {
     }
 }
 
+/// What a live reader's AppleScript may contain. The OS profile can only
+/// limit Apple Events by destination (Mail, Notes), never by verb, so every
+/// script is checked here, and one that fails is refused, not run. Lexical:
+/// AppleScript strings and comments are removed first, then
+/// - no forbidden command word may appear;
+/// - every `tell` names application "Mail" or "Notes";
+/// - every `set` assigns a local: `set x to`, `set end of x to`,
+///   `set <date part> of x to`, or the text item delimiters. A `set` of
+///   any other `… of …` (an app object's property) is refused, as is a
+///   plain `set` of an application property name.
+/// tests/test_notch_script_policy.py mirrors this rule over the readers'
+/// actual scripts and reads both word lists from this file.
+enum NotchEvaluationScriptPolicy {
+    static let forbiddenWords: Set<String> = ["send", "delete", "make", "move", "duplicate", "copy", "save",
+        "close", "quit", "open", "forward", "redirect", "reply", "bounce", "import", "export", "shell", "launch",
+        "activate", "synchronize", "empty", "print", "mount", "store", "run"]
+    static let applicationProperties: Set<String> = ["selection", "selected", "frontmost", "visible", "bounds",
+        "name", "content", "body", "subject", "read", "flagged", "junk", "deleted", "container", "folder",
+        "account", "mailbox", "default", "background", "fetch", "download"]
+    static let dateParts: Set<String> = ["year", "month", "day", "time", "hours", "minutes", "seconds"]
+    static let applications: Set<String> = ["mail", "notes"]
+
+    /// Nil when the script may run; otherwise why it is refused.
+    static func refusal(_ source: String) -> String? {
+        let lowered = source.lowercased()
+        // Tell targets are checked before strings are removed.
+        var rest = Substring(lowered)
+        while let range = rest.range(of: #"(?<![a-z_])tell\s+"#, options: .regularExpression) {
+            let before = lowered[..<range.lowerBound]
+            let after = rest[range.upperBound...]
+            if !before.hasSuffix("end ") {
+                guard let target = after.range(of: #"^application\s+"([a-z]+)""#, options: .regularExpression) else {
+                    return "a tell that does not name Mail or Notes"
+                }
+                let name = after[target].split(separator: "\"").last.map(String.init) ?? ""
+                guard applications.contains(name) else { return "a tell of \(name)" }
+            }
+            rest = after
+        }
+        let text = stripped(lowered)
+        let words = text.split { !($0.isLetter || $0.isNumber || $0 == "_") }.map(String.init)
+        if let word = words.first(where: forbiddenWords.contains) { return "the command word \(word)" }
+        var index = words.startIndex
+        while let found = words[index...].firstIndex(of: "set") {
+            let next = Array(words[(found + 1)...].prefix(5))
+            if !allowedSet(next) { return "a set of something other than a local variable" }
+            index = found + 1
+        }
+        return nil
+    }
+
+    private static func allowedSet(_ w: [String]) -> Bool {
+        if w.count >= 2, w[1] == "to" { return !applicationProperties.contains(w[0]) }
+        if w.count >= 4, w[1] == "of", w[3] == "to" { return w[0] == "end" || dateParts.contains(w[0]) }
+        // `set AppleScript's text item delimiters to …` splits as these words.
+        return w.count >= 5 && w[0] == "applescript" && w[1] == "s" && w[2] == "text" && w[3] == "item"
+            && w[4] == "delimiters"
+    }
+
+    /// Removes AppleScript string literals and comments.
+    static func stripped(_ text: String) -> String {
+        var out = "", chars = Array(text), i = 0, depth = 0
+        while i < chars.count {
+            let c = chars[i], next: Character? = i + 1 < chars.count ? chars[i + 1] : nil
+            if depth > 0 {
+                if c == "(", next == "*" { depth += 1; i += 2 } else if c == "*", next == ")" { depth -= 1; i += 2 } else { i += 1 }
+            } else if c == "(", next == "*" {
+                depth = 1; i += 2
+            } else if (c == "-" && next == "-") || c == "#" {
+                while i < chars.count, chars[i] != "\n" { i += 1 }
+            } else if c == "\"" {
+                i += 1
+                while i < chars.count, chars[i] != "\"" { i += chars[i] == "\\" ? 2 : 1 }
+                i += 1
+                out += " \"\" "
+            } else {
+                out.append(c); i += 1
+            }
+        }
+        return out
+    }
+}
+
 /// The configured run, for WispClient.baseURL. A missing or invalid config
 /// stops the process: an evaluation build never falls back to production.
 enum NotchEvaluationEnvironment {
@@ -698,6 +781,16 @@ final class NotchEvaluationReaders {
     private let ledger: NotchEvaluationLedger
     private var stream: Task<Void, Never>?
 
+    /// True (and recorded) when a reader's AppleScript fails the write check.
+    /// Called from the readers' own background queues.
+    nonisolated static func refuseScript(_ source: String, reader: String) -> Bool {
+        guard let reason = NotchEvaluationScriptPolicy.refusal(source) else { return false }
+        var fields: [String: Any] = ["reason": reason, "script_sha256": NotchEvaluationLedger.sha256(source)]
+        NotchEvaluationLedger.identifier("reader", reader, into: &fields)
+        NotchEvaluationEnvironment.ledger.record("script_refused", fields)
+        return true
+    }
+
     init(ledger: NotchEvaluationLedger) { self.ledger = ledger }
 
     func start() {
@@ -750,39 +843,43 @@ final class NotchEvaluationReaders {
 }
 
 /// Ends the app when its backend stops proving this run's identity, so a
-/// Launch Services launch never outlives the supervised backend.
-@MainActor
-final class NotchEvaluationIdentityWatch {
+/// Launch Services launch never outlives the supervised backend. Runs on its
+/// own queue and exits directly, so a wedged main thread cannot keep the app
+/// alive (a token-checked quit needs the main thread; this does not).
+final class NotchEvaluationIdentityWatch: @unchecked Sendable {
     static let interval: TimeInterval = 10
     static let allowedFailures = 3
+    private let queue = DispatchQueue(label: "wisp-evaluation-identity", qos: .utility)
+    private var timer: DispatchSourceTimer?
     private var failures = 0
-    private var timer: Timer?
     private let ledger: NotchEvaluationLedger
 
     init(ledger: NotchEvaluationLedger) { self.ledger = ledger }
 
     func start() {
-        timer = Timer.scheduledTimer(withTimeInterval: Self.interval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.check() }
-        }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + Self.interval, repeating: Self.interval)
+        timer.setEventHandler { [weak self] in self?.check() }
+        self.timer = timer
+        timer.resume()
     }
 
     private func check() {
         var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("evaluation/identity"))
         request.timeoutInterval = 5
+        let done = DispatchSemaphore(value: 0)
+        var ok = false
         // The guard protocol accepts a reply only with this run's nonce and pid.
         URLSession.shared.dataTask(with: request) { _, response, error in
-            let ok = error == nil && (response as? HTTPURLResponse)?.statusCode == 200
-            DispatchQueue.main.async { MainActor.assumeIsolated { self.observe(ok) } }
+            ok = error == nil && (response as? HTTPURLResponse)?.statusCode == 200
+            done.signal()
         }.resume()
-    }
-
-    private func observe(_ ok: Bool) {
+        if done.wait(timeout: .now() + 8) == .timedOut { ok = false }
         failures = ok ? 0 : failures + 1
         guard failures >= Self.allowedFailures else { return }
-        timer?.invalidate()
-        ledger.record("identity_lost_quit", ["failures": failures])
-        NSApp.terminate(nil)
+        timer?.cancel()
+        ledger.record("identity_lost_exit", ["failures": failures])
+        exit(3)
     }
 }
 
@@ -793,6 +890,14 @@ final class NotchEvaluationIdentityWatch {
 enum NotchEvaluationSelfSandbox {
     private typealias SandboxInit = @convention(c) (
         UnsafePointer<CChar>, UInt64, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> Int32
+
+    static let launchFlag = "WISP_NOTCH_EVALUATION_LAUNCH"
+    private(set) static var applied = false
+
+    /// A Launch Services launch must confine itself; nothing else may skip it.
+    static func required(config: NotchEvaluationConfig, environment: [String: String]) -> Bool {
+        config.liveSources || environment[launchFlag] != nil
+    }
 
     static func apply(profileAt url: URL) {
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
@@ -812,6 +917,7 @@ enum NotchEvaluationSelfSandbox {
         guard sandboxInit(text, 0, &error) == 0 else {
             fatalError("The evaluation profile was refused: \(error.map { String(cString: $0) } ?? "unknown")")
         }
+        applied = true
     }
 }
 
@@ -823,8 +929,14 @@ enum NotchEvaluationHost {
 
     static func run() {
         let config = NotchEvaluationEnvironment.config
-        if config.liveSources {
+        let environment = ProcessInfo.processInfo.environment
+        if NotchEvaluationSelfSandbox.required(config: config, environment: environment) {
             NotchEvaluationSelfSandbox.apply(profileAt: config.ownedRoot.appendingPathComponent("app.sb"))
+        }
+        // Launched through Launch Services means no sandbox-exec wrapper: never
+        // run unconfined.
+        if environment[NotchEvaluationSelfSandbox.launchFlag] != nil, !NotchEvaluationSelfSandbox.applied {
+            fatalError("A Launch Services launch must apply its evaluation profile")
         }
         EvaluationGuardProtocol.config = config
         EvaluationGuardProtocol.ledger = NotchEvaluationEnvironment.ledger

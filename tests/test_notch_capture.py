@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import socket
-import tempfile
 import threading
 from pathlib import Path
 
@@ -106,20 +105,19 @@ class _Launcher:
         return not self.quit.is_set()
 
 
-def _short_root() -> Path:
-    # AF_UNIX paths are short; this is a private directory of this test only.
-    return Path(tempfile.mkdtemp(prefix="nq", dir="/private/tmp/claude" if os.path.isdir("/private/tmp/claude")
-                                 else None))
-
-
-def test_live_app_is_launched_by_launch_services_and_quit_by_token():
-    root = _short_root()
+def test_live_app_is_launched_by_launch_services_and_quit_by_token(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir(mode=0o700)
+    monkeypatch.chdir(root)                    # as the supervisor runs; the socket name stays short
     argv = lifecycle.launch_services_argv("/x/Eval.app", str(root), {"B": "2", "A": "1"})
     assert argv[:3] == ["/usr/bin/open", "-n", "-W"] and argv[-1] == "/x/Eval.app"
     assert argv[3:7] == ["--env", "A=1", "--env", "B=2"]
+    env = lifecycle.app_environment(str(root), str(root / "tmp-app"), launch_services=True)
+    assert env[lifecycle.LAUNCH_FLAG] == lifecycle.LAUNCH_SERVICES      # the app must then self-confine
+    assert lifecycle.LAUNCH_FLAG not in lifecycle.app_environment(str(root), "t", launch_services=False)
     launcher, seen = _Launcher(), []
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(str(root / lifecycle.APP_INPUT))
+    server.bind(lifecycle.APP_INPUT)
     server.listen(1)
 
     def app():
@@ -141,6 +139,7 @@ def test_live_app_is_launched_by_launch_services_and_quit_by_token():
     # Nothing answering: reported, and the launcher is still waited on, never signalled.
     gone = lifecycle.request_app_quit(str(root / "missing"), "T" * 40, _Launcher(), wait=0.2)
     assert gone["requested"] is False and gone["app_exited"] is False
+    assert gone["warning"].startswith("APP_STILL_RUNNING")
 
 
 def test_stop_asks_the_app_to_quit_before_retiring_children(tmp_path):
@@ -164,4 +163,7 @@ def test_stop_asks_the_app_to_quit_before_retiring_children(tmp_path):
     sup.before_stop = lambda: order.append("quit") or {"requested": True}
     state = sup.stop_all("stopped", "stop requested")
     assert order[0] == "quit" and state["app_quit"] == {"requested": True}
-    assert sup.before_stop is None
+    assert sup.before_stop is None and "warning" not in state
+    wedged = lifecycle.Supervisor(str(tmp_path), spawn=lambda argv, **kw: Proc())
+    wedged.before_stop = lambda: {"requested": True, "app_exited": False, "warning": "APP_STILL_RUNNING: synthetic"}
+    assert wedged.stop_all("stopped")["warning"] == "APP_STILL_RUNNING: synthetic"   # surfaced, not buried

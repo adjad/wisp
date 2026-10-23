@@ -78,10 +78,17 @@ cmd_build() {
 # is writable. The app applies the profile to itself (see
 # NotchEvaluationSelfSandbox), because it is launched through Launch Services.
 app_profile() {
-  local owned="$1" image="$2" bundle="$3" live="${4:-}" home cache
+  local home cache
   home="$(/usr/bin/dscl . -read "/Users/$(/usr/bin/id -un)" NFSHomeDirectory | /usr/bin/awk '{print $2}')"
   cache="$(/usr/bin/getconf DARWIN_USER_CACHE_DIR)"
   cache="$(cd "$cache" && pwd -P)"
+  app_profile_text "$1" "$2" "$3" "${4:-}" "$home" "$cache"
+}
+
+# The profile text itself: shell builtins only, so tests/test_notch_profile.py
+# can render both modes for a synthetic home and compare them.
+app_profile_text() {
+  local owned="$1" image="$2" bundle="$3" live="$4" home="$5" cache="$6"
   local lookups='(global-name "com.apple.coreservices.appleevents")
   (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.lsd.mapdb")
   ' reads="" prefs="" events=""
@@ -92,7 +99,8 @@ app_profile() {
     prefs="(literal \"$home/Library/Preferences/$BUNDLE_ID.plist\")"
     events='(allow appleevent-send (appleevent-destination "com.apple.mail") (appleevent-destination "com.apple.Notes"))'
   fi
-  cat <<PROFILE
+  local text
+  IFS= read -r -d '' text <<PROFILE || true
 (version 1)
 (allow default)
 (deny appleevent-send)
@@ -110,6 +118,7 @@ $events
   (subpath "$home/Library/Saved Application State/$BUNDLE_ID.savedState")
   (subpath "$cache$BUNDLE_ID") $prefs)))
 PROFILE
+  printf '%s' "$text"
 }
 
 cmd_launch() {

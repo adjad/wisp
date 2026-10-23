@@ -589,6 +589,11 @@ final class MailReader {
     /// empty string on failure would wipe a good cache.
     private func run(_ source: String, tag: String = "?") -> (text: String?, code: Int) {
         logMailCall(source, tag: tag)
+        #if WISP_NOTCH_EVALUATION
+        // Apple Events can be limited only by destination, so each script is
+        // checked for writes before it runs; a refused one is never executed.
+        if NotchEvaluationReaders.refuseScript(source, reader: "mail-" + tag) { return (nil, -1) }
+        #endif
         guard let s = NSAppleScript(source: source) else { return (nil, 0) }
         var err: NSDictionary?
         let result = s.executeAndReturnError(&err)

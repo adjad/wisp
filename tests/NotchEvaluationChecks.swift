@@ -166,6 +166,30 @@ struct NotchEvaluationChecks {
               "parses a token-checked quit")
         check((try? NotchEvaluationInput.parse(inputRequest(["op": "quit", "token": "wrong"]), token: config.token)) == nil,
               "refuses a quit with a wrong token")
+        // AppleScript write check: reads and local assignments pass; app writes do not.
+        let allowedScripts = [
+            "tell application \"Notes\"\n set refDate to current date\n set year of refDate to 2001\n set output to \"\"\n repeat with nt in notes\n  set output to output & (name of nt)\n end repeat\n return output\nend tell",
+            "tell application \"Mail\"\n set FS to ASCII character 1\n set capName to \"Delete Me -- move\" -- send later (* make *)\n set end of toAddrs to (address of r)\n set AppleScript's text item delimiters to linefeed\n if (read status of m) then set readFlag to \"R\"\nend tell",
+        ]
+        for (index, script) in allowedScripts.enumerated() {
+            check(NotchEvaluationScriptPolicy.refusal(script) == nil, "allows read script \(index)")
+        }
+        let refusedScripts: [(String, String)] = [
+            ("tell application \"Mail\"\n delete m\nend tell", "delete"),
+            ("tell application \"Mail\"\n set read status of m to true\nend tell", "a property set"),
+            ("tell application \"Notes\"\n make new note with properties {name:\"x\"}\nend tell", "make"),
+            ("tell application \"Mail\"\n move m to mailbox \"Archive\"\nend tell", "move"),
+            ("tell application \"Mail\"\n send newMessage\nend tell", "send"),
+            ("tell application \"Mail\"\n set selection to {}\nend tell", "an application property"),
+            ("tell application \"Mail\"\n copy true to flagged of m\nend tell", "copy"),
+            ("tell application \"System Events\"\n get name\nend tell", "another application"),
+            ("tell application \"Mail\"\n tell m\n  set x to 1\n end tell\nend tell", "a nested object tell"),
+            ("do shell script \"true\"", "shell"),
+            ("tell application \"Mail\"\n DELETE m\nend tell", "an upper-case verb"),
+        ]
+        for (script, label) in refusedScripts {
+            check(NotchEvaluationScriptPolicy.refusal(script) != nil, "refuses a script with \(label)")
+        }
         for (fields, label) in [(["op": "ask", "case": "1", "text": "x", "token": "wrong"], "a wrong token"),
                                 (["op": "ask", "case": "1", "text": "x"], "no token"),
                                 (["op": "shell", "case": "1", "text": "x", "token": config.token], "an unknown op"),

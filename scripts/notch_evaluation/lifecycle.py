@@ -204,6 +204,9 @@ class Supervisor:
         if hook is not None:
             try:
                 self.state["app_quit"] = hook()
+                if warning := self.state["app_quit"].get("warning"):
+                    self.state["warning"] = warning
+                    print(f"lifecycle: {warning}", file=sys.stderr, flush=True)
             except Exception as exc:  # noqa: BLE001 — retirement still runs
                 self.state["app_quit"] = {"error": type(exc).__name__}
         for child in reversed(self.children):
@@ -214,6 +217,10 @@ class Supervisor:
 
 APP_INPUT = "app-input.sock"
 QUIT_WAIT_S = 15.0
+# Set for a Launch Services launch: the app then refuses to run unless it has
+# applied app.sb to itself (it cannot be wrapped by sandbox-exec).
+LAUNCH_FLAG = "WISP_NOTCH_EVALUATION_LAUNCH"
+LAUNCH_SERVICES = "launch-services"
 
 
 def request_app_quit(root: str, token: str, launcher: Child | None, *, wait: float = QUIT_WAIT_S,
@@ -227,7 +234,9 @@ def request_app_quit(root: str, token: str, launcher: Child | None, *, wait: flo
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
             conn.settimeout(5)
-            conn.connect(str(Path(root, APP_INPUT)))
+            # Relative from inside the root: socket paths are limited to 104 bytes.
+            same = os.path.realpath(os.getcwd()) == os.path.realpath(root)
+            conn.connect(APP_INPUT if same else str(Path(root, APP_INPUT)))
             conn.sendall((json.dumps({"op": "quit", "token": token}) + "\n").encode())
             reply = json.loads(conn.recv(4096) or b"{}")
         outcome = {"requested": True, "reply": reply.get("status")}
@@ -238,7 +247,20 @@ def request_app_quit(root: str, token: str, launcher: Child | None, *, wait: flo
         while launcher.alive() and clock() < deadline:
             nap(0.1)
         outcome["app_exited"] = not launcher.alive()
+        if not outcome["app_exited"]:
+            # Never silent: the app outlives this stop until its own identity
+            # watchdog sees the retired backend and exits.
+            outcome["warning"] = ("APP_STILL_RUNNING: the app did not quit within "
+                                  f"{wait:.0f}s; it exits itself once the backend's identity is gone")
     return outcome
+
+
+def app_environment(root: str, tmp: str, *, launch_services: bool) -> dict:
+    env = {"HOME": _home(), "LANG": "C.UTF-8", "TMPDIR": tmp,
+           "WISP_NOTCH_EVALUATION_CONFIG": str(Path(root, "native-config.json"))}
+    if launch_services:
+        env[LAUNCH_FLAG] = LAUNCH_SERVICES
+    return env
 
 
 def launch_services_argv(bundle: str, root: str, env: dict) -> list[str]:
@@ -306,8 +328,7 @@ def supervise(args) -> int:
             "live_sources": config.get("source_mode") == "live"})
         tmp = Path(root, "tmp-app")
         os.mkdir(tmp, 0o700)
-        app_env = {"HOME": _home(), "LANG": "C.UTF-8", "TMPDIR": str(tmp),
-                   "WISP_NOTCH_EVALUATION_CONFIG": str(Path(root, "native-config.json"))}
+        app_env = app_environment(root, str(tmp), launch_services=bool(args.bundle))
         if args.bundle:
             # Live sources: launched through Launch Services; the app applies
             # app.sb to itself and is stopped by a token-checked quit.

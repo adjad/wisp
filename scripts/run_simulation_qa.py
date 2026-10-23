@@ -156,6 +156,8 @@ PROFILE_TESTS = {
         "tests/test_notch_driver.py",
         "tests/test_notch_capture.py",
         "tests/test_notch_live_boundary.py",
+        "tests/test_notch_script_policy.py",
+        "tests/test_notch_profile.py",
     "tests/test_cloud_provider_settings.py",
     "tests/test_local_provider_settings.py",
     "tests/test_setup_guide.py",

@@ -283,8 +283,11 @@ def is_live_sync(event) -> bool:
     if not isinstance(event, dict) or set(event) != {"type", "sources"} or event["type"] != LIVE_SYNC_EVENT:
         return False
     sources = event["sources"]
-    return (isinstance(sources, list) and bool(sources) and len(sources) == len(set(sources))
-            and all(isinstance(s, str) and s in LIVE_SYNC_SOURCES for s in sources))
+    # Types first: set() of an unhashable item would raise TypeError instead
+    # of a refusal.
+    if not isinstance(sources, list) or not sources or not all(isinstance(s, str) for s in sources):
+        return False
+    return len(sources) == len(set(sources)) and all(s in LIVE_SYNC_SOURCES for s in sources)
 
 
 def _live() -> bool:
