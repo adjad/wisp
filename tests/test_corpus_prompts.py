@@ -21,15 +21,15 @@ from service.tools.registry import REGISTRY
 
 SYNTHETIC = """# Synthetic prompts
 
-Count: 6 prompts. Multi-turn entries join turns with " → ".
+Count: 6 prompts. Tags: `[R]` read, `[W]` write, `[S]` send. Multi-turn entries join turns with " → ".
 
 ## 1. Reading (3)
 
 1. `[R]` What is on the fixture calendar today?
-2. `[R]` Summarise the fixture inbox.
+2. `[R]` Summarise the fixture inbox – the "important" part.
 3. `[R]` Who is Example Person? → And when did we last talk?
 
-## 2. Changes (3)
+## 2. Changes "and sends" (3)
 
 4. `[W]` Remind me to water the fixture plant.
 5. `[S]` Email person@example.com that the fixture is ready.
@@ -47,6 +47,10 @@ def private(tmp_path, monkeypatch):
     monkeypatch.setattr(corpus_prompts, "IDLE_POLL_S", 0.01)
     monkeypatch.setattr(corpus_prompts, "_day_cache", {})
     monkeypatch.setattr(corpus_prompts, "_job", corpus_prompts._Job())
+    # The reviewed corpus is the user's private file; these tests verify a synthetic one.
+    import hashlib
+    monkeypatch.setattr(corpus_prompts, "EXPECTED_SHA256", hashlib.sha256(SYNTHETIC.encode()).hexdigest())
+    monkeypatch.setattr(corpus_prompts, "EXPECTED_CASES", 6)
     monkeypatch.setattr(corpus, "RUNS_DIR", tmp_path / "corpus-runs")
     source = tmp_path / "Desktop" / "my prompts.md"
     source.parent.mkdir()
@@ -68,12 +72,18 @@ def test_parse_reads_sections_tags_and_turns():
     assert [c.tag for c in cases] == ["R", "R", "R", "W", "S", "W"]
     assert cases[2].segments == ("Who is Example Person?", "And when did we last talk?")
     assert cases[0].segments == ("What is on the fixture calendar today?",)
-    assert (cases[3].section_number, cases[3].section) == (2, "Changes")
+    # An en dash is text, not a separator; quotes survive.
+    assert cases[1].segments == ('Summarise the fixture inbox – the "important" part.',)
+    assert (cases[3].section_number, cases[3].section) == (2, 'Changes "and sends"')
     assert corpus_prompts.sections(cases) == [{"number": 1, "title": "Reading", "count": 3},
-                                              {"number": 2, "title": "Changes", "count": 3}]
-    for bad in ("1. `[R]` a\n1. `[R]` b", "1. `[R]` a →  → b", "no prompts here", "2. `[R]` b\n1. `[R]` a"):
+                                              {"number": 2, "title": 'Changes "and sends"', "count": 3}]
+    for bad in ("1. `[R]` a\n1. `[R]` b", "1. `[R]` a →  → b", "no prompts here", "2. `[R]` b\n1. `[R]` a",
+                "1. `[R]` a\n3. `[R]` c"):
         with pytest.raises(corpus_prompts.PromptsError):
-            corpus_prompts.parse(bad)
+            corpus_prompts.parse(bad, expected_cases=2)
+    # Exactly 1..EXPECTED_CASES: a file one short is refused.
+    with pytest.raises(corpus_prompts.PromptsError, match="1 to 6"):
+        corpus_prompts.parse(SYNTHETIC.replace("6. `[W]`", "x. `[W]`"))
 
 
 def test_import_copies_privately_and_a_changed_file_is_refused(private):
@@ -87,19 +97,24 @@ def test_import_copies_privately_and_a_changed_file_is_refused(private):
     assert json.loads(corpus_prompts.PROMPTS_META.read_text())["sha256"] == imported["sha256"]
     cases, digest = corpus_prompts.load()
     assert len(cases) == 6 and digest == imported["sha256"]
+    link = private.with_name("link.md")
+    os.symlink(private, link)
+    corpus_prompts.import_file(str(link))  # resolved to the real file, then read
     copy.write_text(SYNTHETIC + "7. `[R]` One more.\n", encoding="utf-8")
     with pytest.raises(corpus_prompts.PromptsError, match="changed since it was imported"):
         corpus_prompts.load()
-    link = private.with_name("link.md")
-    os.symlink(copy, link)
-    corpus_prompts.import_file(str(link))  # resolved to the real file, then read
+    # Only the reviewed corpus imports: its sha256 is checked before parsing.
+    other = private.with_name("other.md")
+    other.write_text(SYNTHETIC.replace("fixture plant", "fixture tree"), encoding="utf-8")
+    with pytest.raises(corpus_prompts.PromptsError, match="not the reviewed prompts corpus"):
+        corpus_prompts.import_file(str(other))
     with pytest.raises(corpus_prompts.PromptsError):
         corpus_prompts.import_file(str(private.with_name("missing.md")))
 
 
 def test_selectors():
     many = "\n".join(f"{n}. `[R]` Prompt {n}" for n in range(1, 251))
-    cases = corpus_prompts.parse("## 1. A (250)\n" + many)
+    cases = corpus_prompts.parse("## 1. A (250)\n" + many, expected_cases=250)
     assert len(corpus_prompts.select(cases, "all")) == 250
     assert [c.number for c in corpus_prompts.select(cases, "batch-3")] == list(range(201, 251))
     assert [c.number for c in corpus_prompts.select(cases, "P-17")] == [17]
@@ -202,7 +217,19 @@ def test_a_run_declines_every_effect_and_saves_each_case_as_an_excluded_chat(pri
     assert lines["P-4"]["confirmations"][0]["tool"] == "add_reminder"
     assert {c["tool"] for c in lines["P-6"]["confirmations"]} == {"add_reminder", "send_email"}
     assert lines["P-1"]["confirmations"] == [] and lines["P-1"]["mode"] == "normal"
-    assert (lines["P-5"]["tag"], lines["P-5"]["category"]) == ("S", "2. Changes")
+    assert (lines["P-5"]["tag"], lines["P-5"]["category"]) == ("S", '2. Changes "and sends"')
+    # Each turn keeps the harness's record shape.
+    import hashlib
+    turn = lines["P-5"]["turns"][0]
+    assert turn["input_sha256"] == hashlib.sha256(turn["prompt"].encode()).hexdigest()
+    assert turn["failure_class"] == "CONFIRMATION_DECLINED" and lines["P-5"]["failure_class"] == "CONFIRMATION_DECLINED"
+    assert turn["confirmation"]["tool"] == "send_email" and turn["model"] == "fixture-model"
+    assert turn["route"] == {"role": "agent", "source": "router", "reason": None}
+    assert [(t["name"], t["decision"]) for t in turn["tools"]] == [("send_email", "declined")]
+    assert isinstance(turn["latency_s"], float) and isinstance(turn["ttft_s"], float)
+    assert any(e["type"] == "corpus_declined" for e in turn["events"])
+    assert not any(e["type"] in ("delta", "text") for e in turn["events"])
+    assert lines["P-1"]["failure_class"] == lines["P-1"]["turns"][0]["failure_class"] == "OK"
     # A multi-turn case is one chat, turn by turn, with every answer.
     multi = lines["P-3"]
     assert [t["prompt"] for t in multi["turns"]] == ["Who is Example Person?", "And when did we last talk?"]
@@ -232,6 +259,13 @@ def test_a_run_declines_every_effect_and_saves_each_case_as_an_excluded_chat(pri
     assert by_case["P-5"][column["tag"]] == "S" and by_case["P-5"][column["would_confirm"]] == "send_email"
     assert by_case["P-1"][column["route_source"]] == "router" and by_case["P-1"][column["model"]] == "fixture-model"
     assert by_case["P-1"][column["latency_s"]] != ""
+    harness = [json.loads(row) for row in corpus_prompts.export_jsonl().body.decode().splitlines()]
+    assert [r["case_id"] for r in harness] == [1, 2, 3, 4, 5, 6]
+    assert harness[2]["risk_tag"] == "R" and harness[2]["section"] == "Reading" and harness[2]["turn_count"] == 2
+    assert [t["final_text"].split("\n")[0] for t in harness[2]["turns"]] == [
+        "Answer to: Who is Example Person?", "Answer to: And when did we last talk?"]
+    assert set(harness[4]["turns"][0]) >= {"prompt", "input_sha256", "final_text", "model", "route", "tools",
+                                           "events", "latency_s", "ttft_s", "failure_class"}
     results = corpus_prompts.results_route(limit=2)["results"]
     assert len(results) == 2 and results[0]["answer"]
 
@@ -272,7 +306,8 @@ def test_resume_skips_finished_cases_and_stop_leaves_the_rest(private, wisp, mon
     assert run["status"] == "finished" and run["completed"] == 3 and run["run_id"] == stopped["run_id"]
     # P-1 was not run again; P-2 (stopped) and P-3 were.
     assert [b["prompt"] for b in wisp.bodies[started:]] == [
-        "Summarise the fixture inbox.", "Who is Example Person?", "And when did we last talk?"]
+        'Summarise the fixture inbox – the "important" part.', "Who is Example Person?", "And when did we last talk?"]
+    assert lines["P-2"]["failure_class"] == "INTERRUPTED"
 
 
 def test_the_job_waits_for_the_users_turn(private, wisp, monkeypatch):

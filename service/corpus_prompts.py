@@ -52,6 +52,15 @@ TURN_TIMEOUT_S = 600
 IDLE_SETTLE_S = 3.0
 IDLE_POLL_S = 2.0
 
+# The reviewed corpus: it is verified before it is parsed, and its ids must
+# be exactly 1..EXPECTED_CASES, once each, in order.
+EXPECTED_SHA256 = "62f21e90c6b03b3d0391b3e17de69b946afa0df2a0802b43977bb4ea7382fdfc"
+EXPECTED_CASES = 1000
+# Bounds on what one turn's record keeps of the stream.
+TURN_EVENTS = 200
+EVENT_RESULT = 2000
+TOOL_RESULT = 8000
+
 ENTRY = re.compile(r"^(\d+)\. `\[([RWS])\]` (.+)$")
 SECTION = re.compile(r"^## (\d+)\. (.+?)(?: \(\d+\))?$")
 TURN_SEPARATOR = " → "
@@ -75,8 +84,9 @@ class PromptCase:
         return f"P-{self.number}"
 
 
-def parse(text: str) -> list[PromptCase]:
-    """Every case, in file order. Refuses a file that is not the corpus format."""
+def parse(text: str, expected_cases: int | None = None) -> list[PromptCase]:
+    """Every case, in file order. Refuses a file that is not the corpus format,
+    or whose ids are not exactly 1..expected_cases (default EXPECTED_CASES)."""
     cases: list[PromptCase] = []
     section, section_number = "", 0
     for line in text.splitlines():
@@ -90,12 +100,12 @@ def parse(text: str) -> list[PromptCase]:
         segments = tuple(part.strip() for part in body.split(TURN_SEPARATOR))
         if any(not part for part in segments):
             raise PromptsError(f"Prompt {match.group(1)} has an empty turn.")
-        number = int(match.group(1))
-        if cases and number <= cases[-1].number:
-            raise PromptsError(f"Prompt {number} is out of order or repeated.")
-        cases.append(PromptCase(number, match.group(2), body, segments, section, section_number))
+        cases.append(PromptCase(int(match.group(1)), match.group(2), body, segments, section, section_number))
     if not cases:
         raise PromptsError("No prompts found. Each line should read: 12. `[R]` What's on my calendar?")
+    expected = EXPECTED_CASES if expected_cases is None else expected_cases
+    if [c.number for c in cases] != list(range(1, expected + 1)):
+        raise PromptsError(f"Expected prompts 1 to {expected} once each, in order; found {len(cases)}.")
     return cases
 
 
@@ -146,11 +156,13 @@ def import_file(source: str) -> dict:
     """Copy the user's prompts file into ~/.moe (0600) and record its sha256."""
     path = Path(os.path.expanduser(source.strip().strip("'\""))).resolve()
     data = _read_limited(path)
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != EXPECTED_SHA256:
+        raise PromptsError("That file is not the reviewed prompts corpus (its sha256 does not match).")
     try:
         cases = parse(data.decode("utf-8"))
     except UnicodeDecodeError as exc:
         raise PromptsError("The prompts file is not UTF-8 text.") from exc
-    digest = hashlib.sha256(data).hexdigest()
     _write_private(PROMPTS_FILE, data)
     meta = {"sha256": digest, "cases": len(cases), "imported_at": datetime.now().astimezone().isoformat(timespec="seconds")}
     _write_private(PROMPTS_META, json.dumps(meta).encode())
@@ -164,7 +176,7 @@ def load() -> tuple[list[PromptCase], str]:
     data = _read_limited(PROMPTS_FILE)
     digest = hashlib.sha256(data).hexdigest()
     meta = _read_json(PROMPTS_META)
-    if meta and meta.get("sha256") != digest:
+    if digest != EXPECTED_SHA256 or (meta and meta.get("sha256") != digest):
         raise PromptsError("The prompts file changed since it was imported. Import it again.")
     return parse(data.decode("utf-8", errors="strict")), digest
 
@@ -191,28 +203,103 @@ def select(cases: list[PromptCase], selector: str) -> list[PromptCase]:
     raise PromptsError("Use /corpus prompts all, batch-N, section N, or a prompt number such as 17.")
 
 
+# A case's class is its worst turn's (the harness's order, worst first).
+SEVERITY = ("INTERRUPTED", "TIMEOUT", "ERROR_TURN", "EMPTY_ANSWER", "CONFIRMATION_DECLINED", "OK")
+
+
 class PromptRecord(corpus.CaseRecord):
-    """One prompts case: its section and tag, and each turn's request and answer."""
+    """One prompts case. Alongside the saved-line fields every corpus export
+    reads, each turn keeps the Notch evaluation harness's record shape
+    (scripts/notch_evaluation/driver.py), so its transcripts viewer can read it."""
 
     def __init__(self, case: PromptCase, run_id: str):
         section = f"{case.section_number}. {case.section}" if case.section_number else case.section
         super().__init__({"id": case.id, "category": section,
                           "conversation": [{"role": "user", "content": case.text}]}, run_id, "normal")
-        self.line.update(corpus="prompts", tag=case.tag, section=case.section,
-                         section_number=case.section_number, turns=[])
+        self.line.update(corpus="prompts", number=case.number, tag=case.tag, risk_tag=case.tag,
+                         section=case.section, section_number=case.section_number,
+                         turn_count=len(case.segments), turns=[], failure_class=None)
+        self.turn: dict | None = None
+        self._turn_started = 0.0
 
     def begin_turn(self, prompt: str) -> None:
-        self._close_turn()
-        self.line["turns"].append({"prompt": prompt, "answer": ""})
+        self.end_turn()
         self.line["answer"] = ""
+        self._turn_started = time.monotonic()
+        self.turn = {"prompt": prompt, "input_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                     "final_text": "", "model": None, "route": {"role": None, "source": None, "reason": None},
+                     "tools": [], "confirmation": None, "events": [], "latency_s": None, "ttft_s": None,
+                     "failure_class": None, "error": None,
+                     # The export's names for the same request and answer.
+                     "answer": ""}
+        self.line["turns"].append(self.turn)
 
-    def _close_turn(self) -> None:
-        if self.line["turns"]:
-            self.line["turns"][-1]["answer"] = self.line["answer"]
+    def observe(self, event):
+        super().observe(event)
+        turn, kind = self.turn, event.get("type")
+        if turn is None or kind in ("heartbeat", "corpus_session"):
+            return
+        if kind == "routed":
+            turn["model"] = event.get("model")
+            turn["route"] = {"role": event.get("role"), "source": event.get("route_source"),
+                             "reason": event.get("reason")}
+        elif kind == "tool_call":
+            turn["tools"].append({"id": str(event.get("id", "")), "name": event.get("name"),
+                                  "args": event.get("args") if isinstance(event.get("args"), dict) else {},
+                                  "decision": event.get("decision"), "result": ""})
+        elif kind == "tool_result":
+            for tool in reversed(turn["tools"]):
+                if tool["id"] == str(event.get("id", "")):
+                    tool["result"] = str(event.get("result", ""))[:TOOL_RESULT]
+                    break
+        elif kind in ("delta", "text"):
+            if turn["ttft_s"] is None:
+                turn["ttft_s"] = round(time.monotonic() - self._turn_started, 2)
+        elif kind == "corpus_declined":
+            turn["confirmation"] = turn["confirmation"] or {"tool": event.get("tool"), "reason": event.get("reason")}
+            for tool in reversed(turn["tools"]):
+                if tool["id"] == str(event.get("id", "")):
+                    tool["decision"] = "declined"
+                    break
+        elif kind == "error":
+            turn["error"] = str(event.get("message", ""))
+        # What the notch would have shown, in order; streamed text is the answer itself.
+        if kind not in ("delta", "text") and len(turn["events"]) < TURN_EVENTS:
+            entry = {k: v for k, v in event.items() if k != "result"}
+            if "result" in event:
+                entry["result"] = str(event["result"])[:EVENT_RESULT]
+            turn["events"].append(entry)
 
-    def finish(self, stopped=False):
-        self._close_turn()
+    def end_turn(self, failure: str | None = None) -> None:
+        turn = self.turn
+        if turn is None:
+            return
+        self.turn = None
+        turn["final_text"] = turn["answer"] = self.line["answer"]
+        turn["latency_s"] = round(time.monotonic() - self._turn_started, 2)
+        turn["failure_class"] = failure or ("ERROR_TURN" if turn["error"] else
+                                            "EMPTY_ANSWER" if not turn["final_text"].strip() else
+                                            "CONFIRMATION_DECLINED" if turn["confirmation"] else "OK")
+
+    def finish(self, stopped=False, timed_out=False):
+        self.end_turn("INTERRUPTED" if stopped else "TIMEOUT" if timed_out else None)
+        classes = [t["failure_class"] for t in self.line["turns"] if t.get("failure_class")]
+        self.line["failure_class"] = min(classes, key=SEVERITY.index) if classes else (
+            "INTERRUPTED" if stopped else "ERROR_TURN")
         return super().finish(stopped)
+
+
+def harness_record(line: dict) -> dict:
+    """A saved line in the Notch evaluation harness's results.jsonl shape."""
+    latencies = [t["latency_s"] for t in line.get("turns") or [] if isinstance(t.get("latency_s"), (int, float))]
+    return {"case_id": line.get("number"), "risk_tag": line.get("risk_tag") or line.get("tag"),
+            "section": line.get("section", ""), "turn_count": line.get("turn_count"),
+            "failure_class": line.get("failure_class"), "model": line.get("model") or None,
+            "latency_s": round(sum(latencies), 2) if latencies else line.get("latency_s"),
+            "recorded_at": line.get("started_at"), "label": line.get("run_id"),
+            "session_id": line.get("session_id"),
+            "turns": [{k: v for k, v in turn.items() if k != "answer"} for turn in line.get("turns") or []],
+            "correctness": "UNVERIFIED"}
 
 
 class _Job:
@@ -301,24 +388,29 @@ async def run_case(case: PromptCase, run_id: str) -> dict:
         except Exception as exc:
             log.warning("Prompts event not recorded (%s)", type(exc).__name__)
 
-    stopped = False
+    stopped = timed_out = False
     try:
         title = corpus.case_title({"case_id": case.id, "prompt": case.text})
+        # Turn 1 starts a new chat; later turns are follow-ups in it.
         sid = await corpus.open_session(title, emit)
-        async with asyncio.timeout(TURN_TIMEOUT_S * len(case.segments)):
-            for number, segment in enumerate(case.segments, 1):
-                _job.current["turn"] = number
-                record.begin_turn(segment)
+        for number, segment in enumerate(case.segments, 1):
+            _job.current["turn"] = number
+            record.begin_turn(segment)
+            async with asyncio.timeout(TURN_TIMEOUT_S):
                 sid = await corpus.agent_turn(segment, sid, emit, title)
+            record.end_turn()
         await emit({"type": "done"})
     except asyncio.CancelledError:
         stopped = True
         raise
+    except TimeoutError:
+        timed_out = True
+        await emit({"type": "error", "message": f"This prompt took longer than {TURN_TIMEOUT_S // 60} minutes."})
     except Exception as exc:
         # Provider errors can contain request bodies: the type only.
         await emit({"type": "error", "message": f"This prompt could not finish ({type(exc).__name__})."})
     finally:
-        line = record.finish(stopped=stopped)
+        line = record.finish(stopped=stopped, timed_out=timed_out)
         corpus.save_session(line)
         corpus.persist(line)
         _job.current = None
@@ -481,6 +573,13 @@ def _export_lines(run_id):
 @router.get("/export.md")
 def export_md(run_id: str | None = None):
     return PlainTextResponse(corpus.export_markdown(_export_lines(run_id)), media_type="text/markdown; charset=utf-8")
+
+
+@router.get("/export.jsonl")
+def export_jsonl(run_id: str | None = None):
+    """The run in the harness's results.jsonl shape (its transcripts viewer reads it)."""
+    body = "".join(json.dumps(harness_record(line), ensure_ascii=False) + "\n" for line in _export_lines(run_id))
+    return PlainTextResponse(body, media_type="application/x-ndjson; charset=utf-8")
 
 
 @router.get("/export.csv")
