@@ -186,17 +186,7 @@ def worst(classes: list[str]) -> str:
     return min(classes, key=SEVERITY.index) if classes else "NOT_SUBMITTED"
 
 
-def _archived(path, owned: Path):
-    """Where a screenshot will be once the root is retired into hosts/."""
-    if not isinstance(path, str) or not path:
-        return None
-    try:
-        return str(Path("hosts") / owned.name / Path(path).resolve().relative_to(owned.resolve()))
-    except ValueError:
-        return None
-
-
-def _turn_record(segment: str, reply: dict, failure: str, owned: Path) -> dict:
+def _turn_record(segment: str, reply: dict, failure: str) -> dict:
     started, finished, first = reply.get("started_at"), reply.get("finished_at"), reply.get("first_token_at")
     latency = finished - started if isinstance(started, (int, float)) and isinstance(finished, (int, float)) else None
     ttft = first - started if isinstance(started, (int, float)) and isinstance(first, (int, float)) else None
@@ -207,7 +197,7 @@ def _turn_record(segment: str, reply: dict, failure: str, owned: Path) -> dict:
                       "reason": reply.get("route_reason")},
             "tools": reply.get("tools") or [], "confirmation": reply.get("confirmation"),
             "latency_s": latency, "ttft_s": ttft, "session": reply.get("session"),
-            "trace_id": reply.get("trace_id"), "screenshot": _archived(reply.get("screenshot"), owned),
+            "trace_id": reply.get("trace_id"),
             "dispatch": reply.get("dispatch"), "error": reply.get("error")}
 
 
@@ -235,7 +225,7 @@ def run_case(case: corpus.Case, *, owned: Path, token: str, engine: str, model: 
             turns.append({"prompt": segment, "failure_class": "HOST_UNAVAILABLE", "error": type(exc).__name__})
             break
         failure = classify_turn(reply, segment=segment, model=model)
-        turns.append(_turn_record(segment, reply, failure, owned))
+        turns.append(_turn_record(segment, reply, failure))
         classes.append(failure)
         if failure not in ("OK", "EFFECT_BLOCKED", "CONFIRMATION_DECLINED", "EMPTY_ANSWER", "ERROR_TURN"):
             break       # later turns of this case would answer a different conversation

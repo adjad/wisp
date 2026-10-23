@@ -521,6 +521,7 @@ protocol NotchEvaluationTurnObserver: AnyObject {
 /// request; the adapter sets OverlayModel.input, calls the normal submit,
 /// declines any confirmation card through the card's own resolve path, and
 /// answers with the finalized turn once the terminal event has been shown.
+/// Text only: the rendered answer is the receipt; nothing captures the screen.
 @MainActor
 final class NotchEvaluationInputAdapter: NotchEvaluationTurnObserver {
     private struct Waiter {
@@ -534,7 +535,6 @@ final class NotchEvaluationInputAdapter: NotchEvaluationTurnObserver {
     private let model: OverlayModel
     private let config: NotchEvaluationConfig
     private let ledger: NotchEvaluationLedger
-    weak var panel: NSPanel?
     private var waiter: Waiter?
 
     init(model: OverlayModel, config: NotchEvaluationConfig, ledger: NotchEvaluationLedger) {
@@ -647,7 +647,7 @@ final class NotchEvaluationInputAdapter: NotchEvaluationTurnObserver {
         guard let current = waiter, current.started?.dispatch == turn.dispatch else { return }
         current.timeout?.cancel()
         waiter = nil
-        // Let the finished turn render before it is captured and reported.
+        // Let the finished turn render before it is reported.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self else { return }
             var result: [String: Any] = [
@@ -665,25 +665,8 @@ final class NotchEvaluationInputAdapter: NotchEvaluationTurnObserver {
                 if let value { result[key] = value.timeIntervalSince1970 }
             }
             if let confirmation = current.confirmation { result["confirmation"] = confirmation }
-            if let screenshot = self.capture(current.request.caseID) { result["screenshot"] = screenshot }
             current.reply(NotchEvaluationInput.encode(result))
         }
-    }
-
-    /// The panel's own rendering (no Screen Recording needed), into evidence.
-    private func capture(_ caseID: String) -> String? {
-        guard let view = panel?.contentView, view.bounds.width > 0,
-              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
-        let dir = config.evidence.appendingPathComponent("screens").path
-        if mkdir(dir, 0o700) != 0 && errno != EEXIST { return nil }
-        let path = dir + "/" + caseID + ".png"
-        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { return nil }
-        defer { close(fd) }
-        let written = png.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
-        return written == png.count ? path : nil
     }
 }
 
@@ -735,7 +718,6 @@ enum NotchEvaluationHost {
         model.closing = false
         Self.panel = panel
         let adapter = NotchEvaluationInputAdapter(model: model, config: config, ledger: ledger)
-        adapter.panel = panel
         model.evaluationObserver = adapter
         do { try adapter.start() } catch { fatalError("The evaluation input adapter could not start: \(error)") }
         retained.append(adapter)
