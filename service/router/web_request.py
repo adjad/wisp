@@ -506,6 +506,9 @@ def _delivery(text: str) -> Delivery | None:
     # Object-only tutorial predicates have no recipient relation.
     if re.match(_DELIVER + r"\s+(?:messages?|texts?|emails?)\b", root, re.I) and not _matches(r"\bto\s+\S", root):
         return None
+    # "email summary" / "text summary" name a digest to read, not a send.
+    if re.fullmatch(_DELIVER + r"\s+(?:summary|summaries|digest|recap|overview|report)s?\s*[.?!]*", root.strip(), re.I):
+        return None
     address, phone = _EMAIL.search(root), _PHONE.search(root)
     channel = ("email" if address or _matches(r"^(?:e-?mail)\b|\b(?:by|via|through|over)\s+e-?mail\b|\bto\s+my\s+(?:email|inbox)\b|^(?:send|draft)\s+an?\s+email\b", root)
                else "messages" if phone or _matches(r"^(?:text|message)\b|\b(?:by|via)\s+(?:text|sms|messages)\b|^(?:send|draft)\s+(?:(?:a|the|this|that)\s+|\S+\s+an?\s+)(?:text|message)\b", root)
@@ -862,6 +865,11 @@ def _current(text: str, scopes: tuple[TimeScope, ...]) -> bool:
     if _matches(r"\b(?:am\s+i|are\s+(?:we|you)|"
                 r"(?:do|did|have|should|shall|ought|must|need)\s+(?:i|we|you)|"
                 r"(?:i|we)\s+(?:should|need\s+to|have\s+to|ought\s+to))\b", t):
+        external_subject = False
+    # "what is up for today" has a scope and nothing else: it asks about the
+    # user's own agenda. "what is up with <subject> today" names a subject.
+    if re.fullmatch(r"\s*(?:what(?:'s|\s+is)|whats)\s+up(?:\s+for(?:\s+(?:me|us))?)?\s*[?.!]*\s*",
+                    _without_scope(t, _scopes(t)), re.I):
         external_subject = False
     if re.fullmatch(r"\s*(?:volume|battery(?:\s+level)?|clipboard|wi-?fi|bluetooth|screen)\s*[?.!]*\s*", remainder, re.I):
         external_subject = False

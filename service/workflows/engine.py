@@ -17,8 +17,14 @@ from service.workflows.models import WorkflowPlan, WorkflowTurn
 
 _STANDALONE_READ = re.compile(
     r"(?:(?:can|could|would)\s+you\s+|please\s+)?"
-    r"(?:what(?:'s|\s+is|\s+are)|show(?:\s+me)?|check|list|summari[sz]e|"
+    r"(?:what(?:'s|\s+is|\s+are)|what\s+(?:do|did|have|should|will|am)\s+(?:i|we)|"
+    r"when\s+(?:is|are|do|does)|show(?:\s+me)?|check|list|summari[sz]e|"
     r"do\s+i\s+have|any\s+(?:new\s+|unread\s+)?(?:e-?mails?|mail|messages?|texts?|reminders?|events?|meetings?|news)|how\s+many)\b", re.I)
+
+
+_BARE_REPORT_NOUN = re.compile(
+    r"(?:(?:please|can\s+you|could\s+you)\s+)?(?:e-?mail|text|message|dm)s?\s+"
+    r"(?:summary|summaries|digest|recap|overview)\s*[.?!]*", re.I)
 
 
 def _save(store, sid: str, plan: WorkflowPlan, event: str,
@@ -164,10 +170,20 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True,
         prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
         last_assistant=(store.last_assistant_turn(sid) or "") if persist else "",
         prior_display=prior_display)
+    # "text summary" / "message summary" name a digest to read. The verb reading
+    # opens a delivery with no recipient and answers with the canned question.
+    # A pending workflow or a named recipient keeps its own ownership.
+    if (new_plan is not None and active is None and not new_plan.recipient
+            and _BARE_REPORT_NOUN.fullmatch(prompt.strip())):
+        new_plan = None
     # A self-contained question is not an answer to a pending delivery question.
     # Release an unaddressed pending delivery (no recipient or channel yet) so a
     # stray clarification cannot swallow every later request.
-    if (active and new_plan is None and not active.recipient and not active.channel
+    # A pending content question has only a channel so far (the user said
+    # "text it" but not what): a stale one must not capture an unrelated read.
+    # With a recipient the reply is a payload answer and stays with the workflow.
+    if (active and new_plan is None and not active.recipient
+            and (not active.channel or active.status == "waiting_for_content")
             and active.status not in {"running"}
             and _STANDALONE_READ.match(prompt.strip())
             and not outbound_verb(prompt)):

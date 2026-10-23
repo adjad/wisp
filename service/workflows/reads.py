@@ -58,6 +58,11 @@ _BARE_STOCK_EXCLUSION = re.compile(
 )
 
 
+_BARE_SUMMARY = re.compile(
+    r"(?:(?:please|can you|could you)\s+)?(?:(?:show(?: me)?|check|list|give me)\s+)?"
+    r"(?:my\s+|the\s+)?(?:e-?mail|inbox|texts?|messages?)\s+"
+    r"(?:summar(?:y|ies)|digest|recap)", re.I)
+
 def stock_symbol_key(value: str) -> str:
     """Compare known aliases, tickers and free-form company names consistently."""
     name = re.sub(r"\s+(?:stocks?|shares?)$", "", value.strip(), flags=re.I)
@@ -361,7 +366,11 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
         return None
     text = _normalize(prompt).strip(" *_.?!")
     read_prefix = re.match(r"(?:can you |could you |please )?(?:what|show|check|list|compare)\b", text, re.I)
-    if _OUTBOUND.search(text) and not _INLINE_EMAIL_SUMMARY.match(text) and not read_prefix:
+    # "email summary" / "text summary" name a digest to read: email and text
+    # are nouns here, so the delivery-verb preemption below must not fire.
+    bare_summary = _BARE_SUMMARY.fullmatch(text)
+    if (_OUTBOUND.search(text) and not _INLINE_EMAIL_SUMMARY.match(text)
+            and not read_prefix and not bare_summary):
         return None
     if re.search(r"\b(?:create|set|add|remove|delete|cancel|update|remind)\b", text, re.I):
         return None
@@ -432,6 +441,9 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
             return None
         args = {"day": period} if period in {"today", "yesterday"} else ({"period": period} if period else {})
         return [("summarize_emails", args)], ""
+    if bare_summary and re.search(r"\b(?:text|message)s?\b", text, re.I):
+        args = {"day": period} if period in {"today", "yesterday"} else ({"period": period} if period else {})
+        return [("summarize_messages", args)], ""
     if re.search(r"\b(?:email|inbox)\b", text, re.I) and re.search(r"\bpurchases?\s+from\b", text, re.I):
         match = re.fullmatch(
             r"(?:(?:please|can you|could you)\s+)?(?:show(?: me)?|list|check)\s+"
