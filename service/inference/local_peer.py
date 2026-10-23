@@ -13,6 +13,7 @@ import tempfile
 import time
 import ctypes
 import ipaddress
+import struct
 
 
 class AuthRefused(Exception):
@@ -165,6 +166,145 @@ def process_bsdinfo(pid):
                 bytes(info.comm), bytes(info.name), int(info.start_seconds), int(info.start_microseconds))
     except (OSError, AttributeError):
         raise AuthRefused('process_identity_unsupported') from None
+
+
+_PROCARGS_LIMIT = 1024 * 1024
+
+
+def _parse_procargs(buffer, length):
+    """Read argv[0] at its *exact* Darwin LP64 string-pool offset.
+
+    XNU exec_save_path/exec_extract_strings pads executable_path= + path + NUL
+    to the target pointer size before copying argv. KERN_PROCARGS2 removes the
+    16-byte executable_path= prefix and prepends a 4-byte argc. Consequently
+    argv starts at 4 + align8(path_length + 1), NOT at the next nonzero byte.
+    Skipping NULs would turn an empty argv[0] into argv[1] or an environment
+    entry. Unsupported layouts and empty commands are permanent refusals.
+
+    https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_exec.c
+    (exec_save_path, exec_extract_strings); kern_sysctl.c (sysctl_procargsx).
+    Other arguments/environment stay in the mutable native buffer and are
+    never copied, returned, logged or searched for a replacement command.
+    """
+    def refuse():
+        raise AuthRefused('desktop_process_unqualified')
+    if (type(length) is not int or not 8 <= length < len(buffer)
+            or len(buffer) > _PROCARGS_LIMIT + 4):
+        refuse()
+    view = memoryview(buffer).cast('B')[:length]
+    argc, = struct.unpack_from('=i', view)
+    if not 1 <= argc <= min(65536, length - 5):
+        refuse()
+    def end_of_string(start):
+        end = start
+        while end < length and view[end]:
+            end += 1
+        if end == length:
+            refuse()
+        return end
+    path_end = end_of_string(4)
+    if view[4] != ord('/') or not 1 < path_end - 4 < 4096:
+        refuse()
+    offset = 4 + ((path_end - 4 + 1 + 7) // 8) * 8
+    if offset >= length or any(view[path_end:offset]) or not view[offset]:
+        refuse()
+    command_end = end_of_string(offset)
+    if command_end - offset > 4096:
+        refuse()
+    # ps applies vis escaping. Refuse anything that could need it or that its
+    # whitespace parser could normalize; never silently accept a mangled name.
+    if any(byte <= 32 or byte >= 127 or byte == 92 for byte in view[offset:command_end]):
+        refuse()
+    cursor = command_end + 1
+    for _ in range(argc - 1):
+        if cursor >= length:
+            refuse()
+        cursor = end_of_string(cursor) + 1
+    return bytes(view[offset:command_end]).decode('ascii')
+
+
+def _proc_argv0(pid, uid):
+    """One privilege-neutral, read-only, bounded native argument snapshot.
+
+    This is only called after a same-UID BSD snapshot. Recheck the native ABI
+    and all UIDs here before requesting any argument bytes. No subprocess or
+    fallback is eligible. The caller brackets this with process_bsdinfo.
+    """
+    if (type(pid) is not int or not 0 < pid <= 2 ** 31 - 1
+            or type(uid) is not int or uid != os.getuid()):
+        raise AuthRefused('native_inspection_unavailable')
+    try:
+        if ctypes.sizeof(_BSDInfo) != 136 or ctypes.sizeof(ctypes.c_int) != 4:
+            raise AuthRefused('desktop_process_unqualified')
+        libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+        query = libproc.proc_pidinfo
+        query.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        query.restype = ctypes.c_int
+        info = _BSDInfo()
+        ctypes.set_errno(0)
+        count = query(pid, 3, 0, ctypes.byref(info), 136)
+        if type(count) is not int or count != 136:
+            raise AuthRefused('native_inspection_unavailable')
+        if (info.pid != pid or (info.uid, info.ruid, info.svuid) != (uid,) * 3
+                or not info.flags & 0x10):  # PROC_FLAG_LP64: alignment is target-specific
+            raise AuthRefused('desktop_process_unqualified')
+        library = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+        call = library.sysctl
+        call.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
+                         ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+        call.restype = ctypes.c_int
+        argmax = ctypes.c_int()
+        size = ctypes.c_size_t(4)
+        ctypes.set_errno(0)
+        result = call((ctypes.c_int * 2)(1, 8), 2, ctypes.byref(argmax), ctypes.byref(size), None, 0)
+        if type(result) is not int or result != 0:
+            raise AuthRefused('native_inspection_unavailable')
+        if size.value != 4 or not 0 < argmax.value <= _PROCARGS_LIMIT:
+            raise AuthRefused('desktop_process_unqualified')
+        # sysctl_procargsx subtracts sizeof(argc) from capacity. A small buffer
+        # may contain a tail, not a prefix: use full ARGMAX + argc and reject
+        # saturation. Never parse a truncated/partial best-effort response.
+        buffer = ctypes.create_string_buffer(argmax.value + 4)
+        try:
+            size = ctypes.c_size_t(len(buffer))
+            ctypes.set_errno(0)
+            result = call((ctypes.c_int * 3)(1, 49, pid), 3, buffer, ctypes.byref(size), None, 0)
+            if type(result) is not int or result != 0:
+                raise AuthRefused('native_inspection_unavailable')
+            return _parse_procargs(buffer, int(size.value))
+        finally:
+            ctypes.memset(buffer, 0, len(buffer))
+    except AuthRefused:
+        raise
+    except Exception:  # native failures are never identity, nor raw exception text
+        raise AuthRefused('native_inspection_unavailable') from None
+
+
+def process_command(pid, uid):
+    """The Desktop ps row's (ppid, effective uid, argv[0]), without launching ps.
+
+    Short kernel names and executable paths are deliberately not substitutes
+    for argv[0]. Unchanged _listener predicates decide server/parent refusal in
+    their original order. Foreign UID rows expose no arguments at all.
+    This bracket is not atomic against argv rewrites/same-binary exec (R2).
+    """
+    if (type(pid) is not int or not 0 < pid <= 2 ** 31 - 1
+            or type(uid) is not int or uid != os.getuid()):
+        raise AuthRefused('native_inspection_unavailable')
+    try:
+        before = process_bsdinfo(pid)
+        if not 0 < before[1] <= 2 ** 31 - 1:
+            raise AuthRefused('desktop_process_unqualified')
+        if before[2:5] != (uid,) * 3:
+            return before[1], before[2], ''
+        command = _proc_argv0(pid, uid)
+        if process_bsdinfo(pid) != before:
+            raise AuthRefused('desktop_process_unqualified')
+        return before[1], before[2], command
+    except AuthRefused:
+        raise
+    except Exception:
+        raise AuthRefused('native_inspection_unavailable') from None
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +469,7 @@ def process_path(pid):
       permanent refusals. A retry performs
       the complete verification again; no failure supplies an accepted path.
     * proc_pidpath answers for another user's pid where lsof refused.  This function
-      is therefore never the gate on the owner: `_listener` checks the `ps` uid first
+      is therefore never the gate on the owner: `_listener` checks the process row's uid first
       in its evaluated order (and again, signature and ownership of the file, after).
     """
     if type(pid) is not int or not 0 < pid <= 2 ** 31 - 1:

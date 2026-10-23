@@ -2075,7 +2075,7 @@ PS_ARGV = {pid: ('/bin/ps', '-ww', '-p', str(pid), '-o', 'ppid=,uid=,comm=') for
 # seam `at.process_path(pid)` (libproc proc_pidpath), recorded as the event ('path', pid).
 PATH_EVENTS = {pid: ('path', pid) for pid in (SERVER_PID, PARENT_PID)}
 OLD_TXT_ARGV = {pid: ('/usr/sbin/lsof', '-nP', '-a', '-p', str(pid), '-d', 'txt', '-Fn') for pid in (SERVER_PID, PARENT_PID)}
-EXPECTED_ARGVS = {LISTEN_ARGV, *PS_ARGV.values()}
+EXPECTED_ARGVS = {LISTEN_ARGV}
 
 
 # Captured at import, before any fixture can wrap it.
@@ -2116,6 +2116,7 @@ class Host:
         monkeypatch.setattr(at, 'inspect_command', self.inspect)
         monkeypatch.setattr(at, 'tcp_listeners', self.tcp_listeners)
         monkeypatch.setattr(at, 'process_path', self.process_path)
+        monkeypatch.setattr(at, 'process_command', self.process_command)
         monkeypatch.setattr(at.DesktopOmlx, '_signed_process',
                             lambda instance, pid, identity: host.signed(pid, identity))
         monkeypatch.setattr(at.DesktopOmlx, '_qualified_tree', traced_tree)
@@ -2129,6 +2130,17 @@ class Host:
         if argv[0] == '/bin/ps':
             return self.ps[argv[3]].encode()
         raise AssertionError(argv)      # T0-path: `lsof -d txt` (or anything else) is never spawned for the executable
+
+    def process_command(self, pid, uid):
+        self.events.append(('process', pid))
+        assert uid == UID
+        rows = self.ps[str(pid)].splitlines()
+        if len(rows) != 1:
+            raise AuthRefused('desktop_process_unqualified')
+        fields = rows[0].strip().split(None, 2)
+        if len(fields) != 3:
+            raise AuthRefused('desktop_process_unqualified')
+        return int(fields[0]), int(fields[1]), fields[2]
 
     def process_path(self, pid):
         self.events.append(('path', pid))
@@ -2164,15 +2176,16 @@ def spawns(host):
 
 SEQUENTIAL_SUCCESS = [
     ('spawn', LISTEN_ARGV), ('tcp_listeners',),
-    ('spawn', PS_ARGV[SERVER_PID]), PATH_EVENTS[SERVER_PID], ('signed', SERVER_PID, 'python3'),
-    ('spawn', PS_ARGV[PARENT_PID]), PATH_EVENTS[PARENT_PID], ('signed', PARENT_PID, 'app.omlx'),
+    ('process', SERVER_PID), PATH_EVENTS[SERVER_PID], ('signed', SERVER_PID, 'python3'),
+    ('process', PARENT_PID), PATH_EVENTS[PARENT_PID], ('signed', PARENT_PID, 'app.omlx'),
 ]
 
 
 def test_listener_issues_exactly_the_reviewed_set_of_spawns(host):
     authority = host.new()
     assert authority._identity[0] == SERVER_PID and authority._identity[2] == PARENT_PID
-    assert Counter(spawns(host)) == Counter(EXPECTED_ARGVS)      # three spawns, each exactly once
+    assert Counter(spawns(host)) == Counter(EXPECTED_ARGVS)      # one spawn; process rows are native, counted below
+    assert Counter(e for e in host.events if e[0] == 'process') == Counter([('process', SERVER_PID), ('process', PARENT_PID)])
     assert Counter(e for e in host.events if e[0] == 'path') == Counter(PATH_EVENTS.values())   # T0-path: libproc, twice
     assert [e for e in host.events if e[0] == 'tcp_listeners'] == [('tcp_listeners',)]
     assert sorted(e[1:] for e in host.events if e[0] == 'signed') == [(PARENT_PID, 'app.omlx'), (SERVER_PID, 'python3')]
@@ -2184,7 +2197,7 @@ def test_listener_data_dependencies_hold_in_any_scheduling(host):
     host.new()
     order = [e for e in host.events if e[0] != 'tree']
     at_ = {event: index for index, event in enumerate(order)}
-    listen, ps_server, ps_parent = ('spawn', LISTEN_ARGV), ('spawn', PS_ARGV[SERVER_PID]), ('spawn', PS_ARGV[PARENT_PID])
+    listen, ps_server, ps_parent = ('spawn', LISTEN_ARGV), ('process', SERVER_PID), ('process', PARENT_PID)
     txt_server, txt_parent = PATH_EVENTS[SERVER_PID], PATH_EVENTS[PARENT_PID]
     # T0-spawn changed this test: the former lines also pinned orderings that are NOT data
     # dependencies (a step's ps before its own lsof -d txt before its signature check), which
@@ -2759,6 +2772,8 @@ class Probe:
             monkeypatch.setattr(at, 'inspect_command', lambda argv: self.step(step_name(argv), self.host.inspect, argv))
             monkeypatch.setattr(at, 'tcp_listeners', lambda: self.step('tcp', self.host.tcp_listeners))
             monkeypatch.setattr(at, 'process_path', lambda pid: self.step(path_step_name(pid), self.host.process_path, pid))
+            monkeypatch.setattr(at, 'process_command', lambda pid, uid: self.step(
+                'ps-server' if pid == SERVER_PID else 'ps-parent', self.host.process_command, pid, uid))
             monkeypatch.setattr(at.DesktopOmlx, '_signed_process',
                                 lambda instance, pid, identity: self.step(
                                     'sig-server' if pid == SERVER_PID else 'sig-parent', self.host.signed, pid, identity))
@@ -2813,7 +2828,14 @@ def same_outcome(new, old):
 
 
 def legacy(authority):
-    return LegacyListener._listener(authority)
+    # The frozen listener must use the frozen old process reader, not production.
+    from tests.test_runtime_proc_path import LegacyProcess
+    original = authority._process
+    authority._process = lambda pid: LegacyProcess._process(authority, pid)
+    try:
+        return LegacyListener._listener(authority)
+    finally:
+        authority._process = original
 
 
 def current(authority):
@@ -2844,7 +2866,12 @@ def test_listener_result_and_reviewed_calls_equal_the_oracle_without_faults(host
     host.events.clear()
     old = legacy(bare())
     assert new == old == (SERVER_PID, str(host.python_root / 'cpython/bin/python3.11'), PARENT_PID, str(host.app_executable))
-    assert Counter(map(repr, new_events)) == Counter(map(repr, host.events))   # same calls, each exactly once
+    # Normalize ONLY the old oracle's PS spawns for logical trace comparison.
+    # Native events must never disguise a new PS spawn.
+    old_events = [('process', int(e[1][3])) if e[0] == 'spawn' and e[1][0] == '/bin/ps' else e
+                  for e in host.events]
+    assert sum(e[0] == 'spawn' and e[1][0] == '/bin/ps' for e in host.events) == 2
+    assert Counter(map(repr, new_events)) == Counter(map(repr, old_events))
 
 
 @pytest.mark.parametrize('name,apply,reason,issued', FAULTS, ids=[f[0] for f in FAULTS])
@@ -2923,17 +2950,19 @@ def test_every_call_goes_through_the_module_globals_and_the_instance_seams(host,
     seen = []
     base = Probe(host, monkeypatch)
     real_inspect, real_tcp, real_path = at.inspect_command, at.tcp_listeners, at.process_path
+    real_process = at.process_command
     monkeypatch.setattr(at, 'inspect_command', lambda argv: seen.append(('inspect', step_name(argv))) or real_inspect(argv))
     monkeypatch.setattr(at, 'tcp_listeners', lambda: seen.append(('tcp',)) or real_tcp())
     monkeypatch.setattr(at, 'process_path', lambda pid: seen.append(('process_path', pid)) or real_path(pid))
+    monkeypatch.setattr(at, 'process_command', lambda pid, uid: seen.append(('process_command', pid)) or real_process(pid, uid))
     for name in ('_process', '_executable'):
         original = getattr(at.DesktopOmlx, name)
         monkeypatch.setattr(at.DesktopOmlx, name, lambda self, pid, original=original, name=name:
                             seen.append((name, pid)) or original(self, pid))
     current(bare())
     assert sorted(seen, key=repr) == sorted([
-        ('inspect', 'listen'), ('tcp',), ('_process', SERVER_PID), ('inspect', 'ps-server'), ('_executable', SERVER_PID),
-        ('process_path', SERVER_PID), ('_process', PARENT_PID), ('inspect', 'ps-parent'), ('_executable', PARENT_PID),
+        ('inspect', 'listen'), ('tcp',), ('_process', SERVER_PID), ('process_command', SERVER_PID), ('_executable', SERVER_PID),
+        ('process_path', SERVER_PID), ('_process', PARENT_PID), ('process_command', PARENT_PID), ('_executable', PARENT_PID),
         ('process_path', PARENT_PID)], key=repr)
     assert base.started().count('sig-server') == base.started().count('sig-parent') == 1
 
@@ -2951,10 +2980,11 @@ def test_instrumentation_wrappers_installed_over_the_seams_count_every_call_once
     monkeypatch.setattr(at, 'inspect_command', wrap('inspect', at.inspect_command))
     monkeypatch.setattr(at, 'tcp_listeners', wrap('tcp', at.tcp_listeners))
     monkeypatch.setattr(at, 'process_path', wrap('process_path', at.process_path))
+    monkeypatch.setattr(at, 'process_command', wrap('process_command', at.process_command))
     for _ in range(25):
         current(bare())
-    # T0-path: three spawns (the listener lookup and two ps) plus two libproc lookups per run.
-    assert counts == {'inspect': 25 * 3, 'tcp': 25, 'process_path': 25 * 2}
+    # Native rows remain explicitly instrumented: no lost or doubled inspection.
+    assert counts == {'inspect': 25, 'process_command': 25 * 2, 'tcp': 25, 'process_path': 25 * 2}
 
 
 def test_context_variables_reach_the_worker_threads(host, monkeypatch):
@@ -3384,6 +3414,8 @@ class Fleet:
         monkeypatch.setattr(at, 'tcp_listeners', lambda: ACTIVE.get().step('tcp', ACTIVE.get().host.tcp_listeners))
         monkeypatch.setattr(at, 'process_path',
                             lambda pid: ACTIVE.get().step(path_step_name(pid), ACTIVE.get().host.process_path, pid))
+        monkeypatch.setattr(at, 'process_command', lambda pid, uid: ACTIVE.get().step(
+            'ps-server' if pid == SERVER_PID else 'ps-parent', ACTIVE.get().host.process_command, pid, uid))
         monkeypatch.setattr(at.DesktopOmlx, '_signed_process',
                             lambda instance, pid, identity: ACTIVE.get().step(
                                 'sig-server' if pid == SERVER_PID else 'sig-parent', ACTIVE.get().host.signed, pid, identity))

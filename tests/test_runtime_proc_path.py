@@ -950,3 +950,319 @@ def test_executable_benchmark_cleans_pools_on_success_and_failure(monkeypatch, f
         rows = bench.executable_benchmark(module('old'), module('new'), 1)
         assert rows['server']['speedup_p50'] == 500.0
     assert stopped == ['old', 'new']
+
+
+# Frozen pre-native ps command oracle. No changes to LegacyExecutable above.
+class LegacyProcess:
+    def _process(self, pid):
+        raw = at.inspect_command(['/bin/ps', '-ww', '-p', str(pid),
+                               '-o', 'ppid=,uid=,comm='])
+        try:
+            rows = raw.decode('utf-8').splitlines()
+            if len(rows) != 1:
+                raise ValueError
+            fields = rows[0].strip().split(None, 2)
+            if (len(fields) != 3 or not re.fullmatch(r'[1-9][0-9]*', fields[0])
+                    or not re.fullmatch(r'0|[1-9][0-9]*', fields[1])):
+                raise ValueError
+            return int(fields[0]), int(fields[1]), fields[2]
+        except (UnicodeError, ValueError):
+            raise AuthRefused('desktop_process_unqualified') from None
+
+LEGACY_PROCESS_SHA256 = 'e5ae7bb294ca1bd2e09655a9fff9981581a13f277334a47292764ae6fc614686'
+
+def test_legacy_process_oracle_is_frozen():
+    assert hashlib.sha256(textwrap.dedent(inspect.getsource(LegacyProcess._process)).rstrip().encode()).hexdigest() == LEGACY_PROCESS_SHA256
+
+# Native argv[0] unit corpus: every syscall below is an in-process recording fake.
+# No real process, copied image, ps invocation, socket, or native query is needed.
+def procargs_image(argv=(b'omlx-server',), path=b'/synthetic/python', env=(b'WISP_CANARY=private-synthetic',)):
+    import struct
+    saved = path + b'\0'
+    padding = b'\0' * (-len(saved) % 8)
+    return struct.pack('=i', len(argv)) + saved + padding + b''.join(arg + b'\0' for arg in argv + env)
+
+
+def parse_image(payload, capacity=1024):
+    buffer = bytearray(capacity)
+    buffer[:len(payload)] = payload
+    return local_peer._parse_procargs(buffer, len(payload))
+
+
+@pytest.mark.parametrize('path', [b'/' + b'x' * n for n in range(1, 34)])
+def test_native_command_parser_uses_exact_target_alignment(path):
+    assert parse_image(procargs_image(path=path)) == 'omlx-server'
+
+
+@pytest.mark.parametrize('argv,env', [
+    ((b'', b'omlx-server'), (b'WISP_CANARY=omlx-server',)),
+    ((b'',), (b'omlx-server',)),
+    ((b'', b''), (b'omlx-server', b'another-env-string-without-equals')),
+    ((), (b'omlx-server',)),
+])
+def test_native_command_never_substitutes_a_later_argument_or_environment(argv, env):
+    with pytest.raises(AuthRefused, match='^desktop_process_unqualified$'):
+        parse_image(procargs_image(argv, env=env))
+
+
+@pytest.mark.parametrize('command', [b'bad\ncommand', b'bad\tcommand', b'bad\\command',
+    b'bad\x7fcommand', b'bad\xffcommand', b' omlx-server', b'omlx-server '])
+def test_native_command_refuses_ps_escaping_or_whitespace_normalization(command):
+    with pytest.raises(AuthRefused, match='^desktop_process_unqualified$'):
+        parse_image(procargs_image((command,)))
+
+
+def test_native_command_does_not_copy_or_select_other_arguments_or_environment():
+    assert parse_image(procargs_image((b'omlx-server', b'', b'--api-key=synthetic-private'),
+                                     env=(b'omlx-server', b'KEY=synthetic-private'))) == 'omlx-server'
+
+
+@pytest.mark.parametrize('mutation', ['zero_argc', 'negative_argc', 'huge_argc', 'missing_path',
+    'relative_path', 'padding_nonzero', 'extra_padding', 'truncated_argv', 'truncated_later_arg',
+    'saturated', 'wrong_length_type', 'oversize_length'])
+def test_native_command_parser_rejects_incomplete_ambiguous_and_malformed_data(mutation):
+    import struct
+    payload = procargs_image((b'omlx-server', b'arg'), env=())
+    buffer = bytearray(1024)
+    buffer[:len(payload)] = payload
+    length = len(payload)
+    path_end = payload.index(0, 4)
+    offset = 4 + ((path_end - 4 + 1 + 7) // 8) * 8
+    if mutation == 'zero_argc': struct.pack_into('=i', buffer, 0, 0)
+    elif mutation == 'negative_argc': struct.pack_into('=i', buffer, 0, -1)
+    elif mutation == 'huge_argc': struct.pack_into('=i', buffer, 0, 65537)
+    elif mutation == 'missing_path': buffer[4:length] = b'x' * (length - 4)
+    elif mutation == 'relative_path': buffer[4] = ord('x')
+    elif mutation == 'padding_nonzero': buffer[path_end + 1] = ord('x')
+    elif mutation == 'extra_padding': buffer[offset] = 0
+    elif mutation == 'truncated_argv': length = offset + 3
+    elif mutation == 'truncated_later_arg': length -= 1
+    elif mutation == 'saturated': length = len(buffer)
+    elif mutation == 'wrong_length_type': length = True
+    elif mutation == 'oversize_length': length = len(buffer) + 1
+    with pytest.raises(AuthRefused, match='^desktop_process_unqualified$'):
+        local_peer._parse_procargs(buffer, length)
+
+
+class NativeCommandRig:
+    def __init__(self):
+        self.payload = procargs_image()
+        self.argmax = 1024
+        self.flags = 0x10
+        self.pid = 4321
+        self.uid = UID
+        self.ruid = self.svuid = UID
+        self.error = 0
+        self.returncode = 0
+        self.used = None
+        self.calls = []
+        self.buffers = []
+        self.count = 136
+        self.argmax_size = 4
+
+    def cdll(self, name, **kwargs):
+        from types import SimpleNamespace
+        self.calls.append(('library', name, kwargs))
+        if name == '/usr/lib/libproc.dylib':
+            def info(pid, flavor, argument, pointer, size):
+                self.calls.append(('bsd', pid, flavor, argument, size))
+                row = pointer._obj
+                row.pid, row.uid, row.ruid, row.svuid, row.flags = self.pid, self.uid, self.ruid, self.svuid, self.flags
+                return self.count
+            return SimpleNamespace(proc_pidinfo=info)
+        assert name == '/usr/lib/libSystem.B.dylib'
+        def sysctl(mib, count, buffer, size, newp, newlen):
+            args = tuple(mib)
+            self.calls.append(('sysctl', args, newp, newlen, size._obj.value, ctypes.get_errno()))
+            assert newp is None and newlen == 0
+            if args == (1, 8):
+                buffer._obj.value = self.argmax
+                size._obj.value = self.argmax_size
+                return 0
+            assert args == (1, 49, self.pid)
+            self.buffers.append(buffer)
+            ctypes.memmove(buffer, self.payload, min(len(self.payload), len(buffer)))
+            size._obj.value = len(self.payload) if self.used is None else self.used
+            ctypes.set_errno(self.error)
+            return self.returncode
+        return SimpleNamespace(sysctl=sysctl)
+
+
+@pytest.fixture
+def native_command(monkeypatch):
+    rig = NativeCommandRig()
+    monkeypatch.setattr(local_peer.ctypes, 'CDLL', rig.cdll)
+    return rig
+
+
+def test_native_command_reads_only_pid_after_same_uid_lp64_and_clears_buffer(native_command):
+    assert local_peer._proc_argv0(4321, UID) == 'omlx-server'
+    queries = [row for row in native_command.calls if row[0] == 'sysctl']
+    assert queries == [('sysctl', (1, 8), None, 0, 4, 0),
+                       ('sysctl', (1, 49, 4321), None, 0, 1028, 0)]
+    assert native_command.buffers and not any(native_command.buffers[0].raw)
+
+
+@pytest.mark.parametrize('error', [errno.EPERM, errno.EACCES, errno.ESRCH, errno.EINVAL, errno.EINTR, errno.EIO])
+def test_native_command_denial_is_transient_without_raw_exception_or_data(native_command, error):
+    native_command.returncode, native_command.error = -1, error
+    with pytest.raises(AuthRefused) as caught:
+        local_peer._proc_argv0(4321, UID)
+    assert caught.value.args == ('native_inspection_unavailable',)
+    assert not any(native_command.buffers[0].raw)
+
+
+@pytest.mark.parametrize('change', ['pid', 'uid', 'ruid', 'svuid', 'flags'])
+def test_native_command_rechecks_uid_pid_and_target_bitness_before_argument_access(native_command, change):
+    setattr(native_command, change, 0)
+    with pytest.raises(AuthRefused, match='^desktop_process_unqualified$'):
+        local_peer._proc_argv0(4321, UID)
+    assert not any(row[0] == 'sysctl' for row in native_command.calls)
+
+
+@pytest.mark.parametrize('argmax', [0, -1, 2 ** 30])
+def test_native_command_refuses_unbounded_allocation(native_command, argmax):
+    native_command.argmax = argmax
+    with pytest.raises(AuthRefused, match='^desktop_process_unqualified$'):
+        local_peer._proc_argv0(4321, UID)
+    assert not native_command.buffers
+
+
+@pytest.mark.parametrize('used', [0, 3, 1028, 1029])
+def test_native_command_refuses_short_or_saturated_return_and_clears(native_command, used):
+    native_command.used = used
+    with pytest.raises(AuthRefused, match='^desktop_process_unqualified$'):
+        local_peer._proc_argv0(4321, UID)
+    assert not any(native_command.buffers[0].raw)
+
+
+@pytest.mark.parametrize('pid', [True, None, '4321', 0, -1, 2 ** 31])
+def test_native_process_row_bad_pid_cannot_reach_any_inspection(monkeypatch, pid):
+    monkeypatch.setattr(local_peer, 'process_bsdinfo', lambda pid: pytest.fail('inspected invalid PID'))
+    with pytest.raises(AuthRefused, match='^native_inspection_unavailable$'):
+        local_peer.process_command(pid, UID)
+
+
+def test_native_process_row_brackets_command_read_and_keeps_argv_not_names(monkeypatch):
+    facts = (4321, 77, UID, UID, UID, b'python3', b'python3', 123, 456)
+    calls = []
+    monkeypatch.setattr(local_peer, 'process_bsdinfo', lambda pid: calls.append(('bsd', pid)) or facts)
+    monkeypatch.setattr(local_peer, '_proc_argv0', lambda pid, uid: calls.append(('argv', pid, uid)) or 'omlx-server')
+    assert local_peer.process_command(4321, UID) == (77, UID, 'omlx-server')
+    assert calls == [('bsd', 4321), ('argv', 4321, UID), ('bsd', 4321)]
+
+
+@pytest.mark.parametrize('field', [2, 3, 4])
+def test_native_process_row_other_uid_has_no_argument_access(monkeypatch, field):
+    facts = [4321, 77, UID, UID, UID, b'python3', b'python3', 123, 456]
+    facts[field] = UID + 1
+    monkeypatch.setattr(local_peer, 'process_bsdinfo', lambda pid: tuple(facts))
+    monkeypatch.setattr(local_peer, '_proc_argv0', lambda *args: pytest.fail('read foreign arguments'))
+    assert local_peer.process_command(4321, UID) == (77, facts[2], '')
+
+
+@pytest.mark.parametrize('field,value', [(0, 4322), (1, 78), (2, UID + 1), (3, UID + 1),
+    (4, UID + 1), (5, b'other'), (6, b'other'), (7, 124), (8, 457)])
+def test_native_process_row_rejects_changed_incarnation(monkeypatch, field, value):
+    before = (4321, 77, UID, UID, UID, b'python3', b'python3', 123, 456)
+    after = list(before)
+    after[field] = value
+    snapshots = iter([before, tuple(after)])
+    monkeypatch.setattr(local_peer, 'process_bsdinfo', lambda pid: next(snapshots))
+    monkeypatch.setattr(local_peer, '_proc_argv0', lambda *args: 'omlx-server')
+    with pytest.raises(AuthRefused, match='^desktop_process_unqualified$'):
+        local_peer.process_command(4321, UID)
+
+
+def test_desktop_process_uses_native_seam_and_never_ps(monkeypatch):
+    monkeypatch.setattr(at, 'process_command', lambda pid, uid: (77, uid, 'omlx-server'))
+    monkeypatch.setattr(at, 'inspect_command', lambda argv: pytest.fail('spawned ps'))
+    assert at.DesktopOmlx._process(authority(), 4321) == (77, UID, 'omlx-server')
+
+
+@pytest.mark.parametrize('count', [0, -1, 135, 137, None, False])
+def test_native_command_partial_bsd_record_never_reaches_arguments(native_command, count):
+    native_command.count = count
+    with pytest.raises(AuthRefused, match='^native_inspection_unavailable$'):
+        local_peer._proc_argv0(4321, UID)
+    assert not any(row[0] == 'sysctl' for row in native_command.calls)
+
+
+@pytest.mark.parametrize('size', [0, 3, 5, 1024])
+def test_native_command_argmax_requires_exact_size(native_command, size):
+    native_command.argmax_size = size
+    with pytest.raises(AuthRefused, match='^desktop_process_unqualified$'):
+        local_peer._proc_argv0(4321, UID)
+    assert not native_command.buffers
+
+
+@pytest.mark.parametrize('result', [None, False, '', 0.0])
+def test_native_command_falsey_malformed_native_result_is_not_success(native_command, result):
+    native_command.returncode = result
+    with pytest.raises(AuthRefused, match='^native_inspection_unavailable$'):
+        local_peer._proc_argv0(4321, UID)
+    assert not any(native_command.buffers[0].raw)
+
+
+@pytest.mark.parametrize('error', [OSError('synthetic-private'), AttributeError('synthetic-private'),
+                                 RuntimeError('synthetic-private')])
+def test_native_command_sanitizes_library_failures(monkeypatch, error):
+    def missing(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(local_peer.ctypes, 'CDLL', missing)
+    with pytest.raises(AuthRefused) as caught:
+        local_peer._proc_argv0(4321, UID)
+    assert caught.value.args == ('native_inspection_unavailable',)
+    assert caught.value.__suppress_context__
+
+
+@pytest.mark.parametrize('error', [RuntimeError('synthetic-private'), KeyboardInterrupt()])
+def test_native_command_clears_buffer_even_when_parser_raises(native_command, monkeypatch, error):
+    def explode(*args):
+        raise error
+    monkeypatch.setattr(local_peer, '_parse_procargs', explode)
+    with pytest.raises(AuthRefused if isinstance(error, Exception) else type(error)):
+        local_peer._proc_argv0(4321, UID)
+    assert not any(native_command.buffers[0].raw)
+
+
+def test_native_process_row_sanitizes_unexpected_bsd_error(monkeypatch):
+    def explode(pid):
+        raise RuntimeError('synthetic-private')
+    monkeypatch.setattr(local_peer, 'process_bsdinfo', explode)
+    with pytest.raises(AuthRefused) as caught:
+        local_peer.process_command(4321, UID)
+    assert caught.value.args == ('native_inspection_unavailable',)
+    assert caught.value.__suppress_context__
+
+
+@pytest.mark.parametrize('port', [8791, 18791])
+def test_other_port_subclasses_keep_the_preexisting_ps_reader(monkeypatch, port):
+    class Other(at.DesktopOmlx):
+        pass
+    instance = object.__new__(Other)
+    instance.port, instance.uid = port, UID
+    calls = []
+    monkeypatch.setattr(at, 'process_command', lambda *args: pytest.fail('changed another mode'))
+    monkeypatch.setattr(at, 'inspect_command', lambda argv: calls.append(argv) or f'77 {UID} command with spaces\n'.encode())
+    assert instance._process(4321) == (77, UID, 'command with spaces')
+    assert calls == [['/bin/ps', '-ww', '-p', '4321', '-o', 'ppid=,uid=,comm=']]
+
+
+def test_actual_bundled_subclass_retains_inherited_legacy_row_without_initialization(monkeypatch):
+    # Passive source module import, NOT test_bundled_attribution's native setup.
+    from service.inference.bundled_peer import BundledOmlx
+    instance = object.__new__(BundledOmlx)
+    instance.uid = UID
+    monkeypatch.setattr(at, 'process_command', lambda *args: pytest.fail('native command used in bundled mode'))
+    monkeypatch.setattr(at, 'inspect_command', lambda argv: f'77 {UID} ignored bundled command\n'.encode())
+    assert instance._process(4321) == (77, UID, 'ignored bundled command')
+
+
+def test_desktop_native_refusal_never_falls_back_to_ps(monkeypatch):
+    def refuse(*args):
+        raise AuthRefused('native_inspection_unavailable')
+    monkeypatch.setattr(at, 'process_command', refuse)
+    monkeypatch.setattr(at, 'inspect_command', lambda argv: pytest.fail('native failure fell back to ps'))
+    with pytest.raises(AuthRefused, match='^native_inspection_unavailable$'):
+        authority()._process(4321)
