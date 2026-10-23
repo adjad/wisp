@@ -431,11 +431,74 @@ final class EvaluationGuardProtocol: URLProtocol, URLSessionDataDelegate, @unche
     }
 }
 
+enum NotchEvaluationSandboxProbe {
+    /// State-based proof that a profile confines this process: creating a
+    /// file outside the owned root must be denied. Returns the problem, or
+    /// nil. A probe file that does get created is removed at once.
+    static func problem(directory: String = "/private/tmp") -> String? {
+        let path = directory + "/wisp-notch-sandbox-probe-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
+        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        if fd >= 0 {
+            close(fd)
+            unlink(path)
+            return "a write outside the owned root succeeded"
+        }
+        let code = errno
+        return code == EPERM || code == EACCES ? nil : "the probe write failed with errno \(code), not a denial"
+    }
+}
+
 /// The evaluation input adapter's wire format: one JSON line in, one out,
 /// over a private Unix socket in the owned root. Pure, so the checks cover it.
 enum NotchEvaluationInput {
     static let socketName = "app-input.sock"
     static let maxRequestBytes = 64 * 1024
+
+    /// Why a bound input socket is unfit, or nil: it must be a socket owned
+    /// by this user with mode 0600, whatever the umask did.
+    static func socketProblem(_ info: stat) -> String? {
+        guard (info.st_mode & S_IFMT) == S_IFSOCK else { return "not a socket" }
+        guard info.st_uid == getuid() else { return "not owned by this user" }
+        let mode = info.st_mode & 0o777
+        return mode == 0o600 ? nil : "mode \(String(mode, radix: 8)), not 600"
+    }
+
+    static func socketProblem(path: String) -> String? {
+        var info = stat()
+        return lstat(path, &info) == 0 ? socketProblem(info) : "missing"
+    }
+
+    /// Binds and listens on a private socket at path; refuses one whose
+    /// mode is not 0600.
+    static func bindListener(path: String) throws -> Int32 {
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { throw NotchEvaluationConfig.Problem.badField("socket path") }
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: bytes)
+            raw[bytes.count] = 0
+        }
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard listener >= 0 else { throw NotchEvaluationConfig.Problem.unreadable }
+        let old = umask(0o177)
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        umask(old)
+        guard bound == 0 else {
+            close(listener)
+            throw NotchEvaluationConfig.Problem.badField("socket")
+        }
+        guard socketProblem(path: path) == nil, listen(listener, 4) == 0 else {
+            close(listener)
+            unlink(path)
+            throw NotchEvaluationConfig.Problem.badField("socket mode")
+        }
+        return listener
+    }
     static let maxTextLength = 8000
 
     struct Request: Equatable {
@@ -482,30 +545,60 @@ enum NotchEvaluationInput {
 
 /// What a live reader's AppleScript may contain. The OS profile can only
 /// limit Apple Events by destination (Mail, Notes), never by verb, so every
-/// script is checked here, and one that fails is refused, not run. Lexical:
-/// AppleScript strings and comments are removed first, then
-/// - no forbidden command word may appear;
-/// - every `tell` names application "Mail" or "Notes";
-/// - every `set` assigns a local: `set x to`, `set end of x to`,
-///   `set <date part> of x to`, or the text item delimiters. A `set` of
-///   any other `… of …` (an app object's property) is refused, as is a
-///   plain `set` of an application property name.
-/// tests/test_notch_script_policy.py mirrors this rule over the readers'
-/// actual scripts and reads both word lists from this file.
+/// script is checked here, and one that fails is refused, not run.
+///
+/// An ALLOWLIST built from the readers' own scripts: after AppleScript
+/// strings and comments are removed, every word must be one the readers use
+/// (`allowedWords`; numbers are allowed), every `tell` names application
+/// "Mail" or "Notes", and every `set` assigns one of the readers' own locals
+/// (`allowedLocals`): `set x to`, `set end of x to`, `set <date part> of
+/// refDate to`, or the text item delimiters. Raw event codes (« »),
+/// `current application` and any possessive other than `AppleScript's` are
+/// refused outright, and `forbiddenWords` (never in the allowlist) name the
+/// command words the review called out.
+/// tests/test_notch_script_policy.py collects every script fragment in the
+/// readers (multi-line and single-line literals, and the spliced-in helpers),
+/// requires both sets here to equal exactly what they use, and checks each.
 enum NotchEvaluationScriptPolicy {
+    static let allowedWords: Set<String> = [
+        "a", "account", "accountid", "accountname", "accounts", "acctid", "acctname", "address",
+        "addresses", "and", "applescript", "application", "as", "ascii", "attemptedcount", "caphit",
+        "capid", "capname", "case", "character", "code", "considering", "container", "contains",
+        "content", "contents", "count", "current", "cutoffsecs", "date", "day", "days",
+        "delimiters", "else", "email", "enabled", "end", "endidx", "epochsecs", "error",
+        "errornumber", "every", "exit", "extract", "false", "fieldtext", "fieldvalue", "foldername",
+        "from", "fs", "headerfields", "i", "id", "if", "in", "inbox",
+        "is", "item", "lim", "linefeed", "m", "mailbox", "matches", "message",
+        "messages", "messagetext", "modification", "month", "msgid", "n", "name", "nativeid",
+        "not", "notes", "nt", "number", "of", "olddelims", "on", "or",
+        "output", "plaintext", "problem", "r", "read", "readflag", "received", "recipients",
+        "refdate", "repeat", "return", "rowfields", "rs", "s", "scanaccount", "scanacctid",
+        "scanacctname", "sender", "senderaddress", "sendername", "set", "skippedcount", "startidx", "status",
+        "stoppedearly", "string", "subj", "subject", "tell", "text", "themessages", "then",
+        "thenotes", "time", "to", "toaddrs", "toline", "true", "try", "whose",
+        "with", "year",
+    ]
+    static let allowedLocals: Set<String> = [
+        "accountid", "accountname", "acctid", "acctname", "attemptedcount", "caphit", "capid", "capname",
+        "cutoffsecs", "endidx", "epochsecs", "fieldtext", "foldername", "fs", "headerfields", "lim",
+        "m", "matches", "msgid", "n", "nativeid", "nt", "olddelims", "output",
+        "readflag", "refdate", "rowfields", "rs", "scanaccount", "scanacctid", "scanacctname", "senderaddress",
+        "sendername", "skippedcount", "startidx", "stoppedearly", "subj", "themessages", "thenotes", "toaddrs",
+        "toline",
+    ]
     static let forbiddenWords: Set<String> = ["send", "delete", "make", "move", "duplicate", "copy", "save",
         "close", "quit", "open", "forward", "redirect", "reply", "bounce", "import", "export", "shell", "launch",
-        "activate", "synchronize", "empty", "print", "mount", "store", "run"]
-    static let applicationProperties: Set<String> = ["selection", "selected", "frontmost", "visible", "bounds",
-        "name", "content", "body", "subject", "read", "flagged", "junk", "deleted", "container", "folder",
-        "account", "mailbox", "default", "background", "fetch", "download"]
-    static let dateParts: Set<String> = ["year", "month", "day", "time", "hours", "minutes", "seconds"]
+        "activate", "synchronize", "empty", "print", "mount", "store", "run", "use", "framework", "load",
+        "script", "write", "display", "do", "perform", "check", "property", "global", "me", "my", "it"]
+    static let dateParts: Set<String> = ["year", "month", "day", "time"]
     static let applications: Set<String> = ["mail", "notes"]
 
     /// Nil when the script may run; otherwise why it is refused.
     static func refusal(_ source: String) -> String? {
         let lowered = source.lowercased()
-        // Tell targets are checked before strings are removed.
+        // Raw event codes are refused even inside a string (fail-closed):
+        // a « in an account name stops that scan rather than risk a bypass.
+        if lowered.contains("\u{00AB}") || lowered.contains("\u{00BB}") { return "a raw event code" }
         var rest = Substring(lowered)
         while let range = rest.range(of: #"(?<![a-z_])tell\s+"#, options: .regularExpression) {
             let before = lowered[..<range.lowerBound]
@@ -520,25 +613,39 @@ enum NotchEvaluationScriptPolicy {
             rest = after
         }
         let text = stripped(lowered)
+        if text.range(of: #"current\s+application"#, options: .regularExpression) != nil {
+            return "current application"
+        }
+        // The only possessive the readers use is AppleScript's text item
+        // delimiters; any other (an AppleScriptObjC call, say) is refused.
+        if text.replacingOccurrences(of: #"applescript\s*['\x{2019}]s\s+text\s+item\s+delimiters"#, with: "",
+                                     options: .regularExpression)
+               .range(of: #"['\x{2019}]\s*s\b"#, options: .regularExpression) != nil {
+            return "a possessive other than AppleScript's text item delimiters"
+        }
         let words = text.split { !($0.isLetter || $0.isNumber || $0 == "_") }.map(String.init)
         if let word = words.first(where: forbiddenWords.contains) { return "the command word \(word)" }
+        if let word = words.first(where: { !allowedWords.contains($0) && !$0.allSatisfy(\.isNumber) }) {
+            return "a word the readers do not use: \(word)"
+        }
         var index = words.startIndex
         while let found = words[index...].firstIndex(of: "set") {
             let next = Array(words[(found + 1)...].prefix(5))
-            if !allowedSet(next) { return "a set of something other than a local variable" }
+            if !allowedSet(next) { return "a set of something other than a reader's local" }
             index = found + 1
         }
         return nil
     }
 
     private static func allowedSet(_ w: [String]) -> Bool {
-        if w.count >= 2, w[1] == "to" { return !applicationProperties.contains(w[0]) }
-        if w.count >= 4, w[1] == "of", w[3] == "to" { return w[0] == "end" || dateParts.contains(w[0]) }
+        if w.count >= 2, w[1] == "to" { return allowedLocals.contains(w[0]) }
+        if w.count >= 4, w[1] == "of", w[3] == "to" {
+            return (w[0] == "end" && allowedLocals.contains(w[2])) || (dateParts.contains(w[0]) && w[2] == "refdate")
+        }
         // `set AppleScript's text item delimiters to …` splits as these words.
         return w.count >= 5 && w[0] == "applescript" && w[1] == "s" && w[2] == "text" && w[3] == "item"
             && w[4] == "delimiters"
     }
-
     /// Removes AppleScript string literals and comments.
     static func stripped(_ text: String) -> String {
         var out = "", chars = Array(text), i = 0, depth = 0
@@ -571,8 +678,9 @@ enum NotchEvaluationScriptPolicy {
 /// completion handler called with an error. Nothing is handed to the OS.
 enum NotchEvaluationWorkspaceGuard {
     /// Selector, and how its replacement refuses.
-    enum Shape { case bool1, bool2, bool3Flag, void3Completion, void4Completion, void1,
-                 launchURLOptions, openBundleIDs, launchBundleID }
+    enum Shape { case bool1, bool2, bool3Flag, void2Completion, void3Completion, void4Completion, void1,
+                 launchURLOptions, openBundleIDs, launchBundleID, openURLsAppOptions,
+                 fileImagePoint, iconOptions, fileOperation }
     static let guarded: [(String, Shape)] = [
         ("openURL:", .bool1),
         ("openURL:configuration:completionHandler:", .void3Completion),
@@ -587,6 +695,15 @@ enum NotchEvaluationWorkspaceGuard {
         ("launchAppWithBundleIdentifier:options:additionalEventParamDescriptor:launchIdentifier:", .launchBundleID),
         ("selectFile:inFileViewerRootedAtPath:", .bool2),
         ("activateFileViewerSelectingURLs:", .void1),
+        ("openURL:options:configuration:error:", .launchURLOptions),
+        ("openURLs:withApplicationAtURL:options:configuration:error:", .openURLsAppOptions),
+        ("openTempFile:", .bool1),
+        ("showSearchResultsForQueryString:", .bool1),
+        ("openFile:fromImage:at:inView:", .fileImagePoint),
+        ("recycleURLs:completionHandler:", .void2Completion),
+        ("duplicateURLs:completionHandler:", .void2Completion),
+        ("setIcon:forFile:options:", .iconOptions),
+        ("performFileOperation:source:destination:files:tag:", .fileOperation),
     ]
     /// Selector name -> the refusing implementation installed for it.
     nonisolated(unsafe) private(set) static var installed: [String: IMP] = [:]
@@ -627,6 +744,11 @@ enum NotchEvaluationWorkspaceGuard {
                 block = { (_: AnyObject, _: AnyObject?, _: AnyObject?, _: Bool) -> Bool in refuse(name); return false } as @convention(block) (AnyObject, AnyObject?, AnyObject?, Bool) -> Bool
             case .void1:
                 block = { (_: AnyObject, _: AnyObject?) in refuse(name) } as @convention(block) (AnyObject, AnyObject?) -> Void
+            case .void2Completion:
+                block = { (_: AnyObject, _: AnyObject?, completion: AnyObject?) in
+                    refuse(name)
+                    if let completion { unsafeBitCast(completion, to: Completion.self)(nil, refusal()) }
+                } as @convention(block) (AnyObject, AnyObject?, AnyObject?) -> Void
             case .void3Completion:
                 block = { (_: AnyObject, _: AnyObject?, _: AnyObject?, completion: AnyObject?) in
                     refuse(name)
@@ -650,6 +772,24 @@ enum NotchEvaluationWorkspaceGuard {
                 block = { (_: AnyObject, _: AnyObject?, _: UInt, _: AnyObject?, _: OpaquePointer?) -> Bool in
                     refuse(name); return false
                 } as @convention(block) (AnyObject, AnyObject?, UInt, AnyObject?, OpaquePointer?) -> Bool
+            case .openURLsAppOptions:
+                block = { (_: AnyObject, _: AnyObject?, _: AnyObject?, _: UInt, _: AnyObject?,
+                           error: AutoreleasingUnsafeMutablePointer<NSError?>?) -> AnyObject? in
+                    refuse(name); error?.pointee = refusal(); return nil
+                } as @convention(block) (AnyObject, AnyObject?, AnyObject?, UInt, AnyObject?, AutoreleasingUnsafeMutablePointer<NSError?>?) -> AnyObject?
+            case .fileImagePoint:
+                block = { (_: AnyObject, _: AnyObject?, _: AnyObject?, _: NSPoint, _: AnyObject?) -> Bool in
+                    refuse(name); return false
+                } as @convention(block) (AnyObject, AnyObject?, AnyObject?, NSPoint, AnyObject?) -> Bool
+            case .iconOptions:
+                block = { (_: AnyObject, _: AnyObject?, _: AnyObject?, _: UInt) -> Bool in
+                    refuse(name); return false
+                } as @convention(block) (AnyObject, AnyObject?, AnyObject?, UInt) -> Bool
+            case .fileOperation:
+                block = { (_: AnyObject, _: AnyObject?, _: AnyObject?, _: AnyObject?, _: AnyObject?,
+                           tag: UnsafeMutablePointer<Int>?) -> Bool in
+                    refuse(name); tag?.pointee = -1; return false
+                } as @convention(block) (AnyObject, AnyObject?, AnyObject?, AnyObject?, AnyObject?, UnsafeMutablePointer<Int>?) -> Bool
             }
             let refusing = imp_implementationWithBlock(block)
             method_setImplementation(method, refusing)
@@ -746,27 +886,7 @@ final class NotchEvaluationInputAdapter: NotchEvaluationTurnObserver {
     /// Bind the private socket and accept on a background thread.
     func start() throws {
         let path = config.ownedRoot.appendingPathComponent(NotchEvaluationInput.socketName).path
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(path.utf8)
-        guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { throw NotchEvaluationConfig.Problem.badField("socket path") }
-        withUnsafeMutableBytes(of: &address.sun_path) { raw in
-            raw.copyBytes(from: bytes)
-            raw[bytes.count] = 0
-        }
-        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard listener >= 0 else { throw NotchEvaluationConfig.Problem.unreadable }
-        let old = umask(0o177)
-        let bound = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        umask(old)
-        guard bound == 0, listen(listener, 4) == 0 else {
-            close(listener)
-            throw NotchEvaluationConfig.Problem.badField("socket")
-        }
+        let listener = try NotchEvaluationInput.bindListener(path: path)
         ledger.record("input_adapter_ready", [:])
         let thread = Thread { [weak self] in
             while true {
@@ -1048,6 +1168,11 @@ enum NotchEvaluationHost {
         // run unconfined.
         if environment[NotchEvaluationSelfSandbox.launchFlag] != nil, !NotchEvaluationSelfSandbox.applied {
             fatalError("A Launch Services launch must apply its evaluation profile")
+        }
+        // Either way (sandbox-exec or self-applied) the profile must be in
+        // force: prove it by a write it denies, not by a flag.
+        if let problem = NotchEvaluationSandboxProbe.problem() {
+            fatalError("The evaluation profile is not in force: \(problem)")
         }
         // Before NSApplication: the profile allows the Launch Services lookups
         // AppKit needs, so every NSWorkspace open/launch is refused in-app.

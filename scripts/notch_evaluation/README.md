@@ -39,20 +39,34 @@ sources, and nothing else; every effect stays blocked at its sink.
 
 - **Apple Events cannot be limited by verb.** The live profile can only name
   the destinations (`com.apple.mail`, `com.apple.Notes`). So every
-  AppleScript a reader runs first goes through `NotchEvaluationScriptPolicy`.
-  Strings and comments are removed, then the script must contain no command
-  word (send, delete, make, move, duplicate, copy, save, …), every `tell`
-  must name Mail or Notes, and every `set` must assign a local. A script that
-  fails is refused, recorded as `script_refused`, and not run. The check is
-  lexical: it vets the readers' fixed scripts, and it is not a parser for
-  arbitrary AppleScript. `tests/test_notch_script_policy.py` applies it to
-  every script in the live readers.
+  AppleScript a reader runs first goes through `NotchEvaluationScriptPolicy`,
+  an allowlist built from the readers' own scripts. Raw event codes (`« »`),
+  `current application`, possessive (`'s`) calls other than AppleScript's
+  text item delimiters, and words like send, delete, make, move, use, load,
+  write, display, do and perform are refused. Every word must be one the
+  readers use, every `tell` must name Mail or Notes, and every `set` must
+  assign one of the readers' own locals. A script that fails is refused,
+  recorded as `script_refused`, and not run. The check is lexical: it vets
+  the readers' fixed scripts, and it is not a parser for arbitrary
+  AppleScript. `tests/test_notch_script_policy.py` collects every
+  multi-line and single-line script literal in the readers and requires the
+  allowlists to match them exactly.
+- **No other AppleScript is compiled in.** `OutboundSender` is replaced by a
+  stub in the evaluation build; any call records `outbound-*` and stops the
+  app with `EVALUATION_BLOCKED`. `ScriptRunner` stops before any script or
+  launch.
 - **Launch Services lookups are allowed** in both modes, because AppKit
   cannot start without them. That would also let the app ask Launch Services
   to open URLs, files or apps, so `NotchEvaluationWorkspaceGuard` replaces
   every NSWorkspace open and launch entry point before NSApplication starts.
   Each one records the call and refuses it, and the app will not start
-  without the guard. The native checks call each one.
+  without the guard. The native checks call each one, including the
+  deprecated and file-changing ones (recycle, duplicate, setIcon,
+  performFileOperation).
+- **Confinement is proven, not assumed.** At startup, in both modes, the app
+  tries to create a file outside its owned root. That write must be denied,
+  or the app stops. The input socket must be a 0600 socket owned by the user,
+  or the adapter refuses to start.
 - A wedged main thread cannot handle the quit request. Stop then reports
   `APP_STILL_RUNNING`; the off-main identity watchdog exits the app within
   about 30 seconds of the backend being retired.

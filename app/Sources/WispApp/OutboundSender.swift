@@ -1,5 +1,6 @@
 import Foundation
 
+#if !WISP_NOTCH_EVALUATION
 // Sends mail and iMessages on the backend's behalf, and reports the outcome
 // back. Lives here for the same reason MailReader does: Automation (TCC) is
 // per-process, and only Wisp.app has the stable signed identity those grants
@@ -426,3 +427,40 @@ enum OutboundSender {
         URLSession.shared.dataTask(with: req).resume()
     }
 }
+#else
+/// The contained evaluation build has no sender: none of the AppleScript
+/// above is compiled in, so no Mail or Messages send, draft, reply, forward,
+/// flag, archive or read-state change exists in it. Nothing should reach
+/// these (the evaluation event stream carries only source re-read requests);
+/// if anything does, it is recorded and the app stops rather than continue.
+enum OutboundSender {
+    private static func refuse(_ what: String) -> Never {
+        _ = NotchEvaluationSinks.blocked("outbound-" + what, ledger: NotchEvaluationEnvironment.ledger)
+        fatalError("EVALUATION_BLOCKED: \(what) reached the evaluation build's sender")
+    }
+
+    static func messagesHandle(_ s: String) -> String { refuse("messages_handle") }
+    static func sendEmail(actionId: String, to: [String], cc: [String], subject: String, body: String) {
+        refuse("send_email")
+    }
+    static func sendMessage(actionId: String, to: String, text: String) { refuse("send_message") }
+    static func prepareEmailReply(actionId: String, messageId: String, body: String,
+                                  replyAll: Bool, account: String, accountID: String = "") {
+        refuse("prepare_email_reply")
+    }
+    static func replyToEmail(actionId: String, messageId: String, body: String,
+                             replyAll: Bool, account: String = "", expected: [String: Any] = [:]) {
+        refuse("reply_to_email")
+    }
+    static func draftEmail(actionId: String, to: [String], cc: [String], subject: String, body: String) {
+        refuse("draft_email")
+    }
+    static func draftMessage(actionId: String, to: String, text: String) { refuse("draft_message") }
+    static func markEmailRead(actionId: String, messageId: String, read: Bool) { refuse("mark_email_read") }
+    static func archiveEmail(actionId: String, messageId: String) { refuse("archive_email") }
+    static func forwardEmail(actionId: String, messageId: String, to: [String], body: String) {
+        refuse("forward_email")
+    }
+    static func flagEmail(actionId: String, messageId: String, flagged: Bool) { refuse("flag_email") }
+}
+#endif

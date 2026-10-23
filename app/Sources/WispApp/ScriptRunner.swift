@@ -75,6 +75,10 @@ enum ScriptRunner {
     }
 
     private static func runInTerminal(_ code: String, interpreter: String?, ext: String) {
+        #if WISP_NOTCH_EVALUATION
+        // Unreachable (perform returns first); a second stop before any AppleScript.
+        fatalError("EVALUATION_BLOCKED: the evaluation build never runs code in Terminal")
+        #endif
         guard let path = writeTemp(code, ext: ext) else { return }
         let command: String
         if let interpreter {
@@ -99,6 +103,9 @@ enum ScriptRunner {
     }
 
     private static func openWithApp(_ appName: String, path: String) {
+        #if WISP_NOTCH_EVALUATION
+        fatalError("EVALUATION_BLOCKED: the evaluation build never opens an app")
+        #endif
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-a", appName, path]

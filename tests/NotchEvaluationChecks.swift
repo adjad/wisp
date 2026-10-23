@@ -113,6 +113,89 @@ struct NotchEvaluationChecks {
               "selectFile is refused")
         ws.activateFileViewerSelecting([URL(fileURLWithPath: file)])
         check(recorded("activateFileViewerSelectingURLs:"), "activateFileViewerSelecting is recorded")
+        // The older and the file-changing entry points.
+        launched = nil; thrown = nil
+        do { launched = try ws.open(url, options: [], configuration: [:]) } catch { thrown = error }
+        check(launched == nil && thrown != nil && recorded("openURL:options:configuration:error:"),
+              "open(_:options:configuration:) throws and is recorded")
+        launched = nil; thrown = nil
+        do { launched = try ws.open([url], withApplicationAt: app, options: [], configuration: [:]) } catch { thrown = error }
+        check(launched == nil && thrown != nil && recorded("openURLs:withApplicationAtURL:options:configuration:error:"),
+              "open(_:withApplicationAt:options:configuration:) throws and is recorded")
+        check(!ws.showSearchResults(forQueryString: "wisp-evaluation-never") && recorded("showSearchResultsForQueryString:"),
+              "showSearchResults is refused")
+        check(!ws.setIcon(nil, forFile: file, options: []) && recorded("setIcon:forFile:options:"), "setIcon is refused")
+        var trashed: [Bool] = []
+        ws.recycle([URL(fileURLWithPath: file)]) { moved, error in trashed.append(moved.isEmpty && error != nil) }
+        check(recorded("recycleURLs:completionHandler:"), "recycle is recorded")
+        ws.duplicate([URL(fileURLWithPath: file)]) { copied, error in trashed.append(copied.isEmpty && error != nil) }
+        check(recorded("duplicateURLs:completionHandler:"), "duplicate is recorded")
+        check(trashed == [true, true], "recycle and duplicate complete with an error and nothing moved")
+        // Deprecated past the Swift overlay: called through the installed IMP.
+        func imp(_ name: String) -> IMP? {
+            class_getInstanceMethod(NSWorkspace.self, NSSelectorFromString(name)).map(method_getImplementation)
+        }
+        if let target = imp("openTempFile:") {
+            let call = unsafeBitCast(target, to: (@convention(c) (AnyObject, Selector, AnyObject?) -> Bool).self)
+            check(!call(ws, NSSelectorFromString("openTempFile:"), file as NSString) && recorded("openTempFile:"),
+                  "openTempFile is refused")
+        }
+        if let target = imp("openFile:fromImage:at:inView:") {
+            let call = unsafeBitCast(target, to: (@convention(c) (AnyObject, Selector, AnyObject?, AnyObject?, NSPoint, AnyObject?) -> Bool).self)
+            check(!call(ws, NSSelectorFromString("openFile:fromImage:at:inView:"), file as NSString, nil, .zero, nil)
+                  && recorded("openFile:fromImage:at:inView:"), "openFile(_:fromImage:at:inView:) is refused")
+        }
+        if let target = imp("performFileOperation:source:destination:files:tag:") {
+            let call = unsafeBitCast(target, to: (@convention(c) (AnyObject, Selector, AnyObject?, AnyObject?, AnyObject?,
+                                                                  AnyObject?, UnsafeMutablePointer<Int>?) -> Bool).self)
+            var tag = 0
+            check(!call(ws, NSSelectorFromString("performFileOperation:source:destination:files:tag:"), "recycle" as NSString,
+                        "/nonexistent" as NSString, "" as NSString, ["wisp-evaluation-never.txt"] as NSArray, &tag)
+                  && tag == -1 && recorded("performFileOperation:source:destination:files:tag:"),
+                  "performFileOperation is refused")
+        }
+    }
+
+    /// The startup probe: a write the profile would deny must be denied.
+    /// Unconfined here, so a write that succeeds is reported and cleaned up.
+    static func sandboxProbeChecks(root: URL) {
+        let before = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        check(NotchEvaluationSandboxProbe.problem(directory: root.path) == "a write outside the owned root succeeded",
+              "an unconfined probe write is reported")
+        check(((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []) == before, "the probe file is removed")
+        check(NotchEvaluationSandboxProbe.problem(directory: root.path + "/missing")?.contains("not a denial") == true,
+              "a probe that fails for another reason is not taken as confinement")
+        let locked = root.appendingPathComponent("locked")
+        try? FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        chmod(locked.path, 0o500)
+        defer { chmod(locked.path, 0o700) }
+        check(NotchEvaluationSandboxProbe.problem(directory: locked.path) == nil, "a denied probe write passes")
+    }
+
+    /// The input socket must be a 0600 socket owned by this user.
+    static func socketModeChecks(root: URL) {
+        var info = stat()
+        info.st_mode = S_IFSOCK | 0o600
+        info.st_uid = getuid()
+        check(NotchEvaluationInput.socketProblem(info) == nil, "a 0600 own socket is fit")
+        info.st_mode = S_IFSOCK | 0o666
+        check(NotchEvaluationInput.socketProblem(info) == "mode 666, not 600", "a 0666 socket is refused")
+        info.st_mode = S_IFSOCK | 0o660
+        check(NotchEvaluationInput.socketProblem(info) != nil, "a group-writable socket is refused")
+        info.st_mode = S_IFREG | 0o600
+        check(NotchEvaluationInput.socketProblem(info) == "not a socket", "a regular file is refused")
+        info.st_mode = S_IFSOCK | 0o600
+        info.st_uid = getuid() &+ 1
+        check(NotchEvaluationInput.socketProblem(info) == "not owned by this user", "another user's socket is refused")
+        check(NotchEvaluationInput.socketProblem(path: root.path + "/absent.sock") == "missing", "a missing socket is refused")
+        // A real bind, where this host allows one (the CI fixture sandbox refuses it).
+        let path = root.appendingPathComponent("s.sock").path
+        guard let listener = try? NotchEvaluationInput.bindListener(path: path) else {
+            print("note: socket bind unavailable here; the real-bind mode check did not run")
+            return
+        }
+        defer { close(listener); unlink(path) }
+        check(NotchEvaluationInput.socketProblem(path: path) == nil, "the bound input socket is 0600")
     }
 
     static func configJSON(_ overrides: [String: Any] = [:], root: String) -> Data {
@@ -244,6 +327,16 @@ struct NotchEvaluationChecks {
             ("tell application \"Mail\"\n tell m\n  set x to 1\n end tell\nend tell", "a nested object tell"),
             ("do shell script \"true\"", "shell"),
             ("tell application \"Mail\"\n DELETE m\nend tell", "an upper-case verb"),
+            ("tell application \"Mail\"\n \u{00AB}event coremsnd\u{00BB} m\nend tell", "a raw event code"),
+            ("use framework \"Foundation\"", "AppleScriptObjC use"),
+            ("set x to current application's NSString", "current application"),
+            ("tell application \"Mail\"\n set acctName to m's name\nend tell", "a possessive"),
+            ("load script file \"x\"", "load script"),
+            ("tell application \"Notes\"\n write \"x\" to nt\nend tell", "write"),
+            ("display dialog \"x\"", "display"),
+            ("tell application \"Notes\"\n set name of nt to \"x\"\nend tell", "an app property set"),
+            ("tell application \"Mail\"\n set brandNew to 1\nend tell", "a set of an unknown local"),
+            ("tell application \"Mail\"\n mark m\nend tell", "a word the readers do not use"),
         ]
         for (script, label) in refusedScripts {
             check(NotchEvaluationScriptPolicy.refusal(script) != nil, "refuses a script with \(label)")
@@ -446,6 +539,8 @@ struct NotchEvaluationChecks {
         check(memory.healthy && !memory.record("over", [:]) && !memory.healthy, "exhausted retention is a sticky failure")
 
         workspaceGuardChecks()
+        sandboxProbeChecks(root: root)
+        socketModeChecks(root: root)
         print("NotchEvaluation: \(passed) checks passed")
     }
 }
