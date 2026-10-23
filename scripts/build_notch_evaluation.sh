@@ -102,27 +102,26 @@ app_profile_text() {
     prefs="(literal \"$home/Library/Preferences/$BUNDLE_ID.plist\")"
     events='(allow appleevent-send (appleevent-destination "com.apple.mail") (appleevent-destination "com.apple.Notes"))'
   fi
-  local text
-  IFS= read -r -d '' text <<PROFILE || true
-(version 1)
-(allow default)
-(deny appleevent-send)
-$events
-(deny process-exec (require-not (literal "$image")))
-(deny process-fork)
-(deny mach-lookup $lookups(global-name "com.apple.usernoted.client") (global-name "com.apple.pasteboard.1")
-  (global-name "com.apple.coreservices.quarantine-resolver"))
-(deny network*)
-(allow network-outbound (remote ip "localhost:$LISTEN_PORT"))
-(allow network-bind (local unix-socket (path-literal "$owned/app-input.sock")))
-(deny file-read-data (require-all (subpath "$home")
-  (require-not (require-any (subpath "$owned") (subpath "$bundle") $reads))))
-(deny file-write* (require-not (require-any (subpath "$owned") (literal "/dev/null")
-  (subpath "$home/Library/Caches/$BUNDLE_ID")
-  (subpath "$home/Library/Saved Application State/$BUNDLE_ID.savedState")
-  (subpath "$cache$BUNDLE_ID") $prefs)))
-PROFILE
-  printf '%s' "$text"
+  # printf only: a heredoc needs a temporary file, which a sandboxed caller
+  # may refuse, and a failed read would silently yield an empty profile.
+  printf '%s\n' \
+    "(version 1)" \
+    "(allow default)" \
+    "(deny appleevent-send)" \
+    "$events" \
+    "(deny process-exec (require-not (literal \"$image\")))" \
+    "(deny process-fork)" \
+    "(deny mach-lookup $lookups(global-name \"com.apple.usernoted.client\") (global-name \"com.apple.pasteboard.1\")" \
+    "  (global-name \"com.apple.coreservices.quarantine-resolver\"))" \
+    "(deny network*)" \
+    "(allow network-outbound (remote ip \"localhost:$LISTEN_PORT\"))" \
+    "(allow network-bind (local unix-socket (path-literal \"$owned/app-input.sock\")))" \
+    "(deny file-read-data (require-all (subpath \"$home\")" \
+    "  (require-not (require-any (subpath \"$owned\") (subpath \"$bundle\") $reads))))" \
+    "(deny file-write* (require-not (require-any (subpath \"$owned\") (literal \"/dev/null\")" \
+    "  (subpath \"$home/Library/Caches/$BUNDLE_ID\")" \
+    "  (subpath \"$home/Library/Saved Application State/$BUNDLE_ID.savedState\")" \
+    "  (subpath \"$cache$BUNDLE_ID\") $prefs)))"
 }
 
 cmd_launch() {
@@ -178,6 +177,7 @@ cmd_launch() {
    "$PYTHON" -I -B "$ROOT/scripts/notch_evaluation/host.py" --config "$owned/host-config.json" \
      --print-profile "$PYTHON" > "$owned/host.sb"
    app_profile "$owned" "$app" "$bundle_dir" "$live" > "$owned/app.sb")
+  [[ -s "$owned/app.sb" ]] || die "the app profile is empty"
   # The supervisor owns both children for the life of the run; it starts the
   # backend in the owned root with a clean environment, checks its identity,
   # then starts the app with TMPDIR inside the owned root.
