@@ -79,6 +79,23 @@ def _turn(turn: dict) -> dict:
             "error": turn.get("error")}
 
 
+# Expected limitations of a mode, shown on that section's cases so they are not
+# read as failures. Keyed by mode, then by a word in the corpus section name.
+SECTION_NOTES = {
+    "snapshot": {
+        "brief": ("Snapshot run: the brief shows the calendar only from a native sync under 20 minutes "
+                  "old, so \u201cCalendar unknown\u201d here is an expected snapshot limitation, not a "
+                  "failure. The Brief section is judged on the live run."),
+    },
+}
+
+
+def section_notes(mode: str, sections) -> dict[str, str]:
+    notes = SECTION_NOTES.get(mode, {})
+    return {name: note for name in sorted(set(sections)) for word, note in notes.items()
+            if name and word in name.lower()}
+
+
 def build(run: Path) -> dict:
     cases = {c["case_id"]: c for c in _read_json(run / "cases.json", {}).get("cases", [])}
     sections = _read_json(run / "sections.json", {})
@@ -92,7 +109,9 @@ def build(run: Path) -> dict:
                       "candidate": (record.get("candidate_sha") or "")[:12],
                       "recorded_at": record.get("recorded_at"),
                       "turns": [_turn(t) for t in record.get("turns") or [] if isinstance(t, dict)]})
-    return {"generated_at": time.time(), "total_cases": len(cases), "cases": shown}
+    mode = _read_json(run / "source-mode.json", {}).get("source_mode", "")
+    return {"generated_at": time.time(), "total_cases": len(cases), "cases": shown, "source_mode": mode,
+            "section_notes": section_notes(mode, sections.values())}
 
 
 def _embed(data: dict) -> str:
@@ -163,6 +182,7 @@ background:var(--panel2);border-radius:6px;padding:6px 8px;max-height:320px;over
 .card{border:1px solid var(--warn);border-radius:10px;padding:6px 10px;margin:6px 0;font-size:12.5px}
 .answer{margin-top:6px}
 .meta{color:var(--muted);font-size:11.5px;margin-top:6px}
+.note{border-left:3px solid var(--warn);background:var(--chip);border-radius:6px;padding:6px 10px;margin:6px 0 8px;font-size:12.5px;color:var(--muted)}
 .empty{color:var(--muted);text-align:center;padding:40px 0}
 ul.md{margin:4px 0;padding-left:20px}
 </style>
@@ -295,6 +315,8 @@ ul.md{margin:4px 0;padding-left:20px}
     head.appendChild(chip(secs(c.latency_s)));
     if (c.attempt > 1) head.appendChild(chip("attempt " + c.attempt));
     card.appendChild(head);
+    var note = (data.section_notes || {})[c.section];
+    if (note) card.appendChild(el("div", "note", note));
     var convo = el("div", "convo");
     c.turns.forEach(function (t) {
       convo.appendChild(el("div", "bubble user", t.prompt));
@@ -321,7 +343,8 @@ ul.md{margin:4px 0;padding-left:20px}
   });
   Object.keys(sections).sort().forEach(function (s) { section.appendChild(el("option", null, s)).value = s; });
   Object.keys(classes).sort().forEach(function (s) { cls.appendChild(el("option", null, s + " (" + counts[s] + ")")).value = s; });
-  document.getElementById("summary").textContent = data.cases.length + " of " + data.total_cases +
+  document.getElementById("summary").textContent = (data.source_mode ? data.source_mode + " run · " : "") +
+    data.cases.length + " of " + data.total_cases +
     " cases recorded · updated " + new Date(data.generated_at * 1000).toLocaleString() + " · " +
     Object.keys(counts).sort().map(function (k) { return k + " " + counts[k]; }).join(" · ");
   function apply() {

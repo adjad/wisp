@@ -34,7 +34,8 @@ from scripts.notch_evaluation import corpus, transcripts  # noqa: E402
 
 RESULTS = "results.jsonl"
 SOCKET = "app-input.sock"
-PIN_LOST = "engine-pin-lost.json"     # pinned_engine.LOST_MARKER
+PIN_LOST = "engine-pin-lost.json"
+SOURCE_MODE = "source-mode.json"     # pinned_engine.LOST_MARKER
 MAX_ATTEMPTS = 2
 TURN_TIMEOUT_S = 240.0
 BLOCKED_MARKER = "EVALUATION_BLOCKED"
@@ -191,6 +192,23 @@ def run_token(owned: Path) -> str:
     return json.loads((owned / "host-config.json").read_text(encoding="utf-8"))["token"]
 
 
+def bind_source_mode(run: Path, owned: Path) -> str:
+    """Record the launch's source mode in the run directory, once.
+
+    A run directory holds one mode's results: a later launch in the other
+    mode is refused rather than mixed in. The viewer reads it for its notes.
+    """
+    mode = json.loads((owned / "host-config.json").read_text(encoding="utf-8")).get("source_mode", "snapshot")
+    path = run / SOURCE_MODE
+    if path.exists():
+        recorded = json.loads(path.read_text(encoding="utf-8")).get("source_mode")
+        if recorded != mode:
+            raise ValueError(f"this run directory holds {recorded} results; the launch is {mode}")
+        return mode
+    corpus._private_write(path, {"source_mode": mode})
+    return mode
+
+
 # --- classification --------------------------------------------------------
 
 def classify_turn(reply: dict, *, segment: str, model: str) -> str:
@@ -321,6 +339,7 @@ def cmd_run(args) -> int:
     ids = [int(x) for x in args.ids.split(",")] if args.ids else None
     todo = select(cases, state, canary=args.canary, ids=ids, limit=args.limit)
     token = run_token(owned)
+    bind_source_mode(run, owned)
     signals = {"count": 0}
 
     def on_signal(signum, frame):

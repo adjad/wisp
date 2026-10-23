@@ -241,3 +241,16 @@ def test_wait_for_app_retries_only_a_missing_socket(tmp_path, monkeypatch):
         raise ConnectionResetError
     monkeypatch.setattr(driver, "app_request", broken)
     assert driver.wait_for_app(tmp_path, "t", 3) is None and calls[-1] == 2 and calls.count(2) == 1
+
+
+def test_a_run_directory_holds_one_source_mode(tmp_path):
+    run, owned = tmp_path / "run", tmp_path / "owned"
+    run.mkdir(mode=0o700)
+    owned.mkdir(mode=0o700)
+    (owned / "host-config.json").write_text(json.dumps({"token": "t"}))
+    assert driver.bind_source_mode(run, owned) == "snapshot"
+    assert oct((run / driver.SOURCE_MODE).stat().st_mode & 0o777) == "0o600"
+    assert driver.bind_source_mode(run, owned) == "snapshot"            # the same mode resumes
+    (owned / "host-config.json").write_text(json.dumps({"token": "t", "source_mode": "live"}))
+    with pytest.raises(ValueError, match="holds snapshot results"):
+        driver.bind_source_mode(run, owned)

@@ -79,3 +79,15 @@ def test_an_empty_run_still_renders(tmp_path):
     run.mkdir(mode=0o700)
     data = _data(transcripts.render(run).read_text(encoding="utf-8"))
     assert data["cases"] == [] and data["total_cases"] == 0
+
+
+def test_snapshot_brief_cases_carry_the_expected_limitation_note(tmp_path):
+    run = _run(tmp_path)
+    (run / "sections.json").write_text(json.dumps({"1": "Morning brief and Today", "2": "Notes"}))
+    (run / "source-mode.json").write_text(json.dumps({"source_mode": "snapshot"}))
+    data = _data(transcripts.render(run).read_text(encoding="utf-8"))
+    assert data["source_mode"] == "snapshot"
+    assert list(data["section_notes"]) == ["Morning brief and Today"]
+    assert "expected snapshot limitation" in data["section_notes"]["Morning brief and Today"]
+    (run / "source-mode.json").write_text(json.dumps({"source_mode": "live"}))
+    assert _data(transcripts.render(run).read_text(encoding="utf-8"))["section_notes"] == {}
