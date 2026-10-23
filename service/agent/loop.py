@@ -7,6 +7,7 @@ engine and the audit log. Emits structured events for the frontend.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import hashlib
 import re
@@ -17,7 +18,7 @@ from collections import Counter
 from datetime import datetime
 from typing import Awaitable, Callable, Sequence
 
-from service import debug_capture
+from service import debug_capture, diagnostics
 from service.user_text import user_facing_failure as _user_facing_failure
 from service.config import (narration_mode, no_thinking_kwargs, role_to_model,
                             thinking_kwargs, thinks_explicitly)
@@ -696,6 +697,46 @@ def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False) -
     return no_thinking_kwargs(model) if no_thinking else {}
 
 
+# What the previous model call of this request put at the front of its prompt.
+# oMLX reuses its prefix cache only while that front is byte-identical, and
+# chat templates render the tool list inside the system turn — so a step that
+# offers a different tool set than the step before re-prefills everything
+# after the system text, whatever the history shares. Context-local, so
+# concurrent requests never compare against each other.
+_PREFIX_KEY: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "wisp_model_prefix_key", default=None)
+
+
+def _trace_model_step(msgs, schemas, final, started, first_event_at) -> None:
+    """Record one model call in the request's content-free diagnostics trace.
+
+    Timings and sizes only — never text, tool names or arguments. Without this
+    the trace shows routing and tool events but not where the model time went,
+    and every latency question had to be answered by lining the trace up with
+    oMLX's server log by hand. scripts/harness_report.py reads these rows.
+    """
+    try:
+        now = time.monotonic()
+        system = msgs[0].get("content") if msgs and msgs[0].get("role") == "system" else None
+        key = hash((system if isinstance(system, str) else None,
+                    tuple(s["function"]["name"] for s in schemas or ())))
+        previous = _PREFIX_KEY.get()
+        _PREFIX_KEY.set(key)
+        content = final.get("content") if isinstance(final, dict) else None
+        calls = final.get("tool_calls") if isinstance(final, dict) else None
+        diagnostics.event(
+            "model_step",
+            model_ms=round((now - started) * 1000),
+            ttft_ms=round(((first_event_at or now) - started) * 1000),
+            output_chars=len(content) if isinstance(content, str) else 0,
+            tools_offered=len(schemas or ()),
+            prefix_reset=previous is not None and previous != key,
+            empty=not calls and not (content or "").strip(),
+        )
+    except Exception:  # noqa: BLE001 - diagnostics never break a turn
+        pass
+
+
 async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
                     *, stream_content: bool,
                     temperature: float | None = None,
@@ -716,6 +757,8 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
     final: dict = {}
     content_streamed = False
     last_hb = time.monotonic()
+    started = last_hb
+    first_event_at: float | None = None
     # Degenerate WHITESPACE flood on the content channel — the content-side
     # twin of _is_looping's reasoning check, which cannot see this because it
     # only inspects reasoning text and only counts paragraphs >= 20 chars.
@@ -735,6 +778,8 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
             **(extra or {}))
     async for ev in events:
         kind = ev["kind"]
+        if first_event_at is None:
+            first_event_at = time.monotonic()
         if kind == "reasoning":
             reasoning_parts.append(ev["text"])
             now = time.monotonic()
@@ -781,6 +826,7 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
                 break
         elif kind == "final":
             final = ev["message"]
+    _trace_model_step(msgs, schemas, final, started, first_event_at)
     # Raw request/response for debug export (see OverlayModel.exportDebugLog
     # on the Swift side). Gated on `debug` — this serializes the full message
     # list AND every offered tool schema, on every attempt of every step, and
