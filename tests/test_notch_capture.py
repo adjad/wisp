@@ -105,10 +105,9 @@ class _Launcher:
         return not self.quit.is_set()
 
 
-def test_live_app_is_launched_by_launch_services_and_quit_by_token(tmp_path, monkeypatch):
+def test_live_app_is_launched_by_launch_services_and_quit_by_token(tmp_path):
     root = tmp_path / "root"
     root.mkdir(mode=0o700)
-    monkeypatch.chdir(root)                    # as the supervisor runs; the socket name stays short
     argv = lifecycle.launch_services_argv("/x/Eval.app", str(root), {"B": "2", "A": "1"})
     assert argv[:3] == ["/usr/bin/open", "-n", "-W"] and argv[-1] == "/x/Eval.app"
     assert argv[3:7] == ["--env", "A=1", "--env", "B=2"]
@@ -116,12 +115,16 @@ def test_live_app_is_launched_by_launch_services_and_quit_by_token(tmp_path, mon
     assert env[lifecycle.LAUNCH_FLAG] == lifecycle.LAUNCH_SERVICES      # the app must then self-confine
     assert lifecycle.LAUNCH_FLAG not in lifecycle.app_environment(str(root), "t", launch_services=False)
     launcher, seen = _Launcher(), []
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(lifecycle.APP_INPUT)
-    server.listen(1)
+    # An in-memory socketpair stands in for app-input.sock (the simulation
+    # sandbox refuses binding one); the request and reply are the same.
+    client, conn = socket.socketpair()
+    connected = []
+
+    def connect(where):
+        connected.append(where)
+        return client
 
     def app():
-        conn, _ = server.accept()
         with conn:
             request = json.loads(conn.recv(4096))
             seen.append(request)
@@ -132,10 +135,9 @@ def test_live_app_is_launched_by_launch_services_and_quit_by_token(tmp_path, mon
 
     thread = threading.Thread(target=app, daemon=True)
     thread.start()
-    outcome = lifecycle.request_app_quit(str(root), "T" * 40, launcher, wait=5)
+    outcome = lifecycle.request_app_quit(str(root), "T" * 40, launcher, wait=5, connect=connect)
     thread.join(5)
-    server.close()
-    assert outcome == {"requested": True, "reply": "quitting", "app_exited": True}
+    assert outcome == {"requested": True, "reply": "quitting", "app_exited": True} and connected == [str(root)]
     # Nothing answering: reported, and the launcher is still waited on, never signalled.
     gone = lifecycle.request_app_quit(str(root / "missing"), "T" * 40, _Launcher(), wait=0.2)
     assert gone["requested"] is False and gone["app_exited"] is False

@@ -128,13 +128,24 @@ def engine_resident(engine: str, model: str, *, timeout: float = 5.0) -> bool:
                                           and r.get("loaded") is True for r in rows)
 
 
-def app_request(owned: Path, request: dict, *, timeout: float) -> dict:
-    """One JSON line to the app's input adapter, one JSON line back."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+def _connect(owned: Path, timeout: float) -> socket.socket:
+    """A connection to the app's input adapter socket in the owned root."""
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
         conn.settimeout(timeout)
         # Relative from inside the owned root: a socket path is limited to 104 bytes.
         same = Path.cwd().resolve() == owned.resolve()
         conn.connect(SOCKET if same else str(owned / SOCKET))
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def app_request(owned: Path, request: dict, *, timeout: float) -> dict:
+    """One JSON line to the app's input adapter, one JSON line back."""
+    with _connect(owned, timeout) as conn:
+        conn.settimeout(timeout)
         conn.sendall((json.dumps(request) + "\n").encode("utf-8"))
         chunks = []
         while True:

@@ -223,8 +223,21 @@ LAUNCH_FLAG = "WISP_NOTCH_EVALUATION_LAUNCH"
 LAUNCH_SERVICES = "launch-services"
 
 
+def _connect_app(root: str) -> socket.socket:
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        conn.settimeout(5)
+        # Relative from inside the root: socket paths are limited to 104 bytes.
+        same = os.path.realpath(os.getcwd()) == os.path.realpath(root)
+        conn.connect(APP_INPUT if same else str(Path(root, APP_INPUT)))
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 def request_app_quit(root: str, token: str, launcher: Child | None, *, wait: float = QUIT_WAIT_S,
-                     clock=time.monotonic, nap=time.sleep) -> dict:
+                     clock=time.monotonic, nap=time.sleep, connect=_connect_app) -> dict:
     """Ask the app to quit over its token-checked input socket; never a signal.
 
     ``launcher`` is the supervised ``open -W`` child, which ends once the app
@@ -232,11 +245,7 @@ def request_app_quit(root: str, token: str, launcher: Child | None, *, wait: flo
     """
     outcome: dict = {"requested": False}
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-            conn.settimeout(5)
-            # Relative from inside the root: socket paths are limited to 104 bytes.
-            same = os.path.realpath(os.getcwd()) == os.path.realpath(root)
-            conn.connect(APP_INPUT if same else str(Path(root, APP_INPUT)))
+        with connect(root) as conn:
             conn.sendall((json.dumps({"op": "quit", "token": token}) + "\n").encode())
             reply = json.loads(conn.recv(4096) or b"{}")
         outcome = {"requested": True, "reply": reply.get("status")}

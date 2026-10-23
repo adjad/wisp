@@ -69,31 +69,27 @@ def test_initialize_keeps_text_private_and_the_ledger_hash_only(tmp_path):
 
 
 class FakeAdapter:
-    """The app's input adapter, scripted per case turn."""
+    """The app's input adapter, scripted per case turn.
 
-    def __init__(self, root: Path, token: str, script):
+    Served over an in-memory socketpair per connection: the simulation
+    sandbox refuses binding a socket, and the wire format is the same.
+    """
+
+    def __init__(self, token: str, script):
         self.token, self.script, self.seen = token, script, []
-        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.server.bind(driver.SOCKET)          # relative: the test runs inside the owned root
-        self.server.listen(4)
-        self.thread = threading.Thread(target=self._serve, daemon=True)
-        self.thread.start()
 
-    def _serve(self):
-        while True:
-            try:
-                conn, _ = self.server.accept()
-            except OSError:
-                return
-            with conn:
-                request = json.loads(conn.recv(1 << 16))
-                assert request["token"] == self.token
-                self.seen.append(request)
-                reply = {"status": "ready"} if request["op"] == "ping" else self.script(request)
-                conn.sendall((json.dumps(reply) + "\n").encode())
+    def connect(self) -> socket.socket:
+        client, server = socket.socketpair()
+        threading.Thread(target=self._serve, args=(server,), daemon=True).start()
+        return client
 
-    def close(self):
-        self.server.close()
+    def _serve(self, conn):
+        with conn:
+            request = json.loads(conn.recv(1 << 16))
+            assert request["token"] == self.token
+            self.seen.append(request)
+            reply = {"status": "ready"} if request["op"] == "ping" else self.script(request)
+            conn.sendall((json.dumps(reply) + "\n").encode())
 
 
 def _terminal(request, text="SYNTHETIC answer", **extra):
@@ -111,14 +107,21 @@ def harness(tmp_path, monkeypatch):
     corpus.initialize(run, corpus.parse(path, expected_sha256=sha, expected_cases=6), corpus_sha256=sha)
     owned = tmp_path / "owned"
     owned.mkdir(mode=0o700)
-    monkeypatch.chdir(owned)                    # as run.sh does; socket paths stay short
+    monkeypatch.chdir(owned)                    # as run.sh does
     (owned / "host-config.json").write_text(json.dumps({"token": "T" * 40}))
     resident = {"value": True}
     monkeypatch.setattr(driver, "engine_resident", lambda engine, model, **_: resident["value"])
     adapters = []
 
+    def connect(root, timeout):
+        assert Path(root) == owned
+        if not adapters:
+            raise FileNotFoundError(driver.SOCKET)      # the app has not bound its socket yet
+        return adapters[-1].connect()
+    monkeypatch.setattr(driver, "_connect", connect)
+
     def start(script):
-        adapters.append(FakeAdapter(owned, "T" * 40, script))
+        adapters.append(FakeAdapter("T" * 40, script))
         return adapters[-1]
 
     def go(*extra):
@@ -126,8 +129,6 @@ def harness(tmp_path, monkeypatch):
                             "--model", "SYNTH-MODEL", "--timeout", "5", "--ready-timeout", "0.3", *extra])
 
     yield run, start, go, resident
-    for adapter in adapters:
-        adapter.close()
 
 
 def _records(run: Path) -> list[dict]:
