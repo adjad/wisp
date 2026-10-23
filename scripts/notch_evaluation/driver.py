@@ -147,6 +147,26 @@ def app_request(owned: Path, request: dict, *, timeout: float) -> dict:
     return json.loads(b"".join(chunks))
 
 
+def wait_for_app(owned: Path, token: str, ready_timeout: float, *, clock=time.monotonic,
+                 nap=time.sleep) -> dict | None:
+    """The app's first ping reply, waiting only while its socket is not yet bound.
+
+    A launched app binds its input socket a moment after the supervisor
+    reports it running. Only "not there yet" (no socket, or refused) is
+    retried; any other failure or reply is returned as it is.
+    """
+    deadline = clock() + ready_timeout
+    while True:
+        try:
+            return app_request(owned, {"op": "ping", "token": token}, timeout=30)
+        except (FileNotFoundError, ConnectionRefusedError):
+            if clock() >= deadline:
+                return None
+            nap(0.5)
+        except (OSError, ValueError):
+            return None
+
+
 def run_token(owned: Path) -> str:
     return json.loads((owned / "host-config.json").read_text(encoding="utf-8"))["token"]
 
@@ -277,11 +297,7 @@ def cmd_run(args) -> int:
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    ping = None
-    try:
-        ping = app_request(owned, {"op": "ping", "token": token}, timeout=30)
-    except (OSError, ValueError):
-        pass
+    ping = wait_for_app(owned, token, args.ready_timeout)
     if not ping or ping.get("status") != "ready":
         print(json.dumps({"stopped": "HOST_UNAVAILABLE", "ping": ping}))
         return 4
@@ -325,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     go.add_argument("--label", default="run")
     go.add_argument("--candidate-sha", default="")
     go.add_argument("--timeout", type=float, default=TURN_TIMEOUT_S)
+    go.add_argument("--ready-timeout", type=float, default=90.0,
+                    help="seconds to wait for the app's input socket after launch")
     args = parser.parse_args(argv)
     return {"init": cmd_init, "status": cmd_status, "run": cmd_run}[args.command](args)
 

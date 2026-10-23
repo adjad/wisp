@@ -123,7 +123,7 @@ def harness(tmp_path, monkeypatch):
 
     def go(*extra):
         return driver.main(["run", "--run-dir", str(run), "--owned", str(owned), "--engine", "http://127.0.0.1:1",
-                            "--model", "SYNTH-MODEL", "--timeout", "5", *extra])
+                            "--model", "SYNTH-MODEL", "--timeout", "5", "--ready-timeout", "0.3", *extra])
 
     yield run, start, go, resident
     for adapter in adapters:
@@ -195,3 +195,34 @@ def test_run_directory_must_be_private(tmp_path):
     os.chmod(shared, 0o755)
     with pytest.raises(SystemExit):
         driver.private_dir(shared)
+
+
+def test_driver_waits_for_the_app_socket_then_runs(harness):
+    run, start, go, resident = harness
+    timer = threading.Timer(0.6, lambda: start(_terminal))     # binds after the first pings miss
+    timer.start()
+    try:
+        assert driver.main(["run", "--run-dir", str(run), "--owned", os.getcwd(), "--engine", "http://127.0.0.1:1",
+                            "--model", "SYNTH-MODEL", "--timeout", "5", "--ready-timeout", "5",
+                            "--canary", "1"]) == 0
+    finally:
+        timer.join()
+    assert [r["failure_class"] for r in _records(run)] == ["OK"]
+
+
+def test_wait_for_app_retries_only_a_missing_socket(tmp_path, monkeypatch):
+    calls = []
+
+    def missing(*_, **__):
+        calls.append(1)
+        raise FileNotFoundError
+    monkeypatch.setattr(driver, "app_request", missing)
+    ticks = iter(range(100))
+    assert driver.wait_for_app(tmp_path, "t", 3, clock=lambda: next(ticks), nap=lambda _: None) is None
+    assert len(calls) == 3                     # attempts at t=1, 2; t=3 is past the deadline
+
+    def broken(*_, **__):
+        calls.append(2)
+        raise ConnectionResetError
+    monkeypatch.setattr(driver, "app_request", broken)
+    assert driver.wait_for_app(tmp_path, "t", 3) is None and calls[-1] == 2 and calls.count(2) == 1
