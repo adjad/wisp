@@ -13,6 +13,8 @@ import pytest
     ("Summarize unread email and messages today", [
         ("summarize_emails", {"unread": True, "day": "today"}),
         ("summarize_messages", {"unread": True, "day": "today"})]),
+    ("email summary", [("summarize_emails", {})]),
+    ("text summary", [("summarize_messages", {})]),
     ("Show unread mail", [("view_emails", {"unread": True})]),
     ("Read unread messages yesterday", [("view_messages", {"unread": True, "day": "yesterday"})]),
     ("List unread email and messages", [
@@ -33,8 +35,15 @@ async def test_unread_stream_preserves_summary_or_raw_presentation(tmp_path, mon
     monkeypatch.setattr(main, "ensure_omlx", AsyncMock(side_effect=AssertionError("unexpected inference")))
     monkeypatch.setattr(main, "route", AsyncMock(side_effect=AssertionError("unexpected routing")))
     monkeypatch.setattr(reads, "decide", lambda *a, **k: Decision(Tier.ALLOW, "synthetic read"))
+    # A bare summary is a read: no contact lookup or send may be attempted.
+    # Policy is ALLOW and the synthetic contact is a valid email, so a send
+    # attempt could not hide behind an invalid-recipient refusal.
+    forbidden = []
     calls = []
     async def synthetic_read(tool, args):
+        if tool.name in {"lookup_contact", "send_email", "send_message"}:
+            forbidden.append((tool.name, args))
+            return "synthetic.contact@example.com"
         calls.append((tool.name, args))
         return ("Bounded unread digest; coverage incomplete." if tool.name.startswith("summarize_")
                 else "RAW BODY: synthetic private detail; Message-ID: synthetic-id")
@@ -46,6 +55,7 @@ async def test_unread_stream_preserves_summary_or_raw_presentation(tmp_path, mon
             chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
         events = [json.loads(line[6:]) for line in "".join(chunks).splitlines() if line.startswith("data: ")]
         assert calls == expected
+        assert forbidden == []
         answer = "".join(e.get("text", "") for e in events if e["type"] == "text")
         if expected[0][0].startswith("summarize_"):
             assert "Bounded unread digest" in answer and "coverage incomplete" in answer

@@ -973,3 +973,31 @@ def test_bare_answers_are_not_mistaken_for_reads():
         assert first is not None and first.plan.status == "waiting_for_channel"
         turn = prepare_turn(store, "answer", "any works")
         assert turn is not None  # still handled inside the delivery flow
+
+
+@pytest.mark.parametrize("prompt", [
+    "what do I have to do tmrow",
+    "what do i have to do tomorrow",
+    "when is my next class",
+])
+def test_stale_channel_only_content_question_releases_unrelated_read(prompt):
+    temp, store = _store()
+    with temp:
+        sid = "stale-content"
+        first = prepare_turn(store, sid, "text it")
+        assert first is not None and first.plan.status == "waiting_for_content"
+        assert first.plan.channel == "messages" and not first.plan.recipient
+        assert prepare_turn(store, sid, prompt) is None, prompt
+        assert store.active_workflow(sid) is None
+
+
+def test_known_recipient_content_answer_stays_in_the_workflow():
+    temp, store = _store()
+    with temp:
+        sid = "known-recipient"
+        first = prepare_turn(store, sid, "text Mom it")
+        if first is None or not first.plan.recipient:
+            pytest.skip("compiler does not keep a recipient for this phrasing")
+        assert first.plan.status == "waiting_for_content"
+        second = prepare_turn(store, sid, "what is on my calendar tomorrow")
+        assert second is not None

@@ -17,7 +17,8 @@ from service.workflows.models import WorkflowPlan, WorkflowTurn
 
 _STANDALONE_READ = re.compile(
     r"(?:(?:can|could|would)\s+you\s+|please\s+)?"
-    r"(?:what(?:'s|\s+is|\s+are)|show(?:\s+me)?|check|list|summari[sz]e|"
+    r"(?:what(?:'s|\s+is|\s+are)|what\s+(?:do|did|have|should|will|am)\s+(?:i|we)|"
+    r"when\s+(?:is|are|do|does)|show(?:\s+me)?|check|list|summari[sz]e|"
     r"do\s+i\s+have|any\s+(?:new\s+|unread\s+)?(?:e-?mails?|mail|messages?|texts?|reminders?|events?|meetings?|news)|how\s+many)\b", re.I)
 
 
@@ -167,7 +168,11 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True,
     # A self-contained question is not an answer to a pending delivery question.
     # Release an unaddressed pending delivery (no recipient or channel yet) so a
     # stray clarification cannot swallow every later request.
-    if (active and new_plan is None and not active.recipient and not active.channel
+    # A pending content question has only a channel so far (the user said
+    # "text it" but not what): a stale one must not capture an unrelated read.
+    # With a recipient the reply is a payload answer and stays with the workflow.
+    if (active and new_plan is None and not active.recipient
+            and (not active.channel or active.status == "waiting_for_content")
             and active.status not in {"running"}
             and _STANDALONE_READ.match(prompt.strip())
             and not outbound_verb(prompt)):
