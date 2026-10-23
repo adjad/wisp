@@ -205,25 +205,25 @@ It checks this Mac and shows one page with what to do next:
 
 For catalog entries with a verified public repository, the bundled engine supports
 downloads with progress, cancellation and explicit retry. External engines have a
-manual download path. The merged Mellum build downloads from
+manual download path. The optional merged Mellum build downloads from
 [`Neo-Arid/Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e`](https://huggingface.co/Neo-Arid/Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e);
 an existing local folder in the engine's model directory works too (**Check again**,
 then **Use this model**).
 
 ### Which model for which Mac
 
-Fresh text roles use **`Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e`**. Existing
-role overrides are preserved. The catalog marks this local build as validation
-pending; being the default is not a claim that it passed inference on this release.
-The guide ranks memory fit separately from test status:
+Fresh text roles use **`Ling-3.0-tiny-oQ4e`** as a conservative fallback. Guided
+setup recommends the Ling build below for this Mac's memory. Existing role
+overrides and working models are preserved. Mellum remains an optional choice,
+marked validation pending. The guide ranks memory fit separately from test status:
 
 | Memory | Recommended | Download | Notes |
 | --- | --- | --- | --- |
-| 24 GB or more | Merged Mellum oQ4e | About 7.14 GB from Hugging Face | Current default, Wisp's own fine-tune; catalog validation is pending. |
+| 24 GB or more | `Ling-3.0-tiny-oQ6e` | 6.6 GB from Hugging Face | Public 6-bit build recommended by guided setup. |
 | 16 GB | `Ling-3.0-tiny-oQ5e`, else `Ling-3.0-tiny-oQ4e` | oQ4e 4.6 GB | Sized to leave room for your other apps. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). No public oQ5e build was found; use it if you already have one. |
 | Under 16 GB | `Ling-3.0-tiny-oQ4e` | 4.6 GB | The smallest build that keeps tool selection reliable. Untested on Macs this small: expect it to be tight, and close heavy apps. |
 
-Legacy Ling sizes are the published files' sizes on Hugging Face
+Ling sizes are the published files' sizes on Hugging Face
 (`mlx-works/Ling-3.0-tiny-oQ6e`, `mlx-works/Ling-3.0-tiny-oQ4e`). For Smart Search, also
 install `mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ` (0.35 GB). Any other model oMLX
 serves can be selected, but it is marked untested. Memory-fit rankings are estimates,

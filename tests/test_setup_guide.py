@@ -67,13 +67,11 @@ def test_hardware_rounds_real_memory_and_survives_failure():
 
 # --- recommendations --------------------------------------------------------
 
-def test_fresh_mac_downloads_mellum_at_24gb_and_ling_below():
-    # The user's rule: Mellum (Wisp's own fine-tune, public on Hugging Face) is
-    # the download on 24 GB or more; Ling below that.
-    missing = _status(ram=32, installed=[], roles=_roles(MELLUM))
-    assert missing["models"]["recommended"] == MELLUM
-    assert missing["models"]["download"]["model"] == MELLUM
-    assert missing["models"]["download"]["repo"] == catalog.by_id(MELLUM).repo
+def test_fresh_mac_downloads_ling_q6_at_24gb_and_q4_below():
+    missing = _status(ram=32, installed=[], roles=_roles(Q4))
+    assert missing["models"]["recommended"] == Q6
+    assert missing["models"]["download"]["model"] == Q6
+    assert missing["models"]["download"]["repo"] == catalog.by_id(Q6).repo
     assert _check(missing, "model")["action"] == "download_model"
     assert not missing["ready"]
     small = _status(ram=16, installed=[], roles=_roles(MELLUM))
@@ -87,31 +85,35 @@ def test_mellum_repo_name_is_the_model_id():
     assert repo and repo.split("/")[1] == MELLUM
 
 
-def test_mellum_local_default_is_discovered_without_a_fabricated_download():
-    found = _status(ram=32, installed=[Q6, MELLUM, EMBED], roles=_roles(MELLUM))
-    assert found["models"]["use"] == MELLUM
+def test_configured_mellum_is_kept_when_ling_is_recommended():
+    roles = _roles(MELLUM)
+    found = _status(ram=32, installed=[Q6, MELLUM, EMBED], roles=roles)
+    assert found["models"]["use"] == Q6  # Suggested selection, not a role rewrite.
+    assert all(role["model"] == MELLUM for role in found["roles"])
+    assert roles == _roles(MELLUM)
     entry = next(m for m in found["models"]["installed"] if m["id"] == MELLUM)
     assert entry["tested"] is False
-    assert entry["fit"] == "recommended"
+    assert entry["fit"] == "good"
+    assert found["models"]["recommended"] == Q6
     assert found["ready"]  # Discovery/readiness is separate from inference qualification.
     assert guide.download_info(MELLUM, "/models")["repo"] == catalog.by_id(MELLUM).repo
 
 
-def test_an_installed_ling_keeps_working_and_mellum_is_offered():
-    # On 24 GB+ an existing Ling stays in use; Mellum is offered, never fetched unasked.
+def test_an_installed_ling_keeps_working_and_q6_is_offered():
     result = catalog.recommend(32, [Q4])
-    assert result["first_choice"] == MELLUM
+    assert result["first_choice"] == Q6
     assert result["use"] == Q4
-    assert result["get"] == MELLUM
+    assert result["get"] == Q6
     assert catalog.fit(catalog.by_id(MELLUM), 16) == "heavy"
     assert catalog.recommend(16, [Q4, MELLUM])["use"] == Q4
 
 
 @pytest.mark.parametrize("custom", [False, True])
-def test_mellum_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkeypatch, custom):
+def test_ling_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkeypatch, custom):
     import service.config as config
     overlay = tmp_path / "config.yaml"
-    value = {"roles": {"general": "chosen-chat", "agent": "chosen-agent"},
+    value = {"roles": {"general": MELLUM, "agent": "chosen-agent",
+                       "embedding": "chosen-embedding", "reranker": "chosen-reranker"},
              "inference": {"bindings": {"reasoning": {
                  "endpoint": "local_provider", "model_id": "chosen-reasoning"}}}}
     if custom:
@@ -123,8 +125,9 @@ def test_mellum_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkey
     try:
         result = config.models_config()
         for role in ("router", "fast", "agent", "general", "coding", "reasoning"):
-            assert result["roles"][role] == (value["roles"].get(role, MELLUM) if custom else MELLUM)
-        assert result["roles"]["embedding"] == EMBED
+            assert result["roles"][role] == (value["roles"].get(role, Q4) if custom else Q4)
+        assert result["roles"]["embedding"] == ("chosen-embedding" if custom else EMBED)
+        assert result["roles"]["reranker"] == ("chosen-reranker" if custom else "Qwen3-Reranker-0.6B-mlx-6bit")
         if custom:
             assert result["inference"]["bindings"]["reasoning"] == value["inference"]["bindings"]["reasoning"]
             assert overlay.read_bytes() == before
@@ -133,13 +136,13 @@ def test_mellum_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkey
     finally:
         config.models_config.cache_clear()
 
-@pytest.mark.parametrize("ram,first", [(64, MELLUM), (24, MELLUM), (16, Q4), (12, Q4), (8, Q4), (0, Q4)])
+@pytest.mark.parametrize("ram,first", [(64, Q6), (24, Q6), (16, Q4), (12, Q4), (8, Q4), (0, Q4)])
 def test_first_choice_follows_memory(ram, first):
     # Fresh Macs: the first choice is the best build they can actually download.
     assert catalog.recommend(ram, [])["first_choice"] == first
 
 
-@pytest.mark.parametrize("ram,first", [(64, MELLUM), (24, MELLUM), (16, Q5), (12, Q4)])
+@pytest.mark.parametrize("ram,first", [(64, Q6), (24, Q6), (16, Q5), (12, Q4)])
 def test_first_choice_keeps_the_full_order_once_a_catalog_model_is_installed(ram, first):
     assert catalog.recommend(ram, [Q4])["first_choice"] == first
 
@@ -151,19 +154,19 @@ def test_16gb_is_offered_a_download_it_can_actually_get():
     assert catalog.recommend(16, [Q5])["get"] is None
 
 
-def test_24gb_with_only_legacy_oq4e_keeps_it_without_an_unrelated_download():
+def test_24gb_with_only_oq4e_keeps_it_and_offers_q6():
     rec = catalog.recommend(24, [Q4])
-    assert rec["use"] == Q4 and rec["get"] == MELLUM
+    assert rec["use"] == Q4 and rec["get"] == Q6
 
 
 def test_best_installed_model_wins_and_nothing_is_offered_when_optimal():
     rec = catalog.recommend(24, [Q4, Q6, MELLUM])
-    assert rec["use"] == MELLUM and rec["get"] is None
+    assert rec["use"] == Q6 and rec["get"] is None
 
 
 def test_heavy_model_on_16gb_is_flagged_but_kept():
     assert catalog.fit(catalog.by_id(Q6), 16) == "heavy"
-    assert catalog.fit(catalog.by_id(Q6), 24) == "good"
+    assert catalog.fit(catalog.by_id(Q6), 24) == "recommended"
     assert catalog.fit(catalog.by_id(Q4), 24) == "good"
     assert catalog.recommend(16, [Q6])["use"] == Q6
 
@@ -306,7 +309,7 @@ def test_model_list_is_ranked_and_excludes_embedding_and_reranker():
     ids = [m["id"] for m in s["models"]["installed"]]
     assert ids == [Q6, Q4, "zzz-custom"]
     by_id = {m["id"]: m for m in s["models"]["installed"]}
-    assert by_id[Q6]["fit"] == "good" and by_id[Q6]["tested"] is True
+    assert by_id[Q6]["fit"] == "recommended" and by_id[Q6]["tested"] is True
     assert by_id["zzz-custom"]["fit"] == "unknown" and by_id["zzz-custom"]["tested"] is False
 
 

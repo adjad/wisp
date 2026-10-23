@@ -25,15 +25,15 @@ roles:
   # Every text role is the same resident model — no swap, no cold load, and no
   # routing decision that hinges on which model a request lands on.
   #
-  # User-selected Mellum 2.1 Wisp R1 merged oQ4e default. This is a local
-  # build; setup does not invent a public download or claim validation.
+  # Conservative Ling 4-bit fallback for fresh installs. Guided setup recommends
+  # the hardware-appropriate Ling build; selecting it updates the text roles.
   # Existing user overrides are still deep-merged over these code defaults.
-  fast:       "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
-  router:     "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
-  coding:     "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
-  reasoning:  "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
-  agent:      "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
-  general:    "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
+  fast:       "Ling-3.0-tiny-oQ4e"
+  router:     "Ling-3.0-tiny-oQ4e"
+  coding:     "Ling-3.0-tiny-oQ4e"
+  reasoning:  "Ling-3.0-tiny-oQ4e"
+  agent:      "Ling-3.0-tiny-oQ4e"
+  general:    "Ling-3.0-tiny-oQ4e"
   # Smart Search's T2 retrieval tier (320MB, 1024-dim). NOT a chat model — it's
   # served by oMLX's /v1/embeddings, which rejects LLMs on that endpoint. It is
   # lazy and no longer participates in tool routing.

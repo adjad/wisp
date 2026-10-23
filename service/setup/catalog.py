@@ -1,4 +1,4 @@
-"""Default and legacy model choices, with separate memory and test status.
+"""Recommended and optional model choices, with separate memory and test status.
 
 Being the configured default does not qualify a model's tool calling. Local
 builds without a verified public repository remain discoverable, not downloadable.
@@ -26,7 +26,7 @@ MELLUM_R1_Q4 = CatalogModel(
     "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
     "Mellum 2.1 Wisp R1", "merged oQ4e", 7.14, 24,
     "Neo-Arid/Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-    "Wisp's own fine-tune. The default on Macs with 24 GB or more.", tested=False)
+    "Optional Wisp fine-tune. Model validation is pending.", tested=False)
 
 
 LING_Q6 = CatalogModel(
@@ -41,7 +41,7 @@ LING_Q4 = CatalogModel(
     "mlx-works/Ling-3.0-tiny-oQ4e",
     "Smallest build that keeps tool selection reliable. Comfortable on 16 GB.", tested=True)
 
-PRIMARY_MODELS = (MELLUM_R1_Q4, LING_Q6, LING_Q5, LING_Q4)
+PRIMARY_MODELS = (LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
 
 EMBEDDING_MODEL = CatalogModel(
     "Qwen3-Embedding-0.6B-4bit-DWQ", "Qwen3 Embedding 0.6B", "4-bit", 0.35, 8,
@@ -58,11 +58,11 @@ def ranked_for(ram_gb: int, installed: list[str] | None = None) -> tuple[Catalog
     With `installed` and no catalog model on this Mac yet (a fresh install), a
     model with no public download is left out: a new user must be offered
     something they can actually get, never a private build they cannot fetch.
-    Once any catalog model is installed the full order applies, so an existing
-    choice is never turned into an offer to download a different family.
+    Once any catalog model is installed the full order applies, keeping locally
+    available private builds eligible for the memory-appropriate ranking.
     """
     if ram_gb >= 24:
-        order = (MELLUM_R1_Q4, LING_Q6, LING_Q5, LING_Q4)
+        order = (LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
     elif ram_gb >= 16:
         order = (LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
     else:
