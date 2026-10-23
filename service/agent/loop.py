@@ -692,6 +692,10 @@ def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False) -
     merging again rather than clobbering (each returns a whole
     `{"chat_template_kwargs": {...}}` dict).
     """
+    from service.model_only import model_only_enabled
+    if model_only_enabled():
+        # Model-only test: thinking is stated ON for every step of every model.
+        return {"chat_template_kwargs": {"enable_thinking": True}}
     if thinks_explicitly(model):
         return thinking_kwargs(model, on=think_on)
     return no_thinking_kwargs(model) if no_thinking else {}
@@ -3175,7 +3179,11 @@ async def run_agent(
         # Deliberately narrow: only the selection step. Narration steps
         # (choice="auto", after a tool has run) and every non-agent caller keep
         # the user's configured sampling untouched, so prose stays warm.
-        step_temperature = 0.0 if choice == "required" else temperature
+        from service.model_only import model_only_enabled
+        # Model-only test: never pin sampling; oMLX's per-model profile decides
+        # every step (and the empty-retry +0.7 below only applies to a pinned one).
+        step_temperature = (temperature if model_only_enabled()
+                            else 0.0 if choice == "required" else temperature)
         # The names actually OFFERED to the model this step. Restricting the
         # schema alone ("a function absent from the schema can't be called")
         # turned out not to be a real guarantee — verified live: the summarizer, given

@@ -11,7 +11,9 @@ def model_only_enabled() -> bool:
     deterministic layers that otherwise answer before the model: the batch
     correction guard, typed tasks, delivery workflows, router reads and
     router-direct calls, and the verbatim short-circuit of presynthesized tool
-    results. Safety is unchanged: the policy engine, confirmation cards,
+    results. In the agent loop it also states thinking ON for every step of
+    every model and never pins temperature, so each model runs on its own oMLX
+    profile. Safety is unchanged: the policy engine, confirmation cards,
     routing guard contracts and the audit log still apply to every call.
 
     WISP_MODEL_ONLY (true/false) wins; otherwise the `model_only` config key
