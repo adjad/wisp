@@ -39,8 +39,21 @@ Rules:
   a reply that quotes a message, names a conversation or carries a number is
   dropped for the deterministic sentence.
 - The mail gist and the inbox summary may not carry a number their inputs
-  don't. The summary's input leaves out private subjects and the body text of
-  mass mail, which it only counts by sender.
+  don't. The summary's input leaves out the body text of mass mail, which it
+  only counts by sender.
+- IMPORTANT: the inbox summary uses ALL of a person's mail, private mail
+  included (the user's decision, 2026-10-23). Only mail that carries a sign-in
+  code or a security notice stays out (counted, never read): a credential is not
+  a message. So the written summary is private content at rest in
+  `~/.moe/cache/mail_gists.json` (mode 0600) and reaches the Brief (and a paired
+  phone, through the gateway's pass-through of `/assistant/today`). It is only
+  ever requested from the local fast-role model: for the summary,
+  `_resident_reply(local_only=True)` stands down in remote-only mode and for
+  any engine that isn't loopback-managed.
+- The summary stays compact, like `summarize_emails`: a few short sentences,
+  who wrote and what changed. A reply that is an input line (or starts with the
+  `From <sender>:` form) is dropped for `mail_prose`, which also covers private
+  mail ("John Morada canceled “Office Hours” (3 emails).").
 """
 from __future__ import annotations
 
@@ -76,7 +89,7 @@ _MAX_ATTEMPTS = 2
 # The inbox summary: a short paragraph, so a bigger budget and more of the mail.
 _SUMMARY_TOKENS = 260
 _SUMMARY_THINKING_TOKENS = 1600
-_SUMMARY_CHARS = (40, 480)
+_SUMMARY_CHARS = (40, 340)
 _SUMMARY_EMAILS = 10
 _EXCERPT_CHARS = 220
 KINDS = ("summary", "inbox", "texts")
@@ -107,9 +120,10 @@ MAIL_RULES = (
 SUMMARY_RULES = (
     "You summarize the user's inbox for a glanceable daily brief.\n"
     "IMPORTANT rules:\n"
-    "- Write 2 or 3 short sentences of plain prose, addressed to the user as \"you\".\n"
-    "- Lead with what people wrote or asked and anything canceled or changed; end with one short clause "
-    "for the rest (newsletters, alerts, promos), like `The rest is job alerts and newsletters.`\n"
+    "- Write 2 or 3 short sentences of plain prose (under 45 words in all), addressed to the user as \"you\".\n"
+    "- Lead with what people wrote or asked and anything canceled or changed, one clause per person; end with "
+    "one short clause for the rest (newsletters, alerts, promos), like `The rest is job alerts and newsletters.`\n"
+    "- Put it in your own words. Never copy a line of the list or start with `From <name>:`.\n"
     "- Name senders as the list gives them. Use only what the list shows: never invent a date, time, "
     "amount, name or request.\n"
     "- No lists, no headings, no greeting, no preamble, nothing after the summary.\n"
@@ -242,6 +256,22 @@ _PREFIX = re.compile(r"^\s*(?:re|fwd?|canceled|cancelled|canceled event|invitati
                      r"declined|tentatively accepted)\s*:\s*", re.I)
 
 
+# What redact_summary_codes withholds because it carries a credential or is a
+# security notice, as opposed to the many things it withholds as merely
+# "private" (a deadline, an order number, a schedule change). The summary reads
+# the latter in full and never the former.
+_CREDENTIAL = re.compile(r"authentication details omitted|security incident notice", re.I)
+
+
+def _shown(text: str) -> str | None:
+    """The text as written, or None when it is a sign-in code or a security
+    notice (`redact_summary_codes` calls these out; anything else it withholds
+    is private mail the summary may use)."""
+    from service.tools.imessage_tools import redact_summary_codes
+    redacted = redact_summary_codes(text)
+    return None if redacted != text and _CREDENTIAL.search(redacted) else text
+
+
 def _bare(subject: str) -> str:
     """A subject without its reply, forward or calendar prefixes."""
     while (match := _PREFIX.match(subject)):
@@ -267,31 +297,34 @@ def _from_user(row: dict, mine: set[str]) -> bool:
 
 def _people_mail(rows: list[dict]):
     """(sender, subject, row, rank) for mail from people or about a change, one per
-    sender and bare subject, a cancellation ahead of what it cancels; and the
-    count of mass mail by sender, and of private subjects."""
+    sender and bare subject, a cancellation ahead of what it cancels; the count
+    of mass mail by sender; the count withheld (a sign-in code, a security
+    notice, or a subject already withheld upstream); and every person's emails
+    by sender, duplicates included."""
     from service.assistant.daily_workspace import display_name
-    from service.tools.imessage_tools import redact_summary_codes
     picked: dict[tuple[str, str, bool], tuple] = {}
     bulk: dict[str, int] = {}
-    private = 0
+    emails: dict[str, int] = {}
+    withheld = 0
     mine = _user_addresses()
     for row in rows[:200]:
-        subject = redact_summary_codes(str(row.get("subject") or "")).strip()
+        subject = str(row.get("subject") or "").strip()
         if not subject or _from_user(row, mine):
             continue
         sender = display_name(row.get("sender"), row.get("sender_address", "")) or "Unknown sender"
-        if _PRIVATE.search(_bare(subject)):
-            private += 1
+        if _PRIVATE.search(_bare(subject)) or _shown(subject) is None:
+            withheld += 1
             continue
         if is_mass_mail(row):
             bulk[sender] = bulk.get(sender, 0) + 1
             continue
+        emails[sender] = emails.get(sender, 0) + 1
         rank = 2 if _CHANGE.search(subject) else 1 if _EVENT.search(subject) else 0
         # A reply says something new, so it stays apart from what it answers.
         key = (sender.casefold(), _bare(subject).casefold(), bool(re.match(r"\s*re\s*:", subject, re.I)))
         if key not in picked or rank > picked[key][3]:
             picked[key] = (sender, subject, row, rank)
-    return list(picked.values()), bulk, private
+    return list(picked.values()), bulk, withheld, emails
 
 
 def is_mass_mail(row: dict) -> bool:
@@ -307,22 +340,34 @@ def is_mass_mail(row: dict) -> bool:
         return True
     identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
     subject = str(row.get("subject") or "")
-    return (digest_category(row) in {"news", "social"} or is_machine_sender(identity)) \
+    return (digest_category(row) in {"news", "social"} or is_machine_sender(identity) or _list_footer(row)) \
         and not (_CHANGE.search(subject) or _EVENT.search(subject))
+
+
+def _list_footer(row: dict) -> bool:
+    """The email's own text ends like a mailing list's ("Unsubscribe", "You are
+    receiving this because…"): a promo sent under a person's name. Checked on
+    the row's own body, so it needs no join to the snapshot."""
+    from service.tools.email_tools import _LIST_FOOTER, _QUOTED_MAIL_HISTORY
+    body = _QUOTED_MAIL_HISTORY.split(str(row.get("body") or ""))[0]
+    return bool(_LIST_FOOTER.search(body) or _MAILED_BECAUSE.search(body))
+
+
+_MAILED_BECAUSE = re.compile(r"\b(?:you(?:'re| are) receiving this (?:email|message)|"
+                             r"you received this (?:email|message) because|view (?:this )?(?:email )?in (?:your )?browser)\b", re.I)
 
 
 def _excerpt(row: dict) -> str:
     from service.assistant.daily_workspace import _QUOTED_HISTORY
-    from service.tools.imessage_tools import redact_summary_codes
     body = _QUOTED_HISTORY.split(str(row.get("body") or ""))[0]
-    text = re.sub(r"\s+", " ", redact_summary_codes(body)).strip()
+    text = re.sub(r"\s+", " ", _shown(body) or "").strip()
     return text[:_EXCERPT_CHARS].rsplit(" ", 1)[0] + "…" if len(text) > _EXCERPT_CHARS else text
 
 
 def summary_lines(rows: list[dict]) -> list[str]:
     """The inbox summary's input: each email from a person or about a change,
     with what it says when the body is known, then mass mail counted by sender."""
-    people, bulk, private = _people_mail(rows)
+    people, bulk, withheld, _ = _people_mail(rows)
     lines = []
     for sender, subject, row, _ in people[:_SUMMARY_EMAILS]:
         excerpt = _excerpt(row)
@@ -333,8 +378,8 @@ def summary_lines(rows: list[dict]) -> list[str]:
         names = sorted(bulk, key=lambda n: -bulk[n])
         lines.append(f"- Also {sum(bulk.values())} newsletters, alerts and promos, from " + ", ".join(names[:5])
                      + (" and others" if len(names) > 5 else ""))
-    if private:
-        lines.append(f"- {private} email{'s' if private != 1 else ''} with private details (not shown)")
+    if withheld:
+        lines.append(f"- {withheld} more email{'s' if withheld != 1 else ''} whose content is withheld (sign-in codes, security notices; not shown)")
     return lines
 
 
@@ -351,12 +396,13 @@ def mail_prose(rows: list[dict]) -> str:
     alerts and promos." """
     if not rows:
         return "No new mail today."
-    people, bulk, _ = _people_mail(rows)
+    people, bulk, _, emails = _people_mail(rows)
     said: dict[str, tuple[int, str]] = {}
     for sender, subject, _, rank in people:
         rest = _bare(subject)
-        line = (f"{sender} canceled “{rest}”." if rank == 2 else f"{sender} {_reply_verb(subject)} “{rest}”." if rank == 1
-                else f"{sender} wrote about “{rest}”.")
+        line = (f"{sender} canceled “{rest}”" if rank == 2 else f"{sender} {_reply_verb(subject)} “{rest}”" if rank == 1
+                else f"{sender} wrote about “{rest}”")
+        line += f" ({emails[sender]} emails)." if emails.get(sender, 0) > 1 else "."
         if sender not in said and len(said) >= 3:
             continue
         if sender not in said or rank > said[sender][0]:
@@ -454,10 +500,27 @@ def parse_paragraph(text: str) -> str:
     return paragraph
 
 
+_ECHO = re.compile(r"^\s*(?:[-*•]\s*)?(?:from\s+[^:\n]{1,60}:|also\s+\d+\s+newsletters)", re.I)
+
+
+def echoes_input(summary: str, lines: list[str] = ()) -> bool:
+    """The reply is an input line, not a summary: it starts in the input's
+    `From <sender>:` form, or repeats a line's subject-and-excerpt wholesale."""
+    if _ECHO.match(summary):
+        return True
+    low = summary.casefold()
+    for line in lines:
+        core = line.split(": ", 1)[1] if line.startswith("- From ") and ": " in line else ""
+        if len(core) >= 25 and core.casefold() in low:
+            return True
+    return False
+
+
 def summary_ok(summary: str, lines: list[str]) -> bool:
     """Grounded in the mail: no number it doesn't carry, and every capitalized
-    word past a sentence's start (a name, a place, a day) appears in it."""
-    if not mail_gist_ok(summary, lines):
+    word past a sentence's start (a name, a place, a day) appears in it. An
+    input line handed back is not a summary."""
+    if echoes_input(summary, lines) or not mail_gist_ok(summary, lines):
         return False
     source = " " + " ".join(re.findall(r"[\w']+", "\n".join(lines).casefold())) + " "
     for sentence in re.split(r"(?<=[.!?])\s+", summary):
@@ -540,7 +603,8 @@ _UNREACHABLE = _unreachable_errors()
 
 
 async def _resident_reply(system: str, material: str, abort, *,
-                          tokens: tuple[int, int] = (_TOKENS, _THINKING_TOKENS)) -> str | None:
+                          tokens: tuple[int, int] = (_TOKENS, _THINKING_TOKENS),
+                          local_only: bool = False) -> str | None:
     """The model's reply, or None to stand down without spending anything.
 
     Never loads or evicts: the fast-role model must already be resident, with
@@ -552,7 +616,18 @@ async def _resident_reply(system: str, material: str, abort, *,
     from service.inference.remote_policy import remote_only_profile
     model = role_to_model("fast")
     client = _c()
-    if remote_only_profile() is not None:
+    remote = remote_only_profile() is not None
+    if local_only:
+        # The inbox summary carries the user's mail, private mail included. It
+        # may only ever reach the engine on this Mac: never the remote-only
+        # server, never a non-loopback endpoint.
+        if remote:
+            _stood_down("remote-only inference is on; the inbox summary stays on this Mac")
+            return None
+        if getattr(client, "managed", True) is not True:
+            _stood_down("the engine isn't this Mac's own; the inbox summary stays on this Mac")
+            return None
+    if remote:
         # Remote inference: there is no local residency to protect, so the only
         # stand-down is a user's turn.
         loaded, warm = {model}, set()
@@ -672,7 +747,8 @@ async def refresh(now: float | None = None, *, synth=None, abort=None, force: bo
     _next_call_at = now + _MIN_GAP_S
     started = time.monotonic()
     try:
-        text = await (_resident_reply(system, material, abort, tokens=job.get("tokens", (_TOKENS, _THINKING_TOKENS)))
+        text = await (_resident_reply(system, material, abort, tokens=job.get("tokens", (_TOKENS, _THINKING_TOKENS)),
+                                          local_only=job["kind"] == "summary")
                       if synth is None else synth(system, material))
     except Exception:  # noqa: BLE001 — the deterministic sentence stands in
         _retry_at[job["kind"]] = now + _FAILURE_GAP_S
@@ -780,13 +856,14 @@ def schedule_tick() -> asyncio.Task | None:
 # --- what the Brief shows -----------------------------------------------------------
 
 
-def overview(kind: str, fallback: str, now: float, key: str | None = None) -> dict:
+def overview(kind: str, fallback: str, now: float, key: str | None = None, reject=None) -> dict:
     """The model's text while it is fresh, else the fallback. Given the current
     inputs' key, a text written from other mail gives way once it is
     `_REWRITE_S` older than that would allow (a rewrite is overdue)."""
     entry = _load().get(kind)
     stale = key is not None and entry is not None and entry["key"] != key and now - entry["at"] > 2 * _REWRITE_S
-    if entry and entry["gist"] and now - entry["at"] < _FRESH_S and not stale:
+    if entry and entry["gist"] and now - entry["at"] < _FRESH_S and not stale \
+            and not (reject and reject(entry["gist"])):
         return {"text": entry["gist"], "source": "model"}
     return {"text": fallback, "source": "summary"}
 
@@ -806,7 +883,8 @@ def attach(workspace: dict, now: float | None = None) -> None:
             rows = recent_mail(now)
             workspace["mail_overview"] = overview("inbox", mail_fallback(rows), now)
             slines = summary_lines(rows)
-            workspace["mail_summary"] = (overview("summary", mail_prose(rows), now, key=_key(slines)) if slines
+            workspace["mail_summary"] = (overview("summary", mail_prose(rows), now, key=_key(slines),
+                                                  reject=echoes_input) if slines
                                          else {"text": mail_prose(rows), "source": "summary"})
         except Exception:  # noqa: BLE001 — the rows fall back to their older form
             traceback.print_exc()
