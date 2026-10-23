@@ -1020,10 +1020,13 @@ class BehaviorRuntime:
     def _ingest_asks(self, now: float) -> bool:
         from service.behavior.types import Observation
         sessions = self._session_db_fn()
+        # A corpus test chat's prompts are not the user's asks.
+        not_corpus = getattr(sessions, "not_corpus_sql", None)
+        not_corpus = not_corpus() if not_corpus else "1"
         with sessions._lock:
             rows = sessions._db.execute(
                 "SELECT session_id, idx, content, created_at FROM turns WHERE role='user' "
-                "AND created_at >= ? ORDER BY created_at DESC LIMIT ?",
+                f"AND created_at >= ? AND {not_corpus} ORDER BY created_at DESC LIMIT ?",
                 (now - HISTORY_S, ASK_LIMIT)).fetchall()
         obs = [Observation(id=f"ask:{r['session_id']}:{r['idx']}", kind="wisp_ask",
                            ts=float(r["created_at"]), subject=topic_of(r["content"] or ""),

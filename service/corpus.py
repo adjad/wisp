@@ -36,7 +36,14 @@ RUN_GAP_S = 90
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _RUN_ID = re.compile(r"[A-Za-z0-9-]{1,64}")
 _RUN_LOCK = asyncio.Lock()
+# A normal-mode case waits this long for the user's own turn, then refuses.
+BUSY_WAIT_S = 60
+BUSY_MESSAGE = ("Wisp is busy with another request, so this normal-mode case did not start "
+                "(it could swap models under it). Run it again when Wisp is idle.")
 _run_state = {"id": "", "last": 0.0}
+# bounded: fixed read-only scope on the local agent model (the default).
+# normal: the user's own Ask path, with nothing it would change allowed to run.
+MODES = ("bounded", "normal")
 READ_CATEGORIES = {"lookup_contact": "messages_read", "view_messages": "messages_read",
                    "view_emails": "email_read"}
 
@@ -244,16 +251,16 @@ async def run_case(case, emit):
 class CaseRecord:
     """Folds one case's streamed events into the line saved when it ends."""
 
-    def __init__(self, case, run_id):
+    def __init__(self, case, run_id, mode="bounded"):
         self.started = time.monotonic()
         now = datetime.now().astimezone()
         self.line = {"run_id": run_id, "date": now.strftime("%Y-%m-%d"),
                      "started_at": now.isoformat(timespec="seconds"),
-                     "case_id": case["id"], "category": case["category"],
+                     "mode": mode, "session_id": "", "case_id": case["id"], "category": case["category"],
                      "prompt": case["conversation"][-1]["content"],
                      "model": "", "role": "", "route_source": "", "tools": [], "answer": "",
-                     "status": "incomplete", "error": "", "latency_s": None,
-                     "model_calls": 0, "inference_verified": False}
+                     "confirmations": [], "status": "incomplete", "error": "", "latency_s": None,
+                     "model_calls": 0, "inference_verified": False if mode == "bounded" else None}
 
     def observe(self, event):
         line, kind = self.line, event.get("type")
@@ -276,6 +283,11 @@ class CaseRecord:
         elif kind == "corpus_model":
             line["model_calls"] = int(event.get("completed") or 0)
             line["inference_verified"] = line["model_calls"] > 0
+        elif kind == "corpus_declined":
+            line["confirmations"].append({"tool": str(event.get("tool", "")),
+                                          "reason": str(event.get("reason", ""))})
+        elif kind == "corpus_session":
+            line["session_id"] = str(event.get("id", ""))
         elif kind == "done":
             line["status"] = "done"
         elif kind == "error":
@@ -287,6 +299,40 @@ class CaseRecord:
             self.line["status"] = "stopped"
         self.line["latency_s"] = round(time.monotonic() - self.started, 2)
         return self.line
+
+
+def _session_store():
+    from service.memory import store
+    return store
+
+
+def case_title(line):
+    from service.memory.store import CORPUS_TITLE
+    return f"{CORPUS_TITLE}{line['case_id']} · {_one_line(line.get('prompt', ''), 200)}"
+
+
+def save_session(line):
+    """The case as a chat in the window's list. A normal-mode case was already
+    saved by /agent itself; a bounded one is saved here, prompt and answer as
+    displayed. Never fails the case.
+
+    The title, set before any turn, marks it as a corpus chat, which memory,
+    behaviour and conversation search leave out (SessionStore.is_corpus_session)."""
+    try:
+        store = _session_store()
+        if not line.get("session_id"):
+            sid = store.create_session()
+            store.set_title(sid, case_title(line))
+            store.add_turn(sid, "user", line["prompt"])
+            answer = line.get("answer") or line.get("error") or "This case ended without an answer."
+            digest = ", ".join(dict.fromkeys(t["name"] for t in line.get("tools") or [] if t.get("name"))) or None
+            store.add_turn(sid, "assistant", answer, tool_digest=digest)
+            line["session_id"] = sid
+        store.set_title(line["session_id"], case_title(line))
+        # The turn trigger queues every user turn; a test prompt is not one.
+        store.drop_memory_jobs(line["session_id"])
+    except Exception as exc:
+        log.warning("Corpus case %s was not saved as a chat (%s)", line.get("case_id"), type(exc).__name__)
 
 
 def current_run_id(now=None):
@@ -382,17 +428,21 @@ def export_markdown(lines):
            f" · {verified} with verified inference", ""]
     for line in lines:
         latency = line.get("latency_s")
+        verified = line.get("inference_verified")
         out += [f"## {line['case_id']} · {line.get('category', '')} · {line.get('status', '')}", "",
+                f"**Mode:** {line.get('mode', 'bounded')}", "",
                 f"**Prompt:** {_one_line(line.get('prompt', ''), 2000)}", "",
                 f"**Model:** {line.get('model') or 'unknown'} ({line.get('role') or '-'}, {line.get('route_source') or '-'})"
                 f" · {'%.1f s' % latency if isinstance(latency, (int, float)) else 'time unknown'}"
-                f" · {'inference verified' if line.get('inference_verified') else 'inference not verified'}", ""]
+                f" · {'inference not tracked' if verified is None else 'inference verified' if verified else 'inference not verified'}", ""]
         tools = line.get("tools") or []
         out.append("**Tools:**" if tools else "**Tools:** none")
         for tool in tools:
             out.append(f"- `{tool.get('name', '')}` {json.dumps(tool.get('args') or {}, ensure_ascii=False)}")
             if tool.get("result"):
                 out.append(f"  > {_one_line(tool['result'], 400)}")
+        for asked in line.get("confirmations") or []:
+            out.append(f"- Would ask to confirm `{asked.get('tool', '')}`: {_one_line(asked.get('reason', ''), 300)} (declined)")
         out += ["", "**Answer:**", ""]
         answer = str(line.get("answer") or "").strip()
         out += [("> " + row) if row else ">" for row in answer.splitlines()] if answer else ["> (no answer)"]
@@ -402,8 +452,8 @@ def export_markdown(lines):
     return "\n".join(out)
 
 
-CSV_COLUMNS = ["run_id", "started_at", "case_id", "category", "status", "latency_s", "inference_verified",
-               "model", "tools", "prompt", "answer", "error"]
+CSV_COLUMNS = ["run_id", "started_at", "mode", "case_id", "category", "status", "latency_s", "inference_verified",
+               "model", "tools", "would_confirm", "prompt", "answer", "error", "session_id"]
 
 
 def export_csv(lines):
@@ -411,11 +461,14 @@ def export_csv(lines):
     writer = csv.writer(buffer)
     writer.writerow(CSV_COLUMNS)
     for line in lines:
-        writer.writerow([line.get("run_id", ""), line.get("started_at", ""), line.get("case_id", ""),
-                         line.get("category", ""), line.get("status", ""), line.get("latency_s", ""),
-                         "yes" if line.get("inference_verified") else "no", line.get("model", ""),
-                         "; ".join(t.get("name", "") for t in line.get("tools") or []),
-                         line.get("prompt", ""), line.get("answer", ""), line.get("error", "")])
+        verified = line.get("inference_verified")
+        writer.writerow([line.get("run_id", ""), line.get("started_at", ""), line.get("mode", "bounded"),
+                         line.get("case_id", ""), line.get("category", ""), line.get("status", ""),
+                         line.get("latency_s", ""), "not tracked" if verified is None else "yes" if verified else "no",
+                         line.get("model", ""), "; ".join(t.get("name", "") for t in line.get("tools") or []),
+                         "; ".join(c.get("tool", "") for c in line.get("confirmations") or []),
+                         line.get("prompt", ""), line.get("answer", ""), line.get("error", ""),
+                         line.get("session_id", "")])
     return buffer.getvalue()
 
 
@@ -443,6 +496,56 @@ def export_csv_route(date: str, run_id: str | None = None):
     return PlainTextResponse(export_csv(_export_lines(date, run_id)), media_type="text/csv; charset=utf-8")
 
 
+async def run_normal_case(case, emit):
+    """The user's own path: /agent with its ordinary system prompt, memory,
+    identity and routing, saved as a normal chat. Inside review_scope, anything
+    but a read asks first and the approver declines it, so nothing changes."""
+    from service import idle
+    from service.main import agent
+    from service.safety.policy import review_scope
+    # Never start under the user's own turn: this one may swap models.
+    deadline = time.monotonic() + BUSY_WAIT_S
+    while idle.foreground_busy():
+        if time.monotonic() >= deadline:
+            await emit({"type": "error", "message": BUSY_MESSAGE})
+            return
+        await asyncio.sleep(0.5)
+    prompt = case["conversation"][-1]["content"]
+    # Created and titled before /agent saves a turn, so the chat is marked as
+    # a corpus chat before the memory queue sees its prompt.
+    store = _session_store()
+    sid = store.create_session()
+    store.set_title(sid, case_title({"case_id": case["id"], "prompt": prompt}))
+    await emit({"type": "corpus_session", "id": sid})
+    finished = False
+    with review_scope():
+        response = await agent({"prompt": prompt, "session_id": sid, "debug": False})
+        frames = response.body_iterator
+        try:
+            # Read to the end: /agent saves the turn after its `done`.
+            async for frame in frames:
+                text = frame.decode() if isinstance(frame, bytes) else str(frame)
+                for chunk in text.split("\n\n"):
+                    if not chunk.startswith("data: "):
+                        continue
+                    event = json.loads(chunk[len("data: "):])
+                    kind = event.get("type")
+                    if kind == "session":
+                        # Not forwarded: the runner's chat must not adopt it.
+                        if event.get("id") and event["id"] != sid:
+                            sid = str(event["id"])
+                            await emit({"type": "corpus_session", "id": sid})
+                    elif kind == "done":
+                        finished = True
+                    else:
+                        await emit(event)
+        finally:
+            await frames.aclose()
+    if not finished:
+        raise RuntimeError("The normal-mode turn ended without finishing.")
+    await emit({"type": "done"})
+
+
 @router.post("/run")
 async def run(body: dict):
     try:
@@ -451,12 +554,16 @@ async def run(body: dict):
             raise ValueError("Unknown live corpus case. Reload the cases from the local profile.")
         if body.get("token") != case["token"]:
             raise ValueError("The local corpus profile changed. Reload the cases before running.")
+        mode = body.get("mode") or "bounded"
+        if mode not in MODES:
+            raise ValueError("Use mode bounded or normal.")
     except (ValueError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc
+    runner = run_case if mode == "bounded" else run_normal_case
 
     async def stream():
         queue = asyncio.Queue()
-        record = CaseRecord(case, current_run_id())
+        record = CaseRecord(case, current_run_id(), mode)
 
         async def emit(event):
             try:
@@ -468,9 +575,10 @@ async def run(body: dict):
         async def worker():
             stopped = False
             try:
-                async with asyncio.timeout(240):
+                # A normal-mode turn may swap models and plan, as the user's own can.
+                async with asyncio.timeout(240 if mode == "bounded" else 600):
                     async with _RUN_LOCK:
-                        await run_case(case, emit)
+                        await runner(case, emit)
             except asyncio.CancelledError:
                 stopped = True
                 raise
@@ -480,7 +588,9 @@ async def run(body: dict):
                 await emit({"type": "error", "message": f"Live corpus case could not finish ({type(exc).__name__}). Check the local agent model and source availability."})
             finally:
                 # Once, at case end, whatever ended it.
-                persist(record.finish(stopped=stopped))
+                line = record.finish(stopped=stopped)
+                save_session(line)
+                persist(line)
                 current_run_id()
 
         task = asyncio.create_task(worker())

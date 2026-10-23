@@ -72,6 +72,15 @@ class InteractiveApprover:
         self._actions: dict[str, dict] = {}
 
     async def confirm(self, action: dict) -> bool:
+        from service.safety.policy import review_only
+        if review_only():
+            # A review run never waits on, or offers, a card: it records that
+            # Wisp would have asked, and declines.
+            await self._emit({"type": "corpus_declined", "id": action.get("id", ""),
+                              "tool": action.get("tool", ""), "reason": action.get("reason", ""),
+                              "preview": str(action.get("preview") or "")[:400],
+                              **({"request_id": self.request_id} if self.request_id else {})})
+            return False
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[action["id"]] = fut
         self._actions[action["id"]] = action

@@ -80,6 +80,11 @@ class MemoryQueue:
     def __init__(self, sessions):
         self.sessions = sessions
 
+    def _not_corpus(self, column='session_id'):
+        # Corpus test chats are never extracted, searched or recalled.
+        fn = getattr(self.sessions, 'not_corpus_sql', None)
+        return fn(column) if fn else '1'
+
     def enabled(self):
         with self.sessions._lock:
             return bool(self.sessions._db.execute('SELECT enabled FROM memory_control WHERE id=1').fetchone()[0])
@@ -93,13 +98,14 @@ class MemoryQueue:
         # ensures stale completions cannot overwrite a recovered job.
         with self.sessions._lock, self.sessions._db:
             self.sessions._db.execute("UPDATE memory_jobs SET status='queued',claim='',available_at=0 WHERE status='running'")
+            self.sessions._db.execute(f"DELETE FROM memory_jobs WHERE NOT ({self._not_corpus()})")
 
     def pilot(self, session_limit=20):
         with self.sessions._lock, self.sessions._db:
             before = self.sessions._db.total_changes
-            self.sessions._db.execute('''INSERT OR IGNORE INTO memory_jobs(session_id,turn_idx,origin,generation)
+            self.sessions._db.execute(f'''INSERT OR IGNORE INTO memory_jobs(session_id,turn_idx,origin,generation)
                 SELECT session_id,idx,'historical',memory_version FROM turns WHERE role='user'
-                AND session_id IN (SELECT id FROM sessions ORDER BY last_used DESC LIMIT ?)
+                AND {self._not_corpus()} AND session_id IN (SELECT id FROM sessions ORDER BY last_used DESC LIMIT ?)
                 ORDER BY created_at DESC LIMIT 2000''', (max(1, min(100, int(session_limit))),))
             return self.sessions._db.total_changes - before
 
@@ -110,17 +116,17 @@ class MemoryQueue:
         still arbitrates the claim if another worker or deletion wins a race.
         """
         with self.sessions._lock:
-            return self.sessions._db.execute('''SELECT 1 FROM memory_jobs
-                WHERE status='queued' AND available_at<=? LIMIT 1''',
+            return self.sessions._db.execute(f'''SELECT 1 FROM memory_jobs
+                WHERE status='queued' AND available_at<=? AND {self._not_corpus()} LIMIT 1''',
                 (time.time(),)).fetchone() is not None
 
     def next(self):
         claim = uuid.uuid4().hex
         with self.sessions._lock, self.sessions._db:
             # A single UPDATE arbitrates between connections/processes.
-            self.sessions._db.execute('''UPDATE memory_jobs SET status='running',attempts=attempts+1,claim=?
+            self.sessions._db.execute(f'''UPDATE memory_jobs SET status='running',attempts=attempts+1,claim=?
                 WHERE (session_id,turn_idx)=(SELECT session_id,turn_idx FROM memory_jobs
-                WHERE status='queued' AND available_at<=? ORDER BY origin='automatic' DESC,available_at,session_id,turn_idx LIMIT 1)
+                WHERE status='queued' AND available_at<=? AND {self._not_corpus()} ORDER BY origin='automatic' DESC,available_at,session_id,turn_idx LIMIT 1)
                 AND status='queued' ''', (claim, time.time()))
             row = self.sessions._db.execute('SELECT * FROM memory_jobs WHERE claim=?', (claim,)).fetchone()
         return dict(row) if row else None
@@ -159,6 +165,9 @@ class MemoryQueue:
             return self.sessions._db.execute("UPDATE memory_jobs SET status='cancelled',claim='' WHERE origin='historical' AND status IN ('queued','running')").rowcount
 
     def visible(self, row, facts):
+        is_corpus = getattr(self.sessions, 'is_corpus_session', None)
+        if is_corpus and is_corpus(row['session_id']):
+            return False
         if facts.suppressed_source('conversation', f"{row['session_id']}:{row['turn_idx']}") or facts.suppressed_text(row['text'] or ''):
             return False
         if row['role'] != 'user':
