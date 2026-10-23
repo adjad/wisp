@@ -25,6 +25,9 @@ actor PendingConfigWrites {
 final class WispClient {
     #if WISP_SETTINGS_QA
     static let baseURL = SettingsQAEnvironment.baseURL
+    #elseif WISP_NOTCH_EVALUATION
+    // Every request still passes EvaluationGuardProtocol (token, nonce, pid, no redirects).
+    static let baseURL = NotchEvaluationEnvironment.baseURL
     #else
     static let baseURL = URL(string: "http://127.0.0.1:8765")!
     #endif

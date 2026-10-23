@@ -12,6 +12,8 @@ import time
 import threading
 import json
 
+from service import evaluation_boundary
+
 # The server ends each app event stream on a timer (events(rotate_after=...))
 # and the app re-subscribes 3s later (OverlayModel.startAssistant). A
 # subscriber gone for less than this is treated as reconnecting, not absent.
@@ -82,6 +84,10 @@ class Hub:
     def publish_sync(self, event: dict, *, dedupe_key: str | None = None,
                       target: dict | None = None, durable: bool = True,
                       expires_at: float | None = None) -> dict:
+        # The contained evaluation host publishes nothing: inert pings are
+        # dropped, anything else raises before the durable queue or fanout.
+        if not evaluation_boundary.publication_allowed(event, "publish_sync"):
+            return event
         # The legacy Void bridge cannot return verified results. Refuse its
         # commands so callers cannot bypass the claimed Reminders protocol.
         if event.get('type') in {'create_apple_reminder', 'update_apple_reminder',
@@ -102,6 +108,7 @@ class Hub:
 
     def prepare_nudge_delivery(self, store):
         """Bind the actual store and loop before any publication lease."""
+        evaluation_boundary.publication_allowed({"type": "nudge_delivery"}, "prepare_nudge_delivery")
         from service.assistant.store import AssistantStore, CommittedNudge
         if type(self) is not Hub or type(store) is not AssistantStore or self.store is not store:
             raise ValueError("Nudge delivery needs the actual matching Hub and Store")
@@ -117,6 +124,7 @@ class Hub:
 
     def publish_committed_sync(self, lease, receipt, runtime, loop):
         """Fan out only a fixed writer's committed canonical row, with no await."""
+        evaluation_boundary.publication_allowed({"type": "committed_nudge"}, "publish_committed_sync")
         if (self._owner_loop is not loop or asyncio.get_running_loop() is not loop
                 or self._owner_thread!=threading.get_ident() or type(receipt) is not self._receipt_type):
             raise ValueError("Exact prepared delivery loop and receipt required")
@@ -141,6 +149,8 @@ class Hub:
         unsubscribes first (new publishers then see no subscriber and wait for
         the reconnect) and hands over whatever was already queued.
         """
+        # No subscriber may drain replayed actions inside the evaluation host.
+        evaluation_boundary.publication_allowed({"type": "events_subscription"}, "events")
         q = self.subscribe()
         seen: set[str] = set()
         deadline = None if rotate_after is None else time.monotonic() + rotate_after

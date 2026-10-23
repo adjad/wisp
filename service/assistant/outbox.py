@@ -10,6 +10,7 @@ import uuid
 import time
 from typing import Callable
 
+from service import evaluation_boundary
 from service.assistant.hub import hub
 
 # Long enough for the app to run an AppleScript against a cold Mail.app (which
@@ -109,6 +110,10 @@ async def _request(event_type: str, payload: dict,
 
     Returns {"ok": bool, "error": str, ...}. Cancellation propagates.
     """
+    # Before any claim, store lookup or publication. Inert outside the
+    # contained evaluation host.
+    if (blocked := evaluation_boundary.native_request_blocked(event_type, payload)) is not None:
+        return blocked
     calendar = event_type in {"create_calendar_event", "delete_calendar_event", "move_calendar_event",
                                "cancel_calendar_event"}
     reminder = event_type in {"create_reminder", "update_reminder", "complete_reminder", "delete_reminder"}

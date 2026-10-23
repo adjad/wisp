@@ -150,6 +150,9 @@ PROFILE_TESTS = {
         "tests/test_tool_test_mode.py",
     },
     "reliability": {
+        # Contained Notch evaluation host: one latched boundary per process,
+        # synthetic engine transport only; never a corpus result.
+        "tests/test_notch_evaluation.py",
     "tests/test_cloud_provider_settings.py",
     "tests/test_local_provider_settings.py",
     "tests/test_setup_guide.py",
@@ -589,6 +592,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/notch-command-contract": "native/notch-command-compile",
     "native/notch-tab-contract": "native/notch-tab-compile",
     "native/know-you-contract": "native/know-you-compile",
+    "native/notch-evaluation-contract": "native/notch-evaluation-compile",
 }
 
 
@@ -875,6 +879,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
     backend_trust = str(build_dir / "backend-trust")
+    notch_evaluation = str(build_dir / "notch-evaluation")
     return [
         (
             "native/mail-reply-contract",
@@ -1089,6 +1094,18 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/settings-response-contract", [settings_response]),
+        (
+            "native/notch-evaluation-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-DWISP_NOTCH_EVALUATION_CHECKS", "-module-cache-path", module_cache,
+                "app/Sources/WispApp/NotchEvaluation.swift", "app/Sources/WispApp/WispClient.swift",
+                "app/Sources/WispApp/AgentSend.swift",
+                "tests/NotchEvaluationChecks.swift", "-o", notch_evaluation,
+            ],
+        ),
+        # A stub URLProtocol answers forwarded requests in-process; nothing reaches a socket.
+        ("native/notch-evaluation-contract", [notch_evaluation]),
     ]
 
 

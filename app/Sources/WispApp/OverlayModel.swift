@@ -596,6 +596,9 @@ final class OverlayModel: ObservableObject {
             return
         }
         let prompt = submission.text
+        #if WISP_NOTCH_EVALUATION
+        NotchEvaluationEnvironment.ledger.input(prompt, dispatch: dispatch.id, session: sessionId)
+        #endif
         turns.append(Turn(role: "user", text: prompt))
         answer = ""; reasoning = ""; showReasoning = false; activity = []
         role = ""; modelAbbrev = ""; routeSource = ""; statusText = ""
@@ -673,6 +676,11 @@ final class OverlayModel: ObservableObject {
     /// Quick settings' Model memory: unload the models now. Wisp reloads them on
     /// the next ask. Not while a reply is being written, which needs its model.
     func freeUpMemory() {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("unload_models", ledger: NotchEvaluationEnvironment.ledger)
+        showTransientNotice("Model controls are off in the evaluation build.")
+        return
+        #endif
         guard conversationSettled, !briefComposing, !freeingMemory else { return }
         freeingMemory = true
         Task { [weak self] in
@@ -836,6 +844,11 @@ final class OverlayModel: ObservableObject {
     }
 
     func sendMessageDraft() {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("send_message_draft", ledger: NotchEvaluationEnvironment.ledger)
+        messageDraft?.status = "Not sent: the evaluation build never sends messages."
+        return
+        #endif
         guard var draft = messageDraft, !draft.isSending, !draft.sent else { return }
         guard !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             messageDraft?.status = "The message is empty."
@@ -1109,8 +1122,13 @@ final class OverlayModel: ObservableObject {
             text += "\n\(t.text)\n\n"
         }
 
+        #if WISP_NOTCH_EVALUATION
+        // Private evidence, never Downloads or Finder.
+        let dir = NotchEvaluationEnvironment.config.evidence
+        #else
         let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
+        #endif
         let stamp = DateFormatter(); stamp.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let base = "wisp-debug-\(stamp.string(from: Date()))"
         let jsonURL = dir.appendingPathComponent("\(base).json")
@@ -1121,6 +1139,15 @@ final class OverlayModel: ObservableObject {
     }
 
     private func handle(_ ev: WispClient.Event, dispatchID: UInt64) {
+        #if WISP_NOTCH_EVALUATION
+        // Recorded before the currency check, so late events are visible too.
+        NotchEvaluationEnvironment.ledger.event(type: ev.type, payload: ev.payload, dispatch: dispatchID)
+        defer {
+            if ev.type == "done" || ev.type == "error" {
+                NotchEvaluationEnvironment.ledger.visible(answer: answer, dispatch: dispatchID)
+            }
+        }
+        #endif
         guard submissionState.isCurrent(dispatchID) else { return }
         if let traceID = ev.payload["trace_id"] as? String { turnTraceID = traceID }
         // Any event other than another `status` means whatever it was
@@ -1412,6 +1439,11 @@ final class OverlayModel: ObservableObject {
     private let assistantDelivery = AssistantDelivery()
 
     func startAssistant() {
+        #if WISP_NOTCH_EVALUATION
+        // No assistant action stream, notifications or nudges in the evaluation build.
+        _ = NotchEvaluationSinks.blocked("assistant_stream", ledger: NotchEvaluationEnvironment.ledger)
+        return
+        #endif
         // Nudge notification buttons (Useful / Not now / Wrong / Undo / Do it)
         // route back here on the main actor.
         Notifications.onNudgeResponse = { [weak self] nudgeID, action, info in
@@ -1598,6 +1630,9 @@ final class OverlayModel: ObservableObject {
     var onSyncAssistantSources: (([String]) -> Void)?
 
     private func handleCalendarAction(_ ev: WispClient.Event) async -> [String: Any] {
+        #if WISP_NOTCH_EVALUATION
+        return NotchEvaluationSinks.blocked("calendar:" + ev.type, ledger: NotchEvaluationEnvironment.ledger)
+        #endif
         if ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(ev.type) {
             guard let action = onVerifiedReminderAction else {
                 return ["ok": false, "status": "failed", "error": "Reminders handler unavailable"]
@@ -1667,6 +1702,9 @@ final class OverlayModel: ObservableObject {
     }
 
     private func reconcileReminderAction(_ ev: WispClient.Event) async -> [String: Any] {
+        #if WISP_NOTCH_EVALUATION
+        return NotchEvaluationSinks.blocked("reminder:" + ev.type, ledger: NotchEvaluationEnvironment.ledger)
+        #endif
         guard let reconcile = onReconcileReminderAction else {
             return ["ok": false, "status": "unknown", "error": "Readback handler unavailable"]
         }
@@ -1676,6 +1714,11 @@ final class OverlayModel: ObservableObject {
     }
 
     private func handleAssistantEvent(_ ev: WispClient.Event) async -> Bool {
+        #if WISP_NOTCH_EVALUATION
+        // Known or unknown, no native action runs here; the event is refused.
+        _ = NotchEvaluationSinks.blocked("assistant_event:" + ev.type, ledger: NotchEvaluationEnvironment.ledger)
+        return false
+        #endif
         var notificationOK = true
         func post(title: String, body: String) async {
             let identity = ev.str("event_id")
