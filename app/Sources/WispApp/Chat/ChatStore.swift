@@ -10,6 +10,8 @@ protocol ChatBackend: AnyObject {
     func deleteChat(id: String) async -> Bool
     func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase]
     func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async
+    /// The newest saved corpus run as Markdown and CSV; nil when none is saved.
+    func savedCorpusExport() async throws -> (markdown: String, csv: String)?
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
              testMode: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async
@@ -28,6 +30,15 @@ extension ChatBackend {
     func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
         onEvent(ChatEvent(type: "error", payload: ["message": "This backend does not support live corpus evaluation."]))
     }
+    func savedCorpusExport() async throws -> (markdown: String, csv: String)? { nil }
+}
+
+/// Where an export landed.
+struct CorpusExportFiles: Equatable {
+    let markdown: URL
+    let csv: URL
+    /// False when the run came from the screen rather than the saved runs.
+    let saved: Bool
 }
 
 /// One conversation in the sidebar and the window.
@@ -270,8 +281,51 @@ final class ChatStore: ObservableObject {
         return try await performCorpus(selection, command: text)
     }
 
+    /// Where exports are written; tests point it at a scratch folder.
+    var exportDirectory: () -> URL = {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+    }
+
+    /// The newest conversation holding corpus cases, as it stands on screen.
+    var latestCorpusConversation: ChatConversation? {
+        conversations.filter { $0.messages.contains { $0.corpusEvaluation != nil } }.max { $0.lastUsed < $1.lastUsed }
+    }
+
+    /// The on-screen run as Markdown, for Copy results; nil without one.
+    func corpusMarkdown(_ conversation: ChatConversation?) -> String? {
+        guard let conversation else { return nil }
+        let cases = CorpusExport.cases(from: conversation.messages)
+        return cases.isEmpty ? nil : CorpusExport.markdown(cases, title: conversation.title)
+    }
+
+    /// Writes the latest run as Markdown and CSV: the newest saved run, or the
+    /// run on screen when nothing is saved (a run from before runs were saved).
+    func exportCorpus(now: Date = Date()) async throws -> CorpusExportFiles {
+        var contents: (markdown: String, csv: String, saved: Bool)?
+        if let saved = try? await backend.savedCorpusExport() {
+            contents = (saved.markdown, saved.csv, true)
+        } else if let conversation = latestCorpusConversation {
+            let cases = CorpusExport.cases(from: conversation.messages)
+            if !cases.isEmpty {
+                contents = (CorpusExport.markdown(cases, title: conversation.title), CorpusExport.csv(cases), false)
+            }
+        }
+        guard let contents else { throw AssistantTaskCorpusCommand.CommandError.nothingToExport }
+        let directory = exportDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let stem = CorpusExport.fileStem(now)
+        let markdown = directory.appendingPathComponent(stem + ".md")
+        let csv = directory.appendingPathComponent(stem + ".csv")
+        try Data(contents.markdown.utf8).write(to: markdown, options: .withoutOverwriting)
+        try Data(contents.csv.utf8).write(to: csv, options: .withoutOverwriting)
+        return CorpusExportFiles(markdown: markdown, csv: csv, saved: contents.saved)
+    }
+
     private func performCorpus(_ selection: AssistantTaskCorpusCommand.Selection,
                                command: String) async throws -> ChatConversation {
+        // Exporting starts nothing, so it doesn't wait for a run to finish.
+        if case .export = selection { return try await exportNotice() }
         guard !loadingCorpus, !conversations.contains(where: { $0.corpusRunning }) else {
             throw AssistantTaskCorpusCommand.CommandError.busy
         }
@@ -299,7 +353,15 @@ final class ChatStore: ObservableObject {
             return appendLocalNotice("Local corpus targets\nContacts / Messages: \(contacts.joined(separator: ", "))\nMail identifiers: \(mail.joined(separator: ", "))\nMail identifiers are search terms; an incomplete address is not assumed to be deliverable.")
         case .cases(let label, let cases):
             return runCorpus(label: label, cases: cases, command: command)
+        case .export:
+            return try await exportNotice()
         }
+    }
+
+    private func exportNotice() async throws -> ChatConversation {
+        let files = try await exportCorpus()
+        return appendLocalNotice("Exported corpus results\(files.saved ? "" : " from the run on screen"):\n"
+                                 + "\(files.markdown.path)\n\(files.csv.path)")
     }
 
     func send(_ text: String, attachmentName: String? = nil, image: String? = nil) {

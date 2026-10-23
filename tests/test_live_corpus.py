@@ -8,6 +8,15 @@ from service import corpus
 from service.tools.registry import REGISTRY, Tool
 
 
+@pytest.fixture(autouse=True)
+def saved_runs(tmp_path, monkeypatch):
+    """Every case a test streams is saved under tmp_path, never ~/.moe."""
+    directory = tmp_path / "corpus-runs"
+    monkeypatch.setattr(corpus, "RUNS_DIR", directory)
+    monkeypatch.setattr(corpus, "_run_state", {"id": "", "last": 0.0})
+    return directory
+
+
 def example(category="messages", target="Example Person"):
     return {"category": category, "target": target}
 
@@ -643,3 +652,117 @@ def test_corpus_mail_reader_discloses_count_coverage(corpus_mail_reader):
         result = asyncio.run(email.view_emails_impl(query="alice@example.invalid", strict_match=True, count=3))
     assert "returned 3 of 4" in result and "count=3" in result
     assert "FIXTURE-0" not in result and all(f"FIXTURE-{i}" in result for i in range(1, 4))
+
+
+def stream_fake_case(monkeypatch, events, fail=None):
+    profile = {"contacts": ["Example Person"], "mail_queries": []}
+    monkeypatch.setattr(corpus, "load_profile", lambda: profile)
+    case = corpus.live_cases(profile)[0]
+    async def fake_run(case, emit):
+        for event in events:
+            await emit(event)
+        if fail:
+            raise fail
+    monkeypatch.setattr(corpus, "run_case", fake_run)
+    async def collect():
+        response = await corpus.run({"case_id": case["id"], "token": case["token"]})
+        return [json.loads(frame.removeprefix("data: ")) async for frame in response.body_iterator]
+    return case, asyncio.run(collect())
+
+
+FAKE_EVENTS = [
+    {"type": "routed", "model": "local-test", "role": "agent", "route_source": "corpus_live_model"},
+    {"type": "corpus_model", "completed": 0, "started": 1},
+    {"type": "tool_call", "id": "c1", "name": "lookup_contact", "args": {"name": "Example Person"}},
+    {"type": "tool_result", "id": "c1", "result": "Example Person: synthetic" + "x" * 5000},
+    {"type": "clear_answer"},
+    {"type": "text", "text": "Example Person is in your contacts."},
+    {"type": "corpus_model", "completed": 1, "started": 1},
+    {"type": "done"},
+]
+
+
+def test_finished_case_is_saved_once_owner_only(monkeypatch, saved_runs):
+    case, events = stream_fake_case(monkeypatch, FAKE_EVENTS)
+    assert events[-1]["type"] == "done"
+    files = list(saved_runs.glob("*.jsonl"))
+    assert len(files) == 1
+    assert saved_runs.stat().st_mode & 0o777 == 0o700
+    assert files[0].stat().st_mode & 0o777 == 0o600
+    lines = [json.loads(text) for text in files[0].read_text().splitlines()]
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["case_id"] == case["id"] and line["category"] == case["category"]
+    assert line["prompt"] == case["conversation"][-1]["content"]
+    assert (line["model"], line["role"], line["route_source"]) == ("local-test", "agent", "corpus_live_model")
+    assert line["tools"] == [{"id": "c1", "name": "lookup_contact", "args": {"name": "Example Person"},
+                              "result": ("Example Person: synthetic" + "x" * 5000)[:corpus.RESULT_EXCERPT]}]
+    assert line["answer"] == "Example Person is in your contacts."
+    assert line["status"] == "done" and line["error"] == ""
+    assert line["inference_verified"] is True and line["model_calls"] == 1
+    assert isinstance(line["latency_s"], float) and line["run_id"] and files[0].stem == line["date"]
+
+
+def test_failed_case_saves_the_safe_error(monkeypatch, saved_runs):
+    _, events = stream_fake_case(monkeypatch, FAKE_EVENTS[:4], fail=RuntimeError("secret provider body"))
+    assert events[-1]["type"] == "error"
+    line = json.loads(next(saved_runs.glob("*.jsonl")).read_text())
+    assert line["status"] == "error" and line["error"] == events[-1]["message"]
+    assert "secret provider body" not in json.dumps(line)
+    assert line["inference_verified"] is False
+
+
+def test_save_failure_never_breaks_the_stream(monkeypatch, tmp_path, caplog):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("file")
+    monkeypatch.setattr(corpus, "RUNS_DIR", blocker / "corpus-runs")
+    with caplog.at_level("WARNING", logger="service.corpus"):
+        _, events = stream_fake_case(monkeypatch, FAKE_EVENTS)
+    assert events[-1]["type"] == "done"
+    assert sum(e["type"] == "done" for e in events) == 1
+    assert "was not saved" in caplog.text
+
+
+def test_cases_close_together_share_a_run_and_a_gap_starts_another():
+    first = corpus.current_run_id(now=1000.0)
+    assert corpus.current_run_id(now=1000.0 + corpus.RUN_GAP_S - 1) == first
+    assert corpus.current_run_id(now=1000.0 + 3 * corpus.RUN_GAP_S) != first
+
+
+def test_runs_list_and_export_the_latest_run(saved_runs):
+    def line(run, case, started, **extra):
+        return {"run_id": run, "date": "2026-10-23", "started_at": started, "case_id": case,
+                "category": "messages", "prompt": f"What did {case} say?", "model": "local-test", "role": "agent",
+                "route_source": "corpus_live_model", "tools": [], "answer": "", "status": "done", "error": "",
+                "latency_s": 1.5, "model_calls": 1, "inference_verified": True, **extra}
+    corpus.persist(line("run-a", "LIVE-001", "2026-10-23T09:00:00-07:00"))
+    corpus.persist(line("run-b", "LIVE-001", "2026-10-23T10:00:00-07:00",
+                        tools=[{"id": "c1", "name": "view_messages", "args": {"conversation": "Mom", "count": 5},
+                                "result": "line one\nline two"}],
+                        answer="Mom asked about dinner.\n\nShe said 7, \"maybe\"."))
+    corpus.persist(line("run-b", "LIVE-002", "2026-10-23T10:00:05-07:00", status="error",
+                        error="Live corpus case could not finish (TimeoutError).", inference_verified=False))
+    (saved_runs / "2026-10-23.jsonl").open("a").write("not json\n")
+    runs = corpus.runs()["runs"]
+    assert [(r["run_id"], r["cases"], r["done"], r["errors"], r["verified"]) for r in runs] == [
+        ("run-b", 2, 1, 1, 1), ("run-a", 1, 1, 0, 1)]
+    markdown = corpus.export_md("2026-10-23").body.decode()
+    assert markdown.startswith("# Wisp corpus run run-b")
+    assert "2 cases · 1 done · 1 errors · 1 with verified inference" in markdown
+    assert "## LIVE-001 · messages · done" in markdown and "## LIVE-002 · messages · error" in markdown
+    assert "**Prompt:** What did LIVE-001 say?" in markdown
+    assert '- `view_messages` {"conversation": "Mom", "count": 5}' in markdown
+    assert "  > line one line two" in markdown
+    assert "> Mom asked about dinner.\n>\n> She said 7" in markdown
+    assert "**Error:** Live corpus case could not finish (TimeoutError)." in markdown
+    assert "run-a" not in markdown
+    assert "# Wisp corpus run run-a" in corpus.export_md("2026-10-23", run_id="run-a").body.decode()
+    import csv as csv_module, io
+    rows = list(csv_module.reader(io.StringIO(corpus.export_csv_route("2026-10-23").body.decode())))
+    assert rows[0] == corpus.CSV_COLUMNS
+    assert [row[2] for row in rows[1:]] == ["LIVE-001", "LIVE-002"]
+    assert rows[1][8] == "view_messages" and rows[1][10] == 'Mom asked about dinner.\n\nShe said 7, "maybe".'
+    from fastapi import HTTPException
+    for date, run_id in (("2026-10-24", None), ("../etc", None), ("2026-10-23", "../x"), ("2026-10-23", "missing")):
+        with pytest.raises(HTTPException):
+            corpus.export_md(date, run_id=run_id)

@@ -15,6 +15,7 @@ final class ScriptedBackend: ChatBackend {
     var deleted: [String] = []
     var runs: [(prompt: String, session: String)] = []
     var liveCases: [AssistantTaskCorpusCase] = []
+    var savedExport: (markdown: String, csv: String)?
     var liveRuns: [String] = []
     var caseDelayMs: UInt64 = 0
     var liveDelayMs: UInt64 = 0
@@ -61,6 +62,7 @@ final class ScriptedBackend: ChatBackend {
         if caseDelayMs > 0 { try? await Task.sleep(nanoseconds: caseDelayMs * 1_000_000) }
         return liveCases // deliberately return even after cancellation
     }
+    func savedCorpusExport() async throws -> (markdown: String, csv: String)? { savedExport }
     func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
         liveRuns.append(id)
         if liveDelayMs > 0 { try? await Task.sleep(nanoseconds: liveDelayMs * 1_000_000) }
@@ -139,6 +141,66 @@ struct ChatStoreChecks {
             check(reply.tools.first?.result.contains("source quotation") == true, "real source output stays inspectable")
             check(conversation.sessionId.isEmpty, "corpus does not reuse a saved session")
             check(conversation.messages.last!.text.contains("1/1"), "summary counts verified model completions")
+        }
+        // /corpus export: parsing, help, and the files it writes.
+        do {
+            if case .export? = try! AssistantTaskCorpusCommand.resolve("/corpus export") {
+                check(true, "/corpus export resolves to export")
+            } else { check(false, "/corpus export must resolve to export") }
+            check((try? AssistantTaskCorpusCommand.resolve("/corpus export now")) == nil, "export takes no arguments")
+            check(AssistantTaskCorpusCommand.helpText.contains("/corpus export"), "help lists /corpus export")
+            check(AssistantTaskCorpusCommand.CommandError.usage.errorDescription?.contains("export") == true,
+                  "the usage line names export")
+            let backend = ScriptedBackend()
+            let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"messages","difficulty":"basic","target":"Example Person","token":"t1","conversation":[{"role":"user","content":"Read my recent messages with Example Person."}],"setup":"local","expected":{"tools":["view_messages"],"behavior":["Verify the source quote."]},"risk":"read_only"}"#.utf8)
+            backend.liveCases = [try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)]
+            backend.script = { _ in [
+                ev("corpus_model", ["model": "agent-local", "started": 1, "completed": 1]),
+                ev("tool_call", ["id": "read1", "name": "view_messages", "decision": "allow"]),
+                ev("tool_result", ["id": "read1", "result": "Example Person: source quotation"]),
+                ev("text", ["text": "Line one\nLine two, \"quoted\""]), ev("done")
+            ] }
+            let store = ChatStore(backend: backend)
+            // TMPDIR, not FileManager's temporaryDirectory: Foundation ignores TMPDIR, and
+            // the runner's per-gate directory is the one place a fixture may write.
+            let scratch = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory(),
+                              isDirectory: true).appendingPathComponent("corpus-export-\(UUID().uuidString)")
+            store.exportDirectory = { scratch }
+            do {
+                _ = try await store.exportCorpus()
+                check(false, "an export with no run must fail")
+            } catch {
+                check(error.localizedDescription.contains("no corpus run"), "no run to export says so")
+            }
+            check(store.corpusMarkdown(store.latestCorpusConversation) == nil, "nothing to copy without a run")
+            store.submit("/corpus smoke")
+            await settle(500)
+            let files = try! await store.exportCorpus(now: Date(timeIntervalSince1970: 0))
+            check(!files.saved && files.markdown.deletingLastPathComponent().path == scratch.path
+                    && files.markdown.lastPathComponent.hasPrefix("wisp-corpus-") && files.markdown.pathExtension == "md"
+                    && files.csv.deletingPathExtension().lastPathComponent == files.markdown.deletingPathExtension().lastPathComponent,
+                  "an unsaved run exports from the screen as a .md and .csv pair")
+            let markdown = (try? String(contentsOf: files.markdown, encoding: .utf8)) ?? ""
+            check(markdown.contains("## LIVE-001 · messages · done")
+                    && markdown.contains("**Prompt:** Read my recent messages with Example Person.")
+                    && markdown.contains("- `view_messages`") && markdown.contains("  > Example Person: source quotation")
+                    && markdown.contains("> Line one\n> Line two") && markdown.contains("inference verified"),
+                  "the Markdown has a section per case: prompt, tools, answer, status")
+            let csv = (try? String(contentsOf: files.csv, encoding: .utf8)) ?? ""
+            check(csv.hasPrefix(CorpusExport.csvColumns.joined(separator: ",") + "\r\n")
+                    && csv.contains("\"Line one\nLine two, \"\"quoted\"\"\""), "the CSV quotes commas, quotes and line breaks")
+            check(store.corpusMarkdown(store.latestCorpusConversation)?.contains("LIVE-001") == true,
+                  "Copy results uses the run on screen")
+            backend.savedExport = ("# saved run", "case_id\r\n")
+            let saved = try! await store.exportCorpus(now: Date(timeIntervalSince1970: 60))
+            check(saved.saved && (try? String(contentsOf: saved.markdown, encoding: .utf8)) == "# saved run",
+                  "a saved run is preferred over the screen")
+            let notch = NotchCorpusController(store: store)
+            notch.submit("/corpus export")
+            await settle(200)
+            check(notch.isPresented && notch.exported?.saved == true && notch.notice.isEmpty
+                    && backend.liveRuns == ["LIVE-001"], "the notch's /corpus export writes the files and runs nothing")
+            try? FileManager.default.removeItem(at: scratch)
         }
         // The notch shares guarded execution and pins its own conversation.
         do {

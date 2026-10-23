@@ -3,19 +3,40 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import csv
 import hashlib
+import io
 import json
+import logging
+import os
+import re
+import time
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 import anyio
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from service.paths import MOE_DIR
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/corpus")
 PROFILE = MOE_DIR / "assistant-corpus-profile.json"
+# One JSON line per finished case, one file per local day. Owner-only: the
+# lines carry real names, subjects and source excerpts.
+RUNS_DIR = MOE_DIR / "corpus-runs"
+RESULT_EXCERPT = 2000
+ANSWER_LIMIT = 20000
+RUN_FILE_LIMIT = 32 * 1024 * 1024
+# Cases arrive one request at a time; a case that starts within this many
+# seconds of the last one ending belongs to the same run.
+RUN_GAP_S = 90
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_RUN_ID = re.compile(r"[A-Za-z0-9-]{1,64}")
 _RUN_LOCK = asyncio.Lock()
+_run_state = {"id": "", "last": 0.0}
 READ_CATEGORIES = {"lookup_contact": "messages_read", "view_messages": "messages_read",
                    "view_emails": "email_read"}
 
@@ -220,6 +241,208 @@ async def run_case(case, emit):
             idle.end_foreground()
 
 
+class CaseRecord:
+    """Folds one case's streamed events into the line saved when it ends."""
+
+    def __init__(self, case, run_id):
+        self.started = time.monotonic()
+        now = datetime.now().astimezone()
+        self.line = {"run_id": run_id, "date": now.strftime("%Y-%m-%d"),
+                     "started_at": now.isoformat(timespec="seconds"),
+                     "case_id": case["id"], "category": case["category"],
+                     "prompt": case["conversation"][-1]["content"],
+                     "model": "", "role": "", "route_source": "", "tools": [], "answer": "",
+                     "status": "incomplete", "error": "", "latency_s": None,
+                     "model_calls": 0, "inference_verified": False}
+
+    def observe(self, event):
+        line, kind = self.line, event.get("type")
+        if kind == "routed":
+            line.update(model=str(event.get("model", "")), role=str(event.get("role", "")),
+                        route_source=str(event.get("route_source", "")))
+        elif kind == "tool_call":
+            line["tools"].append({"id": str(event.get("id", "")), "name": str(event.get("name", "")),
+                                  "args": event.get("args") if isinstance(event.get("args"), dict) else {},
+                                  "result": ""})
+        elif kind == "tool_result":
+            for tool in reversed(line["tools"]):
+                if tool["id"] == str(event.get("id", "")):
+                    tool["result"] = str(event.get("result", ""))[:RESULT_EXCERPT]
+                    break
+        elif kind in ("delta", "text"):
+            line["answer"] = (line["answer"] + str(event.get("text", "")))[:ANSWER_LIMIT]
+        elif kind == "clear_answer":
+            line["answer"] = ""
+        elif kind == "corpus_model":
+            line["model_calls"] = int(event.get("completed") or 0)
+            line["inference_verified"] = line["model_calls"] > 0
+        elif kind == "done":
+            line["status"] = "done"
+        elif kind == "error":
+            # The same safe message the UI shows; never provider detail.
+            line.update(status="error", error=str(event.get("message", "")))
+
+    def finish(self, stopped=False):
+        if stopped and self.line["status"] == "incomplete":
+            self.line["status"] = "stopped"
+        self.line["latency_s"] = round(time.monotonic() - self.started, 2)
+        return self.line
+
+
+def current_run_id(now=None):
+    now = time.monotonic() if now is None else now
+    if not _run_state["id"] or now - _run_state["last"] > RUN_GAP_S:
+        _run_state["id"] = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+    _run_state["last"] = now
+    return _run_state["id"]
+
+
+def persist(line, directory=None):
+    """Append one line. Saving must never fail the case: log and carry on."""
+    directory = directory or RUNS_DIR
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+        path = directory / f"{line['date']}.jsonl"
+        data = (json.dumps(line, ensure_ascii=False) + "\n").encode()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+        finally:
+            os.close(fd)
+        return path
+    except Exception as exc:
+        log.warning("Corpus case %s was not saved (%s)", line.get("case_id"), type(exc).__name__)
+        return None
+
+
+def read_day(date, directory=None):
+    path = (directory or RUNS_DIR) / f"{date}.jsonl"
+    try:
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > RUN_FILE_LIMIT:
+            return []
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = []
+    for text in raw.splitlines():
+        try:
+            value = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and value.get("run_id") and value.get("case_id"):
+            lines.append(value)
+    return lines
+
+
+def list_runs(directory=None, days=14):
+    directory = directory or RUNS_DIR
+    try:
+        dates = sorted((p.stem for p in directory.glob("*.jsonl") if _DATE.fullmatch(p.stem)), reverse=True)[:days]
+    except OSError:
+        return []
+    runs = {}
+    for date in dates:
+        for line in read_day(date, directory):
+            run = runs.setdefault(line["run_id"], {"run_id": line["run_id"], "date": date,
+                                                   "started_at": line.get("started_at", ""),
+                                                   "cases": 0, "done": 0, "errors": 0, "verified": 0})
+            run["started_at"] = min(run["started_at"], line.get("started_at", "")) or run["started_at"]
+            run["cases"] += 1
+            run["done"] += line.get("status") == "done"
+            run["errors"] += line.get("status") == "error"
+            run["verified"] += bool(line.get("inference_verified"))
+    return sorted(runs.values(), key=lambda r: r["started_at"], reverse=True)
+
+
+def run_lines(date, run_id=None, directory=None):
+    lines = read_day(date, directory)
+    if run_id is None and lines:
+        run_id = max(lines, key=lambda line: line.get("started_at", ""))["run_id"]
+    return [line for line in lines if line["run_id"] == run_id]
+
+
+def _one_line(text, limit):
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def export_markdown(lines):
+    if not lines:
+        return ""
+    run = lines[0]["run_id"]
+    done = sum(line.get("status") == "done" for line in lines)
+    errors = sum(line.get("status") == "error" for line in lines)
+    verified = sum(bool(line.get("inference_verified")) for line in lines)
+    out = [f"# Wisp corpus run {run}", "",
+           f"Started {lines[0].get('started_at', '')} · {len(lines)} cases · {done} done · {errors} errors"
+           f" · {verified} with verified inference", ""]
+    for line in lines:
+        latency = line.get("latency_s")
+        out += [f"## {line['case_id']} · {line.get('category', '')} · {line.get('status', '')}", "",
+                f"**Prompt:** {_one_line(line.get('prompt', ''), 2000)}", "",
+                f"**Model:** {line.get('model') or 'unknown'} ({line.get('role') or '-'}, {line.get('route_source') or '-'})"
+                f" · {'%.1f s' % latency if isinstance(latency, (int, float)) else 'time unknown'}"
+                f" · {'inference verified' if line.get('inference_verified') else 'inference not verified'}", ""]
+        tools = line.get("tools") or []
+        out.append("**Tools:**" if tools else "**Tools:** none")
+        for tool in tools:
+            out.append(f"- `{tool.get('name', '')}` {json.dumps(tool.get('args') or {}, ensure_ascii=False)}")
+            if tool.get("result"):
+                out.append(f"  > {_one_line(tool['result'], 400)}")
+        out += ["", "**Answer:**", ""]
+        answer = str(line.get("answer") or "").strip()
+        out += [("> " + row) if row else ">" for row in answer.splitlines()] if answer else ["> (no answer)"]
+        if line.get("error"):
+            out += ["", f"**Error:** {line['error']}"]
+        out.append("")
+    return "\n".join(out)
+
+
+CSV_COLUMNS = ["run_id", "started_at", "case_id", "category", "status", "latency_s", "inference_verified",
+               "model", "tools", "prompt", "answer", "error"]
+
+
+def export_csv(lines):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(CSV_COLUMNS)
+    for line in lines:
+        writer.writerow([line.get("run_id", ""), line.get("started_at", ""), line.get("case_id", ""),
+                         line.get("category", ""), line.get("status", ""), line.get("latency_s", ""),
+                         "yes" if line.get("inference_verified") else "no", line.get("model", ""),
+                         "; ".join(t.get("name", "") for t in line.get("tools") or []),
+                         line.get("prompt", ""), line.get("answer", ""), line.get("error", "")])
+    return buffer.getvalue()
+
+
+@router.get("/runs")
+def runs():
+    return {"runs": list_runs()}
+
+
+def _export_lines(date, run_id):
+    if not _DATE.fullmatch(date) or (run_id is not None and not _RUN_ID.fullmatch(run_id)):
+        raise HTTPException(400, "Use a YYYY-MM-DD date and a run id from /corpus/runs.")
+    lines = run_lines(date, run_id)
+    if not lines:
+        raise HTTPException(404, "No saved corpus run for that day.")
+    return lines
+
+
+@router.get("/runs/{date}/export.md")
+def export_md(date: str, run_id: str | None = None):
+    return PlainTextResponse(export_markdown(_export_lines(date, run_id)), media_type="text/markdown; charset=utf-8")
+
+
+@router.get("/runs/{date}/export.csv")
+def export_csv_route(date: str, run_id: str | None = None):
+    return PlainTextResponse(export_csv(_export_lines(date, run_id)), media_type="text/csv; charset=utf-8")
+
+
 @router.post("/run")
 async def run(body: dict):
     try:
@@ -233,21 +456,32 @@ async def run(body: dict):
 
     async def stream():
         queue = asyncio.Queue()
+        record = CaseRecord(case, current_run_id())
 
         async def emit(event):
+            try:
+                record.observe(event)
+            except Exception as exc:
+                log.warning("Corpus event not recorded (%s)", type(exc).__name__)
             await queue.put(event)
 
         async def worker():
+            stopped = False
             try:
                 async with asyncio.timeout(240):
                     async with _RUN_LOCK:
                         await run_case(case, emit)
             except asyncio.CancelledError:
+                stopped = True
                 raise
             except Exception as exc:
                 # Provider errors can contain request bodies; expose only their
                 # type, never personal prompt/result text or transport credentials.
                 await emit({"type": "error", "message": f"Live corpus case could not finish ({type(exc).__name__}). Check the local agent model and source availability."})
+            finally:
+                # Once, at case end, whatever ended it.
+                persist(record.finish(stopped=stopped))
+                current_run_id()
 
         task = asyncio.create_task(worker())
         try:

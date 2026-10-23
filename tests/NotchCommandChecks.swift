@@ -41,6 +41,8 @@ struct NotchCommandChecks {
         check(NotchCommand.isCorpusRequest("/corpus bad-selector"), "bad selectors stay out of normal inference")
         check(!NotchCommand.isCorpusRequest("/corpus/file.txt"), "paths stay ordinary prompts")
         check(!NotchCommand.isCorpusRequest("please /corpus all"), "embedded text is not a corpus command")
+        check(NotchCommand.isCorpusRequest("/corpus export"), "export uses the corpus dispatch, not inference")
+        check(NotchCommand.corpus.summary.contains("export"), "the /corpus summary mentions export")
 
         // Suggestions appear only while typing a command.
         check(NotchCommand.suggestions(for: "/") == NotchCommand.allCases, "a bare slash lists every command")
