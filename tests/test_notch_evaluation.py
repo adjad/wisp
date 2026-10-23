@@ -367,6 +367,8 @@ def test_hub_refuses_every_publication_variant():
             hub.publish_sync({"type": "send_email", "to": "a@example.com"})
         with pytest.raises(boundary.EvaluationBlockedError):
             asyncio.run(hub.publish({"type": "create_calendar_event"}, durable=False))
+        with pytest.raises(boundary.EvaluationBlockedError):     # live-run only; this run is a snapshot
+            hub.publish_sync({"type": "sync_assistant_sources_now", "sources": ["email"]})
         with pytest.raises(boundary.EvaluationBlockedError):
             hub.publish_committed_sync(None, None, None, None)
         with pytest.raises(boundary.EvaluationBlockedError):

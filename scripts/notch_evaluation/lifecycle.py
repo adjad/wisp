@@ -173,6 +173,9 @@ class Supervisor:
         self.root, self.spawn = Path(root), spawn
         self.children: list[Child] = []
         self.state: dict = {"supervisor_pid": os.getpid(), "state": "starting", "children": []}
+        # Runs once before the children are retired (a Launch Services app is
+        # asked to quit itself; it is not a child that could be signalled).
+        self.before_stop = None
 
     def write(self, **fields) -> None:
         self.state.update(fields)
@@ -197,10 +200,58 @@ class Supervisor:
         return child
 
     def stop_all(self, state: str, reason: str = "") -> dict:
+        hook, self.before_stop = self.before_stop, None
+        if hook is not None:
+            try:
+                self.state["app_quit"] = hook()
+            except Exception as exc:  # noqa: BLE001 — retirement still runs
+                self.state["app_quit"] = {"error": type(exc).__name__}
         for child in reversed(self.children):
             child.retire()
         self.write(state=state, reason=reason)
         return self.state
+
+
+APP_INPUT = "app-input.sock"
+QUIT_WAIT_S = 15.0
+
+
+def request_app_quit(root: str, token: str, launcher: Child | None, *, wait: float = QUIT_WAIT_S,
+                     clock=time.monotonic, nap=time.sleep) -> dict:
+    """Ask the app to quit over its token-checked input socket; never a signal.
+
+    ``launcher`` is the supervised ``open -W`` child, which ends once the app
+    has quit. Returns what happened, for the state file.
+    """
+    outcome: dict = {"requested": False}
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(5)
+            conn.connect(str(Path(root, APP_INPUT)))
+            conn.sendall((json.dumps({"op": "quit", "token": token}) + "\n").encode())
+            reply = json.loads(conn.recv(4096) or b"{}")
+        outcome = {"requested": True, "reply": reply.get("status")}
+    except (OSError, ValueError) as exc:
+        outcome = {"requested": False, "error": type(exc).__name__}
+    if launcher is not None:
+        deadline = clock() + wait
+        while launcher.alive() and clock() < deadline:
+            nap(0.1)
+        outcome["app_exited"] = not launcher.alive()
+    return outcome
+
+
+def launch_services_argv(bundle: str, root: str, env: dict) -> list[str]:
+    """`open` a new instance of the evaluation bundle and wait for it to quit.
+
+    Launch Services makes the app its own responsible process, so the
+    permissions the user grants are this bundle's, never a wrapper's.
+    """
+    argv = ["/usr/bin/open", "-n", "-W"]
+    for key, value in sorted(env.items()):
+        argv += ["--env", f"{key}={value}"]
+    log = str(Path(root, "app.log"))
+    return argv + ["--stdout", log, "--stderr", log, bundle]
 
 
 def _identity(port: int, token: str, nonce: str, timeout: float) -> int | None:
@@ -255,10 +306,18 @@ def supervise(args) -> int:
             "live_sources": config.get("source_mode") == "live"})
         tmp = Path(root, "tmp-app")
         os.mkdir(tmp, 0o700)
-        sup.start("app", ["/usr/bin/sandbox-exec", "-f", str(Path(root, "app.sb")), args.app],
-                  env={"HOME": _home(), "LANG": "C.UTF-8", "TMPDIR": str(tmp),
-                       "WISP_NOTCH_EVALUATION_CONFIG": str(Path(root, "native-config.json"))},
-                  cwd=root, log="app.log")
+        app_env = {"HOME": _home(), "LANG": "C.UTF-8", "TMPDIR": str(tmp),
+                   "WISP_NOTCH_EVALUATION_CONFIG": str(Path(root, "native-config.json"))}
+        if args.bundle:
+            # Live sources: launched through Launch Services; the app applies
+            # app.sb to itself and is stopped by a token-checked quit.
+            os.close(os.open(Path(root, "app.log"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+            launcher = sup.start("app", launch_services_argv(args.bundle, root, app_env),
+                                 env={"LANG": "C.UTF-8"}, cwd=root, log="app-launch.log")
+            sup.before_stop = lambda: request_app_quit(root, config["token"], launcher)
+        else:
+            sup.start("app", ["/usr/bin/sandbox-exec", "-f", str(Path(root, "app.sb")), args.app],
+                      env=app_env, cwd=root, log="app.log")
         sup.write(state="running")
     except Exception as exc:  # noqa: BLE001 — every partial launch is retired and reported
         sup.stop_all("failed", f"launch failed: {type(exc).__name__}")
@@ -391,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--host", required=True)
     run.add_argument("--app", required=True)
     run.add_argument("--ready-timeout", type=float, default=30.0)
+    run.add_argument("--bundle", help="live sources: launch this bundle through Launch Services")
     end = sub.add_parser("stop", help="ask the supervisor to retire its children")
     end.add_argument("root")
     keep = sub.add_parser("retire", help="move a finished run's root into a private archive")

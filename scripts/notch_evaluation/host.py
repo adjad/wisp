@@ -60,7 +60,10 @@ ENDPOINTS = (("POST", r"/agent"), ("POST", r"/agent/approve"), ("GET", r"/chats"
 # Each ingests a read the app made in this launch into the isolated store.
 LIVE_SOURCE_ENDPOINTS = (("POST", r"/assistant/sync/(calendar|emails|notes|messages)"),
                          ("GET", r"/assistant/sync/(status|messages)"),
-                         ("POST", r"/assistant/today/workspace/email/identity(/begin)?"))
+                         ("POST", r"/assistant/today/workspace/email/identity(/begin)?"),
+                         # The app's re-read requests; the boundary lets this
+                         # stream carry pings and sync_assistant_sources_now only.
+                         ("GET", r"/assistant/events"))
 SOURCE_MODES = ("snapshot", "live")
 
 # Reviewed builtin reads: registry name -> (module, qualname, path arguments).
@@ -503,7 +506,8 @@ def latch_boundary(config: HostConfig):
     boundary.latch(boundary.Context(
         run_id=config.run_id, owned_root=os.path.realpath(config.owned_root), source_roots=roots,
         reads=reads, receipts_path=os.path.join(config.paths()["evidence"], "boundary.jsonl"),
-        allowed_models=frozenset(config.allowed_models)))
+        allowed_models=frozenset(config.allowed_models),
+        live_source_sync=config.source_mode == "live"))
     return boundary
 
 

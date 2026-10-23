@@ -41,6 +41,11 @@ _MAX_RECEIPTS = 10_000             # in-memory copy only; the file is the record
 _MAX_RECEIPT_BYTES = 64 * 1024 * 1024
 # Hub events that carry no effect and no private content. Everything else is refused.
 _INERT_EVENTS = frozenset({"changed", "heartbeat", "hello"})
+# An approved live-source run admits exactly one more event: a request that
+# the app re-read named sources. It carries no content and changes nothing;
+# the app's readers only read. It is transient (never queued or replayed).
+LIVE_SYNC_EVENT = "sync_assistant_sources_now"
+LIVE_SYNC_SOURCES = frozenset({"calendar", "reminders", "email", "messages", "notes"})
 
 
 class EvaluationBlockedError(RuntimeError):
@@ -69,6 +74,8 @@ class Context:
     reads: tuple[ReadBinding, ...]
     receipts_path: str | None = None
     allowed_models: frozenset[str] = frozenset()
+    # True only for a run the user approved with live, read-only native readers.
+    live_source_sync: bool = False
 
 
 @dataclass(frozen=True)
@@ -271,13 +278,33 @@ def native_request_blocked(event_type: str, payload) -> dict | None:
                      "nothing was sent or changed"}
 
 
+def is_live_sync(event) -> bool:
+    """The one admitted live-run event, in its exact shape and nothing more."""
+    if not isinstance(event, dict) or set(event) != {"type", "sources"} or event["type"] != LIVE_SYNC_EVENT:
+        return False
+    sources = event["sources"]
+    return (isinstance(sources, list) and bool(sources) and len(sources) == len(set(sources))
+            and all(isinstance(s, str) and s in LIVE_SYNC_SOURCES for s in sources))
+
+
+def _live() -> bool:
+    return _state is not None and _state.context.live_source_sync
+
+
 def publication_allowed(event, variant: str) -> bool:
     """False for an inert event the hub should skip silently; raises for any other.
 
-    Returns True only outside evaluation. Under evaluation nothing reaches the
-    durable queue or a subscriber.
+    Returns True outside evaluation. Under evaluation nothing reaches the
+    durable queue, and a subscriber is reached only in an approved live-source
+    run, only by the exact source re-read request (``is_live_sync``), and only
+    transiently.
     """
     if _state is None:
+        return True
+    if _live() and ((variant == "publish_sync" and is_live_sync(event))
+                    or (variant == "events" and event == {"type": "events_subscription"})):
+        _record("allowed", "hub", {"variant": variant, "event_type": event["type"],
+                                   "sources": sorted(event.get("sources", []))})
         return True
     kind = event.get("type") if isinstance(event, dict) else None
     if kind in _INERT_EVENTS:
@@ -286,6 +313,13 @@ def publication_allowed(event, variant: str) -> bool:
     _record("blocked", "hub", {"variant": variant, "event_type": str(kind),
                                "event_sha256": _digest(event)})
     raise EvaluationBlockedError(f"{BLOCKED_MARKER}: hub {variant} publication of {kind!r} refused")
+
+
+def subscriber_may_receive(event) -> bool:
+    """What an evaluation event stream may carry: pings and the live re-read request."""
+    if _state is None:
+        return True
+    return isinstance(event, dict) and (event.get("type") in {"heartbeat", "hello"} or is_live_sync(event))
 
 
 def model_control_blocked(operation: str, model: str = "") -> EvaluationBlockedError | None:

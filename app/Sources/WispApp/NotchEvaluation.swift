@@ -460,8 +460,8 @@ enum NotchEvaluationInput {
         guard let given = object["token"] as? String, EvaluationGuard.constantTimeEqual(given, token) else {
             throw Problem.unauthorized
         }
-        guard let op = object["op"] as? String, ["ask", "ping"].contains(op) else { throw Problem.badField("op") }
-        if op == "ping" { return Request(op: op, caseID: "", text: "", newChat: false, timeout: 0) }
+        guard let op = object["op"] as? String, ["ask", "ping", "quit"].contains(op) else { throw Problem.badField("op") }
+        if op != "ask" { return Request(op: op, caseID: "", text: "", newChat: false, timeout: 0) }
         guard let caseID = object["case"] as? String, isSafeID(caseID) else { throw Problem.badField("case") }
         guard let text = object["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               text.count <= maxTextLength else { throw Problem.badField("text") }
@@ -608,6 +608,14 @@ final class NotchEvaluationInputAdapter: NotchEvaluationTurnObserver {
             ledger.record("input_refused", ["reason": "\(error)"])
             return reply(NotchEvaluationInput.encode(["status": "refused", "error": "\(error)"]))
         }
+        if request.op == "quit" {
+            // The supervisor's token-checked stop: the app ends itself. Nothing
+            // ever signals it, since a Launch Services launch is not a child.
+            ledger.record("quit_requested", [:])
+            reply(NotchEvaluationInput.encode(["status": "quitting"]))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { NSApp.terminate(nil) }
+            return
+        }
         if request.op == "ping" {
             return reply(NotchEvaluationInput.encode([
                 "status": ledger.healthy ? "ready" : "unhealthy", "settled": model.conversationSettled]))
@@ -687,6 +695,11 @@ final class NotchEvaluationReaders {
     let notes = NotesReader()
     let contacts = ContactsReader()
 
+    private let ledger: NotchEvaluationLedger
+    private var stream: Task<Void, Never>?
+
+    init(ledger: NotchEvaluationLedger) { self.ledger = ledger }
+
     func start() {
         calendar.start()
         mail.start()
@@ -694,6 +707,111 @@ final class NotchEvaluationReaders {
         reminders.start()
         notes.start()
         contacts.start()
+        stream = Task { [weak self] in await self?.followReReadRequests() }
+    }
+
+    /// Re-reads the named sources. The backend admits exactly this request on
+    /// the event stream; anything else that arrives is ignored and recorded.
+    func sync(_ sources: [String]) {
+        ledger.record("live_resync", ["sources": sources.sorted().joined(separator: ",")])
+        for source in Set(sources) {
+            switch source {
+            case "calendar": calendar.sync()
+            case "reminders": reminders.sync()
+            case "email": mail.sync()
+            case "messages": messages.sync()
+            case "notes": notes.sync()
+            default: break
+            }
+        }
+    }
+
+    private func followReReadRequests() async {
+        let url = WispClient.baseURL.appendingPathComponent("assistant/events")
+        while !Task.isCancelled {
+            if let (bytes, _) = try? await URLSession.shared.bytes(from: url) {
+                do {
+                    for try await line in bytes.lines where line.hasPrefix("data: ") {
+                        guard let object = try? JSONSerialization.jsonObject(with: Data(line.dropFirst(6).utf8))
+                                as? [String: Any], let kind = object["type"] as? String else { continue }
+                        if kind == "sync_assistant_sources_now", let sources = object["sources"] as? [String] {
+                            sync(sources)
+                        } else if kind != "heartbeat" && kind != "hello" {
+                            var fields: [String: Any] = [:]
+                            NotchEvaluationLedger.identifier("event", kind, into: &fields)
+                            ledger.record("event_ignored", fields)
+                        }
+                    }
+                } catch {}
+            }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        }
+    }
+}
+
+/// Ends the app when its backend stops proving this run's identity, so a
+/// Launch Services launch never outlives the supervised backend.
+@MainActor
+final class NotchEvaluationIdentityWatch {
+    static let interval: TimeInterval = 10
+    static let allowedFailures = 3
+    private var failures = 0
+    private var timer: Timer?
+    private let ledger: NotchEvaluationLedger
+
+    init(ledger: NotchEvaluationLedger) { self.ledger = ledger }
+
+    func start() {
+        timer = Timer.scheduledTimer(withTimeInterval: Self.interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.check() }
+        }
+    }
+
+    private func check() {
+        var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("evaluation/identity"))
+        request.timeoutInterval = 5
+        // The guard protocol accepts a reply only with this run's nonce and pid.
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            let ok = error == nil && (response as? HTTPURLResponse)?.statusCode == 200
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.observe(ok) } }
+        }.resume()
+    }
+
+    private func observe(_ ok: Bool) {
+        failures = ok ? 0 : failures + 1
+        guard failures >= Self.allowedFailures else { return }
+        timer?.invalidate()
+        ledger.record("identity_lost_quit", ["failures": failures])
+        NSApp.terminate(nil)
+    }
+}
+
+/// Confines this process with the launcher's profile. A Launch Services
+/// launch (needed so macOS attributes permission prompts to this app, not to
+/// a sandbox-exec wrapper) cannot be wrapped, so the app applies the same
+/// owned-root profile to itself before it reads anything. Fails closed.
+enum NotchEvaluationSelfSandbox {
+    private typealias SandboxInit = @convention(c) (
+        UnsafePointer<CChar>, UInt64, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> Int32
+
+    static func apply(profileAt url: URL) {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
+        guard fd >= 0 else { fatalError("The evaluation profile is missing") }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid(),
+              info.st_mode & 0o077 == 0, info.st_size > 0, info.st_size < 1 << 20 else {
+            close(fd); fatalError("The evaluation profile is not a private regular file")
+        }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        guard let text = String(data: handle.readDataToEndOfFile(), encoding: .utf8),
+              let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "sandbox_init") else {
+            fatalError("The evaluation profile could not be applied")
+        }
+        let sandboxInit = unsafeBitCast(symbol, to: SandboxInit.self)
+        var error: UnsafeMutablePointer<CChar>?
+        guard sandboxInit(text, 0, &error) == 0 else {
+            fatalError("The evaluation profile was refused: \(error.map { String(cString: $0) } ?? "unknown")")
+        }
     }
 }
 
@@ -705,12 +823,14 @@ enum NotchEvaluationHost {
 
     static func run() {
         let config = NotchEvaluationEnvironment.config
+        if config.liveSources {
+            NotchEvaluationSelfSandbox.apply(profileAt: config.ownedRoot.appendingPathComponent("app.sb"))
+        }
         EvaluationGuardProtocol.config = config
         EvaluationGuardProtocol.ledger = NotchEvaluationEnvironment.ledger
         guard URLProtocol.registerClass(EvaluationGuardProtocol.self) else {
             fatalError("The evaluation network guard could not be installed")
         }
-        let defaults = UserDefaults(suiteName: "com.wisp.notch-evaluation.\(config.runID)")!
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
         let client = WispClient()
@@ -732,7 +852,7 @@ enum NotchEvaluationHost {
             // evaluation backend. Every write path stays refused (OverlayModel
             // seams and the backend boundary); Browser History and Activity are
             // not sources of this run.
-            let readers = NotchEvaluationReaders()
+            let readers = NotchEvaluationReaders(ledger: ledger)
             readers.start()
             retained.append(readers)
             ledger.record("live_readers_started", [:])
@@ -760,6 +880,9 @@ enum NotchEvaluationHost {
         model.evaluationObserver = adapter
         do { try adapter.start() } catch { fatalError("The evaluation input adapter could not start: \(error)") }
         retained.append(adapter)
+        let watch = NotchEvaluationIdentityWatch(ledger: ledger)
+        watch.start()
+        retained.append(watch)
         guard ledger.healthy else {
             fatalError("Notch evaluation receipts are unavailable: \(ledger.failure ?? "unknown")")
         }

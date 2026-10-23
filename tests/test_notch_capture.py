@@ -1,11 +1,16 @@
-"""The live run's read-only file capture and snapshot install, on a SYNTHETIC home.
+"""Live-run plumbing: read-only file capture, snapshot install, launch and quit.
 
-A temporary directory stands in for the user's home. Nothing here reads the
-real Documents or Desktop, starts the app or contacts an engine.
+A temporary directory stands in for the user's home and a socket thread for
+the app. Nothing here reads the real Documents or Desktop, starts the app,
+runs `open`, signals a process or contacts an engine.
 """
 from __future__ import annotations
 
+import json
 import os
+import socket
+import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -86,5 +91,77 @@ def test_reader_endpoints_exist_only_in_live_mode(tmp_path):
     assert live == ENDPOINTS + LIVE_SOURCE_ENDPOINTS
     methods = {m for m, _ in LIVE_SOURCE_ENDPOINTS}
     assert methods <= {"GET", "POST"}
-    assert not any("event" in p or "send" in p or "behavior" in p for _, p in LIVE_SOURCE_ENDPOINTS)
+    assert not any("send" in p or "behavior" in p or "ack" in p or "claim" in p for _, p in LIVE_SOURCE_ENDPOINTS)
+    assert [p for _, p in LIVE_SOURCE_ENDPOINTS if "event" in p] == [r"/assistant/events"]
 
+
+
+class _Launcher:
+    """The supervised `open -W` child: it ends once the app has quit."""
+
+    def __init__(self):
+        self.quit = threading.Event()
+
+    def alive(self):
+        return not self.quit.is_set()
+
+
+def _short_root() -> Path:
+    # AF_UNIX paths are short; this is a private directory of this test only.
+    return Path(tempfile.mkdtemp(prefix="nq", dir="/private/tmp/claude" if os.path.isdir("/private/tmp/claude")
+                                 else None))
+
+
+def test_live_app_is_launched_by_launch_services_and_quit_by_token():
+    root = _short_root()
+    argv = lifecycle.launch_services_argv("/x/Eval.app", str(root), {"B": "2", "A": "1"})
+    assert argv[:3] == ["/usr/bin/open", "-n", "-W"] and argv[-1] == "/x/Eval.app"
+    assert argv[3:7] == ["--env", "A=1", "--env", "B=2"]
+    launcher, seen = _Launcher(), []
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(root / lifecycle.APP_INPUT))
+    server.listen(1)
+
+    def app():
+        conn, _ = server.accept()
+        with conn:
+            request = json.loads(conn.recv(4096))
+            seen.append(request)
+            ok = request == {"op": "quit", "token": "T" * 40}
+            conn.sendall(json.dumps({"status": "quitting" if ok else "refused"}).encode() + b"\n")
+            if ok:
+                launcher.quit.set()
+
+    thread = threading.Thread(target=app, daemon=True)
+    thread.start()
+    outcome = lifecycle.request_app_quit(str(root), "T" * 40, launcher, wait=5)
+    thread.join(5)
+    server.close()
+    assert outcome == {"requested": True, "reply": "quitting", "app_exited": True}
+    # Nothing answering: reported, and the launcher is still waited on, never signalled.
+    gone = lifecycle.request_app_quit(str(root / "missing"), "T" * 40, _Launcher(), wait=0.2)
+    assert gone["requested"] is False and gone["app_exited"] is False
+
+
+def test_stop_asks_the_app_to_quit_before_retiring_children(tmp_path):
+    order = []
+
+    class Proc:
+        pid, returncode = 4321, None
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, sig):
+            order.append(("signal", sig))
+            self.returncode = -sig
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    sup = lifecycle.Supervisor(str(tmp_path), spawn=lambda argv, **kw: Proc())
+    sup.start("app", ["/usr/bin/open"], env={}, cwd=str(tmp_path), log="app-launch.log")
+    sup.before_stop = lambda: order.append("quit") or {"requested": True}
+    state = sup.stop_all("stopped", "stop requested")
+    assert order[0] == "quit" and state["app_quit"] == {"requested": True}
+    assert sup.before_stop is None

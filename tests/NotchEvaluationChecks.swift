@@ -162,6 +162,10 @@ struct NotchEvaluationChecks {
                                                    newChat: false, timeout: 90), "parses an ask")
         check((try? NotchEvaluationInput.parse(inputRequest(["op": "ping", "token": config.token]), token: config.token))?.op == "ping",
               "parses a ping")
+        check((try? NotchEvaluationInput.parse(inputRequest(["op": "quit", "token": config.token]), token: config.token))?.op == "quit",
+              "parses a token-checked quit")
+        check((try? NotchEvaluationInput.parse(inputRequest(["op": "quit", "token": "wrong"]), token: config.token)) == nil,
+              "refuses a quit with a wrong token")
         for (fields, label) in [(["op": "ask", "case": "1", "text": "x", "token": "wrong"], "a wrong token"),
                                 (["op": "ask", "case": "1", "text": "x"], "no token"),
                                 (["op": "shell", "case": "1", "text": "x", "token": config.token], "an unknown op"),

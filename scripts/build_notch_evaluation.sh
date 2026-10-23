@@ -69,29 +69,46 @@ cmd_build() {
 # owned root, its source roots and the app bundle; writes go only to the owned
 # root (TMPDIR is inside it) and this bundle's own caches. Native QA qualifies
 # this profile before any corpus use.
+#
+# A live-source run (the user approved it and grants this bundle's own
+# permissions) differs in exactly these ways: AppleEvents may go to Mail and
+# Notes only, for the readers' fixed read scripts; the AppleEvents and Launch
+# Services lookups those need are not refused; Mail, Messages and the Notes
+# store are readable (never writable); and this bundle's own preferences file
+# is writable. The app applies the profile to itself (see
+# NotchEvaluationSelfSandbox), because it is launched through Launch Services.
 app_profile() {
-  local owned="$1" image="$2" bundle="$3" home cache
+  local owned="$1" image="$2" bundle="$3" live="${4:-}" home cache
   home="$(/usr/bin/dscl . -read "/Users/$(/usr/bin/id -un)" NFSHomeDirectory | /usr/bin/awk '{print $2}')"
   cache="$(/usr/bin/getconf DARWIN_USER_CACHE_DIR)"
   cache="$(cd "$cache" && pwd -P)"
+  local lookups='(global-name "com.apple.coreservices.appleevents")
+  (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.lsd.mapdb")
+  ' reads="" prefs="" events=""
+  if [[ -n "$live" ]]; then
+    lookups=""
+    reads="(subpath \"$home/Library/Mail\") (subpath \"$home/Library/Messages\")
+    (subpath \"$home/Library/Group Containers/group.com.apple.notes\")"
+    prefs="(literal \"$home/Library/Preferences/$BUNDLE_ID.plist\")"
+    events='(allow appleevent-send (appleevent-destination "com.apple.mail") (appleevent-destination "com.apple.Notes"))'
+  fi
   cat <<PROFILE
 (version 1)
 (allow default)
 (deny appleevent-send)
+$events
 (deny process-exec (require-not (literal "$image")))
 (deny process-fork)
-(deny mach-lookup (global-name "com.apple.coreservices.appleevents")
-  (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.lsd.mapdb")
-  (global-name "com.apple.usernoted.client") (global-name "com.apple.pasteboard.1")
+(deny mach-lookup $lookups(global-name "com.apple.usernoted.client") (global-name "com.apple.pasteboard.1")
   (global-name "com.apple.coreservices.quarantine-resolver"))
 (deny network*)
 (allow network-outbound (remote ip "localhost:$LISTEN_PORT"))
 (deny file-read-data (require-all (subpath "$home")
-  (require-not (require-any (subpath "$owned") (subpath "$bundle")))))
+  (require-not (require-any (subpath "$owned") (subpath "$bundle") $reads))))
 (deny file-write* (require-not (require-any (subpath "$owned") (literal "/dev/null")
   (subpath "$home/Library/Caches/$BUNDLE_ID")
   (subpath "$home/Library/Saved Application State/$BUNDLE_ID.savedState")
-  (subpath "$cache$BUNDLE_ID"))))
+  (subpath "$cache$BUNDLE_ID") $prefs)))
 PROFILE
 }
 
@@ -138,12 +155,13 @@ cmd_launch() {
      "${live:+,\"source_mode\":\"live\"}" > "$owned/host-config.json"
    "$PYTHON" -I -B "$ROOT/scripts/notch_evaluation/host.py" --config "$owned/host-config.json" \
      --print-profile "$PYTHON" > "$owned/host.sb"
-   app_profile "$owned" "$app" "$bundle_dir" > "$owned/app.sb")
+   app_profile "$owned" "$app" "$bundle_dir" "$live" > "$owned/app.sb")
   # The supervisor owns both children for the life of the run; it starts the
   # backend in the owned root with a clean environment, checks its identity,
   # then starts the app with TMPDIR inside the owned root.
   (cd "$owned" && /usr/bin/nohup "${LIFECYCLE[@]}" supervise "$owned" --python "$PYTHON" \
-     --host "$ROOT/scripts/notch_evaluation/host.py" --app "$app" > /dev/null 2>&1 &)
+     --host "$ROOT/scripts/notch_evaluation/host.py" --app "$app" ${live:+--bundle "$bundle_dir"} \
+     > /dev/null 2>&1 &)
   local tries=0 state=""
   while ((tries < 400)); do
     state="$(/usr/bin/plutil -extract state raw "$owned/lifecycle.json" 2>/dev/null || true)"

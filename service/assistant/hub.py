@@ -88,6 +88,9 @@ class Hub:
         # dropped, anything else raises before the durable queue or fanout.
         if not evaluation_boundary.publication_allowed(event, "publish_sync"):
             return event
+        if evaluation_boundary.active():
+            # The one admitted evaluation event is never queued or replayed.
+            durable = False
         # The legacy Void bridge cannot return verified results. Refuse its
         # commands so callers cannot bypass the claimed Reminders protocol.
         if event.get('type') in {'create_apple_reminder', 'update_apple_reminder',
@@ -163,8 +166,10 @@ class Hub:
                 seen.add(event_id)
             return True
 
+        evaluating = evaluation_boundary.active()
         try:
-            for row in self.store.pending_events():
+            # An evaluation stream replays nothing: no queued row is ever drained.
+            for row in ([] if evaluating else self.store.pending_events()):
                 q.put_nowait({**row['payload'], 'event_id': row['id']})
             while True:
                 wait = 15.0
@@ -180,11 +185,15 @@ class Hub:
                         break
                     yield {"type": "heartbeat"}
                     continue
+                if evaluating and not evaluation_boundary.subscriber_may_receive(event):
+                    continue
                 if deliverable(event):
                     yield event
             self.unsubscribe(q)
             while not q.empty():
                 event = q.get_nowait()
+                if evaluating and not evaluation_boundary.subscriber_may_receive(event):
+                    continue
                 if deliverable(event):
                     yield event
         finally:
