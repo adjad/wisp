@@ -36,6 +36,7 @@ struct SetupStatus: Decodable {
     struct Models: Decodable {
         let source: String; let installed: [ModelEntry]; let recommended: String
         let use: String?; let warning: String?
+        let recommendedLabel: String?
         let download: Download?; let embeddingDownload: Download?
     }
     struct RoleRow: Decodable, Identifiable {
@@ -60,6 +61,7 @@ struct SetupStatus: Decodable {
     let engines: [Engine]
     let checks: [Check]
     let disclosure: String
+    let configurationToken: String?
 }
 
 // MARK: - Model
@@ -90,6 +92,10 @@ final class SetupGuideModel: ObservableObject {
     @Published var statusIsCurrent = false
     @Published var refreshError: String?
     private var testGeneration = 0
+    // Automatic first-setup steps run at most once per app session each; the
+    // visible buttons stay for retries.
+    private var autoStartedEngine = false
+    private var autoAppliedModels = Set<String>()
     private var statusGeneration = 0
     private var downloadGeneration = 0
     private var monitoringStopped = false
@@ -179,6 +185,51 @@ final class SetupGuideModel: ObservableObject {
         statusIsCurrent = true
         if selectedModel == nil || !next.models.installed.contains(where: { $0.id == selectedModel }) {
             selectedModel = next.models.use ?? next.models.installed.first?.id
+        }
+        autoAdvanceFirstSetup(next)
+    }
+
+    #if WISP_NOTCH_QA
+    /// Inject a supplied status into the actual accept/queue path without a
+    /// polling host or an app delegate. Production cannot call this seam.
+    func qaAcceptAutomaticStatus(_ next: SetupStatus) {
+        hosts["release-interaction-fixture"] = 1
+        monitoringStopped = false
+        accept(next)
+    }
+    #endif
+
+    /// First setup should not stall on steps whose only choice is "yes".
+    private func autoAdvanceFirstSetup(_ next: SetupStatus) {
+        guard busy == nil, isShown, !monitoringStopped else { return }
+        // The built-in engine is ours: start it once if it is present but idle.
+        if next.omlx.bundled == true, !next.omlx.running, !autoStartedEngine,
+           next.checks.contains(where: { $0.id == "engine" && $0.action == "start_engine" }) {
+            autoStartedEngine = true
+            Task { await startEngine() }
+            return
+        }
+        // A model was just installed and nothing points at one: use it. Only when
+        // no local role already names an installed model, so a deliberate choice
+        // is never overwritten.
+        // Only the model setup itself recommends (ranked from the catalog), never
+        // whichever installed model happens to be first.
+        guard next.omlx.running, let id = next.models.use, id == selectedModel, !autoAppliedModels.contains(id),
+              let expected = next.configurationToken, !expected.isEmpty,
+              next.checks.contains(where: { $0.id == "model" && $0.action == "apply_model" }) else { return }
+        let installed = Set(next.models.installed.map(\.id))
+        let local = next.roles.filter { $0.endpoint == "local" }
+        guard !local.isEmpty, !local.contains(where: { installed.contains($0.model) }) else { return }
+        // Applying sets every text role, so a role pointed at another app
+        // (LM Studio, Ollama) on purpose would be repointed: leave that to the person.
+        guard local.count == next.roles.count else { return }
+        autoAppliedModels.insert(id)
+        let generation = statusGeneration
+        Task { [weak self] in
+            guard let self, self.statusGeneration == generation, self.statusIsCurrent,
+                  self.isShown, !self.monitoringStopped, !Task.isCancelled,
+                  self.selectedModel == id else { return }
+            await self.apply(id, expectedConfiguration: expected)
         }
     }
     // Connecting another local app
@@ -329,18 +380,29 @@ final class SetupGuideModel: ObservableObject {
         } catch { fail(error) }
     }
 
-    func apply(_ model: String) async {
+    func apply(_ model: String, expectedConfiguration: String? = nil) async {
         guard busy == nil else { return }
         beginMutation()
+        let generation = statusGeneration
         busy = "Applying…"
         defer { busy = nil }
         do {
             let repointsReasoning = status?.roles.contains { $0.endpoint != "local" } ?? false
-            accept(try decode(try await call("POST", "setup/apply", body: ["model": model])))
+            var body: [String: Any] = ["model": model]
+            if let expectedConfiguration {
+                body["automatic"] = true
+                body["expected_configuration"] = expectedConfiguration
+            }
+            let next = try decode(try await call("POST", "setup/apply", body: body))
+            guard generation == statusGeneration, !monitoringStopped, !Task.isCancelled else { return }
+            accept(next)
             message = "Wisp will use \(model) for chat, tools, coding, and reasoning."
                 + (repointsReasoning ? " Reasoning had been pointed at another app; it now uses this model too." : "")
             messageIsError = false
-        } catch { fail(error) }
+        } catch {
+            guard generation == statusGeneration, !monitoringStopped, !Task.isCancelled else { return }
+            fail(error)
+        }
     }
 
     func connectExternal(port: Int, model: String, withTools: Bool = false) async {
@@ -565,7 +627,10 @@ struct SetupGuideView: View {
                 Text(check.detail).font(.callout).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    if check.action == "install_omlx" {
+                    if check.action == "unsupported_macos" {
+                        Text("Connect another app under Other engines below, or use remote-only mode in Settings.")
+                            .font(.caption).foregroundStyle(Theme.textMuted)
+                    } else if check.action == "install_omlx" {
                         action("Get oMLX") { model.open(check.url) }
                         Text("Then open it once and choose Check again.")
                             .font(.caption).foregroundStyle(Theme.textMuted)
@@ -618,9 +683,8 @@ struct SetupGuideView: View {
                              ? "Recommended for this Mac" : "A better fit for this Mac", tag: "main",
                              omlx: s.omlx)
             }
-            if s.models.recommended == "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-               !s.models.installed.contains(where: { $0.id == s.models.recommended }) {
-                Text("This Mellum build uses an existing local model folder. There is no verified public download configured for it. Add the folder named \(s.models.recommended) to your engine's model directory, then choose Check again and Use this model.")
+            if check?.action == "add_local_model" {
+                Text("This recommended model has no public download. Add its folder (\(recommendedName(s))) to your engine's model directory, then choose Check again and Use this model.")
                     .font(.caption).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let folder = s.omlx.modelDir {
@@ -631,13 +695,15 @@ struct SetupGuideView: View {
         }
     }
 
+    private func recommendedName(_ s: SetupStatus) -> String {
+        s.models.recommendedLabel ?? s.models.recommended
+    }
+
     private func recommendationText(_ s: SetupStatus) -> some View {
-        let text: String
-        if s.models.recommended == "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e" {
-            text = "Mellum 2.1 Wisp R1 merged oQ4e is Wisp's default model. Its model validation is pending."
-        } else {
-            text = "Mellum 2.1 Wisp R1 merged oQ4e is the default, with a conservative 24 GB memory requirement. This Mac is offered smaller alternatives; your existing model choices are preserved."
-        }
+        let name = recommendedName(s)
+        let text = s.models.installed.contains(where: { $0.id == s.models.recommended })
+            ? "\(name) is the best fit for this Mac, and it is installed."
+            : "Recommended for this Mac (\(s.hardware.ramGb > 0 ? "\(s.hardware.ramGb) GB" : "memory unknown")): \(name). Wisp also works with the models you already have."
         return Text(text).font(.callout).foregroundStyle(Theme.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }

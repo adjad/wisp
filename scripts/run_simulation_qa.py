@@ -229,6 +229,7 @@ PROFILE_TESTS = {
         "tests/test_terse_tool_schemas.py",
         "tests/test_search_reliability.py",
         "tests/test_short_circuit.py",
+        "tests/test_brief_never_verbatim.py",
     },
 }
 
@@ -372,6 +373,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow_authored_message.py",
     "tests/test_workflow_inline_delivery.py",
     "tests/test_router_everyday_prompts.py",
+    "tests/test_router_common_prompts.py",
     "tests/test_user_facing_failure_text.py",
     "tests/test_upcoming_agenda_and_tomorrow_prep.py",
     "tests/test_calendar_batch_approval_ids.py",
@@ -452,6 +454,8 @@ ADDITIONAL_FULL_TESTS = {
     # Evening check-in, carry-forward and goal pulse: disposable AssistantStore and
     # state files, in-process TestClient; no model, scheduler, hub or real ~/.moe.
     "tests/test_checkin.py",
+    # oMLX prompt-cache budget: settings.json and cache files in tmp_path only.
+    "tests/test_omlx_cache.py",
     "tests/test_day_plan_email.py",
     "tests/test_user_reported_regressions_20260902.py",
     "tests/test_user_reported_regressions_20260903.py",
@@ -888,6 +892,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/brief-time-contract",
             [TRUSTED_BASH, "scripts/test_brief_time.sh"],
+        ),
+        (
+            "native/release-interactions-contract",
+            [TRUSTED_BASH, "scripts/test_release_interactions.sh", "--outer-isolation"],
         ),
         (
             "native/markdown-contract",

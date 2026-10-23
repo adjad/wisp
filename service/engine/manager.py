@@ -231,6 +231,9 @@ class EngineManager:
     verified: bool = field(default=False, init=False)
     _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     _incarnation: Incarnation | None = field(default=None, init=False, repr=False)
+    # Set when Wisp quits: a model call still in flight must not start the engine again,
+    # or the backend's forced exit leaves it running with no parent.
+    _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.port in RESERVED_PORTS or not 1024 <= self.port <= 65535:
@@ -294,6 +297,8 @@ class EngineManager:
                 self.verified = True
 
     def _start(self) -> bool:
+        if self._closed:
+            raise EngineError("Wisp is quitting; the engine stays stopped")
         if self.running():
             return False
         self.verified = False
@@ -366,6 +371,12 @@ class EngineManager:
 
     def stop(self, grace: float = 10.0) -> None:
         with self._lock:
+            self._stop(grace)
+
+    def close(self, grace: float = 10.0) -> None:
+        """Stop for good: this manager never starts an engine again (Wisp is quitting)."""
+        with self._lock:
+            self._closed = True
             self._stop(grace)
 
     def _stop(self, grace: float) -> None:

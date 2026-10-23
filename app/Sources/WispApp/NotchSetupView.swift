@@ -109,7 +109,11 @@ struct NotchSetupView: View {
             }
             if let check {
                 detail(check.detail)
-                if check.action == "install_omlx" {
+                if check.action == "unsupported_macos" {
+                    chip("Other options  ⤢") {
+                        NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+                    }
+                } else if check.action == "install_omlx" {
                     chip("Get oMLX") { setup.open(check.url) }
                 } else if check.action == "start_engine" {
                     chip(s.omlx.bundled == true ? "Start engine" : "Start oMLX") {

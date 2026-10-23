@@ -440,9 +440,30 @@ def test_audit_followups() -> None:
             logged.stop()
 
 
+def test_quit_keeps_the_engine_stopped() -> None:
+    # Found on a clean install (build 2043): quitting stopped the engine, a model
+    # call still in flight started it again, and the backend's forced exit left it
+    # running with no parent, holding the model's memory until the next launch.
+    with tempfile.TemporaryDirectory() as t:
+        m = make(Path(t))
+        try:
+            m.start()
+            check("ready before quit", asyncio.run(m.wait_ready(20)))
+            m.close()
+            check("close stops the engine", not m.running() and not port_open(m.port))
+            try:
+                m.start()
+                relaunched = True
+            except EngineError:
+                relaunched = False
+            check("a start after quit is refused", not relaunched and not m.running())
+        finally:
+            m.stop()
+
+
 def main() -> int:
     plain = (test_builders, test_refusals, test_prepare_permissions, test_key_and_settings_persistence)
-    live = (test_lifecycle, test_busy_port, test_reaps_orphan, test_reap_only_the_launched_engine,
+    live = (test_lifecycle, test_quit_keeps_the_engine_stopped, test_busy_port, test_reaps_orphan, test_reap_only_the_launched_engine,
             test_audit_followups)
     for fn in plain:
         run_or_skip(fn, False)

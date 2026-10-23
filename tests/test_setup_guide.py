@@ -26,6 +26,11 @@ MELLUM = "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
 EMBED = "Qwen3-Embedding-0.6B-4bit-DWQ"
 
 
+@pytest.fixture(autouse=True)
+def _modern_host(monkeypatch):
+    monkeypatch.setattr(guide, "host_macos_major", lambda: 26)
+
+
 def _roles(model, endpoint="local"):
     return {r: {"model": model, "endpoint": endpoint} for r in guide.TEXT_ROLES}
 
@@ -62,36 +67,53 @@ def test_hardware_rounds_real_memory_and_survives_failure():
 
 # --- recommendations --------------------------------------------------------
 
-def test_mellum_local_default_is_discovered_without_a_fabricated_download():
-    missing = _status(ram=32, installed=[], roles=_roles(MELLUM))
-    assert missing["models"]["recommended"] == MELLUM
-    assert missing["models"]["download"] is None
-    assert _check(missing, "model")["action"] == "add_local_model"
-    assert "folder" in _check(missing, "model")["detail"].lower()
+def test_fresh_mac_downloads_ling_q6_at_24gb_and_q4_below():
+    missing = _status(ram=32, installed=[], roles=_roles(Q4))
+    assert missing["models"]["recommended"] == Q6
+    assert missing["models"]["download"]["model"] == Q6
+    assert missing["models"]["download"]["repo"] == catalog.by_id(Q6).repo
+    assert _check(missing, "model")["action"] == "download_model"
     assert not missing["ready"]
-    found = _status(ram=32, installed=[Q6, MELLUM, EMBED], roles=_roles(MELLUM))
-    assert found["models"]["use"] == MELLUM
+    small = _status(ram=16, installed=[], roles=_roles(MELLUM))
+    assert small["models"]["recommended"] == Q4
+    assert small["models"]["download"]["model"] == Q4
+
+
+def test_mellum_repo_name_is_the_model_id():
+    # The engine serves a download under its repo name; roles name the model id.
+    repo = catalog.by_id(MELLUM).repo
+    assert repo and repo.split("/")[1] == MELLUM
+
+
+def test_configured_mellum_is_kept_when_ling_is_recommended():
+    roles = _roles(MELLUM)
+    found = _status(ram=32, installed=[Q6, MELLUM, EMBED], roles=roles)
+    assert found["models"]["use"] == Q6  # Suggested selection, not a role rewrite.
+    assert all(role["model"] == MELLUM for role in found["roles"])
+    assert roles == _roles(MELLUM)
     entry = next(m for m in found["models"]["installed"] if m["id"] == MELLUM)
     assert entry["tested"] is False
-    assert entry["fit"] == "recommended"
+    assert entry["fit"] == "good"
+    assert found["models"]["recommended"] == Q6
     assert found["ready"]  # Discovery/readiness is separate from inference qualification.
-    assert guide.download_info(MELLUM, "/models") is None
+    assert guide.download_info(MELLUM, "/models")["repo"] == catalog.by_id(MELLUM).repo
 
 
-def test_mellum_missing_does_not_prompt_an_unrequested_ling_upgrade():
+def test_an_installed_ling_keeps_working_and_q6_is_offered():
     result = catalog.recommend(32, [Q4])
-    assert result["first_choice"] == MELLUM
+    assert result["first_choice"] == Q6
     assert result["use"] == Q4
-    assert result["get"] is None
+    assert result["get"] == Q6
     assert catalog.fit(catalog.by_id(MELLUM), 16) == "heavy"
     assert catalog.recommend(16, [Q4, MELLUM])["use"] == Q4
 
 
 @pytest.mark.parametrize("custom", [False, True])
-def test_mellum_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkeypatch, custom):
+def test_ling_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkeypatch, custom):
     import service.config as config
     overlay = tmp_path / "config.yaml"
-    value = {"roles": {"general": "chosen-chat", "agent": "chosen-agent"},
+    value = {"roles": {"general": MELLUM, "agent": "chosen-agent",
+                       "embedding": "chosen-embedding", "reranker": "chosen-reranker"},
              "inference": {"bindings": {"reasoning": {
                  "endpoint": "local_provider", "model_id": "chosen-reasoning"}}}}
     if custom:
@@ -103,8 +125,9 @@ def test_mellum_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkey
     try:
         result = config.models_config()
         for role in ("router", "fast", "agent", "general", "coding", "reasoning"):
-            assert result["roles"][role] == (value["roles"].get(role, MELLUM) if custom else MELLUM)
-        assert result["roles"]["embedding"] == EMBED
+            assert result["roles"][role] == (value["roles"].get(role, Q4) if custom else Q4)
+        assert result["roles"]["embedding"] == ("chosen-embedding" if custom else EMBED)
+        assert result["roles"]["reranker"] == ("chosen-reranker" if custom else "Qwen3-Reranker-0.6B-mlx-6bit")
         if custom:
             assert result["inference"]["bindings"]["reasoning"] == value["inference"]["bindings"]["reasoning"]
             assert overlay.read_bytes() == before
@@ -113,9 +136,15 @@ def test_mellum_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkey
     finally:
         config.models_config.cache_clear()
 
-@pytest.mark.parametrize("ram,first", [(64, MELLUM), (24, MELLUM), (16, Q5), (12, Q4), (8, Q4), (0, Q4)])
+@pytest.mark.parametrize("ram,first", [(64, Q6), (24, Q6), (16, Q4), (12, Q4), (8, Q4), (0, Q4)])
 def test_first_choice_follows_memory(ram, first):
+    # Fresh Macs: the first choice is the best build they can actually download.
     assert catalog.recommend(ram, [])["first_choice"] == first
+
+
+@pytest.mark.parametrize("ram,first", [(64, Q6), (24, Q6), (16, Q5), (12, Q4)])
+def test_first_choice_keeps_the_full_order_once_a_catalog_model_is_installed(ram, first):
+    assert catalog.recommend(ram, [Q4])["first_choice"] == first
 
 
 def test_16gb_is_offered_a_download_it_can_actually_get():
@@ -125,19 +154,19 @@ def test_16gb_is_offered_a_download_it_can_actually_get():
     assert catalog.recommend(16, [Q5])["get"] is None
 
 
-def test_24gb_with_only_legacy_oq4e_keeps_it_without_an_unrelated_download():
+def test_24gb_with_only_oq4e_keeps_it_and_offers_q6():
     rec = catalog.recommend(24, [Q4])
-    assert rec["use"] == Q4 and rec["get"] is None
+    assert rec["use"] == Q4 and rec["get"] == Q6
 
 
 def test_best_installed_model_wins_and_nothing_is_offered_when_optimal():
     rec = catalog.recommend(24, [Q4, Q6, MELLUM])
-    assert rec["use"] == MELLUM and rec["get"] is None
+    assert rec["use"] == Q6 and rec["get"] is None
 
 
 def test_heavy_model_on_16gb_is_flagged_but_kept():
     assert catalog.fit(catalog.by_id(Q6), 16) == "heavy"
-    assert catalog.fit(catalog.by_id(Q6), 24) == "good"
+    assert catalog.fit(catalog.by_id(Q6), 24) == "recommended"
     assert catalog.fit(catalog.by_id(Q4), 24) == "good"
     assert catalog.recommend(16, [Q6])["use"] == Q6
 
@@ -155,7 +184,27 @@ def test_fresh_mac_needs_oMLX_first():
     assert s["ready"] is False
     assert _check(s, "engine")["state"] == "todo" and _check(s, "engine")["action"] == "install_omlx"
     assert "compatible with this Mac" in _check(s, "engine")["detail"]
-    assert s["omlx"]["min_macos"] == 15
+    assert s["omlx"]["min_macos"] == 26
+
+
+def test_old_macos_is_not_sent_to_download_omlx(monkeypatch):
+    monkeypatch.setattr(guide, "host_macos_major", lambda: 15)
+    s = _status(installed=(), running=False, is_installed=False)
+    check = _check(s, "engine")
+    assert check["action"] == "unsupported_macos" and "url" not in check
+    assert "Ollama" in check["detail"] and "remote-only" in check["detail"]
+    # An oMLX the user already has keeps working whatever the host says.
+    assert _check(_status(running=False, is_installed=True), "engine")["action"] == "start_engine"
+    # An unreadable version never blocks the normal install path.
+    monkeypatch.setattr(guide, "host_macos_major", lambda: None)
+    assert _check(_status(installed=(), running=False, is_installed=False), "engine")["action"] == "install_omlx"
+
+
+def test_fresh_mac_recommendation_is_public_and_labelled():
+    s = _status(installed=(), running=True, roles=_roles(MELLUM))
+    assert _check(s, "model")["action"] == "download_model"
+    rec = catalog.by_id(s["models"]["recommended"])
+    assert rec.repo and s["models"]["recommended_label"] == f"{rec.label} · {rec.quant}"
 
 
 @pytest.mark.parametrize("macos,available", [("14.0", False), ("26.1", False),
@@ -260,7 +309,7 @@ def test_model_list_is_ranked_and_excludes_embedding_and_reranker():
     ids = [m["id"] for m in s["models"]["installed"]]
     assert ids == [Q6, Q4, "zzz-custom"]
     by_id = {m["id"]: m for m in s["models"]["installed"]}
-    assert by_id[Q6]["fit"] == "good" and by_id[Q6]["tested"] is True
+    assert by_id[Q6]["fit"] == "recommended" and by_id[Q6]["tested"] is True
     assert by_id["zzz-custom"]["fit"] == "unknown" and by_id["zzz-custom"]["tested"] is False
 
 
@@ -532,6 +581,100 @@ def test_apply_reports_a_stopped_engine_plainly(monkeypatch):
     assert e.value.status_code == 503 and "isn't running" in e.value.detail
 
 
+@pytest.fixture
+def automatic_apply_state(monkeypatch, tmp_path):
+    from service import config, main
+    monkeypatch.setattr(config, "USER_CONFIG", tmp_path / "config.yaml")
+    config.models_config.cache_clear()
+    config.set_roles({r: "missing-fixture-model" for r in (*guide.TEXT_ROLES, "router", "agent")})
+    monkeypatch.setattr(main, "set_roles", config.set_roles)
+    monkeypatch.setattr(main, "_sync_keep_warm", lambda: None)
+    async def status():
+        return {"ok": True}
+    monkeypatch.setattr(main, "setup_status", status)
+    yield config, main
+    config.models_config.cache_clear()
+
+
+@pytest.mark.parametrize("new_choice", ["external", "working_local"])
+def test_automatic_apply_rechecks_after_actual_async_model_lookup(automatic_apply_state, monkeypatch, new_choice):
+    config, main = automatic_apply_state
+    expected = config.setup_configuration_token()
+    async def interleave():
+        started, release = asyncio.Event(), asyncio.Event()
+        class DelayedClient:
+            async def models(self):
+                started.set()
+                await release.wait()
+                return [Q6, Q4]
+        monkeypatch.setattr(main, "client", DelayedClient(), raising=False)
+        pending = asyncio.create_task(main.setup_apply({"model": Q6, "automatic": True,
+                                                        "expected_configuration": expected}))
+        await started.wait()
+        # A real configuration writer runs during the endpoint's suspended lookup.
+        if new_choice == "external":
+            config._save_overlay({"inference": {"bindings": {"reasoning": {
+                "endpoint": "local_provider", "model_id": "chosen-fixture-model"}}}})
+        else:
+            config.set_roles({"reasoning": Q4})
+        chosen = copy.deepcopy(config.models_config())
+        release.set()
+        with pytest.raises(HTTPException) as error:
+            await pending
+        assert error.value.status_code == 409
+        assert config.models_config() == chosen
+        # Manual Apply is still an explicit override of the current choice.
+        assert await main.setup_apply({"model": Q6}) == {"ok": True}
+        assert all(config.models_config()["roles"][r] == Q6 for r in guide.TEXT_ROLES)
+    asyncio.run(interleave())
+
+
+def test_automatic_apply_condition_runs_inside_atomic_overlay_write(automatic_apply_state, monkeypatch):
+    config, main = automatic_apply_state
+    expected = config.setup_configuration_token()
+    writer = config._write_overlay
+    def changed_at_persist(update, **kwargs):
+        if kwargs.get("precondition") is not None:
+            writer({"inference": {"bindings": {"reasoning": {
+                "endpoint": "local_provider", "model_id": "late-fixture-choice"}}}})
+        return writer(update, **kwargs)
+    monkeypatch.setattr(config, "_write_overlay", changed_at_persist)
+    monkeypatch.setattr(main, "client", _FakeClient([Q6]), raising=False)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(main.setup_apply({"model": Q6, "automatic": True, "expected_configuration": expected}))
+    assert error.value.status_code == 409
+    assert config.models_config()["inference"]["bindings"]["reasoning"]["model_id"] == "late-fixture-choice"
+
+
+@pytest.mark.parametrize("existing", [None, "external", "working_local"])
+def test_automatic_apply_requires_unconfigured_roles_even_with_current_token(automatic_apply_state, monkeypatch, existing):
+    config, main = automatic_apply_state
+    if existing == "external":
+        config._save_overlay({"inference": {"bindings": {"agent": {
+            "endpoint": "local_provider", "model_id": "fixture-choice"}}}})
+    elif existing == "working_local":
+        config.set_roles({"reasoning": Q4})
+    monkeypatch.setattr(main, "client", _FakeClient([Q6, Q4]), raising=False)
+    before = copy.deepcopy(config.models_config())
+    body = {"model": Q6, "automatic": True, "expected_configuration": config.setup_configuration_token()}
+    if existing:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(main.setup_apply(body))
+        assert error.value.status_code == 409
+        assert config.models_config() == before
+    else:
+        assert asyncio.run(main.setup_apply(body)) == {"ok": True}
+        assert all(config.models_config()["roles"][r] == Q6 for r in guide.TEXT_ROLES)
+
+
+def test_automatic_apply_cannot_omit_expected_configuration(automatic_apply_state, monkeypatch):
+    _, main = automatic_apply_state
+    monkeypatch.setattr(main, "client", _FakeClient([Q6]), raising=False)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(main.setup_apply({"model": Q6, "automatic": True}))
+    assert error.value.status_code == 400
+
+
 def test_start_engine_maps_failure_to_a_next_step(monkeypatch):
     import service.main as main
     from service.inference.omlx_client import ModelLoadError
@@ -727,3 +870,37 @@ def test_actual_completion_route_to_native_setup_certificate(tmp_path):
     assert checked.returncode == 0, checked.stderr[-7000:]
     assert "setup model-state checks passed; all HTTP intercepted" in checked.stdout
     print(checked.stdout.strip())
+
+
+@pytest.mark.parametrize("content", [None, "", "{not json", "[]", '{"server": "x", "auth": null}'])
+def test_missing_or_broken_omlx_settings_never_stops_the_service(tmp_path, monkeypatch, content):
+    # A fresh Mac has no ~/.omlx/settings.json (oMLX never opened, or not installed).
+    # The backend builds its inference client at startup, so this must not raise.
+    import service.config as config
+    settings = tmp_path / "settings.json"
+    if content is not None:
+        settings.write_text(content)
+    monkeypatch.setattr(config, "OMLX_SETTINGS", settings)
+    monkeypatch.setattr(config, "is_bundled", lambda: False)
+    monkeypatch.setattr(config, "_credential", lambda name: "")
+    monkeypatch.setitem(config.models_config()["omlx"], "base_url", None)
+    try:
+        assert config.omlx_api_key() == ""
+        assert config.omlx_base_url() == "http://127.0.0.1:8000"
+    finally:
+        config.models_config.cache_clear()
+
+
+def test_omlx_settings_written_after_launch_are_picked_up(tmp_path, monkeypatch):
+    # Wisp can start before oMLX.app is ever opened; once oMLX writes its
+    # settings (key, port), they must apply without restarting the backend.
+    import os
+    import service.config as config
+    settings = tmp_path / "settings.json"
+    monkeypatch.setattr(config, "OMLX_SETTINGS", settings)
+    assert config.omlx_settings() == {}
+    settings.write_text('{"auth": {"api_key": "first"}}')
+    assert config.omlx_settings() == {"auth": {"api_key": "first"}}
+    settings.write_text('{"auth": {"api_key": "second-key"}}')
+    os.utime(settings, ns=(1, 10**18))
+    assert config.omlx_settings()["auth"]["api_key"] == "second-key"

@@ -67,18 +67,18 @@ class Skill:
     def matches(self, text: str) -> bool:
         """Whether this skill's triggers fire for `text`.
 
-        Triggers are plain substrings/phrases, not regexes — a skill author
-        writing "expense report" shouldn't have to think about escaping, and a
+        Triggers are plain phrases, not regexes — a skill author writing
+        "expense report" shouldn't have to think about escaping, and a
         malformed regex in a user-authored file shouldn't be able to break
-        routing for every turn.
+        routing for every turn. They match on word boundaries: as bare
+        substrings, "mute the" fired inside "commute the".
         """
         if not self.enabled:
             return False
         low = text.lower()
         explicit = (f"@{self.name.lower()}" in low
                     or f"${self.name.lower()}" in low)
-        return explicit or any(t.lower().strip() in low
-                               for t in self.triggers if t.strip())
+        return explicit or any(trigger_matches(t, low) for t in self.triggers if t.strip())
 
     def as_dict(self) -> dict:
         return {"name": self.name, "description": self.description,
@@ -87,6 +87,14 @@ class Skill:
                 "path": str(self.path), "error": self.error,
                 "bundled": self.bundled,
                 "conversation_workflow": self.conversation_workflow}
+
+
+def trigger_matches(trigger: str, text: str) -> bool:
+    """`trigger` occurs in `text` as whole words (case-insensitive)."""
+    phrase = trigger.lower().strip()
+    if not phrase:
+        return False
+    return re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", text.lower()) is not None
 
 
 _skills: dict[str, Skill] = {}

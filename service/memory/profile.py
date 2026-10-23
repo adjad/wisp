@@ -75,12 +75,17 @@ def empty() -> dict:
 # Validation
 
 
-def _text(value, limit: int, field: str) -> str:
+def _text(value, limit: int, field: str, *, single_line: bool = False) -> str:
     if value is None:
         return ""
     if not isinstance(value, str):
         raise ValueError(f"{field} must be text")
-    cleaned = re.sub(r"[ \t]+", " ", value.replace("\r", "")).strip()
+    if single_line:
+        # A name, goal or struggle is one line of a prompt: a pasted newline
+        # must not become a second, unlabelled instruction.
+        cleaned = re.sub(r"\s+", " ", value).strip()
+    else:
+        cleaned = re.sub(r"[ \t]+", " ", value.replace("\r", "")).strip()
     if len(cleaned) > limit:
         raise ValueError(f"{field} is longer than {limit} characters")
     return cleaned
@@ -93,7 +98,7 @@ def _texts(value, limit: int, count: int, field: str) -> list[str]:
         raise ValueError(f"{field} must be a list")
     out: list[str] = []
     for entry in value:
-        cleaned = _text(entry, limit, field)
+        cleaned = _text(entry, limit, field, single_line=True)
         if cleaned and cleaned.casefold() not in {o.casefold() for o in out}:
             out.append(cleaned)
     if len(out) > count:
@@ -150,7 +155,7 @@ def validate(patch: dict) -> dict:
     out: dict = {}
     for field, value in patch.items():
         if field == "name":
-            out[field] = _text(value, LIMITS["name"], field)
+            out[field] = _text(value, LIMITS["name"], field, single_line=True)
         elif field == "about":
             out[field] = _text(value, LIMITS["about"], field)
         elif field == "goals":
@@ -174,16 +179,34 @@ def validate(patch: dict) -> dict:
 # Storage
 
 
+def _quarantine() -> None:
+    """Move an unreadable profile.json aside as profile.json.bad-<timestamp>."""
+    try:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = PROFILE_PATH.with_name(f"{PROFILE_PATH.name}.bad-{stamp}")
+        n = 1
+        while target.exists():
+            n += 1
+            target = PROFILE_PATH.with_name(f"{PROFILE_PATH.name}.bad-{stamp}-{n}")
+        os.replace(PROFILE_PATH, target)
+    except OSError:
+        pass
+
+
 def _read() -> dict:
     try:
         raw = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return empty()
-    except (OSError, ValueError):
-        # An unreadable file is treated as no profile rather than a crash in
-        # every system prompt; the next save replaces it.
+    except OSError:
+        return empty()
+    except ValueError:
+        # Unparseable: keep the bytes for the user (a hand edit gone wrong, or a
+        # torn write) instead of letting the next save silently replace them.
+        _quarantine()
         return empty()
     if not isinstance(raw, dict):
+        _quarantine()
         return empty()
     profile = empty()
     try:
@@ -320,7 +343,11 @@ def status(profile: dict, *, now: float | None = None) -> dict:
     completed = profile.get("completed_at") is not None
     dismissed_at = profile.get("dismissed_at")
     count = profile.get("dismiss_count", 0)
-    offer = (not completed and count < MAX_AUTO_OFFERS
+    # Someone who already filled in About you has told Wisp who they are; the
+    # questionnaire would only ask it again. A name alone (step one, then the
+    # person left) still leaves the rest worth offering.
+    beyond_name = set(filled_fields(profile)) - {"name"}
+    offer = (not completed and not beyond_name and count < MAX_AUTO_OFFERS
              and (dismissed_at is None or now - dismissed_at >= REOFFER_AFTER_S))
     updated = profile.get("updated_at")
     days = int((now - updated) // 86400) if updated is not None else None

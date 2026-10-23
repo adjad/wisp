@@ -1,7 +1,7 @@
 {
   "path": "omlx/process_memory_enforcer.py",
   "input_sha256": "afc72e5875c844536166b09f2e8d55aec0580024109cddbfb858be119172641f",
-  "output_sha256": "b94a9e26f729535143f944ef849979bdd58f94922b4225bb16975bb666e3702c",
+  "output_sha256": "fb56af6dc22ae7a0ac6706bd3a47a3a35db1ffe9f8ac6efc11b04057cfa048bc",
   "edits": [
     {
       "old": "logger = logging.getLogger(__name__)",
@@ -60,7 +60,12 @@
     },
     {
       "old": "            try:\n                await self._check_and_enforce()\n                await self._check_ttl()\n            except asyncio.CancelledError:\n                break\n            except Exception as e:\n                logger.error(f\"Process memory enforcer error: {e}\")",
-      "new": "            _wisp_guard.begin_iteration(self)\n            try:\n                await self._check_and_enforce()\n                await self._check_ttl()\n                _wisp_guard.complete_iteration(self)\n            except asyncio.CancelledError:\n                _wisp_guard.fail_iteration(self)\n                break\n            except Exception as e:\n                _wisp_guard.fail_iteration(self)\n                logger.error(f\"Process memory enforcer error: {e}\")",
+      "new": "            _wisp_guard.begin_iteration(self)\n            try:\n                await self._check_and_enforce()\n                # Sampling and enforcement are the guard's evidence. The TTL\n                # sweep takes the pool lock, which a model load holds through\n                # its own admission check, so it must not keep the pass pending.\n                _wisp_guard.complete_iteration(self)\n                await self._check_ttl()\n            except asyncio.CancelledError:\n                _wisp_guard.fail_iteration(self)\n                break\n            except Exception as e:\n                _wisp_guard.fail_iteration(self)\n                logger.error(f\"Process memory enforcer error: {e}\")",
+      "count": 1
+    },
+    {
+      "old": "        if self._settings_manager is None:\n            return\n        await self._engine_pool.check_ttl_expirations(",
+      "new": "        if self._settings_manager is None:\n            return\n        # Modified by Wisp: a load holds the pool lock through its admission\n        # check, so waiting on it here would stall the guard's evidence until\n        # the load is refused as stale. Idle unloads can wait for the next pass.\n        lock = getattr(self._engine_pool, \"_lock\", None)\n        if lock is not None and lock.locked():\n            return\n        await self._engine_pool.check_ttl_expirations(",
       "count": 1
     }
   ]
