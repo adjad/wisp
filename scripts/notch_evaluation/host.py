@@ -65,6 +65,8 @@ LIVE_SOURCE_ENDPOINTS = (("POST", r"/assistant/sync/(calendar|emails|notes|messa
                          # stream carry pings and sync_assistant_sources_now only.
                          ("GET", r"/assistant/events"))
 SOURCE_MODES = ("snapshot", "live")
+# The only engine a pinned run may use (the desktop oMLX).
+PINNED_ENGINE_URL = "http://127.0.0.1:8000"
 
 # Reviewed builtin reads: registry name -> (module, qualname, path arguments).
 # Each reads only the isolated store, the snapshot files or pure computation.
@@ -90,6 +92,25 @@ REVIEWED_READS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "recall": ("service.tools.memory_tools", "recall", ()),
     "search_conversations": ("service.tools.memory_tools", "search_conversations", ()),
     "wisp_capabilities": ("service.tools.misc_t1", "wisp_capabilities", ()),
+    # Composes get_upcoming, the reminders store, summarize_emails and
+    # summarize_messages; its optional weather request is refused by the
+    # network guard and reported as a missing source.
+    "daily_brief": ("service.tools.everyday", "daily_brief", ()),
+    # Audited 2026-10-23: stores, in-memory caches or static text only. Their
+    # writes are Wisp's own state in the owned root (behavior runtime tables,
+    # the knowledge directory lock). plan_meeting stays out: it can publish
+    # sync_assistant_sources_now. system_status and list_running_apps stay
+    # out: they run processes and AppleScript. use_skill is not registered:
+    # the host starts no skills.
+    "collect_task_evidence": ("service.tools.task_evidence", "collect_task_evidence", ()),
+    "get_recent_activity": ("service.tools.recent_tools", "get_recent_activity", ()),
+    "describe_me": ("service.tools.behavior_tools", "describe_me", ()),
+    "my_patterns": ("service.tools.behavior_tools", "my_patterns", ()),
+    "predict_my_day": ("service.tools.behavior_tools", "predict_my_day", ()),
+    "search_coverage": ("service.tools.search_coverage", "search_coverage", ()),
+    "scan_subscriptions": ("service.tools.email_extras", "scan_subscriptions", ()),
+    "triage_inbox": ("service.tools.email_extras", "triage_inbox", ()),
+    "read_knowledge": ("service.tools.knowledge_tools", "read_knowledge", ()),
 }
 
 # Variables the host keeps from its launcher. Everything else is dropped, so no
@@ -128,6 +149,9 @@ class HostConfig:
     # "snapshot": sources come only from the verified snapshot. "live": the
     # evaluation app's native readers push this launch's reads (read-only).
     source_mode: str = "snapshot"
+    # The supervisor's attestation of the desktop oMLX on 127.0.0.1:8000
+    # (engine_attest.py). A real engine is used only through this pin.
+    engine_pin: dict | None = None
 
     @property
     def inference_port(self) -> int | None:
@@ -167,6 +191,9 @@ class HostConfig:
         port = self.inference_port
         if port is not None and port == self.listen_port:
             raise ValueError("inference and listen ports must differ")
+        if self.engine_pin is not None and (not isinstance(self.engine_pin, dict)
+                                            or self.inference_url != PINNED_ENGINE_URL):
+            raise ValueError(f"engine_pin needs an object and inference_url {PINNED_ENGINE_URL}")
         for argv in self.exec_allow:
             if not argv or not os.path.isabs(argv[0]):
                 raise ValueError("exec_allow entries must be absolute argv tuples")
@@ -792,6 +819,7 @@ def build_app(config: HostConfig, *, client_factory=None):
     (evidence / "host.json").write_text(json.dumps({
         "run_id": config.run_id, "pid": os.getpid(), "listen_port": config.listen_port,
         "sealed_reads": sealed, "endpoints": [list(e) for e in config.endpoints],
+        "engine_pin": config.engine_pin,
         "source_mode": config.source_mode,
         "engine_ops": [list(o) for o in ENGINE_OPS], "allowed_models": sorted(config.allowed_models),
         "lifespan": "minimal: no warmup, scheduler, replay, skills, MCP, nodes, memory worker, maintenance",
@@ -826,6 +854,13 @@ def start(config: HostConfig, *, client_factory=None):
     pin_roster(config)
     install_http_guard(config)
     latch_boundary(config)
+    if config.engine_pin is not None:
+        # Every checked engine transport vouches with the supervisor's pin:
+        # kernel reads only, no process, no ~/.moe (pinned_engine.py).
+        from scripts.notch_evaluation import pinned_engine
+        pinned_engine.install(config.engine_pin, config.owned_root)
+    elif config.inference_url and client_factory is None:
+        raise GuardViolation("a real engine is used only through the supervisor's engine_pin")
     return build_app(config, client_factory=client_factory)
 
 

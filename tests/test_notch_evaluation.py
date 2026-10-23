@@ -827,6 +827,107 @@ def test_complete_synthetic_captures_feed_the_normal_reads():
     assert report["sources"]["emails"]["provenance"]["reader"] == "synthetic"
 
 
+def test_daily_brief_is_a_reviewed_read_that_reaches_no_effect():
+    import time
+    from service.tools.registry import run_tool
+    from service.assistant.store import assistant_store
+    now = time.time()
+    # A current, complete calendar read covering today, as native sync records it.
+    assistant_store.sync_source("calendar", [{
+        "source_id": "syn-brief", "kind": "event", "title": "SYNTHETIC-BRIEF-EVENT", "context": "Synthetic",
+        "organizer": None, "account": None, "when_ts": now + 600, "end_ts": now + 1200,
+        "all_day": False, "location": None, "invitee_count": None, "organizer_is_user": None,
+        "calendar_writable": None, "confidence": 1.0}],
+        diagnostics={"authorized": True, "available": True, "syncing": False, "complete": True,
+                     "partial": False, "snapshot_started_at": now - 40,
+                     "coverage_start": now - 2 * 86400, "coverage_end": now + 30 * 86400})
+    _hydrate()
+    before = len(boundary.receipts())
+    brief = asyncio.run(run_tool(_tool("daily_brief"), {}))
+    assert not brief.startswith("(error: EVALUATION_BLOCKED"), brief
+    assert "SYNTHETIC-BRIEF-EVENT" in brief
+    # An explicit location asks for weather: the network guard refuses the
+    # request before it is sent, and the brief shows the error, not a forecast.
+    weather = asyncio.run(run_tool(_tool("daily_brief"), {"location": "Palo Alto,CA", "include_calendar": False,
+                                                          "include_reminders": False, "include_activity": False}))
+    assert "evaluation guard refused HTTP GET" in weather, weather
+    new = boundary.receipts()[before:]
+    # The two reviewed-read admissions and the refused weather GET; no hub,
+    # outbox, native, endpoint or other effect sink was reached.
+    kinds = sorted((r["sink"], r.get("tool"), r["outcome"]) for r in new)
+    assert kinds == [("http", None, "blocked"), ("registry", "daily_brief", "allowed"),
+                     ("registry", "daily_brief", "allowed")], new
+
+
+def test_audited_reads_run_and_reach_no_effect_sink():
+    from service.tools.registry import run_tool
+    calls = {"collect_task_evidence": {}, "get_recent_activity": {"hours": 6}, "describe_me": {},
+             "my_patterns": {"query": "mornings"}, "predict_my_day": {}, "search_coverage": {"source": "email"},
+             "scan_subscriptions": {}, "triage_inbox": {},
+             "read_knowledge": {"query": "SYNTHETIC"}}
+    before = len(boundary.receipts())
+    for name, args in calls.items():
+        result = asyncio.run(run_tool(_tool(name), args))
+        assert not result.startswith("(error: EVALUATION_BLOCKED"), (name, result)
+    new = boundary.receipts()[before:]
+    assert sorted((r["sink"], r.get("tool"), r["outcome"]) for r in new) == sorted(
+        ("registry", name, "allowed") for name in calls), new
+    # Still blocked: an on-demand native sync, processes and AppleScript.
+    for name, args in (("plan_meeting", {"title": "SYNTHETIC", "duration_min": 30}),
+                       ("system_status", {}), ("list_running_apps", {})):
+        assert asyncio.run(run_tool(_tool(name), args)).startswith("(error: EVALUATION_BLOCKED"), name
+
+
+def test_pinned_engine_rechecks_the_pin_and_stops_on_any_change():
+    """The backend's engine authority: the supervisor's pin, re-checked with kernel reads only."""
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused, process_identity, process_path
+    from scripts.notch_evaluation import pinned_engine
+    me = os.getpid()
+    _, uid, start_s, start_us = process_identity(me, os.getuid())
+    pin = {"pid": me, "uid": uid, "start_seconds": start_s, "start_microseconds": start_us,
+           "executable": str(process_path(me)), "port": 8000, "model": "SYNTHETIC-MODEL"}
+    marker = OWNED / "evidence" / pinned_engine.LOST_MARKER
+    assert not marker.exists()
+    authority = pinned_engine.PinnedAuthority(pin, str(OWNED))
+    assert authority.load() is authority and authority.binding() == me       # the same incarnation
+    for bad in ({**pin, "port": 8765}, {**pin, "pid": "1"}, {**pin, "executable": "python"}, {**pin, "uid": uid + 1}):
+        assert pinned_engine.pin_problem(bad), bad
+    # A connection that is not to 127.0.0.1:8000 is never the pinned engine's.
+    left, right = socket.socketpair()
+    try:
+        with pytest.raises(AuthRefused):
+            authority.connected_peer(left, me, (me, uid, start_s, start_us))
+    finally:
+        left.close(), right.close()
+    assert marker.exists() and oct(marker.stat().st_mode & 0o777) == "0o600"
+    # Sticky: once lost, even the true incarnation is refused.
+    with pytest.raises(AuthRefused):
+        authority.binding()
+    assert {r["reason"] for r in receipts("engine")} >= {"connection unqualified: connected_socket_unqualified"}
+    marker.unlink()
+    changed = pinned_engine.PinnedAuthority({**pin, "start_microseconds": (start_us + 1) % 1000000}, str(OWNED))
+    with pytest.raises(AuthRefused):
+        changed.binding()                                      # another incarnation of the pid
+    assert json.loads(marker.read_text())["reason"] == "incarnation changed"
+    marker.unlink()
+    # install(): every checked transport for port 8000 vouches with the pin, nothing else does.
+    original = attributed_transport.authority_for
+    try:
+        installed = pinned_engine.install(pin, str(OWNED))
+        assert attributed_transport.authority_for(8000) is installed
+        assert isinstance(attributed_transport.authority_for(8791), attributed_transport._UnavailableAuthority)
+        backend = attributed_transport.CredentialTransport("http://127.0.0.1:8000", "", managed=True).backend
+        assert backend.authority is installed
+    finally:
+        attributed_transport.authority_for = original
+    # A real engine is used only through a pin, and a pin only for the desktop oMLX.
+    with pytest.raises(ValueError):
+        evaluation_host.HostConfig(**{**CONFIG.__dict__, "engine_pin": pin}).validate()      # 18892, not 8000
+    evaluation_host.HostConfig(**{**CONFIG.__dict__, "engine_pin": pin,
+                                  "inference_url": "http://127.0.0.1:8000"}).validate()
+
+
 def test_stale_unlisted_or_altered_payloads_are_never_ready():
     import time
     emails = {"headers": _header(time.time() - 60, "SYNTHETIC-SUBJECT-9"),

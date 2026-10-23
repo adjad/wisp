@@ -34,6 +34,7 @@ from scripts.notch_evaluation import corpus, transcripts  # noqa: E402
 
 RESULTS = "results.jsonl"
 SOCKET = "app-input.sock"
+PIN_LOST = "engine-pin-lost.json"     # pinned_engine.LOST_MARKER
 MAX_ATTEMPTS = 2
 TURN_TIMEOUT_S = 240.0
 BLOCKED_MARKER = "EVALUATION_BLOCKED"
@@ -244,6 +245,11 @@ def _turn_record(segment: str, reply: dict, failure: str) -> dict:
             "reasoning": reply.get("reasoning") or ""}
 
 
+def _pin_lost(owned: Path) -> bool:
+    """The backend found the engine is no longer the one the supervisor pinned."""
+    return (owned / "evidence" / PIN_LOST).exists()
+
+
 def run_case(case: corpus.Case, *, owned: Path, token: str, engine: str, model: str,
              timeout: float, stopping) -> dict:
     turns, classes = [], []
@@ -251,7 +257,7 @@ def run_case(case: corpus.Case, *, owned: Path, token: str, engine: str, model: 
         if stopping():
             classes.append("INTERRUPTED")
             break
-        if not engine_resident(engine, model):
+        if not engine_resident(engine, model) or _pin_lost(owned):
             classes.append("ENGINE_NOT_READY")
             turns.append({"prompt": segment, "failure_class": "ENGINE_NOT_READY"})
             break
@@ -268,6 +274,8 @@ def run_case(case: corpus.Case, *, owned: Path, token: str, engine: str, model: 
             turns.append({"prompt": segment, "failure_class": "HOST_UNAVAILABLE", "error": type(exc).__name__})
             break
         failure = classify_turn(reply, segment=segment, model=model)
+        if _pin_lost(owned):
+            failure = "ENGINE_NOT_READY"     # the backend refused a changed engine
         turns.append(_turn_record(segment, reply, failure))
         classes.append(failure)
         if failure not in ("OK", "EFFECT_BLOCKED", "CONFIRMATION_DECLINED", "EMPTY_ANSWER", "ERROR_TURN"):

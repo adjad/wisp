@@ -158,12 +158,21 @@ cmd_launch() {
   run_id="notch-$(/bin/date +%Y%m%d%H%M%S)"
   token="$("${LIFECYCLE[@]}" secret --bytes 32)"
   nonce="$("${LIFECYCLE[@]}" secret --bytes 16)"
+  local pin=""
+  if [[ -n "$inference" ]]; then
+    # The unconfined supervisor attributes the engine with the production
+    # code and pins it; the sandboxed backend re-checks the pin, never execs.
+    [[ "$inference" == "http://127.0.0.1:8000" ]] || die "only the desktop oMLX on http://127.0.0.1:8000 is supported"
+    ((${#models[@]} == 1)) || die "a pinned run names exactly one --model"
+    pin="$("${LIFECYCLE[@]}" attest-engine --model "${models[0]}")" || die "ENGINE_NOT_READY: the engine could not be attested"
+  fi
   local models_json="[]"
   if ((${#models[@]})); then models_json="$(printf '"%s",' "${models[@]}")"; models_json="[${models_json%,}]"; fi
   (umask 077; set -o noclobber
-   printf '{"run_id":"%s","owned_root":"%s","listen_port":%s,"token":"%s","nonce":"%s","source_roots":["%s/home"],"allowed_models":%s%s%s%s}\n' \
+   printf '{"run_id":"%s","owned_root":"%s","listen_port":%s,"token":"%s","nonce":"%s","source_roots":["%s/home"],"allowed_models":%s%s%s%s%s}\n' \
      "$run_id" "$owned" "$LISTEN_PORT" "$token" "$nonce" "$owned" "$models_json" \
      "${inference:+,\"inference_url\":\"$inference\"}" \
+     "${pin:+,\"engine_pin\":$pin}" \
      "${manifest:+,\"snapshot_manifest_sha256\":\"$manifest\"}" \
      "${live:+,\"source_mode\":\"live\"}" > "$owned/host-config.json"
    "$PYTHON" -I -B "$ROOT/scripts/notch_evaluation/host.py" --config "$owned/host-config.json" \

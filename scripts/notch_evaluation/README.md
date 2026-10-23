@@ -37,6 +37,27 @@ sources, and nothing else; every effect stays blocked at its sink.
 
 ## Known limits
 
+- **Engine attribution is pinned, not re-run per connection.** The production
+  attribution of the desktop oMLX runs `lsof` and the setuid `ps`, which the
+  sandboxed backend cannot run (macOS never executes a setuid binary inside a
+  sandbox). So the unconfined supervisor runs it once before launch, unchanged
+  (`engine_attest.py`: `RuntimeAuthority` → `DesktopOmlx` on 127.0.0.1:8000),
+  and pins the listener's pid, start time, uid, executable, parent, signature
+  and loaded model in the host config. It checks
+  `~/.moe/omlx-runtime-authorization.json` only to confirm the file is absent.
+  The backend never execs and never reads `~/.moe`. Its engine authority
+  (`pinned_engine.py`, importable only under the latch) re-checks the pin on
+  every request write with kernel reads only: the same incarnation and
+  executable (proc_pidinfo, proc_pidpath), and this connection's far end held
+  by that pid (proc_pidfdinfo). Any mismatch stops the run as
+  `ENGINE_NOT_READY`, with no fallback. **Gap:** per-connection peer
+  attribution in a run uses this pinned identity, not the production lsof/ps
+  path; `service/inference/attributed_transport.py` is unchanged.
+- **Reviewed reads** are listed in `host.py` `REVIEWED_READS`. `plan_meeting`
+  (it can request an on-demand native sync), `system_status` and
+  `list_running_apps` (processes, AppleScript), web, clipboard, contacts and
+  browser-history tools stay blocked.
+
 - **Apple Events cannot be limited by verb.** The live profile can only name
   the destinations (`com.apple.mail`, `com.apple.Notes`). So every
   AppleScript a reader runs first goes through `NotchEvaluationScriptPolicy`,

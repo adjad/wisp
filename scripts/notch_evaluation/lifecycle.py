@@ -489,6 +489,8 @@ def main(argv: list[str] | None = None) -> int:
     place = sub.add_parser("install-snapshot", help="install a verified snapshot into a fresh root")
     place.add_argument("snapshot")
     place.add_argument("root")
+    pin = sub.add_parser("attest-engine", help="attribute the desktop oMLX on 127.0.0.1:8000 and print its pin")
+    pin.add_argument("--model", required=True)
     secrets_cmd = sub.add_parser("secret", help="print a random token")
     secrets_cmd.add_argument("--bytes", type=int, default=32)
     args = parser.parse_args(argv)
@@ -503,6 +505,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "install-snapshot":
             print(install_snapshot(args.snapshot, args.root))
+            return 0
+        if args.command == "attest-engine":
+            sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+            from scripts.notch_evaluation import engine_attest
+            try:
+                print(json.dumps(engine_attest.attest(args.model), sort_keys=True))
+            except (engine_attest.EngineAttestationError, OSError, ValueError) as exc:
+                print(f"lifecycle: ENGINE_NOT_READY: {exc}", file=sys.stderr)
+                return 3
             return 0
         if args.command == "retire":
             print(retire(args.root, args.into))

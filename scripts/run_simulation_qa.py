@@ -159,6 +159,7 @@ PROFILE_TESTS = {
         "tests/test_notch_script_policy.py",
         "tests/test_notch_profile.py",
         "tests/test_notch_transcripts.py",
+        "tests/test_notch_pinned_engine.py",
     "tests/test_cloud_provider_settings.py",
     "tests/test_local_provider_settings.py",
     "tests/test_setup_guide.py",
