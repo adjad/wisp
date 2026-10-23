@@ -988,6 +988,7 @@ class _FakeProcess:
 
     def __init__(self, pid: int, *, alive: bool = True, dies_on: tuple[str, ...] = ("SIGTERM",)):
         self.pid, self.code, self.sent, self.dies_on = pid, None if alive else 0, [], dies_on
+        self.wait_timeouts = []
 
     def poll(self):
         return self.code
@@ -999,7 +1000,9 @@ class _FakeProcess:
         if name in self.dies_on:
             self.code = -int(sig)
 
-    def wait(self):
+    def wait(self, *, timeout):
+        assert isinstance(timeout, (float, int)) and 0 < timeout < float("inf")
+        self.wait_timeouts.append(timeout)
         if self.code is None:
             self.code = -9
         return self.code
@@ -1139,6 +1142,136 @@ def test_cleanup_visits_all_handles_even_when_one_retirement_raises(interrupt):
     recorded = json.loads((root / lifecycle.STATE).read_text())
     assert recorded["state"] == "failed" and recorded["children"][1]["alive"]
     assert recorded["cleanup_errors"] == [{"role": "app", "error": "KeyboardInterrupt" if interrupt else "OSError"}]
+
+
+@pytest.mark.parametrize("control_failure", (False, True))
+def test_post_kill_timeout_visits_other_children_and_retains_actual_owner(monkeypatch, control_failure):
+    from types import SimpleNamespace
+    from scripts.notch_evaluation import lifecycle
+    root = OWNED / f"kill-timeout-{control_failure}"
+    root.mkdir(mode=0o700)
+    (root / "host-config.json").write_text(json.dumps({
+        "listen_port": PORT, "token": TOKEN, "nonce": NONCE, "run_id": "synthetic-timeout"}))
+
+    class SlowToReap(_FakeProcess):
+        def wait(self, *, timeout):
+            assert isinstance(timeout, (int, float)) and 0 < timeout < float("inf")
+            self.wait_timeouts.append(timeout)
+            assert self.sent == ["SIGTERM", "SIGKILL"]
+            raise subprocess.TimeoutExpired("synthetic-owned-app", timeout)
+
+    processes = [_FakeProcess(7301), SlowToReap(7302, dies_on=())]
+    child_type = lifecycle.Child
+    sup = lifecycle.Supervisor(str(root), spawn=lambda *a, **kw: processes[len(sup.children)])
+
+    def child_factory(role, process):
+        child = child_type(role, process)
+        if role == "app":
+            child.retire = lambda: child_type.retire(child, grace=0)  # no real timer/sleep
+        return child
+
+    monkeypatch.setattr(lifecycle, "Child", child_factory)
+    monkeypatch.setattr(lifecycle, "Supervisor", lambda _: sup)
+    monkeypatch.setattr(lifecycle, "_identity", lambda *a: processes[0].pid)
+    snapshots = []
+    finished = False
+    retain = sup.retain_unresolved
+
+    def owned_nap(seconds):
+        assert not finished and 0 < seconds <= 1
+        # We are still inside the same supervisor call, holding actual fake
+        # Popen objects; a failed JSON alone has not returned/released it.
+        assert sup.children[1].process is processes[1] and processes[1].code is None
+        assert processes[0].sent == ["SIGTERM"] and processes[0].code == -15
+        state = json.loads((root / lifecycle.STATE).read_text())
+        snapshots.append(state)
+        assert state["state"] == "failed" and state["ownership"] == "retained"
+        assert state["cleanup_pending"][0]["role"] == "app"
+        assert state["cleanup_pending"][0]["alive"] and state["cleanup_pending"][0]["returncode"] is None
+        # Repeated requests cannot refresh the signal/wait budget or signal a
+        # reaped/historical pid. The retained owner only observes this handle.
+        sup.stop_all("stopped", "synthetic repeated cleanup")
+        assert processes[1].sent == ["SIGTERM", "SIGKILL"]
+        assert processes[1].wait_timeouts == [lifecycle.KILL_WAIT_S]
+        processes[1].code = -9  # only now does this owned fake become waitable
+
+    sup.retain_unresolved = lambda: retain(nap=owned_nap)
+
+    class Connection:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def recv(self, size): return b"stop"
+        def sendall(self, data):
+            reply = json.loads(data)
+            assert reply["state"] == "failed" and reply["ownership"] == "retained"
+
+    class Server:
+        def bind(self, path): Path(path).write_text("owned fake socket")
+        def listen(self, backlog): pass
+        def settimeout(self, seconds): pass
+        def accept(self):
+            if control_failure:
+                raise OSError("synthetic control failure")
+            return Connection(), None
+        def close(self): pass
+
+    monkeypatch.setattr(lifecycle.socket, "socket", lambda *a: Server())
+    args = SimpleNamespace(root=str(root), python="synthetic-python", host="synthetic-host",
+                           app="synthetic-app", ready_timeout=1)
+    assert lifecycle.supervise(args) == 2
+    finished = True
+    assert len(snapshots) == 1 and processes[1].wait_timeouts == [lifecycle.KILL_WAIT_S]
+    state = json.loads((root / lifecycle.STATE).read_text())
+    assert state["state"] == "failed" and state["ownership"] == "resolved" and state["cleanup_pending"] == []
+    assert state["cleanup_errors"] == [{"role": "app", "error": "TimeoutExpired", "wait_timeout_s": lifecycle.KILL_WAIT_S}]
+    assert all(not child["alive"] for child in state["children"])
+    assert not (root / lifecycle.CONTROL).exists()
+    assert not sup.children[1].signal(15)  # known reaped: never signal again
+    assert processes[1].sent == ["SIGTERM", "SIGKILL"]
+
+
+@pytest.mark.parametrize("poll_error", (False, True))
+def test_unresolved_owner_survives_poll_reporting_and_interrupt_errors_until_reaped(poll_error):
+    from scripts.notch_evaluation import lifecycle
+    root = OWNED / f"retained-owner-errors-{poll_error}"
+    root.mkdir(mode=0o700)
+
+    class UncertainProcess(_FakeProcess):
+        failed_poll = False
+
+        def poll(self):
+            if poll_error and not self.failed_poll:
+                self.failed_poll = True
+                raise OSError("synthetic failed owned poll")
+            return super().poll()
+
+    process = UncertainProcess(7401, dies_on=())
+    child = lifecycle.Child("app", process)
+    child.retirement_started = True
+    sup = lifecycle.Supervisor(str(root))
+    sup.children = [child]
+    original_write = sup.write
+    naps = []
+
+    def reporting_error(**fields):
+        if not naps:
+            raise OSError("synthetic failed evidence write")
+        original_write(**fields)
+
+    sup.write = reporting_error
+
+    def owned_nap(seconds):
+        assert sup.children[0].process is process and process.code is None
+        naps.append(seconds)
+        if len(naps) == 1:
+            raise KeyboardInterrupt("synthetic interrupted owner")
+        process.code = -9
+
+    with pytest.raises(OSError, match="owned poll" if poll_error else "evidence write"):
+        sup.retain_unresolved(nap=owned_nap)
+    assert len(naps) == 2 and process.sent == []  # retention only observes, never re-signals
+    state = json.loads((root / lifecycle.STATE).read_text())
+    assert state["state"] == "failed" and state["ownership"] == "resolved" and state["cleanup_pending"] == []
 
 
 def test_control_path_limit_refuses_before_spawn_or_state_writes(monkeypatch):

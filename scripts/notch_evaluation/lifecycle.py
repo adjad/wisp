@@ -11,8 +11,9 @@ Stdlib only. Two rules:
   keeps their ``Popen`` handles. A child is signalled only through its handle
   while it is unreaped, so the pid cannot have been reused. ``stop`` asks the
   supervisor over a private Unix socket; no command ever signals a pid read
-  from a file. When the supervisor is gone, stop reports the last recorded
-  state and signals nothing.
+  from a file. Without a live control connection, stop reports the last
+  recorded state and signals nothing. Unresolved cleanup keeps the actual
+  supervisor and its handles alive until those children have been reaped.
 """
 from __future__ import annotations
 
@@ -36,6 +37,8 @@ CONTROL = "control.sock"
 # Darwin's sockaddr_un has 104 bytes, including the trailing NUL.
 _MAX_CONTROL_PATH_BYTES = 103
 STOP_GRACE_S = 5.0
+KILL_WAIT_S = 1.0
+_OWNER_POLL_S = 0.1
 
 
 class RootError(ValueError):
@@ -135,6 +138,7 @@ class Child:
         self.role, self.process = role, process
         self.returncode: int | None = None
         self.signals: list[str] = []
+        self.retirement_started = False
 
     def alive(self) -> bool:
         if self.returncode is not None:
@@ -153,13 +157,18 @@ class Child:
         return True
 
     def retire(self, grace: float = STOP_GRACE_S, *, clock=time.monotonic, nap=time.sleep) -> dict:
+        self.retirement_started = True
         if self.signal(signal.SIGTERM):
             deadline = clock() + grace
             while self.alive() and clock() < deadline:
                 nap(0.05)
             if self.alive():
                 self.signal(signal.SIGKILL)
-                self.process.wait()
+                try:
+                    self.process.wait(timeout=KILL_WAIT_S)
+                except subprocess.TimeoutExpired:
+                    self.alive()
+                    return {**self.record(), "cleanup_error": "TimeoutExpired", "wait_timeout_s": KILL_WAIT_S}
         self.alive()
         return self.record()
 
@@ -203,15 +212,60 @@ class Supervisor:
         interrupted = None
         for child in reversed(self.children):
             try:
-                child.retire()
+                if child.retirement_started:
+                    child.alive()  # An unresolved handle stays owned; do not restart its signal budget.
+                    continue
+                child.retirement_started = True
+                outcome = child.retire()
+                if outcome.get("cleanup_error"):
+                    errors.append({"role": child.role, "error": outcome["cleanup_error"],
+                                   "wait_timeout_s": outcome["wait_timeout_s"]})
             except BaseException as exc:  # visit every owned handle, even on interruption
                 errors.append({"role": child.role, "error": type(exc).__name__})
                 if not isinstance(exc, Exception) and interrupted is None:
                     interrupted = exc
-        self.write(state="failed" if errors else state, reason=reason, cleanup_errors=errors)
+        pending = [c.record() for c in self.children if c.returncode is None]
+        self.write(state="failed" if errors or pending else state, reason=reason, cleanup_errors=errors,
+                   cleanup_pending=pending, ownership="retained" if pending else "resolved")
         if interrupted is not None:
             raise interrupted
         return self.state
+
+    def retain_unresolved(self, *, nap=time.sleep) -> None:
+        """Keep the actual owner alive until every retained handle is reaped.
+
+        A failed state file is not a teardown or a transfer of ownership. Each
+        child was already given its finite retirement budget, so poll only the
+        retained handles here without signalling again. Other children have
+        already been visited. The supervisor cannot return/release its runtime
+        slot while an outcome is unknown; forced owner death still requires the
+        outer controller's qualified cleanup, not historical-PID signalling.
+        """
+        pending = [c for c in self.children if c.returncode is None]
+        interrupted = None
+        while pending:
+            for child in pending:
+                try:
+                    child.alive()
+                except BaseException as exc:
+                    # Poll/report/interrupt errors must not discard a live owner.
+                    if interrupted is None:
+                        interrupted = exc
+            pending = [c for c in pending if c.returncode is None]
+            try:
+                self.write(state="failed", cleanup_pending=[c.record() for c in pending],
+                           ownership="retained" if pending else "resolved")
+            except BaseException as exc:
+                if interrupted is None:
+                    interrupted = exc
+            if pending:
+                try:
+                    nap(_OWNER_POLL_S)
+                except BaseException as exc:
+                    if interrupted is None:
+                        interrupted = exc
+        if interrupted is not None:
+            raise interrupted
 
 
 def _identity(port: int, token: str, nonce: str, timeout: float) -> int | None:
@@ -287,7 +341,10 @@ def supervise(args) -> int:
         if state not in ("failed", "ended", "stopped"):
             state = "failed"
             sup.state.update(reason="supervisor ended before a terminal state")
-        sup.stop_all(state, sup.state.get("reason", ""))
+        try:
+            sup.stop_all(state, sup.state.get("reason", ""))
+        finally:
+            sup.retain_unresolved()
     return 2 if sup.state["state"] == "failed" else result
 
 
@@ -354,7 +411,7 @@ def stop(root: str, *, timeout: float = 30.0) -> dict:
             recorded = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
         except (OSError, ValueError):
             recorded = {"unreadable": True}   # a damaged record still signals nothing
-        return {"stopped_by": "none", "note": "no live supervisor; nothing was signalled",
+        return {"stopped_by": "none", "note": "no live control connection; nothing was signalled",
                 "last_recorded": recorded}
 
 
