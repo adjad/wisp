@@ -642,6 +642,19 @@ async def get_cloud_inference() -> dict[str, Any]:
     return settings
 
 
+async def _cloud_model_answers(probe, model_id: str, available: list[str]) -> bool:
+    """Whether the provider serves model_id. Gemini's OpenAI-compatible list
+    names models "models/<id>" and can leave some out (Gemma), so an unlisted
+    id gets one tiny completion before it is called missing."""
+    if model_id in available or f"models/{model_id}" in available:
+        return True
+    try:
+        response = await probe.chat(model_id, [{"role": "user", "content": "Reply with OK."}], max_tokens=16)
+    except Exception:  # noqa: BLE001 — any failure means "not served"
+        return False
+    return bool((response or {}).get("choices"))
+
+
 @app.post("/inference/cloud")
 async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
     provider_name = body.get("provider")
@@ -680,7 +693,7 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
                 probe = OMLXClient(target=Target("connection-test", endpoint_from_config("cloud", endpoint_cfg),
                                                  model_id.strip(), context_window=context_window), timeout=30)
                 available = await probe.models()
-                if model_id.strip() not in available and f"models/{model_id.strip()}" not in available:
+                if not await _cloud_model_answers(probe, model_id.strip(), available):
                     raise HTTPException(status_code=400,
                         detail="The provider connected, but did not return that exact model ID.")
             with _local_provider_operation_lock:
@@ -703,7 +716,7 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
         generation = _supersede_local_provider_probe()
         probe = OMLXClient(target=target, timeout=30)
         available = await probe.models()
-        if model_id.strip() not in available and f"models/{model_id.strip()}" not in available:
+        if not await _cloud_model_answers(probe, model_id.strip(), available):
             raise HTTPException(status_code=400,
                 detail="The provider connected, but did not return that exact model ID.")
         with _local_provider_operation_lock:

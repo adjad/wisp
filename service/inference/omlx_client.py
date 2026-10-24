@@ -531,10 +531,11 @@ class OMLXClient:
                     # remote model admission, eviction, or administrative APIs.
                     if self.provider.omlx_health:
                         await self.health()
-                    available = await self.models()
-                    # Gemini's OpenAI-compatible inventory lists "models/<id>".
-                    if model not in available and f"models/{model}" not in available:
-                        raise ModelLoadError(f"Model {model!r} is unavailable on {self.endpoint_name}")
+                    # The inventory read proves the endpoint and key answer. A model
+                    # missing from it is not refused: Gemini's OpenAI-compatible
+                    # list leaves Gemma out though it serves it, and a model the
+                    # provider truly lacks fails on the request itself.
+                    await self.models()
                     return
                 await self._ensure_managed(model, settle_timeout=settle_timeout,
                                            exclusive=exclusive, emit=emit)
