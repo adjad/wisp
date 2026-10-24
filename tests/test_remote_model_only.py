@@ -107,3 +107,19 @@ class CloudEverything(RemoteFixture):
             config.disable_cloud_provider()
             self.assertFalse(saved["remote_parity"])
             self.assertFalse(config.cloud_everything_enabled())
+
+
+def test_inline_thought_is_split_from_the_answer_across_chunks():
+    from service.inference.omlx_client import _ThoughtSplitter, _split_inline_thought
+    s = _ThoughtSplitter()
+    parts = []
+    for chunk in ["<tho", "ught>plan it", "</thou", "ght>You have one event.", " Done."]:
+        parts += s.feed(chunk)
+    parts += s.flush()
+    assert "".join(t for k, t in parts if k == "content") == "You have one event. Done."
+    assert "".join(t for k, t in parts if k == "reasoning") == "plan it"
+    message = {"content": "<thought>x</thought>Hello"}
+    _split_inline_thought(message)
+    assert message == {"content": "Hello", "reasoning_content": "x"}
+    plain = _ThoughtSplitter()
+    assert "".join(t for _, t in plain.feed("a < b") + plain.flush()) == "a < b"

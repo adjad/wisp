@@ -134,6 +134,53 @@ def _ensure_choices(data: dict[str, Any]) -> dict[str, Any]:
     }]}
 
 
+
+class _ThoughtSplitter:
+    """Moves a remote model's inline <thought>…</thought> text (Gemma on the
+    Gemini API) out of the answer and into reasoning, even when a tag is split
+    across stream chunks."""
+    OPEN, CLOSE = "<thought>", "</thought>"
+
+    def __init__(self) -> None:
+        self.inside = False
+        self.buffer = ""
+
+    def feed(self, text: str) -> list[tuple[str, str]]:
+        self.buffer += text
+        out: list[tuple[str, str]] = []
+        while self.buffer:
+            tag = self.CLOSE if self.inside else self.OPEN
+            at = self.buffer.find(tag)
+            if at >= 0:
+                if at:
+                    out.append(("reasoning" if self.inside else "content", self.buffer[:at]))
+                self.buffer = self.buffer[at + len(tag):]
+                self.inside = not self.inside
+                continue
+            # Keep a possible partial tag for the next chunk.
+            keep = next((n for n in range(len(tag) - 1, 0, -1) if self.buffer.endswith(tag[:n])), 0)
+            ready = self.buffer[:len(self.buffer) - keep]
+            if ready:
+                out.append(("reasoning" if self.inside else "content", ready))
+            self.buffer = self.buffer[len(ready):]
+            break
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        rest, self.buffer = self.buffer, ""
+        return [("reasoning" if self.inside else "content", rest)] if rest else []
+
+
+def _split_inline_thought(message: dict) -> None:
+    content = message.get("content")
+    if not isinstance(content, str) or _ThoughtSplitter.OPEN not in content:
+        return
+    splitter = _ThoughtSplitter()
+    parts = splitter.feed(content) + splitter.flush()
+    message["content"] = "".join(t for k, t in parts if k == "content").strip()
+    thought = "".join(t for k, t in parts if k == "reasoning")
+    message["reasoning_content"] = ((message.get("reasoning_content") or "") + thought).strip()
+
 class OMLXClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None,
                  timeout: float = 600.0, *, target: Target | None = None) -> None:
@@ -703,6 +750,8 @@ class OMLXClient:
                     if self.provider.name != "omlx":
                         if message.get("reasoning") and not message.get("reasoning_content"):
                             message["reasoning_content"] = message["reasoning"]
+                    if not self.managed:
+                        _split_inline_thought(message)
                     if (not self.managed and choice["message"].get("tool_calls")
                             and choice.get("finish_reason") == "stop"):
                         choice["finish_reason"] = "tool_calls"   # Gemini's OpenAI-compatible API
@@ -755,6 +804,7 @@ class OMLXClient:
                                 temperature, max_tokens, stream=True, **extra)
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
+        thought_splitter = _ThoughtSplitter()
         calls: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None
         done = False
@@ -810,8 +860,12 @@ class OMLXClient:
                         if not self.managed:
                             output_size = self._bounded_remote_value(
                                 output_size, t, output_limit)
-                        content_parts.append(t)
-                        yield {"kind": "content", "text": t}
+                            for kind, piece in thought_splitter.feed(t):
+                                (reasoning_parts if kind == "reasoning" else content_parts).append(piece)
+                                yield {"kind": kind, "text": piece}
+                        else:
+                            content_parts.append(t)
+                            yield {"kind": "content", "text": t}
                     for tc in (delta.get("tool_calls") or []):
                         index = tc.get("index")
                         if index is None:
@@ -835,6 +889,9 @@ class OMLXClient:
         finally:
             idle.end(self.activity_key(model))
             engine_epoch.end()
+        for kind, piece in thought_splitter.flush():
+            (reasoning_parts if kind == "reasoning" else content_parts).append(piece)
+            yield {"kind": kind, "text": piece}
         if calls and not self.managed and finish_reason == "stop":
             finish_reason = "tool_calls"   # Gemini's OpenAI-compatible API ends tool calls with "stop"
         if finish_reason not in {"stop", "length", "tool_calls"}:
