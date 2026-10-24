@@ -11,8 +11,17 @@ Setup is user-owned: Wisp cannot ship a Google OAuth client (the Gmail scopes
 are restricted), so the user creates a Desktop-type client in their own Google
 Cloud project and gives Wisp its id/secret once (`/assistant/gmail/connect`
 or scripts/gmail_connect.py). Consent happens in the browser over a loopback
-redirect with PKCE. Only `gmail.readonly` is ever requested — nothing here can
-send, delete, or modify mail — and data only flows Google -> this Mac.
+redirect with PKCE. Only read-only scopes are requested (`gmail.readonly`, and
+optionally `calendar.readonly`): nothing here can send, delete, or modify mail
+or events, and data only flows Google -> this Mac.
+
+What is fetched, per connected account, in the background (`run`):
+- headers of the newest HEADERS_LIMIT inbox messages, every HEADERS_EVERY s;
+- header history back HISTORY_DAYS, every HISTORY_EVERY s;
+- full bodies of the newest RAW_LIMIT messages, every RAW_EVERY s (15 min,
+  the cadence MailReader.swift uses for Mail.app), and once right after a
+  sign-in. The proactive engine reads these bodies to find what people asked;
+  they live in the same expiring raw-body cache as Mail.app's.
 
 Consent also asks for `calendar.readonly` (google_calendar_source.py reads the
 next week of events into the same calendar store EventKit fills). Google lets
@@ -700,6 +709,13 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         from service.tools import email_tools as E
         E.configure_external_accounts(accounts)
         E.external_email_error(email, "headers", "New sign-in is waiting for its first refresh")
+    if CALENDAR_SCOPE not in granted:
+        # A reconnect that unticked Calendar: the events read before must go.
+        try:
+            from service import google_calendar_source as C
+            C.erase_if_present(email)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[google_calendar] scope-drop erase failed: {type(exc).__name__}", flush=True)
     _authorization.update(phase="reading", phase_email=email, analyze="")
     _spawn(_after_connect(email))
     return email
@@ -818,7 +834,9 @@ async def disconnect(account: str = "") -> dict:
                 await http.post("https://oauth2.googleapis.com/revoke", data={"token": item["refresh_token"]})
         except Exception:
             pass  # Local disconnect already succeeded.
-    return {"removed": sorted(removed), "erased": erased}
+    complete = all(value == "erased" or value.startswith("erased ")
+                   for parts in erased.values() for value in parts.values())
+    return {"removed": sorted(removed), "erased": erased, "complete": complete}
 
 
 def erase_account_data(account: str) -> dict:
@@ -855,10 +873,7 @@ def erase_account_data(account: str) -> dict:
         result["calendar"] = f"failed: {type(exc).__name__}"
     try:
         from service.assistant import mail_gists
-        cache = mail_gists._load()
-        dropped = [kind for kind in ("summary", "inbox") if cache.pop(kind, None) is not None]
-        if dropped:
-            mail_gists._save()
+        mail_gists.invalidate(("summary", "inbox"))
         result["mail_overviews"] = "erased"
     except Exception as exc:  # noqa: BLE001
         result["mail_overviews"] = f"failed: {type(exc).__name__}"

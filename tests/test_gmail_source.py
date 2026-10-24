@@ -2688,6 +2688,56 @@ class GoogleConnectAndErase(unittest.TestCase):
         self.assertNotIn(JUDGE, G.connected_accounts())
         self.assertEqual(self.erased, [JUDGE])
 
+    def test_reconnect_without_calendar_erases_the_old_events(self):
+        self.C.store_events("new@gmail.com", [{"source_id": "gcal:new@gmail.com:e1", "title": "Old",
+                                               "when_ts": time.time() + 3600}])
+        self.finish([G.SCOPE])
+        with self.store.transaction(write=False) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0], 0)
+
+    def test_disconnect_result_says_whether_everything_was_erased(self):
+        self.seed()
+        with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200))):
+            result = asyncio.run(G.disconnect(JUDGE))
+        self.assertTrue(result["complete"])
+        self.seed()
+        with patch.dict(sys.modules, {"service.proactive.store": None}), \
+             patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200))):
+            result = asyncio.run(G.disconnect(ME))
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["erased"][ME]["proactive"], "unavailable")
+
+    def test_disconnect_route_returns_the_erase_result(self):
+        from starlette.requests import Request
+        with patch.dict(sys.modules):
+            for name in ("service.proactive", "service.proactive.store", "service.proactive.cycle"):
+                sys.modules.pop(name, None)     # the real engine, not this class's stand-ins
+            import service.main as M
+        scope = {"type": "http", "method": "POST", "path": "/assistant/gmail/disconnect",
+                 "headers": [(b"content-type", b"application/json")]}
+        fake = AsyncMock(return_value={"removed": [JUDGE], "complete": False,
+                                       "erased": {JUDGE: {"mail": "erased", "proactive": "failed: X"}}})
+        with patch.object(G, "disconnect", fake):
+            body = asyncio.run(M.gmail_disconnect(Request(scope), {"account": JUDGE}))
+        self.assertEqual(body["ok"], False)
+        self.assertTrue(body["partial"])
+        self.assertEqual(body["erased"][JUDGE]["proactive"], "failed: X")
+        self.assertEqual(body["removed"], [JUDGE])
+
+    def test_gist_rewrite_in_flight_during_erase_is_dropped(self):
+        self.seed()
+        gists = self.gists
+        async def synth(system, material):
+            G.erase_account_data(JUDGE)          # erase lands while the model is writing
+            return "JUDGESECRET is the summary of your inbox today and more words here."
+        job = {"kind": "summary", "key": "k2", "lines": ["x"], "rules": "r", "paragraph": True,
+               "ok": lambda text: True}
+        with patch.object(gists, "_jobs", lambda now: [job]):
+            wrote = asyncio.run(gists.refresh(synth=synth, abort=lambda: False))
+        self.assertFalse(wrote)
+        self.assertNotIn("summary", gists._load())
+        self.assertNotIn("summary", json.loads(gists._PATH.read_text()))
+
     def test_status_reports_calendar_per_account(self):
         rows = {r["email"]: r for r in G.status()["accounts"]}
         self.assertTrue(rows[JUDGE]["calendar"])

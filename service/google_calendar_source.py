@@ -157,6 +157,22 @@ def _rfc3339(ts: float) -> str:
 
 # --- fetching -----------------------------------------------------------------
 
+class CalendarScopeLost(G.GmailError):
+    """Google says this token may no longer read Calendar."""
+
+
+def _scope_lost(response: httpx.Response) -> bool:
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    error = error if isinstance(error, dict) else {}
+    reasons = {str(item.get("reason", "")) for item in (error.get("errors") or []) + (error.get("details") or [])
+               if isinstance(item, dict)}
+    return bool(reasons & {"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"})
+
+
 def _api_error(response: httpx.Response) -> str:
     try:
         body = response.json()
@@ -190,6 +206,8 @@ async def _get(http: httpx.AsyncClient, account: str, path: str, params: dict) -
         if response.status_code in (429, 500, 503) and attempt < 2:
             await asyncio.sleep(1.0 * (attempt + 1))
             continue
+        if response.status_code == 403 and _scope_lost(response):
+            raise CalendarScopeLost(_api_error(response))
         if response.status_code != 200:
             raise G.GmailError(_api_error(response))
         return response.json()
@@ -243,6 +261,7 @@ async def refresh_account(account: str, *, transport: httpx.AsyncBaseTransport |
     """Fetch one account's week and replace its Google rows. Returns the count."""
     account = account.strip().lower()
     if not G.has_calendar(account):
+        erase_if_present(account)
         return 0
     lock = _locks.setdefault(account, asyncio.Lock())
     async with lock:
@@ -257,6 +276,12 @@ async def refresh_account(account: str, *, transport: httpx.AsyncBaseTransport |
                 if not G.still_connected():
                     return 0
                 count = store_events(account, items)
+        except CalendarScopeLost as exc:
+            # Calendar access was taken back: its events must not linger.
+            erase(account)
+            _status.setdefault(account, {})["error"] = str(exc)
+            await _publish_changed()
+            return 0
         except G.GmailError as exc:
             if account in G.connected_accounts():
                 state["error"] = str(exc)
@@ -278,6 +303,9 @@ async def refresh_due(accounts: dict[str, dict], now: float | None = None) -> No
         except asyncio.TimeoutError:
             record_error(account, "Google Calendar timed out; it will retry in a few minutes")
 
+    for account, item in accounts.items():
+        if not G.has_calendar(account, item):
+            erase_if_present(account)   # the scope was dropped on a reconnect
     due = [account for account, item in accounts.items() if G.has_calendar(account, item)
            and now - _status.get(account, {}).get("attempted", 0) >= CALENDAR_EVERY]
     await asyncio.gather(*(one(account) for account in due))
@@ -374,7 +402,9 @@ def stored_items(store=None, accounts: set[str] | None = None) -> list[dict]:
             "i.organizer_is_user AS organizer_is_user FROM commitments c "
             "LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
             "LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
-            "WHERE c.source='calendar' AND c.status<>'dismissed' AND substr(c.source_id,1,?)=?",
+            # Dismissed rows ride along too: dropping them from EventKit's
+            # replace-set would delete the row and with it the dismissal.
+            "WHERE c.source='calendar' AND substr(c.source_id,1,?)=?",
             (len(PREFIX), PREFIX)).fetchall()
     items = []
     for r in rows:
@@ -405,16 +435,50 @@ def merge_native_items(items: list[dict], store=None) -> list[dict]:
     return native + [it for it in google if _dupe_key(it["title"], it["when_ts"]) not in keys]
 
 
+def _account_row_ids(db, account: str) -> list[str]:
+    prefix = _prefix(account)
+    return [r["id"] for r in db.execute(
+        "SELECT id FROM commitments WHERE source='calendar' AND (substr(source_id,1,?)=? "
+        "OR (substr(source_id,1,?)=? AND lower(account)=?))",
+        (len(prefix), prefix, len(PREFIX), PREFIX, account))]
+
+
+def erase_if_present(account: str, store=None) -> int:
+    """`erase` only when the account has rows (a read first, no write lock)."""
+    account = account.strip().lower()
+    store = store or _store()
+    with store.transaction(write=False) as db:
+        if not _account_row_ids(db, account):
+            return 0
+    return erase(account, store)
+
+
 def erase(account: str, store=None) -> int:
-    """Delete every Google Calendar row (and its side rows) for one account."""
+    """Delete every Google Calendar row (and its side rows) for one account.
+
+    Best effort beyond the rows themselves: schedule versions of the deleted
+    rows (and any orphaned ones), and queued assistant events (notifications,
+    nudges, actions) whose payload names one of those rows, the account's
+    gcal: ids, or the account's address."""
     account = account.strip().lower()
     _status.pop(account, None)
     store = store or _store()
     prefix = _prefix(account)
     with store.transaction() as db:
-        ids = [r["id"] for r in db.execute(
-            "SELECT id FROM commitments WHERE source='calendar' AND (substr(source_id,1,?)=? "
-            "OR (substr(source_id,1,?)=? AND lower(account)=?))",
-            (len(prefix), prefix, len(PREFIX), PREFIX, account))]
+        ids = _account_row_ids(db, account)
         _delete_rows(db, ids)
+        for rid in ids:
+            db.execute("DELETE FROM assistant_schedule_versions WHERE commitment_id=?", (rid,))
+        db.execute("DELETE FROM assistant_schedule_versions WHERE commitment_id NOT IN "
+                   "(SELECT id FROM commitments)")
+        needles = [prefix, account] + ids
+        for row in db.execute("SELECT id, payload FROM assistant_events").fetchall():
+            payload = str(row["payload"] or "").lower()
+            if any(needle.lower() in payload for needle in needles):
+                db.execute("DELETE FROM assistant_events WHERE id=?", (row["id"],))
+    try:
+        from service.assistant.behavior_runtime import erase_google_calendar_account
+        erase_google_calendar_account(account)
+    except Exception as exc:  # noqa: BLE001 — reported by gmail_source.erase_account_data
+        raise RuntimeError(f"behavior history purge failed: {type(exc).__name__}") from exc
     return len(ids)

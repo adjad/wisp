@@ -273,6 +273,110 @@ class GoogleCalendarSource(unittest.TestCase):
         self.assertNotIn("IGNORE PREVIOUS", dump)
         self.assertNotIn("evil.test", dump)
 
+    # --- audit repairs ------------------------------------------------------
+
+    def test_dropped_scope_in_refresh_due_erases_the_accounts_rows(self):
+        self.refresh(JUDGE, self.judge_week())
+        self.accounts[JUDGE]["scopes"] = [G.SCOPE]
+        asyncio.run(C.refresh_due({JUDGE: self.accounts[JUDGE]}))
+        self.assertEqual(self.rows(JUDGE), [])
+
+    def test_insufficient_permission_403_erases_the_accounts_rows(self):
+        self.refresh(JUDGE, self.judge_week())
+        body = {"error": {"code": 403, "message": "Request had insufficient authentication scopes.",
+                          "details": [{"reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}
+        self.assertEqual(self.refresh(JUDGE, lambda request: httpx.Response(403, json=body)), 0)
+        self.assertEqual(self.rows(JUDGE), [])
+        self.assertIn("Calendar access wasn't granted", C.account_status(JUDGE)["calendar_error"])
+
+    def test_other_403s_keep_the_last_good_rows(self):
+        self.refresh(JUDGE, self.judge_week())
+        self.refresh(JUDGE, lambda request: httpx.Response(403, json={"error": {"errors": [{"reason": "rateLimitExceeded"}]}}))
+        self.assertEqual(len(self.rows(JUDGE)), 4)
+
+    def test_dismissed_google_events_stay_dismissed_across_eventkit_syncs(self):
+        self.refresh(JUDGE, self.judge_week())
+        coffee = next(r for r in self.rows(JUDGE) if r["title"] == "Coffee chat with Priya")
+        self.store.set_status(coffee["id"], "dismissed")
+        native = [{"source_id": "ek-1", "kind": "meeting", "title": "Dentist", "when_ts": at(15).timestamp()}]
+        self.store.sync_source("calendar", C.merge_native_items(native))
+        after = next(r for r in self.rows(JUDGE) if r["source_id"] == coffee["source_id"])
+        self.assertEqual(after["status"], "dismissed")
+        self.assertEqual(after["id"], coffee["id"])
+
+    def test_erase_purges_queued_events_and_schedule_versions(self):
+        self.refresh(JUDGE, self.judge_week())
+        coffee = next(r for r in self.rows(JUDGE) if r["title"] == "Coffee chat with Priya")
+        with self.store.transaction() as db:
+            db.execute("INSERT INTO assistant_schedule_versions VALUES (?,?)", (coffee["id"], "v1"))
+            db.execute("INSERT INTO assistant_schedule_versions VALUES (?,?)", ("orphan-id", "v1"))
+            for i, payload in enumerate([f'{{"commitment_id": "{coffee["id"]}"}}',
+                                         f'{{"source_id": "gcal:{JUDGE}:coffee"}}',
+                                         f'{{"to": "{JUDGE.upper()}"}}', '{"title": "Mine"}']):
+                db.execute("INSERT INTO assistant_events(id,kind,payload,dedupe_key,target,created_at) "
+                           "VALUES (?,?,?,?,?,?)", (f"ev{i}", "notify", payload, f"k{i}", "app", time.time()))
+        C.erase(JUDGE)
+        with self.store.transaction(write=False) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM assistant_schedule_versions").fetchone()[0], 0)
+            left = [r["payload"] for r in db.execute("SELECT payload FROM assistant_events")]
+        self.assertEqual(left, ['{"title": "Mine"}'])
+
+    def test_behavior_learner_never_reads_google_rows(self):
+        from service.assistant.behavior_runtime import BehaviorRuntime
+        self.refresh(JUDGE, self.judge_week())
+        self.store.sync_source("calendar", C.merge_native_items(
+            [{"source_id": "ek-1", "kind": "meeting", "title": "Dentist", "when_ts": at(15).timestamp()}]))
+        rows = BehaviorRuntime._calendar_rows(object(), self.store, at(-48).timestamp(), at(24 * 9).timestamp())
+        self.assertEqual([r["title"] for r in rows], ["Dentist"])
+
+    def test_behavior_purge_removes_google_observations_without_cancellations(self):
+        from service.assistant import behavior_runtime as R
+        from service.behavior.engine import BehaviorEngine
+        from service.behavior.types import Observation
+        home = Path(_scratch.name) / (self._testMethodName + "-home")
+        home.mkdir(exist_ok=True)
+        engine = BehaviorEngine(home / R.ENGINE_DB)
+        now = time.time()
+        def obs(sid, title, ts):
+            return Observation(id=f"cal:{sid}:{int(ts)}", kind="event", ts=ts, subject=title,
+                               source="calendar", source_id=sid)
+        judge = obs(f"gcal:{JUDGE}:coffee", "Coffee chat", now + 7200)
+        mine = obs(f"gcal:{ME}:x", "My 1:1", now + 7200)
+        native = obs("ek-1", "Dentist", now + 3600)
+        engine.observe_snapshot("calendar", [judge, mine, native], window_start=now - 86400,
+                                window_end=now + 86400 * 7, taken_at=now - 10)
+        engine._store.close()
+        self.assertGreater(R.erase_google_calendar_account(JUDGE, home=home), 0)
+        engine = BehaviorEngine(home / R.ENGINE_DB)
+        ids = {o.id for o in engine._store.observations()}
+        self.assertNotIn(judge.id, ids)
+        self.assertIn(mine.id, ids)
+        # The learner now excludes all Google rows: purging them first means
+        # their absence is not read as cancellations.
+        with engine._lock:
+            R.purge_google_calendar_rows(engine._store, R.GOOGLE_CALENDAR_PREFIX)
+        result = engine.observe_snapshot("calendar", [native], window_start=now - 86400,
+                                         window_end=now + 86400 * 7, taken_at=now)
+        self.assertEqual(result["cancelled"], 0)
+        kinds = {o.kind for o in engine._store.observations()}
+        self.assertNotIn("event_cancelled", kinds)
+        self.assertEqual({o.id for o in engine._store.observations()}, {native.id})
+        engine._store.close()
+
+    def test_cancel_event_refuses_google_and_read_only_rows(self):
+        from service.tools import assistant_tools as T
+        self.refresh(JUDGE, self.judge_week())
+        with patch.object(T, "assistant_store", self.store), \
+             patch.object(T, "_retire", side_effect=AssertionError("must not retire")):
+            reply = asyncio.run(T.cancel_event("Coffee chat with Priya"))
+        self.assertIn("read-only calendar", reply)
+        self.store.sync_source("calendar", C.merge_native_items([
+            {"source_id": "ek-sub", "kind": "event", "title": "Subscribed holiday",
+             "when_ts": at(30).timestamp(), "calendar_writable": False}]))
+        with patch.object(T, "assistant_store", self.store), \
+             patch.object(T, "_retire", side_effect=AssertionError("must not retire")):
+            self.assertIn("read-only", asyncio.run(T.cancel_event("Subscribed holiday")))
+
 
 def pytest_days(n: int) -> float:
     start = at(0)

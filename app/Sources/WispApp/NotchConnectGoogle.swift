@@ -98,12 +98,8 @@ final class NotchGoogleModel: ObservableObject {
         Task {
             let r = await request("POST", "assistant/gmail/disconnect", body: ["account": account], timeout: 20)
             erasing = nil
-            if r?["ok"] as? Bool == true {
-                note = "Disconnected \(account) and erased its mail, calendar and to-dos from this Mac."
-                if case .connected(let email, _) = stage, email == account { stage = .idle }
-            } else {
-                note = "Couldn't confirm the erase. Try again."
-            }
+            note = GoogleErase.note(account: account, response: r)
+            if r != nil, case .connected(let email, _) = stage, email == account { stage = .idle }
             await refresh()
         }
     }
@@ -121,6 +117,30 @@ final class NotchGoogleModel: ObservableObject {
               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode)
         else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+}
+
+/// What a Disconnect & erase response proves was erased. Pure. Only parts the
+/// backend reported as "erased" are named; anything else is called out.
+enum GoogleErase {
+    static func note(account: String, response r: [String: Any]?) -> String {
+        guard let r else { return "Couldn't confirm the erase. Try again." }
+        let parts = (r["erased"] as? [String: Any])?[account] as? [String: Any] ?? [:]
+        func erased(_ key: String) -> Bool { (parts[key] as? String)?.hasPrefix("erased") == true }
+        var done: [String] = []
+        if erased("mail") { done.append("mail") }
+        if erased("calendar") { done.append("calendar events") }
+        if erased("proactive") { done.append("to-dos") }
+        let removed = (r["removed"] as? [String] ?? []).contains(account)
+        var line = removed ? "Disconnected \(account)" : "\(account) was not connected"
+        if !done.isEmpty { line += " and erased its " + ListFormatter.localizedString(byJoining: done) }
+        line += "."
+        let missing = ["mail": "mail", "calendar": "calendar events", "mail_overviews": "mail summary",
+                       "proactive": "to-dos"].filter { !erased($0.key) }.map(\.value).sorted()
+        if r["ok"] as? Bool != true && !missing.isEmpty {
+            line += " Not confirmed erased: " + missing.joined(separator: ", ") + "."
+        }
+        return line
     }
 }
 
