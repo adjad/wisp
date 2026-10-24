@@ -30,7 +30,10 @@ private extension Theme {
 /// `onReply` is told whenever Reply is tapped, for whatever else wants to know.
 @MainActor
 enum BriefReplyHook {
-    static var composer: ((ProactiveThread, _ close: @escaping () -> Void) -> AnyView)? = nil
+    static var composer: ((ProactiveThread, _ close: @escaping () -> Void) -> AnyView)? = { thread, close in
+        AnyView(BriefReplyComposer(replyRef: thread.replyRef, account: thread.replyAccount,
+                                   onSent: {}, onDismiss: close))
+    }
     static var onReply: ((ProactiveThread) -> Void)? = nil
 }
 
