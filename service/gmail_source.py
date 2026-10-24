@@ -800,7 +800,10 @@ async def disconnect(account: str = "") -> dict:
             for key in list(_meta):
                 if key[0] == email:
                     _meta.pop(key, None)
-        if accounts:
+        if accounts or cfg.get("client_id"):
+            # The user's own OAuth client stays after the last account goes, so
+            # "Connect Google" in the notch still works after an erase. It holds
+            # no account data and no token.
             _save_config({"client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
                           "accounts": accounts})
         else:

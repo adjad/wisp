@@ -2650,6 +2650,17 @@ class GoogleConnectAndErase(unittest.TestCase):
         # Proactive cards/to-dos/threads.
         self.assertEqual(self.erased, [JUDGE])
 
+    def test_erasing_the_last_account_keeps_the_oauth_client_for_the_next_connect(self):
+        with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200))):
+            asyncio.run(G.disconnect(JUDGE))
+            asyncio.run(G.disconnect(ME))
+        cfg = G.load_config()
+        self.assertEqual(cfg["client_id"], "synthetic")
+        self.assertEqual(cfg["accounts"], {})
+        self.assertFalse(G.is_connected())
+        self.assertNotIn("refresh", G.CONFIG_PATH.read_text())
+        self.assertNotIn(JUDGE, G.CONFIG_PATH.read_text())
+
     def test_erase_survives_a_restart_of_the_mail_cache(self):
         self.seed()
         with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200))):
