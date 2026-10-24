@@ -2299,8 +2299,11 @@ async def agent(body: dict[str, Any]):
                 ask_quality = model_only and model_led_turn
                 ask_preload, ask_stub_rank = _ask_tool_rank(prompt) if ask_quality else ([], [])
                 if ask_quality:
-                    from service.model_only import ASK_STYLE_HINT
+                    from service.model_only import (ASK_CAPABILITY_HINT, ASK_STYLE_HINT,
+                                                    capability_question)
                     synthesis_guidance.insert(0, ASK_STYLE_HINT)
+                    if capability_question(prompt):
+                        synthesis_guidance.insert(1, ASK_CAPABILITY_HINT)
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")

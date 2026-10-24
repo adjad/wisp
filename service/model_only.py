@@ -123,6 +123,17 @@ ASK_STYLE_HINT = (
     "not ask the user to rephrase."
 )
 
+# Appended for a capability question ("Can you send texts?"): the corpus and
+# sweep had the model deny real capabilities or ask "which email?".
+ASK_CAPABILITY_HINT = (
+    "This is a question about what you can do. Answer it directly from the "
+    "Capabilities list above, without calling a tool: you can read and summarize "
+    "the user's email, texts, calendar, reminders and notes; draft and send emails "
+    "and texts (every send is shown to the user to confirm first); add reminders "
+    "and calendar events; search the web, weather and stocks; and control Mac "
+    "settings and apps. A Google account is linked in Wisp's Settings, under Google."
+)
+
 # Read tools whose result is the user's own current data.
 PERSONAL_SOURCE_CATEGORIES = frozenset({
     "assistant_read", "email_read", "messages_read", "notes_read", "browser_history_read",
