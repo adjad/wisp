@@ -46,7 +46,7 @@ def render_day_plan(snap: dict, *, now: float, tz: str) -> str:
         return ts is not None and datetime.fromtimestamp(ts, zone).date() == today
 
     timed = sorted((t for t in todos if on_today(t) and (t.get("source") != "calendar" or t["due_ts"] >= now - 3600)),
-                   key=lambda t: t["due_ts"])
+                   key=lambda t: (not t.get("timed", True), t["due_ts"]))
     overdue = [t for t in todos if t.get("due_ts") is not None and t["due_ts"] < now - 3600
                and t.get("source") != "calendar" and not on_today(t)]
     later = [t for t in todos if t not in timed and t not in overdue and t.get("source") != "calendar"]
@@ -68,7 +68,7 @@ def render_day_plan(snap: dict, *, now: float, tz: str) -> str:
                 lines.append(f"- …and {len(items) - cap} more")
 
     section("Time-bound today:", timed,
-            lambda t: f"{_clock(t['due_ts'], zone)} · {_clean(t.get('title'))} ({_SOURCE.get(t.get('source'), t.get('source', ''))})", 5)
+            lambda t: f"{_clock(t['due_ts'], zone) if t.get('timed', True) else 'all day'} · {_clean(t.get('title'))} ({_SOURCE.get(t.get('source'), t.get('source', ''))})", 5)
     section("Overdue:", overdue,
             lambda t: f"{_clean(t.get('title'))} · {t.get('due_label') or 'overdue'}", 3)
     section("Waiting on a reply from you:", waiting,

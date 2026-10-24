@@ -3158,6 +3158,7 @@ async def run_agent(
     ask_expect_tool = False
     ask_reprompt_step = False
     ask_reprompted = False
+    ask_reprompt_no_web = False
     ask_guard_retried = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
@@ -3256,6 +3257,11 @@ async def run_agent(
             step_schemas = [s for s in schemas if s['function']['name'] in alternatives]
         else:
             step_schemas = schemas
+            if ask_reprompt_step and ask_reprompt_no_web:
+                # A personal question first answered from the web: the
+                # re-prompt step must read the user's own sources.
+                step_schemas = [s for s in schemas
+                                if s['function']['name'] not in _ASK_WEB_TOOLS] or schemas
         choice = "required" if (forcing_first_step or expecting_tool) else "auto"
         if evidence_narration_retried and _unmet_group() is None:
             choice = 'none'
@@ -3706,6 +3712,7 @@ async def run_agent(
                     # required instead of trusting it.
                     ask_reprompted = True
                     ask_expect_tool = True
+                    ask_reprompt_no_web = web_only
                     audit("ask_personal_reprompt", step=_step, web_only=web_only)
                     msgs.append({"role": "assistant", "content": text})
                     msgs.append({"role": "user", "content": (

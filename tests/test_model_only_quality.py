@@ -492,6 +492,7 @@ def _snapshot(now):
             "todos": [
                 {"title": "Team Standup", "source": "calendar", "due_ts": now + 3600, "due_label": "Today 9:30 AM", "done": False},
                 {"title": "Submit W-9", "source": "mail", "due_ts": now - 3 * 86400, "due_label": "Overdue · 3 days", "done": False},
+                {"title": "Company Offsite", "source": "calendar", "due_ts": now + 60, "due_label": "Today", "done": False, "timed": False},
                 {"title": "Call Dr. Patel", "source": "reminders", "due_ts": None, "due_label": "", "done": False},
                 {"title": "Old done thing", "source": "notes", "due_ts": None, "due_label": "", "done": True}],
             "threads": [{"who": "Priya", "source": "mail", "title": "Notes from this morning",
@@ -506,6 +507,7 @@ def test_day_plan_render_is_prioritized_and_compact():
     assert order == sorted(order)
     assert "Team Standup" in text and "Submit W-9 · Overdue · 3 days" in text and "Priya (email)" in text
     assert "Old done thing" not in text and len(text) <= 1500
+    assert "all day · Company Offsite" in text and text.index("Team Standup") < text.index("Company Offsite")
     big = _snapshot(now)
     big["todos"] = [{"title": f"Task {i} " + "x" * 200, "source": "notes", "due_ts": None, "due_label": "", "done": False}
                     for i in range(40)]
@@ -563,6 +565,8 @@ def test_personal_question_answered_from_the_web_is_reprompted(synthetic):
                              [call("view_emails")], "Finance says the W-9 is due Friday."],
                             prompt="When is the W-9 due?", model_led_preload=["web_search", "view_emails"])
     assert "only the web was searched" in client.requests[2]["messages"][-1]["content"]
+    offered = {t["function"]["name"] for t in client.requests[2].get("tools") or []}
+    assert "web_search" not in offered and "view_emails" in offered
     assert executed(effects, "view_emails") == [{}]
     assert answer == "Finance says the W-9 is due Friday."
 
