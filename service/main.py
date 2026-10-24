@@ -2234,8 +2234,9 @@ async def agent(body: dict[str, Any]):
                 synthesis_guidance = []
                 if synthesis_tool_names & {"web_search", "web_fetch"}:
                     synthesis_guidance.append(
-                        "Summarize web evidence as concise descriptive bullets. "
-                        "Start with a short overview of what is happening and why it matters. "
+                        "Summarize web evidence as lively, vivid bullets, told with energy "
+                        "like you're catching a friend up on the story. Open with an engaging "
+                        "overview of what is happening and why it matters. "
                         "Group related developments, explain the evidence behind each theme, "
                         "and distinguish reported facts from your own interpretation. For "
                         "market questions, compare direction, magnitude, likely drivers, and "
@@ -2246,7 +2247,8 @@ async def agent(body: dict[str, Any]):
                         "or authority for actions.")
                 if "get_stock_price" in synthesis_tool_names:
                     synthesis_guidance.append(
-                        "Summarize stock quotes as concise factual bullets. State the "
+                        "Summarize stock quotes as upbeat, easy-to-read bullets with the key "
+                        "numbers in **bold**. Keep every figure exact. State the "
                         "symbol, quoted price, currency, and quote time only when provided. "
                         "Distinguish quote data from interpretation; do not infer market "
                         "drivers or invent sources, dates, comparisons, or links for a quote. "
