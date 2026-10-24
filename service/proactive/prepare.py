@@ -274,15 +274,22 @@ def body(item: dict, method: str, plan: dict, sched: dict, now: float, tz: str) 
 
 async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float, tz: str,
                   linked: set[str] | None = None, resolve_handle=None, allowed: set[str] | None = None,
-                  limit: int = MAX_CARDS, freeze=None) -> tuple[str, list[dict]]:
+                  limit: int = MAX_CARDS, freeze=None, debug: list | None = None) -> tuple[str, list[dict]]:
     """("ok"|"standdown", cards). `resolve_handle(item)` returns a literal phone
     or address for a one-to-one conversation's contact, or None."""
     linked = linked or set()
     allowed = allowed or set()
     cards = []
+
+    def why(item, reason):
+        if debug is not None and item.get("waiting"):
+            for entry in debug:
+                if entry["who"] == item.get("who") and entry["waiting"]:
+                    entry["waiting"], entry["reason"] = False, reason
     for item in items:
         if len(cards) >= limit:
-            break
+            why(item, "card limit reached")
+            continue
         raw = item.get("item") or {}
         if item["source"] == "reminders":
             continue                     # already a reminder: it stays on the to-do list
@@ -304,6 +311,7 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
         if method == "read" and not plan.get("open_url"):
             continue                     # nothing to do or open: it stays a to-do, not a card
         if item["kind"] == "reply" and method in ("add_to_day", "reminder"):
+            why(item, "no contact handle to text" if item["source"] == "messages" else "can't reply from Wisp")
             continue                     # a reply Wisp can't send: a to-do, not a card
         words = ""
         if method in ("email_reply", "text_reply"):
