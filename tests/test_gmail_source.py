@@ -2436,5 +2436,263 @@ class HistoryContinuation(unittest.TestCase):
         self.assertEqual(self.bridge.status()["fetched"], 3)
 
 
+
+JUDGE = "judge@gmail.com"
+
+
+class GoogleConnectAndErase(unittest.TestCase):
+    """Calendar consent, the post-connect pipeline, and Disconnect & erase."""
+
+    def setUp(self):
+        import types
+        from service import google_calendar_source as C
+        from service.assistant import mail_gists
+        from service.assistant.store import AssistantStore
+        self.C, self.gists = C, mail_gists
+        root = Path(_scratch.name) / ("erase-" + self._testMethodName)
+        root.mkdir(parents=True, exist_ok=True)
+        self.root = root
+        self.enterContext(patch.object(cache_store, "CACHE_DIR", root / "cache"))
+        self.enterContext(patch.object(G, "CONFIG_PATH", root / "gmail.json"))
+        self.enterContext(patch.multiple(E, _headers="", _history="", _raw_emails="", _swift_headers="",
+            _swift_history="", _swift_raw="", _external_accounts={}, _headers_sync_generation=0,
+            _email_available=None, _email_read_source="", _email_reason="", _email_sync_pending=False,
+            _native_headers_at=0.0, _native_raw_at=0.0, _native_source="", _swift_identity=[], _identity_emails=[]))
+        self.enterContext(patch.multiple(G, _last={}, _errors={}, _access={}, _epochs={}, _locks={},
+                                        _meta={}, _pending_flow=None, _flow_generation=0,
+                                        _authorization={"state": "idle", "generation": 0, "error": ""}))
+        self.store = AssistantStore(root / "assistant.db")
+        self.enterContext(patch.object(C, "_store_override", self.store))
+        self.enterContext(patch.multiple(C, _status={}, _locks={}))
+        self.enterContext(patch.object(mail_gists, "_PATH", root / "cache" / "mail_gists.json"))
+        self.enterContext(patch.object(mail_gists, "_cache", None))
+        self.erased = []
+        proactive_store = types.ModuleType("service.proactive.store")
+        proactive_store.erase_account = self.erased.append
+        self.analyzed = []
+        cycle = types.ModuleType("service.proactive.cycle")
+        cycle.request_analyze = lambda account=None: self.analyzed.append(account)
+        self.cycle = cycle
+        package = types.ModuleType("service.proactive")
+        package.__path__ = []
+        self.enterContext(patch.dict(sys.modules, {"service.proactive": package,
+                                                   "service.proactive.store": proactive_store,
+                                                   "service.proactive.cycle": cycle}))
+        both = [G.SCOPE, G.CALENDAR_SCOPE]
+        G._save_config({"client_id": "synthetic", "client_secret": "s", "accounts": {
+            ME: {"client_id": "synthetic", "refresh_token": "me-refresh", "scopes": both},
+            JUDGE: {"client_id": "synthetic", "refresh_token": "judge-refresh", "scopes": both}}})
+        E.configure_external_accounts(G.connected_accounts())
+
+    # --- consent scopes -----------------------------------------------------
+
+    def test_consent_asks_for_gmail_and_calendar_read_only(self):
+        from urllib.parse import parse_qs, urlparse
+        from unittest.mock import MagicMock
+        server = MagicMock()
+        server.sockets = [MagicMock(getsockname=lambda: ("127.0.0.1", 50123))]
+        async def run():
+            with patch.object(G.asyncio, "start_server", AsyncMock(return_value=server)):
+                return await G.begin_authorization("synthetic", timeout=0.05)
+        url = asyncio.run(run())
+        self.assertIn("redirect_uri=http%3A%2F%2F127.0.0.1%3A50123", url)
+        scopes = parse_qs(urlparse(url).query)["scope"][0].split()
+        self.assertEqual(set(scopes), {G.SCOPE, G.CALENDAR_SCOPE})
+        self.assertTrue(all(scope.endswith(".readonly") for scope in scopes))
+
+    def finish(self, granted):
+        token = {"refresh_token": "new-refresh", "access_token": "fake", "scope": " ".join(granted)}
+        async def run():
+            with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200, json=token))), \
+                 patch.object(httpx.AsyncClient, "get",
+                              AsyncMock(return_value=httpx.Response(200, json={"emailAddress": "New@Gmail.com"}))), \
+                 patch.object(G, "_after_connect", AsyncMock()) as after:
+                email = await G._finish("synthetic", "s", "code", "verifier", "http://127.0.0.1", generation=0)
+                await asyncio.sleep(0)
+                return email, after
+        return asyncio.run(run())
+
+    def test_finish_records_the_scopes_google_granted(self):
+        email, after = self.finish([G.SCOPE, G.CALENDAR_SCOPE, "openid"])
+        self.assertEqual(email, "new@gmail.com")
+        saved = G.load_config()["accounts"][email]
+        self.assertIn(G.CALENDAR_SCOPE, saved["scopes"])
+        self.assertTrue(G.has_calendar(email))
+        after.assert_awaited_once_with(email)
+        self.assertEqual(G._authorization["phase"], "reading")
+        self.assertEqual(G._authorization["phase_email"], email)
+
+    def test_unticked_calendar_still_connects_mail(self):
+        email, _ = self.finish([G.SCOPE])
+        self.assertIn(email, G.connected_accounts())
+        self.assertFalse(G.has_calendar(email))
+
+    def test_calendar_alone_without_gmail_is_refused(self):
+        with self.assertRaises(G.GmailError):
+            self.finish([G.CALENDAR_SCOPE])
+        self.assertNotIn("new@gmail.com", G.connected_accounts())
+
+    def test_existing_token_without_scope_record_keeps_mail_only(self):
+        cfg = G.load_config()
+        cfg["accounts"][ME].pop("scopes")
+        G._save_config(cfg)
+        self.assertIn(ME, G.connected_accounts())
+        self.assertEqual(G.granted_scopes(ME), {G.SCOPE})
+        self.assertFalse(G.has_calendar(ME))
+        self.assertFalse(next(r for r in G.status()["accounts"] if r["email"] == ME)["calendar"])
+
+    # --- after connect ------------------------------------------------------
+
+    def run_after_connect(self, account=JUDGE):
+        G._authorization.update(phase="reading", phase_email=account)
+        async def run():
+            with patch.object(G, "_sync_account", AsyncMock(return_value=True)) as sync, \
+                 patch.object(self.C, "refresh_account", AsyncMock(return_value=2)) as calendar:
+                await G._after_connect(account)
+                for _ in range(3):
+                    await asyncio.sleep(0)
+                return sync, calendar
+        return asyncio.run(run())
+
+    def test_after_connect_reads_mail_and_calendar_then_requests_analyze(self):
+        sync, calendar = self.run_after_connect()
+        self.assertEqual([c.args for c in sync.await_args_list], [(JUDGE, ("headers",)), (JUDGE, ("raw",))])
+        calendar.assert_awaited_once_with(JUDGE)
+        self.assertEqual(self.analyzed, [JUDGE])
+        self.assertEqual(G._authorization["phase"], "ready")
+        self.assertEqual(G._authorization["analyze"], "requested")
+
+    def test_after_connect_schedules_an_async_analyze(self):
+        seen = []
+        async def request_analyze(account=None):
+            seen.append(account)
+        self.cycle.request_analyze = request_analyze
+        self.run_after_connect()
+        self.assertEqual(seen, [JUDGE])
+
+    def test_after_connect_without_the_engine_still_finishes(self):
+        with patch.dict(sys.modules, {"service.proactive.cycle": None}):
+            self.run_after_connect()
+        self.assertEqual(G._authorization["phase"], "ready")
+        self.assertEqual(G._authorization["analyze"], "unavailable")
+
+    def test_after_connect_skips_calendar_when_not_granted(self):
+        cfg = G.load_config()
+        cfg["accounts"][JUDGE]["scopes"] = [G.SCOPE]
+        G._save_config(cfg)
+        _, calendar = self.run_after_connect()
+        calendar.assert_not_awaited()
+        self.assertEqual(self.analyzed, [JUDGE])
+
+    def test_late_phase_never_overwrites_a_newer_sign_in(self):
+        G._authorization.update(phase="reading", phase_email="someone@else.test")
+        G._set_phase(JUDGE, "ready")
+        self.assertEqual(G._authorization["phase"], "reading")
+
+    # --- disconnect & erase -------------------------------------------------
+
+    def seed(self):
+        def mail(account, tag):
+            message = msg(f"{tag}-1", f"{tag} subject")
+            headers = G.header_line(G.parse_metadata(message), account, True)
+            E.cache_external_emails(account=account, headers=headers, history=headers,
+                                    raw=G.raw_record(message, account))
+            G._meta[(account, f"{tag}-1")] = G.parse_metadata(message)
+        mail(ME, "MINE")
+        mail(JUDGE, "JUDGESECRET")
+        now = time.time()
+        for account, title in ((ME, "My standup"), (JUDGE, "JUDGESECRET dinner")):
+            self.C.store_events(account, [{"source_id": f"gcal:{account}:e1", "title": title, "kind": "meeting",
+                                           "when_ts": now + 3600, "end_ts": now + 7200, "invitee_count": 2,
+                                           "organizer_is_user": False}])
+        cache = self.gists._load()
+        for kind in ("summary", "inbox", "texts"):
+            cache[kind] = {"gist": f"{kind} gist JUDGESECRET", "at": now, "key": "k"}
+        self.gists._save()
+
+    def cache_text(self):
+        root = self.root / "cache"
+        return "\n".join(p.read_text(errors="replace") for p in root.rglob("*") if p.is_file()
+                         and p.name != "mail_gists.json")
+
+    def test_disconnect_erases_every_cache_of_that_account(self):
+        self.seed()
+        self.assertIn("JUDGESECRET", E._headers)
+        self.assertIn("JUDGESECRET", E._raw_emails)
+        self.assertIn("JUDGESECRET", E._history)
+        self.assertIn("JUDGESECRET", self.cache_text())
+        self.assertIn(JUDGE, E.get_identity_emails())
+        revoke = AsyncMock(return_value=httpx.Response(200))
+        with patch.object(httpx.AsyncClient, "post", revoke):
+            result = asyncio.run(G.disconnect(JUDGE))
+        self.assertEqual(result["removed"], [JUDGE])
+        self.assertEqual(result["erased"][JUDGE]["proactive"], "erased")
+        self.assertEqual(revoke.await_args.kwargs["data"], {"token": "judge-refresh"})
+        # Mail: in memory and on disk.
+        for text in (E._headers, E._history, E._raw_emails, self.cache_text()):
+            self.assertNotIn("JUDGESECRET", text)
+            self.assertNotIn(JUDGE, text)
+        self.assertNotIn(JUDGE, E.get_identity_emails())
+        self.assertNotIn(JUDGE, E._external_accounts)
+        self.assertFalse(any(key[0] == JUDGE for key in G._meta))
+        self.assertIn("MINE subject", E._headers)          # the other account is kept
+        # Config.
+        self.assertNotIn(JUDGE, G.CONFIG_PATH.read_text())
+        self.assertIn(ME, G.connected_accounts())
+        # Calendar.
+        with self.store.transaction(write=False) as db:
+            rows = [dict(r) for r in db.execute("SELECT * FROM commitments")]
+        self.assertFalse(any(JUDGE in str(r.get("source_id")) or r.get("account") == JUDGE for r in rows))
+        self.assertEqual([r["title"] for r in rows], ["My standup"])
+        # Mail overviews written from the combined inbox; texts gist is not mail.
+        on_disk = json.loads(self.gists._PATH.read_text())
+        self.assertEqual(set(on_disk), {"texts"})
+        # Proactive cards/to-dos/threads.
+        self.assertEqual(self.erased, [JUDGE])
+
+    def test_erasing_the_last_account_keeps_the_oauth_client_for_the_next_connect(self):
+        with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200))):
+            asyncio.run(G.disconnect(JUDGE))
+            asyncio.run(G.disconnect(ME))
+        cfg = G.load_config()
+        self.assertEqual(cfg["client_id"], "synthetic")
+        self.assertEqual(cfg["accounts"], {})
+        self.assertFalse(G.is_connected())
+        self.assertNotIn("refresh", G.CONFIG_PATH.read_text())
+        self.assertNotIn(JUDGE, G.CONFIG_PATH.read_text())
+
+    def test_erase_survives_a_restart_of_the_mail_cache(self):
+        self.seed()
+        with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200))):
+            asyncio.run(G.disconnect(JUDGE))
+        for name in ("email_headers", "email_history", "email_raw", "email_sources", "identity_emails",
+                     "email_mail_headers", "email_mail_history", "email_mail_raw"):
+            self.assertNotIn("JUDGESECRET", cache_store.load(name), name)
+            self.assertNotIn(JUDGE, cache_store.load(name), name)
+
+    def test_erase_reports_a_missing_engine_without_failing(self):
+        self.seed()
+        with patch.dict(sys.modules, {"service.proactive.store": None}), \
+             patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200))):
+            result = asyncio.run(G.disconnect(JUDGE))
+        erased = result["erased"][JUDGE]
+        self.assertEqual(erased["proactive"], "unavailable")
+        self.assertEqual(erased["mail"], "erased")
+        self.assertTrue(erased["calendar"].startswith("erased 1"))
+
+    def test_revoke_failure_still_erases_locally(self):
+        self.seed()
+        with patch.object(httpx.AsyncClient, "post", AsyncMock(side_effect=httpx.ConnectError("offline"))):
+            asyncio.run(G.disconnect(JUDGE))
+        self.assertNotIn("JUDGESECRET", E._headers)
+        self.assertNotIn(JUDGE, G.connected_accounts())
+        self.assertEqual(self.erased, [JUDGE])
+
+    def test_status_reports_calendar_per_account(self):
+        rows = {r["email"]: r for r in G.status()["accounts"]}
+        self.assertTrue(rows[JUDGE]["calendar"])
+        self.assertIn("calendar_error", rows[JUDGE])
+
+
 if __name__ == "__main__":
     unittest.main()

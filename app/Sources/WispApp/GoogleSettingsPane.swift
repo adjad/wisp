@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Settings ▸ Google: connect Wisp to Gmail (read-only) so mail syncs without
-/// Mail.app open. All OAuth work happens in the local backend (gmail_source.py);
+/// Settings ▸ Google: connect Wisp to Gmail and Google Calendar (read-only) so
+/// mail and events sync without Mail.app or Calendar open. All OAuth work happens in the local backend (gmail_source.py);
 /// this pane only sends the user's own OAuth client id/secret to loopback,
 /// opens the consent URL in the default browser, and shows connection status.
 @MainActor
@@ -194,7 +194,7 @@ final class GoogleAccountModel: ObservableObject {
                 message = "Couldn’t confirm disconnect. Try again."
                 return
             }
-            message = "Disconnected \(account). Its Mail cache may still be available."
+            message = "Disconnected \(account) and erased its mail, calendar events and to-dos from Wisp. Mail.app's own copy, if any, is untouched."
             await refresh()
         }
     }
@@ -307,8 +307,8 @@ struct GoogleSettingsPane: View {
 
                 // Direct Gmail inbox sync (feeds summaries and the daily brief)
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Email with Mail closed").font(.system(size: 14, weight: .medium))
-                    Text("Connect each Google or school Google account you want Wisp to check. Wisp reads Google directly and checks for new mail when you ask. Other accounts continue to use Mail’s local cache.")
+                    Text("Email and calendar with Mail closed").font(.system(size: 14, weight: .medium))
+                    Text("Connect each Google or school Google account you want Wisp to check. Wisp reads Google directly: mail, and the next week of Google Calendar if you allow it. Other accounts continue to use Mail’s local cache.")
                         .font(.caption).foregroundStyle(.secondary)
                     ForEach(model.inboxAccounts) { account in
                         HStack(alignment: .top) {
@@ -329,7 +329,8 @@ struct GoogleSettingsPane: View {
                                 }
                             }
                             Spacer()
-                            Button("Disconnect") { model.disconnect(account.id) }
+                            Button("Disconnect & erase") { model.disconnect(account.id) }
+                                .help("Revokes Wisp's Google access and deletes this account's mail, calendar events and to-dos from Wisp")
                         }
                     }
                     if !model.mailAccounts.isEmpty {
@@ -347,7 +348,7 @@ struct GoogleSettingsPane: View {
                     if !model.message.isEmpty {
                         Text(model.message).font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("Read-only. Google sign-in requires your consent. A school administrator may restrict access. If a refresh fails, Wisp labels cached results and their last successful refresh.")
+                    Text("Read-only mail and calendar. Google sign-in requires your consent. A school administrator may restrict access. If a refresh fails, Wisp labels cached results and their last successful refresh.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
