@@ -354,7 +354,9 @@ async def lifespan(app: FastAPI):
     # contribute tools to the registry, so they load before the first request
     # can arrive. Neither is required — a fresh install has zero of each — and
     # a failure in either must not stop the backend from serving.
-    if profile is None:
+    from service.inference.remote_policy import remote_parity
+    parity = profile is not None and remote_parity()
+    if profile is None or parity:
         try:
             skills.load()
         except Exception:  # noqa: BLE001
@@ -409,6 +411,11 @@ async def lifespan(app: FastAPI):
         # capture (local model only; it would idle anyway since the fast role
         # is unmanaged).
         started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
+        if parity:
+            from service import gmail_source
+            started_tasks.append(asyncio.create_task(gmail_source.run()))
+            from service.memory.api import worker as memory_worker
+            started_tasks.append(asyncio.create_task(memory_worker.run(client)))
     recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
@@ -428,7 +435,7 @@ async def lifespan(app: FastAPI):
         for task in started_tasks:
             task.cancel()
         await asyncio.gather(*started_tasks, return_exceptions=True)
-        if profile is None:
+        if profile is None or parity:
             await mcp_manager.stop()
         await client.aclose()
         if is_bundled():
@@ -600,7 +607,8 @@ _REMOTE_HISTORY_SHARE = 20
 
 def _history_budget(target: Target) -> int:
     budget = max(1500, target.context_window - 11500)
-    if remote_only_profile() is not None:
+    from service.inference.remote_policy import remote_parity
+    if remote_only_profile() is not None and not remote_parity():
         cap = max(1500, remote_only_profile().aggregate_bytes // _REMOTE_HISTORY_SHARE)
         budget = min(budget, cap)
     return budget
@@ -1714,10 +1722,16 @@ async def agent(body: dict[str, Any]):
             from service.router.router import behavior_route_claim
             deterministic_claim = (not model_only
                                    and (literal_envelope or behavior_route_claim(prompt, last_tools)))
-            if (remote_only_profile() is None and not deterministic_claim
+            from service.inference.remote_policy import remote_parity
+            remote_led = remote_only_profile() is not None and remote_parity()
+            if ((remote_only_profile() is None or remote_led) and not deterministic_claim
                     and (model_only or model_led_enabled(os.environ.get("WISP_MODEL_LED_ROUTING")))):
                 proposed_target = role_target("agent")
-                if (proposed_target.endpoint.managed
+                if remote_led:
+                    # The pinned remote target stands in for the local agent model.
+                    model_led_turn = True
+                    model_led_target = proposed_target
+                elif (proposed_target.endpoint.managed
                         and proposed_target.endpoint.name == "local"
                         and getattr(client, "managed", False)
                         and getattr(client, "base_url", "").rstrip("/")
@@ -1776,7 +1790,8 @@ async def agent(body: dict[str, Any]):
             # their first question. Keep one active skill on the session until
             # the user stops it, switches explicitly, or the skill emits its
             # completion marker.
-            if test_mode or remote_only_profile() is not None:
+            from service.inference.remote_policy import remote_parity
+            if test_mode or (remote_only_profile() is not None and not remote_parity()):
                 active_skill = ""
                 skill_turn = ""
             else:

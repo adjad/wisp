@@ -43,3 +43,25 @@ class RemoteModelOnly(RemoteFixture):
             with patch.object(client, "models", listed):
                 asyncio.run(client.ensure_only(model))
             asyncio.run(client.aclose())
+
+
+class RemoteParity(RemoteFixture):
+    def test_off_by_default_keeps_the_remote_limits(self):
+        self.assertFalse(policy.remote_parity())
+        self.assertFalse(policy.remote_tool_allowed("create_tool"))
+
+    def test_parity_lifts_the_data_limits_only(self):
+        import os
+        from service import behavior_switch
+        self.cfg["remote_parity"] = True
+        self.assertTrue(policy.remote_parity())
+        self.assertTrue(policy.remote_tool_allowed("create_tool"))
+        self.assertFalse(policy.remote_tool_allowed("no_such_tool"))
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WISP_BEHAVIOR_PHRASER", None)
+            self.assertTrue(behavior_switch.phraser_enabled())
+        with patch.dict(os.environ, {"WISP_REMOTE_PARITY": "0"}):
+            self.assertFalse(policy.remote_parity())
+        # The pinned payload contract is untouched.
+        with self.assertRaises(Exception):
+            policy.remote_only_profile().validate_payload({"model": "x", "messages": [], "stream": False})

@@ -320,6 +320,11 @@ _NT_CLAUSE_SPLIT_RE = re.compile(r"[;,]|\b(?:and|then|also|plus)\b", re.I)
 _NT_MAX_CHARS = 300
 
 
+def _remote_parity() -> bool:
+    from service.inference.remote_policy import remote_parity
+    return remote_parity()
+
+
 def _strip_non_word(text: str) -> str:
     """Strip leading and trailing non-word characters in linear time (the obvious
     anchored-alternation regex backtracks quadratically on a long punctuation run)."""
@@ -8292,7 +8297,7 @@ async def route(text: str, *,
     literal = knowledge_envelope(text) is not None or _scheduled_send_review(text) is not None
     allow_profile_context = allow_profile_context and not test_mode and not literal
     allow_skill_context = (allow_skill_context and not test_mode and not literal
-                           and remote_only_profile() is None)
+                           and (remote_only_profile() is None or _remote_parity()))
     # Behavior-learning questions are claimed here, ahead of _route_impl (whose
     # body is pinned), only while behavior learning is on.
     behavior = _assistant_read_claim(text)
