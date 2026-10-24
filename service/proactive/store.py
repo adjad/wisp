@@ -126,7 +126,7 @@ class ProactiveStore:
 
     def decisions(self) -> dict:
         data = self._read("decisions.json")
-        for key in ("dismissed", "done", "fired", "suppressed", "unknown"):
+        for key in ("dismissed", "done", "fired", "suppressed", "unknown", "unknown_threads"):
             if not isinstance(data.get(key), dict):
                 data[key] = {}
         return data
@@ -138,7 +138,7 @@ class ProactiveStore:
             data = self.decisions()
             def stamp(v):
                 return float(v.get("at") or 0) if isinstance(v, dict) else float(v or 0)
-            for key in ("dismissed", "fired", "suppressed", "done", "unknown"):
+            for key in ("dismissed", "fired", "suppressed", "done", "unknown", "unknown_threads"):
                 data[key] = {k: v for k, v in data[key].items() if now - stamp(v) < _KEEP_S}
             self._write("decisions.json")
 
@@ -158,18 +158,34 @@ class ProactiveStore:
         """A send whose outcome is unknown: the card stays locked, across cycles
         and restarts, until it is dismissed or its to-do marked handled."""
         with self._lock:
-            self.decisions()["unknown"][card["id"]] = {"at": time.time() if now is None else now,
-                                                       "todo_id": card.get("todo_id")}
+            at = time.time() if now is None else now
+            data = self.decisions()
+            data["unknown"][card["id"]] = {"at": at, "todo_id": card.get("todo_id")}
+            # The whole conversation too, for an hour: a fresh card for the same
+            # chat must not offer the send again while it may have gone out.
+            for ref in _card_refs(card):
+                data["unknown_threads"][ref] = at
             self._write("decisions.json")
 
     def unknown_cards(self) -> set[str]:
         return set(self.decisions()["unknown"])
+
+    def locked(self, card: dict, now: float | None = None) -> bool:
+        """The card, or its conversation within the last hour, had an unknown send."""
+        now = time.time() if now is None else now
+        data = self.decisions()
+        if card.get("id") in data["unknown"]:
+            return True
+        return any(now - float(data["unknown_threads"].get(ref) or 0) < THREAD_LOCK_S for ref in _card_refs(card)
+                   if ref in data["unknown_threads"])
 
     def dismiss_card(self, card: dict, now: float | None = None) -> None:
         now = time.time() if now is None else now
         with self._lock:
             data = self.decisions()
             data["unknown"].pop(card["id"], None)
+            for ref in _card_refs(card):
+                data["unknown_threads"].pop(ref, None)
             data["dismissed"][card["id"]] = now
             self._suppress(card.get("fingerprints"), now)
             self._write("decisions.json")
@@ -256,6 +272,13 @@ class ProactiveStore:
     def erased_since(self, account: str, started: float) -> bool:
         value = (self._read("decisions.json").get("erased_at") or {}).get((account or "").casefold())
         return isinstance(value, (int, float)) and value >= started
+
+
+THREAD_LOCK_S = 3600
+
+
+def _card_refs(card: dict) -> list[str]:
+    return [str(s.get("ref")) for s in card.get("sources") or [] if isinstance(s, dict) and s.get("ref")]
 
 
 def _todo_snapshot(card: dict) -> dict:

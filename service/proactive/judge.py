@@ -230,6 +230,8 @@ def action_title(kind: str, item: dict, result: dict, names: list[str]) -> str:
 
 def _best_quote(lines: list[str], hint: str) -> str:
     """The source line that best matches the item, copied verbatim."""
+    lines = [l for l in lines or [] if not guard.source_sensitive(l)
+             and not re.search(r"details omitted", l, re.I)]   # never a withheld line on a card
     if not lines:
         return ""
     want = _content_words(guard.normalize_slang(hint))
