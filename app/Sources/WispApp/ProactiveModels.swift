@@ -24,6 +24,17 @@ struct ProactiveState: Decodable, Equatable {
     var accounts: [String] = []
     /// A 2–3 sentence overview of the day.
     var summary: String = ""
+    /// One sentence for the top of the Brief (W1); else the summary's first.
+    var lede: String = ""
+    /// The work behind the cards: what Wisp read, found and drafted.
+    var stats: Stats? = nil
+
+    struct Stats: Decodable, Equatable {
+        var read: Int = 0
+        var found: Int = 0
+        var drafted: Int = 0
+        var asOf: Double? = nil
+    }
     var cards: [ProactiveCard] = []
     var todos: [ProactiveTodo] = []
     var threads: [ProactiveThread] = []
@@ -43,7 +54,8 @@ struct ProactiveState: Decodable, Equatable {
         self.threads = threads
     }
 
-    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads }
+    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats }
+    private enum StatsKeys: String, CodingKey { case read, found, drafted, as_of }
 
     init(from decoder: Decoder) {
         guard let c = try? decoder.container(keyedBy: Keys.self) else { return }
@@ -53,6 +65,11 @@ struct ProactiveState: Decodable, Equatable {
             progress = Progress(done: p.lenient(.done, Int.self) ?? 0, total: p.lenient(.total, Int.self) ?? 0)
         }
         accounts = c.lenient(.accounts, LossyList<String>.self)?.items.filter { !$0.isEmpty } ?? []
+        lede = c.lenientString(.lede) ?? ""
+        if let st = try? c.nestedContainer(keyedBy: StatsKeys.self, forKey: .stats) {
+            stats = Stats(read: st.lenient(.read, Int.self) ?? 0, found: st.lenient(.found, Int.self) ?? 0,
+                          drafted: st.lenient(.drafted, Int.self) ?? 0, asOf: st.lenient(.as_of, Double.self))
+        }
         summary = c.lenientString(.summary) ?? ""
         cards = c.lenient(.cards, LossyList<ProactiveCard>.self)?.items.filter { !$0.id.isEmpty } ?? []
         todos = c.lenient(.todos, LossyList<ProactiveTodo>.self)?.items.filter { !$0.id.isEmpty && !$0.title.isEmpty } ?? []
@@ -62,6 +79,73 @@ struct ProactiveState: Decodable, Equatable {
     private enum ProgressKeys: String, CodingKey { case done, total }
 
     // MARK: Presentation
+
+    /// The Brief's one sentence: the engine's lede, else the summary's first
+    /// sentence; nil when it sent neither.
+    var headline: String? {
+        let lede = lede.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !lede.isEmpty { return Self.firstSentence(lede) }
+        let summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? nil : Self.firstSentence(summary)
+    }
+
+    /// Up to the first sentence end (". ", "! ", "? ") that isn't inside a
+    /// number like "2.5" or a clock like "4:15"; the whole text when there's none.
+    static func firstSentence(_ text: String) -> String {
+        let chars = Array(text)
+        var i = 0
+        while i < chars.count - 1 {
+            if ".!?".contains(chars[i]), chars[i + 1] == " " {
+                // "Dr. Lee", "St. Mary's": a title's period isn't an end.
+                let before = String(chars[..<i]).split(separator: " ").last.map { $0.lowercased() } ?? ""
+                let abbreviation = chars[i] == "." && ["dr", "mr", "mrs", "ms", "st", "prof", "jr", "sr", "vs", "e.g", "i.e"].contains(before)
+                if !abbreviation { return String(chars[...i]) }
+            }
+            i += 1
+        }
+        return text
+    }
+
+    /// "Wisp read 49 emails and texts · found 3 things · drafted 1 reply";
+    /// nil without stats or when nothing was read.
+    var workLine: String? {
+        guard let stats, stats.read > 0 else { return nil }
+        var parts = ["Wisp read \(stats.read) email\(stats.read == 1 ? "" : "s") and texts"]
+        parts.append("found \(stats.found) thing\(stats.found == 1 ? "" : "s")")
+        if stats.drafted > 0 { parts.append("drafted \(stats.drafted) repl\(stats.drafted == 1 ? "y" : "ies")") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The collapsed to-do row: "4 to-dos · Readings ×2, Worksheet 3". Open
+    /// to-dos only; the same title twice is counted once with ×n.
+    var todoLine: String {
+        let open = todos.filter { !$0.done }
+        guard !open.isEmpty else { return todos.isEmpty ? "No to-dos" : "All to-dos done" }
+        var order: [String] = []
+        var counts: [String: (title: String, n: Int)] = [:]
+        for todo in open {
+            let key = DayTimeline.todoKey(todo.title)
+            if let seen = counts[key] { counts[key] = (seen.title, seen.n + 1) } else {
+                order.append(key)
+                counts[key] = (todo.title, 1)
+            }
+        }
+        let names = order.compactMap { counts[$0] }.map { $0.n > 1 ? "\($0.title) ×\($0.n)" : $0.title }
+        return "\(open.count) to-do\(open.count == 1 ? "" : "s") · " + names.joined(separator: ", ")
+    }
+
+    /// The collapsed mail-and-texts row: "Mail and texts · Ed, Mom, Devarsh, +3",
+    /// people waiting on a reply first.
+    var peopleLine: String {
+        var names: [String] = []
+        for thread in orderedThreads {
+            let name = thread.who.trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty && !names.contains(name) { names.append(name) }
+        }
+        guard !names.isEmpty else { return "Mail and texts · nothing new" }
+        let shown = names.prefix(3).joined(separator: ", ")
+        return "Mail and texts · " + shown + (names.count > 3 ? ", +\(names.count - 3)" : "")
+    }
 
     /// "Reading 12 of 40…" while the engine works.
     var progressLabel: String {
@@ -104,10 +188,12 @@ struct ProactiveState: Decodable, Equatable {
         }.map(\.element)
     }
 
-    /// Threads that need a reply first, then newest first.
+    /// Threads in the order they need you: a reply first, then people before
+    /// organizations, then newest first.
     var orderedThreads: [ProactiveThread] {
         threads.enumerated().sorted { a, b in
             if a.element.needsReply != b.element.needsReply { return a.element.needsReply }
+            if a.element.isOrganization != b.element.isOrganization { return !a.element.isOrganization }
             let x = a.element.receivedTs ?? 0, y = b.element.receivedTs ?? 0
             return x != y ? x > y : a.offset < b.offset
         }.map(\.element)
@@ -147,9 +233,13 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
         /// The verbatim draft the person can read and edit before firing.
         var draft = ""
         var recipient = ""
-        private enum Keys: String, CodingKey { case method, button, draft, recipient }
-        init(method: String = "", button: String = "", draft: String = "", recipient: String = "") {
-            self.method = method; self.button = button; self.draft = draft; self.recipient = recipient
+        /// For "block_time": the hour Wisp would hold.
+        var slot: Slot? = nil
+        struct Slot: Decodable, Equatable { var start: Double; var end: Double }
+        private enum Keys: String, CodingKey { case method, button, draft, recipient, slot }
+        private enum SlotKeys: String, CodingKey { case start, end }
+        init(method: String = "", button: String = "", draft: String = "", recipient: String = "", slot: Slot? = nil) {
+            self.method = method; self.button = button; self.draft = draft; self.recipient = recipient; self.slot = slot
         }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
@@ -157,6 +247,10 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
             button = c.lenientString(.button) ?? ""
             draft = c.lenientString(.draft) ?? ""
             recipient = c.lenientString(.recipient) ?? ""
+            if let sc = try? c.nestedContainer(keyedBy: SlotKeys.self, forKey: .slot),
+               let start = sc.lenient(.start, Double.self), let end = sc.lenient(.end, Double.self), end > start {
+                slot = Slot(start: start, end: end)
+            }
         }
 
         /// The button's words, never empty.
@@ -168,6 +262,7 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
             case "reminder": return "Add the reminder?"
             case "calendar_event": return "Add to calendar?"
             case "add_to_day": return "Add to my day?"
+            case "block_time": return "Block the time?"
             default: return "Got it"
             }
         }
@@ -209,6 +304,9 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
         action = c.lenient(.action, Action.self)
         replyRef = c.lenientRef(.reply_ref)
     }
+
+    /// The card's name on a chip under the one shown.
+    var chipTitle: String { title.isEmpty ? metaLine.capitalized : title }
 
     /// The meta line, uppercased; built from the first source when the engine sent none.
     var metaLine: String {
@@ -301,6 +399,15 @@ struct ProactiveThread: Decodable, Equatable, Identifiable {
         needsReply = c.lenient(.needs_reply, Bool.self) ?? false
         receivedTs = c.lenient(.received_ts, Double.self).flatMap { $0.isFinite ? $0 : nil }
         replyRef = c.lenientRef(.reply_ref)
+    }
+
+    /// From a team, company or mailer rather than a person, by its name.
+    var isOrganization: Bool {
+        let name = who.lowercased()
+        guard !name.isEmpty else { return false }
+        let words = ["team", "inc", "llc", "noreply", "no-reply", "support", "newsletter", "news", "notification",
+                     "events", "office", "admissions", "department", "university", "store", "billing", "digest", "updates"]
+        return words.contains { name.contains($0) }
     }
 
     /// Mail threads with a reference can be answered from the Brief.

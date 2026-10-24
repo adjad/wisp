@@ -21,7 +21,7 @@ enum NotchQADriver {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = zone
         let midnight = calendar.startOfDay(for: Date())
-        let now = midnight.addingTimeInterval(13 * 3600 + 7 * 60)
+        let now = midnight.addingTimeInterval(10 * 3600 + 32 * 60)
         let dayStart = midnight.timeIntervalSince1970
         func dayModel(_ proactive: ProactiveFixture) -> TodayModel {
             TodayModel(now: { now }, timeZoneProvider: { zone }, transport: { request in
@@ -65,21 +65,38 @@ enum NotchQADriver {
         today.startBackgroundRefresh(afterRefresh: { await DayCards.refresh() })
         let model = OverlayModel()
         model.qaShow(brief: fixtureBrief)
-        let unsummarized = OverlayModel()
         let width = SurfaceLayout.maxExpandedWidth
         // Each Brief scene keeps its own card and to-do state.
-        let draft = ProactiveActions()
-        draft.qaReset(openDraft: "card-dana", expanded: ["t-dana"], replying: "t-dana")
-        let judge = ProactiveActions()
-        judge.qaReset(account: "judge.demo@gmail.com")
+        func state(_ configure: (ProactiveActions) -> Void = { _ in }) -> ProactiveActions {
+            let actions = ProactiveActions()
+            configure(actions)
+            return actions
+        }
+        // The reply composer answers from its own canned fixture, never the service.
+        BriefReplyHook.composer = { thread, close in
+            AnyView(BriefReplyComposer(replyRef: thread.replyRef, account: thread.replyAccount, transport: { request in
+                let draft = request.url?.lastPathComponent == "draft"
+                let body: [String: Any] = draft
+                    ? ["ok": true, "draft": "Hi Ed,\n\nTuesday morning works for me. I can be there at 9.\n\nThanks,\nAdi",
+                       "to": ["echen@ucsc.edu"], "cc": [], "subject": "Re: Exam 1 timing", "account": "adi@ucsc.edu",
+                       "envelope": "qa", "can_send": true]
+                    : ["ok": true, "status": "sent"]
+                return (try JSONSerialization.data(withJSONObject: body),
+                        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }, onDismiss: close))
+        }
         let scenes: [(name: String, tab: NotchTab, view: () -> AnyView)] = [
-            ("brief", .brief, { AnyView(NotchBriefView(model: model, today: today, actions: ProactiveActions())) }),
-            ("brief-full", .brief, { AnyView(NotchBriefView(model: model, today: today, uncapped: true, actions: ProactiveActions())) }),
-            ("brief-draft", .brief, { AnyView(NotchBriefView(model: model, today: today, uncapped: true, actions: draft)) }),
-            ("brief-working", .brief, { AnyView(NotchBriefView(model: model, today: working, actions: ProactiveActions())) }),
-            ("brief-judge", .brief, { AnyView(NotchBriefView(model: model, today: today, actions: judge)) }),
+            ("brief", .brief, { AnyView(NotchBriefView(model: model, today: today, actions: state())) }),
+            ("brief-todos", .brief, { AnyView(NotchBriefView(model: model, today: today, uncapped: true,
+                                                             actions: state { $0.qaReset(openRow: "todos") })) }),
+            ("brief-threads", .brief, { AnyView(NotchBriefView(model: model, today: today, uncapped: true,
+                                                               actions: state { $0.qaReset(expanded: ["t-ed"], replying: "t-ed") })) }),
+            ("brief-draft", .brief, { AnyView(NotchBriefView(model: model, today: today,
+                                                             actions: state { $0.qaReset(openDraft: "card-ed", hero: "card-ed") })) }),
+            ("brief-working", .brief, { AnyView(NotchBriefView(model: model, today: working, actions: state())) }),
+            ("brief-judge", .brief, { AnyView(NotchBriefView(model: model, today: today,
+                                                             actions: state { $0.qaReset(account: judgeAccount) })) }),
             ("brief-legacy", .brief, { AnyView(NotchBriefView(model: model, today: legacy, open: nil)) }),
-            ("brief-legacy-open", .brief, { AnyView(NotchBriefView(model: unsummarized, today: legacy, open: "MAIL")) }),
             ("day", .day, { AnyView(NotchDayView(model: model, today: today)) }),
         ]
         for scene in scenes {
@@ -170,85 +187,92 @@ enum NotchQADriver {
 
     static let judgeAccount = "judge.demo@gmail.com"
 
-    /// A demo day: a recruiter's coffee-chat email, "Mom: let's talk tmrw", a
-    /// Trader Joe's reminder, two calendar events, three cards, six to-dos and
-    /// five thread summaries (one from a linked judge account).
+    /// A demo day: Hack Day and Hacktoberfest at midday, a STAT 5 worksheet to
+    /// block time for, Ed's exam email, "Mom: let's talk tmrw", a recruiter's
+    /// coffee chat and a Trader Joe's reminder; three cards, seven to-dos and
+    /// six thread summaries (one from a linked judge account).
     static func fixtureProactive(dayStart: Double, working: Bool) -> [String: Any] {
         func at(_ h: Double) -> Double { dayStart + h * 3600 }
         let me = "adi@ucsc.edu"
         let cards: [[String: Any]] = [
-            ["id": "card-dana", "meta": "Waiting 2 days · Mail", "account": me,
-             "title": "Dana from Stripe wants a coffee chat",
-             "body": "I checked your calendar: you're free Thursday 3–4 PM. I've drafted a reply offering Thursday at 3, and I'll hold that hour for you.",
-             "why": "A recruiter asked two days ago and you haven't replied.",
-             "sources": [["kind": "mail", "ref": "mail:dana-1", "who": "Dana Lee",
-                          "quote": "Would you be up for a 30-minute coffee chat next week about the PM internship?"]],
-             "action": ["method": "email_reply", "button": "Reply & hold Thursday 3 PM?",
-                        "recipient": "Dana Lee <dana.lee@stripe.com>",
-                        "draft": "Hi Dana,\n\nThanks for reaching out — I'd love to chat about the PM internship. Would Thursday at 3 PM work? Happy to meet at the campus coffee bar or hop on a call.\n\nBest,\nAdi",
+            ["id": "card-stat", "meta": "Due tomorrow · Reminders", "account": me,
+             "title": "Worksheet 3 for STAT 5",
+             "body": "You're free 2–3 PM after Hack Day. I'll hold that hour.",
+             "why": "It's due tomorrow at 11:59 PM and nothing on your day covers it.",
+             "sources": [["kind": "reminders", "ref": "rem:stat5", "who": "", "quote": "STAT 5 worksheet 3"]],
+             "action": ["method": "block_time", "button": "", "draft": "", "recipient": "",
+                        "slot": ["start": at(14), "end": at(15)], "event": NSNull(), "envelope": "opaque"]],
+            ["id": "card-ed", "meta": "Waiting 1 day · Mail", "account": me,
+             "title": "Reply to Ed's exam email",
+             "body": "Ed asked if you can take Exam 1 early on Tuesday. You're free 9–11 AM, so I've drafted a yes.",
+             "why": "Ed asked yesterday and you haven't replied.",
+             "sources": [["kind": "mail", "ref": "mail:ed-1", "who": "Ed Chen",
+                          "quote": "Would you be able to take Exam 1 early, Tuesday morning?"]],
+             "action": ["method": "email_reply", "button": "Send the yes?",
+                        "recipient": "Ed Chen <echen@ucsc.edu>",
+                        "draft": "Hi Ed,\n\nYes, Tuesday morning works. I can come in at 9. Thanks for setting it up.\n\nBest,\nAdi",
                         "event": NSNull(), "envelope": "opaque"]],
-            ["id": "card-mom", "meta": "Tomorrow · Texts", "account": me,
-             "title": "Mom wants to talk tomorrow",
-             "body": "Your calendar is clear tomorrow after 5 PM. I've drafted a text suggesting 6:30, and I'll remind you to call.",
-             "why": "Mom asked to talk tomorrow.",
-             "sources": [["kind": "messages", "ref": "msg:mom", "who": "Mom", "quote": "let's talk tmrw"]],
-             "action": ["method": "text_reply", "button": "Text Mom & set a reminder?", "recipient": "Mom",
-                        "draft": "Sounds good! How about 6:30 tomorrow? I'll call you then.", "event": NSNull(), "envelope": "opaque"]],
-            ["id": "card-tj", "meta": "Today · 5:30 PM · Reminders", "account": me,
-             "title": "Your Trader Joe's run fits before club",
-             "body": "You're free 4:45–6 PM. I can put 5:00–5:30 on your day so the errand doesn't slip past startup club.",
-             "why": "Your reminder is due at 5:30 PM today.",
-             "sources": [["kind": "reminders", "ref": "rem:tj", "who": "", "quote": "Go to Trader Joe's"]],
-             "action": ["method": "add_to_day", "button": "Add it to my day?", "draft": "", "recipient": "",
+            ["id": "card-exam", "meta": "Wednesday · Mail", "account": me,
+             "title": "Remind me: Exam 1 Wed",
+             "body": "Ed's email puts Exam 1 on Wednesday at 10 AM in Kresge 321. I'll remind you Tuesday at 7 PM to review.",
+             "why": "An exam date in your mail isn't on your calendar or reminders.",
+             "sources": [["kind": "mail", "ref": "mail:ed-1", "who": "Ed Chen", "quote": "Exam 1 is Wednesday at 10 in Kresge 321"]],
+             "action": ["method": "reminder", "button": "Set the reminder?", "draft": "", "recipient": "",
                         "event": NSNull(), "envelope": "opaque"]],
         ]
+        func todo(_ id: String, _ title: String, _ source: String, who: String = "", quote: String = "",
+                  due: Double?, label: String, kind: String = "task", card: String? = nil, account: String = "adi@ucsc.edu") -> [String: Any] {
+            ["id": id, "title": title, "source": source, "account": account, "who": who, "quote": quote,
+             "due_ts": due.map { at($0) } ?? NSNull(), "due_label": label, "kind": kind, "done": false,
+             "card_id": card ?? NSNull()]
+        }
         let todos: [[String: Any]] = [
-            ["id": "todo-dana", "title": "Reply to Dana about a coffee chat", "source": "mail", "account": me,
-             "who": "Dana Lee, Stripe", "quote": "30-minute coffee chat next week?", "due_ts": NSNull(),
-             "due_label": "This week", "kind": "reply", "done": false, "card_id": "card-dana"],
-            ["id": "todo-mom", "title": "Call Mom", "source": "messages", "account": me, "who": "Mom",
-             "quote": "let's talk tmrw", "due_ts": at(24), "due_label": "Tomorrow", "kind": "call", "done": false,
-             "card_id": "card-mom"],
-            ["id": "todo-priya", "title": "Call Priya about the pitch deck", "source": "messages", "account": me,
-             "who": "Priya", "quote": "can you call at 4:15?", "due_ts": at(16.25), "due_label": "4:15 PM",
-             "kind": "call", "done": false, "card_id": NSNull()],
-            ["id": "todo-tj", "title": "Go to Trader Joe's", "source": "reminders", "account": me, "who": "",
-             "quote": "", "due_ts": at(17.5), "due_label": "5:30 PM", "kind": "errand", "done": false, "card_id": "card-tj"],
-            ["id": "todo-lecture", "title": "CSE 101 lecture", "source": "calendar", "account": me, "who": "",
-             "quote": "", "due_ts": at(14), "due_label": "2 PM", "kind": "event", "done": false, "card_id": NSNull()],
-            ["id": "todo-hack", "title": "Bring a 5-minute demo to Hall B", "source": "mail", "account": judgeAccount,
-             "who": "Hackathon Team", "quote": "each demo gets five minutes", "due_ts": NSNull(), "due_label": "Noon",
-             "kind": "event", "done": false, "card_id": NSNull()],
-            ["id": "todo-charger", "title": "Bring a laptop charger to club", "source": "notes", "account": me,
-             "who": "", "quote": "- [ ] charger for club", "due_ts": NSNull(), "due_label": "", "kind": "task",
-             "done": false, "card_id": NSNull()],
+            todo("todo-read-cse", "Readings", "reminders", who: "CSE 30", due: 17, label: "5 PM"),
+            todo("todo-read-stat", "Readings", "reminders", who: "STAT 5", due: 24 + 12, label: "Tomorrow"),
+            todo("todo-stat", "Worksheet 3", "reminders", who: "STAT 5", due: 24 + 23.98, label: "Tomorrow", card: "card-stat"),
+            todo("todo-mom", "Call Mom", "messages", who: "Mom", quote: "let's talk tmrw", due: 24, label: "Tomorrow", kind: "call"),
+            todo("todo-tj", "Go to Trader Joe's", "reminders", due: 17.5, label: "5:30 PM", kind: "errand"),
+            todo("todo-devarsh", "Coffee chat with Devarsh", "mail", who: "Devarsh, Stripe",
+                 quote: "30-minute coffee chat next week?", due: nil, label: "This week"),
+            todo("todo-hack", "Hack Day", "calendar", due: 11.75, label: "11:45 AM", kind: "event"),
         ]
         let threads: [[String: Any]] = [
-            ["id": "t-dana", "source": "mail", "account": me, "who": "Dana Lee", "title": "Coffee chat next week?",
-             "summary": "Stripe recruiter asking for a 30-minute coffee chat about the PM internship next week.",
-             "needs_reply": true, "received_ts": at(-36), "reply_ref": ["message_id": "<dana-1@stripe.com>", "account": "adi@ucsc.edu", "account_id": "acct-1"]],
-            ["id": "t-priya", "source": "messages", "account": me, "who": "Priya", "title": "",
-             "summary": "Wants a quick call at 4:15 about the club pitch deck; she's sending slides first.",
-             "needs_reply": true, "received_ts": at(12.9), "reply_ref": [String: String]()],
+            ["id": "t-ed", "source": "mail", "account": me, "who": "Ed", "title": "Exam 1 timing",
+             "summary": "Asks if you can take Exam 1 early on Tuesday morning; the exam itself is Wednesday at 10.",
+             "needs_reply": true, "received_ts": at(-14),
+             "reply_ref": ["message_id": "<ed-1@ucsc.edu>", "account": me, "account_id": "acct-1"]],
             ["id": "t-mom", "source": "messages", "account": me, "who": "Mom", "title": "",
              "summary": "Wants to talk tomorrow; nothing urgent, just catching up.",
-             "needs_reply": true, "received_ts": at(9.2), "reply_ref": [String: String]()],
+             "needs_reply": true, "received_ts": at(-15), "reply_ref": [String: String]()],
+            ["id": "t-devarsh", "source": "mail", "account": me, "who": "Devarsh", "title": "Coffee chat next week?",
+             "summary": "Stripe recruiter confirmed your 30-minute coffee chat for Thursday at 3; a calendar invite is coming.",
+             "needs_reply": false, "received_ts": at(-36),
+             "reply_ref": ["message_id": "<devarsh-1@stripe.com>", "account": me, "account_id": "acct-1"]],
+            ["id": "t-priya", "source": "messages", "account": me, "who": "Priya", "title": "",
+             "summary": "Sent the club pitch deck; says no rush on feedback.",
+             "needs_reply": false, "received_ts": at(9.8), "reply_ref": [String: String]()],
             ["id": "t-lee", "source": "mail", "account": me, "who": "Prof. Lee", "title": "Thesis meeting moved",
-             "summary": "Moved your thesis meeting to Tuesday at 2 PM and asked for the outline beforehand.",
-             "needs_reply": false, "received_ts": at(12.2), "reply_ref": ["message_id": "<lee-4@ucsc.edu>", "account": "adi@ucsc.edu", "account_id": "acct-1"]],
+             "summary": "Moved your thesis meeting to Tuesday at 2 PM.",
+             "needs_reply": false, "received_ts": at(8.5),
+             "reply_ref": ["message_id": "<lee-4@ucsc.edu>", "account": me, "account_id": "acct-1"]],
             ["id": "t-hack", "source": "mail", "account": judgeAccount, "who": "Hackathon Team", "title": "Judging schedule",
              "summary": "Judging starts at noon in Hall B; each demo gets five minutes plus questions.",
-             "needs_reply": false, "received_ts": at(8), "reply_ref": ["message_id": "<hack-1@gmail.com>", "account": "judge.demo@gmail.com"]],
+             "needs_reply": false, "received_ts": at(8),
+             "reply_ref": ["message_id": "<hack-1@gmail.com>", "account": judgeAccount]],
         ]
         return [
-            "state": working ? "working" : "ready", "as_of": at(13), "progress": ["done": 12, "total": 40],
+            "state": working ? "working" : "ready", "as_of": at(10.4), "progress": ["done": 12, "total": 40],
             "accounts": [me, judgeAccount],
-            "summary": "Two things on the clock: CSE 101 at 2 and startup club at 6. Dana from Stripe is still waiting on a coffee-chat reply, Priya wants a call at 4:15, and Mom wants to talk tomorrow. PA 2 is due tonight.",
+            "lede": "Hack Day fills your midday, and Worksheet 3 is the one thing to get ahead of.",
+            "summary": "Hack Day runs 11:45 to 2 with Hacktoberfest at noon. Worksheet 3 for STAT 5 is due tomorrow, Ed is waiting on an exam reply, and Mom wants to talk tomorrow.",
+            "stats": ["read": 49, "found": 3, "drafted": 1, "as_of": at(10.4)],
             "cards": working ? Array(cards.prefix(1)) : cards, "todos": todos, "threads": threads,
         ]
     }
 
-    static func fixturePlan(day: String, dayStart: Double, proactive: ProactiveFixture = .ready) throws -> Data {
+    /// Without `proactive` (the default) this is the Brief from before the
+    /// proactive engine, which tests/BriefTimeViewChecks.swift exercises.
+    static func fixturePlan(day: String, dayStart: Double, proactive: ProactiveFixture = .none) throws -> Data {
         func at(_ h: Double) -> Double { dayStart + h * 3600 }
         func block(_ id: String, _ title: String, _ start: Double, _ end: Double, _ kind: String,
                    task: String? = nil, pattern: String? = nil, evidence: String? = nil) -> [String: Any] {
@@ -263,9 +287,14 @@ enum NotchQADriver {
              "priority": 1, "reference": source + ":" + id, "suggested_minutes": 25, "needs_review": source != "reminders"]
                 .merging(extra) { $1 }
         }
-        let blocks = [
+        let blocks = proactive == .none ? [
             block("lunch", "Lunch with Sam", 11.5, 12.5, "calendar"),
             block("lecture", "CSE 101 lecture", 14, 15.25, "calendar"),
+            block("club", "Startup club meeting", 18, 19, "calendar"),
+            block("pa2-a", "Work on PA 2", 20, 21.5, "suggestion", evidence: "pa2"),
+        ] : [
+            block("hackday", "Hack Day", 11.75, 14, "calendar"),
+            block("hacktober", "Hacktoberfest", 12, 13, "calendar"),
             block("club", "Startup club meeting", 18, 19, "calendar"),
             block("pa2-a", "Work on PA 2", 20, 21.5, "suggestion", evidence: "pa2"),
         ]

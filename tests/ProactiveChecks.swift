@@ -125,6 +125,48 @@ struct ProactiveChecks {
               "an Open in Gmail handoff")
         check(!ProactiveOutcome.parse(Data("not json".utf8)).ok == false, "unparseable 2xx is ok (no error named)")
 
+        // One sentence on top, the work behind it, and the three rows' lines.
+        let top = decode(#"{"lede":"Hack Day fills your midday. More later.","summary":"Ignored.","stats":{"read":49,"found":3,"drafted":1,"as_of":5}}"#)
+        check(top?.headline == "Hack Day fills your midday." && top?.stats == .init(read: 49, found: 3, drafted: 1, asOf: 5),
+              "the lede wins and is cut to one sentence: \(top?.headline ?? "")")
+        check(top?.workLine == "Wisp read 49 emails and texts · found 3 things · drafted 1 reply", "work line: \(top?.workLine ?? "")")
+        check(ProactiveState(summary: "Dr. Lee moved it to 4:15. Mom called.").headline == "Dr. Lee moved it to 4:15.",
+              "titles and clocks don't end a sentence")
+        check(ProactiveState(summary: "Call Mom. Then rest.").headline == "Call Mom.", "a short word still ends one")
+        check(ProactiveState().headline == nil && ProactiveState().workLine == nil, "no lede, summary or stats: nothing")
+        check(decode(#"{"stats":{"read":1,"found":1,"drafted":0}}"#)?.workLine == "Wisp read 1 email and texts · found 1 thing",
+              "singular, and no drafted part at zero")
+        check(decode(#"{"stats":{"read":0}}"#)?.workLine == nil && decode(#"{"stats":"x"}"#)?.stats == nil, "nothing read hides the line")
+        let rows = ProactiveState(todos: [
+            .init(id: "1", title: "Readings", source: "reminders"), .init(id: "2", title: "readings!", source: "reminders"),
+            .init(id: "3", title: "Worksheet 3", source: "reminders"), .init(id: "4", title: "Done", source: "mail", done: true),
+        ], threads: [
+            .init(id: "a", source: "mail", who: "Priya", receivedTs: 9),
+            .init(id: "b", source: "mail", who: "Ed", needsReply: true, receivedTs: 10),
+            .init(id: "c", source: "messages", who: "Mom", needsReply: true, receivedTs: 8),
+            .init(id: "d", source: "mail", who: "Devarsh", needsReply: true, receivedTs: 1),
+            .init(id: "e", source: "mail", who: "Ed", receivedTs: 2), .init(id: "f", source: "mail", who: "Lee", receivedTs: 3),
+            .init(id: "g", source: "mail", who: "Team", receivedTs: 4),
+        ])
+        check(rows.todoLine == "3 to-dos · Readings ×2, Worksheet 3", "to-do row: \(rows.todoLine)")
+        check(rows.peopleLine == "Mail and texts · Ed, Mom, Devarsh, +3", "people row: \(rows.peopleLine)")
+        check(ProactiveState().todoLine == "No to-dos" && ProactiveState().peopleLine == "Mail and texts · nothing new", "empty rows")
+        let block = decode(#"{"cards":[{"id":"b","title":"Worksheet 3","action":{"method":"block_time","slot":{"start":100,"end":200}}},{"id":"x","action":{"method":"block_time","slot":{"start":5,"end":1}}}]}"#)
+        check(block?.cards.first?.action?.slot == .init(start: 100, end: 200) && block?.cards.first?.action?.label == "Block the time?"
+              && block?.cards.last?.action?.slot == nil, "a block-time card holds its slot; a backwards slot is dropped")
+        check(block?.cards.first?.chipTitle == "Worksheet 3", "chips name the card")
+
+        let ranked = ProactiveState(threads: [
+            .init(id: "org", source: "mail", who: "Hackathon Team", receivedTs: 50),
+            .init(id: "fyi", source: "mail", who: "Priya", receivedTs: 10),
+            .init(id: "reply-org", source: "mail", who: "UCSC Admissions", needsReply: true, receivedTs: 40),
+            .init(id: "reply", source: "messages", who: "Mom", needsReply: true, receivedTs: 5),
+        ])
+        check(ranked.orderedThreads.map(\.id) == ["reply", "reply-org", "fyi", "org"],
+              "replies first, then people over organizations, then newest: \(ranked.orderedThreads.map(\.id))")
+        check(ProactiveThread(id: "x", source: "mail", who: "no-reply@canvas").isOrganization
+              && !ProactiveThread(id: "y", source: "mail", who: "Ed").isOrganization, "organizations by name")
+
         print("Proactive checks: \(count) passed")
     }
 }
