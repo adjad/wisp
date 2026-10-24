@@ -49,6 +49,7 @@ def world(monkeypatch):
 
     monkeypatch.setattr(action_tools, "app_request", bridge)
     monkeypatch.setattr(api, "_mail_rows", lambda: [dict(ROW)])
+    monkeypatch.setattr(api, "_header_rows", lambda: [])
     monkeypatch.setattr(api, "_native_accounts", lambda: [{"id": "acct-1", "name": "Work"}])
     monkeypatch.setattr(api, "_external_accounts", lambda: {})
     monkeypatch.setattr(api, "_model_reply", model)
@@ -486,3 +487,24 @@ def test_ordinary_local_calls_are_not_caught_by_the_send_deny():
     from service.safety import policy
     assert policy.local_send_endpoint_hit("curl http://127.0.0.1:8765/assistant/today") is None
     assert policy.local_send_endpoint_hit("ls ~/Desktop") is None
+
+
+def test_header_only_email_can_still_be_drafted(world, monkeypatch):
+    header = {"ts": 1792450793.0, "account": ROW["account"], "account_id": ROW["account_id"],
+              "sender": "Dhruv Kolte", "sender_address": "dkolte@example.edu",
+              "message_id": "header-only@example.edu", "subject": "Floor updates"}
+    monkeypatch.setattr(api, "_header_rows", lambda: [dict(header)])
+    ref = {"message_id": header["message_id"], "account": header["account"],
+           "account_id": header["account_id"]}
+    out = asyncio.run(api.draft_reply(ref))
+    assert out["ok"] is True
+    assert out["to"] == ["dkolte@example.edu"]
+    assert out["subject"] == "Re: Floor updates"
+    assert out["can_send"] is True
+    assert "Only the sender and subject" in world.prompts[-1][1]
+
+
+def test_unknown_message_is_still_not_found(world, monkeypatch):
+    monkeypatch.setattr(api, "_header_rows", lambda: [])
+    out = asyncio.run(api.draft_reply({"message_id": "nope@x", "account": ROW["account"]}))
+    assert out["error"] == "not_found"
