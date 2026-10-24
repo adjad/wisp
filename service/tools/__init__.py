@@ -42,6 +42,7 @@ import service.tools.automation_tools  # noqa: F401 (raw AppleScript)
 # notes_write.py, misc_t1.py, maps_travel.py extended in place
 import service.tools.doc_tools  # noqa: F401         (real .docx/.xlsx via python-docx/openpyxl)
 import service.tools.behavior_tools  # noqa: F401    (learned routines: describe/predict/correct)
+import service.tools.proactive_tools  # noqa: F401   (get_my_day_plan: the Brief's plan for today)
 
 __all__ = ["Tool", "ToolOutcome", "REGISTRY", "tool_schemas", "get_tool",
            "is_tool_error", "classify_tool_outcome", "is_tool_routable",

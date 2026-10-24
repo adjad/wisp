@@ -1381,6 +1381,10 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
                      and t.category in READ_CATEGORIES]
             return reads + [n for n in names if n not in reads]
         head = reads_first(_model_led_preload(prompt))
+        from service.model_only import DAY_PLAN_TOOL, day_plan_question
+        if day_plan_question(prompt) and DAY_PLAN_TOOL in REGISTRY:
+            # The Brief already ranked the day: one read instead of four.
+            head = [DAY_PLAN_TOOL, *(n for n in head if n != DAY_PLAN_TOOL)]
         preload = head[:ASK_PRELOAD]
         try:
             ranked = _reranker.ranked_lexical_candidates(text, writing=writing,
@@ -2308,6 +2312,9 @@ async def agent(body: dict[str, Any]):
                     synthesis_guidance.insert(0, ASK_STYLE_HINT)
                     if capability_question(prompt):
                         synthesis_guidance.insert(1, ASK_CAPABILITY_HINT)
+                    from service.model_only import ASK_DAY_PLAN_HINT, day_plan_question
+                    if day_plan_question(prompt):
+                        synthesis_guidance.insert(1, ASK_DAY_PLAN_HINT)
                 ask_forbidden: frozenset[str] = frozenset()
                 if ask_quality:
                     from service.model_only import COMPOSE_ONLY_FORBIDDEN_CATEGORIES, compose_only

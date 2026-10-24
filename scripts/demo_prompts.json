@@ -36,6 +36,12 @@
     {"id": "todo-4", "category": "todo", "prompt": "Give me my brief for today.", "personal": true},
     {"id": "todo-5", "category": "todo", "prompt": "Am I forgetting anything this week?", "personal": true},
     {"id": "todo-6", "category": "todo", "prompt": "What's my to-do list?", "personal": true, "variant_of": "todo-1"},
+    {"id": "plan-1", "category": "day_plan", "prompt": "What do I need to do today?", "personal": true, "variant_of": "todo-1"},
+    {"id": "plan-2", "category": "day_plan", "prompt": "plan my day", "personal": true, "variant_of": "todo-1"},
+    {"id": "plan-3", "category": "day_plan", "prompt": "What am I forgetting?", "personal": true, "variant_of": "todo-1"},
+    {"id": "plan-4", "category": "day_plan", "prompt": "Anything I should know today?", "personal": true, "variant_of": "todo-1"},
+    {"id": "plan-5", "category": "day_plan", "prompt": "whats on my plate", "personal": true, "variant_of": "todo-1"},
+    {"id": "plan-6", "category": "day_plan", "prompt": "How does my day look?", "personal": true, "variant_of": "todo-1"},
 
     {"id": "web-1", "category": "web", "prompt": "What's the latest news on the Mars Sample Return mission?"},
     {"id": "web-2", "category": "web", "prompt": "Who won the most recent World Series?"},

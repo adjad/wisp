@@ -106,7 +106,34 @@ ASK_CORE_STUBS = frozenset({
     "web_search", "get_weather", "recall", "remember", "daily_brief",
     "collect_task_evidence", "lookup_contact", "set_timer", "system_status",
     "wisp_capabilities", "draft_email", "draft_message", "calculate", "world_time",
+    "get_my_day_plan",
 })
+
+DAY_PLAN_TOOL = "get_my_day_plan"
+_DAY_PLAN = re.compile(
+    r"\bwhat\s+(?:should|do|must|can)\s+i\s+(?:do|focus on|work on|tackle|get done|prioriti[sz]e)\b"
+    r"|\bwhat(?:['’]?s| is)\s+on\s+my\s+(?:plate|list|agenda|to-?do)"
+    r"|\bwhat\s+do\s+i\s+(?:need|have)\s+to\s+(?:do|get done)\b"
+    r"|\bplan\s+(?:out\s+)?my\s+day\b|\bwhat\s+am\s+i\s+(?:forgetting|missing)\b"
+    r"|\banything\s+i\s+should\s+(?:know|do|handle)\b|\bwhat(?:['’]?s| does| is)\s+my\s+day\b"
+    r"|\bmy\s+(?:to-?do|todo)s?(?:\s+list)?\b|\bwhat(?:['’]?s| is)\s+next\s+for\s+me\b"
+    r"|\bhow\s+(?:does|is)\s+my\s+day\b|\bwhere\s+should\s+i\s+start\b",
+    re.I)
+
+
+def day_plan_question(prompt: str) -> bool:
+    """"What should I do today?" and its paraphrases: one get_my_day_plan read
+    answers it better than four separate source reads."""
+    return bool(_DAY_PLAN.search(prompt or ""))
+
+
+ASK_DAY_PLAN_HINT = (
+    "DAY PLAN: call get_my_day_plan once and answer from it; do not read the "
+    "calendar, mail, messages and notes one by one unless it says the plan is "
+    "unavailable. Answer as a short prioritized list: one lead line, then 3-6 "
+    "bullets — time-bound items first (with times), then people waiting on a "
+    "reply, then tasks. No digests, no data-freshness caveats, no source labels."
+)
 
 # Appended to a model-led turn's runtime prompt (the light-read style hint the
 # legacy router sets is never set on a model-led turn).
@@ -277,6 +304,27 @@ def dedupe_reasoning(steps: list[str], answer: str) -> list[str]:
     return out
 
 
+# Data-freshness and coverage boilerplate the read tools write for the MODEL.
+# It never belongs in an answer the user reads.
+_CAVEAT = re.compile(
+    r"local cache|cache is stale|history cache|freshness|newer (?:messages|emails) may be missing|"
+    r"has not completed|refresh(?:ed|ing)?\b.*(?:mail|messages|notes|inbox)|unverified|not verified|"
+    r"\bcoverage\b|scan hit its|messages? cap|untrusted|publisher metadata|try again in a moment|"
+    r"wisp is still syncing|is NOT all of it|were cut to fit", re.I)
+
+
+def _plain_line(line: str) -> str:
+    """One line with markdown emphasis/headers removed; "" for a bare header."""
+    raw = line.strip()
+    if re.fullmatch(r"#{1,6}\s.*|\*\*[^*]{1,60}\*\*:?|__[^_]{1,60}__:?", raw):
+        return ""
+    text = re.sub(r"\*\*|__|`", "", raw)
+    text = re.sub(r"^#{1,6}\s*", "", text).strip()
+    if re.fullmatch(r"[^:]{1,40}:", text):
+        return ""
+    return text
+
+
 def compact_results(results: list[tuple[str, str]], labels: dict[str, str], *,
                     lines_per_source: int = 6, line_chars: int = 160,
                     total_chars: int = 1200) -> str:
@@ -291,8 +339,9 @@ def compact_results(results: list[tuple[str, str]], labels: dict[str, str], *,
                 or "timed out" in text[:200].lower()):
             continue
         seen.add(name)
-        lines = [ln.strip() for ln in text.splitlines()
-                 if ln.strip() and not re.match(r"(?:Account(?:-ID)?|Result coverage|Message-ID|To):", ln.strip())]
+        lines = [_plain_line(ln) for ln in text.splitlines()]
+        lines = [ln for ln in lines if ln and not _CAVEAT.search(ln)
+                 and not re.match(r"(?:Account(?:-ID)?|Result coverage|Message-ID|To|Coverage|URL):", ln)]
         if not lines:
             continue
         kept = [ln if len(ln) <= line_chars else ln[:line_chars - 1].rstrip() + "…"

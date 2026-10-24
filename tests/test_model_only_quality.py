@@ -7,7 +7,8 @@ user data: every source and effect is a synthetic seam.
 import asyncio
 import copy
 import json
-from datetime import date
+import time
+from datetime import date, datetime
 
 import httpx
 import pytest
@@ -468,3 +469,77 @@ def test_degraded_search_result_reaches_the_model_with_a_hedge(synthetic):
     client, _, _ = ask([[call("web_search", query="world series")], "I couldn't confirm that."],
                        prompt="Who won the most recent World Series?", model_led_preload=["web_search"])
     assert "Search coverage was degraded" in tool_messages(client.requests[1])[-1]["content"]
+
+
+# --- "What should I do today?" -----------------------------------------------------
+
+@pytest.mark.parametrize("prompt", [
+    "What should I do today?", "What's on my plate today?", "what do I need to do", "plan my day",
+    "What am I forgetting?", "Anything I should know today?", "what should i focus on first today", "whats on my plate",
+    "What's my to-do list?", "how does my day look"])
+def test_day_plan_questions(prompt):
+    assert mo.day_plan_question(prompt)
+
+
+@pytest.mark.parametrize("prompt", ["What's on my calendar tomorrow?", "Why is the sky blue?", "Text Mom hi"])
+def test_not_day_plan_questions(prompt):
+    assert not mo.day_plan_question(prompt)
+
+
+def _snapshot(now):
+    return {"state": "ready", "summary": "Two events today — Standup at 9:30 and Coffee at 5pm. One person is waiting on a reply.",
+            "cards": [{"title": "Reply to Priya about the notes", "why": "She asked for comments by tonight."}],
+            "todos": [
+                {"title": "Team Standup", "source": "calendar", "due_ts": now + 3600, "due_label": "Today 9:30 AM", "done": False},
+                {"title": "Submit W-9", "source": "mail", "due_ts": now - 3 * 86400, "due_label": "Overdue · 3 days", "done": False},
+                {"title": "Call Dr. Patel", "source": "reminders", "due_ts": None, "due_label": "", "done": False},
+                {"title": "Old done thing", "source": "notes", "due_ts": None, "due_label": "", "done": True}],
+            "threads": [{"who": "Priya", "source": "mail", "title": "Notes from this morning",
+                         "summary": "Wants your comments on the notes.", "needs_reply": True}]}
+
+
+def test_day_plan_render_is_prioritized_and_compact():
+    from service.tools.proactive_tools import render_day_plan
+    now = datetime(2026, 10, 24, 8, 0).timestamp()
+    text = render_day_plan(_snapshot(now), now=now, tz="America/Los_Angeles")
+    order = [text.index(h) for h in ("Time-bound today:", "Overdue:", "Waiting on a reply", "Suggested", "Other to-dos:")]
+    assert order == sorted(order)
+    assert "Team Standup" in text and "Submit W-9 · Overdue · 3 days" in text and "Priya (email)" in text
+    assert "Old done thing" not in text and len(text) <= 1500
+    big = _snapshot(now)
+    big["todos"] = [{"title": f"Task {i} " + "x" * 200, "source": "notes", "due_ts": None, "due_label": "", "done": False}
+                    for i in range(40)]
+    assert len(render_day_plan(big, now=now, tz="America/Los_Angeles")) <= 1500
+
+
+def test_day_plan_tool_only_reads_the_snapshot(monkeypatch):
+    from service.proactive import cycle, executor
+    from service.tools import proactive_tools, registry
+    now = time.time()
+    calls = []
+    monkeypatch.setattr(cycle, "snapshot", lambda **kw: calls.append(kw) or _snapshot(now))
+    for name in ("analyze", "run_cycle", "schedule_tick", "request_analyze"):
+        monkeypatch.setattr(cycle, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError("no cycle")))
+    monkeypatch.setattr(executor, "fire", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no fire")))
+    text = asyncio.run(proactive_tools.get_my_day_plan())
+    assert calls and "Day plan for" in text
+    tool = registry.get_tool("get_my_day_plan")
+    assert tool.category == "assistant_read" and tool.parameters["properties"] == {}
+
+
+def test_day_plan_ranks_first_in_the_ask_head_start(monkeypatch):
+    from service import main
+    monkeypatch.setattr(main, "_model_led_preload", lambda prompt: ["get_upcoming", "summarize_emails"])
+    preload, _ = main._ask_tool_rank("What should I do today?")
+    assert preload[0] == "get_my_day_plan"
+    preload, _ = main._ask_tool_rank("What's on my calendar tomorrow?")
+    assert preload[0] == "get_upcoming"
+
+
+def test_compact_fallback_drops_digest_markdown_and_cache_caveats():
+    digest = ("**Needs attention**\n- **Finance** — “Submit your W-9 by Friday”\n"
+              "Work: Email is from Mail’s local cache. Newer messages may be missing; server freshness is unverified.\n"
+              "Coverage: 3 of 3 accounts\n## Newsletters\n- Shop: 50% off")
+    text = mo.compact_results([("summarize_emails", digest)], {"summarize_emails": "From your email"})
+    assert "**" not in text and "##" not in text and "local cache" not in text and "Coverage" not in text
+    assert "Needs attention" not in text and "Finance — “Submit your W-9 by Friday”" in text
