@@ -552,3 +552,14 @@ def test_dropped_waiting_people_leave_a_reason(store):
         sources.text_items(rows, now=NOW, own=ME))
     debug = snap(store)["debug"]["waiting"]
     assert debug == [{"who": "Mom", "waiting": False, "reason": "you answered last"}]
+
+
+def test_a_friend_texting_from_an_unsaved_number_is_an_item_but_a_campaign_is_not():
+    friend = sources.text_items([(NOW - 60, "+14083298560", "+14083298560: Please study for the exam", "")],
+                                now=NOW, own=ME)
+    assert [t["who"] for t in friend] == ["(408) 329-8560"]
+    campaign = sources.text_items(
+        [(NOW - 60, "+15412303649", "+15412303649: Priority deadline Nov 3. Apply: https://beav.es/xKX", ""),
+         (NOW - 50, "+15102917003", "+15102917003: Reply STOP to opt out of city updates", "")],
+        now=NOW, own=ME)
+    assert campaign == []

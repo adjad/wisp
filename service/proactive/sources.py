@@ -385,6 +385,27 @@ def tally(counts: dict, account: str, **add) -> None:
         row[key] += value
 
 
+_AUTOMATED = re.compile(r"https?://|www\.|\breply\s+stop\b|\btext\s+stop\b|\bopt[ -]?out\b|\bunsubscribe\b|"
+                        r"\bverification code\b|\bmsg\s*&\s*data\b", re.I)
+
+
+def _looks_automated(bare: str, rows: list[tuple[float, str, str]]) -> bool:
+    """A sender with no contact name that the user never texted is dropped only
+    when it reads like a service or campaign: a short code, a link, opt-out
+    wording, or a long blast. A friend texting from a new number gets through."""
+    if re.fullmatch(r"\d{3,8}", bare) or "@" in bare:
+        return True
+    incoming = [r[2].partition(":")[2] for r in rows if r[2].partition(":")[0].strip() != "Me"]
+    return any(_AUTOMATED.search(t) or len(t) > 280 for t in incoming)
+
+
+def _pretty_number(label: str) -> str:
+    digits = re.sub(r"\D", "", label)
+    if label.strip().startswith("+1") and len(digits) == 11:
+        return f"({digits[1:4]}) {digits[4:7]}-{digits[7:]}"
+    return label
+
+
 def text_items(records: list[tuple], *, now: float, own: str | None = None,
                counts: dict | None = None) -> list[dict]:
     """One item per conversation active in the last few days: its latest lines,
@@ -395,6 +416,7 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
     conversations: dict[str, list[tuple[float, str, str]]] = {}
     chats: dict[str, set[str]] = {}
     ever_sent: set[str] = set()
+    raw_texts: dict[str, list[tuple[float, str, str]]] = {}
     for record in records:
         ts, context, text = record[:3]
         guid = record[3] if len(record) > 3 else ""
@@ -402,6 +424,7 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
             ever_sent.add(context)
         if now - TEXT_WINDOW_S <= ts <= now + 300:
             conversations.setdefault(context, []).append((ts, context, redact_summary_codes(text)))
+            raw_texts.setdefault(context, []).append((ts, context, text))
             if guid:
                 chats.setdefault(context, set()).add(guid)
     items = []
@@ -412,7 +435,8 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         bare = re.sub(r"\s*\(conversation \d+\)\s*$", "", bare).strip()
         if counts is not None:
             tally(counts, own, texts=1)
-        if (_LITERAL_LABEL.match(bare) or re.fullmatch(r"\d{3,8}", bare)) and context not in ever_sent:
+        if ((_LITERAL_LABEL.match(bare) or re.fullmatch(r"\d{3,8}", bare)) and context not in ever_sent
+                and _looks_automated(bare, raw_texts.get(context, rows))):
             if counts is not None:
                 tally(counts, own, filtered=1)
             continue
@@ -421,7 +445,7 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         if not incoming:
             continue
         group = context.startswith("Group ")
-        label = clean(context[len("Group "):].strip().strip('"') if group else context, 60)
+        label = clean(context[len("Group "):].strip().strip('"') if group else _pretty_number(context), 60)
         replied = rows[-1][2].partition(":")[0].strip() == "Me"
         rendered = _render(rows)
         text = ("Conversation: " + label + (" (group)" if group else "") + "\n" + "\n".join(rendered))[:MAX_ITEM_CHARS]
