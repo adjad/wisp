@@ -182,7 +182,7 @@ def test_without_a_model_the_examples_still_become_todos(store):
     run(store, no_model)
     view = snap(store)
     titles = " | ".join(t["title"] for t in view["todos"]).casefold()
-    assert "coffee chat" in titles and "talk tmrw" in titles and "trader joe" in titles
+    assert "coffee chat" in titles and "call mom" in titles and "trader joe" in titles
     assert all(c["action"]["draft"] == "" or "attacker" not in c["action"]["draft"] for c in view["cards"])
 
 
@@ -542,7 +542,7 @@ def test_api_routes(store, monkeypatch):
     client = TestClient(app)
     assert client.post("/assistant/proactive/cards/nope/fire", json={"draft": "x"}).status_code == 404
     card = snap(store)["cards"][0]
-    assert client.post(f"/assistant/proactive/cards/{card['id']}/dismiss").json()["ok"] is True
+    assert client.post(f"/assistant/proactive/cards/{card['id']}/dismiss", json={}).json()["ok"] is True
     assert store.card(card["id"]) is None
     todo = next(t for t in snap(store)["todos"] if t["source"] == "reminders")
     assert client.post(f"/assistant/proactive/todos/{todo['id']}", json={"done": True}).json()["done"] is True

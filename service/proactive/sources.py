@@ -106,33 +106,100 @@ def reply_ref_for_row(row: dict) -> dict | None:
         return {"message_id": message_id, "account": account, "account_id": str(row.get("account_id") or "").strip()}
 
 
-def mail_rows(now: float) -> list[dict]:
-    """The last week's mail rows: the body snapshot when there is one, plus
-    cached headers (Gmail-linked accounts included) the snapshot doesn't hold."""
+def _message_key(row: dict) -> str:
+    return str(row.get("message_id") or "").strip().strip("<>").casefold()
+
+
+def dedupe_copies(rows: list[dict], linked: set[str]) -> list[dict]:
+    """One row per message. The same email often arrives twice — through a
+    Google-linked account (read-only) and through Mail.app — so a Mail.app copy
+    (the one Wisp can reply from) wins, then a copy with a body."""
+    def rank(row):
+        native = str(row.get("account") or "").casefold() not in linked
+        return (native, bool(row.get("body")), bool(row.get("account_id")))
+    best: dict[str, dict] = {}
+    loose: dict[tuple, dict] = {}
+    for row in rows:
+        key = _message_key(row)
+        if key:
+            if key not in best or rank(row) > rank(best[key]):
+                best[key] = row
+            continue
+        ident = (_address(row), bare_subject(clean(row.get("subject"), 200)).casefold(), round(float(row["ts"]) / 300))
+        if ident not in loose or rank(row) > rank(loose[ident]):
+            loose[ident] = row
+    kept = list(best.values())
+    seen = {(_address(r), bare_subject(clean(r.get("subject"), 200)).casefold(), round(float(r["ts"]) / 300))
+            for r in kept}
+    kept += [r for k, r in loose.items() if k not in seen]
+    return kept
+
+
+def mail_rows(now: float, linked: set[str] | None = None) -> list[dict]:
+    """The last week's mail rows, one per message: the body snapshot, the raw
+    body cache (Mail.app and Google-linked accounts, the rows W3's reply path
+    reads), and cached headers for anything without a body."""
     from service.tools import email_tools as mail
+    linked = gmail_accounts() if linked is None else linked
     rows: list[dict] = []
     try:
         snapshot = mail.raw_email_snapshot()
     except Exception:  # noqa: BLE001
         snapshot = None
     if snapshot is not None:
-        rows = [dict(r) for r in snapshot.rows]
-    seen = {(str(r.get("account") or ""), str(r.get("message_id") or "")) for r in rows if r.get("message_id")}
-    seen_loose = {(str(r.get("account") or ""), round(float(r["ts"])), clean(r.get("subject"), 200))
-                  for r in rows if _finite(r.get("ts"))}
+        rows += [dict(r) for r in snapshot.rows]
     try:
-        headers = mail.header_rows(since_ts=now - MAIL_WINDOW_S)
+        rows += [dict(r) for r in mail._parse_raw()]
     except Exception:  # noqa: BLE001
-        headers = []
-    for row in headers:
-        if not _finite(row.get("ts")):
-            continue
-        ident = (str(row.get("account") or ""), str(row.get("message_id") or ""))
-        loose = (ident[0], round(float(row["ts"])), clean(row.get("subject"), 200))
-        if (ident[1] and ident in seen) or loose in seen_loose:
-            continue
-        rows.append(dict(row))
-    return [r for r in rows if _finite(r.get("ts")) and now - MAIL_WINDOW_S <= r["ts"] <= now + 300]
+        pass
+    try:
+        rows += [dict(r) for r in mail.header_rows(since_ts=now - MAIL_WINDOW_S)]
+    except Exception:  # noqa: BLE001
+        pass
+    rows = [r for r in rows if _finite(r.get("ts")) and now - MAIL_WINDOW_S <= r["ts"] <= now + 300]
+    return dedupe_copies(rows, linked)
+
+
+def _sent_to_list(row: dict) -> bool:
+    """Addressed to a list or undisclosed recipients, not to the user."""
+    to = str(row.get("to") or "").casefold()
+    if not to:
+        return False
+    try:
+        from service.memory.identity import user_emails
+        mine = [e.casefold() for e in user_emails()]
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(mine) and not any(m in to for m in mine)
+
+
+def bulk_mail(row: dict) -> bool:
+    """Newsletters, alerts, promos and organizations' mass mail: never a card."""
+    from service.assistant.daily_workspace import display_name, not_a_need
+    from service.assistant.mail_gists import is_mass_mail
+    from service.tools.email_tools import is_machine_sender
+    from service.proactive.guard import bulk_sender
+    name = display_name(row.get("sender"), _address(row))
+    body = str(row.get("body") or "")
+    return (not_a_need(row) or is_mass_mail(row) or is_machine_sender(f"{row.get('sender', '')} {_address(row)}")
+            or _sent_to_list(row) or bool(re.match(r"\s*(?:(?:re|fwd?):\s*)*\[[^\]]{2,40}\]", str(row.get("subject") or ""), re.I))
+            or bulk_sender(name, _address(row))
+            or bool(re.search(r"\bunsubscribe\b|manage (?:your )?(?:email )?preferences|"
+                              r"view (?:this email )?in (?:your )?browser|you(?:'|’)re receiving this", body, re.I)))
+
+
+def _deadline(row: dict) -> bool:
+    from service.proactive.triage import _DEADLINE
+    from service.proactive.guard import normalize_slang
+    return bool(_DEADLINE.search(normalize_slang(f"{row.get('subject') or ''} {row.get('body') or ''}")))
+
+
+def school_mail(row: dict) -> bool:
+    try:
+        from service.tools.email_tools import digest_category
+        return digest_category(row) == "school"
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _excerpt(row: dict) -> str:
@@ -168,9 +235,15 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
     items = []
     for (account, _), messages in threads.items():
         incoming = [m for m in messages if _address(m) not in mine]
-        if not incoming or all(skip(m) for m in incoming):
+        if not incoming:
             continue
-        last_in = incoming[-1]
+        # A person wrote, or a school sent something with a deadline: anything
+        # else (newsletters, job alerts, launches, campaigns) is not read at all.
+        people = [m for m in incoming if not skip(m) and not bulk_mail(m)]
+        school = [m for m in incoming if school_mail(m) and _deadline(m)]
+        if not people and not school:
+            continue
+        last_in = (people or school)[-1]
         last = messages[-1]
         replied = _address(last) in mine and last["ts"] >= last_in["ts"]
         subject = redact_summary_codes(clean(last_in.get("subject"), 200))
@@ -194,7 +267,7 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         items.append(dict(id=item_id, source="mail", account=account_of(account, linked=linked, own=own),
                           raw_account=account, who=who, title=subject, text=text, lines=quotes,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
-                          hash=_digest(text, replied)))
+                          person=bool(people), hash=_digest(text, replied)))
     items.sort(key=lambda i: i["received_ts"], reverse=True)
     return items[:MAX_MAIL_THREADS]
 
@@ -202,15 +275,44 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
 # --- texts ----------------------------------------------------------------------
 
 
-def text_records() -> list[tuple[float, str, str]]:
-    """(ts, conversation, "Sender: text") for every cached message, oldest first."""
+def text_records() -> list[tuple[float, str, str, str]]:
+    """(ts, conversation, "Sender: text", chat guid) for every cached message,
+    oldest first. The chat guid comes from the native record with the same
+    timestamp (the V3 feed), "" when there is none."""
     from service.tools import imessage_tools as im
     if im.messages_sync_state() != "ready":
         return []
+    guids: dict[float, set[str]] = {}
+    try:
+        for record in im.structured_messages_snapshot().get("records") or []:
+            stamp = record.get("timestamp")
+            if isinstance(stamp, str):
+                stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+            if _finite(stamp) and isinstance(record.get("conversation"), str):
+                guids.setdefault(round(float(stamp), 3), set()).add(record["conversation"])
+    except Exception:  # noqa: BLE001 — no native ids: no text replies, everything else stands
+        guids = {}
     out = []
     for ts, _identity, context, text, _unread in im._parse_records():
-        out.append((float(ts), context, text))
+        found = guids.get(round(float(ts), 3)) or set()
+        out.append((float(ts), context, text, next(iter(found)) if len(found) == 1 else ""))
     return sorted(out, key=lambda r: r[0])
+
+
+def chat_handle(guids: set[str]) -> str:
+    """The other participant's handle when every message is from one one-to-one
+    chat ("iMessage;-;+15551234567"); "" for a group ("…;+;chat123…"), a mix of
+    chats, or an unknown chat."""
+    if len(guids) != 1:
+        return ""
+    guid = next(iter(guids))
+    service, sep, handle = guid.partition(";-;")
+    if not sep or not handle or handle.casefold().startswith("chat"):
+        return ""
+    return handle.strip()
+
+
+_LITERAL_LABEL = re.compile(r"^[+\d(][\d() .+-]{2,}$|^\S+@\S+$")
 
 
 def _render(rows: list[tuple[float, str, str]]) -> list[str]:
@@ -221,18 +323,32 @@ def _render(rows: list[tuple[float, str, str]]) -> list[str]:
         return [f"[{text.partition(':')[0].strip()}] {text.partition(':')[2].strip()}" for _, _, text in rows]
 
 
-def text_items(records: list[tuple[float, str, str]], *, now: float, own: str | None = None) -> list[dict]:
+def text_items(records: list[tuple], *, now: float, own: str | None = None) -> list[dict]:
     """One item per conversation active in the last few days: its latest lines,
     rendered sender-first so the model can't credit the user's words to the
     other person."""
     from service.tools.imessage_tools import redact_summary_codes
     own = own_account() if own is None else own
     conversations: dict[str, list[tuple[float, str, str]]] = {}
-    for ts, context, text in records:
+    chats: dict[str, set[str]] = {}
+    ever_sent: set[str] = set()
+    for record in records:
+        ts, context, text = record[:3]
+        guid = record[3] if len(record) > 3 else ""
+        if text.partition(":")[0].strip() == "Me":
+            ever_sent.add(context)
         if now - TEXT_WINDOW_S <= ts <= now + 300:
             conversations.setdefault(context, []).append((ts, context, redact_summary_codes(text)))
+            if guid:
+                chats.setdefault(context, set()).add(guid)
     items = []
     for context, rows in conversations.items():
+        # A sender who is only a number or a short code that the user never
+        # texted is a campaign or a service ("Vote YES on Measure I"), not a person.
+        bare = context[len("Group "):].strip().strip('"') if context.startswith("Group ") else context
+        bare = re.sub(r"\s*\(conversation \d+\)\s*$", "", bare).strip()
+        if (_LITERAL_LABEL.match(bare) or re.fullmatch(r"\d{3,8}", bare)) and context not in ever_sent:
+            continue
         rows = rows[-MAX_TEXT_LINES:]
         incoming = [r for r in rows if r[2].partition(":")[0].strip() != "Me"]
         if not incoming:
@@ -252,7 +368,9 @@ def text_items(records: list[tuple[float, str, str]], *, now: float, own: str | 
         who = label if not group else (f"{speaker} in {label}" if speaker else label)
         items.append(dict(id="messages:" + _digest(context), source="messages", account=own, raw_account="",
                           who=who, title=label, text=text, lines=quotes, received_ts=last_in[0],
-                          replied=replied, group=group, ref={"kind": "text", "conversation": context, "label": label},
+                          replied=replied, group=group, person=True,
+                          handle="" if group else chat_handle(chats.get(context, set())),
+                          ref={"kind": "text", "conversation": context, "label": label},
                           reply_ref="messages:" + context, hash=_digest(text, replied)))
     items.sort(key=lambda i: i["received_ts"], reverse=True)
     return items[:MAX_CONVERSATIONS]
@@ -279,7 +397,10 @@ def note_items(*, own: str | None = None) -> list[dict]:
             if not match:
                 continue
             quote = clean(redact_summary_codes(match.group(1)), 200)
-            if not quote:
+            if not quote or re.search(r"details omitted", quote, re.I):
+                continue
+            from service.proactive.guard import source_sensitive
+            if source_sensitive(quote):
                 continue
             ident = f"{row.get('reference')}:{index}"
             items.append(dict(id="notes:" + _digest(ident), source="notes", account=own, raw_account="",
@@ -358,7 +479,7 @@ def collect(now: float | None = None, tz: str = "UTC") -> list[dict]:
     except Exception:  # noqa: BLE001
         mine = set()
     try:
-        items += mail_items(mail_rows(now), mine=mine, now=now, tz=tz, linked=linked, own=own)
+        items += mail_items(mail_rows(now, linked), mine=mine, now=now, tz=tz, linked=linked, own=own)
     except Exception:  # noqa: BLE001
         import traceback
         traceback.print_exc()

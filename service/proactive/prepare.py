@@ -125,6 +125,11 @@ def choose(item: dict, *, now: float, tz: str, linked: set[str], handle: str | N
     return "read", {"recipient": "", "event": None, "envelope": {"kind": "read"}}
 
 
+def _user_names() -> list[str]:
+    from service.proactive.triage import user_names
+    return user_names()
+
+
 def _first_name(who: str) -> str:
     word = re.split(r"[\s,]+", (who or "").strip())[0] if who else ""
     return word if re.fullmatch(r"[A-Za-z][A-Za-z'-]{0,30}", word or "") else ""
@@ -149,7 +154,8 @@ def valid_draft(text: str | None, item: dict, allowed: set[str]) -> str:
         return ""
     if guard.has_contact_or_link(text) or guard.output_has_pii(text):
         return ""
-    source = "\n".join([(item.get("item") or {}).get("text", ""), item.get("who", ""), item.get("title", "")])
+    # Held to the conversation itself: the judge's title is model text too.
+    source = "\n".join([(item.get("item") or {}).get("text", ""), item.get("who", "")])
     if not guard.grounded(text, source, allowed=allowed | _DRAFT_OK_WORDS):
         return ""
     return text
@@ -226,8 +232,14 @@ def _read_button(plan: dict) -> str:
     return f"{label}?" if label else "Mark as handled?"
 
 
-def _headline(item: dict) -> str:
+def _headline(item: dict, method: str = "") -> str:
+    """For a reply, the headline names the same person the button and the
+    recipient do: the conversation's other party, from the source."""
     title = guard.clean(item["title"], 70)
+    if method in ("email_reply", "text_reply"):
+        first = _first_name(item.get("who", "")) or guard.clean(item.get("who"), 30)
+        if not first or not title.casefold().startswith(f"reply to {first.casefold()}"):
+            title = f"Reply to {first}" if first else "Reply"
     return title[:1].upper() + title[1:]
 
 
@@ -271,8 +283,15 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
     for item in items:
         if len(cards) >= limit:
             break
-        if item.get("unranked"):
-            continue
+        raw = item.get("item") or {}
+        if item.get("unranked") and not (raw.get("person") and not raw.get("replied") and not raw.get("group")
+                                         and item["source"] in ("mail", "messages")):
+            continue                     # left-over slots go only to a person still waiting on the user
+        if item["source"] in ("mail", "messages") and not raw.get("person", True) and item.get("due_ts") is None:
+            continue                     # cards come from real people or real deadlines
+        names = _user_names()
+        if guard.names_user(item.get("who", ""), names) or guard.names_user(item.get("title", ""), names):
+            continue                     # the user is never the person to answer
         handle = None
         if item["source"] == "messages" and resolve_handle is not None:
             try:
@@ -280,6 +299,10 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
             except Exception:  # noqa: BLE001 — no handle: no text card
                 handle = None
         method, plan = choose(item, now=now, tz=tz, linked=linked, handle=handle, freeze=freeze)
+        if method == "read" and not plan.get("open_url"):
+            continue                     # nothing to do or open: it stays a to-do, not a card
+        if item["kind"] == "reply" and method in ("add_to_day", "reminder"):
+            continue                     # a reply Wisp can't send: a to-do, not a card
         words = ""
         if method in ("email_reply", "text_reply"):
             words = await draft(item, method, reply_fn, abort, allowed=allowed)
@@ -289,7 +312,7 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
         cards.append({
             "id": card_id(fingerprint, method),
             "meta": meta_line(item, now, tz),
-            "title": _headline(item),
+            "title": _headline(item, method),
             "body": body(item, method, plan, sched, now, tz),
             "why": guard.clean(item.get("why"), 200),
             "account": item.get("account", ""),
