@@ -2488,6 +2488,9 @@ class GoogleConnectAndErase(unittest.TestCase):
         self.store = AssistantStore(root / "assistant.db")
         self.enterContext(patch.object(C, "_store_override", self.store))
         self.enterContext(patch.multiple(C, _status={}, _locks={}))
+        from service import google_workspace
+        self.W = google_workspace
+        self.enterContext(patch.object(google_workspace, "CREDENTIALS_DIR", root / "workspace-creds"))
         self.enterContext(patch.object(mail_gists, "_PATH", root / "cache" / "mail_gists.json"))
         self.enterContext(patch.object(mail_gists, "_cache", None))
         self.erased = []
@@ -2521,7 +2524,10 @@ class GoogleConnectAndErase(unittest.TestCase):
         url = asyncio.run(run())
         self.assertIn("redirect_uri=http%3A%2F%2F127.0.0.1%3A50123", url)
         scopes = parse_qs(urlparse(url).query)["scope"][0].split()
-        self.assertEqual(set(scopes), {G.SCOPE, G.CALENDAR_SCOPE})
+        from service import google_workspace
+        # Gmail and Calendar, plus the read-only Workspace scopes the Workspace
+        # tools use for this account: still nothing that can write.
+        self.assertEqual(set(scopes), {G.SCOPE, G.CALENDAR_SCOPE, *google_workspace.WORKSPACE_SCOPES})
         self.assertTrue(all(scope.endswith(".readonly") for scope in scopes))
 
     def finish(self, granted):
@@ -2545,6 +2551,32 @@ class GoogleConnectAndErase(unittest.TestCase):
         after.assert_awaited_once_with(email)
         self.assertEqual(G._authorization["phase"], "reading")
         self.assertEqual(G._authorization["phase_email"], email)
+
+    def test_new_sign_in_switches_on_workspace_tools_and_erase_removes_them(self):
+        email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE, self.W.FULL_SCOPE])
+        self.assertTrue(G.connected_accounts()[email]["workspace"])
+        creds = json.loads(self.W.credentials_path(email).read_text())
+        self.assertEqual(creds["refresh_token"], "new-refresh")
+        row = next(r for r in G.status()["accounts"] if r["email"] == email)
+        self.assertTrue(row["workspace"] and row["workspace_full"])
+        # Switching off removes the server's sign-in; on restores it.
+        self.assertTrue(G.set_workspace(email, False)["ok"])
+        self.assertFalse(self.W.credentials_path(email).exists())
+        self.assertEqual(self.W.enabled_accounts(), [])
+        G.set_workspace(email, True)
+        self.assertEqual(self.W.enabled_accounts(), [email])
+        self.assertFalse(G.set_workspace("nobody@gmail.com", True)["ok"])
+        with patch("httpx.AsyncClient.post", AsyncMock()):
+            result = asyncio.run(G.disconnect(email))
+        self.assertEqual(result["erased"][email]["workspace"], "erased")
+        self.assertFalse(self.W.credentials_path(email).exists())
+
+    def test_reconnect_keeps_the_workspace_choice(self):
+        email, _ = self.finish([G.SCOPE])
+        G.set_workspace(email, False)
+        self.finish([G.SCOPE])
+        self.assertFalse(G.connected_accounts()[email]["workspace"])
+        self.assertFalse(self.W.credentials_path(email).exists())
 
     def test_unticked_calendar_still_connects_mail(self):
         email, _ = self.finish([G.SCOPE])

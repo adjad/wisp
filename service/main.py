@@ -361,6 +361,12 @@ async def lifespan(app: FastAPI):
             skills.load()
         except Exception:  # noqa: BLE001
             pass
+        try:
+            from service import google_workspace, gmail_source
+            google_workspace.ensure_env()
+            google_workspace.sync_credentials(gmail_source.connected_accounts())
+        except Exception as exc:  # noqa: BLE001 — the tools are optional
+            print(f"[google_workspace] startup sync failed: {type(exc).__name__}", flush=True)
         started_tasks.append(asyncio.create_task(mcp_manager.start()))
 
     # Retention: unpinned research jobs keep their evidence/quotes/report
@@ -3194,6 +3200,13 @@ async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
     except gmail_source.GmailError as exc:
         return {"ok": False, "error": str(exc)}
     return {"ok": True, **receipt}
+
+
+@app.post("/assistant/gmail/workspace")
+async def gmail_workspace(body: dict[str, Any]) -> dict[str, Any]:
+    """Switch the Workspace tools on or off for one connected Google account."""
+    from service import gmail_source
+    return gmail_source.set_workspace(str(body.get("account") or ""), bool(body.get("enabled")))
 
 
 @app.post("/assistant/gmail/disconnect")

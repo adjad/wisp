@@ -278,7 +278,7 @@ class MCPManager:
             REGISTRY[local] = Tool(
                 name=local, description=description, parameters=schema,
                 category=_category_for(spec, server.config),
-                func=_make_caller(server, spec["name"]),
+                func=_make_caller(server, spec["name"], schema),
             )
             self._registered.add(local)
 
@@ -344,11 +344,18 @@ def _category_for(spec: dict, config: dict | None = None) -> str:
     return "mcp_action"
 
 
-def _make_caller(server: MCPServer, remote_name: str):
+def _make_caller(server: MCPServer, remote_name: str, schema: dict | None = None):
     async def call(**args) -> str:
         if not server.running:
             return (f"(the '{server.name}' MCP server isn't running"
                     + (f": {server.error}" if server.error else "") + ")")
+        if server.name == "google_workspace":
+            # Only the Google accounts the user switched on in Settings.
+            from service import google_workspace
+            routed = google_workspace.route_arguments(schema or {}, args)
+            if isinstance(routed, str):
+                return routed
+            args = routed
         try:
             return await server.call_tool(remote_name, args)
         except asyncio.TimeoutError:

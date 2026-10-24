@@ -22,6 +22,7 @@ import shutil
 from pathlib import Path
 
 from service.mcp import CONFIG_PATH, manager
+from service.paths import MOE_DIR
 
 SERVER = "google_workspace"
 TIERS = ("core", "extended", "complete")
@@ -32,7 +33,29 @@ TRUSTED_READ_ONLY = [
     "search_gmail_messages", "get_gmail_message_content", "get_gmail_messages_content_batch",
     "get_gmail_thread_content", "list_gmail_labels", "list_calendars", "get_events",
     "search_drive_files", "list_drive_items", "get_drive_file_content",
+    "get_doc_content", "read_sheet_values", "get_presentation", "get_form",
+    "get_messages", "search_messages", "list_spaces",
+    "list_tasks", "get_task", "list_task_lists",
+    "list_contacts", "get_contact", "search_contacts",
 ]
+# The server's per-account sign-ins. Wisp owns this folder: each account the
+# user switches on in Settings ▸ Google Workspace gets a credential file here,
+# written from Wisp's own Google sign-in, so one consent covers Brief and Ask.
+CREDENTIALS_DIR = MOE_DIR / "google_workspace" / "credentials"
+TOKEN_URI = "https://oauth2.googleapis.com/token"
+# Read-only Workspace scopes requested with Gmail at consent. Writes (sending,
+# editing files) stay with the server's own on-demand sign-in.
+WORKSPACE_SCOPES = (
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/documents.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/presentations.readonly",
+    "https://www.googleapis.com/auth/chat.messages.readonly",
+    "https://www.googleapis.com/auth/chat.spaces.readonly",
+    "https://www.googleapis.com/auth/tasks.readonly",
+    "https://www.googleapis.com/auth/contacts.readonly",
+)
+FULL_SCOPE = WORKSPACE_SCOPES[0]
 _UVX_FALLBACKS = ("~/.local/bin/uvx", "/opt/homebrew/bin/uvx", "/usr/local/bin/uvx")
 _AUTH_URL = re.compile(r"https://accounts\.google\.com/[^\s)>\]\"']+")
 
@@ -115,11 +138,8 @@ async def enable(client_id: str, client_secret: str, email: str, tier: str = "co
     secret = client_secret.strip() or (previous.get("GOOGLE_OAUTH_CLIENT_SECRET", "") if same_client else "")
     if not secret:
         return {"ok": False, "error": "Enter the client secret that belongs to this OAuth client ID. Saved settings were kept."}
-    env = {"GOOGLE_OAUTH_CLIENT_ID": client_id}
-    if secret:
-        env["GOOGLE_OAUTH_CLIENT_SECRET"] = secret
-    if email.strip():
-        env["USER_GOOGLE_EMAIL"] = email.strip()
+    env = {"GOOGLE_OAUTH_CLIENT_ID": client_id, "GOOGLE_OAUTH_CLIENT_SECRET": secret,
+           "WORKSPACE_MCP_CREDENTIALS_DIR": str(CREDENTIALS_DIR)}
     servers[SERVER] = {"command": uvx, "args": ["workspace-mcp", "--tool-tier", tier],
                        "env": env, "enabled": True,
                        "trusted_read_only": TRUSTED_READ_ONLY}
@@ -143,7 +163,12 @@ def status() -> dict:
     entry = _entry()
     env = entry.get("env") or {}
     live = next((s for s in manager.status()["servers"] if s["name"] == SERVER), None)
-    return {"configured": bool(entry), "email": env.get("USER_GOOGLE_EMAIL", ""),
+    try:
+        accounts = enabled_accounts()
+    except Exception:  # noqa: BLE001
+        accounts = []
+    return {"configured": bool(entry), "email": accounts[0] if accounts else "",
+            "accounts": accounts,
             "client_id": env.get("GOOGLE_OAUTH_CLIENT_ID", ""),
             "has_secret": bool(env.get("GOOGLE_OAUTH_CLIENT_SECRET")),
             "uvx": bool(find_uvx()),
@@ -192,3 +217,97 @@ async def signin(email: str) -> dict:
     if not match:
         return {"ok": False, "error": text[:240] or "No sign-in link returned."}
     return {"ok": True, "auth_url": match.group(0)}
+
+
+# --- accounts: which connected Google accounts the Workspace tools may use ------
+
+def ensure_env() -> bool:
+    """Point an existing server entry at Wisp's credentials folder and drop a
+    fixed USER_GOOGLE_EMAIL (the account now comes from the user's choice).
+    True when mcp.json changed and the server needs a reload."""
+    data = _read_file()
+    entry = (data.get("servers") or {}).get(SERVER) if isinstance(data.get("servers"), dict) else None
+    if not isinstance(entry, dict):
+        return False
+    env = dict(entry.get("env") or {})
+    wanted = {**env, "WORKSPACE_MCP_CREDENTIALS_DIR": str(CREDENTIALS_DIR)}
+    wanted.pop("USER_GOOGLE_EMAIL", None)
+    listed = entry.get("trusted_read_only")
+    trusted = (sorted(set(listed) | set(TRUSTED_READ_ONLY))
+               if isinstance(listed, list) and all(isinstance(n, str) for n in listed)
+               else list(TRUSTED_READ_ONLY))
+    if wanted == env and trusted == listed:
+        return False
+    entry["env"] = wanted
+    entry["trusted_read_only"] = trusted
+    _write_file(data)
+    return True
+
+
+def credentials_path(email: str) -> Path:
+    return CREDENTIALS_DIR / f"{email.strip().lower()}.json"
+
+
+def _write_credentials(email: str, item: dict) -> None:
+    CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(CREDENTIALS_DIR, 0o700)
+    path = credentials_path(email)
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        json.dump({"token": None, "refresh_token": item.get("refresh_token", ""),
+                   "token_uri": TOKEN_URI, "client_id": item.get("client_id", ""),
+                   "client_secret": item.get("client_secret", ""),
+                   "scopes": list(item.get("scopes") or []), "expiry": None}, handle)
+    tmp.replace(path)
+
+
+def sync_credentials(accounts: dict[str, dict], *, refresh: tuple[str, ...] = ()) -> None:
+    """Make the credentials folder match the switched-on connected accounts.
+
+    A file the server already holds is kept (it may carry scopes the server
+    added on demand) unless the account just signed in again (`refresh`).
+    Accounts that are switched off or gone lose their file."""
+    wanted = {email.lower(): item for email, item in accounts.items() if item.get("workspace")}
+    for email, item in wanted.items():
+        if email in refresh or not credentials_path(email).exists():
+            _write_credentials(email, item)
+    if CREDENTIALS_DIR.is_dir():
+        for path in CREDENTIALS_DIR.glob("*.json"):
+            if path.stem.lower() not in wanted:
+                path.unlink(missing_ok=True)
+
+
+def enabled_accounts() -> list[str]:
+    from service import gmail_source
+    return sorted(email for email, item in gmail_source.connected_accounts().items()
+                  if item.get("workspace"))
+
+
+def has_full_scopes(email: str, item: dict) -> bool:
+    try:
+        scopes = json.loads(credentials_path(email).read_text()).get("scopes") or []
+    except Exception:  # noqa: BLE001 — no file yet: judge by the sign-in itself
+        scopes = item.get("scopes") or []
+    return FULL_SCOPE in scopes
+
+
+def route_arguments(schema: dict, args: dict) -> dict | str:
+    """Confine a Workspace tool call to an account the user switched on.
+
+    Returns the arguments to send, or a message explaining the refusal. A call
+    that names no account (or one that isn't switched on) goes to the only
+    switched-on account when there is exactly one."""
+    if "user_google_email" not in ((schema or {}).get("properties") or {}):
+        return args
+    allowed = enabled_accounts()
+    if not allowed:
+        return ("(no Google account is switched on for Workspace tools. "
+                "Turn one on in Settings ▸ Google Workspace.)")
+    asked = str(args.get("user_google_email") or "").strip().lower()
+    if asked in allowed:
+        return {**args, "user_google_email": asked}
+    if len(allowed) == 1:
+        return {**args, "user_google_email": allowed[0]}
+    return ("(choose which Google account to use: " + ", ".join(allowed)
+            + ". Pass it as user_google_email.)")

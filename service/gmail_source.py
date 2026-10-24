@@ -229,7 +229,9 @@ def status() -> dict:
     accounts = connected_accounts(cfg)
     sources = {row["account"]: row for row in E.email_source_details() if row["source"] == "gmail"}
     from service import google_calendar_source as C
-    rows = [{"email": email, "last_headers_sync": sources.get(email, {}).get("last_success"),
+    from service import google_workspace as W
+    rows = [{"email": email, "workspace": bool(item.get("workspace")),
+             "workspace_full": W.has_full_scopes(email, item), "last_headers_sync": sources.get(email, {}).get("last_success"),
              "fresh": sources.get(email, {}).get("fresh", False),
              "last_error": _errors.get(email) or sources.get(email, {}).get("error", ""),
              "mail_account_id": item.get("mail_account_id", ""),
@@ -240,7 +242,7 @@ def status() -> dict:
             "client_id": cfg.get("client_id", ""), "has_secret": bool(cfg.get("client_secret")),
             "last_headers_sync": first.get("last_headers_sync"), "last_error": first.get("last_error", ""),
             "authorizing": _pending_flow is not None, "authorization": dict(_authorization),
-            "mail_accounts": E.native_email_accounts()}
+            "mail_accounts": E.native_email_accounts(), "workspace": W.status()}
 
 
 def _current() -> tuple[str, dict, int]:
@@ -660,7 +662,7 @@ async def begin_authorization(client_id: str, client_secret: str = "",
     asyncio.create_task(expire())
     url = AUTH_URL + "?" + urlencode({
         "client_id": client_id, "redirect_uri": redirect, "response_type": "code",
-        "scope": " ".join(CONSENT_SCOPES), "code_challenge": challenge, "code_challenge_method": "S256",
+        "scope": " ".join(_consent_scopes()), "code_challenge": challenge, "code_challenge_method": "S256",
         "state": state, "access_type": "offline", "prompt": "consent"})
     return {"auth_url": url, "generation": generation} if include_receipt else url
 
@@ -708,10 +710,17 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         _epochs[email] = _epochs.get(email, 0) + 1
         _access.pop(email, None)
         _last.pop(email, None)
+        # New accounts get the Workspace tools; a reconnect keeps the user's choice.
+        workspace = accounts.get(email, {}).get("workspace", True)
         accounts[email] = {"client_id": client_id, "client_secret": client_secret,
                            "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id,
-                           "scopes": granted}
+                           "scopes": granted, "workspace": workspace}
         _save_config({"client_id": client_id, "client_secret": client_secret, "accounts": accounts})
+        try:
+            from service import google_workspace
+            google_workspace.sync_credentials(accounts, refresh=(email,))
+        except Exception as exc:  # noqa: BLE001 — Brief still works without the tools
+            print(f"[google_workspace] credential sync failed: {type(exc).__name__}", flush=True)
         from service.tools import email_tools as E
         E.configure_external_accounts(accounts)
         E.external_email_error(email, "headers", "New sign-in is waiting for its first refresh")
@@ -725,6 +734,29 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
     _authorization.update(phase="reading", phase_email=email, analyze="")
     _spawn(_after_connect(email))
     return email
+
+
+def _consent_scopes() -> tuple[str, ...]:
+    """Gmail (required), Calendar, and the read-only Workspace scopes, so the one
+    Google sign-in also serves the Workspace tools for this account."""
+    from service import google_workspace
+    return CONSENT_SCOPES + google_workspace.WORKSPACE_SCOPES
+
+
+def set_workspace(account: str, enabled: bool) -> dict:
+    """Switch one connected account's Workspace tools on or off."""
+    from service import google_workspace
+    account = account.strip().lower()
+    with revocation():
+        cfg = load_config()
+        accounts = connected_accounts(cfg)
+        if account not in accounts:
+            return {"ok": False, "error": "That Google account isn't connected"}
+        accounts[account] = {**accounts[account], "workspace": bool(enabled)}
+        _save_config({"client_id": cfg.get("client_id", ""),
+                      "client_secret": cfg.get("client_secret", ""), "accounts": accounts})
+    google_workspace.sync_credentials(accounts)
+    return {"ok": True}
 
 
 def _spawn(coro) -> asyncio.Task:
@@ -879,6 +911,12 @@ def erase_account_data(account: str) -> dict:
     for key in list(_meta):
         if key[0] == account:
             _meta.pop(key, None)
+    try:
+        from service import google_workspace
+        google_workspace.credentials_path(account).unlink(missing_ok=True)
+        result["workspace"] = "erased"
+    except Exception as exc:  # noqa: BLE001
+        result["workspace"] = f"failed: {type(exc).__name__}"
     try:
         from service import google_calendar_source as C
         result["calendar"] = f"erased {C.erase(account)}"
