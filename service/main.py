@@ -1354,6 +1354,45 @@ def _model_led_preload(prompt: str) -> list[str]:
     except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
         return []
 
+def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
+    """Model-only Ask head start: (preload, stub rank). The preload is
+    _model_led_preload's shortlist cut to ASK_PRELOAD real schemas; the stub
+    rank is the next ASK_STUBS lexical candidates, offered by name only
+    (service/model_only.py). Reads rank ahead of writes when the request has
+    no write intent, so "what's on my calendar" does not spend its few real
+    schemas on cancel/update.
+
+    Lexical on purpose, like _model_led_preload: the embedding route would load
+    an embedding model into the one shared oMLX process, raising the resident
+    memory its prefill guard measures every prompt against. Any failure means
+    no head start (every tool stays reachable through discovery)."""
+    try:
+        from service.model_only import ASK_PRELOAD, ASK_STUBS
+        from service.router.model_led import READ_CATEGORIES
+        from service.router.router import has_write_intent, mask_quoted
+        from service.tools.registry import REGISTRY
+        text = mask_quoted(prompt)
+        writing = has_write_intent(text)
+
+        def reads_first(names: list[str]) -> list[str]:
+            if writing:
+                return list(names)
+            reads = [n for n in names if (t := REGISTRY.get(n)) is not None
+                     and t.category in READ_CATEGORIES]
+            return reads + [n for n in names if n not in reads]
+        head = reads_first(_model_led_preload(prompt))
+        preload = head[:ASK_PRELOAD]
+        try:
+            ranked = _reranker.ranked_lexical_candidates(text, writing=writing,
+                                                         k=ASK_PRELOAD + ASK_STUBS)
+        except Exception:  # noqa: BLE001
+            ranked = []
+        stubs = [n for n in dict.fromkeys([*head[ASK_PRELOAD:], *ranked]) if n not in preload]
+        return preload, stubs[:ASK_STUBS]
+    except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
+        return [], []
+
+
 @app.post("/agent")
 async def agent(body: dict[str, Any]):
     """Route the request and run it, streaming events over SSE.
@@ -2259,6 +2298,16 @@ async def agent(body: dict[str, Any]):
                         "drivers or invent sources, dates, comparisons, or links for a quote. "
                         "When web evidence is also available, cite sources for that evidence "
                         "separately.")
+                # Model-only Ask: no router sets light_read on a model-led
+                # turn, so the answer-style hint is restored here instead.
+                ask_quality = model_only and model_led_turn
+                ask_preload, ask_stub_rank = _ask_tool_rank(prompt) if ask_quality else ([], [])
+                if ask_quality:
+                    from service.model_only import (ASK_CAPABILITY_HINT, ASK_STYLE_HINT,
+                                                    capability_question)
+                    synthesis_guidance.insert(0, ASK_STYLE_HINT)
+                    if capability_question(prompt):
+                        synthesis_guidance.insert(1, ASK_CAPABILITY_HINT)
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")
@@ -2277,8 +2326,12 @@ async def agent(body: dict[str, Any]):
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
                                         model_led_discovery=model_led_turn,
-                                        model_led_preload=(_model_led_preload(prompt)
+                                        model_led_preload=(ask_preload if ask_quality
+                                                           else _model_led_preload(prompt)
                                                            if model_led_turn else ()),
+                                        ask_quality=ask_quality,
+                                        model_led_stub_rank=(ask_stub_rank
+                                                             if ask_quality else None),
                                         private_shell_history=turn_private_shell_history if model_led_turn else None,
                                         fresh_personal_scope=(fresh_personal_obligation(prompt, last_tools or "")
                                                               if model_led_turn else None),

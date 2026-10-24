@@ -1,0 +1,99 @@
+{
+  "about": "Ask-tab demo sweep prompts (scripts/demo_sweep.py). Each case runs in its own session unless it lists `followups`. `variant_of` groups paraphrases of the same question. `personal` marks prompts that ask for the user's own data (a tool should run). Sends/compose must stay unconfirmed: the sweep auto-denies every confirmation.",
+  "cases": [
+    {"id": "cal-1", "category": "calendar", "prompt": "What's on my calendar tomorrow?", "personal": true},
+    {"id": "cal-2", "category": "calendar", "prompt": "what do i have tmrw", "personal": true, "variant_of": "cal-1"},
+    {"id": "cal-3", "category": "calendar", "prompt": "Am I busy tomorrow afternoon?", "personal": true, "variant_of": "cal-1"},
+    {"id": "cal-4", "category": "calendar", "prompt": "When is my dentist appointment?", "personal": true},
+    {"id": "cal-5", "category": "calendar", "prompt": "What's coming up in the next 48 hours?", "personal": true},
+    {"id": "cal-6", "category": "calendar", "prompt": "Do I have anything this weekend?", "personal": true},
+    {"id": "cal-7", "category": "calendar", "prompt": "When is my cousin's wedding and where is it?", "personal": true},
+    {"id": "cal-8", "category": "calendar", "prompt": "What meetings did I have last week?", "personal": true},
+    {"id": "cal-9", "category": "calendar", "prompt": "What's on my calendar today?", "personal": true, "followups": ["and tomorrow?"]},
+
+    {"id": "mail-1", "category": "mail", "prompt": "Summarize my unread emails.", "personal": true},
+    {"id": "mail-2", "category": "mail", "prompt": "anything important in my inbox?", "personal": true, "variant_of": "mail-1"},
+    {"id": "mail-3", "category": "mail", "prompt": "Catch me up on email.", "personal": true, "variant_of": "mail-1"},
+    {"id": "mail-4", "category": "mail", "prompt": "Did anyone email me about the proposal sync?", "personal": true},
+    {"id": "mail-5", "category": "mail", "prompt": "Has my order shipped?", "personal": true},
+    {"id": "mail-6", "category": "mail", "prompt": "When is the W-9 due?", "personal": true},
+    {"id": "mail-7", "category": "mail", "prompt": "Which emails need a reply from me?", "personal": true},
+
+    {"id": "txt-1", "category": "texts", "prompt": "What did Mom text me?", "personal": true},
+    {"id": "txt-2", "category": "texts", "prompt": "any new texts?", "personal": true},
+    {"id": "txt-3", "category": "texts", "prompt": "Summarize my messages from today.", "personal": true, "variant_of": "txt-2"},
+    {"id": "txt-4", "category": "texts", "prompt": "What's Priya been saying lately?", "personal": true},
+    {"id": "txt-5", "category": "texts", "prompt": "Did Jordan reply to me?", "personal": true},
+
+    {"id": "rem-1", "category": "reminders", "prompt": "What are my reminders?", "personal": true},
+    {"id": "rem-2", "category": "reminders", "prompt": "What do I need to remember to do this week?", "personal": true, "variant_of": "rem-1"},
+    {"id": "rem-3", "category": "reminders", "prompt": "Remind me to call Dr. Patel tomorrow at 10am.", "personal": true},
+    {"id": "rem-4", "category": "reminders", "prompt": "Did I set a reminder about the laundry?", "personal": true},
+
+    {"id": "todo-1", "category": "todo", "prompt": "What should I do today?", "personal": true},
+    {"id": "todo-2", "category": "todo", "prompt": "What's on my plate today?", "personal": true, "variant_of": "todo-1"},
+    {"id": "todo-3", "category": "todo", "prompt": "what should i focus on first today", "personal": true, "variant_of": "todo-1"},
+    {"id": "todo-4", "category": "todo", "prompt": "Give me my brief for today.", "personal": true},
+    {"id": "todo-5", "category": "todo", "prompt": "Am I forgetting anything this week?", "personal": true},
+    {"id": "todo-6", "category": "todo", "prompt": "What's my to-do list?", "personal": true, "variant_of": "todo-1"},
+
+    {"id": "web-1", "category": "web", "prompt": "What's the latest news on the Mars Sample Return mission?"},
+    {"id": "web-2", "category": "web", "prompt": "Who won the most recent World Series?"},
+    {"id": "web-3", "category": "web", "prompt": "What's the weather in San Francisco today?"},
+    {"id": "web-4", "category": "web", "prompt": "How is Apple stock doing today?"},
+    {"id": "web-5", "category": "web", "prompt": "What's happening in tech news this week?"},
+    {"id": "web-6", "category": "web", "prompt": "weather tmrw in sf?", "variant_of": "web-3"},
+
+    {"id": "gk-1", "category": "general", "prompt": "Why is the sky blue?"},
+    {"id": "gk-2", "category": "general", "prompt": "What's the capital of Australia?"},
+    {"id": "gk-3", "category": "general", "prompt": "Explain how a transformer neural network works in simple terms."},
+    {"id": "gk-4", "category": "general", "prompt": "What's the difference between a virus and bacteria?"},
+    {"id": "gk-5", "category": "general", "prompt": "How many ounces are in a cup?"},
+    {"id": "gk-6", "category": "general", "prompt": "What is 15% of 84?"},
+    {"id": "gk-7", "category": "general", "prompt": "Who wrote Pride and Prejudice?"},
+
+    {"id": "how-1", "category": "howto", "prompt": "How do I take a screenshot on a Mac?"},
+    {"id": "how-2", "category": "howto", "prompt": "How do I make cold brew coffee?"},
+    {"id": "how-3", "category": "howto", "prompt": "How do I write a good cover letter?"},
+    {"id": "how-4", "category": "howto", "prompt": "How do I center a div in CSS?"},
+    {"id": "how-5", "category": "howto", "prompt": "Give me tips for studying for a final exam."},
+
+    {"id": "talk-1", "category": "smalltalk", "prompt": "hi"},
+    {"id": "talk-2", "category": "smalltalk", "prompt": "How are you doing today?"},
+    {"id": "talk-3", "category": "smalltalk", "prompt": "thanks!"},
+    {"id": "talk-4", "category": "smalltalk", "prompt": "Tell me a joke."},
+    {"id": "talk-5", "category": "smalltalk", "prompt": "I'm feeling stressed about exams."},
+    {"id": "talk-6", "category": "smalltalk", "prompt": "good morning wisp"},
+
+    {"id": "mac-1", "category": "mac", "prompt": "Set a timer for 10 minutes."},
+    {"id": "mac-2", "category": "mac", "prompt": "What's my battery level?"},
+    {"id": "mac-3", "category": "mac", "prompt": "Turn the volume down."},
+    {"id": "mac-4", "category": "mac", "prompt": "Open Safari."},
+    {"id": "mac-5", "category": "mac", "prompt": "How much storage do I have left?"},
+    {"id": "mac-6", "category": "mac", "prompt": "What time is it in Tokyo?"},
+
+    {"id": "draft-1", "category": "compose", "prompt": "Draft an email to Priya saying I'll be 10 minutes late to dinner.", "personal": true},
+    {"id": "draft-2", "category": "compose", "prompt": "Text Mom that I'll call her tonight.", "personal": true},
+    {"id": "draft-3", "category": "compose", "prompt": "Reply to the proposal sync email and say Thursday works.", "personal": true},
+    {"id": "draft-4", "category": "compose", "prompt": "Write a short thank-you note to my professor for the extension."},
+    {"id": "draft-5", "category": "compose", "prompt": "Send Jordan a message asking if we're still on for Friday.", "personal": true},
+
+    {"id": "cap-1", "category": "capability", "prompt": "What can you do with my calendar?"},
+    {"id": "cap-2", "category": "capability", "prompt": "What can you do?"},
+    {"id": "cap-3", "category": "capability", "prompt": "Can you read my email?"},
+    {"id": "cap-4", "category": "capability", "prompt": "How do I connect my Google account to you?"},
+    {"id": "cap-5", "category": "capability", "prompt": "Can you send texts for me?"},
+    {"id": "cap-6", "category": "capability", "prompt": "what are you good at", "variant_of": "cap-2"},
+
+    {"id": "mem-1", "category": "memory", "prompt": "Remember that my favorite coffee order is an oat milk latte."},
+    {"id": "mem-2", "category": "memory", "prompt": "What do you know about me?", "personal": true},
+    {"id": "mem-3", "category": "memory", "prompt": "How heavy is my backpack?", "personal": true},
+
+    {"id": "notes-1", "category": "notes", "prompt": "What's my home wifi password from my notes?", "personal": true},
+    {"id": "notes-2", "category": "notes", "prompt": "What's on my Napa trip packing list?", "personal": true},
+
+    {"id": "mix-1", "category": "mixed", "prompt": "Check my email and calendar and tell me what matters today.", "personal": true},
+    {"id": "mix-2", "category": "mixed", "prompt": "Who is Alex Chen?", "personal": true},
+    {"id": "mix-3", "category": "mixed", "prompt": "Is it going to rain during my coffee with Alex tomorrow?", "personal": true}
+  ]
+}
