@@ -596,11 +596,18 @@ def test_pure_writing_turn_answers_directly_without_reads_or_reprompt(synthetic)
     prompt = "Write a short thank-you note to my professor for the extension."
     note = "Dear Professor [Name],\n\nThank you for the extension.\n\nBest,\n[Your name]"
     client, _, answer = ask([note], prompt=prompt, model_led_preload=["search_notes", "get_upcoming"],
-                            forbidden_tools=frozenset({"search_notes", "get_upcoming"}))
-    offered = {t["function"]["name"] for t in client.requests[0].get("tools") or []}
-    assert "search_notes" not in offered and "get_upcoming" not in offered
+                            forbidden_tools=frozenset({"search_notes", "get_upcoming"}), ask_direct=True)
+    assert not client.requests[0].get("tools") and client.requests[0].get("tool_choice") in (None, "none")
     assert len(client.requests) == 1 and not effects
     assert answer == note
+
+
+def test_writing_with_stored_content_still_reads(synthetic):
+    effects, _ = synthetic
+    client, _, answer = ask([[call("get_upcoming", days=7)], "Summary: a workshop at 14:00."],
+                            prompt="Write a summary of my calendar this week", model_led_preload=["get_upcoming"])
+    assert executed(effects, "get_upcoming") == [{"days": 7}]
+    assert answer == "Summary: a workshop at 14:00."
 
 
 def test_personal_question_answered_from_the_web_is_reprompted(synthetic):

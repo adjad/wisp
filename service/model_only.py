@@ -204,10 +204,11 @@ def compose_only(prompt: str) -> bool:
 
 
 ASK_COMPOSE_HINT = (
-    "COMPOSE: the answer IS the requested text. Write it now, ready to copy, with "
-    "no preamble, no lookups and no note about it. For a personal detail the request "
-    "does not give (a name, a date, a course), use a short placeholder such as [Name] "
-    "instead of searching or asking."
+    "COMPOSE: the answer IS the requested text, and writing it is always within what "
+    "you can do. Write it now, ready to copy: no preamble, no lookups, no clarifying "
+    "question, no refusal. For a personal detail the request does not give (a name, "
+    "a date, a course, a company), use a short placeholder such as [Name] or "
+    "[Company] instead of searching or asking."
 )
 
 # A writing request that draws on the user's stored content keeps its reads:

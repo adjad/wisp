@@ -2316,6 +2316,7 @@ async def agent(body: dict[str, Any]):
                     if day_plan_question(prompt):
                         synthesis_guidance.insert(1, ASK_DAY_PLAN_HINT)
                 ask_forbidden: frozenset[str] = frozenset()
+                ask_direct = False
                 if ask_quality:
                     from service.model_only import ASK_COMPOSE_HINT, ask_forbidden_tools, pure_writing
                     from service.tools.registry import REGISTRY
@@ -2326,6 +2327,8 @@ async def agent(body: dict[str, Any]):
                     ask_forbidden = ask_forbidden_tools(prompt, REGISTRY)
                     if pure_writing(prompt):
                         synthesis_guidance.insert(1, ASK_COMPOSE_HINT)
+                    from service.model_only import compose_only
+                    ask_direct = pure_writing(prompt) and compose_only(prompt)
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")
@@ -2348,6 +2351,7 @@ async def agent(body: dict[str, Any]):
                                                            else _model_led_preload(prompt)
                                                            if model_led_turn else ()),
                                         ask_quality=ask_quality,
+                                        ask_direct=ask_direct,
                                         model_led_stub_rank=(ask_stub_rank
                                                              if ask_quality else None),
                                         private_shell_history=turn_private_shell_history if model_led_turn else None,

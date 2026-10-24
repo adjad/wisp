@@ -1442,6 +1442,10 @@ async def run_agent(
     # model-led turns in model-only mode; every other caller keeps the loop
     # exactly as it was.
     ask_quality: bool = False,
+    # ask_quality only: a pure writing request with no destination ("Write a
+    # haiku", "a thank-you note to my professor"). Every step is tool-free, so
+    # the answer is the text itself, never a lookup, skill load or question.
+    ask_direct: bool = False,
     # ask_quality only: lexical rank beyond the preload. Name-only stubs are
     # limited to these plus model_only.ASK_CORE_STUBS (None = every tool).
     model_led_stub_rank: Sequence[str] | None = None,
@@ -3274,6 +3278,9 @@ async def run_agent(
                                            if s['function']['name'] not in ask_promoted]
         choice = "required" if (forcing_first_step or expecting_tool) else "auto"
         if evidence_narration_retried and _unmet_group() is None:
+            choice = 'none'
+            step_schemas = []
+        if ask_quality and ask_direct and not forcing_first_step:
             choice = 'none'
             step_schemas = []
         # STALLED ON REFUSED REPEATS: last step the model only asked for what it
