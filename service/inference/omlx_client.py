@@ -286,8 +286,17 @@ class OMLXClient:
             raise IncompleteStreamError("Invalid inference response") from None
         if not isinstance(data, dict) or "error" in data:
             # A provider's HTTP-200 error object is still an error. Reject it
-            # before choice normalization or debug capture and retain no body.
-            raise IncompleteStreamError("Inference provider returned an error") from None
+            # before choice normalization or debug capture and retain no body,
+            # only its short machine-readable code/status for diagnosis.
+            err = (data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else data)
+            err = err.get("error") if isinstance(err, dict) else None
+            tag = ""
+            if isinstance(err, dict):
+                code, status = err.get("code"), err.get("status")
+                tag = " ".join(str(v)[:40] for v in (code, status)
+                               if isinstance(v, (int, str)) and str(v).replace("_", "").isalnum())
+            raise IncompleteStreamError("Inference provider returned an error"
+                                        + (f" ({tag})" if tag else "")) from None
         return data
 
     @staticmethod
@@ -694,6 +703,9 @@ class OMLXClient:
                     if self.provider.name != "omlx":
                         if message.get("reasoning") and not message.get("reasoning_content"):
                             message["reasoning_content"] = message["reasoning"]
+                    if (not self.managed and choice["message"].get("tool_calls")
+                            and choice.get("finish_reason") == "stop"):
+                        choice["finish_reason"] = "tool_calls"   # Gemini's OpenAI-compatible API
                     if choice["message"].get("tool_calls") and choice.get("finish_reason") != "tool_calls":
                         raise IncompleteStreamError("Tool generation did not finish successfully")
                     if self.managed:
@@ -801,8 +813,15 @@ class OMLXClient:
                         content_parts.append(t)
                         yield {"kind": "content", "text": t}
                     for tc in (delta.get("tool_calls") or []):
-                        slot = calls.setdefault(tc.get("index", 0),
-                                                {"id": "", "name": "", "arguments": ""})
+                        index = tc.get("index")
+                        if index is None:
+                            # Gemini sends each call whole, without an index: a
+                            # new named call is a new slot, never appended.
+                            index = max(calls) if calls else 0
+                            if ((tc.get("function") or {}).get("name") and calls
+                                    and calls[index]["name"]):
+                                index += 1
+                        slot = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
                         if tc.get("id"):
                             slot["id"] = tc["id"]
                         fn = tc.get("function") or {}
@@ -816,6 +835,8 @@ class OMLXClient:
         finally:
             idle.end(self.activity_key(model))
             engine_epoch.end()
+        if calls and not self.managed and finish_reason == "stop":
+            finish_reason = "tool_calls"   # Gemini's OpenAI-compatible API ends tool calls with "stop"
         if finish_reason not in {"stop", "length", "tool_calls"}:
             raise IncompleteStreamError("Inference stream ended before completion; no actions were executed from it")
         if not calls and finish_reason not in {"stop", "length"}:
@@ -826,7 +847,9 @@ class OMLXClient:
             if finish_reason != "tool_calls":
                 raise IncompleteStreamError("Tool generation did not finish successfully")
             seen_ids = set()
-            for call in calls.values():
+            for index, call in calls.items():
+                if not call["id"] and not self.managed:
+                    call["id"] = f"call_{index}"      # Gemini may omit call ids
                 try:
                     args = json.loads(call["arguments"])
                 except ValueError as exc:
