@@ -19,17 +19,17 @@
   ],
   "splits": {
     "train": {
-      "rows": 1974,
-      "rows_ok": 1974,
-      "tokens_total": 13156291,
-      "tokens_max": 11631,
-      "tokens_p95": 9550,
-      "tokens_median": 6293,
-      "tokens_mean": 6664.8,
-      "labeled_tokens_total": 139533,
-      "target_tokens_min": 27,
-      "target_tokens_median": 64,
-      "target_tokens_p95": 127,
+      "rows": 2546,
+      "rows_ok": 2546,
+      "tokens_total": 16686186,
+      "tokens_max": 11621,
+      "tokens_p95": 9091,
+      "tokens_median": 6276,
+      "tokens_mean": 6553.9,
+      "labeled_tokens_total": 175548,
+      "target_tokens_min": 25,
+      "target_tokens_median": 63,
+      "target_tokens_p95": 123,
       "target_tokens_max": 284,
       "rows_over_max_len": 0
     },
@@ -49,17 +49,17 @@
       "rows_over_max_len": 0
     },
     "dev": {
-      "rows": 242,
-      "rows_ok": 242,
-      "tokens_total": 1629028,
-      "tokens_max": 11211,
-      "tokens_p95": 9468,
-      "tokens_median": 6299,
-      "tokens_mean": 6731.5,
-      "labeled_tokens_total": 16931,
+      "rows": 314,
+      "rows_ok": 314,
+      "tokens_total": 2069816,
+      "tokens_max": 11192,
+      "tokens_p95": 9338,
+      "tokens_median": 6252,
+      "tokens_mean": 6591.8,
+      "labeled_tokens_total": 21101,
       "target_tokens_min": 27,
-      "target_tokens_median": 66,
-      "target_tokens_p95": 122,
+      "target_tokens_median": 61,
+      "target_tokens_p95": 117,
       "target_tokens_max": 245,
       "rows_over_max_len": 0
     },
@@ -91,8 +91,8 @@
   },
   "chat_template_sha256": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a",
   "data_sha256": {
-    "train.jsonl": "b20300360b7af10bb2f05dec4f1bdb072e6c2c44c1117ab952494d4a0ea62afc",
-    "dev.jsonl": "76b6931b939c58ed9efbd9cd8f388c9381f659ba3548e1f8e404113dbf93008f"
+    "train.jsonl": "351adbbcd8808fedf10b29f06f0472a93aa00cc3334de6ff08cded2091b04023",
+    "dev.jsonl": "d41bb8d062370b92507dcc5ad73312bf0a6ecefb0377fc5551674b632cf7f4c8"
   },
   "tokenizer_vocab_size": 157153,
   "actual_axolotl_prepared_label_audit_still_required": true

@@ -6,42 +6,46 @@
  "seed": 20261023,
  "splits": {
   "train": {
-   "rows": 2574,
+   "rows": 3146,
+   "v33_rows": 572,
+   "v33_conversations": 189,
    "by_kind": {
-    "call": 802,
-    "discovery": 128,
-    "final_after_tools": 568,
-    "final_direct": 97,
-    "stub": 379,
+    "call": 1002,
+    "discovery": 183,
+    "final_after_tools": 751,
+    "final_direct": 103,
+    "stub": 507,
     "v2_intent": 510,
     "v2_summary": 90
    },
    "reasoning_chars": {
     "min": 67,
-    "p50": 178,
-    "p95": 302,
+    "p50": 177,
+    "p95": 305,
     "max": 470
    },
-   "sha256": "b20300360b7af10bb2f05dec4f1bdb072e6c2c44c1117ab952494d4a0ea62afc"
+   "sha256": "351adbbcd8808fedf10b29f06f0472a93aa00cc3334de6ff08cded2091b04023"
   },
   "dev": {
-   "rows": 302,
+   "rows": 374,
+   "v33_rows": 72,
+   "v33_conversations": 24,
    "by_kind": {
-    "call": 97,
-    "discovery": 15,
-    "final_after_tools": 70,
-    "final_direct": 11,
-    "stub": 49,
+    "call": 122,
+    "discovery": 21,
+    "final_after_tools": 93,
+    "final_direct": 12,
+    "stub": 66,
     "v2_intent": 51,
     "v2_summary": 9
    },
    "reasoning_chars": {
     "min": 74,
-    "p50": 184,
+    "p50": 176,
     "p95": 293,
     "max": 418
    },
-   "sha256": "76b6931b939c58ed9efbd9cd8f388c9381f659ba3548e1f8e404113dbf93008f"
+   "sha256": "d41bb8d062370b92507dcc5ad73312bf0a6ecefb0377fc5551674b632cf7f4c8"
   }
  }
 }

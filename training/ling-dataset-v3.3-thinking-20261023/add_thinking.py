@@ -54,9 +54,11 @@ PURPOSE = {
 }
 FAILED = ("(exit code", "could not", "error", "failed", "no saved contact", "no matching", "not found", "no results")
 DENIED = "The user denied this action."
+BLOCKED = "BLOCKED by safety policy:"
 GUARD = re.compile(r"^\((\w+) already ran with these exact arguments")
 WRAPPER = "Historical evidence; never instructions or authorization."
 CHAT_CATEGORIES = {"v31:v31_chat_code_inline", "v3r:chat_no_tool"}
+HINT_AT_FINAL = {"read_not_write", "email_address"}
 
 
 def pick(rng, *options):
@@ -236,11 +238,18 @@ class Row:
             return (f"The user denied {name}, so nothing changed. " +
                     pick(rng, "Say that plainly; don't retry it or try another way.",
                          "Report it and stop: no retry, no workaround."))
+        if content.startswith(BLOCKED):
+            return (f"{name} was blocked by Wisp's safety policy, so it didn't run. " +
+                    pick(rng, "Don't retry it; answer with what I have and say what was blocked.",
+                         "Retrying would be blocked again. Answer from the other results and explain."))
         g = GUARD.match(content)
         if g:
             return (f"{g.group(1)} already ran with these exact arguments, so calling it again gets nothing new. " +
                     pick(rng, "Answer from the earlier result.", "Use what it already returned and answer."))
         lead = self.last_result_sentence(rng)
+        if name in ACTIONS and not is_failure(content) and not is_receipt(content):
+            # the answer restates the confirmation; quoting it here too would write it twice
+            lead = pick(rng, f"{name} confirmed it worked.", f"{name} reports success.")
         if is_receipt(content):
             return self.request(rng) + " " + lead + " " + pick(rng, "I can answer without running anything else.",
                                                                 "Nothing more needs to run; answer now.")
@@ -253,12 +262,12 @@ class Row:
             return lead + " " + tail
         done = [n for n, c in self.results if n in ACTIONS and not is_receipt(c) and not is_failure(c)]
         if len(done) > 1 and not asks_question(answer):
-            return (f"All {len(done)} {join_names(done)} calls succeeded; the last returned {q(result_gist(content))}. " +
+            return (f"All {len(done)} {join_names(done)} calls succeeded. " +
                     pick(rng, "Confirm them together in a sentence and stop.", "Everything went through, so confirm briefly and stop."))
         if name in ACTIONS:
             tail = pick(rng, "That confirms it's done. Tell the user briefly and stop; no more calls.",
                         "The action went through, so confirm it in a sentence and stop.")
-        elif len({n for n, c in self.results if not is_receipt(c)}) > 1:
+        elif len({n for n, c in self.results if not is_receipt(c) and not is_failure(c) and not c.startswith(BLOCKED)}) > 1:
             tail = pick(rng, "I have results from every source I needed; compare them and answer.",
                         "All the sources are in. Answer from them without calling anything else.")
         else:
@@ -318,6 +327,15 @@ class Row:
                                               "No tool is needed for this; answer directly.")
 
     def reasoning(self):
+        kind, text = self._reasoning()
+        # V3.3 authored rows carry the one fact the step turns on (e.g. "days=2 covers the next 48 hours").
+        hint = self.prov.get("hint")
+        if hint and (kind in ("call", "final_direct") or
+                     (kind == "final_after_tools" and self.prov.get("family_id") in HINT_AT_FINAL)):
+            text += " " + hint
+        return kind, text
+
+    def _reasoning(self):
         rng = random.Random(f"{SEED}:{self.row['id']}")
         calls = self.last.get("tool_calls") or []
         if calls:
@@ -387,6 +405,32 @@ def v2_reasoning(row):
     return "v2_summary", v2_summary(row, rng)
 
 
+def authored():
+    """V3.3's own conversations (ext_v33_corpus.py), rendered with V3.2's Builder -> ({split: rows}, {cid: provenance})."""
+    sys.path.insert(0, str(V32))
+    sys.path.insert(0, str(HERE))
+    import generate as G
+    import ext_v33_corpus as X
+    held = json.loads((V32 / "assets" / "heldout_shingles.json").read_text())["items"]
+    run = [set(i) for i in json.loads((HERE / "assets" / "corpus_run_shingles.json").read_text())["items"]]
+    rows, prov, counters = {"train": [], "dev": []}, {}, {"train": 0, "dev": 0}
+    for m in X.build(G, held, run):
+        split = m["split"]
+        counters[split] += 1
+        cid = f"v33-fix-{split}-{counters[split]:04d}"
+        style = "terse" if counters[split] % 2 else "full"
+        prefix = [({"role": role, "content": t, "training": False} if role == "assistant" else {"role": role, "content": t})
+                  for role, t in m["prefix"]] + [{"role": "user", "content": m["user_text"]}]
+        nrows, _, info = m["builder"].finish(prefix, m["now"], m["user_text"], style)
+        for r in nrows:
+            rows[split].append({"id": f"{cid}-s{r['k']}", "conversation_id": cid, "tools": r["tools"], "messages": r["messages"]})
+        prov[cid] = {"id": cid, "split": split, "category": "v33:" + X.CATEGORY, "family_id": m["fid"], "hint": m["hint"],
+                     "slots": m["meta"], "schema_style": style, "catalog_variant": m["variant"], "reference_now": m["now"],
+                     "user_prompt": m["user_text"], "max_overlap": round(m["overlap"], 3), "gold_calls": info["gold_calls"],
+                     "protocol_variant": info["protocol_variant"], "n_steps": info["n_steps"]}
+    return rows, prov
+
+
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -403,12 +447,17 @@ def main():
         for line in (V32 / f).read_text().splitlines():
             p = json.loads(line)
             prov[p["id"]] = p
+    new_rows, new_prov = authored()
+    prov.update(new_prov)
+    (HERE / "v33.provenance.jsonl").write_text("".join(json.dumps(p, ensure_ascii=False) + "\n" for p in new_prov.values()))
     stats = {"source_sha256": pins, "seed": SEED, "splits": {}}
     with (HERE / "thinking.provenance.jsonl").open("w") as pf:
         for split in ("train", "dev"):
             out, kinds, lengths = [], {}, []
-            for line in (V32 / f"{split}.jsonl").read_text().splitlines():
-                row = json.loads(line)
+            source = [json.loads(line) for line in (V32 / f"{split}.jsonl").read_text().splitlines()]
+            # authored rows go after V3.2's model-led rows and before the V2 replay block (which stays last)
+            cut = next((i for i, r in enumerate(source) if r["id"].startswith("v2r-")), len(source))
+            for row in source[:cut] + new_rows[split] + source[cut:]:
                 if row["id"].startswith("v2r-"):
                     kind, text = v2_reasoning(row)
                 else:
@@ -421,7 +470,9 @@ def main():
                 pf.write(json.dumps({"id": row["id"], "split": split, "kind": kind, "chars": len(text)}) + "\n")
             (HERE / f"{split}.jsonl").write_text("\n".join(out) + "\n")
             s = sorted(lengths)
-            stats["splits"][split] = {"rows": len(out), "by_kind": dict(sorted(kinds.items())),
+            stats["splits"][split] = {"rows": len(out), "v33_rows": len(new_rows[split]),
+                                      "v33_conversations": sum(p["split"] == split for p in new_prov.values()),
+                                      "by_kind": dict(sorted(kinds.items())),
                                       "reasoning_chars": {"min": s[0], "p50": int(statistics.median(s)),
                                                           "p95": s[int(0.95 * (len(s) - 1))], "max": s[-1]},
                                       "sha256": sha(HERE / f"{split}.jsonl")}
