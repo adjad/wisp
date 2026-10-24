@@ -80,19 +80,20 @@ struct NotchBriefView: View {
             }
             if let plan {
                 let brief = BriefContent(plan: plan, today: today, composed: composedToday)
-                Text(brief.lede)
-                    .font(.system(size: 16.5)).foregroundStyle(Theme.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
                 if today.isShowingCurrentDay, let proactive = plan.workspace?.proactive {
-                    // The proactive engine's Brief: what it caught up on, the
-                    // to-dos from every source and each thread's summary, in
-                    // place of the tiles and the Top 3 it supersedes.
+                    // The proactive engine's Brief: one sentence, the work behind
+                    // it, the top card, then three rows that open in place. It
+                    // replaces the tiles and the Top 3.
+                    lede(proactive.headline ?? brief.lede)
                     ProactiveBriefSection(proactive: proactive, model: model, today: today, actions: actions,
+                                          events: restOfToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap)
-                    footerChips(plan)
+                    HStack {
+                        askChip(plan)
+                        Spacer()
+                    }
                 } else {
+                    lede(brief.lede)
                     legacy(plan, brief)
                 }
             } else if today.error.isEmpty {
@@ -101,29 +102,49 @@ struct NotchBriefView: View {
         }
     }
 
-    /// The tallest the proactive section gets before it scrolls, so the tab
-    /// fits under the notch on a 13-inch display.
-    static let proactiveCap: CGFloat = 540
+    /// The tallest an opened row (to-dos, mail and texts) gets before it scrolls.
+    static let proactiveCap: CGFloat = 300
+
+    private func lede(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 16.5)).foregroundStyle(Theme.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+    }
+
+    /// Calendar events still to come or under way today, soonest first.
+    private func restOfToday(_ plan: TodayPlan) -> [(start: Double, title: String)] {
+        let now = today.now.timeIntervalSince1970
+        return plan.displayBlocks
+            .filter { ($0.kind == "calendar" || $0.kind == "manual") && !DayTimeline.isJunk($0.title) && ($0.end ?? $0.start + 1800) > now }
+            .sorted { $0.start < $1.start }
+            .map { (start: $0.start, title: $0.title) }
+    }
 
     /// Ask about this, and the way to the Day tab.
     private func footerChips(_ plan: TodayPlan) -> some View {
         HStack(spacing: 8) {
-            NotchChrome.chip("Ask about this", icon: "bubble.left", help: "Continue from this in Ask") {
-                // Continue the brief's saved chat only when that brief is the
-                // one on screen; otherwise ask about what is shown.
-                if let brief = model.brief, !brief.sessionId.isEmpty,
-                   StoredBrief.shownIsLive(shown: composedBrief, live: (text: brief.text, at: brief.receivedAt)) {
-                    model.askAboutBrief()
-                } else {
-                    model.askAbout(BriefContent(plan: plan, today: today, composed: composedToday).lede, reference: "")
-                }
-            }
-            .disabled(!model.conversationSettled)
+            askChip(plan)
             Spacer()
             NotchChrome.chip("See my day →", icon: nil, help: "The rest of today, hour by hour (⌘3)") {
                 model.tab = .day
             }
         }
+    }
+
+    private func askChip(_ plan: TodayPlan) -> some View {
+        NotchChrome.chip("Ask about this", icon: "bubble.left", help: "Continue from this in Ask") {
+            // Continue the brief's saved chat only when that brief is the
+            // one on screen; otherwise ask about what is shown.
+            if let brief = model.brief, !brief.sessionId.isEmpty,
+               StoredBrief.shownIsLive(shown: composedBrief, live: (text: brief.text, at: brief.receivedAt)) {
+                model.askAboutBrief()
+            } else {
+                model.askAbout(BriefContent(plan: plan, today: today, composed: composedToday).lede, reference: "")
+            }
+        }
+        .disabled(!model.conversationSettled)
     }
 
     /// The Brief without the proactive engine: four tiles over the Top 3.

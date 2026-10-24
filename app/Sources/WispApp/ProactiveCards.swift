@@ -74,6 +74,11 @@ final class ProactiveActions: ObservableObject {
     @Published var expanded: Set<String> = []
     @Published var replying: String? = nil
     @Published var showAllTodos = false
+    @Published var showAllThreads = false
+    /// The card shown large; nil is the first.
+    @Published var heroID: String? = nil
+    /// The one of the Brief's rows that is open: "todos" or "threads".
+    @Published var openRow: String? = nil
 
     func draft(_ card: ProactiveCard) -> String { drafts[card.id] ?? card.action?.draft ?? "" }
 
@@ -108,6 +113,7 @@ final class ProactiveActions: ObservableObject {
         fires[card.id] = .sending
         var body: [String: Any] = ["draft": draft(card)]
         if !action.recipient.isEmpty { body["recipient"] = action.recipient }
+        if let slot = action.slot { body["slot"] = ["start": slot.start, "end": slot.end] }
         do {
             let outcome = try await post(today, "/assistant/proactive/cards/\(Self.segment(card.id))/fire", body: body)
             guard outcome.ok else {
@@ -215,8 +221,11 @@ final class ProactiveActions: ObservableObject {
     }
 
     #if WISP_NOTCH_QA
-    func qaReset(account: String? = nil, openDraft: String? = nil, expanded: Set<String> = [], replying: String? = nil) {
+    func qaReset(account: String? = nil, openDraft: String? = nil, expanded: Set<String> = [], replying: String? = nil,
+                 hero: String? = nil, openRow: String? = nil) {
         self.account = account
+        heroID = hero
+        self.openRow = openRow
         openDrafts = openDraft.map { [$0] } ?? []
         self.expanded = expanded
         self.replying = replying
@@ -226,18 +235,24 @@ final class ProactiveActions: ObservableObject {
 
 // MARK: - The Brief's proactive section
 
+/// The Brief under its one sentence: the work Wisp did, the top "Before you
+/// ask" card with the rest as chips, then three one-line rows (the rest of the
+/// day, the to-dos, mail and texts) that open in place.
 struct ProactiveBriefSection: View {
     let proactive: ProactiveState
     @ObservedObject var model: OverlayModel
     @ObservedObject var today: TodayModel
     @ObservedObject var actions: ProactiveActions = .shared
-    /// The tallest the cards, to-dos and summaries get before they scroll, so
-    /// the tab fits the notch; nil draws everything (the QA driver's full render).
-    var scrollCap: CGFloat? = 520
-    /// HOOK(W3): told when Reply is tapped on a Summaries row.
+    /// The rest of today's calendar, for the clock row.
+    var events: [(start: Double, title: String)] = []
+    /// The tallest an opened row gets before it scrolls, so the tab fits the
+    /// notch; nil draws everything (the QA driver's full render).
+    var scrollCap: CGFloat? = 300
+    /// HOOK(W3): told when Reply is tapped on a thread.
     var onReply: ((ProactiveThread) -> Void)? = BriefReplyHook.onReply
 
     private static let todoLimit = 6
+    @State private var hoveredThread: String? = nil
 
     private var chosen: String? {
         actions.account.flatMap { picked in proactive.accounts.contains(picked) ? picked : nil }
@@ -246,22 +261,22 @@ struct ProactiveBriefSection: View {
     var body: some View {
         let shown = proactive.only(chosen)
         VStack(alignment: .leading, spacing: 12) {
-            if !proactive.summary.isEmpty {
-                Text(proactive.summary)
-                    .font(.system(size: 13.5)).foregroundStyle(Theme.textSecondary)
-                    .lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            }
-            if proactive.accounts.count > 1 { accountChips }
-            CappedScroll(cap: scrollCap) {
-                VStack(alignment: .leading, spacing: 18) {
-                    beforeYouAsk(shown)
-                    todoSection(shown)
-                    summaries(shown)
+            if let work = proactive.workLine {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles").font(.system(size: 10)).foregroundStyle(Theme.textSecondary)
+                    Text(work).font(.system(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, -4)
+                .accessibilityElement(children: .combine)
+            }
+            beforeYouAsk(shown)
+            attention(shown)
+            VStack(alignment: .leading, spacing: 0) {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                dayRow
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                expandingRow("todos", icon: "checklist", text: shown.todoLine,
+                             empty: shown.todos.isEmpty) { todoList(shown) }
             }
         }
         .task(id: actions.shouldPoll(proactive)) {
@@ -280,33 +295,28 @@ struct ProactiveBriefSection: View {
 
     // MARK: Accounts
 
-    private var accountChips: some View {
-        HStack(spacing: 6) {
-            accountChip("All", picked: chosen == nil) { actions.account = nil }
-            ForEach(proactive.accounts, id: \.self) { account in
-                accountChip(proactive.chipName(account), picked: chosen == account) { actions.account = account }
-                    .help(account)
+    /// All, or one linked account, as one small menu beside Analyze now.
+    @ViewBuilder private var accountMenu: some View {
+        if proactive.accounts.count > 1 {
+            Menu {
+                Button("All accounts") { actions.account = nil; model.onResize() }
+                ForEach(proactive.accounts, id: \.self) { account in
+                    Button(account) { actions.account = account; model.onResize() }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Text(chosen.map(proactive.chipName) ?? "All")
+                    Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold))
+                }
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Capsule().fill(chosen == nil ? Theme.chipFill : Theme.chipOn))
+                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
             }
-            Spacer(minLength: 0)
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+            .help("Show one account's cards, to-dos and mail")
+            .accessibilityLabel("Account: \(chosen ?? "all")")
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Accounts")
-    }
-
-    private func accountChip(_ title: String, picked: Bool, action: @escaping () -> Void) -> some View {
-        Button {
-            action()
-            model.onResize()
-        } label: {
-            Text(title).font(.system(size: 11.5, weight: picked ? .semibold : .medium))
-                .foregroundStyle(picked ? Theme.textPrimary : Theme.textSecondary)
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Capsule().fill(picked ? Theme.chipOn : Theme.chipFill))
-                .overlay(Capsule().stroke(picked ? Color.white.opacity(0.32) : Theme.chipStroke, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .fixedSize()
-        .accessibilityValue(picked ? "Selected" : "")
     }
 
     // MARK: Before you ask
@@ -323,10 +333,12 @@ struct ProactiveBriefSection: View {
 
     @ViewBuilder private func beforeYouAsk(_ shown: ProactiveState) -> some View {
         let cards = shown.cards.filter { !actions.hidden.contains($0.id) }
+        let index = cards.firstIndex { $0.id == actions.heroID } ?? 0
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 8) {
-                header("BEFORE YOU ASK", trailing: cards.isEmpty ? "" : "· \(cards.count)")
+            HStack(alignment: .center, spacing: 6) {
+                header("BEFORE YOU ASK")
                 Spacer()
+                accountMenu
                 analyzeControl
             }
             if proactive.isWorking || actions.analyzePending() { progressRow }
@@ -334,19 +346,46 @@ struct ProactiveBriefSection: View {
                 Text(actions.analyzeError).font(.system(size: 11)).foregroundStyle(Theme.bad)
             }
             if cards.isEmpty {
-                Text(emptyCardsLine)
-                    .font(.system(size: 13)).foregroundStyle(Theme.textMuted)
+                Text(emptyCardsLine).font(.system(size: 12.5)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                ForEach(cards) { card in cardView(card).transition(.opacity) }
+                cardView(cards[index], position: index, of: cards)
+                    .id(cards[index].id)
+                    .transition(.opacity)
+                let rest = cards.enumerated().filter { $0.offset != index }.map(\.element)
+                if !rest.isEmpty { otherCards(Array(rest.prefix(3))) }
             }
         }
     }
 
+    /// The other cards, by title; one tap makes it the one shown.
+    private func otherCards(_ cards: [ProactiveCard]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(cards) { card in
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { actions.heroID = card.id }
+                    model.onResize()
+                } label: {
+                    Text(card.chipTitle).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                        .lineLimit(1).truncationMode(.tail)
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(Capsule().fill(Theme.chipFill))
+                        .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(card.title)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("More things Wisp caught")
+    }
+
     private var emptyCardsLine: String {
-        if proactive.isWorking { return "Cards land here as Wisp finishes reading." }
-        if proactive.isUnavailable { return "Wisp hasn't caught up on your mail and texts yet. Analyze now reads them on this Mac." }
-        return "Nothing to get ahead of right now. Wisp will bring the next thing here."
+        if proactive.isWorking { return "Cards land here as Wisp reads." }
+        if proactive.isUnavailable { return "Not caught up yet — tap ✦ to read your mail and texts." }
+        return "Nothing to get ahead of right now."
     }
 
     private var analyzeControl: some View {
@@ -354,19 +393,17 @@ struct ProactiveBriefSection: View {
         return Button {
             Task { await actions.analyze(today: today, account: chosen); model.onResize() }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: busy ? "ellipsis" : "sparkles").font(.system(size: 10))
-                Text(busy ? "Reading…" : "Analyze now").font(.system(size: 11.5, weight: .medium))
-            }
-            .foregroundStyle(Theme.textSecondary)
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            .background(Capsule().fill(Theme.chipFill))
-            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+            Image(systemName: busy ? "ellipsis" : "sparkles").font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Theme.textSecondary)
+                .frame(width: 22, height: 20)
+                .background(Capsule().fill(Theme.chipFill))
+                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .fixedSize()
         .disabled(busy)
-        .help(chosen.map { "Read \($0)'s mail and texts now and catch up" } ?? "Read your mail, texts, calendar and reminders now and catch up")
+        .help(chosen.map { "Analyze now: read \($0)'s mail and texts and catch up" }
+              ?? "Analyze now: read your mail, texts, calendar and reminders and catch up")
+        .accessibilityLabel("Analyze now")
     }
 
     private var progressRow: some View {
@@ -385,56 +422,74 @@ struct ProactiveBriefSection: View {
         .accessibilityElement(children: .combine)
     }
 
-    // MARK: A card
+    // MARK: The hero card
 
-    private func cardView(_ card: ProactiveCard) -> some View {
+    private func cardView(_ card: ProactiveCard, position: Int, of cards: [ProactiveCard]) -> some View {
         let fire = actions.fires[card.id]
         let draftOpen = actions.openDrafts.contains(card.id)
         let action = card.action
         let hasDraft = !(action?.draft ?? "").isEmpty
-        return VStack(alignment: .leading, spacing: 7) {
-            Text(card.metaLine)
-                .font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(0.6)
-                .foregroundStyle(Theme.textMuted)
-                .help(card.why)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(card.metaLine)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(0.6)
+                    .foregroundStyle(Theme.textMuted).lineLimit(1)
+                    .help(card.why)
+                Spacer(minLength: 4)
+                if actions.dismissing.contains(card.id) {
+                    ProgressView().controlSize(.mini)
+                } else if fire != .sending, !isDone(fire) {
+                    Button { Task { await actions.dismiss(card, today: today) } } label: {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.textMuted)
+                            .frame(width: 16, height: 16).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss: Wisp won't bring this one back")
+                    .accessibilityLabel("Dismiss")
+                }
+            }
             Text(card.title)
-                .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                .font(.system(size: 15.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             if !card.body.isEmpty {
                 Text(card.body)
                     .font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
-                    .lineSpacing(1.5)
+                    .lineSpacing(1.5).lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if draftOpen, let action { draftEditor(card, action) }
             HStack(alignment: .center, spacing: 12) {
                 if let action { fireButton(card, action, fire) }
-                if hasDraft {
-                    Button {
+                if action?.method == "block_time" {
+                    secondary("Pick another time") { model.tab = .day }
+                        .help("Open Day to choose a different time")
+                } else if hasDraft {
+                    secondary(draftOpen ? "Hide the draft" : "Read the draft",
+                              chevron: draftOpen ? "chevron.up" : "chevron.down") {
                         if draftOpen { actions.openDrafts.remove(card.id) } else { actions.openDrafts.insert(card.id) }
                         model.onResize()
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text(draftOpen ? "Hide the draft" : "Read the draft")
-                            Image(systemName: draftOpen ? "chevron.up" : "chevron.down").font(.system(size: 8.5, weight: .bold))
-                        }
-                        .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
                     .disabled(fire == .sending)
                 }
                 Spacer(minLength: 4)
-                if actions.dismissing.contains(card.id) {
-                    ProgressView().controlSize(.small)
-                } else if fire != .sending, !isDone(fire) {
-                    Button("Dismiss") { Task { await actions.dismiss(card, today: today) } }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                        .help("Not useful; Wisp won't bring this one back")
+                if cards.count > 1 {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) { actions.heroID = cards[(position + 1) % cards.count].id }
+                        model.onResize()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text("\(position + 1) of \(cards.count)").monospacedDigit()
+                            Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .bold))
+                        }
+                        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textMuted)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Next card")
+                    .accessibilityLabel("Card \(position + 1) of \(cards.count); next")
                 }
             }
-            .padding(.top, 2)
+            .padding(.top, 3)
             if case .failed(let reason) = fire {
                 Text(reason).font(.system(size: 11)).foregroundStyle(Theme.bad)
                     .fixedSize(horizontal: false, vertical: true)
@@ -443,12 +498,33 @@ struct ProactiveBriefSection: View {
                 Text(error).font(.system(size: 11)).foregroundStyle(Theme.bad)
             }
         }
-        .padding(EdgeInsets(top: 11, leading: 13, bottom: 11, trailing: 13))
+        .padding(EdgeInsets(top: 11, leading: 13, bottom: 11, trailing: 11))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.cardFill))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.cardStroke, lineWidth: 1))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(card.metaLine). \(card.title)")
+    }
+
+    private func secondary(_ title: String, chevron: String? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Text(title)
+                if let chevron { Image(systemName: chevron).font(.system(size: 8.5, weight: .bold)) }
+            }
+            .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+    }
+
+    /// The button's words; a block-time card without any names its hour.
+    private func buttonLabel(_ action: ProactiveCard.Action) -> String {
+        if action.method == "block_time", action.button.trimmingCharacters(in: .whitespaces).isEmpty, let slot = action.slot {
+            return "Block " + DayLoad.span(slot.start, slot.end, zone: today.timezone, locale: today.clockLocale) + "?"
+        }
+        return action.label
     }
 
     private func isDone(_ fire: ProactiveActions.Fire?) -> Bool {
@@ -476,7 +552,7 @@ struct ProactiveBriefSection: View {
             .background(Capsule().fill(Theme.chipOn))
         default:
             Button { Task { await actions.fire(card, today: today); model.onResize() } } label: {
-                Text(isFailed(fire) ? "Try again" : action.label)
+                Text(isFailed(fire) ? "Try again" : buttonLabel(action))
                     .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Color.black)
                     .lineLimit(1)
                     .padding(.horizontal, 13).padding(.vertical, 5)
@@ -529,29 +605,79 @@ struct ProactiveBriefSection: View {
         return min(150, max(64, CGFloat(lines) * 17 + 14))
     }
 
+    // MARK: The three rows
+
+    /// "11:45 AM Hack Day · 12 PM Hacktoberfest", then Day ›.
+    private var dayRow: some View {
+        let line = events.isEmpty ? "Nothing else on your calendar today"
+            : events.prefix(3).map { today.clock($0.start) + " " + $0.title }.joined(separator: " · ")
+        return Button { model.tab = .day } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Image(systemName: "clock").font(.system(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+                Text(line).font(.system(size: 13)).foregroundStyle(events.isEmpty ? Theme.textMuted : Theme.textPrimary)
+                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 2) {
+                    Text("Day")
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
+                }
+                .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("The rest of today, hour by hour (⌘3)")
+    }
+
+    /// A one-line summary that opens to its list in place; one open at a time.
+    private func expandingRow<Content: View>(_ id: String, icon: String, text: String, empty: Bool,
+                                             @ViewBuilder content: () -> Content) -> some View {
+        let open = actions.openRow == id && !empty
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                guard !empty else { return }
+                withAnimation(.easeOut(duration: 0.15)) { actions.openRow = open ? nil : id }
+                model.onResize()
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Image(systemName: icon).font(.system(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+                    Text(text).font(.system(size: 13)).foregroundStyle(empty ? Theme.textMuted : Theme.textPrimary)
+                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    if !empty {
+                        Image(systemName: open ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 8.5, weight: .bold)).foregroundStyle(Theme.textMuted)
+                    }
+                }
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(open ? "Expanded" : "Collapsed")
+            if open {
+                CappedScroll(cap: scrollCap) { content().frame(maxWidth: .infinity, alignment: .leading) }
+                    .padding(.bottom, 8)
+            }
+        }
+    }
+
     // MARK: To-do
 
-    @ViewBuilder private func todoSection(_ shown: ProactiveState) -> some View {
+    @ViewBuilder private func todoList(_ shown: ProactiveState) -> some View {
         let todos = shown.orderedTodos
-        let open = todos.filter { !actions.isDone($0) }.count
-        if !todos.isEmpty {
-            let visible = actions.showAllTodos ? todos : Array(todos.prefix(Self.todoLimit))
-            VStack(alignment: .leading, spacing: 4) {
-                header("TO-DO", trailing: open == 0 ? "· all done" : "· \(open) left")
-                    .padding(.bottom, 3)
-                ForEach(visible) { todo in todoRow(todo) }
-                if todos.count > Self.todoLimit {
-                    Button(actions.showAllTodos ? "Show fewer" : "Show all \(todos.count)") {
-                        actions.showAllTodos.toggle()
-                        model.onResize()
-                    }
-                    .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
-                    .padding(.leading, 26).padding(.top, 2)
+        let visible = actions.showAllTodos ? todos : Array(todos.prefix(Self.todoLimit))
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(visible) { todo in todoRow(todo) }
+            if todos.count > Self.todoLimit {
+                Button(actions.showAllTodos ? "Show fewer" : "Show all \(todos.count)") {
+                    actions.showAllTodos.toggle()
+                    model.onResize()
                 }
+                .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                .padding(.leading, 26).padding(.top, 2)
             }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("To-do")
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("To-do")
     }
 
     private func todoRow(_ todo: ProactiveTodo) -> some View {
@@ -611,52 +737,81 @@ struct ProactiveBriefSection: View {
 
     // MARK: Summaries
 
-    @ViewBuilder private func summaries(_ shown: ProactiveState) -> some View {
+    // MARK: Needs attention · mail & texts
+
+    private static let attentionLimit = 4
+
+    /// What mail and texts need from you, always open: who and what, two lines
+    /// each, replies first and brighter.
+    @ViewBuilder private func attention(_ shown: ProactiveState) -> some View {
         let threads = shown.orderedThreads
-        if !threads.isEmpty {
-            let waiting = threads.filter(\.needsReply).count
-            VStack(alignment: .leading, spacing: 2) {
-                header("SUMMARIES", trailing: waiting == 0 ? "" : "· \(waiting) need\(waiting == 1 ? "s" : "") a reply")
-                    .padding(.bottom, 4)
-                ForEach(threads) { thread in threadRow(thread) }
+        let waiting = threads.filter(\.needsReply).count
+        let visible = actions.showAllThreads ? threads : Array(threads.prefix(Self.attentionLimit))
+        VStack(alignment: .leading, spacing: 2) {
+            header("NEEDS ATTENTION · MAIL & TEXTS",
+                   trailing: waiting == 0 ? "" : "· \(waiting) need\(waiting == 1 ? "s" : "") a reply")
+                .padding(.bottom, 4)
+            if threads.isEmpty {
+                Text("Nothing in your inbox or texts needs you.")
+                    .font(.system(size: 12.5)).foregroundStyle(Theme.textMuted)
+            } else {
+                ForEach(visible) { thread in threadRow(thread) }
+                if threads.count > Self.attentionLimit {
+                    Button(actions.showAllThreads ? "Show fewer"
+                           : "+\(threads.count - Self.attentionLimit) more · Show all") {
+                        actions.showAllThreads.toggle()
+                        model.onResize()
+                    }
+                    .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                    .padding(.leading, 26).padding(.top, 3)
+                }
             }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Summaries")
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Needs attention, mail and texts")
     }
 
     private func threadRow(_ thread: ProactiveThread) -> some View {
         let open = actions.expanded.contains(thread.id)
+        let hot = thread.needsReply
+        let hovered = hoveredThread == thread.id
         return VStack(alignment: .leading, spacing: 6) {
             Button {
                 if open { actions.expanded.remove(thread.id) } else { actions.expanded.insert(thread.id) }
                 model.onResize()
             } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                HStack(alignment: .top, spacing: 9) {
                     Image(systemName: DayTimeline.sourceSymbol(thread.source))
-                        .font(.system(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+                        .font(.system(size: 11)).foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted)
+                        .frame(width: 15).padding(.top, 2)
                     (Text(thread.who.isEmpty ? "Someone" : thread.who).font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(Theme.textPrimary)
-                     + Text("  " + thread.line).font(.system(size: 13)).foregroundColor(Theme.textSecondary))
-                        .lineLimit(open ? nil : 1)
-                        .fixedSize(horizontal: false, vertical: open)
+                        .foregroundColor(hot ? Theme.textPrimary : Theme.textSecondary)
+                     + Text("  " + thread.line).font(.system(size: 13))
+                        .foregroundColor(hot ? Theme.textSecondary : Theme.textMuted))
+                        .lineLimit(open ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    if thread.needsReply {
-                        Text("NEEDS REPLY").font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Theme.textPrimary)
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text(hot ? "NEEDS REPLY" : "FYI").font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(hot ? Theme.textPrimary : Theme.textMuted)
                             .padding(.horizontal, 6).padding(.vertical, 2)
-                            .overlay(Capsule().stroke(Color.white.opacity(0.4), lineWidth: 1))
+                            .overlay(Capsule().stroke(hot ? Color.white.opacity(0.45) : Theme.chipStroke, lineWidth: 1))
                             .fixedSize()
+                        Text(timeLabel(thread.receivedTs)).font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Theme.textMuted).fixedSize()
                     }
-                    Text(timeLabel(thread.receivedTs)).font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Theme.textMuted).fixedSize()
-                    Image(systemName: open ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.textMuted)
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(hovered || open ? 0.05 : hot ? 0.03 : 0)))
+                .overlay(alignment: .leading) {
+                    // Replies owed get a quiet accent, so they read first.
+                    if hot { RoundedRectangle(cornerRadius: 1).fill(Color.white.opacity(0.6)).frame(width: 2).padding(.vertical, 6) }
+                }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .onHover { inside in hoveredThread = inside ? thread.id : (hoveredThread == thread.id ? nil : hoveredThread) }
+            .help(open ? "Hide the actions" : "Reply, open or ask about this")
             .accessibilityValue(open ? "Expanded" : "Collapsed")
             if open { threadDetail(thread) }
         }
@@ -686,7 +841,7 @@ struct ProactiveBriefSection: View {
             }
             if actions.replying == thread.id { replyArea(thread) }
         }
-        .padding(.leading, 24).padding(.bottom, 6)
+        .padding(.leading, 32).padding(.bottom, 6)
     }
 
     /// HOOK(W3): the reply composer, or a placeholder until it is wired.
