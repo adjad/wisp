@@ -710,6 +710,14 @@ def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False) -
 _PREFIX_KEY: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "wisp_model_prefix_key", default=None)
 
+# Model-only test: every step's reasoning in this turn, shown together before
+# `done`. Otherwise only the final step's reasoning reached the UI, and only on
+# two exit paths — a turn that thought before calling a tool, or ended through
+# a fallback, showed no trace at all. None outside a model-only turn.
+_TURN_REASONING: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "wisp_turn_reasoning", default=None)
+_MAX_STEP_REASONING_CHARS = 8000
+
 
 def _trace_model_step(msgs, schemas, final, started, first_event_at) -> None:
     """Record one model call in the request's content-free diagnostics trace.
@@ -831,6 +839,11 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
         elif kind == "final":
             final = ev["message"]
     _trace_model_step(msgs, schemas, final, started, first_event_at)
+    collected = _TURN_REASONING.get()
+    if collected is not None:
+        step_reasoning = "".join(reasoning_parts).strip()
+        if step_reasoning:
+            collected.append(step_reasoning[:_MAX_STEP_REASONING_CHARS])
     # Raw request/response for debug export (see OverlayModel.exportDebugLog
     # on the Swift side). Gated on `debug` — this serializes the full message
     # list AND every offered tool schema, on every attempt of every step, and
@@ -847,6 +860,7 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
         # Wisp didn't send.
         if temperature is not None:
             request["temperature"] = temperature
+        request.update(_template_kwargs(model, no_thinking=no_thinking, think_on=think_on))
         if extra:
             request.update(extra)
         await emit({
@@ -1454,6 +1468,24 @@ async def run_agent(
     # main.py persists our safe return value separately from emitted text.
     # Dry runs describe tool plans over supplied fixtures. Enforce isolation
     # here as well as at /agent so another caller cannot reopen saved context.
+    from service.model_only import model_only_enabled
+    if model_only_enabled():
+        turn_reasoning: list[str] = []
+        _TURN_REASONING.set(turn_reasoning)
+        _emit_outer = emit
+        reasoning_shown = False
+
+        async def emit(ev: dict) -> None:
+            """Show every step's reasoning once, just before the turn ends."""
+            nonlocal reasoning_shown
+            if ev.get("type") == "reasoning":
+                return  # the per-path final-step emits are folded in below
+            if ev.get("type") == "done" and not reasoning_shown and turn_reasoning:
+                reasoning_shown = True
+                text = (turn_reasoning[0] if len(turn_reasoning) == 1 else "\n\n".join(
+                    f"Step {i}:\n{r}" for i, r in enumerate(turn_reasoning, 1)))
+                await _emit_outer({"type": "reasoning", "text": text})
+            await _emit_outer(ev)
     if test_mode:
         include_identity_context = False
         include_memory_context = False

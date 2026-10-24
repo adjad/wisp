@@ -57,3 +57,65 @@ def test_switch_off_keeps_the_normal_thinking_rules(monkeypatch):
     monkeypatch.setenv("WISP_MODEL_ONLY", "0")
     assert loop._template_kwargs("Ling-3.0-tiny-Wisp-V3-merged-oQ4e", no_thinking=False, think_on=False) == {
         "chat_template_kwargs": {"enable_thinking": False}}
+
+
+def _reasoning_turn(monkeypatch, tmp_path, script, model_only="1"):
+    import asyncio
+    import json
+    from service import diagnostics
+    from service.agent import loop
+    monkeypatch.setenv("WISP_MODEL_ONLY", model_only)
+    monkeypatch.setattr(loop, "audit", lambda *a, **k: None)
+
+    class Client:
+        async def ensure_only(self, *a, **k):
+            return None
+
+        async def stream_events(self, model, messages, **kw):
+            think, call, text = script.pop(0) if script else ("", None, "ok")
+            if think:
+                yield {"kind": "reasoning", "text": think}
+            if call:
+                yield {"kind": "final", "message": {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": {"name": call, "arguments": json.dumps({"period": "tomorrow"})}}]}}
+            else:
+                yield {"kind": "content", "text": text}
+                yield {"kind": "final", "message": {"role": "assistant", "content": text, "tool_calls": None}}
+
+    class Approver:
+        async def confirm(self, action):
+            return False
+
+    events = []
+
+    async def emit(ev):
+        events.append(ev)
+
+    async def go():
+        with diagnostics.use(diagnostics.Trace("agent", root=tmp_path)):
+            await loop.run_agent(Client(), "fixture-model", [{"role": "user", "content": "plan for tomorrow"}],
+                                 emit, Approver(), tools=["get_upcoming"], test_mode=True, debug=False,
+                                 include_memory_context=False, include_identity_context=False)
+    asyncio.run(go())
+    return [e for e in events if e["type"] in ("reasoning", "text", "done")]
+
+
+def test_model_only_shows_reasoning_from_every_step(monkeypatch, tmp_path):
+    out = _reasoning_turn(monkeypatch, tmp_path, [("Need the calendar.", "get_upcoming", ""),
+                                                  ("Two events.", None, "You have two events.")])
+    reasoning = [e["text"] for e in out if e["type"] == "reasoning"]
+    assert reasoning == ["Step 1:\nNeed the calendar.\n\nStep 2:\nTwo events."]
+    assert [e["type"] for e in out][-2:] == ["reasoning", "done"]
+
+
+def test_model_only_shows_tool_step_reasoning_when_the_answer_step_has_none(monkeypatch, tmp_path):
+    out = _reasoning_turn(monkeypatch, tmp_path, [("Need the calendar.", "get_upcoming", ""),
+                                                  ("", None, "You have two events.")])
+    assert [e["text"] for e in out if e["type"] == "reasoning"] == ["Need the calendar."]
+
+
+def test_normal_path_still_shows_only_the_final_step(monkeypatch, tmp_path):
+    out = _reasoning_turn(monkeypatch, tmp_path, [("Need the calendar.", "get_upcoming", ""),
+                                                  ("", None, "You have two events.")], model_only="0")
+    assert [e for e in out if e["type"] == "reasoning"] == []
