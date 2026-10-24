@@ -58,18 +58,26 @@ struct BriefReplyComposer: View {
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(Theme.textMuted)
                 .lineLimit(1)
-            if !model.toLine.isEmpty {
-                Text("To: \(model.toLine)")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(2)
-            }
+            // Never truncated: these are the people the reply goes to.
+            recipientLine("To", model.to)
+            recipientLine("CC", model.cc)
+            recipientLine("BCC", model.bcc)
             if !model.subject.isEmpty {
                 Text("Subject: \(model.subject)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(Theme.textSecondary)
                     .lineLimit(1)
             }
+        }
+    }
+
+    @ViewBuilder private func recipientLine(_ label: String, _ addresses: [String]) -> some View {
+        if !addresses.isEmpty {
+            Text("\(label): \(addresses.joined(separator: ", "))")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(label == "To" ? Theme.textSecondary : Theme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
     }
 
@@ -108,7 +116,7 @@ struct BriefReplyComposer: View {
                 chip("Cancel", primary: false) { onDismiss() }
                     .disabled(model.phase == .sending)
                 if model.canSend {
-                    chip(model.phase == .sending ? "Sending…" : "Send", primary: true) {
+                    chip(model.phase == .sending ? "Sending…" : model.sendLabel, primary: true) {
                         Task { await model.send() }
                     }
                     .disabled(!model.sendEnabled)
@@ -148,6 +156,9 @@ final class BriefReplyModel: ObservableObject {
     enum Phase: Equatable { case drafting, ready, sending, sent, unknown }
 
     /// Mirrors WispClient.baseURL; kept here so this file compiles on its own.
+    /// How long the relabelled Send stays disabled after a recipient change.
+    nonisolated static let confirmHoldNanos: UInt64 = 1_500_000_000
+
     nonisolated static let defaultBaseURL = URL(string: "http://127.0.0.1:8765")!
 
     /// Notch QA renders never reach a socket: they get a canned draft.
@@ -174,6 +185,11 @@ final class BriefReplyModel: ObservableObject {
     @Published private(set) var account: String
     @Published private(set) var to: [String] = []
     @Published private(set) var cc: [String] = []
+    @Published private(set) var bcc: [String] = []
+    /// Set when Mail's real recipients differ from the ones first shown: the
+    /// button names them and is held briefly so the second tap is deliberate.
+    @Published private(set) var confirmTo: [String] = []
+    @Published private(set) var holding = false
     @Published private(set) var subject = ""
     @Published private(set) var canSend = false
     @Published private(set) var openURL: URL?
@@ -195,10 +211,11 @@ final class BriefReplyModel: ObservableObject {
         self.onSent = onSent
     }
 
-    var toLine: String { (to + cc).joined(separator: ", ") }
+    var toLine: String { (to + cc + bcc).joined(separator: ", ") }
+    var sendLabel: String { confirmTo.isEmpty ? "Send" : "Send to " + confirmTo.joined(separator: ", ") }
     var editable: Bool { phase == .ready }
     var sendEnabled: Bool {
-        phase == .ready && canSend && envelope != nil
+        phase == .ready && canSend && envelope != nil && !holding
             && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -222,6 +239,7 @@ final class BriefReplyModel: ObservableObject {
         text = obj["draft"] as? String ?? ""
         to = obj["to"] as? [String] ?? []
         cc = obj["cc"] as? [String] ?? []
+        bcc = obj["bcc"] as? [String] ?? []
         subject = obj["subject"] as? String ?? ""
         if let label = obj["account"] as? String, !label.isEmpty { account = label }
         envelope = obj["envelope"] as? String
@@ -259,11 +277,18 @@ final class BriefReplyModel: ObservableObject {
             // Nothing was sent: show who it really goes to and wait for a new tap.
             to = obj?["to"] as? [String] ?? to
             cc = obj?["cc"] as? [String] ?? []
+            bcc = obj?["bcc"] as? [String] ?? []
+            confirmTo = to + cc + bcc
             if let s = obj?["subject"] as? String, !s.isEmpty { subject = s }
             envelope = obj?["envelope"] as? String
             canSend = envelope != nil
             phase = .ready
             status = result.isEmpty ? "Mail will send this to \(toLine). Tap Send to confirm." : result
+            holding = true
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: Self.confirmHoldNanos)
+                self?.holding = false
+            }
         case "refused":
             // Nothing went out; the user may edit and try again unless the
             // envelope itself is no longer usable.

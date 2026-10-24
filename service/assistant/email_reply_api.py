@@ -554,6 +554,18 @@ def _same_recipients(fresh: dict, env: dict) -> bool:
             and fresh["subject"].strip() == env["subject"].strip())
 
 
+def _audit_attempt(status: str, error: str, env: dict | None, body: str | None, **extra) -> None:
+    """One audit line per send attempt, refusals included. Never the body itself:
+    its SHA-256 and length identify what was approved without copying it."""
+    fields: dict[str, Any] = {"status": status, "error": error, "ok": status == "sent"}
+    if env is not None:
+        fields["envelope"] = {k: env[k] for k in _FROZEN_FIELDS if k in env}
+    if isinstance(body, str):
+        fields["body_sha256"] = hashlib.sha256(body.encode("utf-8", "surrogatepass")).hexdigest()
+        fields["body_len"] = len(body)
+    _audit("email_reply_send", tool="reply_to_email", **fields, **extra)
+
+
 def _refused(error: str, result: str) -> dict:
     return {"ok": False, "status": "refused", "error": error, "result": result}
 
@@ -570,57 +582,66 @@ async def send_reviewed_reply(envelope: Any, body: Any) -> dict:
     ``unknown`` (Mail was asked but did not confirm — check Mail, do not retry).
     """
     payload, why = open_envelope(envelope)
+    env = payload["env"] if payload else None
+    text = body if isinstance(body, str) else None
+
+    def refuse(error: str, result: str, **extra) -> dict:
+        _audit_attempt("refused", error, env, text, **extra)
+        return _refused(error, result)
+
     if payload is None:
-        return _refused(f"envelope_{why}", {
+        return refuse(f"envelope_{why}", {
             "expired": "This draft expired. Draft the reply again before sending.",
             "spent": "This reply was already sent (or attempted). Check Mail before sending again.",
         }.get(why, "This reply can't be verified. Draft it again before sending."))
-    if not isinstance(body, str):
-        return _refused("invalid_body", "The reply must be text.")
-    body = body.rstrip()
-    if not body.strip():
-        return _refused("empty_body", "The reply is empty.")
-    if len(body) > _MAX_BODY_CHARS or "\x00" in body:
-        return _refused("invalid_body", "The reply is too long to send from here.")
-    env, nonce = payload["env"], payload["nonce"]
+    if text is None:
+        return refuse("invalid_body", "The reply must be text.")
+    text = text.rstrip()
+    if not text.strip():
+        return refuse("empty_body", "The reply is empty.")
+    if len(text) > _MAX_BODY_CHARS or "\x00" in text:
+        return refuse("invalid_body", "The reply is too long to send from here.")
+    nonce = payload["nonce"]
     if nonce in _in_flight:
-        return _refused("in_flight", "This reply is already sending.")
+        return refuse("in_flight", "This reply is already sending.")
     args = {"message_id": env["message_id"], "account": env["account"],
-            "account_id": env["account_id"], "body": body, "reply_all": payload["reply_all"]}
+            "account_id": env["account_id"], "body": text, "reply_all": payload["reply_all"]}
     if denied := _policy_denies(args):
-        return _refused("policy_denied", f"Not sent: {denied}")
+        return refuse("policy_denied", f"Not sent: {denied}")
     _in_flight.add(nonce)
     try:
-        prepared, problem = await _prepare(args)
+        try:
+            prepared, problem = await _prepare(args)
+        except Exception as exc:  # noqa: BLE001 — Mail never got a send request
+            prepared, problem = None, f"Mail couldn't prepare this reply ({type(exc).__name__}). Nothing was sent."
         if prepared is None:
-            _audit("email_reply_send", tool="reply_to_email", args={**args, "to": env["to"]},
-                   result=problem, ok=False)
-            return _refused("prepare_failed", problem or "Mail couldn't prepare this reply. Nothing was sent.")
+            return refuse("prepare_failed", problem or "Mail couldn't prepare this reply. Nothing was sent.")
         fresh = prepared["expected_reply"]
         if not _same_thread(fresh, env):
-            _audit("email_reply_send", tool="reply_to_email", args={**args, "to": env["to"]},
-                   result="thread changed", ok=False)
-            return _refused("envelope_changed", "That email changed in Mail. Nothing was sent. Draft it again.")
+            return refuse("envelope_changed", "That email changed in Mail. Nothing was sent. Draft it again.")
         if not _same_recipients(fresh, env):
             if payload["verified"]:
-                _audit("email_reply_send", tool="reply_to_email", args={**args, "to": env["to"]},
-                       result="recipients changed", ok=False)
-                return _refused("envelope_changed",
-                                "The recipients changed in Mail. Nothing was sent. Draft it again.")
+                # Includes a BCC Mail added that the user never saw.
+                return refuse("envelope_changed",
+                              "The recipients changed in Mail. Nothing was sent. Draft it again.",
+                              mail_to=fresh["to"], mail_cc=fresh["cc"], mail_bcc=fresh["bcc"])
             # The user saw a prediction; Mail's real reply differs. Show the
-            # real one and ask for a fresh tap. Nothing is sent.
+            # real one — To, CC and BCC in full — and ask for a fresh tap.
             try:
                 token = seal_envelope({k: fresh[k] for k in _FROZEN_FIELDS},
                                       verified=True, reply_all=payload["reply_all"])
             except ValueError:
-                return _refused("envelope_changed", "Mail's reply can't be shown here. Nothing was sent.")
-            _audit("email_reply_send", tool="reply_to_email", args={**args, "to": fresh["to"]},
-                   result="recipients need confirmation", ok=False, status="confirm")
+                return refuse("envelope_changed", "Mail's reply can't be shown here. Nothing was sent.")
+            _audit_attempt("confirm", "recipients_changed", env, text,
+                           mail_to=fresh["to"], mail_cc=fresh["cc"], mail_bcc=fresh["bcc"])
+            everyone = fresh["to"] + fresh["cc"] + fresh["bcc"]
             return {"ok": False, "status": "confirm", "error": "recipients_changed",
-                    "result": f"Mail will send this to {', '.join(fresh['to'] + fresh['cc'])}. Tap Send to confirm.",
-                    "to": list(fresh["to"]), "cc": list(fresh["cc"]), "subject": fresh["subject"],
-                    "envelope": token,
+                    "result": f"Mail will send this to {', '.join(everyone)}. Tap Send to confirm.",
+                    "to": list(fresh["to"]), "cc": list(fresh["cc"]), "bcc": list(fresh["bcc"]),
+                    "subject": fresh["subject"], "envelope": token,
                     "expires_at": time.time() + ENVELOPE_TTL_S}
+        if list(fresh["bcc"]) != list(env["bcc"]):
+            return refuse("envelope_changed", "Mail added a BCC you didn't see. Nothing was sent.")
         _spent[nonce] = payload["exp"]   # from here on Mail may send: never twice
         try:
             result = await _reply(prepared)
@@ -634,9 +655,9 @@ async def send_reviewed_reply(envelope: Any, body: Any) -> dict:
     if not_attempted:
         _spent.pop(nonce, None)   # Mail never started: the same envelope may try again
     status = "sent" if sent else "refused" if not_attempted else "unknown"
-    _audit("email_reply_send", tool="reply_to_email",
-           args={**args, "to": fresh["to"], "cc": fresh["cc"], "subject": fresh["subject"]},
-           result=result, ok=sent, status=status)
+    _audit_attempt(status, "" if sent else "not_attempted" if not_attempted else "unconfirmed",
+                   {**env, "to": fresh["to"], "cc": fresh["cc"], "bcc": fresh["bcc"],
+                    "subject": fresh["subject"]}, text, result=result)
     if sent:
         return {"ok": True, "status": "sent", "result": f"Reply sent to {', '.join(fresh['to'])}.",
                 "to": fresh["to"], "subject": fresh["subject"]}
