@@ -189,12 +189,9 @@ final class GoogleAccountModel: ObservableObject {
 
     func disconnect(_ account: String) {
         Task {
-            guard let response = await request("POST", "assistant/gmail/disconnect", body: ["account": account]),
-                  response["ok"] as? Bool == true else {
-                message = "Couldn’t confirm disconnect. Try again."
-                return
-            }
-            message = "Disconnected \(account) and erased its mail, calendar events and to-dos from Wisp. Mail.app's own copy, if any, is untouched."
+            let response = await request("POST", "assistant/gmail/disconnect", body: ["account": account], timeout: 20)
+            message = GoogleErase.note(account: account, response: response)
+                + (response == nil ? "" : " Mail.app's own copy, if any, is untouched.")
             await refresh()
         }
     }

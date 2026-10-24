@@ -90,6 +90,53 @@ def enabled() -> bool:
     return flag_enabled()
 
 
+GOOGLE_CALENDAR_PREFIX = "gcal:"
+
+
+def purge_google_calendar_rows(behavior_store, prefix: str) -> int:
+    """Remove observations (events and their cancel:/move: lifecycle rows) and
+    snapshot entries for Google Calendar source ids starting with `prefix`.
+    Removing them from the snapshot too means the next diff cannot report
+    them as cancelled."""
+    if not prefix.startswith(GOOGLE_CALENDAR_PREFIX):
+        raise ValueError("Only Google Calendar rows can be purged this way")
+    ids = ["cal:" + prefix, "cancel:cal:" + prefix, "move:cal:" + prefix]
+    conn = behavior_store._conn
+    with behavior_store._lock, conn:
+        before = conn.total_changes
+        conn.execute("DELETE FROM observations WHERE substr(source_id,1,?)=? OR substr(id,1,?)=? "
+                     "OR substr(id,1,?)=? OR substr(id,1,?)=?",
+                     (len(prefix), prefix, *(x for i in ids for x in (len(i), i))))
+        removed = conn.total_changes - before
+    snap = behavior_store.get_snapshot("calendar")
+    if snap is not None:
+        items = [it for it in snap["items"] if not str(it.get("source_id") or "").startswith(prefix)
+                 and not str(it.get("id") or "").startswith(ids[0])]
+        if len(items) != len(snap["items"]):
+            behavior_store.put_snapshot("calendar", taken_at=snap["taken_at"], window_start=snap["window_start"],
+                                        window_end=snap["window_end"], items=items)
+    return removed
+
+
+def erase_google_calendar_account(account: str, home: Path | None = None) -> int:
+    """Disconnect & erase: drop everything learned from one Google account's
+    calendar, whether learning is on (live runtime) or off (file on disk)."""
+    prefix = f"{GOOGLE_CALENDAR_PREFIX}{account.strip().lower()}:"
+    with _runtime_lock:
+        runtime = _runtime
+    if runtime is not None and runtime._local_engine is not None:
+        return runtime.purge_google_calendar(prefix)
+    path = Path(home or _home()) / ENGINE_DB
+    if not path.exists():
+        return 0
+    from service.behavior.store import Store
+    behavior_store = Store(path)
+    try:
+        return purge_google_calendar_rows(behavior_store, prefix)
+    finally:
+        behavior_store.close()
+
+
 def _home() -> Path:
     from service.paths import MOE_DIR
     return MOE_DIR
@@ -909,8 +956,12 @@ class BehaviorRuntime:
                 # done/dismissed rows were marked inside Wisp but still exist in
                 # Apple Calendar: only an upstream disappearance is a cancellation.
                 "WHERE c.source='calendar' AND c.status IN ('active','done','dismissed') "
+                # Google Calendar rows (google_calendar_source) belong to a linked
+                # Google account, possibly a guest's: never learned from.
+                "AND (c.source_id IS NULL OR substr(c.source_id,1,?)<>?) "
                 "AND c.when_ts >= ? AND c.when_ts < ? "
-                "ORDER BY c.when_ts", (start, end)).fetchall()
+                "ORDER BY c.when_ts", (len(GOOGLE_CALENDAR_PREFIX), GOOGLE_CALENDAR_PREFIX,
+                                       start, end)).fetchall()
         return [dict(r) for r in rows]
 
     def calendar_observations(self, rows: list[dict]) -> list:
@@ -938,6 +989,9 @@ class BehaviorRuntime:
         if not sync.get("available") or not _finite(last_sync):
             return False   # no completed read yet: an empty set is not "everything cancelled"
         start, end = now - HISTORY_S, now + AHEAD_S
+        # Google rows learned before they were excluded: drop them (and their
+        # snapshot entries) first, so leaving the feed is not read as cancellations.
+        self.purge_google_calendar(GOOGLE_CALENDAR_PREFIX)
         rows = self._calendar_rows(store, start, end)
         observations = self.calendar_observations(rows)
         result = self.call("observe_snapshot", "calendar", observations,
@@ -950,6 +1004,15 @@ class BehaviorRuntime:
                       "complete", float(last_sync))
         stamps["cal_sync"] = last_sync
         return any(int(result.get(k) or 0) for k in ("upserted", "cancelled", "moved"))
+
+    def purge_google_calendar(self, prefix: str) -> int:
+        """Delete learned rows whose calendar source_id starts with `prefix`."""
+        engine = self.local_engine()
+        store, lock = getattr(engine, "_store", None), getattr(engine, "_lock", None)
+        if store is None or lock is None:
+            return 0   # an injected engine without a local store (tests, remote)
+        with lock:
+            return purge_google_calendar_rows(store, prefix)
 
     def _behavior_ids(self) -> set[str]:
         with self._db_lock:

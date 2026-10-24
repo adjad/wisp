@@ -3060,8 +3060,16 @@ async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
 async def gmail_disconnect(request: Request, body: dict[str, Any]) -> dict[str, Any]:
     _require_native_google_removal(request)
     from service import gmail_source
-    await gmail_source.disconnect(str(body.get("account") or ""))
-    return {"ok": True}
+    result = await gmail_source.disconnect(str(body.get("account") or ""))
+    if not isinstance(result, dict):
+        return {"ok": True}
+    # Disconnect & erase reports exactly what was erased per account
+    # (mail, calendar, mail_overviews, proactive): "erased", "erased <n>",
+    # "unavailable" (that part isn't in this build) or "failed: ...". The
+    # account itself is always removed; `partial` means something remains.
+    erased = result.get("erased") or {}
+    return {"ok": bool(result.get("complete")), "partial": not result.get("complete"),
+            "removed": result.get("removed") or [], "erased": erased}
 
 
 def _require_native_google_removal(request: Request) -> None:

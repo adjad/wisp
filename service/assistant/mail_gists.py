@@ -88,6 +88,9 @@ _next_call_at = 0.0
 # never holds up the MAIL and TEXTS lines.
 _retry_at: dict[str, float] = {}
 _task: asyncio.Task | None = None
+# Bumped by `invalidate` (a Google account's Disconnect & erase). A refresh that
+# began before the bump drops its result: it may describe the erased account's mail.
+_generation = 0
 _last_standdown = ""
 
 MAIL_RULES = (
@@ -616,6 +619,7 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
         _next_call_at = now + _IDLE_GAP_S
         return False
     job = jobs[0]
+    generation = _generation
     from service.memory.identity import identity_prompt_block
     system = (identity_prompt_block(messages=False).strip() + "\n\n" + job["rules"]).strip()
     material = "\n".join(job["lines"])
@@ -629,6 +633,9 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
         _retry_at[job["kind"]] = now + _FAILURE_GAP_S
         _attempts[attempt_key] = _attempts.get(attempt_key, 0) + 1
         traceback.print_exc()
+        return False
+    if generation != _generation:
+        print(f"[mail_gists] dropped a {job['kind']} gist written before an account was erased", flush=True)
         return False
     if text is None:
         _next_call_at = now + _IDLE_GAP_S
@@ -646,6 +653,26 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
     _save()
     print(f"[mail_gists] wrote the {job['kind']} gist in {time.monotonic() - started:.1f}s", flush=True)
     return True
+
+
+def invalidate(kinds: tuple[str, ...] = ("summary", "inbox")) -> list[str]:
+    """Forget the mail overviews and any in-flight rewrite of them.
+
+    For Disconnect & erase: the overviews were written from the combined inbox,
+    so they may describe the erased account's mail. Bumps the generation (a
+    refresh already awaiting the model drops its result), cancels the running
+    tick, and removes the cached kinds from memory and disk."""
+    global _generation, _task
+    _generation += 1
+    if _task is not None and not _task.done():
+        _task.cancel()
+    _task = None
+    _attempts.clear()
+    cache = _load()
+    dropped = [kind for kind in kinds if cache.pop(kind, None) is not None]
+    if dropped:
+        _save()
+    return dropped
 
 
 def schedule_tick() -> asyncio.Task | None:

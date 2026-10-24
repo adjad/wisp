@@ -1195,12 +1195,35 @@ async def cancel_event(title: str) -> str:
             for c in matches[:5])
         return f"Several items match “{title}”: {lst}. Which one? Please be more specific."
     c = matches[0]
+    read_only = _read_only_calendar_row(c)
+    if read_only:
+        return (f"“{read_only['title']}” is on a read-only calendar; Wisp can't change it from this Mac. "
+                "Nothing was cancelled. Cancel it in Calendar if it is yours to cancel.")
     from service.assistant.hub import hub
     error = await _retire(c)
     if error:
         return f"(error: {error})"
     await hub.publish({"type": "changed"})
     return f"Cancelled “{c['title']}”."
+
+
+def _read_only_calendar_row(c: dict) -> dict | None:
+    """The calendar row of this item (or its collapsed twins) that this Mac can't
+    change: a subscribed/read-only EventKit calendar (writable=0), or a Google
+    Calendar event read over the API (source_id gcal:..., never in EventKit)."""
+    ids = [c.get("id")] + list(c.get("duplicate_ids") or [])
+    for cid in ids:
+        row = c if cid == c.get("id") else assistant_store.get(cid)
+        if not row or row.get("source") != "calendar":
+            continue
+        if str(row.get("source_id") or "").startswith("gcal:"):
+            return row
+        with assistant_store.transaction(write=False) as db:
+            flag = db.execute("SELECT writable FROM calendar_event_writable WHERE commitment_id=?",
+                              (cid,)).fetchone()
+        if flag is not None and not flag["writable"]:
+            return row
+    return None
 
 
 async def _retire(c: dict) -> str | None:

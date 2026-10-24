@@ -150,3 +150,32 @@ shows "Add your Google OAuth client in Settings ▸ Google first."
 
    Your own account and your OAuth client stay.
 5. Optional extra cleanup: the judge can also remove Wisp at <https://myaccount.google.com/permissions>.
+
+## What "Disconnect & erase" does and does not reach
+
+The notch and Settings report each part separately. They only say "erased" for parts the backend
+confirmed. Anything else is listed as "Not confirmed erased".
+
+**Erased:**
+- the OAuth token, revoked with Google and removed from `~/.moe/gmail.json`
+- mail headers, history, bodies and identity entries, in memory and in `~/.moe/cache`
+- the account's Google Calendar events (`gcal:<email>:…` rows) and their side rows
+- schedule versions of those rows
+- queued assistant events (notifications, nudges, actions) whose payload names those rows or the
+  account's address
+- anything the routine learner (behavior.db) recorded from those events
+  - Wisp no longer learns from Google Calendar rows at all.
+- the inbox overview and summary written from the combined inbox, including a rewrite that was still in
+  progress
+- the account's proactive cards, to-dos and thread summaries
+
+**Not erased, so plan the demo around it:**
+- **Chat history.** If anyone asked Ask about the judge's mail or calendar, those turns stay in the chat
+  history. Start a new chat for the judge's demo and delete it afterwards.
+- **Debug and corpus logs.** Debug Mode recordings, corpus exports and service logs may quote tool output
+  from the judge's data. Keep Debug Mode off during the judge's turn.
+- **Saved memory facts.** These exist only if the judge's data led Wisp to remember something.
+  Check Memory ▸ Facts after the demo.
+- **Mail.app.** Its own copy, if the judge's account was ever added there.
+- **The Google side.** Wisp's access is revoked. The judge can confirm at
+  <https://myaccount.google.com/permissions>.
