@@ -162,6 +162,8 @@ extension Notification.Name {
     /// Posted (once per change) when the app starts refusing the program on the backend
     /// port. `userInfo["message"]` is the plain-language explanation.
     static let wispBackendRefused = Notification.Name("wisp.backendRefused")
+    /// Settings changed a launch-time choice (Cloud inference ▸ Everything); restart the backend.
+    static let wispRestartBackend = Notification.Name("wisp.restartBackend")
 }
 
 /// Which port is enforced. Set synchronously at launch (a lock, not an actor) so no

@@ -126,6 +126,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         BackendTrustProtocol.enforcedPort = BackendTrust.productionPort
         URLProtocol.registerClass(BackendTrustProtocol.self)
         NotificationCenter.default.addObserver(
+            forName: .wispRestartBackend, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in await self?.backend.restart() }
+        }
+        NotificationCenter.default.addObserver(
             forName: .wispBackendRefused, object: nil, queue: .main) { [weak self] note in
             let message = note.userInfo?["message"] as? String ?? ""
             MainActor.assumeIsolated { self?.presentBackendRefusal(message) }

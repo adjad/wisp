@@ -278,6 +278,8 @@ final class SettingsLoader: ObservableObject {
                             baseURL: "https://openrouter.ai", apiPrefix: "/api/v1"),
         CloudProviderPreset(id: "openai", label: "OpenAI", provider: "openai-compatible",
                             baseURL: "https://api.openai.com", apiPrefix: "/v1"),
+        CloudProviderPreset(id: "gemini", label: "Google Gemini", provider: "openai-compatible",
+                            baseURL: "https://generativelanguage.googleapis.com", apiPrefix: "/v1beta/openai"),
         CloudProviderPreset(id: "custom", label: "OpenAI-compatible", provider: "openai-compatible",
                             baseURL: "", apiPrefix: "/v1"),
     ]
@@ -285,6 +287,7 @@ final class SettingsLoader: ObservableObject {
         (id: "reasoning", label: "Reasoning"),
         (id: "coding", label: "Coding"),
         (id: "research", label: "Research"),
+        (id: "everything", label: "Everything"),
     ]
 
     // "research" is deliberately last and optional: service/research/
@@ -599,6 +602,9 @@ final class SettingsLoader: ObservableObject {
 
     func setCloudRole(_ role: String, enabled: Bool) {
         var next = cloudRoles
+        // "Everything" runs all of Wisp on the cloud model, so it stands alone.
+        if enabled && role == "everything" { next = [] }
+        if enabled && role != "everything" { next.remove("everything") }
         if enabled { next.insert(role) } else { next.remove(role) }
         cloudRoles = next
     }
@@ -721,6 +727,8 @@ final class SettingsLoader: ObservableObject {
             cloudPreset = "openrouter"
         } else if cloudBaseURL == "https://api.openai.com" {
             cloudPreset = "openai"
+        } else if cloudBaseURL == "https://generativelanguage.googleapis.com" {
+            cloudPreset = "gemini"
         } else {
             cloudPreset = "custom"
         }
@@ -879,6 +887,10 @@ final class SettingsLoader: ObservableObject {
                 savedCloudCredentialName = requestedCredentialName
                 cloudStatus = recoveredStatus
                     ?? "Connected to \(object["provider_label"] as? String ?? requestedPreset.label)"
+                if object["restart_required"] as? Bool == true {
+                    cloudStatus += ". Restarting Wisp's engine on the cloud model…"
+                    NotificationCenter.default.post(name: .wispRestartBackend, object: nil)
+                }
                 if requestedSuperModel, object["super_model_router"] as? String != "ready" {
                     cloudStatus += ". Laya is preparing; requests stay local until it is ready"
                 }
@@ -928,6 +940,9 @@ final class SettingsLoader: ObservableObject {
                 do {
                     let object = try await request("DELETE", path: "inference/cloud")
                     confirmedDisabled = object["enabled"] as? Bool == false
+                    if object["restart_required"] as? Bool == true {
+                        NotificationCenter.default.post(name: .wispRestartBackend, object: nil)
+                    }
                 } catch {
                     if let current = try? await request("GET", path: "inference/cloud") {
                         if current["enabled"] as? Bool == false {
@@ -1627,6 +1642,8 @@ struct SettingsView: View {
                                     }
                                     Text(loader.superModelEnabled
                                          ? "Super Model overrides these workload choices while it is on. Public web tools run locally; the cloud model explains their results."
+                                         : loader.cloudRoles.contains("everything")
+                                         ? "All of Wisp runs on this model, like a local model: Ask, Brief, summaries, drafts and tools. Your mail, texts and calendar go to the provider. Wisp restarts its engine to apply."
                                          : "Fast routing, message/email summaries, embeddings, and tool execution stay local.")
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }
