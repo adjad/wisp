@@ -52,20 +52,59 @@ def gmail_accounts() -> set[str]:
 
 
 def own_account() -> str:
-    """The label the user's own (native) sources carry: their first address
-    that isn't a Google-linked one, else "me"."""
-    linked = gmail_accounts()
-    try:
-        from service.memory.identity import user_emails
-        for address in user_emails():
-            if address.casefold() not in linked:
-                return address
-    except Exception:  # noqa: BLE001
-        pass
+    """The owner's bucket: always "me", never an address. Texts, Notes,
+    Reminders, EventKit calendars, Wisp-local items and Mail.app mail all
+    belong here. An address would collide with a Google account linked under
+    the same address (a UCSC Workspace login) and leak the owner's texts
+    into that account's view."""
     return OWN
 
 
+def owner_label() -> str:
+    """How the owner's bucket is shown: their name, else their first address."""
+    try:
+        from service.memory.identity import user_emails, user_name
+        name = (user_name() or "").strip()
+        if name:
+            return name
+        emails = list(user_emails())
+        if emails:
+            return emails[0]
+    except Exception:  # noqa: BLE001
+        pass
+    return "Me"
+
+
+def fetched_by_gmail(row: dict, linked: set[str]) -> bool:
+    """A mail row Wisp's Google sign-in fetched for a linked account: its
+    account is that address and so is its account id. A Mail.app copy under
+    the same address has Mail's own account UUID and a "mail:" native id."""
+    account = str(row.get("account") or "").strip().casefold()
+    if not account or account not in linked:
+        return False
+    if str(row.get("native_id") or "").startswith("mail:"):
+        return False
+    return str(row.get("account_id") or "").strip().casefold() == account
+
+
+def mail_account(row: dict, *, linked: set[str], own: str) -> str:
+    return str(row.get("account")).strip().casefold() if fetched_by_gmail(row, linked) else own
+
+
+def calendar_account(row: dict, *, linked: set[str], own: str) -> str:
+    """A Google Calendar row (source_id "gcal:<email>:<event>") belongs to that
+    linked account; every other calendar, reminder or local row is the owner's."""
+    source_id = str(row.get("source_id") or "")
+    if source_id.startswith("gcal:"):
+        email = source_id[len("gcal:"):].split(":", 1)[0].strip().casefold()
+        if email in linked:
+            return email
+    return own
+
+
 def account_of(raw: str | None, *, linked: set[str] | None = None, own: str | None = None) -> str:
+    """Only for a label already known to come from a linked account's own
+    source; anything else is the owner's."""
     linked = gmail_accounts() if linked is None else linked
     value = str(raw or "").strip()
     if value.casefold() in linked:
@@ -115,7 +154,7 @@ def dedupe_copies(rows: list[dict], linked: set[str]) -> list[dict]:
     Google-linked account (read-only) and through Mail.app — so a Mail.app copy
     (the one Wisp can reply from) wins, then a copy with a body."""
     def rank(row):
-        native = str(row.get("account") or "").casefold() not in linked
+        native = not fetched_by_gmail(row, linked)
         return (native, bool(row.get("body")), bool(row.get("account_id")))
     best: dict[str, dict] = {}
     loose: dict[tuple, dict] = {}
@@ -226,15 +265,18 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
     own = own_account() if own is None else own
     rows = sorted(rows, key=lambda r: r["ts"])
     skip = mass_mail_filter(rows)
-    threads: dict[tuple[str, str], list[dict]] = {}
+    threads: dict[tuple[str, str, str], list[dict]] = {}
     for row in rows:
         subject = clean(row.get("subject"), 200)
         if not subject:
             continue
-        threads.setdefault((str(row.get("account") or ""), bare_subject(subject).casefold()), []).append(row)
+        # The bucket is part of the key: a Mail.app copy and a Google-fetched
+        # copy under one address never merge into one thread.
+        threads.setdefault((mail_account(row, linked=linked, own=own), str(row.get("account") or ""),
+                            bare_subject(subject).casefold()), []).append(row)
     zone = ZoneInfo(tz)
     items = []
-    for (account, _), messages in threads.items():
+    for (bucket, account, _), messages in threads.items():
         incoming = [m for m in messages if _address(m) not in mine]
         if not incoming:
             continue
@@ -244,7 +286,7 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         school = [m for m in incoming if school_mail(m) and _deadline(m)]
         if counts is not None:
             used = {id(m) for m in people + school}
-            tally(counts, account_of(account, linked=linked, own=own), mail=len(incoming),
+            tally(counts, bucket, mail=len(incoming),
                   filtered=sum(1 for m in incoming if id(m) not in used))
         if not people and not school:
             continue
@@ -269,7 +311,7 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                "account_id": str(last_in.get("account_id") or ""), "to": _address(last_in),
                "subject": subject, "has_body": bool(last_in.get("body"))}
         reply_ref = reply_ref_for_row(last_in)
-        items.append(dict(id=item_id, source="mail", account=account_of(account, linked=linked, own=own),
+        items.append(dict(id=item_id, source="mail", account=bucket,
                           raw_account=account, who=who, title=subject, text=text, lines=quotes,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
                           person=bool(people), user_wrote=any(_address(m) in mine for m in messages),
@@ -462,7 +504,8 @@ def schedule(store, now: float, tz: str, *, own: str | None = None, linked: set[
             continue
         entry = dict(id=str(row["id"]), title=clean(row.get("title"), 200), when_ts=float(row["when_ts"]),
                      all_day=bool(row.get("all_day")), source=row.get("source"),
-                     account=account_of(row.get("account"), linked=linked, own=own))
+                     account=calendar_account(row, linked=linked, own=own) if row.get("source") == "calendar"
+                     else own)
         if not entry["title"]:
             continue
         if row.get("source") == "calendar" or row.get("kind") in ("event", "meeting"):

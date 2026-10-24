@@ -30,7 +30,10 @@ ADDRESSES = {"m-sam": "sam@example.com", "m-bob": "bob@corp.example", "m-news": 
 
 
 def mail(mid, sender, address, subject, body, ago_h, account="iCloud", **extra):
-    return dict(ts=NOW - ago_h * 3600, account=account, account_id="acct-1", sender=f"{sender} <{address}>",
+    # A row Google sign-in fetched carries its address as the account id;
+    # a Mail.app row carries Mail's own account id.
+    return dict(ts=NOW - ago_h * 3600, account=account, account_id=account if "@" in account else "acct-1",
+                sender=f"{sender} <{address}>",
                 sender_address=address, to=ME, subject=subject, message_id=mid, body=body, unread=True) | extra
 
 

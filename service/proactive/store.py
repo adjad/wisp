@@ -252,8 +252,8 @@ class ProactiveStore:
         checkpoints and done/added records. A cycle already running drops
         that account's results instead of saving them (erased_at)."""
         account = (account or "").strip().casefold()
-        if not account:
-            return
+        if not account or account == OWNER:
+            return                       # the owner's own data is never erased through a linked account
         mine = lambda x: isinstance(x, dict) and str(x.get("account") or "").casefold() == account  # noqa: E731
         with self._lock:
             state = self.state()
@@ -273,12 +273,16 @@ class ProactiveStore:
             data.setdefault("erased_at", {})[account] = time.time()
             self._write("decisions.json")
 
+    def erased_accounts(self) -> set[str]:
+        return {str(a).casefold() for a in (self._read("decisions.json").get("erased_at") or {})}
+
     def erased_since(self, account: str, started: float) -> bool:
         value = (self._read("decisions.json").get("erased_at") or {}).get((account or "").casefold())
         return isinstance(value, (int, float)) and value >= started
 
 
 THREAD_LOCK_S = 3600
+OWNER = "me"                             # sources.OWN: the owner's bucket
 
 
 def _card_refs(card: dict) -> list[str]:
