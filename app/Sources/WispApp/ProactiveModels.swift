@@ -33,6 +33,7 @@ struct ProactiveState: Decodable, Equatable {
         var read: Int = 0
         var found: Int = 0
         var drafted: Int = 0
+        var filtered: Int = 0
         var asOf: Double? = nil
     }
     var cards: [ProactiveCard] = []
@@ -55,7 +56,7 @@ struct ProactiveState: Decodable, Equatable {
     }
 
     private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats }
-    private enum StatsKeys: String, CodingKey { case read, found, drafted, as_of }
+    private enum StatsKeys: String, CodingKey { case read, found, drafted, filtered, as_of }
 
     init(from decoder: Decoder) {
         guard let c = try? decoder.container(keyedBy: Keys.self) else { return }
@@ -68,7 +69,8 @@ struct ProactiveState: Decodable, Equatable {
         lede = c.lenientString(.lede) ?? ""
         if let st = try? c.nestedContainer(keyedBy: StatsKeys.self, forKey: .stats) {
             stats = Stats(read: st.lenient(.read, Int.self) ?? 0, found: st.lenient(.found, Int.self) ?? 0,
-                          drafted: st.lenient(.drafted, Int.self) ?? 0, asOf: st.lenient(.as_of, Double.self))
+                          drafted: st.lenient(.drafted, Int.self) ?? 0,
+                          filtered: st.lenient(.filtered, Int.self) ?? 0, asOf: st.lenient(.as_of, Double.self))
         }
         summary = c.lenientString(.summary) ?? ""
         cards = c.lenient(.cards, LossyList<ProactiveCard>.self)?.items.filter { !$0.id.isEmpty } ?? []
@@ -106,11 +108,12 @@ struct ProactiveState: Decodable, Equatable {
         return text
     }
 
-    /// "Wisp read 49 emails and texts · found 3 things · drafted 1 reply";
+    /// "Wisp read 132 emails and texts · skipped 120 newsletters · found 3 things · drafted 1 reply";
     /// nil without stats or when nothing was read.
     var workLine: String? {
         guard let stats, stats.read > 0 else { return nil }
         var parts = ["Wisp read \(stats.read) email\(stats.read == 1 ? "" : "s") and texts"]
+        if stats.filtered > 0 { parts.append("skipped \(stats.filtered) newsletter\(stats.filtered == 1 ? "" : "s")") }
         parts.append("found \(stats.found) thing\(stats.found == 1 ? "" : "s")")
         if stats.drafted > 0 { parts.append("drafted \(stats.drafted) repl\(stats.drafted == 1 ? "y" : "ies")") }
         return parts.joined(separator: " · ")
