@@ -480,9 +480,8 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     # 2. Judge and prepare, per account.
     survivors = [s for s in (_survivor(i, store, offline_results) for i in items) if s is not None]
     sched = (schedule_fn or (lambda n, z: _default_schedule(n, z, own=own, linked=linked)))(now, tz)
-    accounts = sorted({own} | {i.get("account") or own for i in items}
-                      | {r.get("account") or own for r in sched.get("calendar", []) + sched.get("reminders", [])},
-                      key=lambda a: (a != own, a))
+    accounts = account_list(own, linked, [i.get("account") for i in items]
+                            + [r.get("account") for r in sched.get("calendar", []) + sched.get("reminders", [])])
     suppressed = store.suppressed_fingerprints()
     previous = store.state()
     judged = dict(previous.get("judged") or {})
@@ -617,9 +616,36 @@ def order_cards(cards: list[dict], deadline_cards: list[dict], limit: int = prep
 
 def _default_deadlines(now: float, tz: str, skip: set[str], own: str, linked: set[str]) -> list[dict]:
     from service.proactive import deadlines
-    rows = [{**r, "account": sources.account_of(r.get("account"), linked=linked, own=own)}
-            for r in deadlines.default_rows(now)]
+    rows = [{**r, "account": sources.calendar_account(r, linked=linked, own=own)
+             if r.get("source") == "calendar" else own} for r in deadlines.default_rows(now)]
     return deadlines.deadline_cards(rows, deadlines.default_day_state, now, tz, skip=skip)
+
+
+_OWNER_ONLY = ("messages", "notes", "reminders")
+
+
+def account_list(own: str, linked: set[str], seen) -> list[str]:
+    """The owner's bucket first, then each linked Google account. A label
+    that is neither (an address from an older build) is not an account."""
+    keep = {str(a).casefold() for a in seen if a} & set(linked)
+    return [own] + sorted(keep | set(linked))
+
+
+def _source_kind(record: dict) -> str:
+    if "sources" in record:
+        return str(((record.get("sources") or [{}])[0] or {}).get("kind") or "")
+    return str(record.get("source") or "")
+
+
+def owned(record: dict, own: str, linked: set[str]) -> dict:
+    """The record with its real bucket. Texts, Notes and Reminders are always
+    the owner's, whatever an older build tagged them; a linked account keeps
+    only what came from its own Gmail or Google Calendar."""
+    account = str(record.get("account") or "").casefold()
+    if _source_kind(record) in _OWNER_ONLY or account not in linked:
+        if record.get("account") != own:
+            return {**record, "account": own}
+    return record
 
 
 def _default_schedule(now: float, tz: str, *, own: str, linked: set[str]) -> dict:
@@ -862,7 +888,12 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
                                                    t["title"].casefold()))
     names = triage.user_names()
     threads = order_threads([_attended(_served_thread(t, names), now, tz) for t in state.get("threads") or []])
-    accounts = list(state.get("accounts") or [own])
+    erased = store.erased_accounts()
+    seen = {str(a).casefold() for a in state.get("accounts") or []}
+    accounts = account_list(own, {a for a in linked if a in seen or a not in erased}, seen)
+    cards = [owned(c, own, linked) for c in cards]
+    todos = [owned(t, own, linked) for t in todos]
+    threads = [owned(t, own, linked) for t in threads]
     if account:
         match = lambda x: str(x.get("account") or "").casefold() == account.casefold()  # noqa: E731
         cards, todos, threads = [c for c in cards if match(c)], [t for t in todos if match(t)], \
@@ -875,7 +906,7 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     else:
         view_state = "unavailable"
     result = {"state": view_state, "as_of": state.get("as_of"), "progress": dict(_status["progress"]),
-              "accounts": accounts, "summary": summary, "cards": [_public(c) for c in cards],
+              "accounts": accounts, "owner": {"id": own, "label": sources.owner_label()}, "summary": summary, "cards": [_public(c) for c in cards],
               "todos": [_public(t) for t in todos], "threads": threads,
               "lede": _lede(cards, todos, summary, now, tz), "stats": _stats(state, cards, todos, account)}
     if view_state == "unavailable":
