@@ -63,12 +63,27 @@
   },
   "no_repeat": {
    "passed": true,
-   "detail": "no identical (name,args) call repeated within a turn",
+   "detail": "no identical (name,args) call repeated within a turn, except a context-only guarded repeat (result exactly the guard text for that tool; non-volatile pure read; alone in its message; never the 3rd identical call; never a row target)",
+   "examples": []
+  },
+  "guard_followup": {
+   "passed": true,
+   "detail": "the step right after a guard result is not another identical call",
+   "examples": []
+  },
+  "repeat_guard": {
+   "passed": true,
+   "detail": "guard text equals Wisp's verbatim text; guard_rejected provenance and conversations.jsonl training:false agree with the guard results; guard conversations contain a guard",
+   "examples": []
+  },
+  "v2_replay": {
+   "passed": true,
+   "detail": "v2r rows: shape, one trailing training:true assistant, no other training flags except false on assistants, tools == [], held-out overlap < OVERLAP_LIMIT, unique ids, counts match v2_replay.provenance.jsonl, byte-identical to v2_replay.*.jsonl",
    "examples": []
   },
   "result_length": {
    "passed": true,
-   "detail": "tool results < 400 chars",
+   "detail": "tool results < 400 chars (< 1200 for conversations tagged messy_result)",
    "examples": []
   },
   "final_present": {
@@ -163,7 +178,7 @@
   },
   "category_counts": {
    "passed": true,
-   "detail": "exact category counts per split",
+   "detail": "exact category counts per split, derived from generate.CATEGORIES / N_TOTAL / N_DEV",
    "examples": []
   },
   "duplicate_prompts": {
@@ -194,135 +209,148 @@
  },
  "counts": {
   "train": {
-   "conversations": 900,
-   "rows": 2776,
+   "conversations": 1444,
+   "rows": 4387,
    "by_category": {
-    "writes": 90,
-    "outbound_sends_drafts": 198,
-    "error_handling": 72,
-    "compound_read_then_act": 162,
-    "stop_after_success_no_loop": 126,
-    "single_tool_reads": 126,
-    "clarify_ambiguity": 54,
-    "chat_no_tool": 45,
-    "followups_history": 27
+    "repeated_read_guard": 58,
+    "compound_read_then_act": 317,
+    "error_handling": 101,
+    "clarify_ambiguity": 72,
+    "single_tool_reads": 159,
+    "stop_after_success_no_loop": 144,
+    "followups_history": 101,
+    "outbound_sends_drafts": 260,
+    "writes": 116,
+    "chat_no_tool": 116
    },
-   "families": 94
+   "families": 160
   },
   "dev": {
-   "conversations": 100,
-   "rows": 309,
+   "conversations": 156,
+   "rows": 474,
    "by_category": {
-    "outbound_sends_drafts": 22,
-    "stop_after_success_no_loop": 14,
-    "writes": 10,
-    "compound_read_then_act": 18,
-    "clarify_ambiguity": 6,
-    "single_tool_reads": 14,
-    "error_handling": 8,
-    "chat_no_tool": 5,
-    "followups_history": 3
+    "writes": 12,
+    "compound_read_then_act": 35,
+    "clarify_ambiguity": 8,
+    "stop_after_success_no_loop": 16,
+    "outbound_sends_drafts": 28,
+    "repeated_read_guard": 6,
+    "followups_history": 11,
+    "chat_no_tool": 12,
+    "single_tool_reads": 17,
+    "error_handling": 11
    },
-   "families": 26
+   "families": 46
   }
  },
  "token_estimate_chars_div4": {
   "train": {
    "row": {
-    "mean": 8604,
-    "p50": 8357,
-    "p95": 12267,
+    "mean": 8691,
+    "p50": 8450,
+    "p95": 12225,
     "max": 14421
+   },
+   "target": {
+    "mean": 52,
+    "p50": 48,
+    "p95": 84,
+    "max": 134
+   }
+  },
+  "dev": {
+   "row": {
+    "mean": 8933,
+    "p50": 8579,
+    "p95": 12391,
+    "max": 13316
    },
    "target": {
     "mean": 51,
     "p50": 48,
     "p95": 82,
-    "max": 113
-   }
-  },
-  "dev": {
-   "row": {
-    "mean": 8772,
-    "p50": 8501,
-    "p95": 11987,
-    "max": 13316
-   },
-   "target": {
-    "mean": 49,
-    "p50": 47,
-    "p95": 80,
-    "max": 98
+    "max": 136
    }
   }
  },
+ "v2_replay": {
+  "present": true,
+  "appended_to_train_dev": true,
+  "rows": {
+   "train": 600,
+   "dev": 60
+  },
+  "provenance_rows": 660,
+  "heldout_max_jaccard": 0.071,
+  "row_tokens_est_chars_div4_max": 868
+ },
  "heldout_max_jaccard": 0.375,
- "dev_vs_train_max_4gram_jaccard": 0.217,
+ "dev_vs_train_max_4gram_jaccard": 0.333,
  "target_tool_call_counts": {
-  "lookup_contact": 481,
-  "send_message": 315,
-  "get_upcoming": 291,
-  "get_tool_schemas": 198,
-  "view_emails": 190,
-  "find_free_time": 127,
-  "add_calendar_event": 91,
-  "send_email": 89,
-  "search_notes": 82,
-  "summarize_emails": 73,
-  "add_reminder": 67,
-  "get_weather": 61,
-  "search_reminders": 37,
-  "view_messages": 32,
-  "reply_to_email": 29,
-  "web_search": 29,
-  "draft_message": 24,
-  "draft_email": 22,
-  "schedule_send": 22,
-  "cancel_event": 22,
-  "find_files": 20,
-  "forward_email": 17,
-  "complete_reminder": 14,
-  "create_note": 14,
-  "append_note": 13,
+  "lookup_contact": 742,
+  "get_upcoming": 532,
+  "send_message": 478,
+  "view_emails": 432,
+  "get_tool_schemas": 312,
+  "search_notes": 177,
+  "send_email": 144,
+  "find_free_time": 144,
+  "view_messages": 136,
+  "add_reminder": 127,
+  "add_calendar_event": 115,
+  "summarize_emails": 97,
+  "get_weather": 64,
+  "search_reminders": 54,
+  "reply_to_email": 54,
+  "find_files": 37,
+  "cancel_event": 36,
+  "draft_message": 30,
+  "forward_email": 29,
+  "draft_email": 27,
+  "schedule_send": 27,
+  "append_note": 25,
+  "update_reminder": 24,
+  "create_note": 24,
+  "web_search": 23,
+  "complete_reminder": 16,
+  "place_call": 13,
   "read_file": 13,
   "calculate": 12,
-  "update_reminder": 11,
-  "recall": 10,
-  "summarize_messages": 10,
-  "place_call": 10,
-  "remember": 9,
-  "list_dir": 8,
-  "get_battery_status": 8,
-  "set_timer": 7,
+  "remember": 11,
+  "set_timer": 10,
+  "recall": 8,
+  "summarize_messages": 8,
+  "music": 8,
+  "clear_past_reminders": 7,
+  "get_battery_status": 7,
+  "list_dir": 7,
+  "archive_email": 6,
   "toggle_setting": 6,
-  "get_stock_price": 6,
-  "manage_timers": 6,
+  "forget": 6,
   "wikipedia_summary": 5,
+  "trash_file": 5,
   "recipe_lookup": 5,
   "triage_inbox": 5,
-  "daily_brief": 5,
-  "clear_past_reminders": 5,
-  "music": 4,
-  "convert_currency": 4,
-  "summarize_thread": 4,
-  "forget": 4,
-  "get_past_events": 4,
-  "archive_email": 4,
-  "open_app": 4,
   "system_status": 4,
-  "network_info": 3,
+  "manage_timers": 4,
+  "open_app": 4,
+  "clear_reminders": 4,
+  "get_stock_price": 4,
+  "set_volume": 3,
+  "quit_app": 3,
+  "convert_currency": 3,
   "mark_email_read": 3,
   "get_recent_activity": 3,
-  "quit_app": 3,
-  "trash_file": 3,
-  "clear_reminders": 2,
-  "set_volume": 2,
-  "set_alarm": 2,
-  "world_time": 2,
-  "list_bluetooth_devices": 2,
-  "flag_email": 2,
+  "daily_brief": 3,
+  "get_past_events": 3,
+  "summarize_thread": 2,
   "get_volume": 2,
-  "set_appearance": 1
+  "set_alarm": 2,
+  "flag_email": 2,
+  "list_bluetooth_devices": 2,
+  "world_time": 1,
+  "set_appearance": 1,
+  "network_info": 1
  },
  "failure_total": 0
 }

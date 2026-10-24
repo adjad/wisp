@@ -26,10 +26,29 @@ DISCOVERY = "get_tool_schemas"
 DECLINED = "The user declined; nothing was sent."
 REJECT = ("Schema selection rejected: Requested tools must belong to the selected admitted families. "
           "No source was read or action performed.")
-EXPECTED = {  # category -> (train, dev)
-    "outbound_sends_drafts": (198, 22), "compound_read_then_act": (162, 18), "stop_after_success_no_loop": (126, 14),
-    "single_tool_reads": (126, 14), "writes": (90, 10), "error_handling": (72, 8), "clarify_ambiguity": (54, 6),
-    "chat_no_tool": (45, 5), "followups_history": (27, 3)}
+sys.path.insert(0, str(HERE))
+import generate as G  # noqa: E402  (import has no side effects; main() is never called)
+
+# Category counts are DERIVED from generate.py (same arithmetic as generate.plan), so they cannot drift from it.
+EXPECTED = {name: (N_ - D_, D_) for name, N_, D_ in
+            ((name, G.N_TOTAL * pct // 100, G.N_DEV * pct // 100) for _k, name, pct in G.CATEGORIES)}
+MESSY_TAG = "messy_result"
+MESSY_LIMIT = G.MESSY_RESULT_LIMIT
+DEFAULT_RESULT_LIMIT = 400
+GUARD_CATEGORY = "repeated_read_guard"
+GUARD_TAG = "repeated_read_guard"
+# Verbatim copy of Wisp's repeated-read guard text (service/agent/loop.py); generate.GUARD_TEXT must equal it.
+GUARD_TEXT = ("({name} already ran with these exact arguments this turn and its result was returned earlier. It was "
+              "NOT run again. Answer from that result, or call it with different arguments if you need different data.)")
+GUARD_MARK = "already ran with these exact arguments"
+# Verbatim copy of _VOLATILE_READS (service/agent/loop.py, origin/main): an identical repeat of these still runs, so the
+# guard never fires for them and a guarded repeat of one is a data bug.
+VOLATILE_READS = frozenset({
+    "system_status", "get_battery_status", "network_info", "world_time", "get_volume",
+    "list_running_apps", "wisp_status", "get_recent_activity", "get_stock_price",
+    "get_sports_scores", "list_scheduled_sends", "screen_capture", "clipboard_read",
+})
+V2R_ID = re.compile(r"v2r-(train|dev)-(\d{4})")
 OUTBOUND = {"send_message", "send_email", "reply_to_email", "forward_email", "schedule_send", "place_call"}
 DESTRUCTIVE = {"cancel_event", "clear_reminders", "clear_past_reminders", "clear_memory", "forget", "delete_path", "trash_file",
                "delete_knowledge", "complete_reminder", "update_reminder", "quit_app", "force_quit_app", "archive_email", "flag_email", "mark_email_read"}
@@ -86,6 +105,10 @@ def offered_names(loaded, attempts, all_tools):
         names.append(DISCOVERY)
         names.extend(t for t in sorted(all_tools) if t not in loaded)
     return names
+
+
+def is_guard_text(txt):
+    return isinstance(txt, str) and GUARD_MARK in txt
 
 
 def canon(a):
@@ -288,6 +311,8 @@ def fidelity_problems(turn_msgs, user_text_all):
             for tc in m["tool_calls"]:
                 fn = tc["function"]["name"]
                 rtxt = results.get(tc["id"], "")
+                if is_guard_text(rtxt):
+                    continue
                 if fn not in ("lookup_contact", DISCOVERY) and fn not in SENDS and fn not in WRITE_FIELDS and not rtxt.startswith('{"schema_discovery"'):
                     allowed |= content_words(rtxt)
     for m in turn_msgs:
@@ -367,6 +392,101 @@ def jacc_ngrams(a, b, n=4):
     return len(A & B) / len(A | B)
 
 
+def validate_v2r(d, appended, generated_ids, held, bad):
+    """Validate V2-replay rows. They are either appended to train/dev.jsonl (checked byte-for-byte against
+    v2_replay.<split>.jsonl and required to trail the generated rows) or, when not appended yet, validated from the
+    v2_replay.*.jsonl files themselves. Returns a summary dict."""
+    CHK = "v2_replay"
+    files = {s: d / f"v2_replay.{s}.jsonl" for s in ("train", "dev")}
+    pfile = d / "v2_replay.provenance.jsonl"
+    is_appended = any(appended[s] for s in appended)
+    if not is_appended and not all(f.exists() for f in files.values()):
+        return {"present": False}
+    rows = {}
+    if is_appended:
+        for s in ("train", "dev"):
+            if not files[s].exists():
+                bad(CHK, f"v2r rows appended to {s}.jsonl but {files[s].name} is missing")
+                rows[s] = appended[s]
+                continue
+            raw = [x for x in (d / f"{s}.jsonl").read_text().splitlines() if x]
+            tail = [x for x in raw if x.startswith('{"id":"v2r-')]
+            want = [x for x in files[s].read_text().splitlines() if x]
+            if tail != want:
+                bad(CHK, f"{s}.jsonl v2r lines are not byte-identical to {files[s].name} ({len(tail)} vs {len(want)} lines)")
+            if raw[len(raw) - len(tail):] != tail:
+                bad(CHK, f"{s}.jsonl: v2r rows must trail the generated rows")
+            rows[s] = appended[s]
+    else:
+        errs = []
+        rows = {s: load_jsonl(files[s], errs, files[s].name) for s in files}
+        for e in errs:
+            bad(CHK, e)
+    prov = load_jsonl(pfile, [], pfile.name) if pfile.exists() else []
+    if not pfile.exists():
+        bad(CHK, "v2_replay.provenance.jsonl is missing")
+    prov_ids = [p["id"] for p in prov]
+    row_ids = [r_.get("id") for s in ("train", "dev") for r_ in rows[s]]
+    if len(set(row_ids)) != len(row_ids) or set(row_ids) & set(x for v in generated_ids.values() for x in v):
+        bad(CHK, "v2r ids are not unique / collide with generated ids")
+    if sorted(row_ids) != sorted(prov_ids) or len(set(prov_ids)) != len(prov_ids):
+        bad(CHK, f"v2r rows ({len(row_ids)}) do not match v2_replay.provenance.jsonl ({len(prov_ids)}) ids")
+    pmap = {p["id"]: p for p in prov}
+    srcs = [p.get("source_v2_id") for p in prov]
+    if len(set(srcs)) != len(srcs):
+        bad(CHK, "duplicate source_v2_id in v2_replay.provenance.jsonl")
+    max_ov, toks, tgt_toks = 0.0, [], []
+    for s in ("train", "dev"):
+        for n, r_ in enumerate(rows[s], 1):
+            rid = r_.get("id", "?")
+            m = V2R_ID.fullmatch(str(rid))
+            if not m or m.group(1) != s or int(m.group(2)) != n:
+                bad(CHK, f"{rid}: id must be v2r-{s}-{n:04d}")
+            if set(r_) != {"id", "conversation_id", "tools", "messages"}:
+                bad(CHK, f"{rid}: keys {sorted(r_)}")
+            if r_.get("conversation_id") != rid:
+                bad(CHK, f"{rid}: conversation_id != id")
+            if r_.get("tools") != []:
+                bad(CHK, f"{rid}: tools must be []")
+            p = pmap.get(rid)
+            if p is None or p.get("split") != s or p.get("category") != "v2_replay":
+                bad(CHK, f"{rid}: provenance missing or wrong split/category")
+            ms = r_.get("messages")
+            if not isinstance(ms, list) or len(ms) < 2 or ms[0].get("role") != "system":
+                bad(CHK, f"{rid}: messages must start with a system message")
+                continue
+            ok = True
+            for x in ms:
+                if not isinstance(x, dict) or set(x) - {"role", "content", "training"} or x.get("role") not in ("system", "user", "assistant") \
+                        or not isinstance(x.get("content"), str):
+                    bad(CHK, f"{rid}: malformed message (v2 rows are plain text; no tool_calls)")
+                    ok = False
+                    break
+            if not ok:
+                continue
+            tgt = ms[-1]
+            if tgt["role"] != "assistant" or tgt.get("training") is not True or not tgt["content"].strip():
+                bad(CHK, f"{rid}: last message must be a non-empty assistant with training:true")
+            if sum(1 for x in ms if x.get("training") is True) != 1:
+                bad(CHK, f"{rid}: exactly one training:true message required")
+            for x in ms[:-1]:
+                if x["role"] == "assistant" and x.get("training") is not False:
+                    bad(CHK, f"{rid}: earlier assistant must be training:false")
+                if x["role"] != "assistant" and "training" in x:
+                    bad(CHK, f"{rid}: {x['role']} message carries a training flag")
+            if not any(x["role"] == "user" for x in ms):
+                bad(CHK, f"{rid}: no user message")
+            ov = max([heldout_overlap(held, x["content"]) for x in ms if x["role"] == "user"] or [0.0])
+            max_ov = max(max_ov, ov)
+            if ov >= G.OVERLAP_LIMIT:
+                bad(CHK, f"{rid}: held-out Jaccard {ov:.2f} >= {G.OVERLAP_LIMIT}")
+            toks.append(len(json.dumps(r_, ensure_ascii=False)) / 4)
+            tgt_toks.append(len(json.dumps(tgt, ensure_ascii=False)) / 4)
+    return {"present": True, "appended_to_train_dev": is_appended,
+            "rows": {s: len(rows[s]) for s in rows}, "provenance_rows": len(prov), "heldout_max_jaccard": round(max_ov, 3),
+            "row_tokens_est_chars_div4_max": round(max(toks)) if toks else 0}
+
+
 # ----------------------------------------------------------------------------- main validation
 
 class Report:
@@ -390,6 +510,9 @@ def run(d: Path, check_repro=False):
     ctx_note = json.loads((d / "assets" / "system_parts.json").read_text())["context_note"]
     held = json.loads((d / "assets" / "heldout_shingles.json").read_text())["items"]
     rows = {s: load_jsonl(d / f"{s}.jsonl", load_errors, f"{s}.jsonl") for s in ("train", "dev")}
+    # V2-replay rows (v2r-*) may be appended after the generated rows; they are validated by their own block below.
+    v2_appended = {s: [r_ for r_ in rows[s] if str(r_.get("id", "")).startswith("v2r-")] for s in rows}
+    rows = {s: [r_ for r_ in rows[s] if not str(r_.get("id", "")).startswith("v2r-")] for s in rows}
     prov = {s: load_jsonl(d / f"{s}.provenance.jsonl", load_errors, f"{s}.provenance.jsonl") for s in ("train", "dev")}
     convs = load_jsonl(d / "conversations.jsonl", load_errors, "conversations.jsonl")
     rep.add("json_valid_all_files", not load_errors, f"{len(load_errors)} errors", load_errors)
@@ -403,6 +526,11 @@ def run(d: Path, check_repro=False):
 
     def bad(check, msg):
         fail[check].append(msg)
+
+    MESSY_IDS = {p["id"] for s_ in ("train", "dev") for p in prov[s_] if MESSY_TAG in (p.get("targeted_failure_class") or [])}
+    GUARD_TAGGED = {p["id"] for s_ in ("train", "dev") for p in prov[s_] if GUARD_TAG in (p.get("targeted_failure_class") or [])}
+    if G.GUARD_TEXT != GUARD_TEXT:
+        bad("repeat_guard", "generate.GUARD_TEXT differs from the verbatim Wisp guard text copied into validate.py")
 
     row_by_conv = collections.defaultdict(list)
     est_tokens, tgt_tokens = {"train": [], "dev": []}, {"train": [], "dev": []}
@@ -459,6 +587,8 @@ def run(d: Path, check_repro=False):
             expect_tool_ids = []
             last_failure_tool = None
             seen_calls = set()
+            guarded_keys = set()
+            guard_prev = None          # (name, canon args) of a guarded repeat in the immediately preceding message
             turn_ok = True
             i = 0
             n_fail_results = 0
@@ -476,6 +606,9 @@ def run(d: Path, check_repro=False):
                     bad("call_pairing", f"{rid}: tool results missing")
                     turn_ok = False
                     break
+                if guard_prev is not None and any((c_["function"]["name"], canon(c_["function"]["arguments"]) if isinstance(c_["function"]["arguments"], dict) else None) == guard_prev for c_ in calls):
+                    bad("guard_followup", f"{rid}: the step right after a guard result repeats the guarded call {guard_prev[0]} again")
+                guard_prev = None
                 ids = [c_["id"] for c_ in calls]
                 if len(set(ids)) != len(ids) or any(r_["tool_call_id"] != c_["id"] for r_, c_ in zip(results, calls)):
                     bad("call_pairing", f"{rid}: id mismatch/order")
@@ -507,15 +640,37 @@ def run(d: Path, check_repro=False):
                         continue
                     if kind == "stub" and not isinstance(args, dict):
                         bad("arguments_json", f"{rid}: stub arguments must be an object")
+                    txt = r_["content"]
+                    guard_res = is_guard_text(txt)
                     if kind in ("exec", "explicit"):   # stub calls are never executed, so they are exempt from the repeat rule
                         key = (fn, canon(args))
                         if key in seen_calls:
-                            bad("no_repeat", f"{rid}: repeated call {fn}")
-                        seen_calls.add(key)
-                    if len(r_["content"]) >= 400:
-                        bad("result_length", f"{rid}: tool result {len(r_['content'])} chars")
-                    if kind == "exec":
-                        txt = r_["content"]
+                            # An identical repeat is allowed ONLY as a context-only guarded repeat of a pure, non-volatile read:
+                            # its result is exactly the guard text for this tool, it is alone in its message, and it is the 2nd
+                            # (never a 3rd) identical call.
+                            if kind == "exec" and txt == GUARD_TEXT.format(name=fn):
+                                if fn in VOLATILE_READS:
+                                    bad("no_repeat", f"{rid}: guarded repeat of volatile tool {fn} (Wisp never guards it)")
+                                elif fn in WRITE_TOOLS:
+                                    bad("no_repeat", f"{rid}: guarded repeat of write/send tool {fn}")
+                                elif key in guarded_keys:
+                                    bad("no_repeat", f"{rid}: third identical call {fn}")
+                                elif len(calls) != 1:
+                                    bad("no_repeat", f"{rid}: guarded repeat of {fn} shares a message with other calls")
+                                guarded_keys.add(key)
+                                guard_prev = key
+                            else:
+                                bad("no_repeat", f"{rid}: repeated call {fn}" + (" with a non-exact guard text" if guard_res else ""))
+                        else:
+                            seen_calls.add(key)
+                            if guard_res:
+                                bad("no_repeat", f"{rid}: guard text returned for a first (non-repeated) call {fn}")
+                    elif guard_res:
+                        bad("no_repeat", f"{rid}: guard text on a discovery/stub call {fn}")
+                    lim = MESSY_LIMIT if row["conversation_id"] in MESSY_IDS else DEFAULT_RESULT_LIMIT
+                    if len(txt) >= lim:
+                        bad("result_length", f"{rid}: tool result {len(txt)} chars (limit < {lim})")
+                    if kind == "exec" and not guard_res:
                         if txt.startswith("(") and (txt.endswith(")") or "NOT" in txt):
                             n_fail_results += 1
                 if kind == "stub":
@@ -616,7 +771,9 @@ def run(d: Path, check_repro=False):
                         bad("schema_valid", f"{rid}: {fn} {e}")
                     key = (fn, canon(args))
                     if key in seen_calls:
-                        bad("no_repeat", f"{rid}: target repeats earlier call {fn}")
+                        bad("no_repeat", f"{rid}: target repeats earlier call {fn}" + (" (a guarded repeat is context-only, never a target)" if key in guarded_keys else ""))
+                    if key == guard_prev:
+                        bad("guard_followup", f"{rid}: the target right after a guard result repeats the guarded call {fn} again")
                     seen_calls.add(key)
                     if fn == DISCOVERY:
                         if not turn and False:
@@ -716,9 +873,26 @@ def run(d: Path, check_repro=False):
         # gold sequence == calls in the last row
         gold = [{"name": c_["function"]["name"], "arguments": _args_obj(c_)}
                 for x in msgs_last[ui + 1:] if x.get("tool_calls") for c_ in x["tool_calls"]]
-        pg = [{k: v for k, v in g.items() if k not in ("rejected", "stub")} for g in p["gold_calls"]]
+        pg = [{k: v for k, v in g.items() if k not in ("rejected", "stub", "guard_rejected")} for g in p["gold_calls"]]
         if gold != pg:
             bad("provenance", f"{cid}: gold_calls differ from conversation")
+        # guarded repeats: provenance flags == guard results in the conversation, each flag sits on a repeat of an earlier call
+        n_guard_res = sum(1 for x in msgs_last[ui + 1:] if x["role"] == "tool" and is_guard_text(x["content"]))
+        n_guard_flag = sum(1 for g in p["gold_calls"] if g.get("guard_rejected"))
+        if n_guard_res != n_guard_flag:
+            bad("repeat_guard", f"{cid}: {n_guard_res} guard results but {n_guard_flag} guard_rejected gold calls")
+        seen_g = set()
+        for g in p["gold_calls"]:
+            k_ = (g["name"], canon(g["arguments"]))
+            if g.get("guard_rejected") and k_ not in seen_g:
+                bad("repeat_guard", f"{cid}: guard_rejected gold call {g['name']} has no earlier identical call")
+            seen_g.add(k_)
+        if (cat_ := p["category"]) == GUARD_CATEGORY and n_guard_res < 1:
+            bad("repeat_guard", f"{cid}: {GUARD_CATEGORY} conversation contains no guarded repeat")
+        if cid in GUARD_TAGGED and n_guard_res < 1:
+            bad("repeat_guard", f"{cid}: tagged {GUARD_TAG} but contains no guarded repeat")
+        if n_guard_res and not (cat_ == GUARD_CATEGORY or cid in GUARD_TAGGED):
+            bad("repeat_guard", f"{cid}: guarded repeat in a conversation not in/tagged {GUARD_CATEGORY}")
         if p["n_steps"] != len(lst):
             bad("provenance", f"{cid}: n_steps mismatch")
         # category-level policies
@@ -756,7 +930,7 @@ def run(d: Path, check_repro=False):
             if re.sub(r"\s+", " ", qb) not in flat:
                 bad("final_quotes_body", f"{cid}: final answer does not quote the exact body that was sent")
         # denial / failure honesty
-        tool_msgs = [x["content"] for x in msgs_last[ui + 1:] if x["role"] == "tool"]
+        tool_msgs = [x["content"] for x in msgs_last[ui + 1:] if x["role"] == "tool" and not is_guard_text(x["content"])]
         final = last.get("content", "")
         neg = re.compile(r"not sent|n't send|wasn't sent|weren't sent|didn't go|declin|held off|haven't sent|nothing (was|has|went)|couldn't|can't|unable|not (been )?(added|saved|created|cancel|sent|verified)|failed|didn't|did not|no[,.]| isn't|not free|haven't|hasn't|without", re.I)
         if any(t_ == DECLINED for t_ in tool_msgs):
@@ -777,6 +951,12 @@ def run(d: Path, check_repro=False):
     for c_ in convs:
         if "tools_per_round" not in c_ or not c_["messages"][-1].get("content"):
             bad("conversations_file", f"{c_.get('id')}: missing tools_per_round/final")
+        cm = c_["messages"]
+        for j_, x_ in enumerate(cm):
+            if x_["role"] == "tool" and is_guard_text(x_["content"]):
+                a_ = cm[j_ - 1] if j_ else {}
+                if a_.get("role") != "assistant" or a_.get("training") is not False:
+                    bad("repeat_guard", f"{c_.get('id')}: guarded repeat must be an assistant message with training:false in conversations.jsonl")
 
     # ---- split integrity & counts
     fam_split = collections.defaultdict(set)
@@ -803,8 +983,12 @@ def run(d: Path, check_repro=False):
     for cat, (tn, dn) in EXPECTED.items():
         if counts["train"][cat] != tn or counts["dev"][cat] != dn:
             bad("category_counts", f"{cat}: train {counts['train'][cat]}/{tn}, dev {counts['dev'][cat]}/{dn}")
-    if sum(counts["train"].values()) != 900 or sum(counts["dev"].values()) != 100:
-        bad("category_counts", "train/dev totals must be 900/100")
+    exp_tr, exp_dv = sum(v[0] for v in EXPECTED.values()), sum(v[1] for v in EXPECTED.values())
+    if sum(counts["train"].values()) != exp_tr or sum(counts["dev"].values()) != exp_dv:
+        bad("category_counts", f"train/dev conversation totals {sum(counts['train'].values())}/{sum(counts['dev'].values())} != generate.py allocation {exp_tr}/{exp_dv}")
+    for cat_ in set(counts["train"]) | set(counts["dev"]):
+        if cat_ not in EXPECTED:
+            bad("category_counts", f"category {cat_} is not in generate.CATEGORIES")
     dup_in = [p for s in ("train", "dev") for p, c_ in all_prompts[s].items() if c_ > 1]
     if dup_in:
         bad("duplicate_prompts", f"{len(dup_in)} user prompts repeated within a split: {dup_in[:3]}")
@@ -823,13 +1007,17 @@ def run(d: Path, check_repro=False):
     if phones_bad:
         bad("synthetic_only", f"{len(phones_bad)} phone numbers outside +1 555 01xx, e.g. {phones_bad[:3]}")
 
+    # ---- V2 replay rows (v2r-*): own shape checks; model-led protocol checks do not apply
+    v2_info = validate_v2r(d, v2_appended, {s: [r_["id"] for r_ in rows[s]] for s in rows}, held, bad)
+
     # ---- reproducibility
     if check_repro:
         with tempfile.TemporaryDirectory() as td:
             subprocess.run([sys.executable, str(d / "generate.py"), "--output-dir", td], check=True, capture_output=True)
             for fn in ("train.jsonl", "dev.jsonl", "train.provenance.jsonl", "dev.provenance.jsonl", "conversations.jsonl", "DATA_CARD.md", "stats.json"):
                 a = hashlib.sha256((d / fn).read_bytes()).hexdigest()
-                b = hashlib.sha256((Path(td) / fn).read_bytes()).hexdigest()
+                want = (Path(td) / fn).read_bytes()   # generate.py itself appends the V2 replay rows
+                b = hashlib.sha256(want).hexdigest()
                 if a != b:
                     bad("reproducible", f"{fn} differs on regeneration")
 
@@ -846,8 +1034,11 @@ def run(d: Path, check_repro=False):
         "arguments_json": "tool-call arguments are JSON objects (dicts), not strings",
         "schema_valid": "every target call valid against the schema offered at that step (types, required, enum, no extra keys)",
         "call_pairing": "tool_call ids unique and paired 1:1 with tool messages in order",
-        "no_repeat": "no identical (name,args) call repeated within a turn",
-        "result_length": "tool results < 400 chars",
+        "no_repeat": "no identical (name,args) call repeated within a turn, except a context-only guarded repeat (result exactly the guard text for that tool; non-volatile pure read; alone in its message; never the 3rd identical call; never a row target)",
+        "guard_followup": "the step right after a guard result is not another identical call",
+        "repeat_guard": "guard text equals Wisp's verbatim text; guard_rejected provenance and conversations.jsonl training:false agree with the guard results; guard conversations contain a guard",
+        "v2_replay": "v2r rows: shape, one trailing training:true assistant, no other training flags except false on assistants, tools == [], held-out overlap < OVERLAP_LIMIT, unique ids, counts match v2_replay.provenance.jsonl, byte-identical to v2_replay.*.jsonl",
+        "result_length": "tool results < 400 chars (< 1200 for conversations tagged messy_result)",
         "final_present": "every conversation ends with non-empty assistant text; only the last step is text",
         "steps_contiguous": "step numbering contiguous per conversation",
         "prefix_consistency": "each step extends the previous step's messages",
@@ -866,7 +1057,7 @@ def run(d: Path, check_repro=False):
         "error_policy": "at most 2 failing tool results per turn",
         "provenance": "provenance complete and consistent with conversations",
         "family_split": "families/templates/scenarios are never shared across splits",
-        "category_counts": "exact category counts per split",
+        "category_counts": "exact category counts per split, derived from generate.CATEGORIES / N_TOTAL / N_DEV",
         "duplicate_prompts": "no repeated user prompt within or across splits",
         "heldout_overlap": "normalized n-gram Jaccard (n=min(6,len)) < 0.4 vs every held-out eval prompt (spec: <= 0.5)",
         "synthetic_only": "only .invalid emails and +1 555 01xx phones",
@@ -883,6 +1074,7 @@ def run(d: Path, check_repro=False):
         "counts": {s: {"conversations": len(prov[s]), "rows": len(rows[s]), "by_category": dict(counts[s]),
                        "families": len({p["family_id"] for p in prov[s]})} for s in ("train", "dev")},
         "token_estimate_chars_div4": {s: {"row": stat(est_tokens[s]), "target": stat(tgt_tokens[s])} for s in ("train", "dev")},
+        "v2_replay": v2_info,
         "heldout_max_jaccard": round(max_overlap, 3), "dev_vs_train_max_4gram_jaccard": round(max_dev_train, 3),
         "target_tool_call_counts": dict(tool_counter.most_common()),
         "failure_total": sum(len(v) for v in fail.values()),

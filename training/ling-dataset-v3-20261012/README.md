@@ -51,7 +51,7 @@ not mix the V2 rows into the same run without a deliberate mixing plan.
 - Only the LAST message of a row is the target (`training: true`). Every earlier assistant message (history or
   in-turn) is `training: false`. System, user and tool messages carry no flag.
 - Tool-call turns have `content: ""` and OpenAI-style `tool_calls` (id, `type: function`, `function.arguments` as a
-  JSON string); tool results are `role: tool` with the matching `tool_call_id`.
+  JSON object); tool results are `role: tool` with the matching `tool_call_id`.
 - The three system messages are the captured model-led prompts (identity block, capability catalog, context note).
   Message 0 is rebuilt per step with the tool-specific rule paragraphs that the loaded tools trigger. Identity is
   synthetic: Test User, test.user@example.invalid; all other people use `.invalid` addresses and `+1 555 01xx` numbers.
@@ -68,20 +68,20 @@ not mix the V2 rows into the same run without a deliberate mixing plan.
    Everything before it is context. Run your preprocessing and inspect the prepared labels BEFORE training: the
    trainer must mask every earlier assistant turn, including earlier tool-call turns. The JSON flags alone are not
    proof that a trainer honours them.
-3. Rows are ~8,607 estimated tokens on average (chars/4, no tokenizer run) because each carries the full system prompt, the offered schemas and ~160 stubs; targets are ~50 tokens. 2,776 train rows are about 23.9M estimated tokens per epoch. Check the
-   real maximum length against your context cap before launching. Measured with the real tokenizer (`preflight.json`): mean 8,997, max 14,521 tokens (train); see "Train on an A6000".
+3. Rows are ~8,607 estimated tokens on average (chars/4, no tokenizer run) because each carries the full system prompt, the offered schemas and ~160 stubs; targets are ~50 tokens. 4,387 model-led train rows are about 40M tokens per epoch. Check the
+   real maximum length against your context cap before launching. Measured with the real tokenizer (`preflight.json`): median 8,840, max 14,521 tokens (train); see "Train on an A6000".
 4. `dev.jsonl` is for development only. The Ling eval corpus stays held out; evaluate with the model-led harness, not
    with these rows. No quality improvement has been measured.
 
 ## Train on an A6000
 
-One NVIDIA A6000 48GB, LoRA, `sequence_len` 16384. Real token counts (Ling tokenizer + template, tools rendered, thinking off; see `preflight.json`): train 2,776 rows, max 14,521 / p95 12,525 / median 8,768 (24.97M tokens per epoch); dev 309 rows, max 13,402; no row exceeds 16,384. Labeled tokens are only ~75k per epoch (median 24 per row).
+One NVIDIA A6000 48GB, LoRA, `sequence_len` 16384. Real token counts (Ling tokenizer + template, tools rendered, thinking off; see `preflight.json`): train 4,387 model-led rows, max 14,521 / p95 12,490 / median 8,840 (39.9M tokens per epoch) plus 600 V2 replay rows (max 737, 0.34M tokens); dev 474 + 60 rows, max 13,541; no row exceeds 16,384. Labeled tokens are ~151k per epoch.
 
 1. Upload `ling-train-dev-v3-20261012.zip`. Verify `sha256sum` against `upload-zip.json`, then extract into a NEW directory (keep V2 data and adapters untouched).
 2. `python preflight.py --local-files-only --tokenizer-dir /path/to/Ling-3.0-tiny-Wisp-V2-merged` (tokenizer + template only; no weights). Must print `"status": "PASS"`. Optionally `python validate.py` for the CPU dataset checks.
 3. Edit `base_model` in `axolotl-a6000.yaml` (V2 merged weights; V3 trains on top of V2). Run `axolotl preprocess axolotl-a6000.yaml` (writes `./last_run_prepared`).
 4. **Gate:** `python check_labels.py ./last_run_prepared --tokenizer-dir /path/to/Ling-3.0-tiny-Wisp-V2-merged --local-files-only` (add `--sample 200` for a quick pass). It matches each prepared row to its source row by exact `input_ids`, then requires labels != -100 only on the final assistant span (tool-call serialization + `<|role_end|>`). Any FAIL (earlier turns trained, target masked, ids not matching the template/tools/thinking setting) means do not train; fix the config. The YAML's masking keys are assumptions about this Axolotl version, and this gate is the proof. The template needs tool-call `arguments` as dicts, and the shipped rows store them as JSON objects, so no parsing is required of Axolotl.
-5. Timed smoke run: add `max_steps: 20` and `evals_per_epoch: 0` (separate `output_dir`), run `axolotl train axolotl-a6000.yaml`. tokens/sec = (20 x 16 rows x ~9,000 tokens) / seconds; record peak memory with `nvidia-smi`. Full epoch = 174 optimizer steps (~25M tokens), so estimate time as smoke time x 8.7.
+5. Timed smoke run: add `max_steps: 20` and `evals_per_epoch: 0` (separate `output_dir`), run `axolotl train axolotl-a6000.yaml`. tokens/sec = (20 x 16 rows x ~9,000 tokens) / seconds; record peak memory with `nvidia-smi`. Full epoch = 312 optimizer steps (~40M tokens), so estimate time as smoke time x 15.6.
 6. Full run: remove the smoke overrides and run `axolotl train axolotl-a6000.yaml`; the adapter lands in `ling-v3-lora-out`.
 
 Expected memory (estimate, unmeasured): ~16GB bf16 weights + LoRA/optimizer state (small, rank 16 attention only) + activations with gradient checkpointing at 9-14k tokens; roughly 20-30GB if chunked cross-entropy works, noticeably more without it (full logits at 16k x 157k vocab are ~5GB bf16 and ~10GB fp32). Caveats: the HF MoE implementation of this custom model (`trust_remote_code`) may loop over experts and be SLOW, so judge feasibility from the smoke run, not from FLOPs; flash attention and the cut-cross-entropy/Liger plugins may not support `bailing_hybrid` (fallbacks are in the YAML comments). Nothing here has been run against Axolotl or the model weights.
@@ -102,3 +102,14 @@ synthetic-only PII and tool-result length.
 
 See `DATA_CARD.md` for distribution and limitations.
 
+
+## Expansion (V3, 13 Oct 2026)
+
+1,600 conversations (1,444 train / 156 dev; was 1,000) plus 660 V2 replay rows. New add-on family modules, each loaded by `generate.py`:
+`ext_chains.py` (multi-step read->act chains, conditional acts, dead ends), `ext_followups.py` (history references, corrections,
+answers from history with no tool), `ext_chat.py` (no-tool chat and tool-word temptations), `ext_messy.py` (long, noisy, truncated
+and partial tool results, up to 1,199 chars, using Wisp's real truncation marker), `ext_guard.py` (Wisp 1.3.2's repeated-read guard:
+the identical repeat is context only, never a target; the target is the recovery). `v2_replay.py` selects 600 train / 60 dev rows
+from the V2 dataset (stratified by competency, held-out screened, unchanged messages, `tools: []`), appended last to train/dev.jsonl
+so V3 keeps V2's read-intent routing skill. Category mix: outbound 18%, compound 22%, stop 10%, reads 11%, writes 8%, errors 7%,
+clarify 5%, chat 8%, follow-ups 7%, repeated-read guard 4%.

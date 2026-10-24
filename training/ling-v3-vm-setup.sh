@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Wisp Ling V3 training VM setup (one NVIDIA A6000 48GB, Ubuntu + CUDA driver, Jupyter).
 # Paste into the VM's setup-script field. Runs once at boot, usually as root.
 #  - installs Axolotl into ~/wisp/venv (uv, Python 3.11)
@@ -7,10 +7,12 @@
 # Log: ~/wisp/setup.log. Done when ~/wisp/SETUP_DONE exists.
 set -uo pipefail
 
-# The Jupyter user's home (uid 1000) so files show up in the notebook file browser.
-JUSER="$(getent passwd 1000 | cut -d: -f1 || true)"
-JHOME="$(getent passwd 1000 | cut -d: -f6 || true)"
-[ -n "$JHOME" ] || { JUSER="$(id -un)"; JHOME="$HOME"; }
+# Whose home: WISP_USER if set, else the sudo caller, else a non-root caller, else uid 1000 (boot-time run as root).
+JUSER="${WISP_USER:-${SUDO_USER:-}}"
+[ -n "$JUSER" ] || { [ "$(id -u)" != 0 ] && JUSER="$(id -un)"; }
+[ -n "$JUSER" ] || JUSER="$(getent passwd 1000 | cut -d: -f1 || true)"
+[ -n "$JUSER" ] || JUSER="$(id -un)"
+JHOME="$(getent passwd "$JUSER" | cut -d: -f6)"; [ -n "$JHOME" ] || JHOME="$HOME"
 WORK="$JHOME/wisp"
 mkdir -p "$WORK/uploads" "$WORK/hf"
 exec > >(tee -a "$WORK/setup.log") 2>&1
@@ -24,9 +26,16 @@ FREE_GB=$(df -BG --output=avail "$WORK" | tail -1 | tr -dc 0-9)
 echo "free disk: ${FREE_GB}GB (need ~60GB: base 16 + merged V2 16 + prepared data + checkpoints)"
 [ "${FREE_GB:-0}" -ge 60 ] || echo "WARN: less than 60GB free on $WORK"
 
-if command -v apt-get >/dev/null; then
+if [ -z "${WISP_NO_APT:-}" ] && command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq && apt-get install -y -qq unzip zip git curl ca-certificates build-essential >/dev/null || echo "WARN: apt install failed"
+fi
+
+# Everything below must belong to $JUSER (uv keeps the Python interpreter in the installing user's home),
+# so a root/sudo run hands over to $JUSER after the system packages.
+if [ "$(id -u)" = 0 ] && [ "$JUSER" != root ]; then
+  chown -R "$JUSER" "$WORK"
+  exec sudo -u "$JUSER" -H env WISP_USER="$JUSER" WISP_NO_APT=1 bash "$(readlink -f "$0")"
 fi
 
 export UV_INSTALL_DIR="$WORK/bin" PATH="$WORK/bin:$PATH"
@@ -39,6 +48,19 @@ pipi() { "$UV" pip install -q -p "$PY" "$@"; }
 echo "== installing axolotl (pulls torch)"
 pipi -U pip setuptools wheel packaging ninja
 pipi "axolotl" huggingface_hub hf_transfer safetensors datasets || echo "ERROR: axolotl install failed"
+echo "== Ling model code needs fla-core (KDA linear-attention kernels) and einops"
+pipi -U fla-core einops || echo "ERROR: fla-core install failed - the model cannot load without it"
+# PyPI's default torch wheel may target a newer CUDA than this VM's driver; reinstall the build that matches it.
+DRV_CUDA="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9]*\)\.\([0-9]*\).*/\1\2/p' | head -1)"
+if [ -n "$DRV_CUDA" ] && ! "$PY" -c "import torch,sys;sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+  TV="$("$PY" -c "import torch;print(torch.__version__.split('+')[0])")"
+  for TAG in cu$DRV_CUDA cu128 cu126 cu124; do
+    [ "${TAG#cu}" -le "$DRV_CUDA" ] || continue
+    echo "== torch $TV does not see the GPU (driver CUDA $DRV_CUDA); trying $TAG build"
+    "$UV" pip install -q -p "$PY" --reinstall-package torch "torch==$TV" --index-url "https://download.pytorch.org/whl/$TAG" \
+      && "$PY" -c "import torch,sys;sys.exit(0 if torch.cuda.is_available() else 1)" && break
+  done
+fi
 "$PY" -c "import torch;print('torch',torch.__version__,'cuda',torch.version.cuda,'gpu',torch.cuda.is_available())"
 
 echo "== optional: flash-attn (prebuilt wheel only; skipped if it would compile)"
@@ -67,10 +89,12 @@ cat > "$WORK/run.sh" <<'RUN'
 # Steps in order: check  unpack  rebuild  preflight  preprocess  labels  smoke  train  status  package
 set -uo pipefail
 WORK="$(cd "$(dirname "$0")" && pwd)"
+export PATH="$WORK/venv/bin:$PATH"   # axolotl train execs `accelerate` from PATH
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # smoke run peaked at ~44GB of 46GB; less fragmentation
 PY="$WORK/venv/bin/python"; AX="$WORK/venv/bin/axolotl"
 UP="$WORK/uploads"; DATA="$WORK/ling-v3"; V2="$WORK/Ling-3.0-tiny-Wisp-V2-merged"
 DATA_ZIP=ling-train-dev-v3-20261012.zip
-DATA_SHA=db4d2d66600987a0f1995a01bc9c15b33e6a8ea724cc4e0cb0675de51d3acc78
+DATA_SHA=aab24f88fca2dbabb2b89a2ddb2a38026e655921e3f0b5cfec7b69c4f5c2bb18
 RB_ZIP=ling-v2-rebuild.zip
 RB_SHA=5c9410913ece6b9513fee5aea735180eeb59f6f5fa93cd71c71c0f107a83def6
 BASE_REPO="inclusionAI/Ling-3.0-tiny"; BASE_REV="9a98e35fe1c9ee255f78dd64771c7ae15a799481"
@@ -89,6 +113,7 @@ check)
   nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader
   "$PY" -c "import torch,axolotl;print('torch',torch.__version__,'cuda ok',torch.cuda.is_available(),'axolotl',axolotl.__version__)"
   "$PY" -c "import flash_attn" 2>/dev/null && echo "flash-attn: yes" || echo "flash-attn: no (sdp fallback)"
+  "$PY" -c "import fla.ops.kda, einops" 2>/dev/null && echo "fla-core: yes" || echo "fla-core: MISSING - model will not load (pip install -U fla-core einops)"
   "$PY" -c "import cut_cross_entropy" 2>/dev/null && echo "cut-CE: yes" || echo "cut-CE: no (plugin dropped)"
   [ -s "$WORK/base_path" ] && echo "base: $(cat "$WORK/base_path") ($(ls "$(cat "$WORK/base_path")"/*.safetensors 2>/dev/null | wc -l) shards)" || echo "base: not downloaded (run: base)"
   sha_ok $DATA_ZIP $DATA_SHA; sha_ok $RB_ZIP $RB_SHA; df -h "$WORK" | tail -1 ;;
@@ -121,8 +146,8 @@ config)
   sed -i "s#^base_model: .*#base_model: $V2#" $Y
   if ! "$PY" -c "import flash_attn" 2>/dev/null; then
     sed -i 's#^flash_attention: true.*#flash_attention: false\nsdp_attention: true#' $Y; echo "config: flash-attn -> sdp_attention"; fi
-  if ! "$PY" -c "import cut_cross_entropy" 2>/dev/null; then
-    sed -i '/^plugins:/d; /CutCrossEntropyPlugin/d; /^cut_cross_entropy:/d' $Y; echo "config: cut-CE plugin removed (more memory)"; fi
+  # cut-CE cannot patch Ling's custom bailing_hybrid model; never enable it for this model.
+  sed -i '/^plugins:/d; /CutCrossEntropyPlugin/d; /^cut_cross_entropy:/d' $Y
   sed -e 's#^output_dir: .*#output_dir: ./smoke-out#' -e 's#^evals_per_epoch: .*#evals_per_epoch: 0#' \
       -e 's#^saves_per_epoch: .*#saves_per_epoch: 0#' $Y > smoke.yaml
   echo "max_steps: 20" >> smoke.yaml
@@ -143,7 +168,7 @@ smoke)
   s=$(date +%s); "$AX" train smoke.yaml > smoke.log 2>&1; rc=$?; e=$(date +%s); kill $M 2>/dev/null
   tail -15 smoke.log
   echo "exit $rc; 20 steps in $((e-s))s; peak GPU memory $(sort -n smoke-mem.txt | tail -1) MiB"
-  [ $rc -eq 0 ] && echo "full run estimate: ~$(( (e-s)*87/10/60 )) min (174 steps)" ;;
+  [ $rc -eq 0 ] && echo "full run estimate: ~$(( (e-s)*156/10/60 )) min (312 steps)" ;;
 train)
   need "$DATA/LABELS_OK" labels
   cd "$DATA"
