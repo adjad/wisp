@@ -2092,7 +2092,9 @@ async def run_agent(
     capability_catalog = None
     if model_led_discovery:
         # Capability metadata does not authorize execution or new disclosure.
-        if not getattr(client, "managed", True) or public_web_synthesis:
+        from service.inference.remote_policy import remote_only_profile, remote_parity
+        remote_led = remote_only_profile() is not None and remote_parity()
+        if (not getattr(client, "managed", True) and not remote_led) or public_web_synthesis:
             raise ValueError("Model-led discovery requires managed local inference")
         if force_first_tool or direct_calls or required_tool_groups:
             raise ValueError("An owned execution plan must retain its controlled route")
