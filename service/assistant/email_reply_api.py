@@ -478,6 +478,30 @@ def clean_draft(text: str | None) -> str:
     return text
 
 
+_GREETING = re.compile(r"^(hi|hey|hello|dear)\s+([A-Za-z][\w.'-]*)\s*([,!.]?)", re.I)
+
+
+def _user_first_name() -> str:
+    try:
+        from service.memory.identity import user_name
+        return (user_name() or "").split()[0].casefold()
+    except Exception:  # noqa: BLE001 — no name known, nothing to correct
+        return ""
+
+
+def _fix_greeting(draft: str, row: dict) -> str:
+    """A draft that greets the user by their own name greets the sender instead."""
+    match = _GREETING.match(draft or "")
+    me = _user_first_name()
+    if not match or not me or match.group(2).casefold() != me:
+        return draft
+    name = parseaddr(str(row.get("sender") or ""))[0].strip().split()
+    first = name[0] if name and "@" not in name[0] else ""
+    greeting = f"{match.group(1)} {first}{match.group(3) or ','}" if first else ""
+    rest = draft[match.end():].lstrip()
+    return f"{greeting}\n\n{rest}".strip() if greeting else rest
+
+
 def _reply_subject(subject: str) -> str:
     subject = (subject or "").strip()
     return subject if re.match(r"^\s*re\s*:", subject, re.I) else f"Re: {subject}".strip()
@@ -538,7 +562,7 @@ async def draft_reply(reply_ref: Any) -> dict:
         return {"ok": False, "error": "not_found",
                 "result": "Wisp no longer has that email. Refresh and try again."}
     system, material = draft_prompt(row, _earlier_in_thread(row))
-    draft = clean_draft(await _model_reply(system, material))
+    draft = _fix_greeting(clean_draft(await _model_reply(system, material)), row)
     out = {**_envelope_view(ref, row), "draft": draft}
     if not draft:
         out["draft_error"] = "Wisp couldn't draft this one. Write your reply below."

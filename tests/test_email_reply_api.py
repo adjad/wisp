@@ -508,3 +508,11 @@ def test_unknown_message_is_still_not_found(world, monkeypatch):
     monkeypatch.setattr(api, "_header_rows", lambda: [])
     out = asyncio.run(api.draft_reply({"message_id": "nope@x", "account": ROW["account"]}))
     assert out["error"] == "not_found"
+
+
+def test_a_draft_greeting_the_user_greets_the_sender(monkeypatch):
+    monkeypatch.setattr(api, "_user_first_name", lambda: "adi")
+    row = {"sender": "Dhruv Kolte <dkolte@example.edu>"}
+    assert api._fix_greeting("Hi Adi,\n\nSounds good.", row) == "Hi Dhruv,\n\nSounds good."
+    assert api._fix_greeting("Hi Sam, sounds good.", row) == "Hi Sam, sounds good."
+    assert api._fix_greeting("Hi Adi, sounds good.", {"sender": "x@y.z"}) == "sounds good."
