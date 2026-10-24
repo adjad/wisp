@@ -625,7 +625,10 @@ _ASK_WEB_TOOLS = frozenset({"web_search", "web_fetch", "wikipedia_summary"})
 # A direct writing answer that dodged: a refusal, or only a question back.
 _ASK_WRITE_DODGE = re.compile(
     r"^\s*(?:sorry|i\s+(?:can(?:'|’)?t|cannot|am unable|'m unable|’m unable|don(?:'|’)t have))\b"
-    r"|\?\s*$", re.I)
+    r"|\?\s*$"
+    # An announcement with no text after it: "Got it. I'll write a brief note…"
+    r"|^\s*(?:(?:got it|sure|okay|ok|alright)[.,!]?\s*)?(?:i(?:'|’)ll|i will|let me)\s+"
+    r"(?:write|draft|compose|check|look|put)\b[^\n]{0,160}$", re.I)
 # Offered on a web-only personal re-prompt when the head start held none.
 _ASK_OWN_SOURCE_READS = ("view_emails", "search_reminders", "search_notes", "view_messages")
 _ASK_GUARD_MESSAGE = (

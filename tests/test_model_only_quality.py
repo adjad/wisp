@@ -706,3 +706,15 @@ def test_direct_writing_answer_is_not_nudged(synthetic):
 def test_direct_step_runs_with_thinking_off(synthetic):
     client, _, _ = ask(["Leaves drift down."], prompt="Write a haiku about autumn.", ask_direct=True)
     assert client.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.parametrize("dodge", [
+    "Got it. I'll write a brief thank-you note to your professor about the extension, ready to send.",
+    "Let me check if there's already a note to your professor.", "I can't write it for LinkedIn."])
+def test_write_dodges_are_detected(dodge):
+    assert loop._ASK_WRITE_DODGE.search(dodge)
+
+
+def test_written_text_is_not_a_dodge():
+    assert not loop._ASK_WRITE_DODGE.search("I'll draft it now.\n\nExcited to join [Company] as [Role].")
+    assert not loop._ASK_WRITE_DODGE.search("Dear Professor [Name],\nThank you for the extension.")
