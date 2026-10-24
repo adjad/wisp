@@ -2319,6 +2319,8 @@ async def agent(body: dict[str, Any]):
                 if ask_quality:
                     from service.model_only import COMPOSE_ONLY_FORBIDDEN_CATEGORIES, compose_only
                     if compose_only(prompt):
+                        from service.model_only import ASK_COMPOSE_HINT
+                        synthesis_guidance.insert(1, ASK_COMPOSE_HINT)
                         # "Write a thank-you note" returns the text; it must
                         # not become append_note/create_note or a draft card.
                         from service.tools.registry import REGISTRY

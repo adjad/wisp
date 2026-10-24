@@ -203,6 +203,14 @@ def compose_only(prompt: str) -> bool:
     return bool(_COMPOSE.match(text)) and not _DESTINATION.search(text)
 
 
+ASK_COMPOSE_HINT = (
+    "COMPOSE: the answer IS the requested text. Write it now, ready to copy, with "
+    "no preamble or note about it. Do not search notes, email or files unless the "
+    "request explicitly asks you to draw on them (\"from my notes\", \"about the email\"); "
+    "fill unknown details with a short [placeholder]."
+)
+
+
 COMPOSE_ONLY_FORBIDDEN_CATEGORIES = frozenset({
     "notes_write", "fs_write", "email_draft", "messages_draft", "email_send",
     "messages_send", "scheduled_send", "calendar_write", "assistant_write",

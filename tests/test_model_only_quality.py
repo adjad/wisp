@@ -543,3 +543,34 @@ def test_compact_fallback_drops_digest_markdown_and_cache_caveats():
     text = mo.compact_results([("summarize_emails", digest)], {"summarize_emails": "From your email"})
     assert "**" not in text and "##" not in text and "local cache" not in text and "Coverage" not in text
     assert "Needs attention" not in text and "Finance — “Submit your W-9 by Friday”" in text
+
+
+def test_compose_only_hint_returns_the_text_without_lookups():
+    assert mo.compose_only("Write a short thank-you note to my professor for the extension.")
+    assert "Write it now" in mo.ASK_COMPOSE_HINT and "Do not search notes" in mo.ASK_COMPOSE_HINT
+
+
+def test_personal_question_answered_from_the_web_is_reprompted(synthetic):
+    effects, register = synthetic
+    tool = register("web_search", "web_tools", "web_read", parameters={
+        "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+
+    async def failed(**args):
+        return "(web search failed: providers failed)"
+    failed.__module__ = tool.func.__module__
+    tool.func = failed
+    client, _, answer = ask([[call("web_search", query="W-9 due")], "I couldn't reach a source for that.",
+                             [call("view_emails")], "Finance says the W-9 is due Friday."],
+                            prompt="When is the W-9 due?", model_led_preload=["web_search", "view_emails"])
+    assert "only the web was searched" in client.requests[2]["messages"][-1]["content"]
+    assert executed(effects, "view_emails") == [{}]
+    assert answer == "Finance says the W-9 is due Friday."
+
+
+def test_general_web_question_is_not_reprompted(synthetic):
+    _, register = synthetic
+    register("web_search", "web_tools", "web_read", parameters={
+        "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+    client, _, answer = ask([[call("web_search", query="world series")], "The Dodgers won."],
+                            prompt="Who won the most recent World Series?", model_led_preload=["web_search"])
+    assert len(client.requests) == 2 and answer.startswith("The Dodgers")

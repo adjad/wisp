@@ -621,6 +621,7 @@ _EMPTY_MESSAGE = (
 
 # Model-only Ask fallbacks (see run_agent's ask_quality). The guard message is
 # the second prefill-guard refusal of one turn with nothing gathered yet.
+_ASK_WEB_TOOLS = frozenset({"web_search", "web_fetch", "wikipedia_summary"})
 _ASK_GUARD_MESSAGE = (
     "My local model is short on memory for that request right now. Give it a "
     "moment and ask again, or narrow it down (one source or a shorter time range)."
@@ -3692,19 +3693,26 @@ async def run_agent(
                     text = salvage_answer(reasoning)
                     if text:
                         audit("ask_salvaged_reasoning", step=_step)
-                if (not ask_reprompted and not attempted_tools and _step < max_steps - 1
+                web_only = bool(attempted_tools) and attempted_tools <= _ASK_WEB_TOOLS
+                if (not ask_reprompted and (not attempted_tools or web_only)
+                        and _step < max_steps - 1
                         and not _ask_capability_prompt and not test_mode
                         and (asks_personal_data(memory_query) or fresh_personal_scope)
-                        and not _ask_short_question(text)):
-                    # Personal data answered with no tool at all: re-prompt
-                    # once with a tool required instead of trusting it.
+                        and not _ask_personal_source_ran()
+                        and (web_only or not _ask_short_question(text))):
+                    # Personal data answered with no tool at all, or from a
+                    # web search ("When is the W-9 due?" is in the user's
+                    # mail, not on the web): re-prompt once with a tool
+                    # required instead of trusting it.
                     ask_reprompted = True
                     ask_expect_tool = True
-                    audit("ask_personal_reprompt", step=_step)
+                    audit("ask_personal_reprompt", step=_step, web_only=web_only)
                     msgs.append({"role": "assistant", "content": text})
                     msgs.append({"role": "user", "content": (
-                        "That asks for my own current data, and no tool has been called yet. "
-                        "Call the tool that holds it now (calendar, email, messages, reminders, "
+                        ("That asks about my own items, and only the web was searched. "
+                         if web_only else
+                         "That asks for my own current data, and no tool has been called yet. ")
+                        + "Call the tool that holds it now (calendar, email, messages, reminders, "
                         "notes or memory); if nothing holds it, say you don't know. Do not guess.")})
                     continue
             unmet = _unmet_group()
