@@ -29,6 +29,7 @@ PROFILE = MOE_DIR / "assistant-corpus-profile.json"
 RUNS_DIR = MOE_DIR / "corpus-runs"
 RESULT_EXCERPT = 2000
 ANSWER_LIMIT = 20000
+REASONING_LIMIT = 20000
 RUN_FILE_LIMIT = 32 * 1024 * 1024
 # Cases arrive one request at a time; a case that starts within this many
 # seconds of the last one ending belongs to the same run.
@@ -260,7 +261,8 @@ class CaseRecord:
                      "prompt": case["conversation"][-1]["content"],
                      "model": "", "role": "", "route_source": "", "tools": [], "answer": "",
                      "confirmations": [], "status": "incomplete", "error": "", "latency_s": None,
-                     "model_calls": 0, "inference_verified": False if mode == "bounded" else None}
+                     "model_calls": 0, "inference_verified": False if mode == "bounded" else None,
+                     "reasoning": ""}
 
     def observe(self, event):
         line, kind = self.line, event.get("type")
@@ -280,6 +282,9 @@ class CaseRecord:
             line["answer"] = (line["answer"] + str(event.get("text", "")))[:ANSWER_LIMIT]
         elif kind == "clear_answer":
             line["answer"] = ""
+        elif kind == "reasoning" and event.get("text"):
+            joined = "\n\n".join(p for p in (line.get("reasoning", ""), str(event["text"]).strip()) if p)
+            line["reasoning"] = joined[:REASONING_LIMIT]
         elif kind == "corpus_model":
             line["model_calls"] = int(event.get("completed") or 0)
             line["inference_verified"] = line["model_calls"] > 0
@@ -416,6 +421,21 @@ def _one_line(text, limit):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
+def _turn_reasoning(turn):
+    """A prompts-run turn's reasoning, from its recorded events (older runs kept
+    them there before lines had a `reasoning` field)."""
+    return "\n\n".join(str(e.get("text", "")).strip() for e in turn.get("events") or []
+                       if e.get("type") == "reasoning" and str(e.get("text", "")).strip())
+
+
+def _reasonings(line):
+    """One reasoning text per answered turn, in the order _answers uses."""
+    turns = line.get("turns") or []
+    if turns:
+        return [_turn_reasoning(t) for t in turns]
+    return [str(line.get("reasoning") or "")]
+
+
 def export_markdown(lines):
     if not lines:
         return ""
@@ -447,9 +467,13 @@ def export_markdown(lines):
             out.append(f"- Would ask to confirm `{asked.get('tool', '')}`: {_one_line(asked.get('reason', ''), 300)} (declined)")
         # A multi-turn case: every turn's request and Wisp's whole answer.
         shown = turns if len(turns) > 1 else [{"prompt": "", "answer": line.get("answer")}]
+        reasonings = _reasonings(line)
         for number, turn in enumerate(shown, 1):
             if len(turns) > 1:
                 out += ["", f"**Turn {number}:** {_one_line(turn.get('prompt', ''), 2000)}"]
+            reasoning = (reasonings[number - 1] if number <= len(reasonings) else "").strip()
+            out += ["", "**Reasoning:**", ""]
+            out += [("> " + row) if row else ">" for row in reasoning.splitlines()] if reasoning else ["> (none)"]
             out += ["", "**Answer:**", ""]
             answer = str(turn.get("answer") or "").strip()
             out += [("> " + row) if row else ">" for row in answer.splitlines()] if answer else ["> (no answer)"]
@@ -461,7 +485,7 @@ def export_markdown(lines):
 
 CSV_COLUMNS = ["run_id", "started_at", "mode", "case_id", "category", "tag", "status", "latency_s",
                "inference_verified", "model", "route_source", "tools", "would_confirm", "turns", "prompt",
-               "answer", "error", "session_id"]
+               "answer", "reasoning", "error", "session_id"]
 
 
 def _answers(line):
@@ -469,6 +493,13 @@ def _answers(line):
     if len(turns) < 2:
         return line.get("answer", "")
     return "\n\n".join(f"Turn {n}: {t.get('answer', '')}" for n, t in enumerate(turns, 1))
+
+
+def _reasoning_cell(line):
+    texts = _reasonings(line)
+    if len(texts) < 2:
+        return texts[0] if texts else ""
+    return "\n\n".join(f"Turn {n}: {t}" for n, t in enumerate(texts, 1))
 
 
 def export_csv(lines):
@@ -485,7 +516,7 @@ def export_csv(lines):
                          "; ".join(t.get("name", "") for t in line.get("tools") or []),
                          "; ".join(c.get("tool", "") for c in line.get("confirmations") or []),
                          len(line.get("turns") or []) or 1, line.get("prompt", ""), _answers(line),
-                         line.get("error", ""), line.get("session_id", "")])
+                         _reasoning_cell(line), line.get("error", ""), line.get("session_id", "")])
     return buffer.getvalue()
 
 
