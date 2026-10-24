@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 import math
+import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -130,6 +131,19 @@ def source_health(status, now, bounds):
     return result
 
 
+# An all-day event only reserves the day when it reads like time away. Course
+# readings, assignment windows, birthdays and holidays you still work through are
+# all-day markers, not occupancy, and must not stop the day from being planned.
+_RESERVES_DAY = re.compile(
+    r"\b(out of (the )?office|ooo|pto|vacation|day off|off work|sick|leave|away|"
+    r"trip|travel|flight|fly(ing)?|retreat|offsite|off-site|conference|summit|"
+    r"camp|wedding|moving|busy|blocked|unavailable|no meetings)\b", re.I)
+
+
+def reserves_day(title: str) -> bool:
+    return bool(_RESERVES_DAY.search(title or ""))
+
+
 def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
     lo, hi = day_bounds(day, timezone)
     preferences = validate_preferences(day, timezone, **preferences)
@@ -160,7 +174,8 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
                         kind=c["source"], task_id=None, warnings=[])
             if c.get("all_day"):
                 all_day.append(item)
-                all_day_constraint = all_day_constraint or not valid_end or until > when
+                all_day_constraint = all_day_constraint or (reserves_day(c.get("title") or "")
+                                                            and (not valid_end or until > when))
             elif valid_end:
                 blocks.append(item)
             else:
