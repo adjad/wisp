@@ -1787,16 +1787,30 @@ def _resolve_account_groups(account: str, extra: list[dict] | None = None) -> tu
     return exact_id or exact_label or partial, groups
 
 
+# Groups to leave out of an account-less read: the "Your accounts" section of
+# a labeled summary must not repeat mail that has its own linked-account section.
+_EXCLUDED_ACCOUNT_GROUPS: ContextVar[frozenset] = ContextVar("excluded_account_groups",
+                                                            default=frozenset())
+
+
+def _linked_account_groups() -> dict[str, tuple[str, str]]:
+    """Gmail-linked address -> the account group its mail is filed under."""
+    return {address: _account_group(address, address) for address in _external_accounts}
+
+
 def _filter_account(rows: list, account: str | None) -> list:
     if not account:
-        return rows
+        excluded = _EXCLUDED_ACCOUNT_GROUPS.get()
+        return [r for r in rows if _account_group(r[1], "") not in excluded] if excluded else rows
     keys, _ = _resolve_account_groups(account, [{"account": r[1], "account_id": ""} for r in rows])
     return [r for r in rows if len(keys) == 1 and _account_group(r[1], "") in keys]
 
 
 def _filter_account_records(rows: list[dict], account: str | None) -> list[dict]:
     if not account:
-        return rows
+        excluded = _EXCLUDED_ACCOUNT_GROUPS.get()
+        return [r for r in rows if _account_group(r["account"], r.get("account_id", ""))
+                not in excluded] if excluded else rows
     keys, _ = _resolve_account_groups(account, rows)
     return [r for r in rows if len(keys) == 1 and _account_group(r["account"], r.get("account_id", "")) in keys]
 
@@ -2816,6 +2830,28 @@ async def summarize_emails(day: str | None = None, count: int = 20,
         return _no_inbox_message()
     if account and (msg := _unknown_account_message(account)):
         return msg
+    linked = _linked_account_groups()
+    if not account and linked:
+        # A linked Google account (a guest's, or one not in Mail.app) is
+        # someone else's inbox as far as "my email" goes: answer per account,
+        # labeled, so its mail is never blended into the user's own.
+        sections = []
+        for address in linked:
+            body = await _summarize_one(day, count, address, period, unread)
+            sections.append(f"## {address}\n{body}")
+        token = _EXCLUDED_ACCOUNT_GROUPS.set(frozenset(linked.values()))
+        try:
+            body = await _summarize_one(day, count, None, period, unread)
+        finally:
+            _EXCLUDED_ACCOUNT_GROUPS.reset(token)
+        sections.insert(0, f"## Your accounts\n{body}")
+        return ("Summarized per account; keep the account headings in your answer.\n\n"
+                + "\n\n".join(sections))
+    return await _summarize_one(day, count, account, period, unread)
+
+
+async def _summarize_one(day: str | None, count: int, account: str | None,
+                         period: str | None, unread: bool) -> str:
     # `period` first: it's the more specific request, and a model that supplies
     # both ("this month", day="today") means the range.
     # Unread is an additional filter; it must never discard a named range.

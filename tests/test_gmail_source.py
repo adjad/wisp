@@ -280,6 +280,30 @@ class GmailSource(unittest.TestCase):
         self.assertEqual(len(E._parse_header_records(E._headers)), 2)
         self.assertFalse(E.email_freshness_warning(ME))
 
+    def test_accountless_summary_is_labeled_per_linked_account(self):
+        # "What's on my email" with a guest Google account linked: one section
+        # per account, and neither inbox leaks into the other's section.
+        guest = "guest@gmail.com"
+        self.accounts = {guest: {"client_id": "synthetic", "refresh_token": "fake-guest"}}
+        E.configure_external_accounts(self.accounts)
+        E.cache_emails(header("Personal", "Native personal note", native_id="native-id"))
+        self.publish(guest, headers=header(guest, "Guest inbox note"))
+        G._last[guest] = {"headers": time.time()}
+        async def no_refresh(http, account):
+            G._last[account]["headers"] = time.time()
+        with patch.object(G, "_sync_headers", no_refresh):
+            output = asyncio.run(E.summarize_emails(day="today"))
+        mine, theirs = output.split("## " + guest)
+        self.assertIn("## Your accounts", mine)
+        self.assertIn("Native personal note", mine)
+        self.assertNotIn("Guest inbox note", mine)
+        self.assertIn("Guest inbox note", theirs)
+        self.assertNotIn("Native personal note", theirs)
+        # A named account still answers for that account alone.
+        named = asyncio.run(E.summarize_emails(day="today", account=guest))
+        self.assertNotIn("## ", named)
+        self.assertIn("Guest inbox note", named)
+
     def test_raw_failure_is_not_hidden_by_fresh_headers(self):
         self.publish(headers=header(), raw=G.raw_record(msg("raw"), ME))
         E.external_email_error(ME, "raw", "Body fetch failed")
