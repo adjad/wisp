@@ -219,7 +219,7 @@ def _tkey(item: dict) -> str:
     return f"{item['hash']}:{triage.VERSION}"
 
 
-WAITING_S = 3 * 86400
+WAITING_S = 7 * 86400
 
 
 def _any_result(item: dict, store, offline_results: dict) -> dict | None:
@@ -237,7 +237,7 @@ def _any_result(item: dict, store, offline_results: dict) -> dict | None:
 
 
 def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, now: float, tz: str,
-                        suppressed: set[str], allowed: set[str]) -> list[dict]:
+                        suppressed: set[str], allowed: set[str], debug: list | None = None) -> list[dict]:
     """Card order, made deterministic for people: the judge's items from
     people, then every one-to-one conversation whose last message is an
     unanswered incoming text under 3 days old (even when the judge left it
@@ -246,13 +246,19 @@ def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, no
     waiting = []
     for candidate in sorted(pool, key=lambda s: -(s["item"].get("received_ts") or 0)):
         item = candidate["item"]
-        if (item.get("group") or item.get("replied") or not item.get("person") or item["id"] in have
-                or now - (item.get("received_ts") or 0) > WAITING_S):
-            continue
-        made = judge_mod._finalize({"title": "", "action": "reply", "why": "", "due": "", "urgency": "high"},
-                                   {"kind": "item", "survivor": candidate}, [], now=now, tz=tz, sched=sched,
-                                   suppressed=suppressed, allowed=allowed)
+        reason = ("group chat" if item.get("group") else "you answered last" if item.get("replied")
+                  else "not a person" if not item.get("person") else "already judged" if item["id"] in have
+                  else "older than 7 days" if now - (item.get("received_ts") or 0) > WAITING_S else "")
+        made = None
+        if not reason:
+            made = judge_mod._finalize({"title": "", "action": "reply", "why": "", "due": "", "urgency": "high"},
+                                       {"kind": "item", "survivor": candidate}, [], now=now, tz=tz, sched=sched,
+                                       suppressed=suppressed, allowed=allowed)
+            reason = "" if made is not None else "dismissed or handled"
+        if debug is not None:
+            debug.append({"who": item.get("who", ""), "waiting": not reason, "reason": reason or "card candidate"})
         if made is not None:
+            made["waiting"] = True
             waiting.append(made)
     taken = {w["primary"] for w in waiting}
     judged = [i for i in ranked if not i.get("unranked")]
@@ -260,6 +266,18 @@ def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, no
     others = [i for i in judged if not (i.get("item") or {}).get("person")]
     rest = [i for i in ranked if i.get("unranked") and i["primary"] not in taken]
     return people + waiting + others + rest
+
+
+def _served_thread(thread: dict, names: list[str]) -> dict:
+    """The backstop at serve time: re-attribute the summary, and replace one
+    that still reads badly with the plain code sentence."""
+    user_wrote = thread.get("user_wrote", thread.get("source") == "messages")
+    summary = triage.attribute(thread.get("summary", ""), names, thread.get("who", ""), user_wrote)
+    like = {"who": thread.get("who"), "source": thread.get("source"), "title": thread.get("title"),
+            "user_wrote": user_wrote, "group": " in " in str(thread.get("who") or "")}
+    if summary and not triage.sane(summary, like):
+        summary = triage.template_summary(like, {"title": thread.get("title")})
+    return {**thread, "summary": summary, "title": guard.second_person(thread.get("title", ""), names)}
 
 
 def _threads(survivors: list[dict]) -> list[dict]:
@@ -381,6 +399,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     cards_by_account = {a: [c for c in previous.get("cards") or [] if c.get("account") == a] for a in accounts}
     todos_by_account = {a: [t for t in previous.get("todos") or [] if t.get("account") == a] for a in accounts}
     summaries = dict(previous.get("summaries") or {})
+    debug_by_account: dict = dict(previous.get("debug") or {})
     _status["phase"] = "judging"
     for acct in accounts:
         mine = [s for s in survivors if (s["item"].get("account") or own) == acct]
@@ -407,14 +426,24 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             ranked = judge_mod.rank(judge_mod.by_rule(mine, acct_sched, now=now, tz=tz, suppressed=suppressed,
                                                       allowed=allowed), now)
             summary = ""
-        waiting_pool = [w for w in (_any_result(i, store, offline_results) for i in items
-                                    if (i.get("account") or own) == acct) if w is not None]
+        waiting_debug: list = []
+        waiting_pool = []
+        for i in items:
+            if (i.get("account") or own) != acct or i["source"] != "messages":
+                continue
+            found = _any_result(i, store, offline_results)
+            if found is None:
+                waiting_debug.append({"who": i.get("who", ""), "waiting": False,
+                                      "reason": "withheld or sensitive"})
+            else:
+                waiting_pool.append(found)
         ranked = with_waiting_people(ranked, waiting_pool, acct_sched, now=now, tz=tz, suppressed=suppressed,
-                                     allowed=allowed)
+                                     allowed=allowed, debug=waiting_debug)
         _status["phase"] = "preparing"
         state, cards = await prepare_mod.prepare(ranked, acct_sched, reply_fn if model_ok else _offline, abort,
                                                  now=now, tz=tz, linked=linked, resolve_handle=resolve or resolve_handle,
-                                                 allowed=allowed, freeze=freeze)
+                                                 allowed=allowed, freeze=freeze, debug=waiting_debug)
+        debug_by_account[acct] = waiting_debug
         if state == "standdown":
             if abort():
                 yielded = True
@@ -450,7 +479,8 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         cards=[c for a in accounts for c in cards_by_account.get(a, [])],
         todos=[t for a in accounts for t in todos_by_account.get(a, [])],
         notes=[{k: n[k] for k in ("id", "title", "account", "who", "hash")} for n in notes],
-        threads=_threads(survivors), summaries=summaries, judged=judged, model=model_ok)
+        threads=_threads(survivors), summaries=summaries, judged=judged, model=model_ok,
+        debug={a: v for a, v in debug_by_account.items() if a in accounts})
     _status.update(state="idle" if not yielded else "idle", phase="", finished_at=time.time())
     _log(f"cycle done: {len(items)} items, {len(pending)} read, {len(survivors)} kept, "
          f"{sum(len(v) for v in cards_by_account.values())} cards{' (by rule)' if not model_ok else ''}")
@@ -635,10 +665,7 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     todos = sorted(merged.values(), key=lambda t: (t["done"], t.get("due_ts") is None, t.get("due_ts") or 0,
                                                    t["title"].casefold()))
     names = triage.user_names()
-    threads = [{**t, "summary": triage.attribute(t.get("summary", ""), names, t.get("who", ""),
-                                                 t.get("user_wrote", t.get("source") == "messages")),
-                "title": guard.second_person(t.get("title", ""), names)}
-               for t in state.get("threads") or []]
+    threads = [_served_thread(t, names) for t in state.get("threads") or []]
     accounts = list(state.get("accounts") or [own])
     if account:
         match = lambda x: str(x.get("account") or "").casefold() == account.casefold()  # noqa: E731
@@ -656,6 +683,9 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
               "todos": [_public(t) for t in todos], "threads": threads}
     if view_state == "unavailable":
         result["reason"] = "Wisp hasn't read your mail and texts yet. Tap Analyze now."
+    # Why a waiting person did or didn't get a card ("you answered last",
+    # "no contact handle"): for Debug Mode and the integrator, names only.
+    result["debug"] = {"waiting": (state.get("debug") or {}).get(account or own, [])}
     if _status.get("error"):
         result["error"] = _status["error"]
     return result

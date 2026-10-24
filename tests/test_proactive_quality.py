@@ -135,7 +135,7 @@ def test_triage_summaries_come_back_in_second_person():
     reply = json.dumps({"title": "Wisp idea", "summary": "Adi told Trishe they would keep the Wisp idea.",
                         "junk": False, "sensitive": False, "asks_of_me": "Call Trishe later"})
     result = triage.validate(reply, item, allowed=set(NAMES))
-    assert result["summary"] == "You told Trishe they would keep the Wisp idea."
+    assert result["summary"] == "You told Trishe you would keep the Wisp idea."
 
 
 # --- 3. marketing never becomes a thread, to-do or card -------------------------------------------
@@ -500,3 +500,55 @@ def test_dismiss_clears_the_conversation_lock(store):
     store.mark_unknown(card, NOW)
     store.dismiss_card(store.card("card:t"), NOW + 1)
     assert not store.locked({**card, "id": "card:other"}, NOW + 2)
+
+
+# --- build 2489 pass ----------------------------------------------------------------------------------------
+
+
+def test_to_artifact_and_they_for_the_user_are_fixed():
+    assert triage.attribute("You (to Trishe) said they downgraded ChatGPT.", NAMES, "Trishe", True) == \
+        "You told Trishe you downgraded ChatGPT."
+
+
+@pytest.mark.parametrize("bad", [
+    "You agree that undecided is a good idea, and asks Sriram to look into it.",
+    "You says hi to Sriram.",
+    "You (to Trishe) said hi.",
+    "I agree, I'd look into it more.",
+    "They remind everyone about the exam.",
+])
+def test_summaries_that_read_badly_are_not_sane(bad):
+    assert not triage.sane(bad, {"user_wrote": True})
+
+
+def test_incoming_mail_never_says_you_asked():
+    assert not triage.sane("You asked about the exam and calculators.", {"user_wrote": False})
+    assert triage.sane("Ed answered your question about the exam.", {"user_wrote": False})
+
+
+def test_a_bad_summary_is_reasked_once_then_templated():
+    items = sources.text_items([(NOW - 120, "Sriram Kannan", "Me: maybe undecided in L and S?", "iMessage;-;+15550001111"),
+                                (NOW - 60, "Sriram Kannan", "Sriram Kannan: I agree, look into it more", "iMessage;-;+15550001111")],
+                               now=NOW, own=ME)
+    calls = []
+
+    async def model(system, material, abort, tokens):
+        calls.append("STRICT" in system)
+        return json.dumps({"title": "Undecided in L and S", "summary": "You agree, and asks Sriram to look.",
+                           "junk": False, "sensitive": False, "asks_of_me": ""})
+
+    state, result = asyncio.run(triage.triage_item(items[0], model, lambda: False))
+    assert calls == [False, True]
+    assert result["summary"] == "Sriram Kannan texted about undecided in L and S."
+    assert triage.template_summary({"who": "Ed", "source": "mail", "title": "Exam reminder"}, {}) == \
+        "Ed emailed: Exam reminder."
+
+
+def test_dropped_waiting_people_leave_a_reason(store):
+    rows = [(NOW - 120, "Mom", "Mom: call me?", GUID_MOM), (NOW - 60, "Mom", "Me: sure, tonight", GUID_MOM)]
+    run(store, Model(triage_reply=lambda m: {"title": "Call", "summary": "Mom asked you to call.", "junk": False,
+                                             "sensitive": False, "asks_of_me": "Call Mom"},
+                     judge_reply=lambda m: {"summary": "", "items": []}),
+        sources.text_items(rows, now=NOW, own=ME))
+    debug = snap(store)["debug"]["waiting"]
+    assert debug == [{"who": "Mom", "waiting": False, "reason": "you answered last"}]

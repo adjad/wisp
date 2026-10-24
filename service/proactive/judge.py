@@ -143,7 +143,8 @@ def _user_names() -> list[str]:
 def _good_title(title: str, source: str, allowed: set[str], names: list[str]) -> bool:
     """Verb first, held to the source, no identifiers, and never naming the
     user as the other person ("Reply to Adi about…" on the user's own words)."""
-    if not title or guard.output_has_pii(title) or not guard.grounded(title, source, allowed=allowed):
+    if not title or guard.output_has_pii(title) or not guard.grounded(title, source, allowed=allowed) \
+            or len(title.split()) > 12:
         return False
     first = re.findall(r"[a-z']+", title.casefold())[:1]
     if not first or first[0] not in VERBS:
@@ -152,7 +153,7 @@ def _good_title(title: str, source: str, allowed: set[str], names: list[str]) ->
 
 
 _VAGUE = re.compile(r"(?i)^(?:read|check|open|see|look at|view|review) (?:the |an |a |this |that |your )?"
-                    r"(?:e-?mail|message|text|mail|note|update)s?\b")
+                    r"(?:e-?mail|message|text|mail|note|update)s?\b|^(?:read|check|review|see) [A-Z][\w'-]+ about\b")
 
 
 _MISCREDIT = re.compile(r"\byour (?:own )?(?:email|message|text|reply|note)s? (?:to|for)\b", re.I)
@@ -193,8 +194,8 @@ def action_title(kind: str, item: dict, result: dict, names: list[str]) -> str:
     """A verb-first to-do built by code: the user's own ask when it reads as
     one, else the action toward the other party (who comes from the source)."""
     asks = guard.clean(result.get("asks_of_me"), 90)
-    if _MISCREDIT.search(asks) or _VAGUE.match(asks):
-        asks = ""
+    if _MISCREDIT.search(asks) or _VAGUE.match(asks) or len(asks.split()) > 12:
+        asks = ""                        # vague, miscredited, or someone else's whole question
     if not item.get("person", True):
         # An organization's notice: the user acts on its deadline, never "replies".
         if asks and not re.match(_TOWARD_SOMEONE, asks) and not guard.names_user(asks, names) \

@@ -21,7 +21,7 @@ from service.proactive import guard
 TOKENS = (160, 1400)
 # Bump whenever RULES or validate() change what a stored result means: older
 # checkpoints are then read again instead of served.
-VERSION = "3"
+VERSION = "5"
 
 RULES = (
     "You read ONE email thread or text conversation for the user's daily brief. "
@@ -124,12 +124,26 @@ _DEADLINE = re.compile(r"\b(?:due|deadline|exam|midterm|quiz|final|assignment|ho
 
 
 _META = re.compile(r"\b(?:sensitive|junk|not spam|spam|classif\w*|asks_of_me|"
-                   r"sent (?:this|it) to \d+|to \d+ (?:people|recipients)|this (?:item|material))\b", re.I)
+                   r"sent (?:this|it) to \d+|to \d+ (?:people|recipients)|this (?:item|material)|sent (?:this|it)(?: email| message| text)? on)\b", re.I)
 _AUTHORED = ("sent", "sends", "wrote", "writes", "emailed", "emails", "reminded", "reminds", "announced",
              "announces", "shared", "shares", "posted", "posts", "said", "says", "asked", "asks", "told", "tells",
              "informed", "informs", "noted", "notes", "mentioned", "mentions", "launched", "launches",
              "invited", "invites", "replied", "replies", "discussed", "discusses", "updated", "updates",
              "is reminding", "is asking", "wants", "wanted", "explained", "explains")
+
+
+def _tidy(text: str) -> str:
+    """Rendering artifacts out: "You (to Trishe) said they…" → "You told Trishe you…"."""
+    text = re.sub(r"\b([Yy]ou) \(to ([^)]+)\) (?:said|says|told|tells)\b", r"\1 told \2", text)
+    text = re.sub(r"\s*\((?:to|from) [^)]*\)", "", text)
+    out = []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if re.match(r"\s*You\b", sentence):
+            sentence = re.sub(r"\bthey(?= (?:were|are|have|had|would|will|did|downgraded|upgraded|went|got|said|"
+                              r"want|wanted|need|needed|plan|planned|decided|agreed|think|thought)\b)", "you", sentence)
+            sentence = re.sub(r"\b(?:they're)\b", "you're", sentence)
+        out.append(sentence)
+    return " ".join(out)
 
 
 def attribute(text: str, names: list[str], who: str, user_wrote: bool) -> str:
@@ -141,7 +155,52 @@ def attribute(text: str, names: list[str], who: str, user_wrote: bool) -> str:
         verbs = "|".join(re.escape(v) for v in sorted(_AUTHORED, key=len, reverse=True))
         text = re.sub(rf"(^|[.!?]\s+){subject}\s+({verbs})\b", lambda m: f"{m.group(1)}{who} {m.group(2)}",
                       text, flags=re.I)
-    return guard.second_person(text, names)
+    return _tidy(guard.second_person(text, names))
+
+
+STRICT = ("- STRICT: the summary is ONE short, grammatical sentence. Credit each message to the person "
+          "who wrote it: an email you received was written by its sender (\"Ed answered your question about the "
+          "exam\"). Say \"you\" for the user, never \"they\" for the user, and no \"(to …)\" notes.")
+
+_PAST_SELF = re.compile(r"^\s*You (?:asked|said|told|sent|wrote|replied|emailed|texted|shared|posted|mentioned|"
+                        r"discussed|reminded|announced|answered|explained)\b")
+_DISAGREE = re.compile(r"\b[Yy]ou (?:\w+ly )?(?:says|asks|tells|wants|thinks|agrees|needs|is|has|does|was)\b|"
+                       r"\b[Yy]ou\b[^.?!]*?\b(?:and|then|but) (?:says|asks|tells|wants|thinks|agrees)\b")
+
+
+def sane(summary: str, item: dict) -> bool:
+    """A summary a person would write: no "(to X)" notes, the user is "you" and
+    not also "they", verbs agree with "you", and an email the user didn't
+    write isn't credited to them."""
+    if re.search(r"\(\s*to\b|\(you\)|->|\[", summary, re.I):
+        return False
+    if _DISAGREE.search(summary):
+        return False
+    verbs = "|".join(sorted(v for v in guard._VERB_S if v.endswith("s")))
+    if re.search(rf"\b[Yy]ou\b[^.?!]*?,? (?:and|then|but) (?:{verbs}|suggests|offers|reminds)\b", summary):
+        return False                     # "You agree…, and suggests…"
+    if re.match(r"\s*(?:I|I'm|I'd|I've|I'll|We|They|He|She)\b", summary):
+        return False                     # a quote, or a subject nobody can place
+    first = re.split(r"(?<=[.!?])\s+", summary.strip())[0]
+    if first.startswith("You") and re.search(r"\bthey\b|\btheir\b", first) and not item.get("group"):
+        return False
+    if not item.get("user_wrote") and _PAST_SELF.match(summary):
+        return False
+    return True
+
+
+def template_summary(item: dict, result: dict) -> str:
+    """The clean stand-in: "Trishe texted about the hackathon", "Ed emailed: Exam reminder"."""
+    who = guard.clean(item.get("who"), 60) or "Someone"
+    topic = guard.clean(result.get("title") or "", 60).rstrip("?!.:;, ")
+    if item.get("source") == "mail":
+        subject = guard.clean(item.get("title"), 90)
+        return f"{who} emailed: {subject}." if subject else f"{who} emailed you."
+    if (topic and topic.casefold() not in ("text conversation", who.casefold())
+            and not re.search(r"\b(?:you|your|me|my|is|are|was)\b", topic, re.I)
+            and who.casefold() not in topic.casefold() and len(topic.split()) <= 5):
+        return f"{who} texted about {topic[:1].lower() + topic[1:] if topic[1:2].islower() else topic}."
+    return f"Texts with {who}."
 
 
 def user_names() -> list[str]:
@@ -199,6 +258,19 @@ async def triage_item(item: dict, reply_fn, abort) -> tuple[str, dict | None]:
     result = validate(reply, item)
     if result is None:
         return "failed", fallback(item)
+    if result["summary"] and not sane(result["summary"], item):
+        # One stricter retry; then a plain sentence built by code.
+        try:
+            again = await reply_fn(_system(item) + "\n" + STRICT, material(item), abort, TOKENS)
+        except Exception:  # noqa: BLE001
+            again = ""
+        if again is None:
+            return "standdown", None
+        retry = validate(again, item)
+        if retry is not None and retry["summary"] and sane(retry["summary"], item):
+            result = {**result, "summary": retry["summary"]}
+        else:
+            result = {**result, "summary": template_summary(item, result)}
     if not result["junk"] and not result["sensitive"] and not result["asks_of_me"]:
         # A small model misses soft plans; the verbatim line keeps them.
         rule = fallback(item)
