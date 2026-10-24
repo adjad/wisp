@@ -151,7 +151,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backend.onReachabilityChange = { [weak self] up in
             guard let self else { return }
             outage += 1
-            if up { self.model.serviceReachable = true; self.model.serviceStarting = false; return }
+            if up {
+                self.model.serviceReachable = true
+                self.model.serviceStarting = false
+                // Whatever failed to load while the service was away loads now.
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.todayModel.refresh()
+                    await DayCards.refresh(force: true)
+                    self.model.onResize()
+                }
+                return
+            }
             let this = outage
             Task { @MainActor [weak self] in
                 // Until the service has answered once, a cold first launch can take

@@ -321,11 +321,14 @@ struct TodayPlanChecks {
                 return (Data("{}".utf8), HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
             }
         }
-        model.startBackgroundRefresh(sleep: { _ in
+        var naps: [Duration] = []
+        model.startBackgroundRefresh(sleep: { nap in
+            naps.append(nap)
             try await withCheckedThrowingContinuation { sleeps.append($0) }
         }, afterRefresh: { cycles += 1 })
         await waitFor("Background refresh must load without a mounted tab") { cycles == 1 && sleeps.count == 1 }
         check(todayReads == 1 && upcomingReads == 1 && briefReads == 1)
+        check(naps == [.seconds(30)], "A loaded Brief waits the full interval")
         model.startBackgroundRefresh()
         await Task.yield()
         check(todayReads == 1 && sleeps.count == 1, "Reopening must not restart the loop or refetch")

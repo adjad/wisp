@@ -237,7 +237,11 @@ final class TodayModel: ObservableObject {
                 guard self != nil else { return }
                 await self?.refreshBackgroundSnapshot()
                 guard !Task.isCancelled else { break }
-                do { try await sleep(interval) } catch { break }
+                // Nothing on screen yet (the service was still starting, or a read
+                // failed): try again soon rather than leave Brief empty for the
+                // full interval.
+                let empty = self?.plan == nil
+                do { try await sleep(empty ? .seconds(3) : interval) } catch { break }
             }
             if self?.backgroundID == id {
                 self?.backgroundRefresh = nil
