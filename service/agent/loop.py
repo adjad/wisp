@@ -3438,6 +3438,10 @@ async def run_agent(
             ask_quality and tools_answered and not (failed_tools - tools_answered)
             and not hard_failed and not forcing_first_step and not expecting_tool
             and choice != "required" and not _ask_narration_thinking)
+        # A direct (tool-free) step is a written answer too: with thinking on,
+        # writing turns drifted into "Let me check…" and refusals.
+        if ask_quality and ask_direct and not forcing_first_step and not _ask_narration_thinking:
+            ask_narrating = True
         step_msgs: list[dict] = []
         step_max_tokens = max_tokens
 

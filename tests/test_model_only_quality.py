@@ -701,3 +701,8 @@ def test_direct_writing_that_dodges_is_nudged_once(synthetic):
 def test_direct_writing_answer_is_not_nudged(synthetic):
     client, _, answer = ask(["Leaves drift down."], prompt="Write a haiku about autumn.", ask_direct=True)
     assert len(client.requests) == 1 and answer == "Leaves drift down."
+
+
+def test_direct_step_runs_with_thinking_off(synthetic):
+    client, _, _ = ask(["Leaves drift down."], prompt="Write a haiku about autumn.", ask_direct=True)
+    assert client.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
