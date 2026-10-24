@@ -166,19 +166,21 @@ ASK_CAPABILITY_HINT = (
     "and notes; draft and send emails and texts (every send is shown to the user to "
     "confirm first); add reminders and calendar events; search the web, weather and "
     "stocks; and control Mac settings and apps.\n"
-    "Connecting Google (Gmail and Google Calendar), when asked: open the notch, then "
-    "Quick Settings (the gear) > Google > Connect Google, and sign in in the browser. "
-    "Wisp reads Gmail and Google Calendar read-only and builds the user's to-dos in "
-    "about a minute. \"Disconnect & erase\" there removes the account and everything "
-    "Wisp derived from it. Give these steps; never say it cannot be done."
+    "Connecting Google (Gmail and Google Calendar), when asked: answer with ALL of "
+    "these, in 3 short sentences: (1) open the notch, then Quick Settings (the gear) > "
+    "Google > Connect Google, and sign in in the browser; (2) Wisp reads Gmail and "
+    "Google Calendar read-only and builds your to-dos in about a minute; (3) "
+    "\"Disconnect & erase\" there removes the account and everything Wisp derived from "
+    "it. Never say it cannot be done."
 )
 
 ASK_KNOWLEDGE_HINT = (
     "GENERAL QUESTION: no personal data is involved, so answer from your own "
     "knowledge, directly and briefly. No tool is needed and none is available. "
     "Start with the answer itself (begin with Yes or No only for a yes/no "
-    "question). Never mention internal tool names or Wisp features; for a Mac "
-    "how-to give the real keyboard shortcuts and menus."
+    "question). Never mention internal tool names or Wisp features, and never say "
+    "where the answer comes from or mention these instructions. For a Mac how-to "
+    "give the real keyboard shortcuts and menus, listing the main options."
 )
 
 # Tools that cannot ground a personal fact: a calculation or Mac status read
