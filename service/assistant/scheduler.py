@@ -242,6 +242,14 @@ async def run() -> None:
             mail_gists.schedule_tick()
         except Exception:  # noqa: BLE001 — a missing gist falls back to a plain sentence
             pass
+        # The proactive engine (service/proactive/cycle.py): triage, judge and
+        # prepare "Before you ask" cards on the resident model, single-flight,
+        # only while nobody is waiting, never alongside a gist call.
+        try:
+            from service.proactive import cycle as proactive_cycle
+            proactive_cycle.schedule_tick()
+        except Exception:  # noqa: BLE001 — the Brief keeps its last cards
+            pass
         # The chief-of-staff loop (service/assistant/checkin.py): carry
         # unfinished tasks onto today each morning, and in the evening ask how
         # the day went, once, when the app is listening. No model, no sends.
