@@ -83,6 +83,10 @@
     {"id": "draft-3", "category": "compose", "prompt": "Reply to the proposal sync email and say Thursday works.", "personal": true},
     {"id": "draft-4", "category": "compose", "prompt": "Write a short thank-you note to my professor for the extension."},
     {"id": "draft-5", "category": "compose", "prompt": "Send Jordan a message asking if we're still on for Friday.", "personal": true},
+    {"id": "draft-6", "category": "compose", "prompt": "Write a haiku about autumn."},
+    {"id": "draft-7", "category": "compose", "prompt": "Draft a LinkedIn post announcing my new job."},
+    {"id": "draft-8", "category": "compose", "prompt": "Compose a short birthday message for my sister."},
+    {"id": "draft-9", "category": "compose", "prompt": "Write a summary of my notes about the Napa trip.", "personal": true},
 
     {"id": "cap-1", "category": "capability", "prompt": "What can you do with my calendar?"},
     {"id": "cap-2", "category": "capability", "prompt": "What can you do?"},

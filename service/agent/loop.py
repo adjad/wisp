@@ -622,6 +622,13 @@ _EMPTY_MESSAGE = (
 # Model-only Ask fallbacks (see run_agent's ask_quality). The guard message is
 # the second prefill-guard refusal of one turn with nothing gathered yet.
 _ASK_WEB_TOOLS = frozenset({"web_search", "web_fetch", "wikipedia_summary"})
+# A direct writing answer that dodged: a refusal, or only a question back.
+_ASK_WRITE_DODGE = re.compile(
+    r"^\s*(?:sorry|i\s+(?:can(?:'|’)?t|cannot|am unable|'m unable|’m unable|don(?:'|’)t have))\b"
+    r"|\?\s*$"
+    # An announcement with no text after it: "Got it. I'll write a brief note…"
+    r"|^\s*(?:(?:got it|sure|okay|ok|alright)[.,!]?\s*)?(?:i(?:'|’)ll|i will|let me)\s+"
+    r"(?:write|draft|compose|check|look|put)\b[^\n]{0,160}$", re.I)
 # Offered on a web-only personal re-prompt when the head start held none.
 _ASK_OWN_SOURCE_READS = ("view_emails", "search_reminders", "search_notes", "view_messages")
 _ASK_GUARD_MESSAGE = (
@@ -1442,6 +1449,10 @@ async def run_agent(
     # model-led turns in model-only mode; every other caller keeps the loop
     # exactly as it was.
     ask_quality: bool = False,
+    # ask_quality only: a pure writing request with no destination ("Write a
+    # haiku", "a thank-you note to my professor"). Every step is tool-free, so
+    # the answer is the text itself, never a lookup, skill load or question.
+    ask_direct: bool = False,
     # ask_quality only: lexical rank beyond the preload. Name-only stubs are
     # limited to these plus model_only.ASK_CORE_STUBS (None = every tool).
     model_led_stub_rank: Sequence[str] | None = None,
@@ -2149,7 +2160,9 @@ async def run_agent(
     # discovery keeps the catalog: its toolset is chosen mid-turn and may grow
     # to include use_skill. Measured: the catalog alone was ~180 tokens on
     # EVERY step while any skill was installed.
-    if skills_allowed:
+    # ask_direct: a one-step written answer; a skill's interview script
+    # ("I'll use the idea-refine skill…") would replace the text asked for.
+    if skills_allowed and not (ask_quality and ask_direct):
         try:
             from service.skills import skills_context_block
             last_user = next((m["content"] for m in reversed(messages)
@@ -3161,6 +3174,7 @@ async def run_agent(
     ask_reprompt_step = False
     ask_reprompted = False
     ask_reprompt_no_web = False
+    ask_write_nudged = False
     ask_guard_retried = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
@@ -3274,6 +3288,9 @@ async def run_agent(
                                            if s['function']['name'] not in ask_promoted]
         choice = "required" if (forcing_first_step or expecting_tool) else "auto"
         if evidence_narration_retried and _unmet_group() is None:
+            choice = 'none'
+            step_schemas = []
+        if ask_quality and ask_direct and not forcing_first_step:
             choice = 'none'
             step_schemas = []
         # STALLED ON REFUSED REPEATS: last step the model only asked for what it
@@ -3424,6 +3441,10 @@ async def run_agent(
             ask_quality and tools_answered and not (failed_tools - tools_answered)
             and not hard_failed and not forcing_first_step and not expecting_tool
             and choice != "required" and not _ask_narration_thinking)
+        # A direct (tool-free) step is a written answer too: with thinking on,
+        # writing turns drifted into "Let me check…" and refusals.
+        if ask_quality and ask_direct and not forcing_first_step and not _ask_narration_thinking:
+            ask_narrating = True
         step_msgs: list[dict] = []
         step_max_tokens = max_tokens
 
@@ -3701,7 +3722,8 @@ async def run_agent(
         if not tool_calls:
             text = msg.get("content") or ""
             if ask_quality:
-                from service.model_only import asks_personal_data, salvage_answer, strip_think
+                from service.model_only import (asks_personal_data, pure_writing, salvage_answer,
+                                                strip_think)
                 text = strip_think(text)
                 if not text and reasoning and not msg.get("_degenerate"):
                     # Content empty but the think block holds an answer: keep
@@ -3709,10 +3731,22 @@ async def run_agent(
                     text = salvage_answer(reasoning)
                     if text:
                         audit("ask_salvaged_reasoning", step=_step)
+                if (ask_direct and not ask_write_nudged and _step < max_steps - 1
+                        and pure_writing(memory_query) and _ASK_WRITE_DODGE.search(text or "")):
+                    # "I can't write a LinkedIn post… what's the job title?":
+                    # one nudge to write it with placeholders instead.
+                    ask_write_nudged = True
+                    audit("ask_write_nudge", step=_step)
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": (
+                        "Please just write it now, complete and ready to copy. Use short "
+                        "[placeholders] for any detail I didn't give. No questions.")})
+                    continue
                 web_only = bool(attempted_tools) and attempted_tools <= _ASK_WEB_TOOLS
                 if (not ask_reprompted and (not attempted_tools or web_only)
                         and _step < max_steps - 1
                         and not _ask_capability_prompt and not test_mode
+                        and not pure_writing(memory_query)
                         and (asks_personal_data(memory_query) or fresh_personal_scope)
                         and not _ask_personal_source_ran()
                         and (web_only or not _ask_short_question(text))):

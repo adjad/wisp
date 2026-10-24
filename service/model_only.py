@@ -152,18 +152,35 @@ ASK_STYLE_HINT = (
     "(a week when they asked about today or tomorrow), mention only the asked day, "
     "and never describe a multi-day count as \"today\".\n"
     "- If no tool you have can know the answer (a personal fact nothing records), "
-    "say so in one short sentence; never estimate or make up a number."
+    "say so in one short sentence; never estimate or make up a number.\n"
+    "- When a contact lookup answers \"who is X?\", say \"X is a contact: <their "
+    "number or email>\" — a phone number is what a contact has, never what they are."
 )
 
 # Appended for a capability question ("Can you send texts?"): the corpus and
 # sweep had the model deny real capabilities or ask "which email?".
 ASK_CAPABILITY_HINT = (
     "This is a question about what you can do. Answer it directly from the "
-    "Capabilities list above, without calling a tool: you can read and summarize "
-    "the user's email, texts, calendar, reminders and notes; draft and send emails "
-    "and texts (every send is shown to the user to confirm first); add reminders "
-    "and calendar events; search the web, weather and stocks; and control Mac "
-    "settings and apps. A Google account is linked in Wisp's Settings, under Google."
+    "Capabilities list above, without calling a tool and without naming internal "
+    "tools: you can read and summarize the user's email, texts, calendar, reminders "
+    "and notes; draft and send emails and texts (every send is shown to the user to "
+    "confirm first); add reminders and calendar events; search the web, weather and "
+    "stocks; and control Mac settings and apps.\n"
+    "Connecting Google (Gmail and Google Calendar), when asked: answer with ALL of "
+    "these, in 3 short sentences: (1) open the notch, then Quick Settings (the gear) > "
+    "Google > Connect Google, and sign in in the browser; (2) Wisp reads Gmail and "
+    "Google Calendar read-only and builds your to-dos in about a minute; (3) "
+    "\"Disconnect & erase\" there removes the account and everything Wisp derived from "
+    "it. Never say it cannot be done."
+)
+
+ASK_KNOWLEDGE_HINT = (
+    "GENERAL QUESTION: no personal data is involved, so answer from your own "
+    "knowledge, directly and briefly. No tool is needed and none is available. "
+    "Start with the answer itself (begin with Yes or No only for a yes/no "
+    "question). Never mention internal tool names or Wisp features, and never say "
+    "where the answer comes from or mention these instructions. For a Mac how-to "
+    "give the real keyboard shortcuts and menus, listing the main options."
 )
 
 # Tools that cannot ground a personal fact: a calculation or Mac status read
@@ -191,9 +208,15 @@ def web_degradation_hint(tool: str, result: str) -> str:
 
 
 _COMPOSE = re.compile(r"^\s*(?:please\s+)?(?:can you\s+|could you\s+)?(?:write|compose|draft|come up with)\b", re.I)
+# A destination is somewhere the text goes: a named recipient ("an email to
+# Priya"), a send/reply verb, or a place it is saved. The noun alone ("a
+# birthday message for my sister") is just the kind of text to write.
 _DESTINATION = re.compile(
-    r"\b(?:e-?mail|text|message|imessage|send|reply|respond|(?:in|to|into)\s+(?:my\s+)?notes?\b|"
-    r"save|file|document|doc|calendar|reminder)\b", re.I)
+    r"\b(?i:e-?mail|text|message|imessage|dm|note|letter|card)\s+(?i:to|for)\s+[A-Z][\w.'-]*"
+    r"|(?i:\b(?:send|sent|reply|respond|forward|post\s+(?:it|this)|share)\b)"
+    r"|(?i:\b(?:in|to|into)\s+(?:my\s+)?(?:notes?|notes app|a file|calendar|reminders?)\b)"
+    r"|(?i:\b(?:save|file|document|doc|calendar|reminder|clipboard)\b)"
+    r"|\b(?i:text|e-?mail|message)\s+[A-Z][\w.'-]*")
 
 
 def compose_only(prompt: str) -> bool:
@@ -204,17 +227,70 @@ def compose_only(prompt: str) -> bool:
 
 
 ASK_COMPOSE_HINT = (
-    "COMPOSE: the answer IS the requested text. Write it now, ready to copy, with "
-    "no preamble or note about it. Do not search notes, email or files unless the "
-    "request explicitly asks you to draw on them (\"from my notes\", \"about the email\"); "
-    "fill unknown details with a short [placeholder]."
+    "COMPOSE: the answer IS the requested text, and writing it is always within what "
+    "you can do. Write it now, ready to copy: no preamble, no lookups, no clarifying "
+    "question, no refusal. For a personal detail the request does not give (a name, "
+    "a date, a course, a company), use a short placeholder such as [Name] or "
+    "[Company] instead of searching or asking."
 )
+
+# A writing request that draws on the user's stored content keeps its reads:
+# "summary of my notes", "reply to Ed's email", "based on my calendar".
+_STORED_CONTENT = re.compile(
+    r"\b(?:my|our)\s+(?:notes?|e-?mails?|inbox|calendar|schedule|agenda|messages?|texts?|"
+    r"chats?|reminders?|to-?dos?|docs?|documents?|files?|folder|drafts?|meetings?|"
+    r"conversations?|browsing|history)\b"
+    r"|\b(?:based on|using|from|according to|summari[sz]e|summary of|recap of)\b"
+    r"|\b(?:reply|respond|answer)\s+to\b"
+    r"|\b[\w.-]+['’]s\s+(?:e-?mail|message|text|note|doc|document|post|invite)\b"
+    r"|\bthe\s+(?:doc|document|file|attachment|e-?mail|thread|message|text|note|"
+    r"meeting|call|invite|spreadsheet|pdf|deck)\b"
+    r"|\b(?:today|tomorrow|yesterday|this week|last week)['’]?s?\s+(?:meeting|call|event|"
+    r"class|appointment)\b"
+    r"|\battached\b|\bwe (?:discussed|talked)\b",
+    re.I)
+_WRITING = re.compile(
+    r"^\s*(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:help me\s+)?"
+    r"(?:write|compose|draft|come up with|pen)\b", re.I)
+
+
+def pure_writing(prompt: str) -> bool:
+    """"Write a short thank-you note to my professor", "Draft a LinkedIn post
+    about my new job": the request supplies everything, so no read tool helps;
+    a placeholder covers any personal detail. False when the text must draw on
+    the user's stored content (their notes, an email, the calendar)."""
+    text = prompt or ""
+    return bool(_WRITING.match(text)) and not _STORED_CONTENT.search(text)
+
+
+# Reads withheld from a pure writing request. Contact lookups stay available so
+# "Draft an email to Priya" can still address the draft.
+WRITING_FORBIDDEN_READ_CATEGORIES = frozenset({
+    "assistant_read", "email_read", "email_triage", "notes_read", "browser_history_read",
+    "fs_read", "web_read", "system_read",
+})
+WRITING_ALLOWED_READS = frozenset({"lookup_contact", "list_contacts"})
+WRITING_FORBIDDEN_READS = frozenset({"view_messages", "summarize_messages"})
 
 
 COMPOSE_ONLY_FORBIDDEN_CATEGORIES = frozenset({
     "notes_write", "fs_write", "email_draft", "messages_draft", "email_send",
     "messages_send", "scheduled_send", "calendar_write", "assistant_write",
 })
+
+
+def ask_forbidden_tools(prompt: str, registry: dict) -> frozenset[str]:
+    """Tools a model-only Ask turn may not offer for this request: every read
+    (except contact lookups) for a pure writing request, and every write, draft
+    and send for a writing request with no destination."""
+    forbidden: set[str] = set()
+    if pure_writing(prompt):
+        forbidden |= {n for n, t in registry.items() if n not in WRITING_ALLOWED_READS
+                      and (t.category in WRITING_FORBIDDEN_READ_CATEGORIES
+                           or n in WRITING_FORBIDDEN_READS)}
+    if compose_only(prompt):
+        forbidden |= {n for n, t in registry.items() if t.category in COMPOSE_ONLY_FORBIDDEN_CATEGORIES}
+    return frozenset(forbidden)
 
 
 # Read tools whose result is the user's own current data.
@@ -374,6 +450,52 @@ _TIME_WORDS = re.compile(
     r"afternoon|evening|now|recent|lately|from|about|with)\b", re.I)
 
 
+_ABOUT_WISP = re.compile(
+    r"\b(?:you|your|yourself|wisp|connect|link|sign\s+in|log\s+in|account|google|gmail|"
+    r"permissions?|grant|integrat\w*|set\s+(?:you|wisp)\s+up)\b", re.I)
+_KNOWLEDGE = re.compile(
+    r"^(?:so\s+)?(?:how\s+(?:do|can|should|would)\s+(?:i|you|one|we)|how\s+to|how\s+(?:many|much|long|far|big|old|does|do|is|are)"
+    r"|why\b|what(?:'s|\s+is|\s+are|\s+was|\s+were)\s+(?:a|an|the)\b|what(?:'s|\s+is)\s+the\s+difference"
+    r"|who\s+(?:wrote|invented|discovered|painted|founded|was)"
+    r"|explain|define|describe|give\s+me\s+(?:some\s+)?(?:tips|advice|ideas)|tips\s+for|tell\s+me\s+(?:a\s+joke|about\s+(?:the|a|an)\b))",
+    re.I)
+_LIVE = re.compile(
+    r"\b(?:latest|recent|recently|current|currently|news|today|tonight|tomorrow|tmrw|yesterday|"
+    r"this\s+(?:week|weekend|month|year)|right\s+now|now|weather|forecast|temperature|rain|"
+    r"stocks?|price|prices|cost\s+now|score|won|winning|playing|happening|open\s+now|near\s+me|"
+    r"traffic|time\s+is\s+it|time\s+in|exchange\s+rate|next|upcoming|coming\s+up|"
+    r"schedule|calendar|inbox|here|nearby|nearest|directions|route|get\s+to|drive\s+to|commute|"
+    r"my|mine|i|i'm|i've|we|our|us)\b"
+    r"|\b(?:e-?mail|text|messag|call|tell|told|sen[dt]|wr[io]te|ping|invit)\w*\s+me\b"
+    r"|\d[\d,.]*\s*(?:%|percent|[x*/+^-])|[%*/+^=]\s*\d", re.I)
+
+
+_MAILISH = re.compile(
+    r"\b(?:due|deadline|submit|form|w-?\d|1099|bill|invoice|statement|receipt|order|package|"
+    r"shipp?(?:ed|ing)|tracking|delivery|confirmation|refund|renewal|subscription)\b", re.I)
+
+
+def mail_first(prompt: str) -> bool:
+    """A personal question whose answer usually sits in the user's email
+    ("When is the W-9 due?", "Did my order ship?"): view_emails leads the
+    head start, so the web is not the first place looked."""
+    return bool(_MAILISH.search(prompt or "")) and asks_personal_data(prompt)
+
+
+def knowledge_question(prompt: str) -> bool:
+    """General knowledge or a general how-to ("How many ounces are in a cup?",
+    "How do I take a screenshot on a Mac?", "Give me tips for studying"): no
+    personal data, nothing live, nothing about Wisp. Answered from knowledge in
+    one tool-free step, since a tool path only added failures and refusals."""
+    text = (prompt or "").strip()
+    head = _KNOWLEDGE.match(text)
+    if not head:
+        return False
+    rest = text[head.end():]  # "How do I" itself is not first-person data
+    return (not _LIVE.search(rest) and not _ABOUT_WISP.search(text)
+            and not asks_personal_data(text))
+
+
 def capability_question(prompt: str) -> bool:
     """A question about what Wisp can do or how to do something, not a request
     for the user's data: "What can you do with my calendar?", "How do I
@@ -384,7 +506,9 @@ def capability_question(prompt: str) -> bool:
     if re.match(r"^(?:what|which)\s+(?:can|could)\s+you\b", text):
         return True
     if re.match(r"^(?:how\s+(?:do|can|should|would)\s+i|how\s+to)\b", text):
-        return True
+        # "How do I connect Google to you?" is about Wisp; "How do I take a
+        # screenshot?" is a general how-to (knowledge_question).
+        return bool(_ABOUT_WISP.search(text))
     if re.search(r"\bwhat\s+are\s+you\s+(?:able|good|capable)\b|\bwhat\s+do\s+you\s+(?:do|know how)\b"
                  r"|\b(?:do|does)\s+(?:you|wisp)\s+have\s+access\b|\bare\s+you\s+able\s+to\b", text):
         return True

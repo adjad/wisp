@@ -547,9 +547,67 @@ def test_compact_fallback_drops_digest_markdown_and_cache_caveats():
     assert "Needs attention" not in text and "Finance — “Submit your W-9 by Friday”" in text
 
 
-def test_compose_only_hint_returns_the_text_without_lookups():
-    assert mo.compose_only("Write a short thank-you note to my professor for the extension.")
-    assert "Write it now" in mo.ASK_COMPOSE_HINT and "Do not search notes" in mo.ASK_COMPOSE_HINT
+@pytest.mark.parametrize("prompt", [
+    "Write a short thank-you note to my professor for the extension.",
+    "Write a haiku about autumn", "Draft a LinkedIn post announcing my new job",
+    "Compose a birthday message for my sister", "Can you help me write a cover letter for a barista job?",
+    "Draft an email to Priya saying I'll be 10 minutes late to dinner."])
+def test_pure_writing_requests(prompt):
+    assert mo.pure_writing(prompt)
+
+
+@pytest.mark.parametrize("prompt", [
+    "Write a summary of my notes from this week", "Draft a reply to Ed's email",
+    "Write an email to Sam based on my calendar", "Write a recap of the meeting",
+    "Draft a follow-up on tomorrow's meeting with Alex", "Write a note from my email from Dana",
+    "Draft a response using the doc I shared", "Reply to the proposal sync email and say Thursday works.",
+    "What's on my calendar tomorrow?"])
+def test_writing_that_draws_on_stored_content_keeps_its_reads(prompt):
+    assert not mo.pure_writing(prompt)
+
+
+class _T:
+    def __init__(self, category):
+        self.category = category
+
+
+_FAKE_REGISTRY = {"search_notes": _T("notes_read"), "view_emails": _T("email_read"),
+                  "get_upcoming": _T("assistant_read"), "view_messages": _T("messages_read"),
+                  "lookup_contact": _T("messages_read"), "web_search": _T("web_read"),
+                  "draft_email": _T("email_draft"), "append_note": _T("notes_write"),
+                  "calculate": _T("compute")}
+
+
+def test_pure_writing_offers_no_reads_but_keeps_contacts_and_destination_writes():
+    note = mo.ask_forbidden_tools("Write a short thank-you note to my professor for the extension.", _FAKE_REGISTRY)
+    assert {"search_notes", "view_emails", "get_upcoming", "view_messages", "web_search",
+            "draft_email", "append_note"} <= note
+    assert "lookup_contact" not in note
+    email = mo.ask_forbidden_tools("Draft an email to Priya saying I'll be 10 minutes late.", _FAKE_REGISTRY)
+    assert "search_notes" in email and "draft_email" not in email and "lookup_contact" not in email
+    summary = mo.ask_forbidden_tools("Write a summary of my notes from this week", _FAKE_REGISTRY)
+    assert "search_notes" not in summary and "append_note" in summary
+    assert mo.ask_forbidden_tools("Draft a reply to Ed's email", _FAKE_REGISTRY) == frozenset()
+    assert "[Name]" in mo.ASK_COMPOSE_HINT
+
+
+def test_pure_writing_turn_answers_directly_without_reads_or_reprompt(synthetic):
+    effects, _ = synthetic
+    prompt = "Write a short thank-you note to my professor for the extension."
+    note = "Dear Professor [Name],\n\nThank you for the extension.\n\nBest,\n[Your name]"
+    client, _, answer = ask([note], prompt=prompt, model_led_preload=["search_notes", "get_upcoming"],
+                            forbidden_tools=frozenset({"search_notes", "get_upcoming"}), ask_direct=True)
+    assert not client.requests[0].get("tools") and client.requests[0].get("tool_choice") in (None, "none")
+    assert len(client.requests) == 1 and not effects
+    assert answer == note
+
+
+def test_writing_with_stored_content_still_reads(synthetic):
+    effects, _ = synthetic
+    client, _, answer = ask([[call("get_upcoming", days=7)], "Summary: a workshop at 14:00."],
+                            prompt="Write a summary of my calendar this week", model_led_preload=["get_upcoming"])
+    assert executed(effects, "get_upcoming") == [{"days": 7}]
+    assert answer == "Summary: a workshop at 14:00."
 
 
 def test_personal_question_answered_from_the_web_is_reprompted(synthetic):
@@ -578,3 +636,85 @@ def test_general_web_question_is_not_reprompted(synthetic):
     client, _, answer = ask([[call("web_search", query="world series")], "The Dodgers won."],
                             prompt="Who won the most recent World Series?", model_led_preload=["web_search"])
     assert len(client.requests) == 2 and answer.startswith("The Dodgers")
+
+
+# --- general knowledge, Wisp how-tos, contacts ---------------------------------
+
+@pytest.mark.parametrize("prompt", [
+    "How many ounces are in a cup?", "How do I take a screenshot on a Mac?", "How do I make cold brew coffee?",
+    "Give me tips for studying for a final exam.", "Why is the sky blue?", "What's the capital of Australia?",
+    "Who wrote Pride and Prejudice?", "What's the difference between a virus and bacteria?"])
+def test_knowledge_questions_answer_from_knowledge(prompt):
+    assert mo.knowledge_question(prompt) and not mo.capability_question(prompt)
+
+
+@pytest.mark.parametrize("prompt", [
+    "Why did Priya email me?", "How should I prepare for my interview?", "What's the weather in Paris?",
+    "Who won the most recent World Series?", "What is 15% of 84?", "What's coming up in the next 48 hours?",
+    "How much storage do I have left?", "How do I get to the airport from here?", "Who is Alex Chen?",
+    "How do I connect my Google account to you?", "What's the latest news on the Mars mission?"])
+def test_personal_live_or_wisp_questions_are_not_knowledge(prompt):
+    assert not mo.knowledge_question(prompt)
+
+
+def test_google_connect_how_to_is_a_capability_answer():
+    assert mo.capability_question("How do I connect my Google account to you?")
+    assert not mo.capability_question("How do I take a screenshot on a Mac?")
+    hint = mo.ASK_CAPABILITY_HINT
+    for step in ("Quick Settings", "Google > Connect Google", "read-only", "about a minute", "Disconnect & erase"):
+        assert step in hint
+    assert "never mention internal tool names" in mo.ASK_KNOWLEDGE_HINT.lower().replace("never mention", "never mention")
+    assert "is a contact:" in mo.ASK_STYLE_HINT
+
+
+def test_mailish_personal_questions_lead_with_email(monkeypatch):
+    from service import main
+    monkeypatch.setattr(main, "_model_led_preload", lambda prompt: ["web_search", "get_upcoming"])
+    assert mo.mail_first("When is the W-9 due?") and mo.mail_first("Did my order ship?")
+    assert not mo.mail_first("When is the next solar eclipse?")
+    assert main._ask_tool_rank("When is the W-9 due?")[0][0] == "view_emails"
+    assert main._ask_tool_rank("Why is the sky blue?")[0][0] != "view_emails"
+
+
+@pytest.mark.parametrize("prompt,expected", [
+    ("Compose a short birthday message for my sister.", True),
+    ("Draft a LinkedIn post announcing my new job.", True),
+    ("Write a short thank-you note to my professor for the extension.", True),
+    ("Draft an email to Priya saying I will be late.", False),
+    ("Draft a text to Mom saying hi", False),
+    ("Write a message to Jordan asking about Friday", False),
+    ("Write a note in my Notes about the trip", False),
+    ("Write it and send it to Sam", False)])
+def test_compose_only_needs_no_destination(prompt, expected):
+    assert mo.compose_only(prompt) is expected
+
+
+def test_direct_writing_that_dodges_is_nudged_once(synthetic):
+    prompt = "Draft a LinkedIn post announcing my new job."
+    post = "Thrilled to share that I've joined [Company] as [Role]!"
+    client, _, answer = ask(["I can't write a LinkedIn post. What's the job title?", post],
+                            prompt=prompt, ask_direct=True)
+    assert len(client.requests) == 2 and "No questions" in client.requests[1]["messages"][-1]["content"]
+    assert answer == post
+
+
+def test_direct_writing_answer_is_not_nudged(synthetic):
+    client, _, answer = ask(["Leaves drift down."], prompt="Write a haiku about autumn.", ask_direct=True)
+    assert len(client.requests) == 1 and answer == "Leaves drift down."
+
+
+def test_direct_step_runs_with_thinking_off(synthetic):
+    client, _, _ = ask(["Leaves drift down."], prompt="Write a haiku about autumn.", ask_direct=True)
+    assert client.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.parametrize("dodge", [
+    "Got it. I'll write a brief thank-you note to your professor about the extension, ready to send.",
+    "Let me check if there's already a note to your professor.", "I can't write it for LinkedIn."])
+def test_write_dodges_are_detected(dodge):
+    assert loop._ASK_WRITE_DODGE.search(dodge)
+
+
+def test_written_text_is_not_a_dodge():
+    assert not loop._ASK_WRITE_DODGE.search("I'll draft it now.\n\nExcited to join [Company] as [Role].")
+    assert not loop._ASK_WRITE_DODGE.search("Dear Professor [Name],\nThank you for the extension.")
