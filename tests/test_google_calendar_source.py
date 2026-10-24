@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -307,19 +308,63 @@ class GoogleCalendarSource(unittest.TestCase):
     def test_erase_purges_queued_events_and_schedule_versions(self):
         self.refresh(JUDGE, self.judge_week())
         coffee = next(r for r in self.rows(JUDGE) if r["title"] == "Coffee chat with Priya")
+        events = {
+            "by_commitment": ("notify", {"commitment_id": coffee["id"]}, None),
+            "by_source": ("notify", {"source_id": f"gcal:{JUDGE}:coffee"}, None),
+            "address_only": ("notify", {"to": JUDGE}, None),
+            "claimed": ("notify", {"commitment_id": coffee["id"]}, "claim-1"),
+            "native_write": ("create_calendar_event", {"source_id": f"gcal:{JUDGE}:coffee"}, None),
+            "other_account": ("notify", {"source_id": "gcal:a@b.com:x"}, None),
+            "mine": ("notify", {"title": "Mine"}, None),
+        }
         with self.store.transaction() as db:
             db.execute("INSERT INTO assistant_schedule_versions VALUES (?,?)", (coffee["id"], "v1"))
             db.execute("INSERT INTO assistant_schedule_versions VALUES (?,?)", ("orphan-id", "v1"))
-            for i, payload in enumerate([f'{{"commitment_id": "{coffee["id"]}"}}',
-                                         f'{{"source_id": "gcal:{JUDGE}:coffee"}}',
-                                         f'{{"to": "{JUDGE.upper()}"}}', '{"title": "Mine"}']):
-                db.execute("INSERT INTO assistant_events(id,kind,payload,dedupe_key,target,created_at) "
-                           "VALUES (?,?,?,?,?,?)", (f"ev{i}", "notify", payload, f"k{i}", "app", time.time()))
+            for i, (eid, (kind, payload, claim)) in enumerate(events.items()):
+                db.execute("INSERT INTO assistant_events(id,kind,payload,dedupe_key,target,created_at,claim_token) "
+                           "VALUES (?,?,?,?,?,?,?)", (eid, kind, json.dumps(payload), f"k{i}", "app", time.time(), claim))
         C.erase(JUDGE)
         with self.store.transaction(write=False) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM assistant_schedule_versions").fetchone()[0], 0)
-            left = [r["payload"] for r in db.execute("SELECT payload FROM assistant_events")]
-        self.assertEqual(left, ['{"title": "Mine"}'])
+            left = {r["id"] for r in db.execute("SELECT id FROM assistant_events")}
+        self.assertEqual(left, {"address_only", "claimed", "native_write", "other_account", "mine"})
+
+    def test_erase_prefix_does_not_match_a_longer_address(self):
+        self.accounts["a@b.com"] = {"client_id": "synthetic", "refresh_token": "x",
+                                    "scopes": [G.SCOPE, G.CALENDAR_SCOPE]}
+        C.store_events("a@b.com", [{"source_id": "gcal:a@b.com:e1", "title": "Keep me", "when_ts": at(30).timestamp()}])
+        with self.store.transaction() as db:
+            db.execute("INSERT INTO assistant_events(id,kind,payload,dedupe_key,target,created_at) "
+                       "VALUES ('ev','notify',?,'k','app',?)", (json.dumps({"source_id": "gcal:a@b.com:e1"}), time.time()))
+        self.assertEqual(C.erase("a@b.co"), 0)
+        self.assertEqual([r["title"] for r in self.rows("a@b.com")], ["Keep me"])
+        with self.store.transaction(write=False) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM assistant_events").fetchone()[0], 1)
+
+    def test_failed_behavior_purge_does_not_stop_other_accounts_refreshing(self):
+        self.refresh(JUDGE, self.judge_week())
+        self.accounts[JUDGE]["scopes"] = [G.SCOPE]          # dropped: its rows get erased
+        refreshed = []
+
+        async def fake_refresh(account, **kwargs):
+            refreshed.append(account)
+            return 0
+
+        def broken(account, home=None):
+            raise RuntimeError("purge broke")
+
+        with patch("service.assistant.behavior_runtime.erase_google_calendar_account", broken), \
+             patch.object(C, "refresh_account", fake_refresh):
+            asyncio.run(C.refresh_due(self.accounts))
+        self.assertEqual(refreshed, [ME])
+        self.assertEqual(self.rows(JUDGE), [])
+        # The scope-lost path inside refresh_account is quiet too.
+        self.accounts[JUDGE]["scopes"] = [G.SCOPE, G.CALENDAR_SCOPE]
+        self.refresh(JUDGE, self.judge_week())
+        body = {"error": {"errors": [{"reason": "insufficientPermissions"}]}}
+        with patch("service.assistant.behavior_runtime.erase_google_calendar_account", broken):
+            self.assertEqual(self.refresh(JUDGE, lambda request: httpx.Response(403, json=body)), 0)
+        self.assertEqual(self.rows(JUDGE), [])
 
     def test_behavior_learner_never_reads_google_rows(self):
         from service.assistant.behavior_runtime import BehaviorRuntime
