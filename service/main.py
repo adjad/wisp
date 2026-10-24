@@ -2317,16 +2317,15 @@ async def agent(body: dict[str, Any]):
                         synthesis_guidance.insert(1, ASK_DAY_PLAN_HINT)
                 ask_forbidden: frozenset[str] = frozenset()
                 if ask_quality:
-                    from service.model_only import COMPOSE_ONLY_FORBIDDEN_CATEGORIES, compose_only
-                    if compose_only(prompt):
-                        from service.model_only import ASK_COMPOSE_HINT
+                    from service.model_only import ASK_COMPOSE_HINT, ask_forbidden_tools, pure_writing
+                    from service.tools.registry import REGISTRY
+                    # "Write a thank-you note to my professor" searched notes
+                    # three times (~28s) before writing: a pure writing request
+                    # gets no reads (a [Name] placeholder covers what it lacks),
+                    # and one with no destination gets no write/draft/send.
+                    ask_forbidden = ask_forbidden_tools(prompt, REGISTRY)
+                    if pure_writing(prompt):
                         synthesis_guidance.insert(1, ASK_COMPOSE_HINT)
-                        # "Write a thank-you note" returns the text; it must
-                        # not become append_note/create_note or a draft card.
-                        from service.tools.registry import REGISTRY
-                        ask_forbidden = frozenset(
-                            n for n, t in REGISTRY.items()
-                            if t.category in COMPOSE_ONLY_FORBIDDEN_CATEGORIES)
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")

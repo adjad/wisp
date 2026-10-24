@@ -205,16 +205,68 @@ def compose_only(prompt: str) -> bool:
 
 ASK_COMPOSE_HINT = (
     "COMPOSE: the answer IS the requested text. Write it now, ready to copy, with "
-    "no preamble or note about it. Do not search notes, email or files unless the "
-    "request explicitly asks you to draw on them (\"from my notes\", \"about the email\"); "
-    "fill unknown details with a short [placeholder]."
+    "no preamble, no lookups and no note about it. For a personal detail the request "
+    "does not give (a name, a date, a course), use a short placeholder such as [Name] "
+    "instead of searching or asking."
 )
+
+# A writing request that draws on the user's stored content keeps its reads:
+# "summary of my notes", "reply to Ed's email", "based on my calendar".
+_STORED_CONTENT = re.compile(
+    r"\b(?:my|our)\s+(?:notes?|e-?mails?|inbox|calendar|schedule|agenda|messages?|texts?|"
+    r"chats?|reminders?|to-?dos?|docs?|documents?|files?|folder|drafts?|meetings?|"
+    r"conversations?|browsing|history)\b"
+    r"|\b(?:based on|using|from|according to|summari[sz]e|summary of|recap of)\b"
+    r"|\b(?:reply|respond|answer)\s+to\b"
+    r"|\b[\w.-]+['’]s\s+(?:e-?mail|message|text|note|doc|document|post|invite)\b"
+    r"|\bthe\s+(?:doc|document|file|attachment|e-?mail|thread|message|text|note|"
+    r"meeting|call|invite|spreadsheet|pdf|deck)\b"
+    r"|\b(?:today|tomorrow|yesterday|this week|last week)['’]?s?\s+(?:meeting|call|event|"
+    r"class|appointment)\b"
+    r"|\battached\b|\bwe (?:discussed|talked)\b",
+    re.I)
+_WRITING = re.compile(
+    r"^\s*(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:help me\s+)?"
+    r"(?:write|compose|draft|come up with|pen)\b", re.I)
+
+
+def pure_writing(prompt: str) -> bool:
+    """"Write a short thank-you note to my professor", "Draft a LinkedIn post
+    about my new job": the request supplies everything, so no read tool helps;
+    a placeholder covers any personal detail. False when the text must draw on
+    the user's stored content (their notes, an email, the calendar)."""
+    text = prompt or ""
+    return bool(_WRITING.match(text)) and not _STORED_CONTENT.search(text)
+
+
+# Reads withheld from a pure writing request. Contact lookups stay available so
+# "Draft an email to Priya" can still address the draft.
+WRITING_FORBIDDEN_READ_CATEGORIES = frozenset({
+    "assistant_read", "email_read", "email_triage", "notes_read", "browser_history_read",
+    "fs_read", "web_read", "system_read",
+})
+WRITING_ALLOWED_READS = frozenset({"lookup_contact", "list_contacts"})
+WRITING_FORBIDDEN_READS = frozenset({"view_messages", "summarize_messages"})
 
 
 COMPOSE_ONLY_FORBIDDEN_CATEGORIES = frozenset({
     "notes_write", "fs_write", "email_draft", "messages_draft", "email_send",
     "messages_send", "scheduled_send", "calendar_write", "assistant_write",
 })
+
+
+def ask_forbidden_tools(prompt: str, registry: dict) -> frozenset[str]:
+    """Tools a model-only Ask turn may not offer for this request: every read
+    (except contact lookups) for a pure writing request, and every write, draft
+    and send for a writing request with no destination."""
+    forbidden: set[str] = set()
+    if pure_writing(prompt):
+        forbidden |= {n for n, t in registry.items() if n not in WRITING_ALLOWED_READS
+                      and (t.category in WRITING_FORBIDDEN_READ_CATEGORIES
+                           or n in WRITING_FORBIDDEN_READS)}
+    if compose_only(prompt):
+        forbidden |= {n for n, t in registry.items() if t.category in COMPOSE_ONLY_FORBIDDEN_CATEGORIES}
+    return frozenset(forbidden)
 
 
 # Read tools whose result is the user's own current data.

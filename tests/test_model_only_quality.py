@@ -547,9 +547,60 @@ def test_compact_fallback_drops_digest_markdown_and_cache_caveats():
     assert "Needs attention" not in text and "Finance — “Submit your W-9 by Friday”" in text
 
 
-def test_compose_only_hint_returns_the_text_without_lookups():
-    assert mo.compose_only("Write a short thank-you note to my professor for the extension.")
-    assert "Write it now" in mo.ASK_COMPOSE_HINT and "Do not search notes" in mo.ASK_COMPOSE_HINT
+@pytest.mark.parametrize("prompt", [
+    "Write a short thank-you note to my professor for the extension.",
+    "Write a haiku about autumn", "Draft a LinkedIn post announcing my new job",
+    "Compose a birthday message for my sister", "Can you help me write a cover letter for a barista job?",
+    "Draft an email to Priya saying I'll be 10 minutes late to dinner."])
+def test_pure_writing_requests(prompt):
+    assert mo.pure_writing(prompt)
+
+
+@pytest.mark.parametrize("prompt", [
+    "Write a summary of my notes from this week", "Draft a reply to Ed's email",
+    "Write an email to Sam based on my calendar", "Write a recap of the meeting",
+    "Draft a follow-up on tomorrow's meeting with Alex", "Write a note from my email from Dana",
+    "Draft a response using the doc I shared", "Reply to the proposal sync email and say Thursday works.",
+    "What's on my calendar tomorrow?"])
+def test_writing_that_draws_on_stored_content_keeps_its_reads(prompt):
+    assert not mo.pure_writing(prompt)
+
+
+class _T:
+    def __init__(self, category):
+        self.category = category
+
+
+_FAKE_REGISTRY = {"search_notes": _T("notes_read"), "view_emails": _T("email_read"),
+                  "get_upcoming": _T("assistant_read"), "view_messages": _T("messages_read"),
+                  "lookup_contact": _T("messages_read"), "web_search": _T("web_read"),
+                  "draft_email": _T("email_draft"), "append_note": _T("notes_write"),
+                  "calculate": _T("compute")}
+
+
+def test_pure_writing_offers_no_reads_but_keeps_contacts_and_destination_writes():
+    note = mo.ask_forbidden_tools("Write a short thank-you note to my professor for the extension.", _FAKE_REGISTRY)
+    assert {"search_notes", "view_emails", "get_upcoming", "view_messages", "web_search",
+            "draft_email", "append_note"} <= note
+    assert "lookup_contact" not in note
+    email = mo.ask_forbidden_tools("Draft an email to Priya saying I'll be 10 minutes late.", _FAKE_REGISTRY)
+    assert "search_notes" in email and "draft_email" not in email and "lookup_contact" not in email
+    summary = mo.ask_forbidden_tools("Write a summary of my notes from this week", _FAKE_REGISTRY)
+    assert "search_notes" not in summary and "append_note" in summary
+    assert mo.ask_forbidden_tools("Draft a reply to Ed's email", _FAKE_REGISTRY) == frozenset()
+    assert "[Name]" in mo.ASK_COMPOSE_HINT
+
+
+def test_pure_writing_turn_answers_directly_without_reads_or_reprompt(synthetic):
+    effects, _ = synthetic
+    prompt = "Write a short thank-you note to my professor for the extension."
+    note = "Dear Professor [Name],\n\nThank you for the extension.\n\nBest,\n[Your name]"
+    client, _, answer = ask([note], prompt=prompt, model_led_preload=["search_notes", "get_upcoming"],
+                            forbidden_tools=frozenset({"search_notes", "get_upcoming"}))
+    offered = {t["function"]["name"] for t in client.requests[0].get("tools") or []}
+    assert "search_notes" not in offered and "get_upcoming" not in offered
+    assert len(client.requests) == 1 and not effects
+    assert answer == note
 
 
 def test_personal_question_answered_from_the_web_is_reprompted(synthetic):

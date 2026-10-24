@@ -3701,7 +3701,8 @@ async def run_agent(
         if not tool_calls:
             text = msg.get("content") or ""
             if ask_quality:
-                from service.model_only import asks_personal_data, salvage_answer, strip_think
+                from service.model_only import (asks_personal_data, pure_writing, salvage_answer,
+                                                strip_think)
                 text = strip_think(text)
                 if not text and reasoning and not msg.get("_degenerate"):
                     # Content empty but the think block holds an answer: keep
@@ -3713,6 +3714,7 @@ async def run_agent(
                 if (not ask_reprompted and (not attempted_tools or web_only)
                         and _step < max_steps - 1
                         and not _ask_capability_prompt and not test_mode
+                        and not pure_writing(memory_query)
                         and (asks_personal_data(memory_query) or fresh_personal_scope)
                         and not _ask_personal_source_ran()
                         and (web_only or not _ask_short_question(text))):
