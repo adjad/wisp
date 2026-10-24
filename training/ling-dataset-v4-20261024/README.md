@@ -145,11 +145,13 @@ Use the same recipe as V3.3-thinking: LoRA r16/alpha32 on attention, 1 epoch, LR
 every V3.3 conversation, so it replaces a V3.3 run rather than stacking on one.
 
 Run these in order:
-1. `axolotl preprocess`
-2. `check_labels.py` (it must PASS)
-3. the 20-step smoke run
-4. the full run
-5. `merge_lora.py`
+1. Upload `ling-train-dev-v4-20261024.zip` (built by `package.py`), check its `sha256sum` against `upload-zip.json`,
+   and extract it into a NEW directory
+2. `axolotl preprocess`
+3. `check_labels.py` (it must PASS)
+4. the 20-step smoke run
+5. the full run
+6. `merge_lora.py`
 
 ## Eval
 

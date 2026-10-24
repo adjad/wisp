@@ -1,0 +1,82 @@
+{
+ "archive": "ling-train-dev-v4-20261024.zip",
+ "sha256": "783b8b7ed98823028306a451da40aacd92b4c681b1ec593c443d8fcd59157365",
+ "bytes": 5464476,
+ "members": 18,
+ "python": "3.14.3",
+ "zlib": "1.2.12",
+ "files": {
+  "README.md": {
+   "sha256": "f33a62c1ffc61ddcd5125dcefed26c732b773f470a0119ef075726fad4a30aa1",
+   "bytes": 9360
+  },
+  "REWRITE_GUIDE.md": {
+   "sha256": "33a3b192b10e4123408c30101956304b89cf1215d0a705a7733c2a1aae6a6506",
+   "bytes": 5890
+  },
+  "assets/voice_tail.txt": {
+   "sha256": "fd711b507c6131f5b09b55b822b0778699927c12fcd888fc7d93331eafdf645e",
+   "bytes": 720
+  },
+  "axolotl-a6000.yaml": {
+   "sha256": "04140fcadb8ac12f0d7a07de8e9eea38e7f3b521446fda5329c5acfbb869172e",
+   "bytes": 6483
+  },
+  "build_v4.py": {
+   "sha256": "924545ffbad481a60979deb8d763504d4e8b983840bf51ac6176977bd1dc2af4",
+   "bytes": 10884
+  },
+  "check_labels.py": {
+   "sha256": "96dada2d8e3b9999bbb751328bcf4c8fbc08e5ecb3258ae1111919daeec51561",
+   "bytes": 6190
+  },
+  "check_rewrite.py": {
+   "sha256": "3edfd81f908c302ff86c0d06f3b6410d341ff80c42d0b5a29876d0f3a87d9c26",
+   "bytes": 7554
+  },
+  "dev.jsonl": {
+   "sha256": "dd45635433c89906c52325bb8dcccd73c3dd86a07694ccdd44580bddb76f0c18",
+   "bytes": 9849832
+  },
+  "ext_v4_personal.py": {
+   "sha256": "ca60cc971b0b42e11c05cc175d4f05d22b529d391603670ead323c1116da4ba0",
+   "bytes": 15870
+  },
+  "merge_lora.py": {
+   "sha256": "dc013268b2d1ac3c6ff810521d38c826271e0023d46808f4ceec8674d0fcc22b",
+   "bytes": 4248
+  },
+  "preflight.json": {
+   "sha256": "690ea189db4c7734af26a97061671b422bbf8b9f6ba5ffa477b4be45151bc51f",
+   "bytes": 3592
+  },
+  "preflight.py": {
+   "sha256": "b45135b2352c4896ec6ea53db46caf68445b32a1e69fcc364754a634ce41eb41",
+   "bytes": 10432
+  },
+  "stats.json": {
+   "sha256": "7d1f3ed023b8e175e4b009d66d41562478a5c672f213f5fb9b391be23f68ad3b",
+   "bytes": 820
+  },
+  "train.jsonl": {
+   "sha256": "5611abfdfa7c7e3ffeafcc2ad63336c6256d21f0526f3f03ed55bab30dc7aedb",
+   "bytes": 78955753
+  },
+  "v4.provenance.jsonl": {
+   "sha256": "168ae11c0047f9d3d9a4e8846ea34fcebe55a2a89405cde06c456ea98ed1828f",
+   "bytes": 106319
+  },
+  "validate_v4.py": {
+   "sha256": "a0a33e4dc19ce6026f5040ff904a11da6d80c9d96b41b1163db13cf2c347179a",
+   "bytes": 8064
+  },
+  "validation.json": {
+   "sha256": "f191f41272cdfc83a6162284146dcbc24a5cb81046e96354734b04bd12b239e0",
+   "bytes": 570
+  },
+  "voice_rewrites.jsonl": {
+   "sha256": "eda008f0c98e8ccf64788cbf92f5c3b9f9c23a3a82f0d6e43e753e6129e26fb3",
+   "bytes": 310330
+  }
+ }
+}
