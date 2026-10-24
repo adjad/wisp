@@ -622,6 +622,10 @@ _EMPTY_MESSAGE = (
 # Model-only Ask fallbacks (see run_agent's ask_quality). The guard message is
 # the second prefill-guard refusal of one turn with nothing gathered yet.
 _ASK_WEB_TOOLS = frozenset({"web_search", "web_fetch", "wikipedia_summary"})
+# A direct writing answer that dodged: a refusal, or only a question back.
+_ASK_WRITE_DODGE = re.compile(
+    r"^\s*(?:sorry|i\s+(?:can(?:'|’)?t|cannot|am unable|'m unable|’m unable|don(?:'|’)t have))\b"
+    r"|\?\s*$", re.I)
 # Offered on a web-only personal re-prompt when the head start held none.
 _ASK_OWN_SOURCE_READS = ("view_emails", "search_reminders", "search_notes", "view_messages")
 _ASK_GUARD_MESSAGE = (
@@ -3167,6 +3171,7 @@ async def run_agent(
     ask_reprompt_step = False
     ask_reprompted = False
     ask_reprompt_no_web = False
+    ask_write_nudged = False
     ask_guard_retried = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
@@ -3719,6 +3724,17 @@ async def run_agent(
                     text = salvage_answer(reasoning)
                     if text:
                         audit("ask_salvaged_reasoning", step=_step)
+                if (ask_direct and not ask_write_nudged and _step < max_steps - 1
+                        and pure_writing(memory_query) and _ASK_WRITE_DODGE.search(text or "")):
+                    # "I can't write a LinkedIn post… what's the job title?":
+                    # one nudge to write it with placeholders instead.
+                    ask_write_nudged = True
+                    audit("ask_write_nudge", step=_step)
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": (
+                        "Please just write it now, complete and ready to copy. Use short "
+                        "[placeholders] for any detail I didn't give. No questions.")})
+                    continue
                 web_only = bool(attempted_tools) and attempted_tools <= _ASK_WEB_TOOLS
                 if (not ask_reprompted and (not attempted_tools or web_only)
                         and _step < max_steps - 1

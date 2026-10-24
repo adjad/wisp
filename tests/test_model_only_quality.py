@@ -687,3 +687,17 @@ def test_mailish_personal_questions_lead_with_email(monkeypatch):
     ("Write it and send it to Sam", False)])
 def test_compose_only_needs_no_destination(prompt, expected):
     assert mo.compose_only(prompt) is expected
+
+
+def test_direct_writing_that_dodges_is_nudged_once(synthetic):
+    prompt = "Draft a LinkedIn post announcing my new job."
+    post = "Thrilled to share that I've joined [Company] as [Role]!"
+    client, _, answer = ask(["I can't write a LinkedIn post. What's the job title?", post],
+                            prompt=prompt, ask_direct=True)
+    assert len(client.requests) == 2 and "No questions" in client.requests[1]["messages"][-1]["content"]
+    assert answer == post
+
+
+def test_direct_writing_answer_is_not_nudged(synthetic):
+    client, _, answer = ask(["Leaves drift down."], prompt="Write a haiku about autumn.", ask_direct=True)
+    assert len(client.requests) == 1 and answer == "Leaves drift down."
