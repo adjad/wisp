@@ -681,12 +681,26 @@ def invalidate(kinds: tuple[str, ...] = ("summary", "inbox")) -> list[str]:
     return dropped
 
 
+def _remote_background_paused() -> bool:
+    """On a remote model (Gemini), automatic background calls would spend the
+    provider's rate limit that live questions need: only an explicit Analyze
+    runs. WISP_REMOTE_BACKGROUND=1 turns the automatic cycle back on."""
+    import os
+    from service.inference.remote_policy import remote_only_profile
+    try:
+        return remote_only_profile() is not None and os.environ.get("WISP_REMOTE_BACKGROUND") != "1"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def schedule_tick() -> asyncio.Task | None:
     """Single-flight background tick for the scheduler loop; never awaited there."""
     global _task
     from service import idle
     from service.assistant.hub import hub
     if (_task is not None and not _task.done()) or time.time() < _next_call_at:
+        return None
+    if _remote_background_paused():
         return None
     if idle.foreground_busy():
         _stood_down("a turn is in progress")
