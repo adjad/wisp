@@ -49,6 +49,7 @@ CONFIG_PATH = MOE_DIR / "mcp.json"
 # A server that hasn't answered `initialize` in this long is treated as broken
 # rather than retried forever — a wrong command in mcp.json shouldn't leave a
 # zombie subprocess and a hanging startup task.
+_LINE_LIMIT_BYTES = 16 * 1024 * 1024
 _HANDSHAKE_TIMEOUT_S = 20.0
 _CALL_TIMEOUT_S = 90.0
 _MAX_RESULT_CHARS = 8000
@@ -94,6 +95,10 @@ class MCPServer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
                 env=env,
+                # One JSON-RPC message per line, and tools/list is one message:
+                # Google Workspace's is ~87 KB, past asyncio's 64 KB default,
+                # which killed the read loop mid-handshake.
+                limit=_LINE_LIMIT_BYTES,
             )
         except Exception as e:  # noqa: BLE001
             self.error = f"couldn't start: {e}"
