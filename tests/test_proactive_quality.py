@@ -397,3 +397,57 @@ def test_surname_is_never_rewritten():
     assert guard.second_person("Trishala Jain asked Adi to call on Fridays.", real()) == \
         "Trishala Jain asked you to call on Fridays."
     assert guard.second_person("Adi Fridays are busy.", ["Adi"]) == "You Fridays are busy."
+
+
+# --- live run 2479 ------------------------------------------------------------------------------------------
+
+
+def test_old_checkpoints_are_read_again_under_new_rules(store, monkeypatch):
+    items = sources.text_items(mom_texts(), now=NOW, own=ME)
+    store.triage_put(items[0]["id"], items[0]["hash"], {"junk": False, "sensitive": False, "title": "Old",
+                     "summary": "Adi told Mom something.", "asks_of_me": ""}, status="ok")   # pre-version key
+    seen = []
+
+    async def model(system, material, abort, tokens):
+        seen.append("ONE email thread or text conversation" in system)
+        return await _cycle_model()(system, material, abort, tokens)
+
+    run(store, model, items)
+    assert any(seen)                     # the pre-version checkpoint was not served: it was read again
+    thread = snap(store)["threads"][0]
+    assert "Adi" not in thread["summary"]
+
+
+def test_incoming_mail_credits_the_sender_not_you():
+    item = {"source": "mail", "who": "Ed", "title": "Exam", "person": False, "user_wrote": False,
+            "text": "Subject: Exam reminder\nFrom Ed:\nExam 1 is next Wednesday, closed-book. Exam prep is due.",
+            "lines": []}
+    reply = json.dumps({"title": "Exam reminder", "summary": "The user sent a reminder that Exam 1 is next Wednesday.",
+                        "junk": False, "sensitive": False, "asks_of_me": ""})
+    assert triage.validate(reply, item, allowed=set())["summary"] == "Ed sent a reminder that Exam 1 is next Wednesday."
+    assert triage.attribute("The user told Mom hi.", NAMES, "Mom", True) == "You told Mom hi."
+
+
+def test_meta_summaries_are_dropped():
+    item = sources.text_items(mom_texts(), now=NOW, own=ME)[0]
+    reply = json.dumps({"title": "Talk", "summary": "Mom sent this to 3 people and it is not sensitive.",
+                        "junk": False, "sensitive": False, "asks_of_me": "Talk with Mom tomorrow"})
+    assert triage.validate(reply, item, allowed=set())["summary"] == ""
+
+
+def test_a_waiting_contact_gets_a_reply_card_even_when_the_judge_omits_it(store):
+    items = sources.text_items(mom_texts(), now=NOW, own=ME)
+    model = Model(triage_reply=lambda m: {"title": "Chat", "summary": "Mom wants to talk tomorrow.", "junk": True,
+                                          "sensitive": False, "asks_of_me": ""},
+                  judge_reply=lambda m: {"summary": "", "items": []})
+    run(store, model, items)
+    card = next(c for c in snap(store)["cards"])
+    assert card["action"]["method"] == "text_reply" and card["title"].startswith("Reply to Mom")
+    assert card["action"]["button"] == "Text Mom back?"
+
+
+def test_vague_read_the_email_todos_are_dropped():
+    assert judge._VAGUE.match("Read the email from Dhruv")
+    item = {"source": "mail", "who": "Dhruv Kolte", "title": "Floor updates", "person": True, "replied": False}
+    assert judge.action_title("task", item, {"asks_of_me": "Read the email from Dhruv", "title": "Floor updates"},
+                              NAMES) == ""

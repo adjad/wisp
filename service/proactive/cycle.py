@@ -206,11 +206,60 @@ def _survivor(item: dict, store, offline_results: dict) -> dict | None:
         result = {"junk": False, "sensitive": False, "title": item["title"], "summary": "",
                   "asks_of_me": item["title"]}
         return {"item": item, "result": result}
-    entry = store.triage_get(item["id"], item["hash"])
+    entry = store.triage_get(item["id"], _tkey(item))
     result = (entry or {}).get("result") if entry else offline_results.get(item["id"])
     if not isinstance(result, dict) or result.get("junk") or result.get("sensitive"):
         return None
     return {"item": item, "result": result}
+
+
+def _tkey(item: dict) -> str:
+    """The triage checkpoint key: content hash plus the triage rules' version,
+    so a summary written under older rules is read again."""
+    return f"{item['hash']}:{triage.VERSION}"
+
+
+WAITING_S = 3 * 86400
+
+
+def _any_result(item: dict, store, offline_results: dict) -> dict | None:
+    """An item with its triage result, junk included (a real contact's last
+    text can read as small talk and still be waiting on the user)."""
+    if item["source"] != "messages":
+        return None
+    entry = store.triage_get(item["id"], _tkey(item))
+    result = (entry or {}).get("result") if entry else offline_results.get(item["id"])
+    if result is None:
+        result = {"junk": False, "sensitive": False, "title": "", "summary": "", "asks_of_me": ""}
+    if not isinstance(result, dict) or result.get("sensitive"):
+        return None
+    return {"item": item, "result": result}
+
+
+def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, now: float, tz: str,
+                        suppressed: set[str], allowed: set[str]) -> list[dict]:
+    """Card order, made deterministic for people: the judge's items from
+    people, then every one-to-one conversation whose last message is an
+    unanswered incoming text under 3 days old (even when the judge left it
+    out), then everything else. The 5-card cap applies after this."""
+    have = {i["primary"] for i in ranked if not i.get("unranked")}
+    waiting = []
+    for candidate in sorted(pool, key=lambda s: -(s["item"].get("received_ts") or 0)):
+        item = candidate["item"]
+        if (item.get("group") or item.get("replied") or not item.get("person") or item["id"] in have
+                or now - (item.get("received_ts") or 0) > WAITING_S):
+            continue
+        made = judge_mod._finalize({"title": "", "action": "reply", "why": "", "due": "", "urgency": "high"},
+                                   {"kind": "item", "survivor": candidate}, [], now=now, tz=tz, sched=sched,
+                                   suppressed=suppressed, allowed=allowed)
+        if made is not None:
+            waiting.append(made)
+    taken = {w["primary"] for w in waiting}
+    judged = [i for i in ranked if not i.get("unranked")]
+    people = [i for i in judged if (i.get("item") or {}).get("person")]
+    others = [i for i in judged if not (i.get("item") or {}).get("person")]
+    rest = [i for i in ranked if i.get("unranked") and i["primary"] not in taken]
+    return people + waiting + others + rest
 
 
 def _threads(survivors: list[dict]) -> list[dict]:
@@ -221,7 +270,9 @@ def _threads(survivors: list[dict]) -> list[dict]:
             continue
         out.append({"id": "thread:" + item["id"], "source": item["source"], "account": item["account"],
                     "who": item.get("who", ""), "title": guard.clean(result.get("title") or item.get("title"), 90),
-                    "summary": guard.clean(result.get("summary") or result.get("asks_of_me"), 400),
+                    "summary": guard.clean(result.get("summary") or result.get("asks_of_me")
+                                           or (item.get("title") if item["source"] == "mail" else ""), 400),
+                    "user_wrote": bool(item.get("user_wrote")),
                     "needs_reply": bool(result.get("asks_of_me")) and not item.get("replied")
                                    and item.get("person", True) and not item.get("group"),
                     "received_ts": item.get("received_ts"), "reply_ref": item.get("reply_ref", "")})
@@ -283,7 +334,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     for item in items:
         if item["source"] not in ("mail", "messages"):
             continue
-        entry = store.triage_get(item["id"], item["hash"])
+        entry = store.triage_get(item["id"], _tkey(item))
         if entry and (entry["status"] in ("ok", "sensitive") or entry.get("attempts", 0) >= 2):
             continue
         pending.append(item)
@@ -307,7 +358,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                     model_ok = False        # the model isn't resident: go on by rule
                     _stood_down("the model isn't available; using rules")
             if state != "standdown" and not store.erased_since(item.get("account", ""), started):
-                store.triage_put(item["id"], item["hash"], result, status=state, account=item.get("account", ""))
+                store.triage_put(item["id"], _tkey(item), result, status=state, account=item.get("account", ""))
         if not model_ok:
             rule = triage.fallback(item)
             if rule is not None:
@@ -356,6 +407,10 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             ranked = judge_mod.rank(judge_mod.by_rule(mine, acct_sched, now=now, tz=tz, suppressed=suppressed,
                                                       allowed=allowed), now)
             summary = ""
+        waiting_pool = [w for w in (_any_result(i, store, offline_results) for i in items
+                                    if (i.get("account") or own) == acct) if w is not None]
+        ranked = with_waiting_people(ranked, waiting_pool, acct_sched, now=now, tz=tz, suppressed=suppressed,
+                                     allowed=allowed)
         _status["phase"] = "preparing"
         state, cards = await prepare_mod.prepare(ranked, acct_sched, reply_fn if model_ok else _offline, abort,
                                                  now=now, tz=tz, linked=linked, resolve_handle=resolve or resolve_handle,
@@ -581,7 +636,11 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     cards = [{**c, "action": {**c["action"], "locked": "unknown"}} if c["id"] in locked else c for c in cards]
     todos = sorted(merged.values(), key=lambda t: (t["done"], t.get("due_ts") is None, t.get("due_ts") or 0,
                                                    t["title"].casefold()))
-    threads = list(state.get("threads") or [])
+    names = triage.user_names()
+    threads = [{**t, "summary": triage.attribute(t.get("summary", ""), names, t.get("who", ""),
+                                                 t.get("user_wrote", t.get("source") == "messages")),
+                "title": guard.second_person(t.get("title", ""), names)}
+               for t in state.get("threads") or []]
     accounts = list(state.get("accounts") or [own])
     if account:
         match = lambda x: str(x.get("account") or "").casefold() == account.casefold()  # noqa: E731

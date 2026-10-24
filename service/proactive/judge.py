@@ -148,7 +148,11 @@ def _good_title(title: str, source: str, allowed: set[str], names: list[str]) ->
     first = re.findall(r"[a-z']+", title.casefold())[:1]
     if not first or first[0] not in VERBS:
         return False
-    return not guard.names_user(title, names) and not _MISCREDIT.search(title)
+    return not guard.names_user(title, names) and not _MISCREDIT.search(title) and not _VAGUE.match(title)
+
+
+_VAGUE = re.compile(r"(?i)^(?:read|check|open|see|look at|view|review) (?:the |an |a |this |that |your )?"
+                    r"(?:e-?mail|message|text|mail|note|update)s?\b")
 
 
 _MISCREDIT = re.compile(r"\byour (?:own )?(?:email|message|text|reply|note)s? (?:to|for)\b", re.I)
@@ -189,7 +193,7 @@ def action_title(kind: str, item: dict, result: dict, names: list[str]) -> str:
     """A verb-first to-do built by code: the user's own ask when it reads as
     one, else the action toward the other party (who comes from the source)."""
     asks = guard.clean(result.get("asks_of_me"), 90)
-    if _MISCREDIT.search(asks):
+    if _MISCREDIT.search(asks) or _VAGUE.match(asks):
         asks = ""
     if not item.get("person", True):
         # An organization's notice: the user acts on its deadline, never "replies".
@@ -221,9 +225,7 @@ def action_title(kind: str, item: dict, result: dict, names: list[str]) -> str:
         return f"Meet {who}" + (f" for {lower(topic)}" if topic else "")
     if asks and not guard.names_user(asks, names):
         return asks[:1].upper() + asks[1:]
-    if item.get("replied"):
-        return ""                        # they already answered: nothing left to name
-    return f"Reply to {who}{about}" if who and item.get("source") in ("mail", "messages") else ""
+    return ""                            # no real ask: not a to-do
 
 
 def _best_quote(lines: list[str], hint: str) -> str:
@@ -315,9 +317,7 @@ def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: st
         fingerprint = f"reminder:{row['id']}"
         if fingerprint in suppressed:
             return None
-        title = guard.clean(raw.get("title"), 90)
-        if not title or not guard.grounded(title, row["title"], allowed=allowed):
-            title = row["title"]
+        title = row["title"]                          # a reminder reads as the user wrote it
         due_ts, fixed, has_clock = (row["when_ts"], "", False) if row.get("when_ts") is not None else \
             guard.resolve_due(row["title"], now, tz)
         return dict(title=title, kind="errand" if _infer_kind(row["title"], "reminders") == "errand" else "task",

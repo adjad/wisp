@@ -267,7 +267,8 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         items.append(dict(id=item_id, source="mail", account=account_of(account, linked=linked, own=own),
                           raw_account=account, who=who, title=subject, text=text, lines=quotes,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
-                          person=bool(people), hash=_digest(text, replied)))
+                          person=bool(people), user_wrote=any(_address(m) in mine for m in messages),
+                          hash=_digest(text, replied)))
     items.sort(key=lambda i: i["received_ts"], reverse=True)
     return items[:MAX_MAIL_THREADS]
 
@@ -369,6 +370,7 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None) -> l
         items.append(dict(id="messages:" + _digest(context), source="messages", account=own, raw_account="",
                           who=who, title=label, text=text, lines=quotes, received_ts=last_in[0],
                           replied=replied, group=group, person=True,
+                          user_wrote=any(r[2].partition(":")[0].strip() == "Me" for r in rows),
                           handle="" if group else chat_handle(chats.get(context, set())),
                           ref={"kind": "text", "conversation": context, "label": label},
                           reply_ref="messages:" + context, hash=_digest(text, replied)))

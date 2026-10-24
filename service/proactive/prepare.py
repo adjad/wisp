@@ -284,6 +284,8 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
         if len(cards) >= limit:
             break
         raw = item.get("item") or {}
+        if item["source"] == "reminders":
+            continue                     # already a reminder: it stays on the to-do list
         if item.get("unranked") and not (raw.get("person") and not raw.get("replied") and not raw.get("group")
                                          and item["source"] in ("mail", "messages")):
             continue                     # left-over slots go only to a person still waiting on the user
