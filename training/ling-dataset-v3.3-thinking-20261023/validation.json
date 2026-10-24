@@ -1,0 +1,15 @@
+{
+ "status": "PASS",
+ "rows_checked": 2876,
+ "problem_count": 0,
+ "problems": [],
+ "distinct_reasoning_skeletons": 1849,
+ "source_sha256": {
+  "train.jsonl": "4e70563a4f672af43ad3a839c6ce845bd6858b4bdf264887e39d83b69996d936",
+  "dev.jsonl": "a47deb1b1135dbe09f27d2071a02960c8b6d5ce51749eca5eff38672f0a19ab6"
+ },
+ "sha256": {
+  "train": "b20300360b7af10bb2f05dec4f1bdb072e6c2c44c1117ab952494d4a0ea62afc",
+  "dev": "76b6931b939c58ed9efbd9cd8f388c9381f659ba3548e1f8e404113dbf93008f"
+ }
+}

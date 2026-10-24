@@ -1,0 +1,47 @@
+{
+ "source_sha256": {
+  "train.jsonl": "4e70563a4f672af43ad3a839c6ce845bd6858b4bdf264887e39d83b69996d936",
+  "dev.jsonl": "a47deb1b1135dbe09f27d2071a02960c8b6d5ce51749eca5eff38672f0a19ab6"
+ },
+ "seed": 20261023,
+ "splits": {
+  "train": {
+   "rows": 2574,
+   "by_kind": {
+    "call": 802,
+    "discovery": 128,
+    "final_after_tools": 568,
+    "final_direct": 97,
+    "stub": 379,
+    "v2_intent": 510,
+    "v2_summary": 90
+   },
+   "reasoning_chars": {
+    "min": 67,
+    "p50": 178,
+    "p95": 302,
+    "max": 470
+   },
+   "sha256": "b20300360b7af10bb2f05dec4f1bdb072e6c2c44c1117ab952494d4a0ea62afc"
+  },
+  "dev": {
+   "rows": 302,
+   "by_kind": {
+    "call": 97,
+    "discovery": 15,
+    "final_after_tools": 70,
+    "final_direct": 11,
+    "stub": 49,
+    "v2_intent": 51,
+    "v2_summary": 9
+   },
+   "reasoning_chars": {
+    "min": 74,
+    "p50": 184,
+    "p95": 293,
+    "max": 418
+   },
+   "sha256": "76b6931b939c58ed9efbd9cd8f388c9381f659ba3548e1f8e404113dbf93008f"
+  }
+ }
+}

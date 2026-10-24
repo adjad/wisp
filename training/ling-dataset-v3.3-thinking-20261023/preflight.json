@@ -1,0 +1,99 @@
+{
+  "status": "PASS",
+  "max_len": 16384,
+  "thinking": "enabled (enable_thinking=True); context steps render <think></think>",
+  "tools_passed_to_template": true,
+  "v2_replay_tools_arg": "tools=[] -> None (identical render to no tools argument; verified)",
+  "rows_needing_string_to_dict_workaround": 0,
+  "label_definition": "tokens after '<role>ASSISTANT</role>\\n<think>' through '<|role_end|>' of the final assistant message; everything else -100",
+  "checks": [
+    "target opens with reasoning_content + </think>",
+    "system turn says detailed thinking on",
+    "context assistant steps render empty <think></think>",
+    "last message is training:true assistant, no earlier training:true",
+    "full render startswith generation-prompt render",
+    "exactly one trailing <|role_end|> in target",
+    "final assistant span is the tail (independent regex)",
+    "no token straddles the boundary; prefix tokens identical inside full render",
+    "target non-empty, last token is <|role_end|>"
+  ],
+  "splits": {
+    "train": {
+      "rows": 1974,
+      "rows_ok": 1974,
+      "tokens_total": 13156291,
+      "tokens_max": 11631,
+      "tokens_p95": 9550,
+      "tokens_median": 6293,
+      "tokens_mean": 6664.8,
+      "labeled_tokens_total": 139533,
+      "target_tokens_min": 27,
+      "target_tokens_median": 64,
+      "target_tokens_p95": 127,
+      "target_tokens_max": 284,
+      "rows_over_max_len": 0
+    },
+    "train_v2_replay": {
+      "rows": 600,
+      "rows_ok": 600,
+      "tokens_total": 369291,
+      "tokens_max": 842,
+      "tokens_p95": 740,
+      "tokens_median": 648,
+      "tokens_mean": 615.5,
+      "labeled_tokens_total": 63985,
+      "target_tokens_min": 50,
+      "target_tokens_median": 105,
+      "target_tokens_p95": 162,
+      "target_tokens_max": 199,
+      "rows_over_max_len": 0
+    },
+    "dev": {
+      "rows": 242,
+      "rows_ok": 242,
+      "tokens_total": 1629028,
+      "tokens_max": 11211,
+      "tokens_p95": 9468,
+      "tokens_median": 6299,
+      "tokens_mean": 6731.5,
+      "labeled_tokens_total": 16931,
+      "target_tokens_min": 27,
+      "target_tokens_median": 66,
+      "target_tokens_p95": 122,
+      "target_tokens_max": 245,
+      "rows_over_max_len": 0
+    },
+    "dev_v2_replay": {
+      "rows": 60,
+      "rows_ok": 60,
+      "tokens_total": 37376,
+      "tokens_max": 776,
+      "tokens_p95": 733,
+      "tokens_median": 649,
+      "tokens_mean": 622.9,
+      "labeled_tokens_total": 6479,
+      "target_tokens_min": 66,
+      "target_tokens_median": 102,
+      "target_tokens_p95": 168,
+      "target_tokens_max": 201,
+      "rows_over_max_len": 0
+    }
+  },
+  "v2_replay_source": "appended to train/dev.jsonl",
+  "note_splits": "keys train/dev = model-led rows only; train_v2_replay/dev_v2_replay = V2 replay rows (tools=[]) reported separately",
+  "rows_over_max_len": [],
+  "problems": [],
+  "problem_count": 0,
+  "tokenizer_dir_files_sha256": {
+    "tokenizer.json": "40fb9d7d7795b8bd305aeff39ce9963f3f450915b9553f2938e009be9a1fed60",
+    "tokenizer_config.json": "2456b0372956cd3e82f17e33372148b115a94970bfd4878ba5e7e60cd3204f74",
+    "chat_template.jinja": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a"
+  },
+  "chat_template_sha256": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a",
+  "data_sha256": {
+    "train.jsonl": "b20300360b7af10bb2f05dec4f1bdb072e6c2c44c1117ab952494d4a0ea62afc",
+    "dev.jsonl": "76b6931b939c58ed9efbd9cd8f388c9381f659ba3548e1f8e404113dbf93008f"
+  },
+  "tokenizer_vocab_size": 157153,
+  "actual_axolotl_prepared_label_audit_still_required": true
+}

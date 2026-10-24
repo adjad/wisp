@@ -1,0 +1,7 @@
+*.zip
+# Too large for GitHub; regenerate byte-identically (sha256 in stats.json / validation.json / preflight.json):
+#   python3 ../ling-dataset-v3.2-20261014/sources.py && python3 ../ling-dataset-v3.2-20261014/generate.py && python3 add_thinking.py
+train.jsonl
+dev.jsonl
+__pycache__/
+last_run_prepared/
