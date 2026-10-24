@@ -525,13 +525,19 @@ async def _resident_reply(system: str, material: str, abort, *,
     """
     from service.assistant.brief import _c
     from service.config import role_to_model, thinking_kwargs
+    from service.inference.remote_policy import remote_only_profile
     model = role_to_model("fast")
     client = _c()
-    loaded = set(await client.loaded_models())
-    try:
-        warm = set(client.keep_warm())
-    except Exception:  # noqa: BLE001 — unknown keep-warm set: assume nothing extra is allowed
-        warm = set()
+    if remote_only_profile() is not None:
+        # Remote inference: there is no local residency to protect, so the only
+        # stand-down is a user's turn.
+        loaded, warm = {model}, set()
+    else:
+        loaded = set(await client.loaded_models())
+        try:
+            warm = set(client.keep_warm())
+        except Exception:  # noqa: BLE001 — unknown keep-warm set: assume nothing extra is allowed
+            warm = set()
     if model not in loaded:
         _stood_down(f"the fast model ({model}) isn't loaded; loaded: {sorted(loaded) or 'nothing'}")
         return None

@@ -467,6 +467,9 @@ def thinking_kwargs(model: str, *, on: bool) -> dict:
     keep omitting the kwarg, because their measured behavior depends on the
     template default and has not been re-measured with an explicit `True`.
     """
+    from service.inference.remote_policy import remote_only_profile
+    if remote_only_profile() is not None:
+        return {}                        # a remote server has no local chat template to steer
     if model in explicit_thinking_models():
         return {"chat_template_kwargs": {"enable_thinking": bool(on)}}
     if not on and model in no_thinking_capable():

@@ -714,7 +714,10 @@ def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False,
     merging again rather than clobbering (each returns a whole
     `{"chat_template_kwargs": {...}}` dict).
     """
+    from service.inference.remote_policy import remote_only_profile
     from service.model_only import model_only_enabled
+    if remote_only_profile() is not None:
+        return {}                        # a remote server has no local chat template to steer
     if model_only_enabled():
         # Model-only test: thinking is stated ON for every step of every model,
         # except a model-only Ask narration step whose caller asked for it OFF
