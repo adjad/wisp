@@ -113,7 +113,8 @@ final class ProactiveActions: ObservableObject {
         fires[card.id] = .sending
         var body: [String: Any] = ["draft": draft(card)]
         if !action.recipient.isEmpty { body["recipient"] = action.recipient }
-        if let slot = action.slot { body["slot"] = ["start": slot.start, "end": slot.end] }
+        // The service books the slot it stored on the card and rechecks it; the
+        // request never carries one (the fire route refuses unknown fields).
         do {
             let outcome = try await post(today, "/assistant/proactive/cards/\(Self.segment(card.id))/fire", body: body)
             guard outcome.ok else {
