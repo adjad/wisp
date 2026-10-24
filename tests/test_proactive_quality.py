@@ -24,7 +24,7 @@ TZ = "America/Los_Angeles"
 NOW = datetime(2026, 10, 23, 10, 0, tzinfo=ZoneInfo(TZ)).timestamp()
 ME = "adnjain@ucsc.edu"
 LINKED = "adijain888@gmail.com"
-NAMES = ["Adi Jain", "Adi", "Jain"]
+NAMES = ["Adi Jain", "Adi"]
 
 
 @pytest.fixture(autouse=True)
@@ -330,3 +330,70 @@ def test_day_summary_reads_naturally():
     text = cycle._day_summary([], todos, threads, NOW, TZ)
     assert text == ("Two events today — CruzHacks Hack Day at 11:45 and Hacktoberfest x CruzHacks at noon. "
                     "Three people are waiting on a reply.")
+
+
+# --- re-audit: the unknown lock survives the next cycle ----------------------------------------------
+
+
+def _cycle_items():
+    rows = [mail("<sam@x>", "Sam Lee", "sam@example.com", "Coffee chat?", "Let's go to a coffee chat this week?", 5,
+                 account="Google")]
+    return (sources.mail_items(rows, mine={ME, LINKED}, now=NOW, tz=TZ, linked={LINKED}, own=ME)
+            + sources.text_items(mom_texts(), now=NOW, own=ME))
+
+
+def _cycle_model():
+    def tri(m):
+        if "coffee" in m.casefold():
+            return {"title": "Coffee chat", "summary": "Sam Lee wants a coffee chat this week.", "junk": False,
+                    "sensitive": False, "asks_of_me": "Reply to Sam about the coffee chat"}
+        return {"title": "Talk tomorrow", "summary": "Mom wants to talk tomorrow.", "junk": False,
+                "sensitive": False, "asks_of_me": "Reply to Mom"}
+    return Model(triage_reply=tri, judge_reply=lambda m: {"summary": "", "items": [
+        {"title": "Reply", "action": "reply", "why": "", "due": "", "sources": [s], "urgency": "high"}
+        for s in ("S1", "S2")]})
+
+
+def _freeze(ref):
+    return {"ok": True, "can_send": True, "envelope": "sealed:" + ref["message_id"], "to": ["sam@example.com"],
+            "cc": [], "subject": "Re: Coffee chat?", "expires_at": NOW + 10_000_000}
+
+
+@pytest.mark.parametrize("method", ["email_reply", "text_reply"])
+def test_an_unknown_lock_survives_the_next_cycle(store, monkeypatch, method):
+    run(store, _cycle_model(), _cycle_items(), freeze=_freeze)
+    card = next(c for c in snap(store)["cards"] if c["action"]["method"] == method)
+    sends = []
+
+    async def unknown(card, words):
+        sends.append(words)
+        return {"ok": False, "status": "unknown"}
+
+    assert asyncio.run(executor.fire(card["id"], "Hi", store=store, methods={method: unknown}))["status"] == "unknown"
+    run(store, _cycle_model(), _cycle_items(), freeze=_freeze)          # a re-judge rebuilds every card
+    rebuilt = next(c for c in snap(store)["cards"] if c["id"] == card["id"])
+    assert rebuilt["action"]["locked"] == "unknown"
+    again = asyncio.run(executor.fire(card["id"], "Hi", store=store, methods={method: unknown}))
+    assert again["status"] == "locked" and sends == ["Hi"]
+    # Dismiss clears it (and the card is gone for good).
+    store.dismiss_card(store.card(card["id"]))
+    assert card["id"] not in store.unknown_cards()
+
+
+def test_mark_handled_clears_the_unknown_lock(store):
+    card = _text_card(store)
+    store.mark_unknown(card)
+    store.set_todo_done({"id": "todo:t", "fingerprints": ["m:1"]}, True)
+    assert "card:t" not in store.unknown_cards()
+
+
+def test_surname_is_never_rewritten():
+    assert triage.user_names.__module__  # the fixture patches it; check the real one below
+    import importlib
+    real = importlib.reload(importlib.import_module("service.proactive.triage")).user_names
+    import service.memory.identity as identity
+    identity.user_name = lambda: "Adi Jain"
+    assert real() == ["Adi Jain", "Adi"]
+    assert guard.second_person("Trishala Jain asked Adi to call on Fridays.", real()) == \
+        "Trishala Jain asked you to call on Fridays."
+    assert guard.second_person("Adi Fridays are busy.", ["Adi"]) == "You Fridays are busy."

@@ -126,7 +126,7 @@ class ProactiveStore:
 
     def decisions(self) -> dict:
         data = self._read("decisions.json")
-        for key in ("dismissed", "done", "fired", "suppressed"):
+        for key in ("dismissed", "done", "fired", "suppressed", "unknown"):
             if not isinstance(data.get(key), dict):
                 data[key] = {}
         return data
@@ -138,7 +138,7 @@ class ProactiveStore:
             data = self.decisions()
             def stamp(v):
                 return float(v.get("at") or 0) if isinstance(v, dict) else float(v or 0)
-            for key in ("dismissed", "fired", "suppressed", "done"):
+            for key in ("dismissed", "fired", "suppressed", "done", "unknown"):
                 data[key] = {k: v for k, v in data[key].items() if now - stamp(v) < _KEEP_S}
             self._write("decisions.json")
 
@@ -154,10 +154,22 @@ class ProactiveStore:
             if isinstance(fp, str) and fp:
                 data["suppressed"][fp] = now
 
+    def mark_unknown(self, card: dict, now: float | None = None) -> None:
+        """A send whose outcome is unknown: the card stays locked, across cycles
+        and restarts, until it is dismissed or its to-do marked handled."""
+        with self._lock:
+            self.decisions()["unknown"][card["id"]] = {"at": time.time() if now is None else now,
+                                                       "todo_id": card.get("todo_id")}
+            self._write("decisions.json")
+
+    def unknown_cards(self) -> set[str]:
+        return set(self.decisions()["unknown"])
+
     def dismiss_card(self, card: dict, now: float | None = None) -> None:
         now = time.time() if now is None else now
         with self._lock:
             data = self.decisions()
+            data["unknown"].pop(card["id"], None)
             data["dismissed"][card["id"]] = now
             self._suppress(card.get("fingerprints"), now)
             self._write("decisions.json")
@@ -182,6 +194,8 @@ class ProactiveStore:
             data = self.decisions()
             if done:
                 data["done"][todo["id"]] = {"at": now, "todo": {**todo, "done": True}}
+                data["unknown"] = {k: v for k, v in data["unknown"].items()
+                                   if not (isinstance(v, dict) and v.get("todo_id") == todo["id"])}
                 self._suppress(todo.get("fingerprints"), now)
             else:
                 data["done"].pop(todo["id"], None)

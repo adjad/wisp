@@ -369,6 +369,10 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                                                      allowed=allowed, freeze=freeze)
         dismissed = set(store.decisions()["dismissed"]) | set(store.decisions()["fired"])
         cards = [c for c in cards if c["id"] not in dismissed]
+        locked = store.unknown_cards()
+        for card in cards:
+            if card["id"] in locked:
+                card["action"]["locked"] = "unknown"     # an unconfirmed send is never offered again
         from service.proactive import executor
         for card in cards:
             sealed = card.pop("_sealed", None)
@@ -573,6 +577,8 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     for todo in merged.values():
         todo["added_to_day"] = todo["id"] in added
     cards = [c for c in state.get("cards") or [] if c.get("todo_id") not in done]
+    locked = store.unknown_cards()
+    cards = [{**c, "action": {**c["action"], "locked": "unknown"}} if c["id"] in locked else c for c in cards]
     todos = sorted(merged.values(), key=lambda t: (t["done"], t.get("due_ts") is None, t.get("due_ts") or 0,
                                                    t["title"].casefold()))
     threads = list(state.get("threads") or [])

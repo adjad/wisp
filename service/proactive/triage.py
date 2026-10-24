@@ -131,7 +131,9 @@ def user_names() -> list[str]:
         full = ""
     if not full:
         return []
-    return [full] + [w for w in re.findall(r"[A-Za-z][\w'-]+", full) if len(w) >= 2]
+    first = re.findall(r"[A-Za-z][\w'-]+", full)[:1]
+    # Full name and first name only: a surname is shared ("Trishala Jain").
+    return [full] + [w for w in first if len(w) >= 2 and w.casefold() != full.casefold()]
 
 
 def fallback(item: dict) -> dict | None:
