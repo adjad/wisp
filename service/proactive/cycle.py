@@ -669,6 +669,18 @@ async def _tick() -> None:
         await run_cycle(force=True, patient=True, account=request.get("account"))
 
 
+def _remote_background_paused() -> bool:
+    """On a remote model (Gemini), automatic background calls would spend the
+    provider's rate limit that live questions need: only an explicit Analyze
+    runs. WISP_REMOTE_BACKGROUND=1 turns the automatic cycle back on."""
+    import os
+    from service.inference.remote_policy import remote_only_profile
+    try:
+        return remote_only_profile() is not None and os.environ.get("WISP_REMOTE_BACKGROUND") != "1"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def schedule_tick() -> asyncio.Task | None:
     """Single-flight background tick for the scheduler loop; never awaited there."""
     global _task, _rerun
@@ -680,6 +692,8 @@ def schedule_tick() -> asyncio.Task | None:
         request, _rerun = _rerun, None
         analyze(request.get("account"))
         return _task
+    if _remote_background_paused():
+        return None
     if time.time() < _next_tick_at:
         return None
     if _foreground():
