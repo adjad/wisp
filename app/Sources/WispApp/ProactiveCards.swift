@@ -302,7 +302,7 @@ struct ProactiveBriefSection: View {
             Menu {
                 Button("All accounts") { actions.account = nil; model.onResize() }
                 ForEach(proactive.accounts, id: \.self) { account in
-                    Button(account) { actions.account = account; model.onResize() }
+                    Button(proactive.chipName(account)) { actions.account = account; model.onResize() }
                 }
             } label: {
                 HStack(spacing: 3) {
@@ -868,7 +868,7 @@ struct ProactiveBriefSection: View {
 
     /// A linked Google account other than the person's own reads in Gmail, not Mail.
     private func isLinkedGmail(_ account: String) -> Bool {
-        !account.isEmpty && account != proactive.accounts.first && account.lowercased().hasSuffix("gmail.com")
+        !account.isEmpty && account != proactive.ownerID
     }
 
     private func openSource(_ thread: ProactiveThread) {

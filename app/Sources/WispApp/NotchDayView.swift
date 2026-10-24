@@ -193,7 +193,7 @@ struct NotchDayView: View {
             .padding(.leading, 10)
             .overlay(alignment: .leading) { Rectangle().fill(Theme.chipStroke).frame(width: 2) }
             .frame(maxWidth: .infinity, alignment: .leading)
-        if !timeline.allDay.isEmpty { allDayStrip(timeline.allDay) }
+        if !timeline.allDay.isEmpty { allDayStrip(timeline.allDay, booked: bookedTimes(plan)) }
         if let warning = warningLine(plan) {
             Text(warning).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
                 .lineLimit(2).fixedSize(horizontal: false, vertical: true)
@@ -340,11 +340,35 @@ struct NotchDayView: View {
         }
     }
 
-    private func allDayStrip(_ titles: [String]) -> some View {
+    /// Timed Wisp blocks keyed by a loose title, so an all-day assignment that
+    /// already has time held for it ("Week 4 Reading: Functions [CSE-20-04]" and
+    /// the block "Week 4 Reading: Functions for CSE 20") reads as booked.
+    private func bookedTimes(_ plan: TodayPlan) -> [String: String] {
+        var booked: [String: String] = [:]
+        for block in plan.displayBlocks where block.task_id != nil {
+            let key = Self.looseTitle(block.title)
+            if !key.isEmpty, booked[key] == nil {
+                booked[key] = NotchChrome.dayClock(block.start, zone: today.timezone, locale: today.clockLocale)
+            }
+        }
+        return booked
+    }
+
+    static func looseTitle(_ title: String) -> String {
+        var t = title.lowercased()
+        if let bracket = t.firstIndex(of: "[") { t = String(t[..<bracket]) }
+        if let range = t.range(of: " for ", options: .backwards) { t = String(t[..<range.lowerBound]) }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+    }
+
+    private func allDayStrip(_ titles: [String], booked: [String: String] = [:]) -> some View {
         HStack(spacing: 8) {
             Text("All day").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
             ForEach(Array(titles.prefix(3).enumerated()), id: \.offset) { _, title in
-                Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                let held = booked[Self.looseTitle(title)]
+                Text(held.map { "\(title)  ✓ \($0)" } ?? title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(held == nil ? Theme.textPrimary : Theme.textSecondary)
                     .lineLimit(1)
                     .padding(.horizontal, 8).padding(.vertical, 2)
                     .background(RoundedRectangle(cornerRadius: 6).fill(DayInk.calendarFill))

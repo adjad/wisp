@@ -21,12 +21,12 @@ struct ProactiveChecks {
         // The contract's full shape.
         let full = decode("""
         {"state":"ready","as_of":1700000000,"progress":{"done":12,"total":40},
-         "accounts":["me@ucsc.edu","judge@gmail.com"],"summary":"A steady day.",
+         "accounts":["me","judge@gmail.com"],"summary":"A steady day.",
          "cards":[{"id":"c1","meta":"Overdue · 3 days · Mail","title":"Reply to Dana","body":"I checked…","why":"Asked twice",
-                   "account":"me@ucsc.edu","sources":[{"kind":"mail","ref":"m1","who":"Dana","quote":"coffee?"}],
+                   "account":"me","sources":[{"kind":"mail","ref":"m1","who":"Dana","quote":"coffee?"}],
                    "action":{"method":"email_reply","button":"Reply & add to calendar?","draft":"Hi Dana","recipient":"dana@x.com",
                              "event":{"start":1},"envelope":{"opaque":true}}}],
-         "todos":[{"id":"t1","title":"Coffee chat","source":"mail","account":"me@ucsc.edu","who":"Dana","quote":"coffee?",
+         "todos":[{"id":"t1","title":"Coffee chat","source":"mail","account":"me","who":"Dana","quote":"coffee?",
                    "due_ts":1700003600,"due_label":"3 PM","kind":"event","done":false,"card_id":"c1"},
                   {"id":"t2","title":"Call Mom","source":"messages","account":"","who":"Mom","quote":"tmrw",
                    "due_ts":null,"due_label":"Tomorrow","kind":"call","done":true,"card_id":null}],
@@ -40,7 +40,7 @@ struct ProactiveChecks {
         check(full.state == "ready" && !full.isWorking && !full.isUnavailable && full.asOf == 1_700_000_000, "state")
         check(full.progress == .init(done: 12, total: 40) && full.progressLabel == "Reading 12 of 40…"
               && full.progressFraction == 0.3, "progress: \(full.progressLabel)")
-        check(full.accounts == ["me@ucsc.edu", "judge@gmail.com"] && full.summary == "A steady day.", "accounts and summary")
+        check(full.accounts == ["me", "judge@gmail.com"] && full.summary == "A steady day.", "accounts and summary")
         let card = full.cards.first
         check(card?.metaLine == "OVERDUE · 3 DAYS · MAIL" && card?.title == "Reply to Dana" && card?.sources.first?.quote == "coffee?",
               "a card's meta line is caps: \(card?.metaLine ?? "")")
@@ -81,7 +81,7 @@ struct ProactiveChecks {
               "a bare string reference is the message id; cards carry one too")
 
         // Accounts: untagged items belong to the first (the person's own).
-        let mine = full.only("me@ucsc.edu"), judge = full.only("judge@gmail.com"), all = full.only(nil)
+        let mine = full.only("me"), judge = full.only("judge@gmail.com"), all = full.only(nil)
         check(mine.cards.count == 1 && mine.todos.count == 2 && mine.threads.map(\.id) == ["h2"], "my account keeps untagged items")
         check(judge.cards.isEmpty && judge.todos.isEmpty && judge.threads.map(\.id) == ["h1"], "the judge's account is only theirs")
         check(all == full, "All shows everything")

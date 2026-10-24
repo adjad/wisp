@@ -22,6 +22,10 @@ struct ProactiveState: Decodable, Equatable {
     var asOf: Double? = nil
     var progress: Progress? = nil
     var accounts: [String] = []
+    /// The owner's own bucket: this Mac's texts, Notes, Reminders, Calendar
+    /// and Mail. Linked Google accounts only ever carry their own mail and calendar.
+    var ownerID: String = "me"
+    var ownerLabel: String = ""
     /// A 2–3 sentence overview of the day.
     var summary: String = ""
     /// One sentence for the top of the Brief (W1); else the summary's first.
@@ -55,7 +59,8 @@ struct ProactiveState: Decodable, Equatable {
         self.threads = threads
     }
 
-    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats }
+    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats, owner }
+    private enum OwnerKeys: String, CodingKey { case id, label }
     private enum StatsKeys: String, CodingKey { case read, found, drafted, filtered, as_of }
 
     init(from decoder: Decoder) {
@@ -67,6 +72,10 @@ struct ProactiveState: Decodable, Equatable {
         }
         accounts = c.lenient(.accounts, LossyList<String>.self)?.items.filter { !$0.isEmpty } ?? []
         lede = c.lenientString(.lede) ?? ""
+        if let o = try? c.nestedContainer(keyedBy: OwnerKeys.self, forKey: .owner) {
+            ownerID = o.lenientString(.id).flatMap { $0.isEmpty ? nil : $0 } ?? "me"
+            ownerLabel = o.lenientString(.label) ?? ""
+        }
         if let st = try? c.nestedContainer(keyedBy: StatsKeys.self, forKey: .stats) {
             stats = Stats(read: st.lenient(.read, Int.self) ?? 0, found: st.lenient(.found, Int.self) ?? 0,
                           drafted: st.lenient(.drafted, Int.self) ?? 0,
@@ -164,10 +173,10 @@ struct ProactiveState: Decodable, Equatable {
 
     /// Whether an item tagged `account` belongs to the chosen account. No choice
     /// shows everything; an untagged item (this Mac's Messages, Reminders,
-    /// Notes) belongs to the first account, the person's own.
+    /// Notes) belongs to the owner's own bucket.
     func belongs(_ account: String, to chosen: String?) -> Bool {
         guard let chosen else { return true }
-        let owner = account.isEmpty ? (accounts.first ?? "") : account
+        let owner = account.isEmpty ? ownerID : account
         return owner.caseInsensitiveCompare(chosen) == .orderedSame
     }
 
@@ -205,6 +214,7 @@ struct ProactiveState: Decodable, Equatable {
     /// A short chip name for an account: the part before the @, unless two
     /// accounts share it.
     func chipName(_ account: String) -> String {
+        if account == ownerID { return ownerLabel.isEmpty ? "You" : ownerLabel }
         let local = account.split(separator: "@").first.map(String.init) ?? account
         let clashes = accounts.filter { ($0.split(separator: "@").first.map(String.init) ?? $0) == local }.count > 1
         return clashes || local.isEmpty ? account : local

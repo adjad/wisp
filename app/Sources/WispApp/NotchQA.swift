@@ -78,7 +78,7 @@ enum NotchQADriver {
                 let draft = request.url?.lastPathComponent == "draft"
                 let body: [String: Any] = draft
                     ? ["ok": true, "draft": "Hi Ed,\n\nTuesday morning works for me. I can be there at 9.\n\nThanks,\nAdi",
-                       "to": ["echen@ucsc.edu"], "cc": [], "subject": "Re: Exam 1 timing", "account": "adi@ucsc.edu",
+                       "to": ["echen@ucsc.edu"], "cc": [], "subject": "Re: Exam 1 timing", "account": "me",
                        "envelope": "qa", "can_send": true]
                     : ["ok": true, "status": "sent"]
                 return (try JSONSerialization.data(withJSONObject: body),
@@ -193,7 +193,7 @@ enum NotchQADriver {
     /// six thread summaries (one from a linked judge account).
     static func fixtureProactive(dayStart: Double, working: Bool) -> [String: Any] {
         func at(_ h: Double) -> Double { dayStart + h * 3600 }
-        let me = "adi@ucsc.edu"
+        let me = "me"
         let cards: [[String: Any]] = [
             ["id": "card-stat", "meta": "Due tomorrow · Reminders", "account": me,
              "title": "Worksheet 3 for STAT 5",
@@ -221,7 +221,7 @@ enum NotchQADriver {
                         "event": NSNull(), "envelope": "opaque"]],
         ]
         func todo(_ id: String, _ title: String, _ source: String, who: String = "", quote: String = "",
-                  due: Double?, label: String, kind: String = "task", card: String? = nil, account: String = "adi@ucsc.edu") -> [String: Any] {
+                  due: Double?, label: String, kind: String = "task", card: String? = nil, account: String = "me") -> [String: Any] {
             ["id": id, "title": title, "source": source, "account": account, "who": who, "quote": quote,
              "due_ts": due.map { at($0) } ?? NSNull(), "due_label": label, "kind": kind, "done": false,
              "card_id": card ?? NSNull()]
@@ -262,7 +262,7 @@ enum NotchQADriver {
         ]
         return [
             "state": working ? "working" : "ready", "as_of": at(10.4), "progress": ["done": 12, "total": 40],
-            "accounts": [me, judgeAccount],
+            "accounts": [me, judgeAccount], "owner": ["id": "me", "label": "Adi"],
             "lede": "Hack Day fills your midday, and Worksheet 3 is the one thing to get ahead of.",
             "summary": "Hack Day runs 11:45 to 2 with Hacktoberfest at noon. Worksheet 3 for STAT 5 is due tomorrow, Ed is waiting on an exam reply, and Mom wants to talk tomorrow.",
             "stats": ["read": 49, "found": 3, "drafted": 1, "as_of": at(10.4)],
