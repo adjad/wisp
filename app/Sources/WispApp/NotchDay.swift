@@ -26,6 +26,8 @@ enum DayStyle: Int, CaseIterable, Comparable {
     case needsYou
     /// Past due: red, near now.
     case overdue
+    /// A to-do Wisp found in your mail, texts, notes or reminders, at its time.
+    case todo
 
     static func < (a: DayStyle, b: DayStyle) -> Bool { a.rawValue < b.rawValue }
 
@@ -38,6 +40,7 @@ enum DayStyle: Int, CaseIterable, Comparable {
         case .caught: return "Caught in texts"
         case .needsYou: return "Needs you"
         case .overdue: return "Overdue"
+        case .todo: return "To-do"
         }
     }
 }
@@ -94,6 +97,33 @@ struct NeedsYouList: Equatable {
     let more: Int
 }
 
+/// One to-do from the proactive engine (`workspace.proactive.todos`), as the
+/// Day tab hands it over.
+struct DayTodoInput: Equatable {
+    var id: String
+    var title: String
+    /// "mail", "messages", "calendar", "reminders" or "notes".
+    var source: String
+    var who: String = ""
+    var due: Double? = nil
+    var dueLabel: String = ""
+    /// The engine's kind; "event", "meeting", "call" and "plan" happen at their time.
+    var kind: String = ""
+    var done = false
+}
+
+/// One row of the Day tab's "Still to fit": a task the planner couldn't place,
+/// or a to-do with no time today.
+struct DayFitRow: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    /// An SF Symbol for where it came from.
+    let symbol: String
+    /// Set for a to-do, so the row can check it off or add it to the day.
+    var todoID: String? = nil
+}
+
 /// One "Caught for you" record from the attention runner.
 struct DayCaughtInput: Equatable {
     var id: String
@@ -126,6 +156,9 @@ struct DayItem: Identifiable, Equatable {
     var kind: String = ""
     /// For a grouped review suggestion: the items one Keep plans together.
     var members: [DayMember] = []
+    /// For a to-do: its id and where it came from ("mail", "messages", …).
+    var todoID: String? = nil
+    var source: String = ""
     /// Over before now, on today: drawn dim, inside the lane's two hours back.
     var past = false
 
@@ -164,7 +197,8 @@ struct DayTimeline: Equatable {
     ///   - clock: formats a time ("3:30 PM"); `dayClock` formats one on another day ("Fri 5 PM").
     static func build(blocks: [DayBlockInput], allDay: [String], needs: [DayNeedInput], caught: [DayCaughtInput],
                       now: Double, dayStart: Double, dayEnd: Double, workStart: Double, workEnd: Double,
-                      isToday: Bool, clock: (Double) -> String, dayClock: (Double) -> String) -> DayTimeline {
+                      isToday: Bool, clock: (Double) -> String, dayClock: (Double) -> String,
+                      todos: [DayTodoInput] = []) -> DayTimeline {
         // On today, two hours back so what just happened stays in view, dim.
         let earliest = isToday
             ? max(dayStart, floorHour(min(max(now, dayStart), dayEnd - hour), dayStart: dayStart) - 2 * hour) : dayStart
@@ -226,6 +260,29 @@ struct DayTimeline: Equatable {
                                  start: when, end: when + hour, style: .caught, caughtID: record.id))
         }
 
+        // To-dos with a time today go on the clock, once: not calendar events
+        // (already blocks), not what's done, nor one a block or reminder already draws.
+        let drawn = Set(blocks.map { todoKey($0.title) } + needs.map { todoKey($0.title) })
+        for todo in todos where !todo.done && todo.source != "calendar" && !isJunk(todo.title)
+            && !drawn.contains(todoKey(todo.title)) {
+            guard let due = todo.due, isTimed(due, dayStart: dayStart, dayEnd: dayEnd) else { continue }
+            let from = [sourceName(todo.source), todo.who].filter { !$0.isEmpty }.joined(separator: " · ")
+            if isToday && due < now {
+                let start = max(earliest, now)
+                items.append(DayItem(id: "todo:" + todo.id, title: todo.title,
+                                     detail: "Overdue since " + clock(due) + (from.isEmpty ? "" : " · " + from),
+                                     start: start, end: start + 30 * 60, style: .overdue, todoID: todo.id, source: todo.source))
+            } else if due > earliest {
+                let atTime = happensAtTime(todo.kind)
+                let start = atTime ? due : max(earliest, due - 30 * 60)
+                let end = atTime ? due + 30 * 60 : max(due, start + 15 * 60)
+                let when = (atTime ? "At " : "Due ") + clock(due)
+                items.append(DayItem(id: "todo:" + todo.id, title: todo.title,
+                                     detail: [when, from].filter { !$0.isEmpty }.joined(separator: " · "),
+                                     start: start, end: end, style: .todo, todoID: todo.id, source: todo.source))
+            }
+        }
+
         let latest = items.map(\.end).max() ?? earliest
         var to = ceilHour(max(earliest + 4 * hour, isToday ? max(workEnd, now + 3 * hour) : workEnd, latest), dayStart: dayStart)
         to = min(to, dayEnd)
@@ -243,6 +300,88 @@ struct DayTimeline: Equatable {
         }
         items = items.filter { $0.end > $0.start }
         return DayTimeline(from: from, to: to, items: arrange(items), allDay: allDay.filter { !isJunk($0) })
+    }
+
+    // MARK: To-dos
+
+    /// A to-do's due time names a moment on this day, not just the day: date-only
+    /// to-dos come as midnight or the day's last minute.
+    static func isTimed(_ due: Double, dayStart: Double, dayEnd: Double) -> Bool {
+        due > dayStart && due < dayEnd - 60
+    }
+
+    /// Kinds that happen at their time (start there) rather than being due by it.
+    static func happensAtTime(_ kind: String) -> Bool {
+        ["event", "meeting", "call", "plan", "appointment"].contains(kind.lowercased())
+    }
+
+    /// One spelling for comparing titles: lowercased letters and digits only.
+    static func todoKey(_ title: String) -> String {
+        String(title.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+    }
+
+    /// The SF Symbol for a to-do's or summary's source.
+    static func sourceSymbol(_ source: String) -> String {
+        switch source.lowercased() {
+        case "mail", "email": return "envelope"
+        case "messages", "text", "texts": return "message"
+        case "calendar": return "calendar"
+        case "reminders": return "checklist"
+        case "notes": return "note.text"
+        case "wisp", "plan": return "clock"
+        default: return "circle.dashed"
+        }
+    }
+
+    /// Where a to-do came from, in a word.
+    static func sourceName(_ source: String) -> String {
+        switch source.lowercased() {
+        case "mail", "email": return "Mail"
+        case "messages", "text", "texts": return "Texts"
+        case "calendar": return "Calendar"
+        case "reminders": return "Reminders"
+        case "notes": return "Notes"
+        default: return ""
+        }
+    }
+
+    /// The Day tab's "Still to fit": tasks the planner couldn't place, then
+    /// to-dos with no time today (undated, dated today without a time, or past
+    /// due from an earlier day), each once. Calendar events, done to-dos and
+    /// to-dos for a later day are left out; so is anything already on the day.
+    static func stillToFit(todos: [DayTodoInput], unscheduled: [(id: String, title: String, reason: String)],
+                           blocks: [DayBlockInput], needs: [DayNeedInput] = [], now: Double, dayStart: Double,
+                           dayEnd: Double, isToday: Bool, dayClock: (Double) -> String) -> [DayFitRow] {
+        var rows: [DayFitRow] = []
+        // A reminder the lane already draws as Needs you isn't still to fit.
+        var seen = Set(blocks.map { todoKey($0.title) }
+                       + needs.filter { $0.due.map { $0 >= dayStart && $0 < dayEnd } ?? false }.map { todoKey($0.title) })
+        for task in unscheduled where !isJunk(task.title) && !seen.contains(todoKey(task.title)) {
+            seen.insert(todoKey(task.title))
+            rows.append(DayFitRow(id: "task:" + task.id, title: task.title, detail: plainReason(task.reason).capitalizedFirst,
+                                  symbol: sourceSymbol("wisp")))
+        }
+        for todo in todos where !todo.done && todo.source != "calendar" && !isJunk(todo.title)
+            && !seen.contains(todoKey(todo.title)) {
+            var due = ""
+            if let at = todo.due {
+                if isTimed(at, dayStart: dayStart, dayEnd: dayEnd) { continue }   // on the clock
+                if at >= dayEnd { continue }                                         // a later day's
+                if at < dayStart {
+                    guard isToday else { continue }
+                    due = "Overdue since " + dayClock(at)
+                } else {
+                    due = todo.dueLabel.isEmpty ? (isToday ? "Today" : "That day") : todo.dueLabel
+                }
+            } else {
+                due = todo.dueLabel
+            }
+            seen.insert(todoKey(todo.title))
+            rows.append(DayFitRow(id: "todo:" + todo.id, title: todo.title,
+                                  detail: [todo.who, due].filter { !$0.isEmpty }.joined(separator: " · "),
+                                  symbol: sourceSymbol(todo.source), todoID: todo.id))
+        }
+        return rows
     }
 
     /// The shortest time a block is drawn as: the lane never draws one under 22

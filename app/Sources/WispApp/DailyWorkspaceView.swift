@@ -56,6 +56,10 @@ struct DailyWorkspace: Decodable {
     /// The Brief's "Needs you today" line (daily_workspace.needs_you); absent
     /// from an older service.
     var needs_you: DailyNeedsYou? = nil
+    /// What the proactive engine caught up on (service/proactive): cards, to-dos
+    /// and thread summaries for the Brief, timed to-dos for the Day. Absent from
+    /// an older service; its decoding never fails the plan (ProactiveModels.swift).
+    var proactive: ProactiveState? = nil
 }
 
 struct DailyNeedsYou: Decodable, Equatable {

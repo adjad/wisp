@@ -348,6 +348,8 @@ func dayChecks(_ check: (Bool, String) -> Void) {
 
     briefSummaryChecks(check, dayStart: dayStart, now: now)
 
+    dayTodoChecks(check, dayStart: dayStart, now: now, clock: clock, dayClock: dayClock)
+
     // How busy the calendar is: one verdict for the CAL line and the lede.
     func event(_ title: String, _ start: Double, _ end: Double?) -> DayLoad.Event {
         DayLoad.Event(title: title, start: at(start), end: end.map(at))
@@ -407,4 +409,99 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           && WispClock.hour(0, locale: WispClock.fixedLocale) == "12 AM", "hour labels follow the locale")
     check(WispClock.time(at(15.5), zone: utc, locale: gb) == "15:30" && WispClock.time(at(15.5), zone: utc, locale: WispClock.fixedLocale) == "3:30 PM",
           "clock times follow the locale")
+}
+
+/// To-dos from the proactive engine on the Day tab: timed ones on the hour
+/// lane, untimed ones in "Still to fit", each once and with its source.
+func dayTodoChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Double,
+                   clock: (Double) -> String, dayClock: (Double) -> String) {
+    let hour = 3600.0
+    let dayEnd = dayStart + 24 * hour
+    func at(_ h: Double) -> Double { dayStart + h * hour }
+    let blocks = [
+        DayBlockInput(id: "lecture", title: "CSE 101 lecture", start: at(14), end: at(15.25), kind: "calendar"),
+        DayBlockInput(id: "club", title: "Startup club", start: at(18), end: at(19), kind: "calendar"),
+    ]
+    let needs = [DayNeedInput(id: "pa2", title: "PA 2", source: "reminders", due: at(23.5))]
+    let todos = [
+        DayTodoInput(id: "priya", title: "Call Priya", source: "messages", who: "Priya", due: at(16.25), kind: "call"),
+        DayTodoInput(id: "tj", title: "Go to Trader Joe's", source: "reminders", due: at(17.5), kind: "errand"),
+        DayTodoInput(id: "lecture", title: "CSE 101 lecture", source: "calendar", due: at(14), kind: "event"),
+        DayTodoInput(id: "dana", title: "Reply to Dana", source: "mail", who: "Dana Lee", due: nil, dueLabel: "This week"),
+        DayTodoInput(id: "mom", title: "Call Mom", source: "messages", who: "Mom", due: at(24), dueLabel: "Tomorrow"),
+        DayTodoInput(id: "late", title: "Return the form", source: "mail", due: at(10)),
+        DayTodoInput(id: "done", title: "Pay rent", source: "reminders", due: at(16), done: true),
+        DayTodoInput(id: "dup", title: "pa 2!", source: "reminders", due: at(20)),
+        DayTodoInput(id: "dateonly", title: "Pick up package", source: "notes", due: dayStart, dueLabel: ""),
+        DayTodoInput(id: "eod", title: "Submit timesheet", source: "mail", due: dayEnd - 30, dueLabel: "Today"),
+        DayTodoInput(id: "old", title: "Renew library book", source: "reminders", due: dayStart - 30 * hour),
+        DayTodoInput(id: "junk", title: "n/a", source: "notes"),
+    ]
+    let timeline = DayTimeline.build(blocks: blocks, allDay: [], needs: needs, caught: [], now: now,
+                                     dayStart: dayStart, dayEnd: dayEnd, workStart: at(9), workEnd: at(18),
+                                     isToday: true, clock: clock, dayClock: dayClock, todos: todos)
+    func item(_ id: String) -> DayItem? { timeline.items.first { $0.id == "todo:" + id } }
+
+    let priya = item("priya")
+    check(priya?.style == .todo && priya?.start == at(16.25) && priya?.end == at(16.75),
+          "a call happens at its time, for half an hour: \(String(describing: priya))")
+    check(priya?.source == "messages" && priya?.todoID == "priya" && priya?.detail == "At 16:15 · Texts · Priya",
+          "the block keeps its source and says when and from whom: \(priya?.detail ?? "")")
+    let tj = item("tj")
+    check(tj?.style == .todo && tj?.end == at(17.5) && tj?.start == at(17) && tj?.detail == "Due 17:30 · Reminders",
+          "an errand is due by its time, so its block ends there: \(String(describing: tj))")
+    check(item("lecture") == nil && timeline.items.filter { $0.title == "CSE 101 lecture" }.count == 1,
+          "a calendar to-do is the calendar block, drawn once")
+    check(item("dana") == nil && item("mom") == nil, "undated and tomorrow's to-dos stay off today's clock")
+    let late = item("late")
+    check(late?.style == .overdue && late?.start == now && late?.detail.hasPrefix("Overdue since 10:00") == true,
+          "a to-do due earlier today and not done sits at now as overdue: \(late?.detail ?? "")")
+    check(item("done") == nil, "a done to-do leaves the clock")
+    check(item("dup") == nil, "a to-do a reminder already draws is not drawn twice")
+    check(item("dateonly") == nil && item("eod") == nil, "midnight and end-of-day times are date-only, not times")
+    check(item("junk") == nil, "placeholder titles never draw")
+    check(timeline.styles.contains(.todo) && DayStyle.todo.legend == "To-do", "the legend names to-dos")
+    check(timeline.to >= at(19), "the lane still reaches the last block")
+
+    // Not today: a to-do still draws at its time, without an overdue.
+    let other = DayTimeline.build(blocks: [], allDay: [], needs: [], caught: [], now: now, dayStart: dayStart,
+                                  dayEnd: dayEnd, workStart: at(9), workEnd: at(18), isToday: false,
+                                  clock: clock, dayClock: dayClock, todos: [todos[5]])
+    check(other.items.first?.style == .todo && other.items.first?.start == at(9.5),
+          "on another day, a to-do due at 10 is drawn by 10, not as overdue")
+    // No to-dos: the build is what it was.
+    let none = DayTimeline.build(blocks: blocks, allDay: [], needs: needs, caught: [], now: now, dayStart: dayStart,
+                                 dayEnd: dayEnd, workStart: at(9), workEnd: at(18), isToday: true,
+                                 clock: clock, dayClock: dayClock)
+    check(!none.items.contains { $0.style == .todo }, "without to-dos nothing new is drawn")
+
+    // Still to fit: the planner's leftovers, then to-dos with no time today.
+    let fit = DayTimeline.stillToFit(
+        todos: todos, unscheduled: [(id: "t1", title: "Essay outline", reason: "Needs 45 min; the largest gap is 30 min"),
+                                    (id: "t2", title: "nothing", reason: "")],
+        blocks: blocks, needs: needs, now: now, dayStart: dayStart, dayEnd: dayEnd, isToday: true, dayClock: dayClock)
+    check(fit.map(\.id) == ["task:t1", "todo:dana", "todo:dateonly", "todo:eod", "todo:old"],
+          "still to fit, in order: \(fit.map(\.id))")
+    check(fit[0].symbol == "clock" && fit[0].todoID == nil && fit[0].detail.hasPrefix("No long enough gap"),
+          "a planner task says why it didn't fit: \(fit[0].detail)")
+    check(fit[1].symbol == "envelope" && fit[1].detail == "Dana Lee · This week" && fit[1].todoID == "dana",
+          "an undated to-do shows its source, who and when: \(fit[1].detail)")
+    check(fit[2].symbol == "note.text" && fit[2].detail == "Today", "a date-only to-do today reads Today: \(fit[2].detail)")
+    check(fit[4].symbol == "checklist" && fit[4].detail.hasPrefix("Overdue since earlier"),
+          "an earlier day's to-do is overdue: \(fit[4].detail)")
+    check(!fit.contains { ["todo:mom", "todo:priya", "todo:lecture", "todo:done", "todo:dup", "todo:junk"].contains($0.id) },
+          "tomorrow's, timed, calendar, done, duplicate and placeholder to-dos aren't still to fit")
+    let elsewhere = DayTimeline.stillToFit(todos: todos, unscheduled: [], blocks: [], now: now, dayStart: dayStart,
+                                           dayEnd: dayEnd, isToday: false, dayClock: dayClock)
+    check(!elsewhere.contains { $0.id == "todo:old" }, "another day shows no overdue to-dos")
+
+    // Sources and kinds.
+    check(DayTimeline.sourceSymbol("mail") == "envelope" && DayTimeline.sourceSymbol("messages") == "message"
+          && DayTimeline.sourceSymbol("calendar") == "calendar" && DayTimeline.sourceSymbol("reminders") == "checklist"
+          && DayTimeline.sourceSymbol("notes") == "note.text" && DayTimeline.sourceSymbol("other") == "circle.dashed",
+          "one SF Symbol per source")
+    check(DayTimeline.happensAtTime("Meeting") && !DayTimeline.happensAtTime("errand"), "which kinds start at their time")
+    check(DayTimeline.todoKey("Go to Trader Joe's!") == DayTimeline.todoKey("go to trader joes"), "titles compare loosely")
+    check(DayTimeline.isTimed(at(9), dayStart: dayStart, dayEnd: dayEnd) && !DayTimeline.isTimed(dayStart, dayStart: dayStart, dayEnd: dayEnd)
+          && !DayTimeline.isTimed(dayEnd - 59, dayStart: dayStart, dayEnd: dayEnd), "timed versus date-only")
 }

@@ -7,8 +7,10 @@ private extension Theme {
     static let tileFocusStroke = Color.white.opacity(0.6)
 }
 
-/// The notch's Brief tab: what's going on, read only. One sentence about the
-/// day, then four count tiles (Today, Mail, Messages, Events) over one list:
+/// The notch's Brief tab: everything to know about the day. One sentence about
+/// the day, then, when the proactive engine has run (`workspace.proactive`), its
+/// overview, "Before you ask" cards, the to-dos from every source and each
+/// thread's summary (ProactiveCards.swift). Without it, four count tiles (Today, Mail, Messages, Events) over one list:
 /// the Top 3 by default, or the open tile's list in its place, so opening a
 /// tile never pushes the tab past one list's height. What Wisp is keeping in
 /// mind closes the tab. Doing things belongs to Ask and Day.
@@ -28,9 +30,18 @@ struct NotchBriefView: View {
     @State private var keyboardNav = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(model: OverlayModel, today: TodayModel, open: String? = nil) {
+    /// The QA driver's full render: the proactive section without its scroll cap.
+    private let uncapped: Bool
+    /// Card, to-do and thread state; the app's shared one, or a QA scene's own.
+    private let actions: ProactiveActions
+
+    @MainActor
+    init(model: OverlayModel, today: TodayModel, open: String? = nil, uncapped: Bool = false,
+         actions: ProactiveActions? = nil) {
         self.model = model
         self.today = today
+        self.uncapped = uncapped
+        self.actions = actions ?? .shared
         // The QA driver names the old rows; each maps to the tile that holds it.
         _open = State(initialValue: open.flatMap { tag in
             switch tag {
@@ -74,43 +85,66 @@ struct NotchBriefView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-                tileStrip(brief)
-                // The Top 3 and a tile's list take the same place, cross-fading;
-                // the area clips so neither draws past it while the panel resizes.
-                ZStack(alignment: .topLeading) {
-                    if let tile = open, let shown = brief.tiles[tile] {
-                        tileList(tile, shown.detail).id(tile.rawValue)
-                            .transition(reduceMotion ? .identity : .opacity)
-                    } else {
-                        topList(brief.top, glance: brief.glance).id("top")
-                            .transition(reduceMotion ? .identity : .opacity)
-                    }
+                if today.isShowingCurrentDay, let proactive = plan.workspace?.proactive {
+                    // The proactive engine's Brief: what it caught up on, the
+                    // to-dos from every source and each thread's summary, in
+                    // place of the tiles and the Top 3 it supersedes.
+                    ProactiveBriefSection(proactive: proactive, model: model, today: today, actions: actions,
+                                          scrollCap: uncapped ? nil : Self.proactiveCap)
+                    footerChips(plan)
+                } else {
+                    legacy(plan, brief)
                 }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .clipped()
-                if !brief.suggestions.isEmpty { suggestionsRow(brief.suggestions) }
-                HStack(spacing: 8) {
-                    NotchChrome.chip("Ask about this", icon: "bubble.left", help: "Continue from this in Ask") {
-                        // Continue the brief's saved chat only when that brief is the
-                        // one on screen; otherwise ask about what is shown.
-                        if let brief = model.brief, !brief.sessionId.isEmpty,
-                           StoredBrief.shownIsLive(shown: composedBrief, live: (text: brief.text, at: brief.receivedAt)) {
-                            model.askAboutBrief()
-                        } else {
-                            model.askAbout(BriefContent(plan: plan, today: today, composed: composedToday).lede, reference: "")
-                        }
-                    }
-                    .disabled(!model.conversationSettled)
-                    Spacer()
-                    NotchChrome.chip("See my day →", icon: nil, help: "The rest of today, hour by hour (⌘3)") {
-                        model.tab = .day
-                    }
-                }
-                if !brief.summary.isEmpty { goalLines(brief.summary) }
             } else if today.error.isEmpty {
                 ProcessingRow(label: "Loading your day…")
             }
         }
+    }
+
+    /// The tallest the proactive section gets before it scrolls, so the tab
+    /// fits under the notch on a 13-inch display.
+    static let proactiveCap: CGFloat = 540
+
+    /// Ask about this, and the way to the Day tab.
+    private func footerChips(_ plan: TodayPlan) -> some View {
+        HStack(spacing: 8) {
+            NotchChrome.chip("Ask about this", icon: "bubble.left", help: "Continue from this in Ask") {
+                // Continue the brief's saved chat only when that brief is the
+                // one on screen; otherwise ask about what is shown.
+                if let brief = model.brief, !brief.sessionId.isEmpty,
+                   StoredBrief.shownIsLive(shown: composedBrief, live: (text: brief.text, at: brief.receivedAt)) {
+                    model.askAboutBrief()
+                } else {
+                    model.askAbout(BriefContent(plan: plan, today: today, composed: composedToday).lede, reference: "")
+                }
+            }
+            .disabled(!model.conversationSettled)
+            Spacer()
+            NotchChrome.chip("See my day →", icon: nil, help: "The rest of today, hour by hour (⌘3)") {
+                model.tab = .day
+            }
+        }
+    }
+
+    /// The Brief without the proactive engine: four tiles over the Top 3.
+    @ViewBuilder private func legacy(_ plan: TodayPlan, _ brief: BriefContent) -> some View {
+        tileStrip(brief)
+        // The Top 3 and a tile's list take the same place, cross-fading;
+        // the area clips so neither draws past it while the panel resizes.
+        ZStack(alignment: .topLeading) {
+            if let tile = open, let shown = brief.tiles[tile] {
+                tileList(tile, shown.detail).id(tile.rawValue)
+                    .transition(reduceMotion ? .identity : .opacity)
+            } else {
+                topList(brief.top, glance: brief.glance).id("top")
+                    .transition(reduceMotion ? .identity : .opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .clipped()
+        if !brief.suggestions.isEmpty { suggestionsRow(brief.suggestions) }
+        footerChips(plan)
+        if !brief.summary.isEmpty { goalLines(brief.summary) }
     }
 
     // MARK: - Tiles
