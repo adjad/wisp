@@ -381,6 +381,8 @@ struct DiagnosticReportChecks {
              "source": "email", "source_state": "disabled", "error_kind": "TimeoutError", "native_operation": "create_reminder",
              "native_outcome": "unknown", "component": "native", "route_source": "semantic"],
             ["stage": "failed", "elapsed_ms": 8],
+            ["stage": "model_step", "elapsed_ms": 9, "model_ms": 800, "ttft_ms": 300, "output_chars": 42, "tools_offered": 3,
+             "prefix_reset": true, "empty": false, "content": privateText],
         ]
         let tamper = String(repeating: "4", count: 32)
         try write(["schema_version": 1, "trace_id": tamper, "kind": "PRIVATE-KIND", "status": "evil", "client_terminal_event": "other",
@@ -402,6 +404,9 @@ struct DiagnosticReportChecks {
             check(good[key] != nil, "valid \(key) dropped")
         }
         check(good["tasks"] == nil && good["blocks"] != nil)
+        let step = rows.first { $0["elapsed_ms"] as? Int == 9 }!
+        check(Set(step.keys) == ["stage", "elapsed_ms", "model_ms", "ttft_ms", "output_chars", "tools_offered", "prefix_reset", "empty"],
+              "model_step row kept \(step.keys.sorted())")
         let build = clean["backend_build"] as! [String: String]
         check(build == ["source_fingerprint": String(repeating: "a", count: 64), "commit": String(repeating: "b", count: 40), "python_version": "3.12.1"], "build \(build)")
         let badBuild = String(repeating: "5", count: 32)

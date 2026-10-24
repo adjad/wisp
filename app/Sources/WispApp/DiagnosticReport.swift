@@ -37,8 +37,8 @@ enum DiagnosticReport {
         guard let object = try? JSONSerialization.jsonObject(with: Data(bytes)) as? [String: Any],
               object["trace_id"] as? String == traceID, object["schema_version"] as? Int == 1 else { return nil }
         // Rebuild the allowlist even if someone edited a journal on disk.
-        let labels: Set<String> = ["agent", "today", "daily_brief", "source_sync", "native", "started", "completed", "failed", "cancelled", "routed", "tool_call", "tool_result", "confirm", "approved", "denied", "error", "done", "sources", "plan", "requested", "result", "waiting", "unavailable", "unknown"]
-        let numeric = ["tasks", "blocks", "unscheduled", "warnings", "revision", "calendar_ready", "reminders_ready", "ok", "events_dropped", "elapsed_ms"]
+        let labels: Set<String> = ["agent", "today", "daily_brief", "source_sync", "native", "started", "completed", "failed", "cancelled", "routed", "tool_call", "tool_result", "confirm", "approved", "denied", "error", "done", "sources", "plan", "requested", "result", "waiting", "unavailable", "unknown", "model_step"]
+        let numeric = ["tasks", "blocks", "unscheduled", "warnings", "revision", "calendar_ready", "reminders_ready", "ok", "events_dropped", "elapsed_ms", "model_ms", "ttft_ms", "output_chars", "tools_offered", "prefix_reset", "empty"]
         var result: [String: Any] = ["schema_version": 1, "trace_id": traceID]
         for key in ["kind", "status"] {
             if let value = object[key] as? String, labels.contains(value) { result[key] = value }
