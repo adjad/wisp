@@ -2153,7 +2153,9 @@ async def run_agent(
     # discovery keeps the catalog: its toolset is chosen mid-turn and may grow
     # to include use_skill. Measured: the catalog alone was ~180 tokens on
     # EVERY step while any skill was installed.
-    if skills_allowed:
+    # ask_direct: a one-step written answer; a skill's interview script
+    # ("I'll use the idea-refine skill…") would replace the text asked for.
+    if skills_allowed and not (ask_quality and ask_direct):
         try:
             from service.skills import skills_context_block
             last_user = next((m["content"] for m in reversed(messages)

@@ -674,3 +674,16 @@ def test_mailish_personal_questions_lead_with_email(monkeypatch):
     assert not mo.mail_first("When is the next solar eclipse?")
     assert main._ask_tool_rank("When is the W-9 due?")[0][0] == "view_emails"
     assert main._ask_tool_rank("Why is the sky blue?")[0][0] != "view_emails"
+
+
+@pytest.mark.parametrize("prompt,expected", [
+    ("Compose a short birthday message for my sister.", True),
+    ("Draft a LinkedIn post announcing my new job.", True),
+    ("Write a short thank-you note to my professor for the extension.", True),
+    ("Draft an email to Priya saying I will be late.", False),
+    ("Draft a text to Mom saying hi", False),
+    ("Write a message to Jordan asking about Friday", False),
+    ("Write a note in my Notes about the trip", False),
+    ("Write it and send it to Sam", False)])
+def test_compose_only_needs_no_destination(prompt, expected):
+    assert mo.compose_only(prompt) is expected

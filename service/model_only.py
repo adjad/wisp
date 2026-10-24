@@ -206,9 +206,15 @@ def web_degradation_hint(tool: str, result: str) -> str:
 
 
 _COMPOSE = re.compile(r"^\s*(?:please\s+)?(?:can you\s+|could you\s+)?(?:write|compose|draft|come up with)\b", re.I)
+# A destination is somewhere the text goes: a named recipient ("an email to
+# Priya"), a send/reply verb, or a place it is saved. The noun alone ("a
+# birthday message for my sister") is just the kind of text to write.
 _DESTINATION = re.compile(
-    r"\b(?:e-?mail|text|message|imessage|send|reply|respond|(?:in|to|into)\s+(?:my\s+)?notes?\b|"
-    r"save|file|document|doc|calendar|reminder)\b", re.I)
+    r"\b(?i:e-?mail|text|message|imessage|dm|note|letter|card)\s+(?i:to|for)\s+[A-Z][\w.'-]*"
+    r"|(?i:\b(?:send|sent|reply|respond|forward|post\s+(?:it|this)|share)\b)"
+    r"|(?i:\b(?:in|to|into)\s+(?:my\s+)?(?:notes?|notes app|a file|calendar|reminders?)\b)"
+    r"|(?i:\b(?:save|file|document|doc|calendar|reminder|clipboard)\b)"
+    r"|\b(?i:text|e-?mail|message)\s+[A-Z][\w.'-]*")
 
 
 def compose_only(prompt: str) -> bool:
