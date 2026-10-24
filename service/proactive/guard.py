@@ -245,7 +245,10 @@ _VERB_S = ("says", "asks", "wants", "needs", "plans", "thinks", "tells", "agrees
            "is", "was", "does", "goes", "gets", "keeps", "sends", "shares", "posts", "hopes", "feels",
            "likes", "loves", "knows", "owes", "promises", "offers", "suggests", "mentions", "confirms",
            "explains", "writes", "receives", "finds", "launches", "signs", "joins", "attends", "decides",
-           "invites", "thanks", "texts", "emails", "calls", "meets", "works", "applies", "registers")
+           "invites", "thanks", "texts", "emails", "calls", "meets", "works", "applies", "registers",
+           "reminds", "needs", "wonders", "reports", "announces", "shares", "plans", "remembers",
+           "notes", "adds", "lists", "updates", "requests", "reminds", "submits", "studies", "starts",
+           "finishes", "visits", "talks", "says", "wants", "agrees", "replies")
 _IRREGULAR = {"is": "are", "was": "were", "has": "have", "does": "do", "goes": "go", "tries": "try",
               "replies": "reply", "applies": "apply"}
 
@@ -268,7 +271,7 @@ def _conjugate(word: str) -> str:
     low = word.casefold()
     if low in _IRREGULAR:
         return _IRREGULAR[low]
-    if low in _VERB_S or (len(low) > 3 and low.endswith("s") and not low.endswith(("ss", "us", "is", "ous"))):
+    if low in _VERB_S and low.endswith("s"):
         if low.endswith("ies") and len(low) > 4:
             return low[:-3] + "y"
         if low.endswith(("sses", "shes", "ches", "xes", "zes")):

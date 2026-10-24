@@ -19,6 +19,9 @@ import re
 from service.proactive import guard
 
 TOKENS = (160, 1400)
+# Bump whenever RULES or validate() change what a stored result means: older
+# checkpoints are then read again instead of served.
+VERSION = "3"
 
 RULES = (
     "You read ONE email thread or text conversation for the user's daily brief. "
@@ -91,6 +94,8 @@ def validate(reply: str | None, item: dict, *, allowed: set[str] | None = None) 
     if any(guard.output_has_pii(result[f]) for f in ("title", "summary", "asks_of_me")):
         # The backstop: drop the words rather than leak an identifier.
         return {"junk": result["junk"], "sensitive": True, "title": "", "summary": "", "asks_of_me": ""}
+    if _META.search(result["summary"]):
+        result["summary"] = ""           # the model describing its own labels, not the message
     allowed = allowed_words() if allowed is None else allowed
     source = item["text"] + "\n" + item.get("who", "") + "\n" + item.get("title", "")
     for name in ("title", "summary", "asks_of_me"):
@@ -99,12 +104,8 @@ def validate(reply: str | None, item: dict, *, allowed: set[str] | None = None) 
                 return None          # an invented fact in the summary: the whole reply is suspect
             result[name] = ""
     names = user_names()
-    if not item.get("person", True) and item.get("who"):
-        # An organization's notice is never the user's own words: a summary that
-        # opens "The user reminds everyone…" means the sender did.
-        lead = re.compile(r"^(?:" + "|".join([r"the user"] + [re.escape(n) for n in names]) + r")\b(?!['’])", re.I)
-        result["summary"] = lead.sub(item["who"], result["summary"], count=1)
-    for name in ("title", "summary", "asks_of_me"):
+    result["summary"] = attribute(result["summary"], names, item.get("who", ""), bool(item.get("user_wrote")))
+    for name in ("title", "asks_of_me"):
         result[name] = guard.second_person(result[name], names)
     if item["source"] == "mail" and not item.get("replied") and item.get("who"):
         # "Your email to Dhruv…" about Dhruv's own email: credit the sender.
@@ -122,6 +123,27 @@ _DEADLINE = re.compile(r"\b(?:due|deadline|exam|midterm|quiz|final|assignment|ho
                        re.I)
 
 
+_META = re.compile(r"\b(?:sensitive|junk|not spam|spam|classif\w*|asks_of_me|"
+                   r"sent (?:this|it) to \d+|to \d+ (?:people|recipients)|this (?:item|material))\b", re.I)
+_AUTHORED = ("sent", "sends", "wrote", "writes", "emailed", "emails", "reminded", "reminds", "announced",
+             "announces", "shared", "shares", "posted", "posts", "said", "says", "asked", "asks", "told", "tells",
+             "informed", "informs", "noted", "notes", "mentioned", "mentions", "launched", "launches",
+             "invited", "invites", "replied", "replies", "discussed", "discusses", "updated", "updates",
+             "is reminding", "is asking", "wants", "wanted", "explained", "explains")
+
+
+def attribute(text: str, names: list[str], who: str, user_wrote: bool) -> str:
+    """Second person, credited right. When the user wrote nothing in the item
+    (an incoming email), "The user sent a reminder…" means the sender did:
+    "Ed sent a reminder…". Everything else about the user becomes "you"."""
+    if text and who and not user_wrote:
+        subject = r"(?:" + "|".join([r"the user"] + [re.escape(n) for n in names if n]) + r")"
+        verbs = "|".join(re.escape(v) for v in sorted(_AUTHORED, key=len, reverse=True))
+        text = re.sub(rf"(^|[.!?]\s+){subject}\s+({verbs})\b", lambda m: f"{m.group(1)}{who} {m.group(2)}",
+                      text, flags=re.I)
+    return guard.second_person(text, names)
+
+
 def user_names() -> list[str]:
     """The user's full name and each part of it, for second-person rewriting."""
     try:
@@ -131,7 +153,9 @@ def user_names() -> list[str]:
         full = ""
     if not full:
         return []
-    return [full] + [w for w in re.findall(r"[A-Za-z][\w'-]+", full) if len(w) >= 2]
+    first = re.findall(r"[A-Za-z][\w'-]+", full)[:1]
+    # Full name and first name only: a surname is shared ("Trishala Jain").
+    return [full] + [w for w in first if len(w) >= 2 and w.casefold() != full.casefold()]
 
 
 def fallback(item: dict) -> dict | None:
