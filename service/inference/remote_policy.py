@@ -218,9 +218,15 @@ def remote_only_profile() -> RemoteOnlyProfile | None:
     # Only the launcher's WISP_REMOTE_ONLY=1 opts in. A profile left in
     # ~/.moe/config.yaml must never move a normal Mac's inference (and its
     # native reads) to a remote server on its own.
-    if _FORCED_MODE is None:
-        return None
     from service.config import models_config
+    if _FORCED_MODE is None:
+        # Settings ▸ Cloud inference ▸ "Everything" is the other explicit opt-in:
+        # it writes the profile AND remote_parity, then restarts the backend.
+        cfg = models_config()
+        profile = (cfg.get("inference") or {}).get("remote_only")
+        if not (cfg.get("remote_parity") is True and isinstance(profile, dict)
+                and profile.get("enabled", True) is True):
+            return None
     inference = models_config().get("inference", {})
     if not isinstance(inference, dict):
         _refuse("Invalid inference configuration")

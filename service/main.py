@@ -671,6 +671,31 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
         "readiness_timeout": 10,
     }
     probe = None
+    from service.config import CLOUD_EVERYTHING, set_cloud_everything
+    if CLOUD_EVERYTHING in roles:
+        try:
+            endpoint_from_config("cloud", endpoint_cfg)
+            if remote_only_profile() is None:
+                # Test the key and model before moving all of Wisp onto them.
+                probe = OMLXClient(target=Target("connection-test", endpoint_from_config("cloud", endpoint_cfg),
+                                                 model_id.strip(), context_window=context_window), timeout=30)
+                available = await probe.models()
+                if model_id.strip() not in available and f"models/{model_id.strip()}" not in available:
+                    raise HTTPException(status_code=400,
+                        detail="The provider connected, but did not return that exact model ID.")
+            with _local_provider_operation_lock:
+                set_cloud_everything(endpoint_cfg, model_id.strip(), context_window)
+        except HTTPException:
+            raise
+        except (EndpointConfigurationError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        except Exception:
+            raise HTTPException(status_code=400,
+                detail="The provider could not be reached or rejected the credential.") from None
+        finally:
+            if probe is not None:
+                await probe.aclose()
+        return await get_cloud_inference()
     try:
         cloud_endpoint = endpoint_from_config("cloud", endpoint_cfg)
         target = Target("connection-test", cloud_endpoint, model_id.strip(),
@@ -678,7 +703,7 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
         generation = _supersede_local_provider_probe()
         probe = OMLXClient(target=target, timeout=30)
         available = await probe.models()
-        if model_id.strip() not in available:
+        if model_id.strip() not in available and f"models/{model_id.strip()}" not in available:
             raise HTTPException(status_code=400,
                 detail="The provider connected, but did not return that exact model ID.")
         with _local_provider_operation_lock:

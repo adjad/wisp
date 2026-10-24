@@ -966,6 +966,11 @@ def cloud_provider_settings() -> dict:
              if isinstance(bindings.get(role), dict)
              and bindings[role].get("endpoint") == "cloud"]
     first = bindings.get(roles[0], {}) if roles else {}
+    everything = cloud_everything_enabled()
+    if everything:
+        roles = [CLOUD_EVERYTHING]
+        remote = cfg.get("remote_only") or {}
+        first = {"model_id": remote.get("model_id", ""), "context_window": remote.get("context_window", 16384)}
     provider_name = str(endpoint_cfg.get("provider", "openrouter"))
     credential_ref = str(endpoint_cfg.get("credential_ref", "keychain:cloud"))
     credential_name = (credential_ref.removeprefix("keychain:")
@@ -976,13 +981,25 @@ def cloud_provider_settings() -> dict:
         "provider_label": "OpenRouter" if provider_name == "openrouter" else "OpenAI-compatible",
         "base_url": str(endpoint_cfg.get("base_url", "https://openrouter.ai")),
         "api_prefix": str(endpoint_cfg.get("api_prefix", "/api/v1")),
-        "model_id": str(super_cfg.get("model_id") or first.get("model_id", "")),
-        "context_window": int(super_cfg.get("context_window")
+        "model_id": str((first.get("model_id") if everything else None)
+                         or super_cfg.get("model_id") or first.get("model_id", "")),
+        "context_window": int((first.get("context_window") if everything else None)
+                              or super_cfg.get("context_window")
                               or first.get("context_window", 16384)),
         "credential_name": credential_name,
         "roles": roles,
         "super_model_enabled": bool(super_cfg.get("enabled", False)),
+        "everything": everything,
+        "restart_required": everything != (_remote_now() is not None),
     }
+
+
+def _remote_now():
+    from service.inference.remote_policy import remote_only_profile
+    try:
+        return remote_only_profile()
+    except Exception:  # noqa: BLE001 — an invalid saved profile is "not running remote"
+        return None
 
 
 def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
@@ -1020,6 +1037,40 @@ def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
     }})
 
 
+CLOUD_EVERYTHING = "everything"
+# Generous limits for the whole-Wisp cloud profile: remote_parity keeps full
+# history and every tool, so the request bounds only stop runaway payloads.
+_EVERYTHING_LIMITS = {"max_tokens": 8192, "request_bytes": 8 * 1024 * 1024, "messages": 1000,
+                      "aggregate_bytes": 4 * 1024 * 1024, "tools": 128,
+                      "response_bytes": 8 * 1024 * 1024}
+
+
+def set_cloud_everything(endpoint_cfg: dict, model_id: str, context_window: int) -> None:
+    """Run ALL of Wisp on one cloud model, exactly like a local model.
+
+    Writes the remote-only profile plus remote_parity (no extra data limits);
+    it takes effect when the backend restarts."""
+    profile = {"base_url": endpoint_cfg["base_url"], "api_prefix": endpoint_cfg["api_prefix"],
+               "model_id": model_id, "credential_ref": endpoint_cfg["credential_ref"],
+               "context_window": context_window, "readiness_timeout": 15, "enabled": True,
+               **_EVERYTHING_LIMITS}
+    profile["max_tokens"] = min(profile["max_tokens"], context_window)
+    from service.inference.remote_policy import profile_from_config
+    profile_from_config(profile)              # refuse an invalid profile before saving it
+    _save_overlay({"remote_parity": True, "inference": {
+        "endpoints": {"cloud": endpoint_cfg},
+        "remote_only": profile,
+        "super_model": {"enabled": False, "model_id": model_id, "context_window": context_window},
+    }})
+
+
+def cloud_everything_enabled() -> bool:
+    cfg = models_config()
+    profile = (cfg.get("inference") or {}).get("remote_only")
+    return (cfg.get("remote_parity") is True and isinstance(profile, dict)
+            and profile.get("enabled", True) is True)
+
+
 def cloud_super_model_enabled() -> bool:
     from service.inference.remote_policy import remote_only_profile
     if remote_only_profile() is not None:
@@ -1034,6 +1085,12 @@ def cloud_super_model_enabled() -> bool:
 
 
 def disable_cloud_provider() -> None:
+    if cloud_everything_enabled():
+        # Back to local models at the next backend restart.
+        _save_overlay({"remote_parity": False, "inference": {
+            "remote_only": {"enabled": False}, "endpoints": {"cloud": {"enabled": False}},
+            "super_model": {"enabled": False}}})
+        return
     current = models_config().get("inference", {}).get("bindings", {})
     bindings = {}
     for role in CLOUD_ASSIGNABLE_ROLES:

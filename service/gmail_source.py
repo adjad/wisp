@@ -76,6 +76,10 @@ CONFIG_PATH = MOE_DIR / "gmail.json"
 
 HEADERS_LIMIT = 200          # per account, same depth as MailReader
 RAW_LIMIT = 50
+# Plus every message from the past week (up to WEEK_RAW_LIMIT), so the Brief reads
+# a whole week of a newly linked inbox, not only its newest 50.
+WEEK_RAW_DAYS = 7
+WEEK_RAW_LIMIT = 150
 HISTORY_LIMIT = 2000         # ~2y cap; first walk is the only expensive one
 HISTORY_DAYS = 730
 BODY_CAP = 20000
@@ -441,7 +445,9 @@ async def _sync_headers(http, account: str) -> None:
 
 async def _sync_raw(http, account: str) -> None:
     from service.tools import email_tools
-    ids = await _list_ids(http, RAW_LIMIT)
+    newest = await _list_ids(http, RAW_LIMIT)
+    week = await _list_ids(http, WEEK_RAW_LIMIT, query=f"newer_than:{WEEK_RAW_DAYS}d")
+    ids = list(dict.fromkeys(newest + week))
     gate = asyncio.Semaphore(FETCH_CONCURRENCY)
 
     async def one(message_id: str) -> dict:
@@ -760,6 +766,13 @@ async def _after_connect(email: str) -> None:
     if email not in connected_accounts():
         return
     _set_phase(email, "analyzing")
+    # A fresh start: whatever an earlier sign-in of this account left in the
+    # Brief goes first, then every account is judged again from scratch.
+    try:
+        from service.proactive.store import erase_account as reset_brief
+        reset_brief(email)
+    except Exception as exc:  # noqa: BLE001 — a stale card is better than no analyze
+        print(f"[gmail] proactive reset failed: {type(exc).__name__}", flush=True)
     outcome = request_proactive_analyze(email)
     _set_phase(email, "ready", analyze=outcome)
 

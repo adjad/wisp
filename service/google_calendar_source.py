@@ -2,8 +2,8 @@
 
 A judge (or the user) who signs in with "Connect Google" grants
 `calendar.readonly` next to `gmail.readonly` (gmail_source.CONSENT_SCOPES).
-For every connected account that granted it, this module reads today through
-the next 7 days from the Calendar API (the primary calendar plus the other
+For every connected account that granted it, this module reads the past 7
+and next 7 days from the Calendar API (the primary calendar plus the other
 calendars the account has selected) and writes the events into the SAME
 commitments store EventKit's CalendarReader fills through
 POST /assistant/sync/calendar, so Day, Brief, Ask's calendar tools and the
@@ -44,6 +44,7 @@ from service import gmail_source as G
 API = "https://www.googleapis.com/calendar/v3"
 CALENDAR_EVERY = 300
 DAYS_AHEAD = 7
+DAYS_BEHIND = 7                   # the past week too: a meeting that just happened can need a follow-up
 MAX_CALENDARS = 12
 MAX_EVENTS_PER_CALENDAR = 500
 PREFIX = "gcal:"
@@ -146,10 +147,11 @@ def _dupe_key(title, when_ts) -> tuple[str, int]:
 
 
 def window(now: float | None = None) -> tuple[float, float]:
-    """Local midnight today .. local midnight after DAYS_AHEAD more days."""
+    """Local midnight DAYS_BEHIND days ago .. local midnight after DAYS_AHEAD more days."""
     local = datetime.fromtimestamp(time.time() if now is None else now)
     start = local.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start.timestamp(), (start + timedelta(days=DAYS_AHEAD + 1)).timestamp()
+    return ((start - timedelta(days=DAYS_BEHIND)).timestamp(),
+            (start + timedelta(days=DAYS_AHEAD + 1)).timestamp())
 
 
 def _rfc3339(ts: float) -> str:

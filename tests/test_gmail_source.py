@@ -2584,6 +2584,42 @@ class GoogleConnectAndErase(unittest.TestCase):
         calendar.assert_not_awaited()
         self.assertEqual(self.analyzed, [JUDGE])
 
+    def test_after_connect_resets_the_brief_for_that_account_before_analyzing(self):
+        order = []
+        sys.modules["service.proactive.store"].erase_account = lambda a: order.append(("reset", a))
+        self.cycle.request_analyze = lambda account=None: order.append(("analyze", account))
+        self.run_after_connect()
+        self.assertEqual(order, [("reset", JUDGE), ("analyze", JUDGE)])
+        self.assertNotIn(ME, [a for _, a in order])
+
+    def test_after_connect_still_analyzes_when_the_brief_reset_fails(self):
+        def boom(account):
+            raise RuntimeError("store locked")
+        sys.modules["service.proactive.store"].erase_account = boom
+        self.run_after_connect()
+        self.assertEqual(self.analyzed, [JUDGE])
+        self.assertEqual(G._authorization["phase"], "ready")
+
+    def test_raw_sync_reads_the_whole_week_plus_the_newest_without_duplicate_fetches(self):
+        calls, fetched = [], []
+        async def fake_get(http, path, params=()):
+            params = list(params)
+            if path == "messages":
+                calls.append(params)
+                if ("q", f"newer_than:{G.WEEK_RAW_DAYS}d") in params:
+                    return {"messages": [{"id": i} for i in ("b", "c", "d")]}
+                return {"messages": [{"id": i} for i in ("a", "b")]}
+            fetched.append(path.split("/")[-1])
+            return msg(path.split("/")[-1])
+        cached = []
+        with patch.object(G, "_get", fake_get), patch.object(G, "_still_connected", lambda: True), \
+             patch.object(E, "cache_external_emails", lambda **kw: cached.append(kw)):
+            asyncio.run(G._sync_raw(None, ME))
+        self.assertTrue(any(("q", "newer_than:7d") in c for c in calls))
+        self.assertTrue(any(not any(k == "q" for k, _ in c) for c in calls))
+        self.assertEqual(sorted(fetched), ["a", "b", "c", "d"])
+        self.assertEqual(len(cached), 1)
+
     def test_late_phase_never_overwrites_a_newer_sign_in(self):
         G._authorization.update(phase="reading", phase_email="someone@else.test")
         G._set_phase(JUDGE, "ready")

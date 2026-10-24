@@ -91,6 +91,11 @@ def build_input(survivors: list[dict], sched: dict, now: float, tz: str) -> tupl
         lines.append(f"- [R{n}] {guard.clean(reminder['title'], 80)} ({when})")
     if not sched.get("reminders"):
         lines.append("- (nothing)")
+    if sched.get("past_calendar"):
+        lines += ["", "MEETINGS IN THE LAST 7 DAYS (only if one clearly needs a follow-up):"]
+        for n, event in enumerate(sched["past_calendar"][:10], 1):
+            ids[f"P{n}"] = {"kind": "calendar", "row": event}
+            lines.append(f"- [P{n}] {_clock(event['when_ts'], tz, event.get('all_day'))} {guard.clean(event['title'], 80)}")
     lines += ["", "ITEMS (last 7 days):"]
     ranked = sorted(survivors, key=lambda s: (not s["result"].get("asks_of_me"), -(s["item"].get("received_ts") or 0)))
     for n, survivor in enumerate(ranked[:MAX_SURVIVOR_LINES], 1):

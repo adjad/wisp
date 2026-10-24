@@ -151,7 +151,7 @@ class GoogleCalendarSource(unittest.TestCase):
         self.assertEqual(C.account_status(JUDGE)["calendar_events"], 4)
         self.assertEqual(C.account_status(JUDGE)["calendar_error"], "")
 
-    def test_window_is_today_through_seven_days_and_singles_out_recurrences(self):
+    def test_window_is_the_past_week_through_seven_days_ahead_and_singles_out_recurrences(self):
         google = self.judge_week()
         self.refresh(JUDGE, google)
         query = next(r for r in google.calls if r.url.path.endswith("/events")).url.params
@@ -159,8 +159,8 @@ class GoogleCalendarSource(unittest.TestCase):
         self.assertEqual(query["singleEvents"], "true")
         self.assertEqual(query["timeMin"], C._rfc3339(lo))
         self.assertEqual(query["timeMax"], C._rfc3339(hi))
-        self.assertEqual(hi - lo, pytest_days(8))
-        self.assertEqual(lo, at(0).timestamp())
+        self.assertEqual(hi, (at(0) + timedelta(days=8)).timestamp())
+        self.assertEqual(lo, (at(0) - timedelta(days=7)).timestamp())
 
     def test_refresh_replaces_only_that_accounts_rows_and_keeps_row_ids(self):
         self.store.sync_source("calendar", [{"source_id": "ek-1", "kind": "meeting", "title": "Dentist",

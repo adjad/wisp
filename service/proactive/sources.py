@@ -23,6 +23,7 @@ from service.proactive.guard import clean
 
 MAIL_WINDOW_S = 7 * 86400
 TEXT_WINDOW_S = 4 * 86400
+PAST_CALENDAR_DAYS = 7
 MAX_MAIL_THREADS = 40
 MAX_CONVERSATIONS = 20
 MAX_TEXT_LINES = 8
@@ -317,7 +318,13 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                           person=bool(people), user_wrote=any(_address(m) in mine for m in messages),
                           hash=_digest(text, replied)))
     items.sort(key=lambda i: i["received_ts"], reverse=True)
-    return items[:MAX_MAIL_THREADS]
+    # The cap is per account: a busy linked inbox never pushes out the owner's mail.
+    kept, per = [], {}
+    for item in items:
+        per[item["account"]] = per.get(item["account"], 0) + 1
+        if per[item["account"]] <= MAX_MAIL_THREADS:
+            kept.append(item)
+    return kept
 
 
 # --- texts ----------------------------------------------------------------------
@@ -483,7 +490,7 @@ def _midnight(now: float, tz: str) -> float:
 
 
 def schedule(store, now: float, tz: str, *, own: str | None = None, linked: set[str] | None = None) -> dict:
-    """{"calendar": today's and tomorrow's events, "reminders": open reminders
+    """{"calendar": today's and tomorrow's events, "past_calendar": linked Google accounts' last week, "reminders": open reminders
     (overdue, due by tomorrow, and undated)}, each row {id, title, when_ts,
     all_day, account, source}."""
     own = own_account() if own is None else own
@@ -498,7 +505,8 @@ def schedule(store, now: float, tz: str, *, own: str | None = None, linked: set[
         hidden = store.hidden_commitment_ids(now)
     except Exception:  # noqa: BLE001
         hidden = set()
-    calendar, reminders = [], []
+    calendar, reminders, past = [], [], []
+    linked_set = {str(a).casefold() for a in linked}
     for row in rows:
         if row.get("id") in hidden or not _finite(row.get("when_ts")):
             continue
@@ -511,6 +519,11 @@ def schedule(store, now: float, tz: str, *, own: str | None = None, linked: set[
         if row.get("source") == "calendar" or row.get("kind") in ("event", "meeting"):
             if start <= entry["when_ts"] < end:
                 calendar.append(entry)
+            elif (start - PAST_CALENDAR_DAYS * 86400 <= entry["when_ts"] < start
+                  and str(entry["account"]).casefold() in linked_set):
+                # A linked Google account's last week: a meeting that just
+                # happened can need a follow-up.
+                past.append(entry)
         elif row.get("source") in ("reminders", "manual") and entry["when_ts"] < end:
             reminders.append(entry)
     try:
@@ -523,7 +536,8 @@ def schedule(store, now: float, tz: str, *, own: str | None = None, linked: set[
             reminders.append(dict(id="undated:" + str(row.get("source_id")), title=title, when_ts=None,
                                   all_day=False, source="reminders", account=own))
     calendar.sort(key=lambda r: r["when_ts"])
-    return {"calendar": calendar, "reminders": reminders}
+    past.sort(key=lambda r: r["when_ts"], reverse=True)
+    return {"calendar": calendar, "reminders": reminders, "past_calendar": past}
 
 
 # --- everything -------------------------------------------------------------------

@@ -388,7 +388,8 @@ def _threads(survivors: list[dict], now: float | None = None, tz: str = "UTC") -
 def _account_schedule(sched: dict, account: str, own: str) -> dict:
     keep = lambda row: (row.get("account") or own) == account  # noqa: E731
     return {"calendar": [r for r in sched.get("calendar", []) if keep(r)],
-            "reminders": [r for r in sched.get("reminders", []) if keep(r)]}
+            "reminders": [r for r in sched.get("reminders", []) if keep(r)],
+            "past_calendar": [r for r in sched.get("past_calendar", []) if keep(r)]}
 
 
 async def run_cycle(*, now: float | None = None, tz: str | None = None, account: str | None = None,
@@ -495,6 +496,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         acct_sched = _account_schedule(sched, acct, own)
         key = _digest({"s": sorted(f"{s['item']['id']}:{s['item']['hash']}:{_digest(s['result'])}" for s in mine),
                        "c": [r["id"] for r in acct_sched["calendar"]], "r": [r["id"] for r in acct_sched["reminders"]],
+                       "p": [r["id"] for r in acct_sched["past_calendar"]],
                        "x": sorted(suppressed), "day": datetime.fromtimestamp(now, ZoneInfo(tz)).date().isoformat(),
                        "m": model_ok})
         last = judged.get(acct) or {}

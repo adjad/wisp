@@ -65,3 +65,45 @@ class RemoteParity(RemoteFixture):
         # The pinned payload contract is untouched.
         with self.assertRaises(Exception):
             policy.remote_only_profile().validate_payload({"model": "x", "messages": [], "stream": False})
+
+
+class CloudEverything(RemoteFixture):
+    """Settings ▸ Cloud inference ▸ Everything: config alone (no launch flag) runs all of Wisp remotely."""
+
+    def _saved(self, cfg):
+        self.cfg = cfg
+        policy.remote_only_profile.cache_clear()
+
+    def test_config_opt_in_activates_without_the_launch_flag(self):
+        with patch.object(policy, "_FORCED_MODE", None):
+            self._saved({"inference": {"remote_only": dict(self.profile)}})
+            self.assertIsNone(policy.remote_only_profile())         # a stray profile alone does nothing
+            self._saved({"remote_parity": True, "inference": {"remote_only": dict(self.profile)}})
+            self.assertIsNotNone(policy.remote_only_profile())
+            self._saved({"remote_parity": True,
+                         "inference": {"remote_only": {**self.profile, "enabled": False}}})
+            self.assertIsNone(policy.remote_only_profile())         # disconnected
+
+    def test_set_and_disable_round_trip(self):
+        saved = {}
+        def save(update, **_):
+            def merge(a, b):
+                for k, v in b.items():
+                    a[k] = merge(a.get(k, {}), v) if isinstance(v, dict) and isinstance(a.get(k), dict) else v
+                return a
+            merge(saved, update)
+        endpoint = {"enabled": True, "provider": "openai-compatible",
+                    "base_url": "https://generativelanguage.googleapis.com", "api_prefix": "/v1beta/openai",
+                    "credential_ref": "keychain:cloud", "readiness_timeout": 10}
+        with patch.object(config, "_save_overlay", side_effect=save), \
+             patch.object(config, "models_config", side_effect=lambda: saved):
+            config.set_cloud_everything(endpoint, "gemma-4-e4b-it", 128000)
+            self.assertTrue(saved["remote_parity"])
+            profile = saved["inference"]["remote_only"]
+            self.assertEqual((profile["base_url"], profile["api_prefix"], profile["model_id"], profile["credential_ref"]),
+                             (endpoint["base_url"], "/v1beta/openai", "gemma-4-e4b-it", "keychain:cloud"))
+            self.assertTrue(config.cloud_everything_enabled())
+            self.assertEqual(config.cloud_provider_settings()["roles"], ["everything"])
+            config.disable_cloud_provider()
+            self.assertFalse(saved["remote_parity"])
+            self.assertFalse(config.cloud_everything_enabled())
