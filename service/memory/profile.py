@@ -364,7 +364,8 @@ def status(profile: dict, *, now: float | None = None) -> dict:
 _TONE_RULES = {
     "gentle": ("Speak gently and reassuringly. Lead with what is going well or is "
                "handled before what is not; never scold."),
-    "warm": "Be warm and direct: friendly, plain, and to the point.",
+    "warm": ("Be warm and energetic: friendly, upbeat and vivid, with real "
+             "enthusiasm for what they are doing."),
     "direct": ("Be straight to the point. Skip pleasantries and preamble; give the "
                "answer or the ask first."),
 }
@@ -607,7 +608,7 @@ def preview(profile: dict | None = None) -> list[str]:
                      "with a small next step. Never a reproach.")
     tone = profile.get("tone") or "warm"
     detail = profile.get("detail") or "short"
-    manner = {"gentle": "gently", "warm": "warmly and plainly", "direct": "straight to the point"}[tone]
+    manner = {"gentle": "gently", "warm": "warmly and with energy", "direct": "straight to the point"}[tone]
     length = {"short": "short", "thorough": "thorough"}[detail]
     lines.append(f"I'll talk to you {manner}, and keep replies {length}.")
     if profile.get("boundaries"):
