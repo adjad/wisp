@@ -12,6 +12,8 @@
 - ``calendar_event``: attention_calendar.create_calendar, approved for exactly
   the event the card showed.
 - ``add_to_day``: assistant_store.today_save_task.
+- ``block_time``: a pinned Wisp Day task in the card's slot, after checking
+  the slot is still free (deadlines.hold). Wisp-local: never Calendar.
 - ``read``: nothing to do; the card is marked handled.
 
 IMPORTANT: the recipient is the card's own, taken from the source when the
@@ -292,6 +294,13 @@ async def _run(card: dict, method: str, words: str, store, methods: dict, now: f
         if result.get("ok") is not True and result.get("status") != "blocked":
             result = call(card) if call else add_to_day(envelope.get("title") or card.get("title"),
                                                          envelope.get("due_ts"), now=now)
+    elif method == "block_time":
+        call = methods.get("block_time")
+        if call:
+            result = call(card)
+        else:
+            from service.proactive import deadlines
+            result = deadlines.hold(card, now=now)
     elif method == "read":
         result = {"ok": True, "status": "succeeded"}
     else:
