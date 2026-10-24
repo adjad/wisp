@@ -31,6 +31,7 @@ Rules:
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 import uuid
@@ -261,7 +262,7 @@ async def refresh_account(account: str, *, transport: httpx.AsyncBaseTransport |
     """Fetch one account's week and replace its Google rows. Returns the count."""
     account = account.strip().lower()
     if not G.has_calendar(account):
-        erase_if_present(account)
+        _erase_quietly(account, only_if_present=True)
         return 0
     lock = _locks.setdefault(account, asyncio.Lock())
     async with lock:
@@ -278,7 +279,7 @@ async def refresh_account(account: str, *, transport: httpx.AsyncBaseTransport |
                 count = store_events(account, items)
         except CalendarScopeLost as exc:
             # Calendar access was taken back: its events must not linger.
-            erase(account)
+            _erase_quietly(account)
             _status.setdefault(account, {})["error"] = str(exc)
             await _publish_changed()
             return 0
@@ -294,6 +295,16 @@ async def refresh_account(account: str, *, transport: httpx.AsyncBaseTransport |
     return count
 
 
+def _erase_quietly(account: str, *, only_if_present: bool = False) -> None:
+    """Background erase: a failed behavior-history purge (RuntimeError, raised
+    after the calendar rows are already gone) is logged, never allowed to stop
+    other accounts from refreshing. Disconnect & erase reports it instead."""
+    try:
+        (erase_if_present if only_if_present else erase)(account)
+    except RuntimeError as exc:
+        print(f"[google_calendar] background erase incomplete: {exc}", flush=True)
+
+
 async def refresh_due(accounts: dict[str, dict], now: float | None = None) -> None:
     now = time.time() if now is None else now
 
@@ -305,7 +316,7 @@ async def refresh_due(accounts: dict[str, dict], now: float | None = None) -> No
 
     for account, item in accounts.items():
         if not G.has_calendar(account, item):
-            erase_if_present(account)   # the scope was dropped on a reconnect
+            _erase_quietly(account, only_if_present=True)   # the scope was dropped on a reconnect
     due = [account for account, item in accounts.items() if G.has_calendar(account, item)
            and now - _status.get(account, {}).get("attempted", 0) >= CALENDAR_EVERY]
     await asyncio.gather(*(one(account) for account in due))
@@ -435,6 +446,9 @@ def merge_native_items(items: list[dict], store=None) -> list[dict]:
     return native + [it for it in google if _dupe_key(it["title"], it["when_ts"]) not in keys]
 
 
+_NATIVE_WRITE_KINDS = frozenset({"create_reminder", "create_calendar_event"})
+
+
 def _account_row_ids(db, account: str) -> list[str]:
     prefix = _prefix(account)
     return [r["id"] for r in db.execute(
@@ -457,9 +471,9 @@ def erase(account: str, store=None) -> int:
     """Delete every Google Calendar row (and its side rows) for one account.
 
     Best effort beyond the rows themselves: schedule versions of the deleted
-    rows (and any orphaned ones), and queued assistant events (notifications,
-    nudges, actions) whose payload names one of those rows, the account's
-    gcal: ids, or the account's address."""
+    rows (and any orphaned ones), and unclaimed, non-native-write assistant
+    events whose JSON payload has `commitment_id` among those rows or a
+    `source_id` under the account's gcal: prefix."""
     account = account.strip().lower()
     _status.pop(account, None)
     store = store or _store()
@@ -471,10 +485,21 @@ def erase(account: str, store=None) -> int:
             db.execute("DELETE FROM assistant_schedule_versions WHERE commitment_id=?", (rid,))
         db.execute("DELETE FROM assistant_schedule_versions WHERE commitment_id NOT IN "
                    "(SELECT id FROM commitments)")
-        needles = [prefix, account] + ids
-        for row in db.execute("SELECT id, payload FROM assistant_events").fetchall():
-            payload = str(row["payload"] or "").lower()
-            if any(needle.lower() in payload for needle in needles):
+        # Exact JSON fields only: commitment_id among the erased rows, or a
+        # source_id under this account's gcal: prefix. Claimed rows and native
+        # write actions are in flight or need their outcome kept: never touched.
+        erased_ids = set(ids)
+        for row in db.execute("SELECT id, kind, payload, claim_token FROM assistant_events").fetchall():
+            if row["claim_token"] is not None or row["kind"] in _NATIVE_WRITE_KINDS:
+                continue
+            try:
+                payload = json.loads(row["payload"] or "")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            cid, sid = payload.get("commitment_id"), payload.get("source_id")
+            if (isinstance(cid, str) and cid in erased_ids) or (isinstance(sid, str) and sid.startswith(prefix)):
                 db.execute("DELETE FROM assistant_events WHERE id=?", (row["id"],))
     try:
         from service.assistant.behavior_runtime import erase_google_calendar_account
