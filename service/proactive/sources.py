@@ -216,7 +216,8 @@ def _sentences(text: str) -> list[str]:
 
 
 def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
-               linked: set[str] | None = None, own: str | None = None) -> list[dict]:
+               linked: set[str] | None = None, own: str | None = None,
+               counts: dict | None = None) -> list[dict]:
     """One item per thread (account + bare subject), newest first. Threads made
     only of mass mail, or only of the user's own mail, are left out."""
     from service.assistant.daily_workspace import display_name, mass_mail_filter
@@ -241,6 +242,10 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         # else (newsletters, job alerts, launches, campaigns) is not read at all.
         people = [m for m in incoming if not skip(m) and not bulk_mail(m)]
         school = [m for m in incoming if school_mail(m) and _deadline(m)]
+        if counts is not None:
+            used = {id(m) for m in people + school}
+            tally(counts, account_of(account, linked=linked, own=own), mail=len(incoming),
+                  filtered=sum(1 for m in incoming if id(m) not in used))
         if not people and not school:
             continue
         last_in = (people or school)[-1]
@@ -324,7 +329,15 @@ def _render(rows: list[tuple[float, str, str]]) -> list[str]:
         return [f"[{text.partition(':')[0].strip()}] {text.partition(':')[2].strip()}" for _, _, text in rows]
 
 
-def text_items(records: list[tuple], *, now: float, own: str | None = None) -> list[dict]:
+def tally(counts: dict, account: str, **add) -> None:
+    """Add to what Wisp looked at for one account: {mail, texts, notes, filtered}."""
+    row = counts.setdefault(account, {"mail": 0, "texts": 0, "notes": 0, "filtered": 0})
+    for key, value in add.items():
+        row[key] += value
+
+
+def text_items(records: list[tuple], *, now: float, own: str | None = None,
+               counts: dict | None = None) -> list[dict]:
     """One item per conversation active in the last few days: its latest lines,
     rendered sender-first so the model can't credit the user's words to the
     other person."""
@@ -348,7 +361,11 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None) -> l
         # texted is a campaign or a service ("Vote YES on Measure I"), not a person.
         bare = context[len("Group "):].strip().strip('"') if context.startswith("Group ") else context
         bare = re.sub(r"\s*\(conversation \d+\)\s*$", "", bare).strip()
+        if counts is not None:
+            tally(counts, own, texts=1)
         if (_LITERAL_LABEL.match(bare) or re.fullmatch(r"\d{3,8}", bare)) and context not in ever_sent:
+            if counts is not None:
+                tally(counts, own, filtered=1)
             continue
         rows = rows[-MAX_TEXT_LINES:]
         incoming = [r for r in rows if r[2].partition(":")[0].strip() != "Me"]
@@ -469,9 +486,10 @@ def schedule(store, now: float, tz: str, *, own: str | None = None, linked: set[
 # --- everything -------------------------------------------------------------------
 
 
-def collect(now: float | None = None, tz: str = "UTC") -> list[dict]:
+def collect(now: float | None = None, tz: str = "UTC", counts: dict | None = None) -> list[dict]:
     """Every mail, text and note item, each source on its own: one failing
-    never takes the others with it."""
+    never takes the others with it. `counts` gets, per account, everything
+    looked at, including the bulk mail and campaign texts left out."""
     now = time.time() if now is None else now
     linked, own = gmail_accounts(), own_account()
     items: list[dict] = []
@@ -481,17 +499,22 @@ def collect(now: float | None = None, tz: str = "UTC") -> list[dict]:
     except Exception:  # noqa: BLE001
         mine = set()
     try:
-        items += mail_items(mail_rows(now, linked), mine=mine, now=now, tz=tz, linked=linked, own=own)
+        items += mail_items(mail_rows(now, linked), mine=mine, now=now, tz=tz, linked=linked, own=own,
+                            counts=counts)
     except Exception:  # noqa: BLE001
         import traceback
         traceback.print_exc()
     try:
-        items += text_items(text_records(), now=now, own=own)
+        items += text_items(text_records(), now=now, own=own, counts=counts)
     except Exception:  # noqa: BLE001
         import traceback
         traceback.print_exc()
     try:
-        items += note_items(own=own)
+        notes = note_items(own=own)
+        items += notes
+        if counts is not None:
+            for note in notes:
+                tally(counts, note.get("account") or own, notes=1)
     except Exception:  # noqa: BLE001
         pass
     return items

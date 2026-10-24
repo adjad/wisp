@@ -432,7 +432,8 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     _status.update(state="working", phase="reading", account=account, error="", started_at=started,
                    finished_at=None, progress={"done": 0, "total": 0})
     # Reading the caches parses megabytes of mail and texts: off the event loop.
-    items = await asyncio.to_thread(collect or (lambda n, z: sources.collect(n, z)), now, tz)
+    looked: dict = {}
+    items = await asyncio.to_thread(collect or (lambda n, z: sources.collect(n, z, counts=looked)), now, tz)
     if account:
         items.sort(key=lambda i: str(i.get("account", "")).casefold() != account.casefold())
 
@@ -572,11 +573,13 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             taken = {c.get("todo_id") for c in keep}
             mine = [c for c in found if (c.get("account") or own) == acct and c.get("todo_id") not in taken]
             cards_by_account[acct] = order_cards(keep, mine)
-    read_by_account: dict = {}
-    for i in items:
-        if i["source"] in ("mail", "messages", "notes"):
-            a = i.get("account") or own
-            read_by_account[a] = read_by_account.get(a, 0) + 1
+    # What Wisp looked at, bulk mail it skipped included. An injected collect
+    # (tests) reports nothing, so its items stand in.
+    if not looked:
+        for i in items:
+            if i["source"] in ("mail", "messages", "notes"):
+                key = {"mail": "mail", "messages": "texts", "notes": "notes"}[i["source"]]
+                sources.tally(looked, i.get("account") or own, **{key: 1})
     # An account erased while this cycle ran (Disconnect & erase) keeps nothing.
     erased = {a for a in accounts if a != own and store.erased_since(a, started)}
     accounts = [a for a in accounts if a not in erased]
@@ -592,7 +595,8 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         notes=[{k: n[k] for k in ("id", "title", "account", "who", "hash")} for n in notes],
         threads=_threads(survivors, now, tz), summaries=summaries, judged=judged, model=model_ok,
         debug={a: v for a, v in debug_by_account.items() if a in accounts},
-        stats={a: {"read": read_by_account.get(a, 0)} for a in accounts})
+        # Every account looked at counts, even one whose mail was all bulk.
+        stats={a: _looked_stats(looked.get(a)) for a in sorted(set(accounts) | (set(looked) - erased))})
     _status.update(state="idle" if not yielded else "idle", phase="", finished_at=time.time())
     _log(f"cycle done: {len(items)} items, {len(pending)} read, {len(survivors)} kept, "
          f"{sum(len(v) for v in cards_by_account.values())} cards{' (by rule)' if not model_ok else ''}")
@@ -787,17 +791,29 @@ def _lede(cards: list[dict], todos: list[dict], summary: str, now: float, tz: st
     return summary
 
 
+def _looked_stats(row: dict | None) -> dict:
+    row = row or {}
+    breakdown = {k: int(row.get(k) or 0) for k in ("mail", "texts", "notes")}
+    return {"read": breakdown["mail"] + breakdown["texts"], "filtered": int(row.get("filtered") or 0),
+            "read_breakdown": breakdown}
+
+
 def _stats(state: dict, cards: list[dict], todos: list[dict], account: str | None) -> dict:
-    """ "Wisp read 49 emails and texts · found 3 things · drafted 1 reply"."""
-    per = state.get("stats") or {}
-    read = sum(int((v or {}).get("read") or 0) for a, v in per.items()
-               if not account or str(a).casefold() == account.casefold())
+    """ "Wisp read 102 emails and texts · skipped 90 newsletters · found 3
+    things · drafted 1 reply". `read` is every mail and text conversation
+    looked at in the window, bulk included; `filtered` is the bulk left out."""
+    per = [v or {} for a, v in (state.get("stats") or {}).items()
+           if not account or str(a).casefold() == account.casefold()]
+    read = sum(int(v.get("read") or 0) for v in per)
+    filtered = sum(int(v.get("filtered") or 0) for v in per)
+    breakdown = {k: sum(int((v.get("read_breakdown") or {}).get(k) or 0) for v in per)
+                 for k in ("mail", "texts", "notes")}
     from service.proactive.deadlines import is_test
     open_todos = {t["id"] for t in todos if not t["done"] and t["source"] != "calendar" and not is_test(t["title"])}
     extra = {c["id"] for c in cards if c.get("todo_id") not in open_todos}
     return {"read": read, "found": len(open_todos) + len(extra),
             "drafted": sum(1 for c in cards if (c.get("action") or {}).get("draft")),
-            "as_of": state.get("as_of")}
+            "filtered": filtered, "read_breakdown": breakdown, "as_of": state.get("as_of")}
 
 
 def snapshot(*, account: str | None = None, now: float | None = None, tz: str | None = None, store=None,

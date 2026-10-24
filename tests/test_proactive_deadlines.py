@@ -197,7 +197,8 @@ def test_the_cycle_adds_deadline_cards_and_counts_what_it_read(store):
     view = cycle.snapshot(now=NOON, tz=TZ, store=store, schedule_fn=lambda n, z: {"calendar": [], "reminders": []},
                           own="me", linked=set())
     assert [c["action"]["method"] for c in view["cards"]] == ["block_time", "add_to_day"]
-    assert view["stats"]["read"] == 2 and view["stats"]["drafted"] == 0 and view["stats"]["as_of"] == NOON
+    assert view["stats"]["read"] == 1 and view["stats"]["read_breakdown"] == {"mail": 1, "texts": 0, "notes": 1}
+    assert view["stats"]["drafted"] == 0 and view["stats"]["as_of"] == NOON
     assert view["stats"]["found"] >= 1
     assert view["lede"] == "Worksheet 3 for STAT 5 is due tomorrow, and I found you an hour for it."
     # A slot that has started is no longer offered.
@@ -229,7 +230,31 @@ def test_stats_count_cards_and_open_non_calendar_todos_once_and_skip_test_remind
              {"id": "d", "title": "Done thing", "source": "mail", "done": True}]
     cards = [{"id": "x", "todo_id": "a", "action": {"draft": "Hi!"}}, {"id": "y", "todo_id": "z", "action": {}}]
     stats = cycle._stats({"stats": {"me": {"read": 49}}, "as_of": NOON}, cards, todos, None)
-    assert stats == {"read": 49, "found": 2, "drafted": 1, "as_of": NOON}
+    assert stats == {"read": 49, "found": 2, "drafted": 1, "filtered": 0,
+                     "read_breakdown": {"mail": 0, "texts": 0, "notes": 0}, "as_of": NOON}
+
+
+def test_read_counts_every_mail_and_text_looked_at_including_the_bulk_left_out():
+    from service.proactive import sources
+    now = NOON
+    me = "me@example.com"
+
+    def row(i, sender, address, subject, body):
+        return dict(ts=now - 3600 - i, account="iCloud", account_id="a", sender=f"{sender} <{address}>",
+                    sender_address=address, to=me, subject=subject, message_id=f"m{i}", body=body, unread=True)
+    rows = [row(i, "Shop Weekly", "news@shop.example", f"Sale {i}", "Big sale! Unsubscribe here.") for i in range(5)]
+    rows.append(row(9, "Sam Lee", "sam@example.com", "Coffee?", "Want to grab coffee Friday?"))
+    texts = [(now - 600, "Mom", "Mom: call me?"), (now - 500, "72345", "72345: Vote YES on Measure I")]
+    counts: dict = {}
+    mail = sources.mail_items(rows, mine={me}, now=now, tz=TZ, linked=set(), own=me, counts=counts)
+    msgs = sources.text_items(texts, now=now, own=me, counts=counts)
+    assert [i["who"] for i in mail] == ["Sam Lee"] and [i["who"] for i in msgs] == ["Mom"]
+    assert counts[me] == {"mail": 6, "texts": 2, "notes": 0, "filtered": 6}
+    assert cycle._looked_stats(counts[me]) == {"read": 8, "filtered": 6,
+                                               "read_breakdown": {"mail": 6, "texts": 2, "notes": 0}}
+    state = {"stats": {me: cycle._looked_stats(counts[me])}, "as_of": now}
+    stats = cycle._stats(state, [], [], None)
+    assert stats["read"] == 8 and stats["filtered"] == 6 and stats["read_breakdown"]["mail"] == 6
 
 
 # --- attention -----------------------------------------------------------------------
