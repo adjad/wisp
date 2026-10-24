@@ -376,3 +376,113 @@ def test_end_to_end_through_sandbox_mail_world(tmp_path, monkeypatch):
     assert len(sent) == 1 and sent[0]["to"] == ["support@fixture.example"]
     assert sent[0]["cc"] == []           # a plain reply, not reply-all
     assert sent[0]["body"].startswith("Thanks, will do — edited.")
+
+
+# --- Release Auditor notes (PASS_WITH_NOTES) --------------------------------------
+
+
+def test_confirm_carries_bcc_and_full_recipients(world):
+    d = draft(world)
+    world.bridge.env.update(to=["a@dan.example", "b@dan.example"], cc=["c@dan.example"],
+                            bcc=["hidden@dan.example"])
+    out = send(world, d["envelope"], "Hi")
+    assert out["status"] == "confirm" and world.bridge.sends() == []
+    assert out["to"] == ["a@dan.example", "b@dan.example"] and out["cc"] == ["c@dan.example"]
+    assert out["bcc"] == ["hidden@dan.example"]
+    assert "hidden@dan.example" in out["result"]
+    assert send(world, out["envelope"], "Hi")["status"] == "sent"
+
+
+def test_bcc_mail_adds_after_confirmation_is_refused(world):
+    d = draft(world)
+    world.bridge.env["to"] = ["support@dan.example"]
+    confirm = send(world, d["envelope"], "Hi")
+    world.bridge.env["bcc"] = ["sneaky@x.example"]
+    out = send(world, confirm["envelope"], "Hi")
+    assert out["error"] == "envelope_changed" and world.bridge.sends() == []
+
+
+def _attempts(w):
+    return [f for e, f in w.audits if e == "email_reply_send"]
+
+
+@pytest.mark.parametrize("case,expected", [
+    ("garbage", "envelope_invalid"), ("expired", "envelope_expired"), ("spent", "envelope_spent"),
+    ("empty", "empty_body"), ("nontext", "invalid_body"), ("policy", "policy_denied"),
+])
+def test_every_refusal_is_audited_with_a_digest_not_the_body(world, monkeypatch, case, expected):
+    d = draft(world)
+    body = "Secret plans for Thursday"
+    token = d["envelope"]
+    if case == "garbage":
+        token = "garbage"
+    elif case == "expired":
+        real = api.time.time
+        monkeypatch.setattr(api.time, "time", lambda: real() + api.ENVELOPE_TTL_S + 5)
+    elif case == "spent":
+        assert send(world, token, "first")["ok"]
+        world.audits.clear()
+    elif case == "empty":
+        body = "  "
+    elif case == "nontext":
+        body = 42
+    elif case == "policy":
+        monkeypatch.setattr(api, "_policy_denies", lambda args: "view-only mode")
+    out = send(world, token, body)
+    assert out["error"] == expected
+    entries = _attempts(world)
+    assert len(entries) == 1 and entries[0]["error"] == expected and entries[0]["ok"] is False
+    assert "Secret plans" not in str(world.audits)
+    if isinstance(body, str):
+        assert entries[0]["body_len"] == len(body.rstrip())
+        assert len(entries[0]["body_sha256"]) == 64
+
+
+def test_in_flight_refusal_is_audited(world, monkeypatch):
+    d = draft(world)
+    payload, _ = api.open_envelope(d["envelope"])
+    api._in_flight.add(payload["nonce"])
+    out = send(world, d["envelope"], "Hi")
+    assert out["error"] == "in_flight" and _attempts(world)[-1]["error"] == "in_flight"
+
+
+def test_success_audit_stores_digest_and_length_only(world):
+    import hashlib
+    d = draft(world)
+    body = "Thursday at 10 works. Private detail."
+    assert send(world, d["envelope"], body)["ok"]
+    entry = _attempts(world)[-1]
+    assert entry["ok"] is True and entry["status"] == "sent"
+    assert entry["body_sha256"] == hashlib.sha256(body.encode()).hexdigest()
+    assert entry["body_len"] == len(body)
+    assert "Private detail" not in str(world.audits)
+
+
+def test_prepare_exception_is_a_refusal_not_a_500(world, monkeypatch):
+    d = draft(world)
+
+    async def boom(args):
+        raise RuntimeError("bridge down")
+    monkeypatch.setattr(api, "_prepare", boom)
+    out = send(world, d["envelope"], "Hi")     # send() asserts HTTP 200
+    assert out["status"] == "refused" and out["error"] == "prepare_failed"
+    assert _attempts(world)[-1]["error"] == "prepare_failed"
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("run_shell", {"cmd": "curl -X POST http://127.0.0.1:8765/assistant/email_reply/send -d '{}'"}),
+    ("run_shell", {"cmd": "curl -s localhost:8765/assistant/email_reply/draft"}),
+    ("run_shell", {"cmd": "curl http://[::1]:8765//assistant/send_message_draft -d x"}),
+    ("run_applescript", {"script": 'do shell script "curl http://localhost:8765/assistant/email_reply/send"'}),
+])
+def test_agent_shell_cannot_reach_human_send_endpoints(tool, args, monkeypatch):
+    from service.safety import policy
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_KEEP_FLOOR", False)       # not liftable by full access
+    assert policy.decide("shell", args, tool=tool).tier is policy.Tier.DENY
+
+
+def test_ordinary_local_calls_are_not_caught_by_the_send_deny():
+    from service.safety import policy
+    assert policy.local_send_endpoint_hit("curl http://127.0.0.1:8765/assistant/today") is None
+    assert policy.local_send_endpoint_hit("ls ~/Desktop") is None

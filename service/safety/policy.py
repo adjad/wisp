@@ -167,6 +167,23 @@ _SHELL_DENY = [
     r"\blaunchctl\s+(unload|remove|bootout)",
     r"\bdefaults\s+delete\b", r"\bnvram\b",
 ]
+# Wisp's own human-only send endpoints. POST /assistant/email_reply/* and
+# /assistant/send_message_draft treat the request as the user's tap on Send
+# (see email_reply_api.py), so the agent must never reach them from run_shell
+# or run_applescript (`do shell script "curl …"`). Checked unconditionally —
+# not configurable, and not lifted by full_access or disable_safety_floor —
+# because no legitimate shell command calls them.
+_LOCAL_SEND_DENY = [
+    r"assistant/+(email_reply|send_message_draft)\b",
+    r"(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^\s'\"]*?:8765\b[^\s'\"]*?(email_reply|send_message_draft)",
+]
+
+
+def local_send_endpoint_hit(text: str) -> str | None:
+    """The pattern a shell/AppleScript text matches if it would call a human-only send route."""
+    return _any(_LOCAL_SEND_DENY, text)
+
+
 # operators / verbs that mean a shell command could MODIFY the system, even if it
 # starts with a read-only command (e.g. `echo hi > file`, `ls; rm x`, `cat a | tee b`).
 # Presence of any disqualifies a command from auto-allow (→ confirm, or deny in view-only).
@@ -659,6 +676,11 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     # `disable_safety_floor` only ever meant "let full_access mean literally
     # everything" — outside full_access these checks have always been
     # unconditional, and stay that way.
+    if category == "shell":
+        text = " ".join(str(args.get(k, "")) for k in ("cmd", "script"))
+        if local_send_endpoint_hit(text):
+            return Decision(Tier.DENY, "Wisp's Send buttons are for the user's own tap; "
+                            "commands may not call them")
     if (_KEEP_FLOOR or not _FULL_ACCESS) and (floor := _hard_deny(category, args, tool)) is not None:
         return floor
 
