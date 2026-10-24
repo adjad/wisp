@@ -459,6 +459,8 @@ from service.assistant.checkin_api import router as checkin_router
 app.include_router(checkin_router)
 from service.assistant.email_reply_api import router as email_reply_router
 app.include_router(email_reply_router)
+from service.proactive.api import router as proactive_router
+app.include_router(proactive_router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
