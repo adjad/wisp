@@ -1,0 +1,6 @@
+work/
+rewrite_queue.jsonl
+*.zip
+train.jsonl
+dev.jsonl
+__pycache__/

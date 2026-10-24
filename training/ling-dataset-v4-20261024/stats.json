@@ -1,0 +1,36 @@
+{
+ "source_sha256": {
+  "train": "351adbbcd8808fedf10b29f06f0472a93aa00cc3334de6ff08cded2091b04023",
+  "dev": "d41bb8d062370b92507dcc5ad73312bf0a6ecefb0377fc5551674b632cf7f4c8"
+ },
+ "seed": 20261024,
+ "messages_rewritten": 1129,
+ "splits": {
+  "train": {
+   "rows": 3536,
+   "v4_rows": 390,
+   "v4_conversations": 150,
+   "final_answers": 1004,
+   "final_words": {
+    "p50": 24,
+    "p90": 42,
+    "max": 89
+   },
+   "final_with_bold_pct": 63.0,
+   "sha256": "5611abfdfa7c7e3ffeafcc2ad63336c6256d21f0526f3f03ed55bab30dc7aedb"
+  },
+  "dev": {
+   "rows": 426,
+   "v4_rows": 52,
+   "v4_conversations": 20,
+   "final_answers": 125,
+   "final_words": {
+    "p50": 23,
+    "p90": 44,
+    "max": 67
+   },
+   "final_with_bold_pct": 60.8,
+   "sha256": "dd45635433c89906c52325bb8dcccd73c3dd86a07694ccdd44580bddb76f0c18"
+  }
+ }
+}
