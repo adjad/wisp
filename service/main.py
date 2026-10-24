@@ -1385,6 +1385,10 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
         if day_plan_question(prompt) and DAY_PLAN_TOOL in REGISTRY:
             # The Brief already ranked the day: one read instead of four.
             head = [DAY_PLAN_TOOL, *(n for n in head if n != DAY_PLAN_TOOL)]
+        from service.model_only import mail_first
+        if not writing and mail_first(prompt) and "view_emails" in REGISTRY:
+            # "When is the W-9 due?" went to web_search; the answer was in mail.
+            head = ["view_emails", *(n for n in head if n != "view_emails")]
         preload = head[:ASK_PRELOAD]
         try:
             ranked = _reranker.ranked_lexical_candidates(text, writing=writing,
@@ -2327,8 +2331,16 @@ async def agent(body: dict[str, Any]):
                     ask_forbidden = ask_forbidden_tools(prompt, REGISTRY)
                     if pure_writing(prompt):
                         synthesis_guidance.insert(1, ASK_COMPOSE_HINT)
-                    from service.model_only import compose_only
-                    ask_direct = pure_writing(prompt) and compose_only(prompt)
+                    from service.model_only import (ASK_KNOWLEDGE_HINT, capability_question,
+                                                    compose_only, knowledge_question)
+                    knowledge = knowledge_question(prompt)
+                    if knowledge:
+                        synthesis_guidance.insert(1, ASK_KNOWLEDGE_HINT)
+                    # One tool-free step: writing with no destination, general
+                    # knowledge, and questions about what Wisp can do (their
+                    # tool paths failed, refused or named internal tools).
+                    ask_direct = ((pure_writing(prompt) and compose_only(prompt)) or knowledge
+                                  or capability_question(prompt))
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")

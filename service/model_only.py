@@ -152,18 +152,33 @@ ASK_STYLE_HINT = (
     "(a week when they asked about today or tomorrow), mention only the asked day, "
     "and never describe a multi-day count as \"today\".\n"
     "- If no tool you have can know the answer (a personal fact nothing records), "
-    "say so in one short sentence; never estimate or make up a number."
+    "say so in one short sentence; never estimate or make up a number.\n"
+    "- When a contact lookup answers \"who is X?\", say \"X is a contact: <their "
+    "number or email>\" — a phone number is what a contact has, never what they are."
 )
 
 # Appended for a capability question ("Can you send texts?"): the corpus and
 # sweep had the model deny real capabilities or ask "which email?".
 ASK_CAPABILITY_HINT = (
     "This is a question about what you can do. Answer it directly from the "
-    "Capabilities list above, without calling a tool: you can read and summarize "
-    "the user's email, texts, calendar, reminders and notes; draft and send emails "
-    "and texts (every send is shown to the user to confirm first); add reminders "
-    "and calendar events; search the web, weather and stocks; and control Mac "
-    "settings and apps. A Google account is linked in Wisp's Settings, under Google."
+    "Capabilities list above, without calling a tool and without naming internal "
+    "tools: you can read and summarize the user's email, texts, calendar, reminders "
+    "and notes; draft and send emails and texts (every send is shown to the user to "
+    "confirm first); add reminders and calendar events; search the web, weather and "
+    "stocks; and control Mac settings and apps.\n"
+    "Connecting Google (Gmail and Google Calendar), when asked: open the notch, then "
+    "Quick Settings (the gear) > Google > Connect Google, and sign in in the browser. "
+    "Wisp reads Gmail and Google Calendar read-only and builds the user's to-dos in "
+    "about a minute. \"Disconnect & erase\" there removes the account and everything "
+    "Wisp derived from it. Give these steps; never say it cannot be done."
+)
+
+ASK_KNOWLEDGE_HINT = (
+    "GENERAL QUESTION: no personal data is involved, so answer from your own "
+    "knowledge, directly and briefly. No tool is needed and none is available. "
+    "Start with the answer itself (begin with Yes or No only for a yes/no "
+    "question). Never mention internal tool names or Wisp features; for a Mac "
+    "how-to give the real keyboard shortcuts and menus."
 )
 
 # Tools that cannot ground a personal fact: a calculation or Mac status read
@@ -427,6 +442,52 @@ _TIME_WORDS = re.compile(
     r"afternoon|evening|now|recent|lately|from|about|with)\b", re.I)
 
 
+_ABOUT_WISP = re.compile(
+    r"\b(?:you|your|yourself|wisp|connect|link|sign\s+in|log\s+in|account|google|gmail|"
+    r"permissions?|grant|integrat\w*|set\s+(?:you|wisp)\s+up)\b", re.I)
+_KNOWLEDGE = re.compile(
+    r"^(?:so\s+)?(?:how\s+(?:do|can|should|would)\s+(?:i|you|one|we)|how\s+to|how\s+(?:many|much|long|far|big|old|does|do|is|are)"
+    r"|why\b|what(?:'s|\s+is|\s+are|\s+was|\s+were)\s+(?:a|an|the)\b|what(?:'s|\s+is)\s+the\s+difference"
+    r"|who\s+(?:wrote|invented|discovered|painted|founded|was)"
+    r"|explain|define|describe|give\s+me\s+(?:some\s+)?(?:tips|advice|ideas)|tips\s+for|tell\s+me\s+(?:a\s+joke|about\s+(?:the|a|an)\b))",
+    re.I)
+_LIVE = re.compile(
+    r"\b(?:latest|recent|recently|current|currently|news|today|tonight|tomorrow|tmrw|yesterday|"
+    r"this\s+(?:week|weekend|month|year)|right\s+now|now|weather|forecast|temperature|rain|"
+    r"stocks?|price|prices|cost\s+now|score|won|winning|playing|happening|open\s+now|near\s+me|"
+    r"traffic|time\s+is\s+it|time\s+in|exchange\s+rate|next|upcoming|coming\s+up|"
+    r"schedule|calendar|inbox|here|nearby|nearest|directions|route|get\s+to|drive\s+to|commute|"
+    r"my|mine|i|i'm|i've|we|our|us)\b"
+    r"|\b(?:e-?mail|text|messag|call|tell|told|sen[dt]|wr[io]te|ping|invit)\w*\s+me\b"
+    r"|\d[\d,.]*\s*(?:%|percent|[x*/+^-])|[%*/+^=]\s*\d", re.I)
+
+
+_MAILISH = re.compile(
+    r"\b(?:due|deadline|submit|form|w-?\d|1099|bill|invoice|statement|receipt|order|package|"
+    r"shipp?(?:ed|ing)|tracking|delivery|confirmation|refund|renewal|subscription)\b", re.I)
+
+
+def mail_first(prompt: str) -> bool:
+    """A personal question whose answer usually sits in the user's email
+    ("When is the W-9 due?", "Did my order ship?"): view_emails leads the
+    head start, so the web is not the first place looked."""
+    return bool(_MAILISH.search(prompt or "")) and asks_personal_data(prompt)
+
+
+def knowledge_question(prompt: str) -> bool:
+    """General knowledge or a general how-to ("How many ounces are in a cup?",
+    "How do I take a screenshot on a Mac?", "Give me tips for studying"): no
+    personal data, nothing live, nothing about Wisp. Answered from knowledge in
+    one tool-free step, since a tool path only added failures and refusals."""
+    text = (prompt or "").strip()
+    head = _KNOWLEDGE.match(text)
+    if not head:
+        return False
+    rest = text[head.end():]  # "How do I" itself is not first-person data
+    return (not _LIVE.search(rest) and not _ABOUT_WISP.search(text)
+            and not asks_personal_data(text))
+
+
 def capability_question(prompt: str) -> bool:
     """A question about what Wisp can do or how to do something, not a request
     for the user's data: "What can you do with my calendar?", "How do I
@@ -437,7 +498,9 @@ def capability_question(prompt: str) -> bool:
     if re.match(r"^(?:what|which)\s+(?:can|could)\s+you\b", text):
         return True
     if re.match(r"^(?:how\s+(?:do|can|should|would)\s+i|how\s+to)\b", text):
-        return True
+        # "How do I connect Google to you?" is about Wisp; "How do I take a
+        # screenshot?" is a general how-to (knowledge_question).
+        return bool(_ABOUT_WISP.search(text))
     if re.search(r"\bwhat\s+are\s+you\s+(?:able|good|capable)\b|\bwhat\s+do\s+you\s+(?:do|know how)\b"
                  r"|\b(?:do|does)\s+(?:you|wisp)\s+have\s+access\b|\bare\s+you\s+able\s+to\b", text):
         return True

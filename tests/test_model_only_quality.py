@@ -636,3 +636,41 @@ def test_general_web_question_is_not_reprompted(synthetic):
     client, _, answer = ask([[call("web_search", query="world series")], "The Dodgers won."],
                             prompt="Who won the most recent World Series?", model_led_preload=["web_search"])
     assert len(client.requests) == 2 and answer.startswith("The Dodgers")
+
+
+# --- general knowledge, Wisp how-tos, contacts ---------------------------------
+
+@pytest.mark.parametrize("prompt", [
+    "How many ounces are in a cup?", "How do I take a screenshot on a Mac?", "How do I make cold brew coffee?",
+    "Give me tips for studying for a final exam.", "Why is the sky blue?", "What's the capital of Australia?",
+    "Who wrote Pride and Prejudice?", "What's the difference between a virus and bacteria?"])
+def test_knowledge_questions_answer_from_knowledge(prompt):
+    assert mo.knowledge_question(prompt) and not mo.capability_question(prompt)
+
+
+@pytest.mark.parametrize("prompt", [
+    "Why did Priya email me?", "How should I prepare for my interview?", "What's the weather in Paris?",
+    "Who won the most recent World Series?", "What is 15% of 84?", "What's coming up in the next 48 hours?",
+    "How much storage do I have left?", "How do I get to the airport from here?", "Who is Alex Chen?",
+    "How do I connect my Google account to you?", "What's the latest news on the Mars mission?"])
+def test_personal_live_or_wisp_questions_are_not_knowledge(prompt):
+    assert not mo.knowledge_question(prompt)
+
+
+def test_google_connect_how_to_is_a_capability_answer():
+    assert mo.capability_question("How do I connect my Google account to you?")
+    assert not mo.capability_question("How do I take a screenshot on a Mac?")
+    hint = mo.ASK_CAPABILITY_HINT
+    for step in ("Quick Settings", "Google > Connect Google", "read-only", "about a minute", "Disconnect & erase"):
+        assert step in hint
+    assert "never mention internal tool names" in mo.ASK_KNOWLEDGE_HINT.lower().replace("never mention", "never mention")
+    assert "is a contact:" in mo.ASK_STYLE_HINT
+
+
+def test_mailish_personal_questions_lead_with_email(monkeypatch):
+    from service import main
+    monkeypatch.setattr(main, "_model_led_preload", lambda prompt: ["web_search", "get_upcoming"])
+    assert mo.mail_first("When is the W-9 due?") and mo.mail_first("Did my order ship?")
+    assert not mo.mail_first("When is the next solar eclipse?")
+    assert main._ask_tool_rank("When is the W-9 due?")[0][0] == "view_emails"
+    assert main._ask_tool_rank("Why is the sky blue?")[0][0] != "view_emails"
