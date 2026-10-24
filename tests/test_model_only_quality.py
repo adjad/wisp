@@ -395,3 +395,17 @@ def test_compact_catalog_and_step_budget(synthetic):
 def test_ask_quality_off_keeps_the_raw_merge(synthetic):
     _, _, answer = run([[call("get_upcoming", days=1)], "", ""], model_led_preload=["get_upcoming"])
     assert "Workshop tomorrow at 14:00" in answer and not answer.startswith("Here's what I found")
+
+
+def test_repeated_read_hands_back_the_cached_result(synthetic):
+    effects, _ = synthetic
+    client, _, _ = ask([[call("get_upcoming", days=1)], [call("get_upcoming", days=1)], "Done."])
+    assert executed(effects, "get_upcoming") == [{"days": 1}]
+    repeat = tool_messages(client.requests[2])[-1]["content"]
+    assert "NOT run again" in repeat and "Workshop tomorrow at 14:00" in repeat
+
+
+def test_empty_turn_with_no_tool_gets_one_direct_answer_step(synthetic):
+    client, _, answer = ask(["", "", "Study in short blocks and test yourself."], prompt="Give me tips for studying.")
+    assert answer == "Study in short blocks and test yourself."
+    assert client.requests[-1]["tools"] == [] and "Answer my last question directly" in client.requests[-1]["messages"][-1]["content"]

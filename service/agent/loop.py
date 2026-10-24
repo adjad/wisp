@@ -3152,6 +3152,7 @@ async def run_agent(
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
     ask_blocked: set[str] = set()
+    ask_read_cache: dict = {}
     from service.model_only import narration_thinking_enabled as _ask_nt
     _ask_narration_thinking = _ask_nt() if ask_quality else True
 
@@ -3177,11 +3178,16 @@ async def run_agent(
         await emit({"type": "done"})
         return text
 
-    async def _ask_summarize() -> str:
+    async def _ask_summarize(direct: bool = False) -> str:
         """One short, tool-free narration over the results already in context:
-        the step that replaces a raw tool dump. "" when it fails."""
+        the step that replaces a raw tool dump. With `direct`, the same step
+        for a turn with no tool result (its steps came back empty, e.g. a call
+        to a tool that was not offered, which oMLX drops). "" when it fails."""
         from service.model_only import ASK_PROMPT_BUDGET, salvage_answer, strip_think
         nudge = {"role": "user", "content": (
+            "Answer my last question directly now, briefly and helpfully, from what you "
+            "know. Do not call any tool. If it needs my personal data you have not "
+            "looked up, say so instead of guessing." if direct else
             "Answer my last question now in at most 4 sentences (a short bullet list "
             "only if there are several items), using only the tool results above. "
             "Do not call any tool and do not paste raw tool output.")}
@@ -3757,6 +3763,8 @@ async def run_agent(
                 # ending the turn blank — the request is answerable, the model
                 # just spent its whole token budget thinking about it.
                 text = _TRUNCATED_MESSAGE
+            elif not text.strip() and ask_quality and (direct := await _ask_summarize(direct=True)):
+                text = direct
             elif not text.strip():
                 # Empty for none of the reasons above — see _EMPTY_MESSAGE.
                 # This is the floor: past here nothing else can fire, so the
@@ -4084,6 +4092,14 @@ async def run_agent(
                 result = (f"({name} already ran with these exact arguments this turn and its "
                           "result was returned earlier. It was NOT run again. Answer from that "
                           "result, or call it with different arguments if you need different data.)")
+                if ask_quality and read_key in ask_read_cache:
+                    # The Ask step budget may have trimmed the earlier result
+                    # out of context; "returned earlier" would then point at
+                    # nothing. Hand the same result back, bounded.
+                    from service.model_only import ASK_TOOL_RESULT_CHARS
+                    result = (f"({name} already ran with these exact arguments; it was NOT run "
+                              "again. Same result as before, answer from it now:)\n"
+                              + _fit_tool_result(ask_read_cache[read_key], name, ASK_TOOL_RESULT_CHARS))
                 audit("reject_repeated_read", tool=name, args=args)
                 prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
@@ -4535,6 +4551,8 @@ async def run_agent(
                     # A parenthesized notice ("(no public web results found ...)")
                     # is not a usable answer; leave an identical retry allowed.
                     completed_reads.add(read_key)
+                    if ask_quality:
+                        ask_read_cache[read_key] = str(result)
             if restricted[0] is not None and tool_executed:
                 # Only a lookup that actually RAN satisfies the restriction; a
                 # denied or declined one leaves writes refused for the turn
