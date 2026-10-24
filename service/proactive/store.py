@@ -254,7 +254,14 @@ class ProactiveStore:
         account = (account or "").strip().casefold()
         if not account or account == OWNER:
             return                       # the owner's own data is never erased through a linked account
-        mine = lambda x: isinstance(x, dict) and str(x.get("account") or "").casefold() == account  # noqa: E731
+        def mine(x) -> bool:
+            # Texts, Notes and Reminders are the owner's even when an older
+            # build tagged them with an address that matches this account.
+            if not isinstance(x, dict) or str(x.get("account") or "").casefold() != account:
+                return False
+            kind = str(((x.get("sources") or [{}])[0] or {}).get("kind") or "") if "sources" in x \
+                else str(x.get("source") or x.get("kind") or "")
+            return kind not in _OWNER_ONLY
         with self._lock:
             state = self.state()
             for key in ("cards", "todos", "threads", "notes"):
@@ -283,6 +290,7 @@ class ProactiveStore:
 
 THREAD_LOCK_S = 3600
 OWNER = "me"                             # sources.OWN: the owner's bucket
+_OWNER_ONLY = ("messages", "notes", "reminders")  # cycle._OWNER_ONLY
 
 
 def _card_refs(card: dict) -> list[str]:

@@ -524,6 +524,26 @@ def test_erase_account_forgets_everything_for_it(store):
     assert snap(store, account=ME)["todos"]
 
 
+def test_erase_keeps_owner_texts_an_older_build_tagged_with_the_linked_address(store):
+    run(store, FakeModel())
+    todo = next(t for t in snap(store)["todos"] if t["source"] == "reminders")
+    store.set_todo_done(todo, True)
+    with store._lock:
+        state = store.state()
+        for key in ("todos", "threads"):
+            for x in state.get(key) or []:
+                if x.get("source") in ("messages", "reminders"):
+                    x["account"] = JUDGE
+        store._write("state.json")
+        done = store.decisions()["done"]
+        for v in done.values():
+            (v.get("todo") or {})["account"] = JUDGE
+        store._write("decisions.json")
+    store.erase_account(JUDGE)
+    assert store.decisions()["done"], "the owner's done reminder survived"
+    assert any(x.get("source") == "messages" for x in store.state().get("threads") or [])
+
+
 def test_request_analyze_without_a_loop_queues_for_the_scheduler(monkeypatch):
     monkeypatch.setattr(cycle, "_rerun", None)
     result = cycle.request_analyze(JUDGE)
