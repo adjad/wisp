@@ -871,6 +871,12 @@ struct OverlayView: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
+        #if WISP_NOTCH_EVALUATION
+        // Opens on the snapshot's documents; loadAttachment admits nothing else.
+        if let root = NotchEvaluationEnvironment.config.sourceRoots.first {
+            panel.directoryURL = URL(fileURLWithPath: root, isDirectory: true)
+        }
+        #endif
         model.pickingFile = true
         defer { model.pickingFile = false }
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -932,7 +938,11 @@ struct SourceSyncTip: View {
             // instead of a bare "Unavailable" the user can't act on.
             ForEach(sources.filter(\.needsFullDiskAccess)) { source in
                 Button {
+                    #if WISP_NOTCH_EVALUATION
+                    _ = NotchEvaluationSinks.blocked("open_settings", ledger: NotchEvaluationEnvironment.ledger)
+                    #else
                     if let url = URL(string: BriefDetail.fullDiskAccess.url) { NSWorkspace.shared.open(url) }
+                    #endif
                 } label: {
                     Text("\(source.label) needs Full Disk Access. \(BriefDetail.fullDiskAccess.label)")
                         .lineLimit(2)

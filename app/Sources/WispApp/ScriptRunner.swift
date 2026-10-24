@@ -48,11 +48,20 @@ enum ScriptRunner {
     }
 
     static func copy(_ text: String) {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("pasteboard_copy", ledger: NotchEvaluationEnvironment.ledger)
+        return
+        #endif
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
 
     static func perform(_ target: RunTarget, code: String) {
+        #if WISP_NOTCH_EVALUATION
+        // No Terminal, Safari or Pages run, and no temporary file is written.
+        _ = NotchEvaluationSinks.blocked("run_code", ledger: NotchEvaluationEnvironment.ledger)
+        return
+        #endif
         switch target {
         case .terminal(let interpreter, let ext):
             runInTerminal(code, interpreter: interpreter, ext: ext)
@@ -66,6 +75,10 @@ enum ScriptRunner {
     }
 
     private static func runInTerminal(_ code: String, interpreter: String?, ext: String) {
+        #if WISP_NOTCH_EVALUATION
+        // Unreachable (perform returns first); a second stop before any AppleScript.
+        fatalError("EVALUATION_BLOCKED: the evaluation build never runs code in Terminal")
+        #endif
         guard let path = writeTemp(code, ext: ext) else { return }
         let command: String
         if let interpreter {
@@ -90,6 +103,9 @@ enum ScriptRunner {
     }
 
     private static func openWithApp(_ appName: String, path: String) {
+        #if WISP_NOTCH_EVALUATION
+        fatalError("EVALUATION_BLOCKED: the evaluation build never opens an app")
+        #endif
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-a", appName, path]
@@ -97,6 +113,9 @@ enum ScriptRunner {
     }
 
     private static func writeTemp(_ content: String, ext: String) -> String? {
+        #if WISP_NOTCH_EVALUATION
+        return nil
+        #endif
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisp-\(UUID().uuidString).\(ext)")
         do {
@@ -108,6 +127,9 @@ enum ScriptRunner {
     }
 
     private static func chmodExecutable(_ path: String) {
+        #if WISP_NOTCH_EVALUATION
+        fatalError("EVALUATION_BLOCKED: the evaluation build never runs a process")
+        #endif
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/chmod")
         p.arguments = ["+x", path]

@@ -128,6 +128,12 @@ final class OverlayModel: ObservableObject {
     var onOpenCorpus: () -> Void = {}
 
     @Published var input = ""
+    #if WISP_NOTCH_EVALUATION
+    // The evaluation input adapter; told of each turn's start, confirmation and end.
+    weak var evaluationObserver: NotchEvaluationTurnObserver?
+    // This turn's displayed events in order, for the evaluation transcript.
+    private var evaluationEvents: [[String: Any]] = []
+    #endif
     @Published var answer = ""
     @Published var reasoning = ""
     @Published var showReasoning = false
@@ -150,6 +156,13 @@ final class OverlayModel: ObservableObject {
     @Published var tab: NotchTab = .ask {
         didSet {
             guard tab != oldValue else { return }
+            #if WISP_NOTCH_EVALUATION
+            // Ask only: Brief, Day and Research read and act on sources the
+            // evaluation does not cover. Assigning in didSet does not re-enter it.
+            _ = NotchEvaluationSinks.blocked("tab_" + "\(tab)", ledger: NotchEvaluationEnvironment.ledger)
+            tab = .ask
+            return
+            #endif
             // A research plan holds the prompt queue only while it is on screen.
             // Leaving the tab lets a question asked in Ask, or a brief, run.
             if oldValue == .research { releaseResearchDispatch() }
@@ -584,6 +597,23 @@ final class OverlayModel: ObservableObject {
 
     private func start(_ dispatch: PromptDispatch) {
         guard case .prompt(let submission) = dispatch.work else { return }
+        #if WISP_NOTCH_EVALUATION
+        // Research mode, or a turn whose input receipt cannot be kept, never
+        // runs: the dispatch is retired without sending anything.
+        let ledger = NotchEvaluationEnvironment.ledger
+        if submission.researchMode || !ledger.healthy
+            || !ledger.input(submission.text, dispatch: dispatch.id, session: sessionId) {
+            _ = NotchEvaluationSinks.blocked(submission.researchMode ? "research" : "turn_without_evidence",
+                                             ledger: ledger)
+            showTransientNotice(submission.researchMode ? "Research is off in the evaluation build."
+                                : "Evaluation evidence is unavailable, so nothing more is sent.", duration: 12)
+            completeSubmission(dispatch.id)
+            return
+        }
+        evaluationEvents = []
+        evaluationObserver?.evaluationStarted(dispatch: dispatch.id,
+                                              inputSHA256: NotchEvaluationLedger.sha256(submission.text))
+        #endif
         // Includes empty-Return recovery and queued dispatches, not just typed
         // prompts: their answers must not render behind the corpus surface.
         onHideCorpus()
@@ -673,6 +703,11 @@ final class OverlayModel: ObservableObject {
     /// Quick settings' Model memory: unload the models now. Wisp reloads them on
     /// the next ask. Not while a reply is being written, which needs its model.
     func freeUpMemory() {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("unload_models", ledger: NotchEvaluationEnvironment.ledger)
+        showTransientNotice("Model controls are off in the evaluation build.")
+        return
+        #endif
         guard conversationSettled, !briefComposing, !freeingMemory else { return }
         freeingMemory = true
         Task { [weak self] in
@@ -836,6 +871,11 @@ final class OverlayModel: ObservableObject {
     }
 
     func sendMessageDraft() {
+        #if WISP_NOTCH_EVALUATION
+        _ = NotchEvaluationSinks.blocked("send_message_draft", ledger: NotchEvaluationEnvironment.ledger)
+        messageDraft?.status = "Not sent: the evaluation build never sends messages."
+        return
+        #endif
         guard var draft = messageDraft, !draft.isSending, !draft.sent else { return }
         guard !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             messageDraft?.status = "The message is empty."
@@ -876,6 +916,16 @@ final class OverlayModel: ObservableObject {
     }
 
     func loadAttachment(url: URL) {
+        #if WISP_NOTCH_EVALUATION
+        // Only a regular file inside the snapshot's source roots, read from
+        // its resolved path so a link swapped in later cannot redirect it.
+        guard let admitted = NotchEvaluationSources.admit(url, config: NotchEvaluationEnvironment.config) else {
+            _ = NotchEvaluationSinks.blocked("attachment_outside_sources", ledger: NotchEvaluationEnvironment.ledger)
+            showTransientNotice("Only files from the evaluation snapshot can be attached.")
+            return
+        }
+        let url = admitted
+        #endif
         let ext = url.pathExtension.lowercased()
         let mime = (ext == "jpg" || ext == "jpeg") ? "jpeg" : ext
         loadAttachment(name: url.lastPathComponent) {
@@ -904,6 +954,11 @@ final class OverlayModel: ObservableObject {
     }
 
     func attach(name: String, dataURL: String) {
+        #if WISP_NOTCH_EVALUATION
+        // Pasted or dropped data has no source-root provenance.
+        _ = NotchEvaluationSinks.blocked("attach_data", ledger: NotchEvaluationEnvironment.ledger)
+        return
+        #endif
         cancelAttachmentRead()
         attachedImageName = name
         attachedImage = dataURL
@@ -1109,8 +1164,13 @@ final class OverlayModel: ObservableObject {
             text += "\n\(t.text)\n\n"
         }
 
+        #if WISP_NOTCH_EVALUATION
+        // Private evidence, never Downloads or Finder.
+        let dir = NotchEvaluationEnvironment.config.evidence
+        #else
         let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
+        #endif
         let stamp = DateFormatter(); stamp.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let base = "wisp-debug-\(stamp.string(from: Date()))"
         let jsonURL = dir.appendingPathComponent("\(base).json")
@@ -1121,7 +1181,20 @@ final class OverlayModel: ObservableObject {
     }
 
     private func handle(_ ev: WispClient.Event, dispatchID: UInt64) {
+        #if WISP_NOTCH_EVALUATION
+        // Raw telemetry before the currency check, so late events are kept;
+        // a stale terminal never claims a visible result (see terminal()).
+        let ledger = NotchEvaluationEnvironment.ledger
+        let current = submissionState.isCurrent(dispatchID)
+        ledger.event(type: ev.type, payload: ev.payload, dispatch: dispatchID, current: current)
+        if !current && (ev.type == "done" || ev.type == "error") {
+            ledger.terminal(ev.type, visible: "", dispatch: dispatchID, current: false, session: sessionId, trace: nil)
+        }
+        #endif
         guard submissionState.isCurrent(dispatchID) else { return }
+        #if WISP_NOTCH_EVALUATION
+        recordEvaluationEvent(ev)
+        #endif
         if let traceID = ev.payload["trace_id"] as? String { turnTraceID = traceID }
         // Any event other than another `status` means whatever it was
         // narrating (a model load/swap — see ensure_only) is over or was
@@ -1190,6 +1263,10 @@ final class OverlayModel: ObservableObject {
                               scopeHint: ev.str("scope_hint"),
                               preview: ev.str("preview"))
             phase = .confirming
+            #if WISP_NOTCH_EVALUATION
+            evaluationObserver?.evaluationConfirmation(tool: ev.str("tool"),
+                                                       grantable: ev.payload["grantable"] as? Bool ?? false)
+            #endif
         case "message_draft":
             messageDraft = MessageDraft(to: ev.str("to"), text: ev.str("text"))
             phase = .streaming
@@ -1258,6 +1335,14 @@ final class OverlayModel: ObservableObject {
             flushPendingDelta()
             let gotNothing = answer.isEmpty && activity.isEmpty && role.isEmpty
             if ev.bool("dropped") && gotNothing {
+                #if WISP_NOTCH_EVALUATION
+                // Nothing was displayed for this dispatch; its prompt goes back.
+                ledger.terminal("dropped", visible: "", dispatch: dispatchID, current: true,
+                                session: sessionId, trace: turnTraceID)
+                var dropped = Turn(role: "assistant", text: "")
+                applyDebugFields(to: &dropped)
+                evaluationObserver?.evaluationTerminal(evaluationTurn(dropped, outcome: "dropped", dispatch: dispatchID))
+                #endif
                 lastDroppedReport = ["surface": "chat", "client_outcome": "connection_dropped", "journal_available": false]
                 if let id = turnTraceID { lastDroppedReport?["trace_id"] = id }
                 // One key per dropped turn, so reopening its report keeps the note.
@@ -1303,6 +1388,12 @@ final class OverlayModel: ObservableObject {
                 t.errorDetail = detail.isEmpty ? nil : detail
                 applyDebugFields(to: &t)
                 turns.append(t)
+                #if WISP_NOTCH_EVALUATION
+                // Exactly the error turn just displayed, for this dispatch.
+                ledger.terminal("error", visible: t.text, dispatch: dispatchID, current: true,
+                                session: sessionId, trace: turnTraceID)
+                evaluationObserver?.evaluationTerminal(evaluationTurn(t, outcome: "error", dispatch: dispatchID))
+                #endif
                 answer = ""; activity = []
                 completedDispatch = true
             }
@@ -1311,6 +1402,15 @@ final class OverlayModel: ObservableObject {
             // in the throttle buffer (up to ~60ms worth) would be silently
             // dropped instead of appearing in the finished reply.
             flushPendingDelta()
+            #if WISP_NOTCH_EVALUATION
+            // The complete flushed reply, before it is cleared and before a
+            // queued turn can start.
+            ledger.terminal("done", visible: answer, dispatch: dispatchID, current: true,
+                            session: sessionId, trace: turnTraceID)
+            var finished = Turn(role: "assistant", text: answer, activity: activity)
+            applyDebugFields(to: &finished)
+            evaluationObserver?.evaluationTerminal(evaluationTurn(finished, outcome: "done", dispatch: dispatchID))
+            #endif
             // Move the finished reply into the conversation history so the next
             // turn renders below it. Carry this turn's tool-call activity along
             // with it (and clear the live copy) — previously `activity` was
@@ -1331,6 +1431,66 @@ final class OverlayModel: ObservableObject {
         onResize()
         if completedDispatch { completeSubmission(dispatchID) }
     }
+
+    #if WISP_NOTCH_EVALUATION
+    /// A finalized turn for the evaluation adapter. Response model ids come
+    /// from the engine's own replies (raw_model_io), not the route request.
+    /// Bounded copy of one tool result or text for the transcript.
+    private static func evaluationText(_ text: String, limit: Int = 65_536) -> [String: Any] {
+        text.utf8.count <= limit ? ["text": text]
+            : ["text": String(decoding: Array(text.utf8.prefix(limit)), as: UTF8.self), "truncated_from": text.utf8.count]
+    }
+
+    /// What the notch shows for this event, in order. Streamed answer deltas
+    /// and heartbeats are not listed; the full final answer is the turn text.
+    private func recordEvaluationEvent(_ ev: WispClient.Event) {
+        var entry: [String: Any] = ["type": ev.type, "at": Date().timeIntervalSince1970]
+        switch ev.type {
+        case "status", "clear_answer", "done", "error":
+            for key in ["text", "error", "message"] where !ev.str(key).isEmpty { entry[key] = ev.str(key) }
+        case "routed":
+            entry["role"] = ev.str("role"); entry["model"] = ev.str("model")
+            entry["route_source"] = ev.str("route_source"); entry["reason"] = ev.str("reason")
+            entry["needs_tools"] = ev.bool("needs_tools")
+        case "tool_call":
+            entry["id"] = ev.str("id"); entry["name"] = ev.str("name")
+            entry["args"] = Self.prettyJSON(ev.payload["args"])
+            entry["decision"] = ev.str("decision"); entry["reason"] = ev.str("reason")
+        case "tool_result":
+            entry["id"] = ev.str("id")
+            entry["result"] = Self.evaluationText(ev.str("result"))
+        case "confirm":
+            entry["tool"] = ev.str("tool"); entry["reason"] = ev.str("reason")
+            entry["preview"] = ev.str("preview"); entry["grantable"] = ev.payload["grantable"] as? Bool ?? false
+        case "confirm_timeout":
+            entry["id"] = ev.str("id")
+        case "message_draft":
+            entry["to"] = ev.str("to"); entry["text"] = ev.str("text")
+        default:
+            return
+        }
+        evaluationEvents.append(entry)
+    }
+
+    private func evaluationTurn(_ t: Turn, outcome: String, dispatch: UInt64) -> NotchEvaluationTurn {
+        let served = t.rawIO.compactMap { io -> String? in
+            if let data = io.responseJSON.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let model = object["model"] as? String { return model }
+            return nil
+        }
+        let tools: [[String: Any]] = t.toolCalls.map {
+            ["name": $0.name, "args": $0.argsJSON, "decision": $0.decision, "reason": $0.decisionReason,
+             "result": String($0.result.prefix(4000))]
+        }
+        return NotchEvaluationTurn(outcome: outcome, dispatch: dispatch, text: t.text, model: t.model,
+                                   routeRole: t.routeRole, routeSource: t.routeSource, routeReason: t.routeReason,
+                                   tools: tools, responseModels: served, startedAt: t.startedAt,
+                                   firstTokenAt: t.firstTokenAt, finishedAt: t.finishedAt,
+                                   session: sessionId, traceID: t.traceID,
+                                   events: evaluationEvents, activity: t.activity, reasoning: t.reasoningText)
+    }
+    #endif
 
     private func completeSubmission(_ dispatchID: UInt64) {
         let next = submissionState.complete(dispatchID)
@@ -1412,6 +1572,11 @@ final class OverlayModel: ObservableObject {
     private let assistantDelivery = AssistantDelivery()
 
     func startAssistant() {
+        #if WISP_NOTCH_EVALUATION
+        // No assistant action stream, notifications or nudges in the evaluation build.
+        _ = NotchEvaluationSinks.blocked("assistant_stream", ledger: NotchEvaluationEnvironment.ledger)
+        return
+        #endif
         // Nudge notification buttons (Useful / Not now / Wrong / Undo / Do it)
         // route back here on the main actor.
         Notifications.onNudgeResponse = { [weak self] nudgeID, action, info in
@@ -1598,6 +1763,9 @@ final class OverlayModel: ObservableObject {
     var onSyncAssistantSources: (([String]) -> Void)?
 
     private func handleCalendarAction(_ ev: WispClient.Event) async -> [String: Any] {
+        #if WISP_NOTCH_EVALUATION
+        return NotchEvaluationSinks.blocked("calendar:" + ev.type, ledger: NotchEvaluationEnvironment.ledger)
+        #endif
         if ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(ev.type) {
             guard let action = onVerifiedReminderAction else {
                 return ["ok": false, "status": "failed", "error": "Reminders handler unavailable"]
@@ -1667,6 +1835,9 @@ final class OverlayModel: ObservableObject {
     }
 
     private func reconcileReminderAction(_ ev: WispClient.Event) async -> [String: Any] {
+        #if WISP_NOTCH_EVALUATION
+        return NotchEvaluationSinks.blocked("reminder:" + ev.type, ledger: NotchEvaluationEnvironment.ledger)
+        #endif
         guard let reconcile = onReconcileReminderAction else {
             return ["ok": false, "status": "unknown", "error": "Readback handler unavailable"]
         }
@@ -1676,6 +1847,11 @@ final class OverlayModel: ObservableObject {
     }
 
     private func handleAssistantEvent(_ ev: WispClient.Event) async -> Bool {
+        #if WISP_NOTCH_EVALUATION
+        // Known or unknown, no native action runs here; the event is refused.
+        _ = NotchEvaluationSinks.blocked("assistant_event:" + ev.type, ledger: NotchEvaluationEnvironment.ledger)
+        return false
+        #endif
         var notificationOK = true
         func post(title: String, body: String) async {
             let identity = ev.str("event_id")

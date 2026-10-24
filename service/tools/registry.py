@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from service import evaluation_boundary
+
 REGISTRY: dict[str, "Tool"] = {}
 
 
@@ -561,6 +563,10 @@ async def run_tool(tool: Tool, args: dict, *, private_shell_read_only: bool = Fa
     # Reject a bad call BEFORE it ever reaches tool.func — see _validate_args.
     if (err := _validate_args(tool, args)) is not None:
         return err
+    # The contained evaluation host's final sink: only sealed reviewed reads
+    # run. A no-op outside that host (see service/evaluation_boundary.py).
+    if (blocked := evaluation_boundary.tool_dispatch_problem(tool, args)) is not None:
+        return blocked
     try:
         # A SYNC tool runs on a worker thread, not on the event loop.
         #

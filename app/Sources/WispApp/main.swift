@@ -38,6 +38,14 @@ MainActor.assumeIsolated {
 MainActor.assumeIsolated {
     ChatQADriver.run()
 }
+#elseif WISP_NOTCH_EVALUATION
+
+// The contained Notch evaluation host: the real panel and Ask path against a
+// guarded evaluation backend. Never packaged as Wisp.app; installs no
+// AppDelegate, BackendManager, source readers or native writers.
+MainActor.assumeIsolated {
+    NotchEvaluationHost.run()
+}
 #else
 
 // Program starts on the main thread; enter the main actor to build the app.

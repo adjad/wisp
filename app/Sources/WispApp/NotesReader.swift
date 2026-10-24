@@ -122,6 +122,12 @@ final class NotesReader {
             }
             return
         }
+        #if WISP_NOTCH_EVALUATION
+        if NotchEvaluationReaders.refuseScript(self.script, reader: "notes") {
+            self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false, reason: "The Notes reader could not start.")
+            return
+        }
+        #endif
         guard let s = NSAppleScript(source: self.script) else {
             self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false, reason: "The Notes reader could not start.")
             return

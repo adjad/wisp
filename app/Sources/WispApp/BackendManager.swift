@@ -135,6 +135,9 @@ final class BackendManager {
     var backendRootPath: String? { backendRoot()?.resolvingSymlinksInPath().path }
 
     private func startIfNeeded(freshRecovery: Bool) async {
+        #if WISP_NOTCH_EVALUATION
+        fatalError("EVALUATION_BLOCKED: the evaluation build never starts the production backend")
+        #endif
         guard !portConflict else { return }
         startMonitor()
         guard !starting, enforceCredentialState() else { return }
@@ -433,6 +436,9 @@ final class BackendManager {
     }
 
     nonisolated static func publishRuntimeReceipt(generation: String, pid: Int32, configDigest: String) throws {
+        #if WISP_NOTCH_EVALUATION
+        fatalError("EVALUATION_BLOCKED: the evaluation build never publishes a backend receipt")
+        #endif
         guard acceptableRuntimeGeneration(generation), pid > 0,
               configurationDigest() == configDigest,
               try BackendCredentials.generation() == generation else { throw BackendCredentials.Failure.quarantined }

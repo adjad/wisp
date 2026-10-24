@@ -122,6 +122,9 @@ enum PortGuard {
 
     /// Processes listening on `port`, or nil when the system could not be asked.
     static func listeners(port: Int) -> [Listener]? {
+        #if WISP_NOTCH_EVALUATION
+        return nil   // never asked in the evaluation build ("could not be asked")
+        #endif
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         process.arguments = ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"]
