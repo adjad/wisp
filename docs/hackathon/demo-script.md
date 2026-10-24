@@ -41,14 +41,17 @@ Every draft is ready to send, and nothing goes out until you tap.
 - "Still to fit" lists untimed to-dos with their source icons.
 
 ### 3. Ask: anything else (45 s)
-Known-good prompts on the current build. Each takes about 2–6 s:
-- "What should I do today?" gives a plan of the day from every source.
-- "What's on my calendar tomorrow?"
-- "Which emails need a reply from me?"
-- "What did Mom text me?" (a real text thread exists)
-- "What's the weather tomorrow?"
-- "Why is the sky blue?" / "What is 15% of 84?" for general knowledge.
-- "What can you do?"
+Known-good prompts, checked live on build 2522 at 11:30:
+- "good morning wisp" (5 s)
+- "What should I do today?" gives a day plan from every source (3 s)
+- "What did Mom text me?" (3 s)
+- "What's on my calendar tomorrow?" (3 s)
+- "How do I connect my Google account to you?" gives the Connect Google steps (2 s)
+- "Write a short thank-you note to my professor" (1 s)
+- "Why is the sky blue?" (1 s)
+
+Avoid these, which were bad live: "Which emails need a reply from me?" (lists Indeed job spam),
+"Anything important in my email?" (picks ads), weather (location lookup fails), "When is the W-9 due?".
 
 Avoid on stage: long compose requests (they can take 20 s+), and anything that sends.
 
