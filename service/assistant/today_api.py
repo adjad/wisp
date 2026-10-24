@@ -104,6 +104,12 @@ def snapshot(day, timezone, *, debug=False):
                 mail_gists.attach(result["workspace"])
             except Exception:  # noqa: BLE001
                 pass
+            try:
+                # "Before you ask" cards, to-dos and thread summaries (service/proactive).
+                from service.proactive import cycle as proactive_cycle
+                proactive_cycle.attach(result["workspace"], now=now)
+            except Exception:  # noqa: BLE001
+                pass
         if debug:
             # Returned only on explicit opt-in; never journaled. Fixed clock and
             # exact inputs make a replay independent of current state/sources.

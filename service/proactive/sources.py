@@ -1,0 +1,374 @@
+"""What the proactive engine reads: items from every source, already cached.
+
+Mail threads (the native Mail snapshot plus Gmail-linked accounts through the
+shared mail caches), text conversation slices, Notes TODO lines, and the
+calendar and reminders from the assistant store. Reads caches only: never a
+native request, never a model call.
+
+An item is one thread or conversation slice:
+``{id, source, account, who, title, text, lines, received_ts, hash, replied,
+ref}``. ``text`` is the bounded material the triage call reads; ``lines`` are
+the verbatim incoming lines a quote may be copied from, by code.
+"""
+from __future__ import annotations
+
+import hashlib
+import math
+import re
+import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from service.proactive.guard import clean
+
+MAIL_WINDOW_S = 7 * 86400
+TEXT_WINDOW_S = 4 * 86400
+MAX_MAIL_THREADS = 40
+MAX_CONVERSATIONS = 20
+MAX_TEXT_LINES = 8
+MAX_EXCERPT = 500
+MAX_ITEM_CHARS = 1600
+OWN = "me"
+
+
+def _digest(*parts) -> str:
+    return hashlib.sha256("\x1f".join(str(p) for p in parts).encode()).hexdigest()[:20]
+
+
+def _finite(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+# --- accounts -------------------------------------------------------------------
+
+
+def gmail_accounts() -> set[str]:
+    """Accounts linked only through Wisp's Google sign-in (read-only)."""
+    try:
+        from service.gmail_source import connected_accounts
+        return {a.casefold() for a in connected_accounts()}
+    except Exception:  # noqa: BLE001 — no Google config: no linked accounts
+        return set()
+
+
+def own_account() -> str:
+    """The label the user's own (native) sources carry: their first address
+    that isn't a Google-linked one, else "me"."""
+    linked = gmail_accounts()
+    try:
+        from service.memory.identity import user_emails
+        for address in user_emails():
+            if address.casefold() not in linked:
+                return address
+    except Exception:  # noqa: BLE001
+        pass
+    return OWN
+
+
+def account_of(raw: str | None, *, linked: set[str] | None = None, own: str | None = None) -> str:
+    linked = gmail_accounts() if linked is None else linked
+    value = str(raw or "").strip()
+    if value.casefold() in linked:
+        return value.casefold()
+    return own if own is not None else own_account()
+
+
+# --- mail -----------------------------------------------------------------------
+
+_PREFIX = re.compile(r"^\s*(?:re|fwd?|aw|sv)\s*:\s*", re.I)
+
+
+def bare_subject(subject: str) -> str:
+    subject = str(subject or "")
+    while (match := _PREFIX.match(subject)):
+        subject = subject[match.end():]
+    return subject.strip()
+
+
+def _address(row: dict) -> str:
+    address = str(row.get("sender_address") or "").strip()
+    if not address:
+        found = re.search(r"<([^>]+@[^>]+)>", str(row.get("sender") or ""))
+        address = found.group(1) if found else (str(row.get("sender") or "") if "@" in str(row.get("sender") or "") else "")
+    return address.strip().casefold()
+
+
+def reply_ref_for_row(row: dict) -> dict | None:
+    """W3's reply_ref for a raw mail-cache row ({message_id, account,
+    account_id}); None when the row can't be replied to (no Message-ID)."""
+    try:
+        from service.assistant.email_reply_api import reply_ref_for_row as build
+        return build(row)
+    except ImportError:
+        message_id, account = str(row.get("message_id") or "").strip(), str(row.get("account") or "").strip()
+        if not message_id or not account:
+            return None
+        return {"message_id": message_id, "account": account, "account_id": str(row.get("account_id") or "").strip()}
+
+
+def mail_rows(now: float) -> list[dict]:
+    """The last week's mail rows: the body snapshot when there is one, plus
+    cached headers (Gmail-linked accounts included) the snapshot doesn't hold."""
+    from service.tools import email_tools as mail
+    rows: list[dict] = []
+    try:
+        snapshot = mail.raw_email_snapshot()
+    except Exception:  # noqa: BLE001
+        snapshot = None
+    if snapshot is not None:
+        rows = [dict(r) for r in snapshot.rows]
+    seen = {(str(r.get("account") or ""), str(r.get("message_id") or "")) for r in rows if r.get("message_id")}
+    seen_loose = {(str(r.get("account") or ""), round(float(r["ts"])), clean(r.get("subject"), 200))
+                  for r in rows if _finite(r.get("ts"))}
+    try:
+        headers = mail.header_rows(since_ts=now - MAIL_WINDOW_S)
+    except Exception:  # noqa: BLE001
+        headers = []
+    for row in headers:
+        if not _finite(row.get("ts")):
+            continue
+        ident = (str(row.get("account") or ""), str(row.get("message_id") or ""))
+        loose = (ident[0], round(float(row["ts"])), clean(row.get("subject"), 200))
+        if (ident[1] and ident in seen) or loose in seen_loose:
+            continue
+        rows.append(dict(row))
+    return [r for r in rows if _finite(r.get("ts")) and now - MAIL_WINDOW_S <= r["ts"] <= now + 300]
+
+
+def _excerpt(row: dict) -> str:
+    from service.assistant.daily_workspace import _QUOTED_HISTORY
+    from service.tools.imessage_tools import redact_summary_codes
+    body = _QUOTED_HISTORY.split(str(row.get("body") or ""))[0]
+    text = clean(redact_summary_codes(body), 4000)
+    return text[:MAX_EXCERPT].rsplit(" ", 1)[0] + "…" if len(text) > MAX_EXCERPT else text
+
+
+def _sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text or "")
+    return [clean(p, 300) for p in parts if len(clean(p)) >= 3]
+
+
+def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
+               linked: set[str] | None = None, own: str | None = None) -> list[dict]:
+    """One item per thread (account + bare subject), newest first. Threads made
+    only of mass mail, or only of the user's own mail, are left out."""
+    from service.assistant.daily_workspace import display_name, mass_mail_filter
+    from service.tools.imessage_tools import redact_summary_codes
+    linked = gmail_accounts() if linked is None else linked
+    own = own_account() if own is None else own
+    rows = sorted(rows, key=lambda r: r["ts"])
+    skip = mass_mail_filter(rows)
+    threads: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        subject = clean(row.get("subject"), 200)
+        if not subject:
+            continue
+        threads.setdefault((str(row.get("account") or ""), bare_subject(subject).casefold()), []).append(row)
+    zone = ZoneInfo(tz)
+    items = []
+    for (account, _), messages in threads.items():
+        incoming = [m for m in messages if _address(m) not in mine]
+        if not incoming or all(skip(m) for m in incoming):
+            continue
+        last_in = incoming[-1]
+        last = messages[-1]
+        replied = _address(last) in mine and last["ts"] >= last_in["ts"]
+        subject = redact_summary_codes(clean(last_in.get("subject"), 200))
+        who = display_name(last_in.get("sender"), _address(last_in)) or "Unknown sender"
+        blocks, quotes = [], [subject]
+        for message in messages[-3:]:
+            from_user = _address(message) in mine
+            speaker = "You (the user)" if from_user else (display_name(message.get("sender"), _address(message)) or "Unknown sender")
+            stamp = datetime.fromtimestamp(message["ts"], zone).strftime("%a %b %-d %-I:%M %p")
+            excerpt = _excerpt(message) if message.get("body") else ""
+            blocks.append(f"From {speaker} · {stamp}:\n{excerpt or '(subject only)'}")
+            if not from_user and excerpt:
+                quotes.extend(_sentences(excerpt))
+        text = f"Subject: {subject}\n" + "\n".join(blocks)
+        text = text[:MAX_ITEM_CHARS]
+        item_id = "mail:" + _digest(account, bare_subject(subject).casefold())
+        ref = {"kind": "email", "message_id": str(last_in.get("message_id") or ""), "account": account,
+               "account_id": str(last_in.get("account_id") or ""), "to": _address(last_in),
+               "subject": subject, "has_body": bool(last_in.get("body"))}
+        reply_ref = reply_ref_for_row(last_in)
+        items.append(dict(id=item_id, source="mail", account=account_of(account, linked=linked, own=own),
+                          raw_account=account, who=who, title=subject, text=text, lines=quotes,
+                          received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
+                          hash=_digest(text, replied)))
+    items.sort(key=lambda i: i["received_ts"], reverse=True)
+    return items[:MAX_MAIL_THREADS]
+
+
+# --- texts ----------------------------------------------------------------------
+
+
+def text_records() -> list[tuple[float, str, str]]:
+    """(ts, conversation, "Sender: text") for every cached message, oldest first."""
+    from service.tools import imessage_tools as im
+    if im.messages_sync_state() != "ready":
+        return []
+    out = []
+    for ts, _identity, context, text, _unread in im._parse_records():
+        out.append((float(ts), context, text))
+    return sorted(out, key=lambda r: r[0])
+
+
+def _render(rows: list[tuple[float, str, str]]) -> list[str]:
+    try:
+        from service.tools.imessage_tools import render_for_summary
+        return render_for_summary(rows)
+    except Exception:  # noqa: BLE001 — the plain cached shape still names the sender first
+        return [f"[{text.partition(':')[0].strip()}] {text.partition(':')[2].strip()}" for _, _, text in rows]
+
+
+def text_items(records: list[tuple[float, str, str]], *, now: float, own: str | None = None) -> list[dict]:
+    """One item per conversation active in the last few days: its latest lines,
+    rendered sender-first so the model can't credit the user's words to the
+    other person."""
+    from service.tools.imessage_tools import redact_summary_codes
+    own = own_account() if own is None else own
+    conversations: dict[str, list[tuple[float, str, str]]] = {}
+    for ts, context, text in records:
+        if now - TEXT_WINDOW_S <= ts <= now + 300:
+            conversations.setdefault(context, []).append((ts, context, redact_summary_codes(text)))
+    items = []
+    for context, rows in conversations.items():
+        rows = rows[-MAX_TEXT_LINES:]
+        incoming = [r for r in rows if r[2].partition(":")[0].strip() != "Me"]
+        if not incoming:
+            continue
+        group = context.startswith("Group ")
+        label = clean(context[len("Group "):].strip().strip('"') if group else context, 60)
+        replied = rows[-1][2].partition(":")[0].strip() == "Me"
+        rendered = _render(rows)
+        text = ("Conversation: " + label + (" (group)" if group else "") + "\n" + "\n".join(rendered))[:MAX_ITEM_CHARS]
+        quotes = []
+        for _, _, line in incoming:
+            sender, _, body = line.partition(":")
+            if body.strip():
+                quotes.append(clean(body, 300))
+        last_in = incoming[-1]
+        speaker = last_in[2].partition(":")[0].strip()
+        who = label if not group else (f"{speaker} in {label}" if speaker else label)
+        items.append(dict(id="messages:" + _digest(context), source="messages", account=own, raw_account="",
+                          who=who, title=label, text=text, lines=quotes, received_ts=last_in[0],
+                          replied=replied, group=group, ref={"kind": "text", "conversation": context, "label": label},
+                          reply_ref="messages:" + context, hash=_digest(text, replied)))
+    items.sort(key=lambda i: i["received_ts"], reverse=True)
+    return items[:MAX_CONVERSATIONS]
+
+
+# --- notes ------------------------------------------------------------------------
+
+
+_TODO_LINE = re.compile(r"^\s*(?:[-*]\s+\[ \]\s+|TODO:?\s+|Action(?: item)?:\s+)(.+)", re.I)
+
+
+def note_items(*, own: str | None = None) -> list[dict]:
+    """Explicit unchecked tasks in Notes ("- [ ] …", "TODO: …"): to-dos as written."""
+    from service.tools.imessage_tools import redact_summary_codes
+    from service.tools.notes_tools import raw_notes_snapshot
+    own = own_account() if own is None else own
+    snapshot = raw_notes_snapshot()
+    if getattr(snapshot, "origin", "") != "live":
+        return []
+    items = []
+    for row in snapshot.records:
+        for index, line in enumerate(str(row.get("body") or "").splitlines()):
+            match = _TODO_LINE.match(line)
+            if not match:
+                continue
+            quote = clean(redact_summary_codes(match.group(1)), 200)
+            if not quote:
+                continue
+            ident = f"{row.get('reference')}:{index}"
+            items.append(dict(id="notes:" + _digest(ident), source="notes", account=own, raw_account="",
+                              who=clean(row.get("title"), 80), title=quote, text=quote, lines=[quote],
+                              received_ts=None, replied=False, ref={"kind": "note", "reference": row.get("reference")},
+                              reply_ref=None, hash=_digest(quote)))
+            if len(items) >= 60:
+                return items
+    return items
+
+
+# --- calendar and reminders ------------------------------------------------------
+
+
+def _midnight(now: float, tz: str) -> float:
+    zone = ZoneInfo(tz)
+    local = datetime.fromtimestamp(now, zone)
+    return datetime.combine(local.date(), datetime.min.time(), zone).timestamp()
+
+
+def schedule(store, now: float, tz: str, *, own: str | None = None, linked: set[str] | None = None) -> dict:
+    """{"calendar": today's and tomorrow's events, "reminders": open reminders
+    (overdue, due by tomorrow, and undated)}, each row {id, title, when_ts,
+    all_day, account, source}."""
+    own = own_account() if own is None else own
+    linked = gmail_accounts() if linked is None else linked
+    start = _midnight(now, tz)
+    end = start + 2 * 86400
+    try:
+        rows = store.upcoming(now - 14 * 86400, days=16)
+    except Exception:  # noqa: BLE001
+        rows = []
+    try:
+        hidden = store.hidden_commitment_ids(now)
+    except Exception:  # noqa: BLE001
+        hidden = set()
+    calendar, reminders = [], []
+    for row in rows:
+        if row.get("id") in hidden or not _finite(row.get("when_ts")):
+            continue
+        entry = dict(id=str(row["id"]), title=clean(row.get("title"), 200), when_ts=float(row["when_ts"]),
+                     all_day=bool(row.get("all_day")), source=row.get("source"),
+                     account=account_of(row.get("account"), linked=linked, own=own))
+        if not entry["title"]:
+            continue
+        if row.get("source") == "calendar" or row.get("kind") in ("event", "meeting"):
+            if start <= entry["when_ts"] < end:
+                calendar.append(entry)
+        elif row.get("source") in ("reminders", "manual") and entry["when_ts"] < end:
+            reminders.append(entry)
+    try:
+        undated = store.undated_reminders()
+    except Exception:  # noqa: BLE001
+        undated = []
+    for row in undated[:20]:
+        title = clean(row.get("title"), 200)
+        if title:
+            reminders.append(dict(id="undated:" + str(row.get("source_id")), title=title, when_ts=None,
+                                  all_day=False, source="reminders", account=own))
+    calendar.sort(key=lambda r: r["when_ts"])
+    return {"calendar": calendar, "reminders": reminders}
+
+
+# --- everything -------------------------------------------------------------------
+
+
+def collect(now: float | None = None, tz: str = "UTC") -> list[dict]:
+    """Every mail, text and note item, each source on its own: one failing
+    never takes the others with it."""
+    now = time.time() if now is None else now
+    linked, own = gmail_accounts(), own_account()
+    items: list[dict] = []
+    try:
+        from service.memory.identity import user_emails
+        mine = {e.casefold() for e in user_emails()}
+    except Exception:  # noqa: BLE001
+        mine = set()
+    try:
+        items += mail_items(mail_rows(now), mine=mine, now=now, tz=tz, linked=linked, own=own)
+    except Exception:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+    try:
+        items += text_items(text_records(), now=now, own=own)
+    except Exception:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+    try:
+        items += note_items(own=own)
+    except Exception:  # noqa: BLE001
+        pass
+    return items
