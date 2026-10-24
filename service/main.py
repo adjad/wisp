@@ -2308,6 +2308,16 @@ async def agent(body: dict[str, Any]):
                     synthesis_guidance.insert(0, ASK_STYLE_HINT)
                     if capability_question(prompt):
                         synthesis_guidance.insert(1, ASK_CAPABILITY_HINT)
+                ask_forbidden: frozenset[str] = frozenset()
+                if ask_quality:
+                    from service.model_only import COMPOSE_ONLY_FORBIDDEN_CATEGORIES, compose_only
+                    if compose_only(prompt):
+                        # "Write a thank-you note" returns the text; it must
+                        # not become append_note/create_note or a draft card.
+                        from service.tools.registry import REGISTRY
+                        ask_forbidden = frozenset(
+                            n for n, t in REGISTRY.items()
+                            if t.category in COMPOSE_ONLY_FORBIDDEN_CATEGORIES)
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")
@@ -2347,7 +2357,7 @@ async def agent(body: dict[str, Any]):
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,
                                         required_tool_groups=decision.required_tool_groups,
-                                        forbidden_tools=decision.forbidden_tools,
+                                        forbidden_tools=decision.forbidden_tools | ask_forbidden,
                                         conditional_tools=decision.conditional_tools,
                                         tool_argument_bindings=decision.tool_argument_bindings,
                                         strict_read_limits=decision.strict_read_limits,

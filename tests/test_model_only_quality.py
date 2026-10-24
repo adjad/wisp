@@ -300,7 +300,8 @@ def test_unscoped_personal_question_is_reprompted_once_then_accepted(synthetic):
     client, _, answer = ask(["Your backpack weighs 1.2 kg.", "I don't have anything that records that."],
                             prompt="How heavy is my backpack?")
     assert client.requests[1]["tool_choice"] == "required"
-    assert answer == "I don't have anything that records that."
+    # Nothing that could know ran after the re-prompt: a plain "I don't have that".
+    assert answer == mo.ASK_UNKNOWN_MESSAGE
     assert len(client.requests) == 2
 
 
@@ -409,3 +410,61 @@ def test_empty_turn_with_no_tool_gets_one_direct_answer_step(synthetic):
     client, _, answer = ask(["", "", "Study in short blocks and test yourself."], prompt="Give me tips for studying.")
     assert answer == "Study in short blocks and test yourself."
     assert client.requests[-1]["tools"] == [] and "Answer my last question directly" in client.requests[-1]["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize("prompt", [
+    "When is the W-9 due?", "Has the package shipped?", "what's on tomorrow",
+    "Is there a meeting this afternoon?", "When is the dentist appointment on Friday?"])
+def test_implicit_personal_deadlines_and_items(prompt):
+    assert mo.asks_personal_data(prompt)
+
+
+@pytest.mark.parametrize("prompt,expected", [
+    ("Write a short thank-you note to my professor for the extension.", True),
+    ("Compose a haiku about autumn", True),
+    ("Draft an email to Priya saying I'll be late.", False),
+    ("Write a note in my notes about the trip", False),
+    ("Text Mom that I'll call tonight.", False),
+    ("What's on my calendar?", False)])
+def test_compose_only(prompt, expected):
+    assert mo.compose_only(prompt) is expected
+
+
+def test_web_degradation_hint():
+    degraded = "General-web results were unavailable. These are encyclopedia background results."
+    assert "do not add specifics" in mo.web_degradation_hint("web_search", degraded)
+    assert mo.web_degradation_hint("web_search", "[1] Dodgers win\nURL: https://x.test") == ""
+    assert mo.web_degradation_hint("get_upcoming", degraded) == ""
+
+
+def test_style_hint_scopes_the_day_and_refuses_to_estimate():
+    assert "never describe a multi-day count as \"today\"" in mo.ASK_STYLE_HINT
+    assert "never estimate" in mo.ASK_STYLE_HINT
+
+
+def test_reprompt_that_only_ran_a_calculator_says_it_does_not_know(synthetic):
+    _, register = synthetic
+    register("calculate", "everyday", "compute")
+    _, _, answer = ask(["Your backpack weighs 1.2 kg.", [call("calculate")], "Your backpack weighs about 1.02 kg."],
+                       prompt="How heavy is my backpack?", model_led_preload=["calculate", "get_upcoming"])
+    assert answer == mo.ASK_UNKNOWN_MESSAGE
+
+
+def test_reprompt_grounded_by_a_real_read_keeps_the_answer(synthetic):
+    _, _, answer = ask(["It is due January 1.", [call("view_emails")], "Finance says the W-9 is due Friday."],
+                       prompt="When is the W-9 due?", model_led_preload=["view_emails"])
+    assert answer == "Finance says the W-9 is due Friday."
+
+
+def test_degraded_search_result_reaches_the_model_with_a_hedge(synthetic):
+    _, register = synthetic
+    tool = register("web_search", "web_tools", "web_read", parameters={
+        "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+
+    async def degraded(**args):
+        return "General-web results were unavailable. These are encyclopedia background results.\n[1] List"
+    degraded.__module__ = tool.func.__module__
+    tool.func = degraded
+    client, _, _ = ask([[call("web_search", query="world series")], "I couldn't confirm that."],
+                       prompt="Who won the most recent World Series?", model_led_preload=["web_search"])
+    assert "Search coverage was degraded" in tool_messages(client.requests[1])[-1]["content"]

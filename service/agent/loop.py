@@ -2569,6 +2569,15 @@ async def run_agent(
                             and registered.category in PERSONAL_SOURCE_CATEGORIES))
                    for name, outcome in tool_outcomes)
 
+    def _ask_grounding_tool_ran() -> bool:
+        """A tool that could hold a fact ran and was not denied (weather and
+        web count; a calculator or Mac status read does not)."""
+        from service.model_only import UNGROUNDING_CATEGORIES
+        return any(outcome.status != "denied"
+                   and (registered := get_tool(name)) is not None
+                   and registered.category not in UNGROUNDING_CATEGORIES
+                   for name, outcome in tool_outcomes)
+
     def _prior_requirements_met(tool_name: str) -> bool:
         """Effect tools may not run before earlier source obligations."""
         covered = tools_answered | waived_tools
@@ -3789,6 +3798,13 @@ async def run_agent(
                     'has no requests. Keep useful facts and exact source dates from the results already returned. '
                     'Qualify coverage and any missing sources. Do not call tools again.')})
                 continue
+            if ask_quality and ask_reprompted and not _ask_grounding_tool_ran():
+                # The forced re-prompt ran nothing that could hold the fact (a
+                # calculation, a Mac status read) or nothing at all: say so
+                # plainly instead of publishing an invented number.
+                audit("ask_unknown_personal_fact", step=_step)
+                from service.model_only import ASK_UNKNOWN_MESSAGE
+                text = ASK_UNKNOWN_MESSAGE
             # Publish once, after checking receipts and obligations.
             verified = _verified_final(text)
             if verified != text:
@@ -4487,13 +4503,15 @@ async def run_agent(
                              and result != "The user denied this action."))):
                 executed_strict_reads[name] = executed_strict_reads.get(name, 0) + 1
             if ask_quality:
-                from service.model_only import ASK_TOOL_RESULT_CHARS, argument_fix_hint
+                from service.model_only import (ASK_TOOL_RESULT_CHARS, argument_fix_hint,
+                                                web_degradation_hint)
                 # Smaller results (each one is re-sent on every later step),
                 # and a rejected argument comes back with a repair hint so the
                 # model fixes its own call instead of asking the user.
                 msgs.append({"role": "tool", "tool_call_id": cid,
                              "content": _fit_tool_result(result, name, ASK_TOOL_RESULT_CHARS)
-                             + argument_fix_hint(name, args, result)})
+                             + argument_fix_hint(name, args, result)
+                             + web_degradation_hint(name, result)})
             else:
                 msgs.append({"role": "tool", "tool_call_id": cid,
                              "content": _fit_tool_result(result, name)})
