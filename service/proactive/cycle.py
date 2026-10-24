@@ -225,8 +225,8 @@ WAITING_S = 3 * 86400
 def _any_result(item: dict, store, offline_results: dict) -> dict | None:
     """An item with its triage result, junk included (a real contact's last
     text can read as small talk and still be waiting on the user)."""
-    if item["source"] != "messages":
-        return None
+    if item["source"] != "messages" or triage.withheld(item):
+        return None                      # a withheld conversation never becomes a card
     entry = store.triage_get(item["id"], _tkey(item))
     result = (entry or {}).get("result") if entry else offline_results.get(item["id"])
     if result is None:
@@ -424,9 +424,8 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                                                      allowed=allowed, freeze=freeze)
         dismissed = set(store.decisions()["dismissed"]) | set(store.decisions()["fired"])
         cards = [c for c in cards if c["id"] not in dismissed]
-        locked = store.unknown_cards()
         for card in cards:
-            if card["id"] in locked:
+            if store.locked(card, now):
                 card["action"]["locked"] = "unknown"     # an unconfirmed send is never offered again
         from service.proactive import executor
         for card in cards:
@@ -632,8 +631,7 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     for todo in merged.values():
         todo["added_to_day"] = todo["id"] in added
     cards = [c for c in state.get("cards") or [] if c.get("todo_id") not in done]
-    locked = store.unknown_cards()
-    cards = [{**c, "action": {**c["action"], "locked": "unknown"}} if c["id"] in locked else c for c in cards]
+    cards = [{**c, "action": {**c["action"], "locked": "unknown"}} if store.locked(c, now) else c for c in cards]
     todos = sorted(merged.values(), key=lambda t: (t["done"], t.get("due_ts") is None, t.get("due_ts") or 0,
                                                    t["title"].casefold()))
     names = triage.user_names()

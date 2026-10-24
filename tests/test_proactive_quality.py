@@ -20,6 +20,8 @@ import pytest
 from service.proactive import cycle, executor, guard, judge, prepare, sources, triage
 from service.proactive.store import ProactiveStore
 
+_REAL_USER_NAMES = triage.user_names        # the autouse fixture patches it per test
+
 TZ = "America/Los_Angeles"
 NOW = datetime(2026, 10, 23, 10, 0, tzinfo=ZoneInfo(TZ)).timestamp()
 ME = "adnjain@ucsc.edu"
@@ -387,14 +389,12 @@ def test_mark_handled_clears_the_unknown_lock(store):
     assert "card:t" not in store.unknown_cards()
 
 
-def test_surname_is_never_rewritten():
-    assert triage.user_names.__module__  # the fixture patches it; check the real one below
-    import importlib
-    real = importlib.reload(importlib.import_module("service.proactive.triage")).user_names
+def test_surname_is_never_rewritten(monkeypatch):
     import service.memory.identity as identity
-    identity.user_name = lambda: "Adi Jain"
-    assert real() == ["Adi Jain", "Adi"]
-    assert guard.second_person("Trishala Jain asked Adi to call on Fridays.", real()) == \
+    monkeypatch.setattr(identity, "user_name", lambda: "Adi Jain")     # restored after the test
+    real = _REAL_USER_NAMES()
+    assert real == ["Adi Jain", "Adi"]
+    assert guard.second_person("Trishala Jain asked Adi to call on Fridays.", real) == \
         "Trishala Jain asked you to call on Fridays."
     assert guard.second_person("Adi Fridays are busy.", ["Adi"]) == "You Fridays are busy."
 
@@ -451,3 +451,52 @@ def test_vague_read_the_email_todos_are_dropped():
     item = {"source": "mail", "who": "Dhruv Kolte", "title": "Floor updates", "person": True, "replied": False}
     assert judge.action_title("task", item, {"asks_of_me": "Read the email from Dhruv", "title": "Floor updates"},
                               NAMES) == ""
+
+
+# --- audit follow-up: withheld chats, per-conversation lock --------------------------------------------------
+
+
+def test_withheld_conversations_never_become_cards_or_quotes(store):
+    rows = [(NOW - 120, "Mom", "Mom: Authentication details omitted.", GUID_MOM),
+            (NOW - 60, "Mom", "Mom: Private details omitted.", GUID_MOM)]
+    items = sources.text_items(rows, now=NOW, own=ME)
+    assert cycle._any_result(items[0], store, {}) is None
+
+    async def offline(system, material, abort, tokens):
+        return None
+
+    run(store, offline, items)
+    assert snap(store)["cards"] == []
+    assert "details omitted" not in "".join(p.read_text() for p in store.base.glob("*.json"))
+    assert judge._best_quote(["Your code is 482913", "Private details omitted."], "code") == ""
+
+
+def test_an_unknown_send_locks_the_conversation_for_an_hour(store):
+    run(store, _cycle_model(), _cycle_items(), freeze=_freeze)
+    card = next(c for c in snap(store)["cards"] if c["action"]["method"] == "text_reply")
+
+    async def unknown(card, words):
+        return {"ok": False, "status": "unknown"}
+
+    asyncio.run(executor.fire(card["id"], "Hi", store=store, methods={"text_reply": unknown}, now=NOW))
+    # A different card for the same conversation (another method, a new id) stays locked for the hour.
+    fresh = {**card, "id": "card:new", "action": {**card["action"], "locked": None}}
+    store.save_state(cards=[fresh])
+    sent = []
+
+    async def ok(card, words):
+        sent.append(words)
+        return {"ok": True, "status": "succeeded"}
+
+    locked = asyncio.run(executor.fire("card:new", "Hi", store=store, methods={"text_reply": ok}, now=NOW + 600))
+    assert locked["status"] == "locked" and sent == []
+    assert snap(store)["cards"][0]["action"]["locked"] == "unknown"
+    later = asyncio.run(executor.fire("card:new", "Hi", store=store, methods={"text_reply": ok}, now=NOW + 3700))
+    assert later["ok"] is True and sent == ["Hi"]
+
+
+def test_dismiss_clears_the_conversation_lock(store):
+    card = _text_card(store)
+    store.mark_unknown(card, NOW)
+    store.dismiss_card(store.card("card:t"), NOW + 1)
+    assert not store.locked({**card, "id": "card:other"}, NOW + 2)

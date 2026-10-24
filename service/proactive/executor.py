@@ -235,7 +235,7 @@ async def fire(card_id: str, draft: str | None = None, recipient: str | None = N
             return {"ok": False, "status": "blocked", "error": "The message is empty."}
         if len(words) > 5000:
             return {"ok": False, "status": "blocked", "error": "The message is too long."}
-    if action.get("locked") == "unknown" or card_id in store.unknown_cards():
+    if action.get("locked") == "unknown" or store.locked(card, now):
         where = "Mail" if method == "email_reply" else "Messages"
         return {"ok": False, "status": "locked",
                 "error": f"Check {where} before sending again: the last send wasn't confirmed. "
