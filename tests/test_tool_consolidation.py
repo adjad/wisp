@@ -45,7 +45,7 @@ def test_registry_stays_under_the_one_hundred_cap():
     # once the user installs them, and test modules can leave them behind.
     builtin = [name for name, tool in REGISTRY.items()
                if tool.func.__module__.startswith("service.tools.")]
-    assert len(builtin) == 92
+    assert len(builtin) == 93
 
 
 def test_retired_names_stay_retired_and_merged_tools_exist():
