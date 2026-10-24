@@ -892,6 +892,9 @@ class OMLXClient:
         for kind, piece in thought_splitter.flush():
             (reasoning_parts if kind == "reasoning" else content_parts).append(piece)
             yield {"kind": kind, "text": piece}
+        if not self.managed and done and finish_reason is None:
+            # Gemini can close a complete stream ([DONE]) without a finish reason.
+            finish_reason = "tool_calls" if calls else "stop"
         if calls and not self.managed and finish_reason == "stop":
             finish_reason = "tool_calls"   # Gemini's OpenAI-compatible API ends tool calls with "stop"
         if finish_reason not in {"stop", "length", "tool_calls"}:
