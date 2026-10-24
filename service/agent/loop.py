@@ -622,6 +622,8 @@ _EMPTY_MESSAGE = (
 # Model-only Ask fallbacks (see run_agent's ask_quality). The guard message is
 # the second prefill-guard refusal of one turn with nothing gathered yet.
 _ASK_WEB_TOOLS = frozenset({"web_search", "web_fetch", "wikipedia_summary"})
+# Offered on a web-only personal re-prompt when the head start held none.
+_ASK_OWN_SOURCE_READS = ("view_emails", "search_reminders", "search_notes", "view_messages")
 _ASK_GUARD_MESSAGE = (
     "My local model is short on memory for that request right now. Give it a "
     "moment and ask again, or narrow it down (one source or a shorter time range)."
@@ -3249,6 +3251,7 @@ async def run_agent(
             expecting_tool = True
             ask_expect_tool = False
             ask_reprompt_step = True
+        ask_promoted: frozenset[str] = frozenset()
         if forcing_first_step:
             # An obligation group contains alternatives, not an arbitrary
             # mandatory first member (e.g. list_dir vs find_files).
@@ -3261,7 +3264,14 @@ async def run_agent(
                 # A personal question first answered from the web: the
                 # re-prompt step must read the user's own sources.
                 step_schemas = [s for s in schemas
-                                if s['function']['name'] not in _ASK_WEB_TOOLS] or schemas
+                                if s['function']['name'] not in _ASK_WEB_TOOLS]
+                real_now = {s['function']['name'] for s in step_schemas} - set(stub_names)
+                promoted = [s for s in _admit(tool_schemas(list(_ASK_OWN_SOURCE_READS)))
+                            if s['function']['name'] not in real_now
+                            and s['function']['name'] not in forbidden_tools]
+                ask_promoted = frozenset(s['function']['name'] for s in promoted)
+                step_schemas = promoted + [s for s in step_schemas
+                                           if s['function']['name'] not in ask_promoted]
         choice = "required" if (forcing_first_step or expecting_tool) else "auto"
         if evidence_narration_retried and _unmet_group() is None:
             choice = 'none'
@@ -3399,7 +3409,7 @@ async def run_agent(
         offered_schemas = step_schemas
         # Stubs are offered by name only so the server keeps the call; they are
         # never executable. A stub call is converted into discovery below.
-        step_stubs = frozenset(stub_names)
+        step_stubs = frozenset(stub_names) - ask_promoted
         if ask_guard_retried and step_stubs:
             # After one prefill-guard refusal the turn stays lean: real
             # schemas only (get_tool_schemas still reaches everything else).

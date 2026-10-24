@@ -563,7 +563,7 @@ def test_personal_question_answered_from_the_web_is_reprompted(synthetic):
     tool.func = failed
     client, _, answer = ask([[call("web_search", query="W-9 due")], "I couldn't reach a source for that.",
                              [call("view_emails")], "Finance says the W-9 is due Friday."],
-                            prompt="When is the W-9 due?", model_led_preload=["web_search", "view_emails"])
+                            prompt="When is the W-9 due?", model_led_preload=["web_search"])
     assert "only the web was searched" in client.requests[2]["messages"][-1]["content"]
     offered = {t["function"]["name"] for t in client.requests[2].get("tools") or []}
     assert "web_search" not in offered and "view_emails" in offered
