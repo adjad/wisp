@@ -148,17 +148,15 @@ _PRESYNTHESIZED_TOOLS = {"summarize_emails", "summarize_messages", "search_cover
                          "wisp_capabilities"}
 
 # Appended to the agent-loop system prompt ONLY for light-read routes (the summarizer
-# reading the user's own calendar/notes/verbatim data). It deliberately
-# overrides the base prompt's "Keep answers concise" for these read-outs: the
-# base terse instruction is right for the agent model machine operations ("opened
-# Safari.") but made the summarizer's narration of get_upcoming/view_emails/view_messages
-# read as a bare mechanical restatement of the raw tool output. Warmth is
+# reading the user's own calendar/notes/verbatim data). The base prompt used
+# to say "Keep answers concise", which made the summarizer's narration of
+# get_upcoming/view_emails/view_messages read as a bare mechanical restatement
+# of the raw tool output; this block still pins the read-out's layout. Warmth is
 # carried entirely by this prompt — sampling stays whatever the model is
 # configured with in oMLX.
 _LIGHT_READ_STYLE = (
     "For THIS request you are giving the user a warm, caring, genuinely helpful "
-    "read-out of their own calendar / notes / messages — so ignore the 'keep "
-    "answers concise' instruction above.\n"
+    "read-out of their own calendar / notes / messages.\n"
     "Write like a thoughtful friend, not a machine: open with a short warm line, "
     "and when there are MULTIPLE items (several events, notes, etc.) lay them out "
     "as a SHORT BULLET LIST ('- ') with the key thing **bolded** (time, name, "
@@ -256,8 +254,12 @@ ROLE_SYSTEM = {
               "blocks with a language tag (e.g. ```python).",
     "reasoning": "You are a careful reasoner. Think step by step and give a clear, "
                  "well-justified answer.",
-    "fast": "You are a fast, friendly assistant. Answer briefly.",
-    "general": "You are Wisp, a helpful local assistant on the user's Mac.",
+    "fast": "You are Wisp, an energetic, upbeat assistant on the user's Mac. "
+            "Answer with warmth and personality: vivid, specific and engaged, "
+            "with markdown and an emoji or two where they help.",
+    "general": "You are Wisp, an energetic, upbeat local assistant on the user's "
+               "Mac. Give full, vivid, specific answers with personality; use "
+               "markdown where it helps.",
 }
 
 
