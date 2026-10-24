@@ -237,3 +237,114 @@ def due_label(due_ts: float | None, now: float, tz: str, *, has_clock: bool = Fa
     if (due.date() - today).days < 7:
         return f"{due.strftime('%a')} {clock}".strip()
     return f"{due.strftime('%a %b %-d')} {clock}".strip()
+
+
+# --- second person ------------------------------------------------------------------
+
+_VERB_S = ("says", "asks", "wants", "needs", "plans", "thinks", "tells", "agrees", "replies", "tries", "has",
+           "is", "was", "does", "goes", "gets", "keeps", "sends", "shares", "posts", "hopes", "feels",
+           "likes", "loves", "knows", "owes", "promises", "offers", "suggests", "mentions", "confirms",
+           "explains", "writes", "receives", "finds", "launches", "signs", "joins", "attends", "decides",
+           "invites", "thanks", "texts", "emails", "calls", "meets", "works", "applies", "registers")
+_IRREGULAR = {"is": "are", "was": "were", "has": "have", "does": "do", "goes": "go", "tries": "try",
+              "replies": "reply", "applies": "apply"}
+
+
+def _you_verb(match: re.Match) -> str:
+    you, verb = match.group(1), match.group(2)
+    low = verb.casefold()
+    if low not in _VERB_S or low == "posted":
+        return match.group(0)
+    if low in _IRREGULAR:
+        fixed = _IRREGULAR[low]
+    elif low.endswith(("sses", "shes", "ches", "xes")):
+        fixed = low[:-2]
+    else:
+        fixed = low[:-1]
+    return f"{you} {fixed}"
+
+
+def _conjugate(word: str) -> str:
+    low = word.casefold()
+    if low in _IRREGULAR:
+        return _IRREGULAR[low]
+    if low in _VERB_S or (len(low) > 3 and low.endswith("s") and not low.endswith(("ss", "us", "is", "ous"))):
+        if low.endswith("ies") and len(low) > 4:
+            return low[:-3] + "y"
+        if low.endswith(("sses", "shes", "ches", "xes", "zes")):
+            return low[:-2]
+        return low[:-1]
+    return word
+
+
+def second_person(text: str, names: list[str] | tuple[str, ...] = ()) -> str:
+    """Model prose about the user, addressed to them: "The user posted…" and
+    "Adi told Trishe…" become "You posted…" and "You told Trishe…"; "Adi's"
+    becomes "your", and a verb right after a replaced subject agrees ("The
+    user reminds" → "You remind")."""
+    if not text:
+        return text
+    subjects = [r"the user"] + [re.escape(n) for n in sorted({n for n in names if n and len(n) >= 2},
+                                                             key=len, reverse=True)]
+    pattern = re.compile(r"\b(?:" + "|".join(subjects) + r")\b(['’]s)?(\s+(\w+))?", re.I)
+
+    def swap(match: re.Match) -> str:
+        before = text[:match.start()].rstrip()
+        start = not before or before[-1] in ".!?:;\n"
+        if match.group(1):
+            word = "Your" if start else "your"
+            return word + (match.group(2) or "")
+        word = "You" if start else "you"
+        if match.group(3):
+            return f"{word}{match.group(2)[:-len(match.group(3))]}{_conjugate(match.group(3))}"
+        return word
+    return pattern.sub(swap, text)
+
+
+def names_user(text: str, names) -> bool:
+    """The text names the user (their name, or "the user") as a person."""
+    subjects = [r"the user"] + [re.escape(n) for n in names if n and len(n) >= 2]
+    return bool(re.search(r"\b(?:" + "|".join(subjects) + r")\b", text or "", re.I))
+
+
+# --- bulk senders ---------------------------------------------------------------------
+
+_BULK_LOCAL = re.compile(
+    r"^(?:no[-_.]?reply|do[-_.]?not[-_.]?reply|donotreply|noreply|notifications?|notify|alerts?|news|newsletters?|"
+    r"info|hello|hi|team|marketing|updates?|digest|mailer|mail|bounce|support|contact|community|events?|"
+    r"announce(?:ments?)?|promo(?:tions?)?|offers?|deals?|store|shop|billing|accounts?|admin|outreach|"
+    r"campaigns?|members?|membership|subscriptions?|welcome|feedback|jobs?|careers?|recruiting|"
+    r"invitations?|reminders?|calendar-notification|postmaster|messages?|edu|learn|courses?)(?:[-_.+].*)?$", re.I)
+_BULK_DOMAIN = re.compile(
+    r"(?:^|\.)(?:indeed\.com|kaggle\.com|princetonreview\.com|review\.com|devpost\.com|mlh\.io|substack\.com|"
+    r"linkedin\.com|medium\.com|mailchimp\.com|mcsv\.net|sendgrid\.net|hubspot(?:email)?\.(?:com|net)|"
+    r"vote\.org|actblue\.com|ngpvan\.com|eab\.com|e2ma\.net|constantcontact\.com|campaign-archive\.com|"
+    r"beehiiv\.com|convertkit\.com|klaviyo(?:mail)?\.com|ccsend\.com|mktomail\.com|salesforce\.com|"
+    r"exacttarget\.com|amazonses\.com|quora\.com|glassdoor\.com|handshake\.com|joinhandshake\.com|"
+    r"ziprecruiter\.com|youtube\.com|facebookmail\.com|instagram\.com|twitter\.com|"
+    r"discord\.com|notion\.so|canva\.com|coursera\.org|udemy\.com|duolingo\.com|"
+    r"uber\.com|doordash\.com|amazon\.com|apple\.com|paypal\.com|venmo\.com|chase\.com|spotify\.com|"
+    r"netflix\.com|hacktoberfest\.com|digitalocean\.com|outreach\.senate\.ca\.gov|senate\.ca\.gov|house\.gov)$",
+    re.I)
+# Campus and civic mass-mail platforms send under a staff member's name
+# ("Vanessa via Navigate", a councilmember's newsletter).
+_BULK_PLATFORM = re.compile(r"(?:^|\.)navigate[\w-]*\.|(?:^|\.)(?:lists?|listserv|mailman|bulk|news|e|em|email|"
+                            r"mail\d*|send|go|info|marketing|comms?|communications)\.[\w-]+\.|\.gov$", re.I)
+_BULK_NAME = re.compile(r"\b(?:team|newsletter|briefing|digest|weekly|daily|news|alerts?|updates?|notifications?|"
+                        r"department|office|services|housing|police|university|college|program|center|"
+                        r"foundation|campaign|committee|club|society|association|hq|official|advising|advisors?|"
+                        r"admissions|registrar|financial aid|career center|student life|residential|"
+                        r"\w*news\w*|\w*letter)\b", re.I)
+
+
+def bulk_sender(name: str, address: str) -> bool:
+    """An organization or an automated sender, not a person writing to the user."""
+    address = (address or "").strip().casefold()
+    local, _, domain = address.partition("@")
+    if local and _BULK_LOCAL.match(local):
+        return True
+    if domain and (_BULK_DOMAIN.search(domain) or _BULK_PLATFORM.search(domain)):
+        return True
+    if name and _BULK_NAME.search(name):
+        return True
+    return False

@@ -129,6 +129,103 @@ def _infer_kind(text: str, source: str) -> str:
     return "reply" if source in ("mail", "messages") else "task"
 
 
+VERBS = set("""reply respond answer text call email message meet get grab go buy pick drop send submit register
+rsvp confirm schedule book review finish pay sign practice prepare study read check follow ask plan attend join
+talk visit fill complete apply help bring return set make write update cancel decide share watch vote start
+catch see thank find order renew file turn print collect clean fix call""".split())
+
+
+def _user_names() -> list[str]:
+    from service.proactive.triage import user_names
+    return user_names()
+
+
+def _good_title(title: str, source: str, allowed: set[str], names: list[str]) -> bool:
+    """Verb first, held to the source, no identifiers, and never naming the
+    user as the other person ("Reply to Adi about…" on the user's own words)."""
+    if not title or guard.output_has_pii(title) or not guard.grounded(title, source, allowed=allowed):
+        return False
+    first = re.findall(r"[a-z']+", title.casefold())[:1]
+    if not first or first[0] not in VERBS:
+        return False
+    return not guard.names_user(title, names) and not _MISCREDIT.search(title)
+
+
+_MISCREDIT = re.compile(r"\byour (?:own )?(?:email|message|text|reply|note)s? (?:to|for)\b", re.I)
+
+
+def _first(who: str) -> str:
+    word = re.split(r"[\s,]+", (who or "").strip())[0] if who else ""
+    return word if re.fullmatch(r"[A-Za-z][A-Za-z'.-]{0,30}", word or "") else (who or "").strip()
+
+
+_TOWARD_SOMEONE = r"(?i)(?:reply|respond|answer|text|email|write back|send|forward|share|call|meet)\b"
+
+
+def _topic(result: dict, item: dict, names: list[str]) -> str:
+    topic = guard.clean(result.get("title") or "", 60).rstrip("?!.:;, ")
+    topic = re.sub(r"(?i)^(?:a |the )?(?:discussion|conversation|chat|talk|question|update|email|text)s? "
+                   r"(?:about|on|regarding|re:?)\s+", "", topic).strip()
+    if (not topic or guard.names_user(topic, names) or len(topic.split()) > 5
+            or topic.casefold() in ("text conversation", "email thread", "text from " + _first(item.get("who", "")).casefold())
+            or topic.casefold() == (item.get("title") or "").casefold() and item.get("source") == "messages"
+            or _first(item.get("who", "")).casefold() in topic.casefold()):
+        return ""
+    return topic[:1].lower() + topic[1:] if topic[1:2].islower() else topic
+
+
+def reply_title(item: dict, result: dict, names: list[str]) -> str:
+    """"Reply to Sam about the coffee chat": the person is the conversation's
+    other party (the email's sender, the chat's contact), the topic the
+    triage title when it is short."""
+    who = _first(item.get("who", ""))
+    if not who or guard.names_user(who, names):
+        return ""
+    topic = _topic(result, item, names)
+    return f"Reply to {who}" + (f" about {topic}" if topic else "")
+
+
+def action_title(kind: str, item: dict, result: dict, names: list[str]) -> str:
+    """A verb-first to-do built by code: the user's own ask when it reads as
+    one, else the action toward the other party (who comes from the source)."""
+    asks = guard.clean(result.get("asks_of_me"), 90)
+    if _MISCREDIT.search(asks):
+        asks = ""
+    if not item.get("person", True):
+        # An organization's notice: the user acts on its deadline, never "replies".
+        if asks and not re.match(_TOWARD_SOMEONE, asks) and not guard.names_user(asks, names) \
+                and (re.findall(r"[a-z']+", asks.casefold())[:1] or [""])[0] in VERBS:
+            return asks[:1].upper() + asks[1:]
+        topic = guard.clean(result.get("title") or item.get("title") or "", 60).rstrip("?!.:;, ")
+        return f"Review {topic[:1].lower() + topic[1:] if topic[1:2].islower() else topic}" if topic else ""
+    first = re.findall(r"[a-z']+", asks.casefold())[:1]
+    if asks and first and first[0] in VERBS and not guard.names_user(asks, names):
+        return asks[:1].upper() + asks[1:]
+    who = _first(item.get("who", "")) if item.get("source") in ("mail", "messages") else ""
+    if who and guard.names_user(who, names):
+        who = ""
+    topic = guard.clean(result.get("title") or "", 60).rstrip("?!.:;, ")
+    if guard.names_user(topic, names) or (topic and topic.casefold() in ("text conversation", "email thread")):
+        topic = ""
+    if topic and item.get("source") == "messages" and topic.casefold() == (item.get("title") or "").casefold():
+        topic = ""
+    if len(topic.split()) > 5:
+        topic = ""                       # a whole subject line reads badly inside a to-do
+    lower = lambda t: t[:1].lower() + t[1:] if t[1:2].islower() else t  # noqa: E731
+    about = f" about {lower(topic)}" if topic else ""
+    if kind == "reply" and who and not item.get("replied"):
+        return f"Reply to {who}{about}"
+    if kind == "call" and who:
+        return f"Call {who}" + (f" about {lower(topic)}" if topic else "")
+    if kind == "meet" and who:
+        return f"Meet {who}" + (f" for {lower(topic)}" if topic else "")
+    if asks and not guard.names_user(asks, names):
+        return asks[:1].upper() + asks[1:]
+    if item.get("replied"):
+        return ""                        # they already answered: nothing left to name
+    return f"Reply to {who}{about}" if who and item.get("source") in ("mail", "messages") else ""
+
+
 def _best_quote(lines: list[str], hint: str) -> str:
     """The source line that best matches the item, copied verbatim."""
     if not lines:
@@ -175,15 +272,24 @@ def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: st
             return None
         kind = raw.get("action") if raw.get("action") in KINDS else _infer_kind(
             result.get("asks_of_me") or raw.get("title", ""), item["source"])
+        if kind in ("reply", "meet", "call") and not item.get("person", True):
+            kind = "task"                             # nobody to answer: an organization's notice
         if kind == "reply" and item.get("replied") and item["source"] in ("mail", "messages"):
             return None                               # they already answered
+        names = _user_names()
         title = guard.clean(raw.get("title"), 90)
-        if not title or not guard.grounded(title, source_text, allowed=allowed) or guard.output_has_pii(title):
-            title = guard.clean(result.get("asks_of_me") or result.get("title") or item.get("title"), 90)
+        if not _good_title(title, source_text, allowed, names) or (
+                not item.get("person", True) and re.match(_TOWARD_SOMEONE, title)):
+            title = action_title(kind, item, result, names)
+        if kind == "reply" and item.get("person", True) and item["source"] in ("mail", "messages"):
+            # Who to answer comes from the source, never from model text.
+            title = reply_title(item, result, names) or title
+        if not title:
+            return None                               # nothing the user can actually do
         why = guard.clean(raw.get("why"), 200)
         if why and (not guard.grounded(why, source_text, allowed=allowed) or guard.output_has_pii(why)):
             why = ""
-        why = why or guard.clean(result.get("summary"), 200)
+        why = guard.second_person(why or guard.clean(result.get("summary"), 200), names)
         due_phrase = _due_from_source(raw.get("due", ""), survivor)
         arrival = item.get("received_ts") or now
         due_ts, fixed, has_clock = guard.resolve_due(due_phrase, arrival, tz) if due_phrase else (None, "", False)
@@ -195,6 +301,8 @@ def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: st
                     break
         if kind != "reply" and _schedule_duplicate(" ".join([title, result.get("asks_of_me", "")]), sched):
             return None                               # already on the calendar or a reminder
+        if not item.get("person", True) and (due_ts is None or due_ts < now - 86400):
+            return None                               # an organization's mail needs a live deadline
         return dict(title=title, kind=kind, why=why, due_ts=due_ts, has_clock=has_clock,
                     due_label=guard.due_label(due_ts, now, tz, has_clock=has_clock, fixed=fixed),
                     urgency=raw.get("urgency") if raw.get("urgency") in _URGENCY else "medium",

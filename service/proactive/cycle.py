@@ -21,6 +21,7 @@ Rules:
 from __future__ import annotations
 
 import asyncio
+import re
 import hashlib
 import json
 import time
@@ -113,19 +114,32 @@ def _foreground() -> bool:
 # --- recipients --------------------------------------------------------------------------
 
 
-def resolve_handle(item: dict) -> str | None:
-    """A literal phone or address for a one-to-one conversation's own contact:
-    the label itself when it is one, else the single exact Contacts match."""
+def resolve_handle(item: dict, *, find_contacts=None) -> str | None:
+    """The literal handle to text back, or None for no text card.
+
+    The recipient is the conversation's own participant: the handle in its
+    one-to-one chat id (sources.chat_handle), never a name lookup. A group or
+    named chat has none. The label only confirms it: a number label must be
+    that handle, and a name must be exactly one contact holding that handle.
+    """
+    from service.tools.imessage_tools import _norm_handle
     from service.tools.registry import _literal_message_recipient
-    label = str((item.get("ref") or {}).get("label") or item.get("title") or "")
-    literal = _literal_message_recipient(label)
-    if literal:
-        return literal
-    from service.tools.imessage_tools import find_contacts
+    if item.get("group"):
+        return None
+    handle = _literal_message_recipient(item.get("handle") or "")
+    if not handle:
+        return None
+    label = str((item.get("ref") or {}).get("label") or item.get("title") or "").strip()
+    if _literal_message_recipient(label):
+        return handle if _norm_handle(label) == _norm_handle(handle) else None
+    if find_contacts is None:
+        from service.tools.imessage_tools import find_contacts
     matches = [m for m in find_contacts(label) if str(m.get("name", "")).casefold() == label.casefold()]
     if len(matches) != 1:
+        return None                      # unknown, or several contacts share the name
+    if _norm_handle(handle) not in {_norm_handle(h) for h in matches[0].get("handles") or []}:
         return None
-    return _literal_message_recipient(matches[0].get("preferred"))
+    return handle
 
 
 def freeze_reply(reply_ref):
@@ -155,7 +169,8 @@ def deterministic_todos(sched: dict, notes: list[dict], now: float, tz: str) -> 
         out.append({"id": todo_id(event["id"]), "title": event["title"], "source": "calendar",
                     "account": event.get("account", ""), "who": "", "quote": "", "due_ts": event["when_ts"],
                     "due_label": guard.due_label(event["when_ts"], now, tz, has_clock=not event.get("all_day")),
-                    "kind": "event", "done": False, "card_id": None, "fingerprints": [f"calendar:{event['id']}"]})
+                    "kind": "event", "done": False, "card_id": None, "fingerprints": [f"calendar:{event['id']}"],
+                    "timed": not event.get("all_day")})
     for reminder in sched.get("reminders", []):
         due, fixed, has_clock = (reminder["when_ts"], "", False) if reminder.get("when_ts") is not None else (None, "", False)
         out.append({"id": todo_id(reminder["id"]), "title": reminder["title"], "source": "reminders",
@@ -207,7 +222,8 @@ def _threads(survivors: list[dict]) -> list[dict]:
         out.append({"id": "thread:" + item["id"], "source": item["source"], "account": item["account"],
                     "who": item.get("who", ""), "title": guard.clean(result.get("title") or item.get("title"), 90),
                     "summary": guard.clean(result.get("summary") or result.get("asks_of_me"), 400),
-                    "needs_reply": bool(result.get("asks_of_me")) and not item.get("replied"),
+                    "needs_reply": bool(result.get("asks_of_me")) and not item.get("replied")
+                                   and item.get("person", True) and not item.get("group"),
                     "received_ts": item.get("received_ts"), "reply_ref": item.get("reply_ref", "")})
         if len(out) >= MAX_THREADS:
             break
@@ -257,7 +273,8 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     started = time.time()
     _status.update(state="working", phase="reading", account=account, error="", started_at=started,
                    finished_at=None, progress={"done": 0, "total": 0})
-    items = (collect or (lambda n, z: sources.collect(n, z)))(now, tz)
+    # Reading the caches parses megabytes of mail and texts: off the event loop.
+    items = await asyncio.to_thread(collect or (lambda n, z: sources.collect(n, z)), now, tz)
     if account:
         items.sort(key=lambda i: str(i.get("account", "")).casefold() != account.casefold())
 
@@ -369,6 +386,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     notes = [i for i in items if i["source"] == "notes"]
     summaries = {k: v for k, v in summaries.items() if k not in erased}
     judged = {k: v for k, v in judged.items() if k not in erased}
+    store.prune(now)
     store.save_state(
         as_of=now, timezone=tz, accounts=accounts,
         cards=[c for a in accounts for c in cards_by_account.get(a, [])],
@@ -468,17 +486,57 @@ def _public(record: dict) -> dict:
     return {k: v for k, v in record.items() if k not in ("fingerprints",)}
 
 
-def _day_summary(cards: list[dict], todos: list[dict], now: float, tz: str) -> str:
+_NUMBER = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"]
+
+
+def _count(n: int) -> str:
+    return _NUMBER[n] if n < len(_NUMBER) else str(n)
+
+
+def _clock_words(ts: float, zone) -> str:
+    local = datetime.fromtimestamp(ts, zone)
+    if local.hour == 12 and local.minute == 0:
+        return "noon"
+    return local.strftime("%-I:%M %p").replace(":00 ", " ").lower().replace(" am", "am").replace(" pm", "pm") \
+        if local.minute == 0 else local.strftime("%-I:%M")
+
+
+def _short_title(title: str, limit: int = 36) -> str:
+    """An event name short enough for a sentence: no bracketed tail, cut at a word."""
+    text = re.sub(r"\s*[\(\[][^)\]]*[\)\]]\s*", " ", title or "").strip() or (title or "")
+    text = guard.clean(text, 200)
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].rstrip(" -–—:,x")
+    return text
+
+
+def _day_summary(cards: list[dict], todos: list[dict], threads: list[dict], now: float, tz: str) -> str:
+    """A natural one- or two-sentence overview, built by code: "Two events
+    today — CruzHacks Hack Day at 11:45 and Hacktoberfest at noon. Three
+    people are waiting on replies." """
     zone = ZoneInfo(tz)
     today = datetime.fromtimestamp(now, zone).date()
-    events = [t for t in todos if t["source"] == "calendar" and t.get("due_ts")
-              and datetime.fromtimestamp(t["due_ts"], zone).date() == today]
-    open_todos = [t for t in todos if not t["done"] and t["source"] != "calendar"]
-    parts = [f"You have {len(events) or 'no'} event{'s' if len(events) != 1 else ''} today"
-             f" and {len(open_todos) or 'no'} open to-do{'s' if len(open_todos) != 1 else ''}."]
-    if cards:
-        parts.append(f"First up: {cards[0]['title'].rstrip('.')}.")
-    return " ".join(parts)
+    events = sorted((t for t in todos if t["source"] == "calendar" and t.get("due_ts") and t.get("timed", True)
+                     and datetime.fromtimestamp(t["due_ts"], zone).date() == today and t["due_ts"] >= now - 3600),
+                    key=lambda t: t["due_ts"])
+    sentences = []
+    if events:
+        named = [f"{_short_title(e['title'])} at {_clock_words(e['due_ts'], zone)}" for e in events[:2]]
+        lead = f"{_count(len(events))} event{'s' if len(events) != 1 else ''} today"
+        rest = f", plus {len(events) - 2} more" if len(events) > 2 else ""
+        sentences.append(f"{lead} — {' and '.join(named)}{rest}.")
+    else:
+        sentences.append("Nothing on your calendar for the rest of today.")
+    waiting = {t["who"] for t in threads if t.get("needs_reply") and t.get("who")}
+    if waiting:
+        n = len(waiting)
+        sentences.append(f"{_count(n)} {'people are' if n != 1 else 'person is'} waiting on a reply.")
+    else:
+        open_todos = [t for t in todos if not t["done"] and t["source"] not in ("calendar",)]
+        if open_todos:
+            n = len(open_todos)
+            sentences.append(f"{_count(n)} thing{'s' if n != 1 else ''} on your to-do list.")
+    return " ".join(sentences)
 
 
 def snapshot(*, account: str | None = None, now: float | None = None, tz: str | None = None, store=None,
@@ -523,8 +581,7 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
         match = lambda x: str(x.get("account") or "").casefold() == account.casefold()  # noqa: E731
         cards, todos, threads = [c for c in cards if match(c)], [t for t in todos if match(t)], \
             [t for t in threads if match(t)]
-    summaries = state.get("summaries") or {}
-    summary = summaries.get(account or own) or _day_summary(cards, todos, now, tz)
+    summary = _day_summary(cards, todos, threads, now, tz)
     if running():
         view_state = "working"
     elif state.get("as_of") is not None:

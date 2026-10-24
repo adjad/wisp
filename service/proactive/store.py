@@ -22,6 +22,7 @@ import traceback
 from pathlib import Path
 
 _DONE_SHOWN_S = 24 * 3600
+_KEEP_S = 14 * 86400
 
 
 def base_dir() -> Path:
@@ -82,6 +83,10 @@ class ProactiveStore:
             entry = {"hash": content_hash, "status": status, "result": result, "account": account,
                      "at": time.time() if now is None else now, "attempts": attempts}
             data[item_id] = entry
+            # Nothing older than 14 days is kept: sources are read 7 days back.
+            cutoff = entry["at"] - _KEEP_S
+            for key in [k for k, v in data.items() if float((v or {}).get("at") or 0) < cutoff]:
+                data.pop(key, None)
             # Bounded: the oldest checkpoints go first.
             if len(data) > 2000:
                 for key in sorted(data, key=lambda k: data[k].get("at", 0))[:len(data) - 2000]:
@@ -125,6 +130,17 @@ class ProactiveStore:
             if not isinstance(data.get(key), dict):
                 data[key] = {}
         return data
+
+    def prune(self, now: float | None = None) -> None:
+        """Forget decisions older than 14 days; their sources are long out of the window."""
+        now = time.time() if now is None else now
+        with self._lock:
+            data = self.decisions()
+            def stamp(v):
+                return float(v.get("at") or 0) if isinstance(v, dict) else float(v or 0)
+            for key in ("dismissed", "fired", "suppressed", "done"):
+                data[key] = {k: v for k, v in data[key].items() if now - stamp(v) < _KEEP_S}
+            self._write("decisions.json")
 
     def suppressed_fingerprints(self) -> set[str]:
         """Source fingerprints (item id + content hash) the user already handled:

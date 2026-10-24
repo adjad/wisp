@@ -6,8 +6,8 @@ The integrator includes this router in service/main.py:
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 router = APIRouter(prefix="/assistant/proactive", tags=["proactive"])
 
@@ -31,6 +31,34 @@ class TodoUpdate(BaseModel):
     timezone: str | None = None
 
 
+def _native_only(request: Request) -> None:
+    """The app's own JSON requests only: any Origin header (a web page, even
+    "null") is refused, and so is a body that isn't JSON."""
+    if "origin" in request.headers:
+        raise HTTPException(403, "Use Wisp's Brief for this.")
+    media = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if media != "application/json":
+        raise HTTPException(415, "Content-Type must be application/json.")
+
+
+async def _body(request: Request, model):
+    _native_only(request)
+    try:
+        data = await request.json()
+    except ValueError as exc:
+        raise HTTPException(422, "Body must be a JSON object.") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(422, "Body must be a JSON object.")
+    try:
+        return model(**data)
+    except ValidationError as exc:
+        raise HTTPException(422, "Invalid request.") from exc
+
+
+class Empty(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 @router.get("")
 def proactive(account: str | None = None):
     from service.proactive.cycle import snapshot
@@ -38,14 +66,16 @@ def proactive(account: str | None = None):
 
 
 @router.post("/analyze")
-async def analyze(body: Analyze | None = None):
+async def analyze(request: Request):
     """Analyze now: runs in the background; progress shows in workspace.proactive."""
+    body = await _body(request, Analyze)
     from service.proactive.cycle import analyze as start
-    return start((body.account if body else None) or None)
+    return start(body.account or None)
 
 
 @router.post("/cards/{card_id}/fire")
-async def fire(card_id: str, body: Fire):
+async def fire(card_id: str, request: Request):
+    body = await _body(request, Fire)
     from service.proactive.executor import fire as run
     result = await run(card_id, body.draft, body.recipient)
     if result.get("status") == "not_found":
@@ -54,7 +84,8 @@ async def fire(card_id: str, body: Fire):
 
 
 @router.post("/cards/{card_id}/dismiss")
-def dismiss(card_id: str):
+async def dismiss(card_id: str, request: Request):
+    await _body(request, Empty)
     from service.proactive.store import store
     card = store().card(card_id)
     if card is None:
@@ -77,7 +108,8 @@ def _find_todo(todo_id: str) -> dict | None:
 
 
 @router.post("/todos/{todo_id}")
-def update_todo(todo_id: str, body: TodoUpdate):
+async def update_todo(todo_id: str, request: Request):
+    body = await _body(request, TodoUpdate)
     from service.proactive.store import store
     if body.done is None and not body.add_to_day:
         raise HTTPException(status_code=422, detail="Send done or add_to_day.")

@@ -88,7 +88,7 @@ async def _email_reply(card: dict, draft: str, store=None) -> dict:
     held = _ENVELOPES.get(card["id"])
     if held is None or held[1] - time.time() < _FRESH_MARGIN_S:
         view = freeze_reply(action.get("reply_ref"))
-        if not (isinstance(view, dict) and view.get("can_send") and view.get("envelope")):
+        if not (isinstance(view, dict) and view.get("ok") and view.get("can_send") and view.get("envelope")):
             return {"ok": False, "status": "send_unavailable",
                     "error": (view or {}).get("reason") or "This email can't be replied to from Wisp.",
                     "open_url": (view or {}).get("open_url", "")}
@@ -107,19 +107,38 @@ async def _email_reply(card: dict, draft: str, store=None) -> dict:
     return {**result, "ok": result.get("status") == "sent"}
 
 
+def _text_policy_problem(to: str, draft: str) -> str | None:
+    """The safety policy floor for a text. DENY (view-only mode, a grant that
+    forbids it) refuses; CONFIRM is satisfied by the user's tap on this exact
+    card, which showed the recipient and the words."""
+    try:
+        from service.safety import Tier, decide
+        decision = decide("messages_send", {"to": to, "text": draft}, tool="send_message")
+    except Exception as exc:  # noqa: BLE001 — a policy that can't be read refuses
+        return f"safety policy unavailable ({type(exc).__name__})"
+    if decision.tier is Tier.DENY:
+        return decision.reason or "The safety policy doesn't allow sending this text."
+    return None
+
+
 async def _text_reply(card: dict, draft: str) -> dict:
-    """The send_message_draft core: a literal handle and a human-reviewed body."""
+    """The send_message_draft core: a literal handle, the policy floor, and a
+    human-reviewed body. An unconfirmed send is "unknown", never "failed"."""
     from service.tools.action_tools import human_reviewed_content, send_message
-    from service.tools.registry import _literal_message_recipient
+    from service.tools.registry import _literal_message_recipient, _OutboundUnknownResult
     to = _literal_message_recipient(card["action"].get("recipient"))
     if to is None:
         return {"ok": False, "status": "blocked", "error": "This card has no literal phone number or address to text."}
+    if problem := _text_policy_problem(to, draft):
+        _audit("deny", tool="send_message", source="proactive_card", reason=problem)
+        return {"ok": False, "status": "blocked", "error": problem}
     with human_reviewed_content():
         result = await send_message(to=to, text=draft)
     ok = isinstance(result, str) and result.startswith("Message sent to ")
+    unknown = isinstance(result, _OutboundUnknownResult)
     _audit("draft_card_send", tool="send_message", source="proactive_card",
            args={"to": to, "text_sha256": _sha(draft)}, result=str(result)[:200], ok=ok)
-    return {"ok": ok, "status": "succeeded" if ok else "failed", "result": str(result)}
+    return {"ok": ok, "status": "succeeded" if ok else "unknown" if unknown else "failed", "result": str(result)}
 
 
 def _reminder_problem() -> str | None:
@@ -216,6 +235,11 @@ async def fire(card_id: str, draft: str | None = None, recipient: str | None = N
             return {"ok": False, "status": "blocked", "error": "The message is empty."}
         if len(words) > 5000:
             return {"ok": False, "status": "blocked", "error": "The message is too long."}
+    if action.get("locked") == "unknown":
+        where = "Mail" if method == "email_reply" else "Messages"
+        return {"ok": False, "status": "locked",
+                "error": f"Check {where} before sending again: the last send wasn't confirmed. "
+                         "Dismiss this card or mark it handled."}
     if card_id in _in_flight:
         return {"ok": False, "status": "in_progress", "error": "This card is already being sent."}
     _in_flight.add(card_id)
@@ -229,6 +253,12 @@ async def fire(card_id: str, draft: str | None = None, recipient: str | None = N
     finally:
         _in_flight.discard(card_id)
     ok = result.get("ok") is True
+    if not ok and result.get("status") == "unknown" and method in ("email_reply", "text_reply"):
+        # It may have gone out: never offer the same send again.
+        current = store.card(card_id)
+        if current is not None:
+            current["action"]["locked"] = "unknown"
+            store.update_card(current)
     _audit("proactive_fire", tool=method, card=card_id, account=card.get("account", ""), ok=ok,
            status=result.get("status", "succeeded" if ok else "failed"),
            args={"recipient": action.get("recipient", ""), "draft_sha256": _sha(words or ""),
