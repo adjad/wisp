@@ -2802,6 +2802,9 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     from service.assistant.store import parse_undated_snapshot
     undated = (parse_undated_snapshot(body.get("undated"), body.get("undated_total"))
                if source == "reminders" else None)
+    if source == "calendar":
+        from service import google_calendar_source
+        items = google_calendar_source.merge_native_items(items)
     try:
         # One call, one transaction: the dated rows, the receipt and the undated list
         # commit together or not at all.

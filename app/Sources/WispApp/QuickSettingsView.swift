@@ -40,6 +40,7 @@ struct QuickSettingsView: View {
                 learningRow
             }
             group("Daily brief") { briefRow }
+            group("Google") { NotchConnectGoogle() }
             group("Advanced") {
                 row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
                     Text("Model, timing and tools under each reply")
