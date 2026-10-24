@@ -559,7 +559,9 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         judged[acct] = {"key": key, "at": now, "model": model_ok}
     # 3. Deadline cards: a real free slot for work due soon. Code only, every
     # cycle (a slot goes stale as the day moves), filling what replies leave.
-    if not yielded and deadline_fn is not None:
+    # Runs even when the judge yielded to a turn: it is code only, and skipping
+    # it would save the state without any deadline card until the next cycle.
+    if deadline_fn is not None:
         decided = store.decisions()
         skip = set(decided["dismissed"]) | set(decided["fired"])
         try:
@@ -696,6 +698,10 @@ def schedule_tick() -> asyncio.Task | None:
     return _task
 
 
+ANALYZE_RETRIES = 3
+ANALYZE_RETRY_S = 15.0
+
+
 def analyze(account: str | None = None, **kwargs) -> dict:
     """Analyze now: a forced, patient cycle in the background. One already
     running gets a forced rerun queued behind it, never a second cycle."""
@@ -706,10 +712,19 @@ def analyze(account: str | None = None, **kwargs) -> dict:
 
     async def go():
         global _rerun
-        await run_cycle(force=True, patient=True, account=account, **kwargs)
-        while _rerun is not None:
+        retries = 0
+        result = await run_cycle(force=True, patient=True, account=account, **kwargs)
+        while True:
+            if _rerun is None and isinstance(result, dict) and result.get("status") == "yielded" \
+                    and retries < ANALYZE_RETRIES:
+                # The user's turn interrupted it: finish the job once they're done.
+                retries += 1
+                _rerun = {"account": account}
+                await asyncio.sleep(ANALYZE_RETRY_S)
+            if _rerun is None:
+                break
             request, _rerun = _rerun, None
-            await run_cycle(force=True, patient=True, account=request.get("account"), **kwargs)
+            result = await run_cycle(force=True, patient=True, account=request.get("account"), **kwargs)
 
     _status.update(state="working", phase="starting", account=account, progress={"done": 0, "total": 0})
     _task = asyncio.create_task(go())

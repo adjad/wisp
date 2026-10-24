@@ -45,3 +45,32 @@ def test_judge_sees_past_meetings_as_citable_calendar_sources():
     material, ids = judge.build_input([], sched, NOW, TZ)
     assert "MEETINGS IN THE LAST 7 DAYS" in material and "[P1]" in material
     assert ids["P1"]["kind"] == "calendar" and ids["P1"]["row"]["id"] == "g1"
+
+
+def test_an_analyze_interrupted_by_a_turn_runs_again(monkeypatch):
+    import asyncio
+    from service.proactive import cycle
+    calls = []
+
+    async def fake_run_cycle(**kwargs):
+        calls.append(kwargs.get("account"))
+        return {"status": "yielded"} if len(calls) == 1 else {"status": "done"}
+
+    monkeypatch.setattr(cycle, "run_cycle", fake_run_cycle)
+    monkeypatch.setattr(cycle, "ANALYZE_RETRY_S", 0)
+    monkeypatch.setattr(cycle, "_rerun", None)
+    monkeypatch.setattr(cycle, "_task", None)
+
+    async def go():
+        cycle.analyze(JUDGE)
+        await cycle._task
+
+    asyncio.run(go())
+    assert calls == [JUDGE, JUDGE]
+
+
+def test_the_deadline_step_is_not_gated_on_a_yield():
+    import inspect
+    from service.proactive import cycle
+    source = inspect.getsource(cycle._cycle)
+    assert "if not yielded and deadline_fn" not in source and "if deadline_fn is not None:" in source
