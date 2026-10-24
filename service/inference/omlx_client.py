@@ -135,6 +135,28 @@ def _ensure_choices(data: dict[str, Any]) -> dict[str, Any]:
 
 
 
+
+class _RateLimitRetry(httpx.AsyncBaseTransport):
+    """Remote providers only: a 429 (Gemini's per-minute limit) waits and
+    re-sends the same request a few times instead of failing the turn."""
+    DELAYS = (3.0, 6.0, 12.0)
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    async def handle_async_request(self, request):
+        import asyncio
+        for delay in (*self.DELAYS, None):
+            response = await self._inner.handle_async_request(request)
+            if response.status_code != 429 or delay is None:
+                return response
+            await response.aclose()
+            await asyncio.sleep(delay)
+        return response
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
 class _ThoughtSplitter:
     """Moves a remote model's inline <thought>…</thought> text (Gemma on the
     Gemini API) out of the answer and into reasoning, even when a tag is split
@@ -215,7 +237,8 @@ class OMLXClient:
             managed=self.managed, key_loader=key_loader)
         self._client = guard_client(httpx.AsyncClient(
             base_url=self.base_url,
-            transport=self._credential_transport,
+            transport=(self._credential_transport if self.managed
+                       else _RateLimitRetry(self._credential_transport)),
             timeout=httpx.Timeout(timeout, connect=5.0),
             trust_env=False, follow_redirects=False,
         ))

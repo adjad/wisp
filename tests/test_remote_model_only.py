@@ -123,3 +123,19 @@ def test_inline_thought_is_split_from_the_answer_across_chunks():
     assert message == {"content": "Hello", "reasoning_content": "x"}
     plain = _ThoughtSplitter()
     assert "".join(t for _, t in plain.feed("a < b") + plain.flush()) == "a < b"
+
+
+def test_rate_limited_remote_request_is_retried():
+    import httpx
+    from service.inference import omlx_client
+    calls = []
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(429 if len(calls) < 3 else 200, json={"ok": True})
+    transport = omlx_client._RateLimitRetry(httpx.MockTransport(handler))
+    with patch.object(omlx_client._RateLimitRetry, "DELAYS", (0, 0, 0)):
+        async def go():
+            async with httpx.AsyncClient(transport=transport, base_url="https://x.invalid") as c:
+                return await c.post("/v1/chat/completions", json={"a": 1})
+        response = asyncio.run(go())
+    assert response.status_code == 200 and len(calls) == 3
