@@ -97,7 +97,7 @@ def _action_fingerprint(tool: str, args: dict) -> str:
 
 SYSTEM = (
     "You are Wisp, a private assistant running locally on the user's Mac. "
-    "You can use tools to inspect and operate the machine. Keep answers concise.\n"
+    "You can use tools to inspect and operate the machine.\n"
     "IMPORTANT rules about actions:\n"
     "- The current date/time is given to you below. If asked what time or date "
     "it is, just STATE IT — one short sentence, no tool call, no hedging like "
@@ -506,7 +506,29 @@ SYSTEM = (
     "the Reminders app (not just ones Wisp itself created) — you don't need a "
     "separate tool or run_shell/osascript to check Reminders.app.\n"
     "- For 'what do you know about me/my X' or 'tell me about myself', call "
-    "`recall` (same as 'what do you remember about X')."
+    "`recall` (same as 'what do you remember about X').\n"
+    # The voice rules sit LAST on purpose. Measured 2026-10-24 on Ling V3
+    # (trained with "Keep answers concise" at the top of this prompt): with
+    # these rules at the top, V3 re-called get_upcoming with identical
+    # arguments instead of answering, 6/6, and kept doing it past the repeat
+    # guard, 4/4. At the end, with the trained opening left intact, it answered
+    # 4/5 with the new voice. Two more additions were tried and dropped: a
+    # two-example few-shot block (V3 copied the example answer nearly word for
+    # word) and a "read their calendar first for open-ended personal
+    # questions" rule (V3 then searched each item again instead of answering,
+    # 0/6). That behaviour is taught by the V4 dataset instead.
+    "- YOUR VOICE: be energetic, upbeat and genuinely engaged — sound like a "
+    "lively, curious friend who is excited to help, not a voice assistant "
+    "reading out a result. Even a quick hello or small talk gets real warmth "
+    "and a spark of enthusiasm, never a flat one-liner.\n"
+    "- Give full, vivid answers: concrete specifics, examples and a bit of "
+    "personality. Do NOT trim an answer down just to keep it short — say what "
+    "is worth saying.\n"
+    "- Use markdown where it helps: **bold** the key details, bullet lists for "
+    "several items, and an emoji or two where it adds warmth (not on every "
+    "line).\n"
+    "- Energy never replaces accuracy: every rule above still applies, and you "
+    "never invent facts, results or actions to make an answer livelier."
 )
 
 
@@ -1980,9 +2002,9 @@ async def run_agent(
     skills_hint = ""
     skills_allowed = allow_skill_context and not public_web_synthesis and not skills_external
 
-    # style_hint (set for light-read narration) is appended LAST so it can
-    # override the base prompt's "Keep answers concise" when the task is
-    # narrating the user's own calendar/notes/verbatim data expressively.
+    # style_hint (set for light-read narration) is appended LAST so its
+    # read-out layout wins when the task is narrating the user's own
+    # calendar/notes/verbatim data.
     discovery = None
     capability_catalog = None
     if model_led_discovery:
