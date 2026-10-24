@@ -199,7 +199,11 @@ class ProactiveStore:
             data["fired"][card["id"]] = {"at": now, "method": (card.get("action") or {}).get("method"),
                                          "status": result.get("status", "succeeded")}
             self._suppress(card.get("fingerprints"), now)
-            if card.get("todo_id"):
+            if card.get("todo_id") and (card.get("action") or {}).get("method") == "block_time":
+                # Time is held for it; the work itself isn't done.
+                data.setdefault("added_to_day", {})[card["todo_id"]] = {"at": now,
+                                                                       "task_id": result.get("task_id") or ""}
+            elif card.get("todo_id"):
                 data["done"][card["todo_id"]] = {"at": now, "todo": _todo_snapshot(card)}
             self._write("decisions.json")
         self.remove_card(card["id"])

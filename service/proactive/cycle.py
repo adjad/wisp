@@ -277,10 +277,94 @@ def _served_thread(thread: dict, names: list[str]) -> dict:
             "user_wrote": user_wrote, "group": " in " in str(thread.get("who") or "")}
     if summary and not triage.sane(summary, like):
         summary = triage.template_summary(like, {"title": thread.get("title")})
-    return {**thread, "summary": summary, "title": guard.second_person(thread.get("title", ""), names)}
+    title = re.sub(r"^\s*you\s*:\s*", "", thread.get("title", ""), flags=re.I)
+    if like["group"]:
+        title = re.sub(r"^group\s+(?=\S)", "", title, flags=re.I)    # "Group camp larp"
+    return {**thread, "summary": summary, "title": guard.second_person(title, names)}
 
 
-def _threads(survivors: list[dict]) -> list[dict]:
+def _attended(thread: dict, now: float, tz: str) -> dict:
+    kind, reason = attention(thread, now, tz)
+    public = {k: v for k, v in thread.items() if k not in ("asked", "deadline")}
+    return {**public, "attention": kind, "attention_reason": reason}
+
+
+_DUE_WORD = re.compile(r"\b(exam|midterm|final|quiz|deadline|due|assignment|homework|application|"
+                       r"registration|rsvp|interview|appointment|submission|submit|expires?|last day|closes?)\b", re.I)
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+_WAITING_MAIL_S = 14 * 86400
+_ANSWER = re.compile(r"\b(?:reply|respond|answer|confirm|let (?:him|her|them|\w+) know|get back)\b", re.I)
+
+
+def needs_reply(item: dict, result: dict, now: float) -> bool:
+    """A real person's last message is incoming and unanswered: a one-to-one
+    text, or an email from a person that asks the user something."""
+    if item.get("replied") or item.get("group") or not item.get("person", True):
+        return False
+    age = now - float(item.get("received_ts") or 0)
+    if item["source"] == "messages":
+        return age <= WAITING_S
+    asks = str(result.get("asks_of_me") or "")
+    return (item["source"] == "mail" and bool(asks) and age <= _WAITING_MAIL_S
+            and ("?" in (item.get("text") or "") or bool(_ANSWER.search(asks))))
+
+
+def mentioned_deadline(item: dict, now: float, tz: str) -> dict | None:
+    """The first sentence naming a deadline word ("exam", "due") with a date
+    that resolve.py reads from that same sentence, still ahead. The date is
+    always the source's own words."""
+    arrival = item.get("received_ts")
+    if type(arrival) not in (int, float):
+        return None
+    for sentence in _SENTENCE.split(item.get("text") or ""):
+        word = _DUE_WORD.search(sentence)
+        if not word or len(sentence) > 400:
+            continue
+        due, _label, _clock = guard.resolve_due(sentence, float(arrival), tz)
+        if due is None or due < now or due > now + 21 * 86400:
+            continue
+        return {"due_ts": due, "word": word.group(1).lower()}
+    return None
+
+
+def _when_words(due_ts: float, now: float, tz: str) -> str:
+    zone = ZoneInfo(tz)
+    today, day = datetime.fromtimestamp(now, zone).date(), datetime.fromtimestamp(due_ts, zone).date()
+    if day == today:
+        return "today"
+    if (day - today).days == 1:
+        return "tomorrow"
+    if (day - today).days < 7:
+        same_week = day.isocalendar()[:2] == today.isocalendar()[:2]
+        return day.strftime("%a") if same_week else "next " + day.strftime("%a")
+    return day.strftime("%b %-d")
+
+
+def attention(thread: dict, now: float, tz: str) -> tuple[str, str]:
+    """("reply"|"deadline"|"fyi", a short reason), by code, as of `now`."""
+    if thread.get("needs_reply"):
+        days = int((now - float(thread.get("received_ts") or now)) // 86400)
+        if days >= 1:
+            return "reply", f"waiting {days} day{'s' if days != 1 else ''}"
+        if thread.get("asked"):
+            return "reply", "asked you a question"
+        return "reply", "texted you" if thread.get("source") == "messages" else "emailed you"
+    due = thread.get("deadline") or {}
+    if type(due.get("due_ts")) in (int, float) and due["due_ts"] >= now:
+        word = {"due": "due", "submit": "due", "submission": "due"}.get(due.get("word"), due.get("word") or "due")
+        return "deadline", f"{word} {_when_words(due['due_ts'], now, tz)}"
+    if thread.get("source") == "messages" and thread.get("replied"):
+        return "fyi", "you answered last"
+    return "fyi", ""
+
+
+def order_threads(threads: list[dict]) -> list[dict]:
+    rank = {"reply": 0, "deadline": 1, "fyi": 2}
+    return sorted(threads, key=lambda t: (rank.get(t.get("attention"), 2), -(t.get("received_ts") or 0)))
+
+
+def _threads(survivors: list[dict], now: float | None = None, tz: str = "UTC") -> list[dict]:
+    now = time.time() if now is None else now
     out = []
     for survivor in sorted(survivors, key=lambda s: -(s["item"].get("received_ts") or 0)):
         item, result = survivor["item"], survivor["result"]
@@ -291,8 +375,10 @@ def _threads(survivors: list[dict]) -> list[dict]:
                     "summary": guard.clean(result.get("summary") or result.get("asks_of_me")
                                            or (item.get("title") if item["source"] == "mail" else ""), 400),
                     "user_wrote": bool(item.get("user_wrote")),
-                    "needs_reply": bool(result.get("asks_of_me")) and not item.get("replied")
-                                   and item.get("person", True) and not item.get("group"),
+                    "needs_reply": needs_reply(item, result, now),
+                    "asked": "?" in (item.get("text") or "") and bool(result.get("asks_of_me")),
+                    "replied": bool(item.get("replied")),
+                    "deadline": mentioned_deadline(item, now, tz),
                     "received_ts": item.get("received_ts"), "reply_ref": item.get("reply_ref", "")})
         if len(out) >= MAX_THREADS:
             break
@@ -308,7 +394,8 @@ def _account_schedule(sched: dict, account: str, own: str) -> dict:
 async def run_cycle(*, now: float | None = None, tz: str | None = None, account: str | None = None,
                     force: bool = False, patient: bool = False, reply_fn=None, abort=None,
                     collect=None, schedule_fn=None, store=None, resolve=None, linked: set[str] | None = None,
-                    own: str | None = None, allowed: set[str] | None = None, freeze=None) -> dict:
+                    own: str | None = None, allowed: set[str] | None = None, freeze=None,
+                    deadline_fn=None) -> dict:
     """One full cycle. Every dependency can be injected (tests use a fake model
     and fixture sources); production reads the caches and the resident model."""
     global _running
@@ -318,7 +405,9 @@ async def run_cycle(*, now: float | None = None, tz: str | None = None, account:
     try:
         return await _cycle(now=now, tz=tz, account=account, force=force, patient=patient, reply_fn=reply_fn,
                             abort=abort, collect=collect, schedule_fn=schedule_fn, store=store, resolve=resolve,
-                            linked=linked, own=own, allowed=allowed, freeze=freeze)
+                            linked=linked, own=own, allowed=allowed, freeze=freeze,
+                            deadline_fn=deadline_fn if deadline_fn is not None else
+                            (_default_deadlines if schedule_fn is None else None))
     except Exception as exc:  # noqa: BLE001 — a failed cycle leaves the last good output in place
         traceback.print_exc()
         _status.update(state="error", error=type(exc).__name__, finished_at=time.time())
@@ -328,7 +417,7 @@ async def run_cycle(*, now: float | None = None, tz: str | None = None, account:
 
 
 async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, schedule_fn, store, resolve,
-                 linked, own, allowed, freeze) -> dict:
+                 linked, own, allowed, freeze, deadline_fn=None) -> dict:
     from service.proactive.store import store as default_store
     store = store or default_store()
     now = time.time() if now is None else now
@@ -466,6 +555,28 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         todos_by_account[acct] = [todo_from_item(i, card_ids) for i in ranked]
         summaries[acct] = summary
         judged[acct] = {"key": key, "at": now, "model": model_ok}
+    # 3. Deadline cards: a real free slot for work due soon. Code only, every
+    # cycle (a slot goes stale as the day moves), filling what replies leave.
+    if not yielded and deadline_fn is not None:
+        decided = store.decisions()
+        skip = set(decided["dismissed"]) | set(decided["fired"])
+        try:
+            # On the loop thread: the store's SQLite connection belongs to it,
+            # and this is a few indexed reads plus pure planning.
+            found = deadline_fn(now, tz, skip, own, linked)
+        except Exception:  # noqa: BLE001 — no deadline cards this time
+            traceback.print_exc()
+            found = []
+        for acct in accounts:
+            keep = [c for c in cards_by_account.get(acct, []) if c["action"]["method"] != "block_time"]
+            taken = {c.get("todo_id") for c in keep}
+            mine = [c for c in found if (c.get("account") or own) == acct and c.get("todo_id") not in taken]
+            cards_by_account[acct] = order_cards(keep, mine)
+    read_by_account: dict = {}
+    for i in items:
+        if i["source"] in ("mail", "messages", "notes"):
+            a = i.get("account") or own
+            read_by_account[a] = read_by_account.get(a, 0) + 1
     # An account erased while this cycle ran (Disconnect & erase) keeps nothing.
     erased = {a for a in accounts if a != own and store.erased_since(a, started)}
     accounts = [a for a in accounts if a not in erased]
@@ -479,13 +590,32 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         cards=[c for a in accounts for c in cards_by_account.get(a, [])],
         todos=[t for a in accounts for t in todos_by_account.get(a, [])],
         notes=[{k: n[k] for k in ("id", "title", "account", "who", "hash")} for n in notes],
-        threads=_threads(survivors), summaries=summaries, judged=judged, model=model_ok,
-        debug={a: v for a, v in debug_by_account.items() if a in accounts})
+        threads=_threads(survivors, now, tz), summaries=summaries, judged=judged, model=model_ok,
+        debug={a: v for a, v in debug_by_account.items() if a in accounts},
+        stats={a: {"read": read_by_account.get(a, 0)} for a in accounts})
     _status.update(state="idle" if not yielded else "idle", phase="", finished_at=time.time())
     _log(f"cycle done: {len(items)} items, {len(pending)} read, {len(survivors)} kept, "
          f"{sum(len(v) for v in cards_by_account.values())} cards{' (by rule)' if not model_ok else ''}")
     return {"ok": not yielded, "status": "yielded" if yielded else "done", "model": model_ok,
             "items": len(items), "read": len(pending), "survivors": len(survivors)}
+
+
+_REPLY_METHODS = ("email_reply", "text_reply")
+
+
+def order_cards(cards: list[dict], deadline_cards: list[dict], limit: int = prepare_mod.MAX_CARDS) -> list[dict]:
+    """Someone waiting on the user comes first; deadline cards fill the slots
+    that leaves, ahead of the rest."""
+    replies = [c for c in cards if c["action"]["method"] in _REPLY_METHODS]
+    rest = [c for c in cards if c["action"]["method"] not in _REPLY_METHODS]
+    return (replies + deadline_cards + rest)[:limit]
+
+
+def _default_deadlines(now: float, tz: str, skip: set[str], own: str, linked: set[str]) -> list[dict]:
+    from service.proactive import deadlines
+    rows = [{**r, "account": sources.account_of(r.get("account"), linked=linked, own=own)}
+            for r in deadlines.default_rows(now)]
+    return deadlines.deadline_cards(rows, deadlines.default_day_state, now, tz, skip=skip)
 
 
 def _default_schedule(now: float, tz: str, *, own: str, linked: set[str]) -> dict:
@@ -627,6 +757,49 @@ def _day_summary(cards: list[dict], todos: list[dict], threads: list[dict], now:
     return " ".join(sentences)
 
 
+def _lede(cards: list[dict], todos: list[dict], summary: str, now: float, tz: str) -> str:
+    """One line that leads with the most proactive thing, built by code:
+    "Hack Day at 11:45. Worksheet 3 for STAT 5 is due tomorrow, and I found
+    you an hour for it." A Wisp test reminder never leads."""
+    from service.proactive import deadlines
+    zone = ZoneInfo(tz)
+    today = datetime.fromtimestamp(now, zone).date()
+    events = sorted((t for t in todos if t["source"] == "calendar" and t.get("timed", True) and t.get("due_ts")
+                     and not t["done"] and not deadlines.is_test(t["title"])
+                     and datetime.fromtimestamp(t["due_ts"], zone).date() == today and t["due_ts"] >= now - 900),
+                    key=lambda t: t["due_ts"])
+    opener = f"{_short_title(events[0]['title'])} at {_clock_words(events[0]['due_ts'], zone)}." if events else ""
+    live = [c for c in cards if c["action"].get("locked") != "unknown"
+            and not deadlines.is_test(c.get("title", ""))]
+    reply = next((c for c in live if c["action"]["method"] in _REPLY_METHODS), None)
+    block = next((c for c in live if c["action"]["method"] == "block_time"), None)
+    point = ""
+    if reply is not None:
+        who = prepare_mod._first_name((reply.get("sources") or [{}])[0].get("who", "")) or "Someone"
+        point = (f"{who} is waiting on you, and I drafted a reply." if reply["action"].get("draft")
+                 else f"{who} is waiting on you.")
+    elif block is not None:
+        minutes = (block.get("action", {}).get("envelope") or {}).get("duration_min") or 30
+        due = block.get("due_words") or "due soon"
+        point = f"{block['title']} is {due}, and I found you {deadlines.length_words(minutes)} for it."
+    if point:
+        return f"{opener} {point}".strip()
+    return summary
+
+
+def _stats(state: dict, cards: list[dict], todos: list[dict], account: str | None) -> dict:
+    """ "Wisp read 49 emails and texts · found 3 things · drafted 1 reply"."""
+    per = state.get("stats") or {}
+    read = sum(int((v or {}).get("read") or 0) for a, v in per.items()
+               if not account or str(a).casefold() == account.casefold())
+    from service.proactive.deadlines import is_test
+    open_todos = {t["id"] for t in todos if not t["done"] and t["source"] != "calendar" and not is_test(t["title"])}
+    extra = {c["id"] for c in cards if c.get("todo_id") not in open_todos}
+    return {"read": read, "found": len(open_todos) + len(extra),
+            "drafted": sum(1 for c in cards if (c.get("action") or {}).get("draft")),
+            "as_of": state.get("as_of")}
+
+
 def snapshot(*, account: str | None = None, now: float | None = None, tz: str | None = None, store=None,
              schedule_fn=None, own: str | None = None, linked: set[str] | None = None) -> dict:
     """workspace.proactive, per the shared contract."""
@@ -662,10 +835,17 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
         todo["added_to_day"] = todo["id"] in added
     cards = [c for c in state.get("cards") or [] if c.get("todo_id") not in done]
     cards = [{**c, "action": {**c["action"], "locked": "unknown"}} if store.locked(c, now) else c for c in cards]
+    # A held slot that has started is no offer; the next cycle finds another.
+    cards = [c for c in cards if c["action"].get("method") != "block_time"
+             or float((c["action"].get("slot") or {}).get("start") or 0) > now]
+    for card in cards:
+        if card["action"].get("method") == "block_time" and card.get("todo_id") in merged \
+                and not merged[card["todo_id"]].get("card_id"):
+            merged[card["todo_id"]]["card_id"] = card["id"]
     todos = sorted(merged.values(), key=lambda t: (t["done"], t.get("due_ts") is None, t.get("due_ts") or 0,
                                                    t["title"].casefold()))
     names = triage.user_names()
-    threads = [_served_thread(t, names) for t in state.get("threads") or []]
+    threads = order_threads([_attended(_served_thread(t, names), now, tz) for t in state.get("threads") or []])
     accounts = list(state.get("accounts") or [own])
     if account:
         match = lambda x: str(x.get("account") or "").casefold() == account.casefold()  # noqa: E731
@@ -680,7 +860,8 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
         view_state = "unavailable"
     result = {"state": view_state, "as_of": state.get("as_of"), "progress": dict(_status["progress"]),
               "accounts": accounts, "summary": summary, "cards": [_public(c) for c in cards],
-              "todos": [_public(t) for t in todos], "threads": threads}
+              "todos": [_public(t) for t in todos], "threads": threads,
+              "lede": _lede(cards, todos, summary, now, tz), "stats": _stats(state, cards, todos, account)}
     if view_state == "unavailable":
         result["reason"] = "Wisp hasn't read your mail and texts yet. Tap Analyze now."
     # Why a waiting person did or didn't get a card ("you answered last",

@@ -124,7 +124,7 @@ _DEADLINE = re.compile(r"\b(?:due|deadline|exam|midterm|quiz|final|assignment|ho
 
 
 _META = re.compile(r"\b(?:sensitive|junk|not spam|spam|classif\w*|asks_of_me|"
-                   r"sent (?:this|it) to \d+|to \d+ (?:people|recipients)|this (?:item|material)|sent (?:this|it)(?: email| message| text)? on)\b", re.I)
+                   r"sent (?:this|it) to \d+|to \d+ (?:people|recipients)|this (?:item|material)|sent (?:this|it)(?: email| message| text)? on|sent (?:this|the) (?:email|message|text)\b(?!\s+(?:to|about) \w))\b", re.I)
 _AUTHORED = ("sent", "sends", "wrote", "writes", "emailed", "emails", "reminded", "reminds", "announced",
              "announces", "shared", "shares", "posted", "posts", "said", "says", "asked", "asks", "told", "tells",
              "informed", "informs", "noted", "notes", "mentioned", "mentions", "launched", "launches",
@@ -176,6 +176,10 @@ def sane(summary: str, item: dict) -> bool:
         return False
     if _DISAGREE.search(summary):
         return False
+    if _META.search(summary) or re.search(r"\b(?:sent|texted|wrote|told)\s+[A-Z][\w'-]*(?: [A-Z][\w'-]*)?\s*:", summary):
+        return False                     # describes the message, or pastes it ("You sent Sriram: …")
+    if re.match(r"\s*(?:You|From [A-Z][\w' -]{0,40})\s*:", summary) or re.search(r"[“\"][^”\"]{40,}", summary):
+        return False                     # "You: “I agree…”", "From Dhruv: …": a pasted line, not a summary
     verbs = "|".join(sorted(v for v in guard._VERB_S if v.endswith("s")))
     if re.search(rf"\b[Yy]ou\b[^.?!]*?,? (?:and|then|but) (?:{verbs}|suggests|offers|reminds)\b", summary):
         return False                     # "You agree…, and suggests…"
