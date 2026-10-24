@@ -389,6 +389,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_codex_monitor.py",
     "tests/test_fit_window.py",
     "tests/test_lexical_tool_retrieval.py",
+    "tests/test_ling_diagnostics.py",
     # Pure capability metadata, scripted inference/fake tool registry, and
     # in-process /agent with disposable SQLite; no lifespan, model or native tools.
     "tests/test_model_led_routing.py",

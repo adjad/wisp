@@ -1,0 +1,85 @@
+{
+  "schema": "wisp.ling-diagnostics/1",
+  "description": "Scripted offline harness demonstration, NOT model responses or Ling quality evidence.",
+  "runs": [
+    {
+      "case_id": "FMT-001",
+      "variant": "baseline",
+      "repetition": 1,
+      "responses": [
+        {
+          "model": "offline-fixture",
+          "choices": [
+            {
+              "message": {
+                "role": "assistant",
+                "content": "Hello from Wisp"
+              },
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "MATH-001",
+      "variant": "baseline",
+      "repetition": 1,
+      "responses": [
+        {
+          "model": "offline-fixture",
+          "choices": [
+            {
+              "message": {
+                "role": "assistant",
+                "content": "53"
+              },
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "TOOL-001",
+      "variant": "baseline",
+      "repetition": 1,
+      "responses": [
+        {
+          "model": "offline-fixture",
+          "choices": [
+            {
+              "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                      "name": "lookup_contact",
+                      "arguments": "{\"name\":\"Mira Chen\"}"
+                    }
+                  }
+                ]
+              },
+              "finish_reason": "tool_calls"
+            }
+          ]
+        },
+        {
+          "model": "offline-fixture",
+          "choices": [
+            {
+              "message": {
+                "role": "assistant",
+                "content": "+1-202-555-0138"
+              },
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
