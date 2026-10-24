@@ -84,3 +84,28 @@ Avoid on stage: long compose requests (they can take 20 s+), and anything that s
   card numbers, passwords and codes. Email content is fenced as untrusted, so "ignore previous instructions" emails can't
   steer it.
 - **Sends:** every send needs the tap, goes through a signed single-use envelope, and has its recipient locked.
+
+## Gemma 4 E4B version (live since 12:46)
+The model is `gemma-4-E4B-it-oQ4e-mtp`: about 5 GB, 4-bit, served by oMLX on this Mac.
+
+**Talking point:** "Every word you see is written by Gemma 4 E4B running on this laptop. It reads my mail, texts and
+calendar, picks Wisp's tools itself, and nothing leaves the machine."
+
+**Order:**
+1. **Brief:** the lede, the cards (tap one block), and the summaries.
+2. **Ask, the best prompts on Gemma:**
+   - "good morning wisp"
+   - "How do I connect my Google account to you?"
+   - "Write a short thank-you note to my professor"
+   - "What's on my calendar tomorrow?"
+   - "Why is the sky blue?"
+3. **Judge:** Connect Google; their cards appear in about 20–30 s; then Disconnect & erase.
+4. **Optional proof it's local, done last:** turn Wi-Fi off and ask "What's on my calendar tomorrow?". It still answers.
+   Connect Google and web/weather questions need Wi-Fi, so do this after the judge step.
+
+**Avoid on Gemma:**
+- "What should I do today?": 11 s, and it opens with a wrong "nothing scheduled".
+- Anything that sends.
+- Weather.
+
+**Back to Ling:** run `rollback_live.sh` from the gemma scratch folder, or copy `~/.moe/config.yaml.pre-gemma-*` back to `~/.moe/config.yaml` and restart Wisp.
