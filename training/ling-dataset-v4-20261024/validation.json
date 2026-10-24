@@ -1,0 +1,27 @@
+{
+ "status": "PASS",
+ "problem_count": 0,
+ "problems": [],
+ "voice_metrics": {
+  "train": {
+   "final_answers": 1004,
+   "words_p50": 24,
+   "words_p90": 42,
+   "bold_pct": 63.0,
+   "emoji_pct": 35.9,
+   "distinct_openers_pct": 88.7
+  },
+  "dev": {
+   "final_answers": 125,
+   "words_p50": 23,
+   "words_p90": 44,
+   "bold_pct": 60.8,
+   "emoji_pct": 36.8,
+   "distinct_openers_pct": 97.6
+  }
+ },
+ "sha256": {
+  "train": "5611abfdfa7c7e3ffeafcc2ad63336c6256d21f0526f3f03ed55bab30dc7aedb",
+  "dev": "dd45635433c89906c52325bb8dcccd73c3dd86a07694ccdd44580bddb76f0c18"
+ }
+}
