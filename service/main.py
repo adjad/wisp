@@ -1381,6 +1381,10 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
                      and t.category in READ_CATEGORIES]
             return reads + [n for n in names if n not in reads]
         head = reads_first(_model_led_preload(prompt))
+        from service.model_only import DAY_PLAN_TOOL, day_plan_question
+        if day_plan_question(prompt) and DAY_PLAN_TOOL in REGISTRY:
+            # The Brief already ranked the day: one read instead of four.
+            head = [DAY_PLAN_TOOL, *(n for n in head if n != DAY_PLAN_TOOL)]
         preload = head[:ASK_PRELOAD]
         try:
             ranked = _reranker.ranked_lexical_candidates(text, writing=writing,
@@ -2308,6 +2312,21 @@ async def agent(body: dict[str, Any]):
                     synthesis_guidance.insert(0, ASK_STYLE_HINT)
                     if capability_question(prompt):
                         synthesis_guidance.insert(1, ASK_CAPABILITY_HINT)
+                    from service.model_only import ASK_DAY_PLAN_HINT, day_plan_question
+                    if day_plan_question(prompt):
+                        synthesis_guidance.insert(1, ASK_DAY_PLAN_HINT)
+                ask_forbidden: frozenset[str] = frozenset()
+                if ask_quality:
+                    from service.model_only import COMPOSE_ONLY_FORBIDDEN_CATEGORIES, compose_only
+                    if compose_only(prompt):
+                        from service.model_only import ASK_COMPOSE_HINT
+                        synthesis_guidance.insert(1, ASK_COMPOSE_HINT)
+                        # "Write a thank-you note" returns the text; it must
+                        # not become append_note/create_note or a draft card.
+                        from service.tools.registry import REGISTRY
+                        ask_forbidden = frozenset(
+                            n for n, t in REGISTRY.items()
+                            if t.category in COMPOSE_ONLY_FORBIDDEN_CATEGORIES)
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")
@@ -2347,7 +2366,7 @@ async def agent(body: dict[str, Any]):
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,
                                         required_tool_groups=decision.required_tool_groups,
-                                        forbidden_tools=decision.forbidden_tools,
+                                        forbidden_tools=decision.forbidden_tools | ask_forbidden,
                                         conditional_tools=decision.conditional_tools,
                                         tool_argument_bindings=decision.tool_argument_bindings,
                                         strict_read_limits=decision.strict_read_limits,

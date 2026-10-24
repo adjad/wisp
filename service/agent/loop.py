@@ -621,6 +621,9 @@ _EMPTY_MESSAGE = (
 
 # Model-only Ask fallbacks (see run_agent's ask_quality). The guard message is
 # the second prefill-guard refusal of one turn with nothing gathered yet.
+_ASK_WEB_TOOLS = frozenset({"web_search", "web_fetch", "wikipedia_summary"})
+# Offered on a web-only personal re-prompt when the head start held none.
+_ASK_OWN_SOURCE_READS = ("view_emails", "search_reminders", "search_notes", "view_messages")
 _ASK_GUARD_MESSAGE = (
     "My local model is short on memory for that request right now. Give it a "
     "moment and ask again, or narrow it down (one source or a shorter time range)."
@@ -2569,6 +2572,15 @@ async def run_agent(
                             and registered.category in PERSONAL_SOURCE_CATEGORIES))
                    for name, outcome in tool_outcomes)
 
+    def _ask_grounding_tool_ran() -> bool:
+        """A tool that could hold a fact ran and was not denied (weather and
+        web count; a calculator or Mac status read does not)."""
+        from service.model_only import UNGROUNDING_CATEGORIES
+        return any(outcome.status != "denied"
+                   and (registered := get_tool(name)) is not None
+                   and registered.category not in UNGROUNDING_CATEGORIES
+                   for name, outcome in tool_outcomes)
+
     def _prior_requirements_met(tool_name: str) -> bool:
         """Effect tools may not run before earlier source obligations."""
         covered = tools_answered | waived_tools
@@ -3148,6 +3160,7 @@ async def run_agent(
     ask_expect_tool = False
     ask_reprompt_step = False
     ask_reprompted = False
+    ask_reprompt_no_web = False
     ask_guard_retried = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
@@ -3238,6 +3251,7 @@ async def run_agent(
             expecting_tool = True
             ask_expect_tool = False
             ask_reprompt_step = True
+        ask_promoted: frozenset[str] = frozenset()
         if forcing_first_step:
             # An obligation group contains alternatives, not an arbitrary
             # mandatory first member (e.g. list_dir vs find_files).
@@ -3246,6 +3260,18 @@ async def run_agent(
             step_schemas = [s for s in schemas if s['function']['name'] in alternatives]
         else:
             step_schemas = schemas
+            if ask_reprompt_step and ask_reprompt_no_web:
+                # A personal question first answered from the web: the
+                # re-prompt step must read the user's own sources.
+                step_schemas = [s for s in schemas
+                                if s['function']['name'] not in _ASK_WEB_TOOLS]
+                real_now = {s['function']['name'] for s in step_schemas} - set(stub_names)
+                promoted = [s for s in _admit(tool_schemas(list(_ASK_OWN_SOURCE_READS)))
+                            if s['function']['name'] not in real_now
+                            and s['function']['name'] not in forbidden_tools]
+                ask_promoted = frozenset(s['function']['name'] for s in promoted)
+                step_schemas = promoted + [s for s in step_schemas
+                                           if s['function']['name'] not in ask_promoted]
         choice = "required" if (forcing_first_step or expecting_tool) else "auto"
         if evidence_narration_retried and _unmet_group() is None:
             choice = 'none'
@@ -3383,7 +3409,7 @@ async def run_agent(
         offered_schemas = step_schemas
         # Stubs are offered by name only so the server keeps the call; they are
         # never executable. A stub call is converted into discovery below.
-        step_stubs = frozenset(stub_names)
+        step_stubs = frozenset(stub_names) - ask_promoted
         if ask_guard_retried and step_stubs:
             # After one prefill-guard refusal the turn stays lean: real
             # schemas only (get_tool_schemas still reaches everything else).
@@ -3683,19 +3709,27 @@ async def run_agent(
                     text = salvage_answer(reasoning)
                     if text:
                         audit("ask_salvaged_reasoning", step=_step)
-                if (not ask_reprompted and not attempted_tools and _step < max_steps - 1
+                web_only = bool(attempted_tools) and attempted_tools <= _ASK_WEB_TOOLS
+                if (not ask_reprompted and (not attempted_tools or web_only)
+                        and _step < max_steps - 1
                         and not _ask_capability_prompt and not test_mode
                         and (asks_personal_data(memory_query) or fresh_personal_scope)
-                        and not _ask_short_question(text)):
-                    # Personal data answered with no tool at all: re-prompt
-                    # once with a tool required instead of trusting it.
+                        and not _ask_personal_source_ran()
+                        and (web_only or not _ask_short_question(text))):
+                    # Personal data answered with no tool at all, or from a
+                    # web search ("When is the W-9 due?" is in the user's
+                    # mail, not on the web): re-prompt once with a tool
+                    # required instead of trusting it.
                     ask_reprompted = True
                     ask_expect_tool = True
-                    audit("ask_personal_reprompt", step=_step)
+                    ask_reprompt_no_web = web_only
+                    audit("ask_personal_reprompt", step=_step, web_only=web_only)
                     msgs.append({"role": "assistant", "content": text})
                     msgs.append({"role": "user", "content": (
-                        "That asks for my own current data, and no tool has been called yet. "
-                        "Call the tool that holds it now (calendar, email, messages, reminders, "
+                        ("That asks about my own items, and only the web was searched. "
+                         if web_only else
+                         "That asks for my own current data, and no tool has been called yet. ")
+                        + "Call the tool that holds it now (calendar, email, messages, reminders, "
                         "notes or memory); if nothing holds it, say you don't know. Do not guess.")})
                     continue
             unmet = _unmet_group()
@@ -3789,6 +3823,13 @@ async def run_agent(
                     'has no requests. Keep useful facts and exact source dates from the results already returned. '
                     'Qualify coverage and any missing sources. Do not call tools again.')})
                 continue
+            if ask_quality and ask_reprompted and not _ask_grounding_tool_ran():
+                # The forced re-prompt ran nothing that could hold the fact (a
+                # calculation, a Mac status read) or nothing at all: say so
+                # plainly instead of publishing an invented number.
+                audit("ask_unknown_personal_fact", step=_step)
+                from service.model_only import ASK_UNKNOWN_MESSAGE
+                text = ASK_UNKNOWN_MESSAGE
             # Publish once, after checking receipts and obligations.
             verified = _verified_final(text)
             if verified != text:
@@ -4487,13 +4528,15 @@ async def run_agent(
                              and result != "The user denied this action."))):
                 executed_strict_reads[name] = executed_strict_reads.get(name, 0) + 1
             if ask_quality:
-                from service.model_only import ASK_TOOL_RESULT_CHARS, argument_fix_hint
+                from service.model_only import (ASK_TOOL_RESULT_CHARS, argument_fix_hint,
+                                                web_degradation_hint)
                 # Smaller results (each one is re-sent on every later step),
                 # and a rejected argument comes back with a repair hint so the
                 # model fixes its own call instead of asking the user.
                 msgs.append({"role": "tool", "tool_call_id": cid,
                              "content": _fit_tool_result(result, name, ASK_TOOL_RESULT_CHARS)
-                             + argument_fix_hint(name, args, result)})
+                             + argument_fix_hint(name, args, result)
+                             + web_degradation_hint(name, result)})
             else:
                 msgs.append({"role": "tool", "tool_call_id": cid,
                              "content": _fit_tool_result(result, name)})

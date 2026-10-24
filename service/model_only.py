@@ -106,7 +106,34 @@ ASK_CORE_STUBS = frozenset({
     "web_search", "get_weather", "recall", "remember", "daily_brief",
     "collect_task_evidence", "lookup_contact", "set_timer", "system_status",
     "wisp_capabilities", "draft_email", "draft_message", "calculate", "world_time",
+    "get_my_day_plan",
 })
+
+DAY_PLAN_TOOL = "get_my_day_plan"
+_DAY_PLAN = re.compile(
+    r"\bwhat\s+(?:should|do|must|can)\s+i\s+(?:do|focus on|work on|tackle|get done|prioriti[sz]e)\b"
+    r"|\bwhat(?:['’]?s| is)\s+on\s+my\s+(?:plate|list|agenda|to-?do)"
+    r"|\bwhat\s+do\s+i\s+(?:need|have)\s+to\s+(?:do|get done)\b"
+    r"|\bplan\s+(?:out\s+)?my\s+day\b|\bwhat\s+am\s+i\s+(?:forgetting|missing)\b"
+    r"|\banything\s+i\s+should\s+(?:know|do|handle)\b|\bwhat(?:['’]?s| does| is)\s+my\s+day\b"
+    r"|\bmy\s+(?:to-?do|todo)s?(?:\s+list)?\b|\bwhat(?:['’]?s| is)\s+next\s+for\s+me\b"
+    r"|\bhow\s+(?:does|is)\s+my\s+day\b|\bwhere\s+should\s+i\s+start\b",
+    re.I)
+
+
+def day_plan_question(prompt: str) -> bool:
+    """"What should I do today?" and its paraphrases: one get_my_day_plan read
+    answers it better than four separate source reads."""
+    return bool(_DAY_PLAN.search(prompt or ""))
+
+
+ASK_DAY_PLAN_HINT = (
+    "DAY PLAN: call get_my_day_plan once and answer from it; do not read the "
+    "calendar, mail, messages and notes one by one unless it says the plan is "
+    "unavailable. Answer as a short prioritized list: one lead line, then 3-6 "
+    "bullets — time-bound items first (with times), then people waiting on a "
+    "reply, then tasks. No digests, no data-freshness caveats, no source labels."
+)
 
 # Appended to a model-led turn's runtime prompt (the light-read style hint the
 # legacy router sets is never set on a model-led turn).
@@ -120,7 +147,12 @@ ASK_STYLE_HINT = (
     "- Never paste raw tool output, JSON, IDs or field labels; say it in your "
     "own words, grounded only in what the tools returned.\n"
     "- If a tool rejected an argument, fix the call yourself and try again; do "
-    "not ask the user to rephrase."
+    "not ask the user to rephrase.\n"
+    "- Match the time range the user asked about. If a tool returned a wider range "
+    "(a week when they asked about today or tomorrow), mention only the asked day, "
+    "and never describe a multi-day count as \"today\".\n"
+    "- If no tool you have can know the answer (a personal fact nothing records), "
+    "say so in one short sentence; never estimate or make up a number."
 )
 
 # Appended for a capability question ("Can you send texts?"): the corpus and
@@ -133,6 +165,57 @@ ASK_CAPABILITY_HINT = (
     "and calendar events; search the web, weather and stocks; and control Mac "
     "settings and apps. A Google account is linked in Wisp's Settings, under Google."
 )
+
+# Tools that cannot ground a personal fact: a calculation or Mac status read
+# after a forced re-prompt is not evidence of "my backpack weighs 1.02 kg".
+UNGROUNDING_CATEGORIES = frozenset({"compute", "system_read", "wisp_admin"})
+ASK_UNKNOWN_MESSAGE = (
+    "I don't have that. Nothing I can check (your calendar, email, messages, "
+    "reminders, notes or what you've told me) records it."
+)
+
+_DEGRADED_WEB = re.compile(
+    r"General-web results were unavailable|\(no public web results|couldn't reach|could not reach|"
+    r"timed out|search (?:is|was) unavailable|no results found", re.I)
+
+
+def web_degradation_hint(tool: str, result: str) -> str:
+    """A model-facing hedge when a web lookup came back degraded, or ""."""
+    if tool not in {"web_search", "web_fetch", "wikipedia_summary"}:
+        return ""
+    if not _DEGRADED_WEB.search(str(result or "")[:600]):
+        return ""
+    return ("\n(Search coverage was degraded: these results do not verify current facts. "
+            "Say the search could not confirm it, hedge anything you state, and do not add "
+            "specifics such as scores, dates or prices that are not in the results above.)")
+
+
+_COMPOSE = re.compile(r"^\s*(?:please\s+)?(?:can you\s+|could you\s+)?(?:write|compose|draft|come up with)\b", re.I)
+_DESTINATION = re.compile(
+    r"\b(?:e-?mail|text|message|imessage|send|reply|respond|(?:in|to|into)\s+(?:my\s+)?notes?\b|"
+    r"save|file|document|doc|calendar|reminder)\b", re.I)
+
+
+def compose_only(prompt: str) -> bool:
+    """A writing request with no destination ("Write a short thank-you note to
+    my professor"): the answer IS the text, so no write/draft/send tool runs."""
+    text = prompt or ""
+    return bool(_COMPOSE.match(text)) and not _DESTINATION.search(text)
+
+
+ASK_COMPOSE_HINT = (
+    "COMPOSE: the answer IS the requested text. Write it now, ready to copy, with "
+    "no preamble or note about it. Do not search notes, email or files unless the "
+    "request explicitly asks you to draw on them (\"from my notes\", \"about the email\"); "
+    "fill unknown details with a short [placeholder]."
+)
+
+
+COMPOSE_ONLY_FORBIDDEN_CATEGORIES = frozenset({
+    "notes_write", "fs_write", "email_draft", "messages_draft", "email_send",
+    "messages_send", "scheduled_send", "calendar_write", "assistant_write",
+})
+
 
 # Read tools whose result is the user's own current data.
 PERSONAL_SOURCE_CATEGORIES = frozenset({
@@ -229,6 +312,27 @@ def dedupe_reasoning(steps: list[str], answer: str) -> list[str]:
     return out
 
 
+# Data-freshness and coverage boilerplate the read tools write for the MODEL.
+# It never belongs in an answer the user reads.
+_CAVEAT = re.compile(
+    r"local cache|cache is stale|history cache|freshness|newer (?:messages|emails) may be missing|"
+    r"has not completed|refresh(?:ed|ing)?\b.*(?:mail|messages|notes|inbox)|unverified|not verified|"
+    r"\bcoverage\b|scan hit its|messages? cap|untrusted|publisher metadata|try again in a moment|"
+    r"wisp is still syncing|is NOT all of it|were cut to fit", re.I)
+
+
+def _plain_line(line: str) -> str:
+    """One line with markdown emphasis/headers removed; "" for a bare header."""
+    raw = line.strip()
+    if re.fullmatch(r"#{1,6}\s.*|\*\*[^*]{1,60}\*\*:?|__[^_]{1,60}__:?", raw):
+        return ""
+    text = re.sub(r"\*\*|__|`", "", raw)
+    text = re.sub(r"^#{1,6}\s*", "", text).strip()
+    if re.fullmatch(r"[^:]{1,40}:", text):
+        return ""
+    return text
+
+
 def compact_results(results: list[tuple[str, str]], labels: dict[str, str], *,
                     lines_per_source: int = 6, line_chars: int = 160,
                     total_chars: int = 1200) -> str:
@@ -243,8 +347,9 @@ def compact_results(results: list[tuple[str, str]], labels: dict[str, str], *,
                 or "timed out" in text[:200].lower()):
             continue
         seen.add(name)
-        lines = [ln.strip() for ln in text.splitlines()
-                 if ln.strip() and not re.match(r"(?:Account(?:-ID)?|Result coverage|Message-ID|To):", ln.strip())]
+        lines = [_plain_line(ln) for ln in text.splitlines()]
+        lines = [ln for ln in lines if ln and not _CAVEAT.search(ln)
+                 and not re.match(r"(?:Account(?:-ID)?|Result coverage|Message-ID|To|Coverage|URL):", ln)]
         if not lines:
             continue
         kept = [ln if len(ln) <= line_chars else ln[:line_chars - 1].rstrip() + "…"
@@ -302,7 +407,14 @@ _PERSONAL = re.compile(
     r"|\bwhat(?:'s| is| are)?\s+(?:on\s+)?my\b"
     r"|\b(?:mom|dad|mother|father)\s+(?:text|said|say|send|email)"
     r"|\b(?:reply|replied|respond|responded|text|texted|email|emailed|message|messaged|call|called|"
-    r"write|wrote)\s+(?:back\s+)?(?:to\s+)?me\b",
+    r"write|wrote)\s+(?:back\s+)?(?:to\s+)?me\b"
+    # Implicit personal deadlines, events and items: "When is the W-9 due?",
+    # "what's on tomorrow", "is there a meeting today", "has the package shipped".
+    r"|\b(?:due|deadline|expires?|expiring|overdue|rsvp|shipped|delivered|arriv(?:e|ing))\b"
+    r"|\bwhat(?:'s| is)\s+on\b"
+    r"|\b(?:is|are)\s+there\s+(?:a|an|any)\s+(?:meeting|event|email|message|text|reminder|appointment|class)"
+    r"|\b(?:when|where|what time)\s+(?:is|was|are)\s+(?:the|my|our)\s+\w+.*\b(?:today|tomorrow|tonight|"
+    r"this|next|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     re.I)
 _QUESTION = re.compile(r"\?\s*$|^\s*(?:what|when|where|who|which|how|is|are|am|do|does|did|have|has|"
                        r"was|were|will|should|any)\b", re.I)

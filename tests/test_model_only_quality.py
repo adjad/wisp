@@ -7,7 +7,8 @@ user data: every source and effect is a synthetic seam.
 import asyncio
 import copy
 import json
-from datetime import date
+import time
+from datetime import date, datetime
 
 import httpx
 import pytest
@@ -300,7 +301,8 @@ def test_unscoped_personal_question_is_reprompted_once_then_accepted(synthetic):
     client, _, answer = ask(["Your backpack weighs 1.2 kg.", "I don't have anything that records that."],
                             prompt="How heavy is my backpack?")
     assert client.requests[1]["tool_choice"] == "required"
-    assert answer == "I don't have anything that records that."
+    # Nothing that could know ran after the re-prompt: a plain "I don't have that".
+    assert answer == mo.ASK_UNKNOWN_MESSAGE
     assert len(client.requests) == 2
 
 
@@ -409,3 +411,170 @@ def test_empty_turn_with_no_tool_gets_one_direct_answer_step(synthetic):
     client, _, answer = ask(["", "", "Study in short blocks and test yourself."], prompt="Give me tips for studying.")
     assert answer == "Study in short blocks and test yourself."
     assert client.requests[-1]["tools"] == [] and "Answer my last question directly" in client.requests[-1]["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize("prompt", [
+    "When is the W-9 due?", "Has the package shipped?", "what's on tomorrow",
+    "Is there a meeting this afternoon?", "When is the dentist appointment on Friday?"])
+def test_implicit_personal_deadlines_and_items(prompt):
+    assert mo.asks_personal_data(prompt)
+
+
+@pytest.mark.parametrize("prompt,expected", [
+    ("Write a short thank-you note to my professor for the extension.", True),
+    ("Compose a haiku about autumn", True),
+    ("Draft an email to Priya saying I'll be late.", False),
+    ("Write a note in my notes about the trip", False),
+    ("Text Mom that I'll call tonight.", False),
+    ("What's on my calendar?", False)])
+def test_compose_only(prompt, expected):
+    assert mo.compose_only(prompt) is expected
+
+
+def test_web_degradation_hint():
+    degraded = "General-web results were unavailable. These are encyclopedia background results."
+    assert "do not add specifics" in mo.web_degradation_hint("web_search", degraded)
+    assert mo.web_degradation_hint("web_search", "[1] Dodgers win\nURL: https://x.test") == ""
+    assert mo.web_degradation_hint("get_upcoming", degraded) == ""
+
+
+def test_style_hint_scopes_the_day_and_refuses_to_estimate():
+    assert "never describe a multi-day count as \"today\"" in mo.ASK_STYLE_HINT
+    assert "never estimate" in mo.ASK_STYLE_HINT
+
+
+def test_reprompt_that_only_ran_a_calculator_says_it_does_not_know(synthetic):
+    _, register = synthetic
+    register("calculate", "everyday", "compute")
+    _, _, answer = ask(["Your backpack weighs 1.2 kg.", [call("calculate")], "Your backpack weighs about 1.02 kg."],
+                       prompt="How heavy is my backpack?", model_led_preload=["calculate", "get_upcoming"])
+    assert answer == mo.ASK_UNKNOWN_MESSAGE
+
+
+def test_reprompt_grounded_by_a_real_read_keeps_the_answer(synthetic):
+    _, _, answer = ask(["It is due January 1.", [call("view_emails")], "Finance says the W-9 is due Friday."],
+                       prompt="When is the W-9 due?", model_led_preload=["view_emails"])
+    assert answer == "Finance says the W-9 is due Friday."
+
+
+def test_degraded_search_result_reaches_the_model_with_a_hedge(synthetic):
+    _, register = synthetic
+    tool = register("web_search", "web_tools", "web_read", parameters={
+        "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+
+    async def degraded(**args):
+        return "General-web results were unavailable. These are encyclopedia background results.\n[1] List"
+    degraded.__module__ = tool.func.__module__
+    tool.func = degraded
+    client, _, _ = ask([[call("web_search", query="world series")], "I couldn't confirm that."],
+                       prompt="Who won the most recent World Series?", model_led_preload=["web_search"])
+    assert "Search coverage was degraded" in tool_messages(client.requests[1])[-1]["content"]
+
+
+# --- "What should I do today?" -----------------------------------------------------
+
+@pytest.mark.parametrize("prompt", [
+    "What should I do today?", "What's on my plate today?", "what do I need to do", "plan my day",
+    "What am I forgetting?", "Anything I should know today?", "what should i focus on first today", "whats on my plate",
+    "What's my to-do list?", "how does my day look"])
+def test_day_plan_questions(prompt):
+    assert mo.day_plan_question(prompt)
+
+
+@pytest.mark.parametrize("prompt", ["What's on my calendar tomorrow?", "Why is the sky blue?", "Text Mom hi"])
+def test_not_day_plan_questions(prompt):
+    assert not mo.day_plan_question(prompt)
+
+
+def _snapshot(now):
+    return {"state": "ready", "summary": "Two events today — Standup at 9:30 and Coffee at 5pm. One person is waiting on a reply.",
+            "cards": [{"title": "Reply to Priya about the notes", "why": "She asked for comments by tonight."}],
+            "todos": [
+                {"title": "Team Standup", "source": "calendar", "due_ts": now + 3600, "due_label": "Today 9:30 AM", "done": False},
+                {"title": "Submit W-9", "source": "mail", "due_ts": now - 3 * 86400, "due_label": "Overdue · 3 days", "done": False},
+                {"title": "Company Offsite", "source": "calendar", "due_ts": now + 60, "due_label": "Today", "done": False, "timed": False},
+                {"title": "Call Dr. Patel", "source": "reminders", "due_ts": None, "due_label": "", "done": False},
+                {"title": "Old done thing", "source": "notes", "due_ts": None, "due_label": "", "done": True}],
+            "threads": [{"who": "Priya", "source": "mail", "title": "Notes from this morning",
+                         "summary": "Wants your comments on the notes.", "needs_reply": True}]}
+
+
+def test_day_plan_render_is_prioritized_and_compact():
+    from service.tools.proactive_tools import render_day_plan
+    now = datetime(2026, 10, 24, 8, 0).timestamp()
+    text = render_day_plan(_snapshot(now), now=now, tz="America/Los_Angeles")
+    order = [text.index(h) for h in ("Time-bound today:", "Overdue:", "Waiting on a reply", "Suggested", "Other to-dos:")]
+    assert order == sorted(order)
+    assert "Team Standup" in text and "Submit W-9 · Overdue · 3 days" in text and "Priya (email)" in text
+    assert "Old done thing" not in text and len(text) <= 1500
+    assert "all day · Company Offsite" in text and text.index("Team Standup") < text.index("Company Offsite")
+    big = _snapshot(now)
+    big["todos"] = [{"title": f"Task {i} " + "x" * 200, "source": "notes", "due_ts": None, "due_label": "", "done": False}
+                    for i in range(40)]
+    assert len(render_day_plan(big, now=now, tz="America/Los_Angeles")) <= 1500
+
+
+def test_day_plan_tool_only_reads_the_snapshot(monkeypatch):
+    from service.proactive import cycle, executor
+    from service.tools import proactive_tools, registry
+    now = time.time()
+    calls = []
+    monkeypatch.setattr(cycle, "snapshot", lambda **kw: calls.append(kw) or _snapshot(now))
+    for name in ("analyze", "run_cycle", "schedule_tick", "request_analyze"):
+        monkeypatch.setattr(cycle, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError("no cycle")))
+    monkeypatch.setattr(executor, "fire", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no fire")))
+    text = asyncio.run(proactive_tools.get_my_day_plan())
+    assert calls and "Day plan for" in text
+    tool = registry.get_tool("get_my_day_plan")
+    assert tool.category == "assistant_read" and tool.parameters["properties"] == {}
+
+
+def test_day_plan_ranks_first_in_the_ask_head_start(monkeypatch):
+    from service import main
+    monkeypatch.setattr(main, "_model_led_preload", lambda prompt: ["get_upcoming", "summarize_emails"])
+    preload, _ = main._ask_tool_rank("What should I do today?")
+    assert preload[0] == "get_my_day_plan"
+    preload, _ = main._ask_tool_rank("What's on my calendar tomorrow?")
+    assert preload[0] == "get_upcoming"
+
+
+def test_compact_fallback_drops_digest_markdown_and_cache_caveats():
+    digest = ("**Needs attention**\n- **Finance** — “Submit your W-9 by Friday”\n"
+              "Work: Email is from Mail’s local cache. Newer messages may be missing; server freshness is unverified.\n"
+              "Coverage: 3 of 3 accounts\n## Newsletters\n- Shop: 50% off")
+    text = mo.compact_results([("summarize_emails", digest)], {"summarize_emails": "From your email"})
+    assert "**" not in text and "##" not in text and "local cache" not in text and "Coverage" not in text
+    assert "Needs attention" not in text and "Finance — “Submit your W-9 by Friday”" in text
+
+
+def test_compose_only_hint_returns_the_text_without_lookups():
+    assert mo.compose_only("Write a short thank-you note to my professor for the extension.")
+    assert "Write it now" in mo.ASK_COMPOSE_HINT and "Do not search notes" in mo.ASK_COMPOSE_HINT
+
+
+def test_personal_question_answered_from_the_web_is_reprompted(synthetic):
+    effects, register = synthetic
+    tool = register("web_search", "web_tools", "web_read", parameters={
+        "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+
+    async def failed(**args):
+        return "(web search failed: providers failed)"
+    failed.__module__ = tool.func.__module__
+    tool.func = failed
+    client, _, answer = ask([[call("web_search", query="W-9 due")], "I couldn't reach a source for that.",
+                             [call("view_emails")], "Finance says the W-9 is due Friday."],
+                            prompt="When is the W-9 due?", model_led_preload=["web_search"])
+    assert "only the web was searched" in client.requests[2]["messages"][-1]["content"]
+    offered = {t["function"]["name"] for t in client.requests[2].get("tools") or []}
+    assert "web_search" not in offered and "view_emails" in offered
+    assert executed(effects, "view_emails") == [{}]
+    assert answer == "Finance says the W-9 is due Friday."
+
+
+def test_general_web_question_is_not_reprompted(synthetic):
+    _, register = synthetic
+    register("web_search", "web_tools", "web_read", parameters={
+        "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+    client, _, answer = ask([[call("web_search", query="world series")], "The Dodgers won."],
+                            prompt="Who won the most recent World Series?", model_led_preload=["web_search"])
+    assert len(client.requests) == 2 and answer.startswith("The Dodgers")

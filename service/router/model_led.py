@@ -313,6 +313,7 @@ _MODULE_FAMILIES = {
     "everyday": "compute", "conversions": "compute",
     "recent_tools": "wisp_activity", "search_coverage": "wisp_activity",
     "tool_authoring": "skills",
+    "proactive_tools": "calendar",
 }
 _ACTIVITY_TOOLS = frozenset({"daily_brief", "get_recent_activity", "wisp_status",
                            "wisp_capabilities", "sync_sources", "search_coverage"})
