@@ -15,6 +15,10 @@
 - ``block_time``: a pinned Wisp Day task in the card's slot, after checking
   the slot is still free (deadlines.hold). Wisp-local: never Calendar.
 - ``read``: nothing to do; the card is marked handled.
+- ``undo_add``: a "Wisp did this" card's Undo. Deletes exactly the event or
+  reminder auto-add created, by the identifier in the store's auto-add record
+  (never one from the request or the card), through the verified cancel /
+  delete paths (autoadd.undo); the item is then never added again.
 
 IMPORTANT: the recipient is the card's own, taken from the source when the
 card was prepared. A request may repeat it, never change it. Only the draft's
@@ -303,6 +307,10 @@ async def _run(card: dict, method: str, words: str, store, methods: dict, now: f
             result = deadlines.hold(card, now=now)
     elif method == "read":
         result = {"ok": True, "status": "succeeded"}
+    elif method == "undo_add":
+        from service.proactive import autoadd
+        undoers = {k: methods[f"undo_{k}"] for k in ("calendar", "reminder") if f"undo_{k}" in methods} or None
+        result = await autoadd.undo(card, store, undoers=undoers, now=now)
     else:
         return {"ok": False, "status": "blocked", "error": f"Unknown action {method!r}."}
     # A reply that also proposed a time adds the hold after the send succeeds;

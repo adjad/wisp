@@ -4596,7 +4596,9 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         # is exactly the composite question it exists to answer in one shot
         # instead of four, which also means four fewer decode-dominated steps
         # (see [[moe-decode-dominates-latency]]) when the model reaches for it.
-        subset += [*_ALL_SOURCES, "daily_brief"]
+        # get_my_day_plan is the Brief's own ranked plan for today, the answer
+        # to "what should I do today" in one read.
+        subset += [*_ALL_SOURCES, "daily_brief", "get_my_day_plan"]
         domains.append("todo" if _TODO_RE.search(t) else "planning")
         multi = True   # see RouteDecision.multi_round — all four sources are required
         # …and once all four HAVE answered, the requirement is met and the

@@ -20,6 +20,10 @@ Rules:
 - About hourly, while the user is away from the keyboard (HID idle ≥ 5 min),
   the whole Brief regenerates: a forced cycle, then every mail/texts overview
   (idle_refresh). Never during a turn; a failed idle probe counts as "in use".
+- Auto-add (autoadd.py) runs last, in this background cycle only and never
+  once a turn has started: a missed, time-sensitive event or deadline goes on
+  Calendar/Reminders through the verified writes, and its "Wisp did this"
+  card leads the cards (it counts toward the 5).
 """
 from __future__ import annotations
 
@@ -433,7 +437,7 @@ async def run_cycle(*, now: float | None = None, tz: str | None = None, account:
                     force: bool = False, patient: bool = False, reply_fn=None, abort=None,
                     collect=None, schedule_fn=None, store=None, resolve=None, linked: set[str] | None = None,
                     own: str | None = None, allowed: set[str] | None = None, freeze=None,
-                    deadline_fn=None) -> dict:
+                    deadline_fn=None, autoadd_fn=None) -> dict:
     """One full cycle. Every dependency can be injected (tests use a fake model
     and fixture sources); production reads the caches and the resident model."""
     global _running
@@ -445,7 +449,9 @@ async def run_cycle(*, now: float | None = None, tz: str | None = None, account:
                             abort=abort, collect=collect, schedule_fn=schedule_fn, store=store, resolve=resolve,
                             linked=linked, own=own, allowed=allowed, freeze=freeze,
                             deadline_fn=deadline_fn if deadline_fn is not None else
-                            (_default_deadlines if schedule_fn is None else None))
+                            (_default_deadlines if schedule_fn is None else None),
+                            autoadd_fn=autoadd_fn if autoadd_fn is not None else
+                            (_default_autoadd if schedule_fn is None else None))
     except Exception as exc:  # noqa: BLE001 — a failed cycle leaves the last good output in place
         traceback.print_exc()
         _status.update(state="error", error=type(exc).__name__, finished_at=time.time())
@@ -455,7 +461,7 @@ async def run_cycle(*, now: float | None = None, tz: str | None = None, account:
 
 
 async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, schedule_fn, store, resolve,
-                 linked, own, allowed, freeze, deadline_fn=None) -> dict:
+                 linked, own, allowed, freeze, deadline_fn=None, autoadd_fn=None) -> dict:
     from service.proactive.store import store as default_store
     store = store or default_store()
     now = time.time() if now is None else now
@@ -620,6 +626,11 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             taken = {c.get("todo_id") for c in keep}
             mine = [c for c in found if (c.get("account") or own) == acct and c.get("todo_id") not in taken]
             cards_by_account[acct] = order_cards(keep, mine)
+    # 4. Auto-add (autoadd.py): a missed, time-sensitive event or deadline goes
+    # on Calendar/Reminders through the verified writes, then a "Wisp did this"
+    # card leads. Never once a turn has started; every write re-checks it.
+    await _auto_add(cards_by_account, accounts, own, survivors, sched, now=now, tz=tz, store=store,
+                    abort=abort, autoadd_fn=None if yielded or abort() else autoadd_fn)
     # What Wisp looked at, bulk mail it skipped included. An injected collect
     # (tests) reports nothing, so its items stand in.
     if not looked:
@@ -661,6 +672,40 @@ def order_cards(cards: list[dict], deadline_cards: list[dict], limit: int = prep
     replies = [c for c in cards if c["action"]["method"] in _REPLY_METHODS and not c.get("critical")]
     rest = [c for c in cards if c["action"]["method"] not in _REPLY_METHODS and not c.get("critical")]
     return (alerts + replies + deadline_cards + rest)[:limit]
+
+
+async def _default_autoadd(survivors, sched, *, now, tz, store, abort) -> dict:
+    from service.proactive import autoadd
+    return await autoadd.step(survivors, sched, now=now, tz=tz, store=store, abort=abort)
+
+
+async def _auto_add(cards_by_account: dict, accounts: list[str], own: str, survivors: list[dict], sched: dict, *,
+                    now: float, tz: str, store, abort, autoadd_fn) -> None:
+    """Run auto-add (when given one), then put its cards in each account's
+    list: done cards first, tap-to-add ones after replies. Cards from an
+    earlier cycle's auto-add are rebuilt, never carried over."""
+    from service.proactive import autoadd
+    auto = {"tap": [], "items": set()}
+    if autoadd_fn is not None:
+        try:
+            auto = await autoadd_fn(survivors, sched, now=now, tz=tz, store=store, abort=abort)
+        except Exception:  # noqa: BLE001 — no auto-add this time; the Brief still saves
+            traceback.print_exc()
+    done = autoadd.done_cards(store, now)
+    added_items = set(auto.get("items") or set())
+    for record in store.auto_added().values():
+        if isinstance(record, dict) and record.get("status") == "added" and record.get("item_id"):
+            added_items.add(record["item_id"])
+    for acct in accounts:
+        mine_done = [c for c in done if (c.get("account") or own) == acct]
+        mine_tap = [{**c, "auto_add_tap": True} for c in auto.get("tap") or [] if (c.get("account") or own) == acct]
+        previous = cards_by_account.get(acct, [])
+        refs = {str(((c.get("sources") or [{}])[0] or {}).get("ref") or "") for c in previous}
+        if not (mine_done or mine_tap or refs & added_items
+                or any(c.get("auto_added") or c.get("auto_add_tap") for c in previous)):
+            continue
+        rest = [c for c in previous if not c.get("auto_added") and not c.get("auto_add_tap")]
+        cards_by_account[acct] = autoadd.merge_cards(mine_done, mine_tap, rest, added_items, prepare_mod.MAX_CARDS)
 
 
 def _default_deadlines(now: float, tz: str, skip: set[str], own: str, linked: set[str]) -> list[dict]:

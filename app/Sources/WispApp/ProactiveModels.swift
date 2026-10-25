@@ -239,7 +239,9 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
     }
 
     struct Action: Decodable, Equatable {
-        /// "email_reply", "text_reply", "reminder", "calendar_event", "add_to_day" or "read".
+        /// "email_reply", "text_reply", "reminder", "calendar_event", "add_to_day", "block_time", "read",
+        /// or "undo_add": a "Wisp did this" card (meta "ADDED · CALENDAR"), whose button removes exactly
+        /// what Wisp added (service/proactive/autoadd.py). It fires through the same card route.
         var method = ""
         /// The one question-style button: "Reply & add to calendar?".
         var button = ""
@@ -276,6 +278,7 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
             case "calendar_event": return "Add to calendar?"
             case "add_to_day": return "Add to my day?"
             case "block_time": return "Block the time?"
+            case "undo_add": return "Undo?"
             default: return "Got it"
             }
         }

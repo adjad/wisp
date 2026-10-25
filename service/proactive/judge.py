@@ -269,6 +269,53 @@ def _schedule_duplicate(text: str, sched: dict) -> bool:
     return False
 
 
+def _on_schedule(name: str, sched: dict) -> bool:
+    """A course roll-up entry ("Worksheet 3, Statistics") already on the
+    calendar or reminders, as the course's own feed names it ("Worksheet 3 [STAT-5-02]")."""
+    head = guard.clean(name.split(",")[0], 80).casefold()
+    if len(head) < 3:
+        return False
+    for row in sched.get("calendar", []) + sched.get("reminders", []):
+        title = guard.clean(row.get("title"), 200).casefold()
+        if title.startswith(head) and not title[len(head):len(head) + 1].isalnum():
+            return True
+    return False
+
+
+def _digest_item(raw: dict, item: dict, result: dict, fingerprints: list[str], extra: list[dict], *,
+                 now: float, tz: str, sched: dict) -> dict | None:
+    """A course roll-up names one concrete entry, by code: the soonest one still
+    due that is not already planned ("Finish Worksheet 3, Statistics", due Oct
+    25), never the roll-up itself ("Review recent Canvas Notifications"). Its
+    date is read as of when the mail arrived; nothing still due, no item."""
+    arrival = item.get("received_ts") or now
+    hint = _content_words(raw.get("title", ""))
+    picked = []
+    for entry in item.get("entries") or []:
+        if _on_schedule(entry["name"], sched):
+            continue
+        due_ts, fixed, has_clock = guard.resolve_due(entry["due_phrase"], arrival, tz)
+        if due_ts is None or due_ts <= now:
+            continue
+        picked.append((len(hint & _content_words(entry["name"])), -due_ts, entry, due_ts, fixed, has_clock))
+    if not picked:
+        return None
+    # The one the judge named when it named one, else the soonest due.
+    _, _, entry, due_ts, fixed, has_clock = max(picked, key=lambda p: (p[0], p[1]))
+    title = guard.clean(f"Finish {entry['name']}", 90)
+    if guard.output_has_pii(title):
+        return None
+    label = guard.due_label(due_ts, now, tz, has_clock=has_clock, fixed=fixed)
+    line = f"{entry['name']} is due {entry['due_phrase']}"
+    when = guard.when_words(due_ts, tz, has_clock=has_clock)
+    return dict(title=title, kind="task", why=guard.clean(f"{entry['name']} is due {when}.", 200),
+                due_ts=due_ts, has_clock=has_clock, due_label=label,
+                urgency=raw.get("urgency") if raw.get("urgency") in _URGENCY else "medium",
+                source=item["source"], account=item["account"], who=item.get("who", ""), quote=guard.clean(line, 240),
+                primary=item["id"], sources=[item["id"]] + [e["item"]["id"] for e in extra],
+                fingerprints=fingerprints, item=item, result=result)
+
+
 def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: str, sched: dict,
               suppressed: set[str], allowed: set[str]) -> dict | None:
     """One validated item, or None when it must not surface."""
@@ -291,6 +338,8 @@ def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: st
                         account=item["account"], who=item.get("who", ""), quote="", primary=item["id"],
                         sources=[item["id"]], fingerprints=fingerprints[:1], item=item, result=result,
                         critical=True)
+        if item.get("entries"):
+            return _digest_item(raw, item, result, fingerprints, extra, now=now, tz=tz, sched=sched)
         kind = raw.get("action") if raw.get("action") in KINDS else _infer_kind(
             result.get("asks_of_me") or raw.get("title", ""), item["source"])
         if kind in ("reply", "meet", "call") and not item.get("person", True):

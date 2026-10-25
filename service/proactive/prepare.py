@@ -65,8 +65,8 @@ def _reminder_due(item: dict, now: float, tz: str) -> float | None:
     """When a reminder for this item should go off: 15 minutes before a stated
     clock time, else 9 AM on the due day (or in 5 minutes if that has passed)."""
     due = item.get("due_ts")
-    if due is None:
-        return None
+    if due is None or due <= now:
+        return None                      # never a reminder for a time already gone
     if item.get("has_clock"):
         at = max(due - 15 * 60, now + 5 * 60)
         return at if at <= due else None
@@ -114,7 +114,7 @@ def choose(item: dict, *, now: float, tz: str, linked: set[str], handle: str | N
     if event is not None:
         return "calendar_event", {"recipient": "", "event": event, "envelope": {"kind": "calendar", **event}}
     remind_at = _reminder_due(item, now, tz) if source != "reminders" else None
-    if remind_at is not None:
+    if remind_at is not None and remind_at > now:
         title = guard.clean(item["title"], 120)
         return "reminder", {"recipient": "", "event": None,
                             "envelope": {"kind": "reminder", "title": title, "due_ts": remind_at}}
@@ -213,8 +213,11 @@ def meta_line(item: dict, now: float, tz: str) -> str:
             parts.append("TODAY")
         elif day == today + timedelta(days=1):
             parts.append("TOMORROW")
-        else:
+        elif (day - today).days < 7:
             parts.append(datetime.fromtimestamp(due, zone).strftime("%a").upper())
+        else:
+            # A weekday alone would read as this week's: name the date.
+            parts.append(datetime.fromtimestamp(due, zone).strftime("%b %-d").upper())
     else:
         received = (item.get("item") or {}).get("received_ts")
         if received is not None and now - received >= 86400 and item["kind"] == "reply":
@@ -226,13 +229,23 @@ def meta_line(item: dict, now: float, tz: str) -> str:
     return " · ".join(parts)
 
 
-def _button(method: str, item: dict, has_event: bool) -> str:
+def _plan_when(method: str, plan: dict, tz: str) -> str:
+    """The resolved time a reminder or calendar hold is for, formatted by code
+    ("Tue, Oct 27, 12 PM"): never the source's phrase."""
+    envelope = plan.get("envelope") or {}
+    if method == "reminder" and envelope.get("due_ts"):
+        return guard.when_words(envelope["due_ts"], tz)
+    if method == "calendar_event" and (plan.get("event") or {}).get("start_ts"):
+        return guard.when_words(plan["event"]["start_ts"], tz)
+    return ""
+
+
+def _button(method: str, item: dict, has_event: bool, when: str = "") -> str:
     first = _first_name(item.get("who", "")) or "them"
-    when = item.get("due_label", "")
     return {
         "email_reply": "Reply & add to calendar?" if has_event else f"Send {first} this reply?",
         "text_reply": "Text back & add to calendar?" if has_event else f"Text {first} back?",
-        "reminder": f"Remind me {when.lower()}?" if when else "Set a reminder?",
+        "reminder": f"Remind me {when}?" if when else "Set a reminder?",
         "calendar_event": "Add to calendar?",
         "add_to_day": "Add to today's plan?",
         "read": "Mark as handled?",
@@ -273,8 +286,9 @@ def body(item: dict, method: str, plan: dict, sched: dict, now: float, tz: str) 
     work = {
         "email_reply": f"I've drafted a reply to {who or 'them'}",
         "text_reply": f"I've drafted a text to {who or 'them'}",
-        "reminder": f"I've set up a reminder for {item.get('due_label', '').lower() or 'later'}",
-        "calendar_event": f"I've lined up a calendar hold for {item.get('due_label', '').lower() or day_word}",
+        # Nothing is set until the user taps: the copy offers, it never claims.
+        "reminder": f"I can remind you {_plan_when(method, plan, tz) or 'later'}",
+        "calendar_event": f"I can add a calendar hold for {_plan_when(method, plan, tz) or day_word}",
         "add_to_day": "I can add it to today's plan",
         "read": "Open it when you have a minute" if plan.get("open_url") else "Nothing to send — just worth knowing",
     }[method]
@@ -345,6 +359,9 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
         method, plan = choose(item, now=now, tz=tz, linked=linked, handle=handle, freeze=freeze)
         if method == "read" and not plan.get("open_url"):
             continue                     # nothing to do or open: it stays a to-do, not a card
+        if item.get("due_ts") is not None and item["due_ts"] <= now and method not in ("email_reply", "text_reply"):
+            why(item, "its due time has passed")
+            continue                     # past due: at most an overdue to-do, never a card
         if item["kind"] == "reply" and method in ("add_to_day", "reminder"):
             why(item, "no contact handle to text" if item["source"] == "messages" else "can't reply from Wisp")
             continue                     # a reply Wisp can't send: a to-do, not a card
@@ -364,7 +381,8 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
             "sources": [{"kind": item["source"], "ref": item["primary"], "who": item.get("who", ""),
                          "quote": item.get("quote", "")}],
             "action": {"method": method,
-                       "button": _read_button(plan) if method == "read" else _button(method, item, bool(plan.get("event"))),
+                       "button": _read_button(plan) if method == "read" else _button(method, item, bool(plan.get("event")),
+                                                                                    _plan_when(method, plan, tz)),
                        "draft": words, "recipient": plan["recipient"], "event": plan.get("event"),
                        "envelope": plan["envelope"], "to": plan.get("to", []), "cc": plan.get("cc", []),
                        "subject": plan.get("subject", ""), "reply_all": False,

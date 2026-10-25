@@ -175,6 +175,7 @@ _SHELL_DENY = [
 # because no legitimate shell command calls them.
 _LOCAL_SEND_DENY = [
     r"assistant/+(email_reply|send_message_draft)\b",
+    r"assistant/+proactive/+cards/+[^/\s'\"]+/+fire\b",
     r"(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^\s'\"]*?:8765\b[^\s'\"]*?(email_reply|send_message_draft)",
 ]
 
