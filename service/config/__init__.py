@@ -316,6 +316,24 @@ def set_behavior_enabled(enabled: bool) -> bool:
     return enabled
 
 
+def proactive_auto_add_enabled() -> bool:
+    """Whether the background Brief may add a missed, time-sensitive event or
+    deadline to Calendar/Reminders on its own and report it after
+    (service/proactive/autoadd.py). Default True; ``proactive_auto_add: false``
+    in the user overlay turns it off (the same items become tap-to-add cards).
+    An overlay that exists but cannot be read fails closed: it may hold that false."""
+    if not user_overlay_valid():
+        return False
+    return models_config().get("proactive_auto_add") is not False
+
+
+def set_proactive_auto_add(enabled: bool) -> bool:
+    if type(enabled) is not bool:
+        raise ValueError("proactive_auto_add must be a boolean")
+    _save_overlay({"proactive_auto_add": enabled})
+    return enabled
+
+
 def omlx_base_url() -> str:
     if is_bundled():
         from service.engine import BUNDLED_PORT
