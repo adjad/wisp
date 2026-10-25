@@ -280,6 +280,17 @@ def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: st
         fingerprints = [f"{item['id']}:{item['hash']}"] + [f"{e['item']['id']}:{e['item']['hash']}" for e in extra]
         if all(fp in suppressed for fp in fingerprints[:1]):
             return None
+        if item.get("critical"):
+            # A critical account alert: code's fixed title and sentence only,
+            # never the judge's words or a quote, and nothing to reply to.
+            title = guard.clean(item.get("title"), 90)
+            if not title:
+                return None
+            return dict(title=title, kind="read", why=guard.clean(result.get("summary"), 200), due_ts=None,
+                        has_clock=False, due_label="", urgency="high", source=item["source"],
+                        account=item["account"], who=item.get("who", ""), quote="", primary=item["id"],
+                        sources=[item["id"]], fingerprints=fingerprints[:1], item=item, result=result,
+                        critical=True)
         kind = raw.get("action") if raw.get("action") in KINDS else _infer_kind(
             result.get("asks_of_me") or raw.get("title", ""), item["source"])
         if kind in ("reply", "meet", "call") and not item.get("person", True):

@@ -261,6 +261,8 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
     """One item per thread (account + bare subject), newest first. Threads made
     only of mass mail, or only of the user's own mail, are left out."""
     from service.assistant.daily_workspace import display_name, mass_mail_filter
+    from service.proactive.triage import raw_secret
+    from service.tools.email_tools import critical_account_mail, critical_mail_title
     from service.tools.imessage_tools import redact_summary_codes
     linked = gmail_accounts() if linked is None else linked
     own = own_account() if own is None else own
@@ -277,7 +279,7 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                             bare_subject(subject).casefold()), []).append(row)
     zone = ZoneInfo(tz)
     items = []
-    for (bucket, account, _), messages in threads.items():
+    for (bucket, account, thread_subject), messages in threads.items():
         incoming = [m for m in messages if _address(m) not in mine]
         if not incoming:
             continue
@@ -285,17 +287,41 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         # else (newsletters, job alerts, launches, campaigns) is not read at all.
         people = [m for m in incoming if not skip(m) and not bulk_mail(m)]
         school = [m for m in incoming if school_mail(m) and _deadline(m)]
+        # A critical account alert (an exposed secret, a new sign-in, a failed
+        # payment) is machine mail that still matters: it skips the bulk filters.
+        critical = [] if people else [m for m in incoming if critical_account_mail(m)]
         if counts is not None:
-            used = {id(m) for m in people + school}
+            used = {id(m) for m in people + school + critical}
             tally(counts, bucket, mail=len(incoming),
                   filtered=sum(1 for m in incoming if id(m) not in used))
-        if not people and not school:
+        if not people and not school and not critical:
             continue
-        last_in = (people or school)[-1]
+        last_in = (people or critical or school)[-1]
         last = messages[-1]
         replied = _address(last) in mine and last["ts"] >= last_in["ts"]
         subject = redact_summary_codes(clean(last_in.get("subject"), 200))
         who = display_name(last_in.get("sender"), _address(last_in)) or "Unknown sender"
+        # Whether the source itself, before redaction, carries a real secret.
+        secret = any(raw_secret(f"{m.get('subject') or ''}\n{m.get('body') or ''}") for m in messages[-3:])
+        item_id = "mail:" + _digest(account, bare_subject(subject).casefold())
+        ref = {"kind": "email", "message_id": str(last_in.get("message_id") or ""), "account": account,
+               "account_id": str(last_in.get("account_id") or ""), "to": _address(last_in),
+               "subject": subject, "has_body": bool(last_in.get("body"))}
+        if critical:
+            # Only a fixed sentence built from the sender and the alert's class:
+            # no body, no subject words, no code, token or link reaches the
+            # model, the card or the to-do.
+            title = critical_mail_title(last_in, critical_account_mail(last_in))
+            text = f"Subject: {title}"
+            # Keyed by the raw thread subject: alerts whose subjects redact to the
+            # same stand-in ("Private details omitted.") stay separate items.
+            items.append(dict(id="mail:" + _digest(account, "critical", thread_subject), source="mail",
+                              account=bucket, raw_account=account, who=who, title=title, text=text, lines=[], received_ts=float(last_in["ts"]),
+                              replied=replied, ref=ref, reply_ref=reply_ref_for_row(last_in),
+                              unread=last_in.get("unread"), person=False, critical=True, secret=secret,
+                              user_wrote=any(_address(m) in mine for m in messages),
+                              hash=_digest(text, replied, last_in["ts"])))
+            continue
         blocks, quotes = [], [subject]
         for message in messages[-3:]:
             from_user = _address(message) in mine
@@ -307,16 +333,12 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                 quotes.extend(_sentences(excerpt))
         text = f"Subject: {subject}\n" + "\n".join(blocks)
         text = text[:MAX_ITEM_CHARS]
-        item_id = "mail:" + _digest(account, bare_subject(subject).casefold())
-        ref = {"kind": "email", "message_id": str(last_in.get("message_id") or ""), "account": account,
-               "account_id": str(last_in.get("account_id") or ""), "to": _address(last_in),
-               "subject": subject, "has_body": bool(last_in.get("body"))}
         reply_ref = reply_ref_for_row(last_in)
         items.append(dict(id=item_id, source="mail", account=bucket,
                           raw_account=account, who=who, title=subject, text=text, lines=quotes,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
                           unread=last_in.get("unread"),
-                          person=bool(people), user_wrote=any(_address(m) in mine for m in messages),
+                          person=bool(people), secret=secret, user_wrote=any(_address(m) in mine for m in messages),
                           hash=_digest(text, replied)))
     items.sort(key=lambda i: i["received_ts"], reverse=True)
     # The cap is per account: a busy linked inbox never pushes out the owner's mail.
