@@ -125,6 +125,18 @@ def choose(item: dict, *, now: float, tz: str, linked: set[str], handle: str | N
     return "read", {"recipient": "", "event": None, "envelope": {"kind": "read"}}
 
 
+def _critical_plan(raw: dict, freeze=None) -> dict:
+    """A critical alert's card only opens the original message (Mail or Gmail's
+    own link to it, never a link from the email) or is marked handled: no
+    reply, no recipient, no envelope to send."""
+    plan = {"recipient": "", "event": None, "envelope": {"kind": "read"}}
+    view = freeze(raw["reply_ref"]) if freeze is not None and raw.get("reply_ref") else None
+    if isinstance(view, dict) and view.get("open_url"):
+        plan.update(open_url=view["open_url"], open_label=view.get("open_label") or "Open in Mail",
+                    reply_ref=raw["reply_ref"])
+    return plan
+
+
 def _user_names() -> list[str]:
     from service.proactive.triage import user_names
     return user_names()
@@ -293,6 +305,29 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
         raw = item.get("item") or {}
         if item["source"] == "reminders":
             continue                     # already a reminder: it stays on the to-do list
+        if raw.get("critical") and item["source"] == "mail":
+            # A critical account alert: a review card with the fixed title, no draft.
+            plan = _critical_plan(raw, freeze)
+            fingerprint = (item.get("fingerprints") or [item["primary"]])[0]
+            cards.append({
+                "id": card_id(fingerprint, "read"),
+                "meta": meta_line(item, now, tz),
+                "title": guard.clean(item["title"], 90),
+                "body": body(item, "read", plan, sched, now, tz),
+                "why": guard.clean(item.get("why"), 200),
+                "account": item.get("account", ""),
+                "sources": [{"kind": item["source"], "ref": item["primary"], "who": item.get("who", ""),
+                             "quote": ""}],
+                "action": {"method": "read", "button": _read_button(plan), "draft": "", "recipient": "",
+                           "event": None, "envelope": plan["envelope"], "to": [], "cc": [], "subject": "",
+                           "reply_all": False, "reply_ref": plan.get("reply_ref"),
+                           "open_url": plan.get("open_url", ""), "open_label": plan.get("open_label", "")},
+                "todo_id": todo_id(item["primary"]),
+                "fingerprints": list(item.get("fingerprints") or []),
+                "due_ts": None,
+                "critical": True,
+            })
+            continue
         if item.get("unranked") and not (raw.get("person") and not raw.get("replied") and not raw.get("group")
                                          and item["source"] in ("mail", "messages")):
             continue                     # left-over slots go only to a person still waiting on the user

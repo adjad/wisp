@@ -106,7 +106,7 @@ _QUOTED_HISTORY = re.compile(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]
 # item so the notch can name the sender and order by recency; `replied` marks a
 # conversation the user has texted since. An email's model-written gist is
 # attached by the Today endpoint (mail_gists.attach), so this module stays pure.
-_COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied")
+_COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied", "critical")
 
 
 _BULK_BODY = re.compile(r"\bunsubscribe\b|manage (?:your )?(?:email )?preferences|view (?:this email )?in (?:your )?browser",
@@ -173,12 +173,15 @@ def important_email_rows(snapshot):
     sender that is none of those (a clinic, a landlord's office) still counts
     by a request line.
     """
-    from service.tools.email_tools import _MARKETING_SUBJECT, _NEWSLETTER_RE, digest_category
+    from service.tools.email_tools import _MARKETING_SUBJECT, _NEWSLETTER_RE, critical_account_mail, digest_category
     from service.tools.imessage_tools import important_message_reason
     out = []
     rows = sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]
     skip = mass_mail_filter(rows)
     for row in rows:
+        if critical_account_mail(row):
+            out.append((row, []))        # a critical account alert counts whoever sent it
+            continue
         if skip(row):
             continue
         body = _QUOTED_HISTORY.split(row.get("body", "") or "")[0]
@@ -236,11 +239,32 @@ def display_name(sender, address=""):
     return clean(inner.group(1) if inner else address, 80)
 
 
+# Event-marketing, hackathon-platform and job-alert senders write under a
+# friendly name from an ordinary-looking address ("Major League Hacking
+# <hi@mlh.io>"), so is_machine_sender misses them; they are never a person.
+_PROMO_SENDER = re.compile(
+    r"\b(?:major league hacking|mlh|devpost|hackathons?|handshake|wellfound|angellist|hackerrank|"
+    r"leetcode|unstop|job alerts?)\b|\b(?:jobs?|careers?|talent|recruiting|events?|community)@|"
+    r"@(?:[\w-]+\.)*(?:mlh\.io|devpost\.com|joinhandshake\.com|wellfound\.com|hackerrank\.com|"
+    r"leetcode\.com|unstop\.com|substack\.com|beehiiv\.com)\b", re.I)
+_PROMO_SUBJECT = re.compile(r"\bjob alert\b|\bjobs? (?:for you|near you|matching)\b|\bnew jobs?\b|"
+                            r"\bis (?:starting|live|here)\b|\bregistration (?:is )?open\b|\bregister now\b", re.I)
+
+
 def _sender_fields(row):
-    from service.tools.email_tools import is_machine_sender
+    from service.tools.email_tools import (_NEWSLETTER_RE, critical_account_mail, critical_mail_title,
+                                           is_broadcast, is_machine_sender)
     sender = display_name(row.get("sender"), row.get("sender_address", ""))
-    return dict(sender=sender, received_ts=row["ts"] if finite(row.get("ts")) else None,
-                person=bool(sender) and not is_machine_sender(f"{sender} {row.get('sender_address', '')}"))
+    identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
+    promo = (bool(_PROMO_SENDER.search(identity) or _NEWSLETTER_RE.search(identity)
+                  or _PROMO_SUBJECT.search(str(row.get("subject") or ""))) or is_broadcast(row))
+    fields = dict(sender=sender, received_ts=row["ts"] if finite(row.get("ts")) else None,
+                  person=bool(sender) and not promo and not is_machine_sender(f"{sender} {row.get('sender_address', '')}"))
+    kind = critical_account_mail(row)
+    if kind:
+        # The fixed, safe phrase for a critical account alert (never the subject's words).
+        fields["critical"] = critical_mail_title(row, kind).removesuffix(" — review")
+    return fields
 
 
 def _item(source, identity, title, reason, *, quote="", due=None, priority=2, reference=""):
@@ -474,6 +498,8 @@ def needs_you(attention, *, now, day_end):
     """The Brief's "Needs you today" line: the day's attention items that are
     work for the user today, as short grounded phrases, in this order:
 
+    - critical account alerts from email ("alert": an exposed secret, a new
+      sign-in, a failed payment), as Wisp's fixed phrase, never the subject;
     - reminders past due ("overdue"), then reminders due today by their time
       ("due"), then active tasks on the day plan with no due time ("plan");
     - email from a person ("mail"): its subject, or for a subject the privacy
@@ -487,10 +513,17 @@ def needs_you(attention, *, now, day_end):
     automated senders and withheld-credential mail are never listed.
     Returns ``dict(items=[...], more=N)``: at most NEEDS_YOU_SHOWN items, and
     how many more were selected."""
-    overdue, due, plan, mail, texts = [], [], [], [], {}
+    overdue, due, plan, mail, texts, alerts = [], [], [], [], {}, {}
     seen = set()
     for item in attention:
         source, title = item.get("source"), clean(item.get("title"))
+        if source == "email" and isinstance(item.get("critical"), str) and clean(item["critical"]):
+            # Its subject may be withheld ("sign-in" reads as a credential); the
+            # phrase is Wisp's own. Copies of one alert are listed once.
+            text = clean(item["critical"], 120)
+            alerts.setdefault(text.casefold(), dict(id=item["id"], kind="alert", text=text, due_ts=None,
+                                                    all_day=False, received_ts=item.get("received_ts")))
+            continue
         if _junk(title) or _WITHHELD_AUTH_SUBJECT.search(title):
             continue
         stamp = item.get("due_ts")
@@ -536,7 +569,7 @@ def needs_you(attention, *, now, day_end):
     overdue.sort(key=lambda e: e["due_ts"])
     due.sort(key=lambda e: e["due_ts"])
     mail = [e for e in sorted(mail, key=newest) if not e.pop("planned") & seen]
-    picked = overdue + due + plan + mail + people
+    picked = sorted(alerts.values(), key=newest) + overdue + due + plan + mail + people
     for entry in picked:
         entry.pop("received_ts", None)
     return dict(items=picked[:NEEDS_YOU_SHOWN], more=max(0, len(picked) - NEEDS_YOU_SHOWN))
@@ -869,7 +902,7 @@ def collect_evidence(store, state, day, timezone, *, now):
         result["reminders"] = dict(ready=False, records=[], detail="Reminders could not be read.")
     try:
         from service.tools import email_tools as mail
-        from service.tools.email_tools import raw_email_snapshot, digest_category
+        from service.tools.email_tools import raw_email_snapshot, digest_category, critical_account_mail
         from service.tools.imessage_tools import redact_summary_codes, important_message_reason
         snapshot = raw_email_snapshot()
         records = []
@@ -894,7 +927,7 @@ def collect_evidence(store, state, day, timezone, *, now):
             header_count = len(selected)
             skip = mass_mail_filter(selected[:200])
             for row in selected[:200]:
-                if digest_category(row) not in {"attention", "school"} or skip(row):
+                if digest_category(row) not in {"attention", "school"} or (skip(row) and not critical_account_mail(row)):
                     continue
                 subject = redact_summary_codes(row["subject"])
                 records.append(dict(id=header_record_id(row, subject), title=subject, quote=subject,
