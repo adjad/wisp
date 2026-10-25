@@ -471,3 +471,32 @@ def test_the_card_fire_route_is_denied_from_the_shell():
     from service.safety import policy
     assert policy.local_send_endpoint_hit(
         "curl -X POST http://127.0.0.1:8765/assistant/proactive/cards/card:abc/fire -d '{}'")
+
+
+def test_a_clocked_deadline_is_reminded_the_morning_of_and_three_hours_before(store, monkeypatch):
+    item = mail("Ed Park", "ed@ucsc.edu", "CSE 20 homework", "Hi all, HW4 due Friday Oct 30 11:59 PM. Good luck!")
+    plan, _ = autoadd.plan_for(item, dict(OK), now=NOW, tz=TZ)
+    assert plan["alerts"] == [at(10, 30, 9), at(10, 30, 20, 59)]
+    sent, deleted = [], []
+
+    async def fake_request(kind, payload, **_):
+        if kind == "create_reminder":
+            sent.append(payload["due_ts"])
+            return {"ok": True, "status": "succeeded", "source_id": f"R-{len(sent)}", "title": payload["title"]}
+        deleted.append((payload["source_id"], payload["expected_due_ts"]))
+        return {"ok": True, "status": "succeeded"}
+
+    import service.assistant.outbox as outbox
+    monkeypatch.setattr(outbox, "request", fake_request)
+    monkeypatch.setattr(autoadd, "_app_connected_now", lambda: True)
+    monkeypatch.setattr(autoadd, "_reminder_problem", lambda: None, raising=False)
+    from service.proactive import executor
+    monkeypatch.setattr(executor, "_reminder_problem", lambda: None)
+    result = asyncio.run(autoadd.create_reminder(plan))
+    assert result["ok"] and sent == plan["alerts"] and len(result["reminders"]) == 2
+    record = {**plan, "source_id": result["source_id"], "reminders": result["reminders"], "status": "added",
+              "received_ts": item["received_ts"], "timezone": TZ}
+    card = autoadd.done_card(record, NOW)
+    assert "I'll remind you Fri, Oct 30 at 9 AM and 8:59 PM." in card["body"]
+    assert asyncio.run(autoadd.delete_reminder(record))["ok"]
+    assert deleted == [("R-1", at(10, 30, 9)), ("R-2", at(10, 30, 20, 59))]

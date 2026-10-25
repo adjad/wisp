@@ -155,6 +155,9 @@ def _reminder_problem() -> str | None:
     return _policy_block(kind="reminder")
 
 
+_REMINDERS_MADE: set[tuple] = set()
+
+
 async def _reminder(card: dict) -> dict:
     from service.assistant.outbox import request
     envelope = card["action"]["envelope"]
@@ -163,13 +166,27 @@ async def _reminder(card: dict) -> dict:
         return {"ok": False, "status": "blocked", "error": "This reminder has no title or time."}
     if problem := _reminder_problem():
         return {"ok": False, "status": "blocked", "error": problem}
-    result = await request("create_reminder", {"title": title.strip()[:200], "due_ts": float(due),
-                                               "commitment_kind": "reminder"},
-                           before_dispatch=_reminder_problem)
-    _audit("allow", tool="add_reminder", source="proactive_card",
-           status="succeeded" if result.get("ok") is True else result.get("status", "unknown"),
-           args={"title_sha256": _sha(title), "due_ts": due})
-    return {**result, "ok": result.get("ok") is True}
+    # A deadline carries more than one alert (the day of, and 3 hours before):
+    # one reminder each, all from the card's own envelope.
+    alerts = [a for a in envelope.get("alerts") or [] if isinstance(a, dict)] or [{"title": title, "due_ts": due}]
+    result: dict = {"ok": True}
+    for alert in alerts:
+        when = alert.get("due_ts")
+        if type(when) not in (int, float):
+            return {"ok": False, "status": "blocked", "error": "This reminder has no time."}
+        key = (card.get("id"), float(when))
+        if key in _REMINDERS_MADE:
+            continue                     # a retry after a partial failure never doubles one
+        result = await request("create_reminder", {"title": title.strip()[:200], "due_ts": float(when),
+                                                   "commitment_kind": "reminder"},
+                               before_dispatch=_reminder_problem)
+        _audit("allow", tool="add_reminder", source="proactive_card",
+               status="succeeded" if result.get("ok") is True else result.get("status", "unknown"),
+               args={"title_sha256": _sha(title), "due_ts": when})
+        if result.get("ok") is not True:
+            return {**result, "ok": False}
+        _REMINDERS_MADE.add(key)
+    return {**result, "ok": True}
 
 
 async def _calendar_event(card: dict, still_current) -> dict:

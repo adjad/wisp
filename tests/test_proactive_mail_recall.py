@@ -264,9 +264,10 @@ def test_a_future_due_date_gives_a_correctly_formatted_reminder_card():
     assert card["action"]["method"] == "reminder"
     remind_at = card["action"]["envelope"]["due_ts"]
     assert NOW < remind_at < due
-    assert card["action"]["button"] == "Remind me Tue, Oct 27, 11:45 AM?"
+    # Due at noon: 9 AM that day and "3 hours before" are the same moment.
+    assert card["action"]["button"] == "Remind me Tue, Oct 27, 9 AM?"
     assert card["meta"] == "TUE · MAIL"
-    assert "I can remind you Tue, Oct 27, 11:45 AM." in card["body"]
+    assert "I can remind you Tue, Oct 27, 9 AM." in card["body"]
 
 
 def test_a_card_body_never_claims_a_reminder_or_hold_was_already_set():
@@ -298,3 +299,29 @@ def test_a_due_date_change_replaces_the_date_an_item_was_created_with():
     entries = sources.digest_entries(row, now=NOW, tz=TZ)
     assert [(e["name"], e["due_ts"]) for e in entries] == [
         ("HW3, Statistics", datetime(2026, 10, 26, 23, 59, tzinfo=ZONE).timestamp())]
+
+
+def test_a_deadline_is_reminded_the_morning_of_and_three_hours_before():
+    due = datetime(2026, 10, 26, 23, 59, tzinfo=ZONE).timestamp()      # Mon Oct 26, 11:59 PM
+    [card] = cards_for([org_item(due)])
+    alerts = [a["due_ts"] for a in card["action"]["envelope"]["alerts"]]
+    assert alerts == [datetime(2026, 10, 26, 9, 0, tzinfo=ZONE).timestamp(), due - 3 * 3600]
+    assert card["action"]["button"] == "Remind me Mon, Oct 26, 9 AM and 8:59 PM?"
+
+    made = []
+
+    async def fake_request(kind, payload, **_):
+        made.append(payload["due_ts"])
+        return {"ok": True, "status": "succeeded"}
+
+    import asyncio
+    import service.assistant.outbox as outbox
+    from service.proactive import executor
+    original, outbox.request = outbox.request, fake_request
+    try:
+        executor._reminder_problem, saved = (lambda: None), executor._reminder_problem
+        assert asyncio.run(executor._reminder(card))["ok"] is True
+        assert asyncio.run(executor._reminder(card))["ok"] is True     # a retry never doubles them
+    finally:
+        outbox.request, executor._reminder_problem = original, saved
+    assert made == alerts

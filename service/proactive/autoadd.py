@@ -413,11 +413,29 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
                         day=datetime.fromtimestamp(at, zone).date().isoformat())
         else:
             plan.update(due_ts=float(at))
+            if got.has_clock:
+                plan["alerts"] = deadline_alerts(float(at), now, tz)
         return plan, ""
     return None, reason
 
 
 # --- the writes (production) -------------------------------------------------------------
+
+
+DEADLINE_LEAD_S = 3 * 3600
+
+
+def deadline_alerts(due: float, now: float, tz: str) -> list[float]:
+    """When to be reminded of a deadline with a clock time: 9 AM on the day it
+    is due and 3 hours before it, whichever are still ahead (one when they
+    nearly coincide). The deadline itself when neither is."""
+    zone = ZoneInfo(tz)
+    day = datetime.fromtimestamp(due, zone).date()
+    nine = datetime.combine(day, datetime.min.time(), zone).replace(hour=9).timestamp()
+    times = sorted({t for t in (nine, due - DEADLINE_LEAD_S) if now + 5 * 60 <= t < due})
+    if len(times) == 2 and times[1] - times[0] < 3600:
+        times = times[1:]
+    return times or [due]
 
 
 def _app_connected_now() -> bool:
@@ -477,10 +495,19 @@ async def create_reminder(plan: dict) -> dict:
     if problem := _reminder_problem():
         return {"ok": False, "status": "blocked", "error": problem}
     from service.assistant.outbox import request
-    result = await request("create_reminder", {"title": plan["title"][:200], "due_ts": float(plan["due_ts"]),
-                                               "commitment_kind": "reminder"},
-                           before_dispatch=_reminder_problem)
-    return result if isinstance(result, dict) else {"ok": False, "status": "unknown", "error": "unreadable"}
+    made: list[dict] = []
+    result: dict = {}
+    for when in plan.get("alerts") or [plan["due_ts"]]:
+        result = await request("create_reminder", {"title": plan["title"][:200], "due_ts": float(when),
+                                                   "commitment_kind": "reminder"},
+                               before_dispatch=_reminder_problem)
+        result = result if isinstance(result, dict) else {"ok": False, "status": "unknown", "error": "unreadable"}
+        if result.get("ok") is not True or not str(result.get("source_id") or "").strip():
+            # One that landed before this miss is still Wisp's: undo finds it.
+            return {**result, "ok": False, "reminders": made}
+        made.append({"source_id": str(result["source_id"]).strip(), "due_ts": float(when),
+                     "title": result.get("title") if isinstance(result.get("title"), str) else plan["title"]})
+    return {**result, "ok": True, "source_id": made[0]["source_id"], "title": made[0]["title"], "reminders": made}
 
 
 async def delete_event(record: dict) -> dict:
@@ -497,14 +524,22 @@ async def delete_event(record: dict) -> dict:
 
 
 async def delete_reminder(record: dict) -> dict:
-    """The verified reminder delete: exact identifier, title and due time, read back as absent."""
+    """The verified reminder delete: exact identifier, title and due time, read
+    back as absent. A deadline's every alert, each by its own identifier."""
     from service.proactive.executor import _reminder_problem as policy
     if problem := policy():
         return {"ok": False, "status": "blocked", "error": problem}
     from service.assistant.outbox import request
-    return await request("delete_reminder", {
-        "source_id": record["source_id"], "expected_title": record["title"],
-        "expected_due_ts": float(record["due_ts"])}, before_dispatch=policy)
+    made = record.get("reminders") or [{"source_id": record["source_id"], "title": record["title"],
+                                         "due_ts": record["due_ts"]}]
+    result: dict = {"ok": True, "status": "succeeded"}
+    for one in made:
+        result = await request("delete_reminder", {
+            "source_id": one["source_id"], "expected_title": one.get("title") or record["title"],
+            "expected_due_ts": float(one["due_ts"])}, before_dispatch=policy)
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            return result if isinstance(result, dict) else {"ok": False, "status": "unknown"}
+    return result
 
 
 WRITERS = {"calendar": create_event, "reminder": create_reminder}
@@ -546,6 +581,17 @@ def _received_words(ts: float, now: float, tz: str) -> str:
     return day.strftime("%b %-d")
 
 
+def _alert_words(times: list[float], tz: str) -> str:
+    """"Fri, Oct 30 at 9 AM and 8:59 PM": the second time alone on the same day."""
+    zone = ZoneInfo(tz)
+    out = []
+    for i, t in enumerate(times):
+        moment = datetime.fromtimestamp(t, zone)
+        same = i and datetime.fromtimestamp(times[i - 1], zone).date() == moment.date()
+        out.append(f"{_clock(moment)} {moment:%p}" if same else f"{moment:%a, %b %-d} at {_clock(moment)} {moment:%p}")
+    return " and ".join(out)
+
+
 def done_card(record: dict, now: float) -> dict:
     tz = record.get("timezone") or "UTC"
     first = _first_name(record.get("who", ""))
@@ -558,7 +604,11 @@ def done_card(record: dict, now: float) -> dict:
         did = f"I added it for {when}."
     else:
         meta, title = "ADDED · REMINDER", f"Added {record['title']} to your reminders"
-        did = f"I set a reminder for {when}."
+        alerts = [r.get("due_ts") for r in record.get("reminders") or [] if isinstance(r, dict)]
+        if len(alerts) > 1:
+            did = f"It's due {when}; I'll remind you {_alert_words(alerts, tz)}."
+        else:
+            did = f"I set a reminder for {when}."
     body = (f"From {origin} {_received_words(record['received_ts'], now, tz)}: “{quote}” {did}" if quote
             else f"From {origin}. {did}")
     return {
@@ -746,6 +796,8 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
                                     "attempts": int(record.get("attempts") or 0)})
             continue
         entry = {**_record(plan, now), "status": status, "attempts": int(record.get("attempts") or 0) + 1}
+        if isinstance(outcome.get("reminders"), list) and outcome["reminders"]:
+            entry["reminders"] = [r for r in outcome["reminders"] if isinstance(r, dict)]
         if verified:
             entry["source_id"] = outcome["source_id"].strip()
             if plan["kind"] == "reminder" and isinstance(outcome.get("title"), str) and outcome["title"].strip():
