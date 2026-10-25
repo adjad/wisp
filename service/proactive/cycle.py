@@ -17,6 +17,9 @@ Rules:
 - With no model available the cycle still works by rule: calendar, reminders
   and Notes to-dos are deterministic, and each item's own verbatim ask stands
   in for its triage, so a model outage never hides a to-do.
+- About hourly, while the user is away from the keyboard (HID idle ≥ 5 min),
+  the whole Brief regenerates: a forced cycle, then every mail/texts overview
+  (idle_refresh). Never during a turn; a failed idle probe counts as "in use".
 """
 from __future__ import annotations
 
@@ -38,6 +41,11 @@ IDLE_GAP_S = 300
 MAX_THREADS = 30
 _MAIL_GIST_HOLD_S = 90
 _PATIENT_WAIT_S = 600
+# The hourly idle refresh: at most once per IDLE_REFRESH_S, at the first tick
+# the machine has seen no keyboard/mouse input for IDLE_AFTER_S.
+IDLE_REFRESH_S = 55 * 60
+IDLE_AFTER_S = 5 * 60
+_IDLE_PROBE_TIMEOUT_S = 2.0
 
 _status = {"state": "idle", "phase": "", "progress": {"done": 0, "total": 0}, "account": None,
            "error": "", "started_at": None, "finished_at": None}
@@ -46,6 +54,7 @@ _running = False
 _rerun: dict | None = None
 _next_tick_at = 0.0
 _last_standdown = ""
+_idle_retry_at = 0.0
 
 
 def _log(text: str) -> None:
@@ -266,7 +275,7 @@ def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, no
     """Card order, made deterministic for people: the judge's items from
     people, then every one-to-one conversation whose last message is an
     unanswered incoming text under 3 days old (even when the judge left it
-    out), then everything else. The 5-card cap applies after this."""
+    out), then everything else. Critical account alerts go ahead of all of it. The 5-card cap applies after this."""
     have = {i["primary"] for i in ranked if not i.get("unranked")}
     waiting = []
     for candidate in sorted(pool, key=lambda s: -(s["item"].get("received_ts") or 0)):
@@ -288,10 +297,12 @@ def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, no
             waiting.append(made)
     taken = {w["primary"] for w in waiting}
     judged = [i for i in ranked if not i.get("unranked")]
-    people = [i for i in judged if (i.get("item") or {}).get("person")]
-    others = [i for i in judged if not (i.get("item") or {}).get("person")]
+    critical = [i for i in judged if (i.get("item") or {}).get("critical")]
+    people = [i for i in judged if (i.get("item") or {}).get("person") and i not in critical]
+    others = [i for i in judged if not (i.get("item") or {}).get("person") and i not in critical]
     rest = [i for i in ranked if i.get("unranked") and i["primary"] not in taken]
-    return people + waiting + others + rest
+    # A security or account alert comes before everything, so people never push it past the cap.
+    return critical + people + waiting + others + rest
 
 
 def _served_thread(thread: dict, names: list[str]) -> dict:
@@ -644,11 +655,12 @@ _REPLY_METHODS = ("email_reply", "text_reply")
 
 
 def order_cards(cards: list[dict], deadline_cards: list[dict], limit: int = prepare_mod.MAX_CARDS) -> list[dict]:
-    """Someone waiting on the user comes first; deadline cards fill the slots
-    that leaves, ahead of the rest."""
-    replies = [c for c in cards if c["action"]["method"] in _REPLY_METHODS]
-    rest = [c for c in cards if c["action"]["method"] not in _REPLY_METHODS]
-    return (replies + deadline_cards + rest)[:limit]
+    """A security or account alert first, then someone waiting on the user;
+    deadline cards fill the slots that leaves, ahead of the rest."""
+    alerts = [c for c in cards if c.get("critical")]
+    replies = [c for c in cards if c["action"]["method"] in _REPLY_METHODS and not c.get("critical")]
+    rest = [c for c in cards if c["action"]["method"] not in _REPLY_METHODS and not c.get("critical")]
+    return (alerts + replies + deadline_cards + rest)[:limit]
 
 
 def _default_deadlines(now: float, tz: str, skip: set[str], own: str, linked: set[str]) -> list[dict]:
@@ -693,6 +705,79 @@ def _default_schedule(now: float, tz: str, *, own: str, linked: set[str]) -> dic
 # --- background scheduling ---------------------------------------------------------------------
 
 
+def hid_idle_seconds() -> float | None:
+    """Seconds since the last keyboard, mouse or trackpad input (IOHIDSystem's
+    HIDIdleTime, in nanoseconds), or None when it can't be read. A locked
+    screen or an absent user reads as a long idle time."""
+    import subprocess
+    try:
+        out = subprocess.run(["/usr/sbin/ioreg", "-c", "IOHIDSystem", "-r", "-k", "HIDIdleTime", "-d", "1"],
+                             capture_output=True, text=True, timeout=_IDLE_PROBE_TIMEOUT_S).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', out or "")
+    return int(found.group(1)) / 1e9 if found else None
+
+
+idle_probe = hid_idle_seconds      # injectable: tests swap in a fake
+
+
+def user_away(probe=None) -> bool:
+    """True only when the probe says the machine has sat idle long enough.
+    Any failure counts as "in use": the refresh never runs during use."""
+    try:
+        seconds = (probe or idle_probe)()
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(seconds, (int, float)) and seconds >= IDLE_AFTER_S
+
+
+def idle_refresh_due(now: float, store) -> bool:
+    last = float(store.state().get("idle_refresh_at") or 0)
+    return now - last >= IDLE_REFRESH_S and now >= _idle_retry_at
+
+
+async def _refresh_gists() -> None:
+    from service.assistant import mail_gists
+    await mail_gists.refresh_all()
+
+
+async def idle_refresh(*, now: float | None = None, probe=None, store=None, cycle=None, gists=None) -> str:
+    """Regenerate the whole Brief while the user is away: a forced cycle
+    (re-judge and re-prepare even when nothing changed), then every mail and
+    texts overview, one after another. "not_due", "active", "yielded" or "ran".
+    The last run's time lives in the store's state, so a restart doesn't
+    rerun it."""
+    global _idle_retry_at
+    from service.proactive.store import store as default_store
+    store = store or default_store()
+    now = time.time() if now is None else now
+    if not idle_refresh_due(now, store):
+        return "not_due"
+    if not await asyncio.to_thread(user_away, probe) or _foreground():
+        return "active"            # checked again on the next scheduler tick
+    _log("idle refresh: regenerating the Brief")
+    result = await (cycle or run_cycle)(force=True)
+    if not isinstance(result, dict) or result.get("status") != "done":
+        _idle_retry_at = now + TICK_GAP_S
+        return "yielded"
+    store.save_state(idle_refresh_at=now)
+    try:
+        await (gists or _refresh_gists)()
+    except Exception:  # noqa: BLE001 — the cards are fresh; the overviews keep their last text
+        traceback.print_exc()
+    return "ran"
+
+
+async def _idle_tick() -> None:
+    global _next_tick_at
+    outcome = await idle_refresh()
+    if outcome == "yielded":
+        _next_tick_at = time.time() + TICK_GAP_S
+    elif outcome != "ran" and time.time() >= _next_tick_at:
+        await _tick()              # in use: the ordinary incremental cycle as before
+
+
 async def _tick() -> None:
     global _next_tick_at, _rerun
     result = await run_cycle()
@@ -727,7 +812,12 @@ def schedule_tick() -> asyncio.Task | None:
         return _task
     if _remote_background_paused():
         return None
-    if time.time() < _next_tick_at:
+    try:
+        from service.proactive.store import store as default_store
+        refresh = idle_refresh_due(time.time(), default_store())
+    except Exception:  # noqa: BLE001
+        refresh = False
+    if not refresh and time.time() < _next_tick_at:
         return None
     if _foreground():
         _stood_down("a turn is in progress")
@@ -741,7 +831,7 @@ def schedule_tick() -> asyncio.Task | None:
             return None
     except Exception:  # noqa: BLE001
         pass
-    _task = asyncio.create_task(_tick())
+    _task = asyncio.create_task(_idle_tick() if refresh else _tick())
     return _task
 
 

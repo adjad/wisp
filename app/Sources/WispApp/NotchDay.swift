@@ -628,13 +628,14 @@ struct DayTimeline: Equatable {
                 } else {
                     label = "DUE"
                 }
+            case "alert": label = "ALERT"
             case "plan": label = "PLAN"
             case "mail": label = "MAIL"
             case "text": label = "TEXT"
             default: label = nil
             }
             return NeedsYouRow(id: item.id ?? "needs-you-\(index)", label: label,
-                               text: item.text, overdue: item.kind == "overdue")
+                               text: item.text, overdue: item.kind == "overdue" || item.kind == "alert")
         }
         return NeedsYouList(rows: rows, more: max(0, more))
     }

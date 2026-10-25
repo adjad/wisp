@@ -21,7 +21,7 @@ from service.proactive import guard
 TOKENS = (160, 1400)
 # Bump whenever RULES or validate() change what a stored result means: older
 # checkpoints are then read again instead of served.
-VERSION = "5"
+VERSION = "6"
 
 RULES = (
     "You read ONE email thread or text conversation for the user's daily brief. "
@@ -224,6 +224,8 @@ def user_names() -> list[str]:
 def fallback(item: dict) -> dict | None:
     """The rule reading of an item whose triage failed: the newest incoming line
     that reads as a plan or a request, copied verbatim. None when there is none."""
+    if item.get("critical"):
+        return critical_result(item)
     if withheld(item):
         return None
     if not item.get("person", True) and not _DEADLINE.search(guard.normalize_slang(item["text"])):
@@ -238,10 +240,42 @@ def fallback(item: dict) -> dict | None:
 # Wisp's own stand-ins for text the privacy layer withheld (imessage_tools.
 # redact_summary_codes): the item held a credential or private detail.
 _WITHHELD = re.compile(r"\b(?:private|authentication) details omitted\b|\bdetails omitted\)", re.I)
+# A real secret in the raw source: a provider's token format, a private key,
+# a key or token stated with its value, or a one-time code next to its digits.
+_RAW_SECRET = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|"
+    r"sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|"
+    r"glpat-[A-Za-z0-9_-]{20,})|-----BEGIN [A-Z ]*PRIVATE KEY-----|"
+    r"\b(?:api[ _-]?key|secret(?:[ _-]?key)?|access[ _-]?(?:key|token)|auth[ _-]?token|token|bearer)\b"
+    r"\s*[:=]?\s*[\"'“]?[A-Za-z0-9_\-./+]{16,}|"
+    r"(?<![\d])\d{4,8}(?![\d])[^\n]{0,30}\b(?:code|passcode|pin|otp)\b|"
+    r"\b(?:code|passcode|pin|otp)\b[^\n]{0,30}(?<![\d])\d{4,8}(?![\d])", re.I)
+
+
+def raw_secret(text: str) -> bool:
+    """The source itself, before any redaction, holds a credential's value."""
+    return guard.source_sensitive(text or "") or bool(_RAW_SECRET.search(text or ""))
 
 
 def withheld(item: dict) -> bool:
+    """Never sent to the model. A mail item carries ``secret``, read from the
+    raw source before redaction: the redaction placeholder alone ("private
+    details omitted") is Wisp's own words, not a secret, and the model only ever
+    sees the redacted text. Items without that flag keep the placeholder rule."""
+    if "secret" in item:
+        return bool(item["secret"]) or guard.source_sensitive(item["text"])
     return guard.source_sensitive(item["text"]) or bool(_WITHHELD.search(item["text"]))
+
+
+def critical_result(item: dict) -> dict | None:
+    """A critical account alert's reading, by code: its fixed safe title, and
+    never a model call (the alert itself may carry the secret it reports)."""
+    if not item.get("critical"):
+        return None
+    title = guard.clean(item.get("title"), 90)
+    summary = title.removesuffix(" — review").rstrip(".") + "." if title else ""
+    return {"junk": False, "sensitive": False, "title": title, "summary": summary,
+            "asks_of_me": title, "critical": True}
 
 
 async def triage_item(item: dict, reply_fn, abort) -> tuple[str, dict | None]:
@@ -249,6 +283,8 @@ async def triage_item(item: dict, reply_fn, abort) -> tuple[str, dict | None]:
 
     reply_fn(system, material, abort, tokens) -> str | None: None stands down
     (a turn started, or the model isn't resident) without spending anything."""
+    if item.get("critical"):
+        return "ok", critical_result(item)
     if withheld(item):
         return "sensitive", {"junk": False, "sensitive": True, "title": "", "summary": "", "asks_of_me": ""}
     try:

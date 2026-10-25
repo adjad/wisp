@@ -2155,8 +2155,104 @@ def _digest_body_evidence(rows: list[dict]) -> list[dict]:
     return enriched if raw_email_snapshot(expected_generation=snapshot.generation) is snapshot else clean
 
 
+# Mail about the reader's own account that must never be lost among
+# notifications: an exposed secret, a vulnerability alert, a new sign-in, a
+# login change, a breach, a failed payment, a locked account, a 2FA change.
+# Subject and sender only (never the body), and never from a marketing or
+# newsletter sender, nor a promo that merely mentions security.
+_CRITICAL_MAIL = (
+    ("exposed_secret", re.compile(
+        r"\b(?:secrets?|credentials?|tokens?|api[ _-]?keys?|access keys?|private keys?|passwords?)\b"
+        r"[^.!?]{0,40}\b(?:detected|exposed|leaked|found|compromised|published)\b|"
+        r"\b(?:exposed|leaked|detected)\s+(?:\w+\s+){0,2}(?:secrets?|credentials?|tokens?|api[ _-]?keys?|passwords?)\b",
+        re.I)),
+    ("security_advisory", re.compile(
+        r"\bdependabot (?:security )?alerts?\b|\bsecurity (?:advisory|advisories|vulnerabilit(?:y|ies))\b|"
+        r"\bvulnerabilit(?:y|ies) (?:alerts?|found|detected)\b|\bcritical vulnerabilit(?:y|ies)\b", re.I)),
+    ("new_sign_in", re.compile(
+        r"\b(?:new|unusual|suspicious|unrecogni[sz]ed) (?:sign[- ]?in|log[- ]?in|device sign[- ]?in)\b|"
+        r"\b(?:sign[- ]?in|log[- ]?in) (?:attempt|alert)\b|"
+        r"\bsomeone (?:tried to |may have )?(?:sign(?:ed)?|log(?:ged)?)[- ]?in\b|\bwas this you\b", re.I)),
+    ("security_alert", re.compile(r"^\s*(?:critical )?security alert\b", re.I)),
+    ("login_change", re.compile(
+        r"\bpassword (?:(?:was|has been) )?(?:reset|changed)\b(?! (?:link|instructions))|"
+        r"\b(?:didn['’]?t|did not) request\b[^.!?]{0,40}\bpassword\b|"
+        r"\bpassword\b[^.!?]{0,40}\b(?:didn['’]?t|did not) request\b", re.I)),
+    ("breach", re.compile(
+        r"\bdata breach\b|\bsecurity (?:incident|breach)\b|"
+        r"\b(?:account|data|information) (?:was |has been |may have been )?(?:compromised|exposed in)\b", re.I)),
+    ("payment_failed", re.compile(
+        r"\bpayment (?:has |was )?(?:failed|declined|unsuccessful|could not be processed)\b|"
+        r"\b(?:card|transaction|charge) (?:was |has been )?declined\b|\bunable to process (?:your )?payment\b",
+        re.I)),
+    ("account_locked", re.compile(
+        r"\baccount (?:(?:has been|was|is|will be) )?(?:suspended|locked|disabled|deactivated|restricted)\b", re.I)),
+    ("two_factor", re.compile(
+        r"\b(?:two[- ]factor|2fa|two[- ]step|2-step|multi[- ]factor|mfa)\b[^.!?]{0,30}"
+        r"\b(?:disabled|turned off|removed|changed|reset)\b", re.I)),
+)
+# A promo or event that names a security product is not an alert on the account.
+_CRITICAL_PROMO = re.compile(
+    r"\b(?:webinar|workshop|hackathon|summit|conference|meetup|register|join us|is starting|starts|"
+    r"launch(?:es|ing|ed)?|announcing|introducing|new feature|try (?:it|now|free)|free trial|"
+    r"learn (?:how|more)|course|ebook|guide to|tips|best practices|% off|upgrade to|now available)\b", re.I)
+_CRITICAL_PHRASE = {
+    "exposed_secret": "flagged a possible exposed secret{where}",
+    "security_advisory": "sent a security vulnerability alert{where}",
+    "new_sign_in": "reported a new sign-in to your account",
+    "security_alert": "sent a security alert about your account",
+    "login_change": "reported a change to your account's sign-in details",
+    "breach": "reported a data breach",
+    "payment_failed": "reported a failed payment",
+    "account_locked": "reported your account is locked or suspended",
+    "two_factor": "reported a change to two-factor sign-in",
+}
+_REPO_PREFIX = re.compile(r"^\s*\[([A-Za-z0-9][\w.-]{0,38}/[\w.-]{1,60})\]")
+_SAFE_ORG = re.compile(r"[A-Za-z][A-Za-z .&'-]{0,29}")
+
+
+def critical_account_mail(row: dict) -> str | None:
+    """The kind of critical account alert this email is, or None. Headers only."""
+    subject = str(row.get("subject") or "")
+    sender = str(row.get("sender") or "")
+    identity = f"{sender} {row.get('sender_address', '') or ''}"
+    if (_NEWSLETTER_RE.search(identity) or _MARKETING_SUBJECT.search(subject) or _CRITICAL_PROMO.search(subject)
+            or is_broadcast(row)):
+        return None
+    domain = str(row.get("sender_address", "") or "").lower().rpartition("@")[2]
+    if _SOCIAL_RE.search(domain) or _SOCIAL_RE.search(sender):
+        # A social network's mail quotes other people's posts: only words
+        # outside a framed post title are about the reader's own account.
+        subject = _social_account_security_subject(subject)
+    for kind, pattern in _CRITICAL_MAIL:
+        if pattern.search(subject):
+            return kind
+    return None
+
+
+def critical_mail_title(row: dict, kind: str | None = None) -> str:
+    """A fixed, safe headline for a critical alert: the sender's organisation,
+    the alert's class and (for a repository alert) the repository, never the
+    subject's other words, a code, a token or a link."""
+    kind = kind or critical_account_mail(row)
+    if kind not in _CRITICAL_PHRASE:
+        return ""
+    sender = re.sub(r"\s*<[^>]*>?", "", str(row.get("sender") or "")).strip().strip('"\'')
+    org = sender if _SAFE_ORG.fullmatch(sender or "") else ""
+    if not org:
+        address = str(row.get("sender_address") or "") or (re.findall(r"<([^>]+)>", str(row.get("sender") or "")) or [""])[0]
+        host = address.rpartition("@")[2].split(".")
+        org = host[-2].capitalize() if len(host) >= 2 and re.fullmatch(r"[a-z]{2,20}", host[-2].lower()) else "A service"
+    repo = _REPO_PREFIX.match(str(row.get("subject") or ""))
+    where = f" in {repo.group(1)}" if repo and kind == "exposed_secret" else \
+        f" for {repo.group(1)}" if repo and kind == "security_advisory" else ""
+    return f"{org} {_CRITICAL_PHRASE[kind].format(where=where)} — review"
+
+
 def digest_category(row: dict) -> str:
     """Classify headers, using body evidence only from a current matched record."""
+    if critical_account_mail(row):
+        return "attention"
     if "body" in row and row.get("_current_list_footer") is not True:
         row = _digest_body_evidence([row])[0]
     subject = row.get("subject", "") or ""
