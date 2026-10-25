@@ -31,6 +31,10 @@ _WORK = re.compile(r"\b(?:worksheet|homework|hw\s*\d*|assignment|reading|reading
                    r"lab|project|pa\s*\d+|report|draft|write[- ]?up|submit|submission|due)\b", re.I)
 _LONG = re.compile(r"\b(?:worksheet|homework|hw\s*\d*|assignment|problem set|pset|essay|paper|lab|project|"
                    r"pa\s*\d+|report|write[- ]?up)\b", re.I)
+# A reminder to be somewhere ("Attend the midterm review session"): no work
+# time to block before it.
+_ATTEND = re.compile(r"\b(?:attend|go to|session|lecture|class|office hours|meeting|meet|appointment|call|"
+                     r"interview|party|dinner|lunch|event|recital|game|practice)\b", re.I)
 _STUDY = re.compile(r"\b(?:worksheet|homework|hw\s*\d*|reading|readings|problem set|pset|essay|study)\b", re.I)
 _COURSE = re.compile(r"\s*\[([A-Za-z]{2,6})-(\d{1,3}[A-Za-z]?)(?:-\d{1,3})?\]\s*")
 
@@ -78,6 +82,8 @@ def candidates(rows: list[dict], now: float, tz: str) -> list[dict]:
                 continue
         elif source not in ("reminders", "manual") or row.get("kind") in ("event", "meeting"):
             continue
+        elif _ATTEND.search(title) and not _LONG.search(title):
+            continue                     # a place to be, not work to do
         all_day = bool(row.get("all_day"))
         due_day = datetime.fromtimestamp(float(when), zone).date()
         if not today <= due_day <= today + timedelta(days=WINDOW_DAYS):
