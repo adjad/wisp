@@ -494,7 +494,15 @@ def _junk(title):
             or text in _JUNK_TITLES)
 
 
-def needs_you(attention, *, now, day_end):
+def needs_you_fingerprint(text, due_ts):
+    """What a Needs you row said when the user cleared it: its text and due
+    time (to the minute). A reminder given a new due date, or a person who
+    texts again ("2 texts from Mom"), reads differently, so it comes back."""
+    due = "" if not finite(due_ts) else str(int(due_ts // 60))
+    return hashlib.sha256((clean(text, 200) + "\x1f" + due).encode()).hexdigest()[:24]
+
+
+def needs_you(attention, *, now, day_end, dismissed=None):
     """The Brief's "Needs you today" line: the day's attention items that are
     work for the user today, as short grounded phrases, in this order:
 
@@ -511,6 +519,13 @@ def needs_you(attention, *, now, day_end):
     the tabs can't disagree; collection already left out mass mail
     (mass_mail_filter). Undated reminders, notes, calendar events, mail from
     automated senders and withheld-credential mail are never listed.
+    ``dismissed`` maps item ids the user cleared from the list to the
+    fingerprint (needs_you_fingerprint) each had then; an item whose id and
+    fingerprint both still match is left out before the cut, so the next item
+    takes its place and ``more`` counts only what is still listed. Clearing
+    never changes the source: the reminder stays in Reminders.
+    Each item carries its ``fingerprint``; a dated reminder (not a Day task)
+    carries ``can_complete`` for the row's Mark done.
     Returns ``dict(items=[...], more=N)``: at most NEEDS_YOU_SHOWN items, and
     how many more were selected."""
     overdue, due, plan, mail, texts, alerts = [], [], [], [], {}, {}
@@ -536,6 +551,10 @@ def needs_you(attention, *, now, day_end):
             seen.add(name)
             entry = dict(id=item["id"], kind="overdue" if dated and stamp < now else "due" if dated else "plan",
                          text=title, due_ts=stamp if dated else None, all_day=item.get("all_day") is True)
+            if dated and str(item["id"]).startswith("reminders:"):
+                # A Reminders (or Wisp-only) reminder, never a Day task: Mark done
+                # completes it through the verified path (needs_you_api.done).
+                entry["can_complete"] = True
             (overdue if entry["kind"] == "overdue" else due if dated else plan).append(entry)
         elif source == "email" and item.get("person") is True:
             sender = clean(item.get("sender"), 80)
@@ -572,16 +591,21 @@ def needs_you(attention, *, now, day_end):
     picked = sorted(alerts.values(), key=newest) + overdue + due + plan + mail + people
     for entry in picked:
         entry.pop("received_ts", None)
+        entry["fingerprint"] = needs_you_fingerprint(entry["text"], entry["due_ts"])
+    if dismissed:
+        picked = [e for e in picked if dismissed.get(e["id"]) != e["fingerprint"]]
     return dict(items=picked[:NEEDS_YOU_SHOWN], more=max(0, len(picked) - NEEDS_YOU_SHOWN))
 
 
-def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=(), profile=None):
+def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=(), profile=None,
+           dismissed=None):
     """Return explainable attention items and a proposed itinerary, all transient.
 
     ``evidence`` contains source-labelled records and explicit readiness/coverage.
     ``behavior`` is an optional public availability result, never raw activity.
     ``profile`` is the user's own profile (service/memory/profile.py) or None;
     an item naming one of its people is raised to the top with the reason said.
+    ``dismissed`` is the user's cleared Needs you rows (store.needs_you_dismissals).
     Its windows need current evidence, increasing bounds, >=0.65 recurrence strength,
     a named timezone, and a human-readable explanation. No percentage is shown:
     these scores are evidence strength, not calibrated forecast probabilities.
@@ -796,7 +820,7 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
             block["warnings"].append("Suggested time · duration is an estimate")
     proposal["tasks"] = state["tasks"]
     return dict(day=day, timezone=timezone, generated_at=now, attention=items[:MAX_ITEMS],
-                needs_you=needs_you(items[:MAX_ITEMS], now=now, day_end=hi),
+                needs_you=needs_you(items[:MAX_ITEMS], now=now, day_end=hi, dismissed=dismissed),
                 attention_omitted=max(0, len(items) - MAX_ITEMS), source_coverage=coverage,
                 behavior_detail=behavior_detail,
                 behavior_context=(dict(ready=True, generated_at=behavior["generated_at"],
@@ -1042,5 +1066,7 @@ def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), p
     if hide is not None:  # a Day task twin of a hidden reminder (today_api.snapshot does the same)
         state = {**state, "tasks": hide(state["tasks"], now)}
     evidence = collect_evidence(store, state, day, timezone, now=now)
+    cleared = getattr(store, "needs_you_dismissals", None)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
-                  ignored_windows=ignored_windows, profile=profile)
+                  ignored_windows=ignored_windows, profile=profile,
+                  dismissed=cleared() if cleared is not None else None)

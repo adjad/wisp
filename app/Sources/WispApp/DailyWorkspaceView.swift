@@ -106,6 +106,10 @@ struct DailyNeedsYou: Decodable, Equatable {
         let text: String
         let due_ts: Double?
         let all_day: Bool?
+        /// What Clear sends back (daily_workspace.needs_you_fingerprint).
+        var fingerprint: String? = nil
+        /// A dated reminder Mark done can complete.
+        var can_complete: Bool? = nil
     }
     let items: [Item]
     let more: Int

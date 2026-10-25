@@ -34,6 +34,9 @@ struct NotchBriefView: View {
     private let uncapped: Bool
     /// Card, to-do and thread state; the app's shared one, or a QA scene's own.
     private let actions: ProactiveActions
+    /// Clear and Mark done on the Top 3's Needs you rows.
+    @ObservedObject private var needActions: NeedsYouActionsModel = NotchBriefView.needsYouActions
+    static let needsYouActions = NeedsYouActionsModel(baseURL: WispClient.baseURL)
 
     @MainActor
     init(model: OverlayModel, today: TodayModel, open: String? = nil, uncapped: Bool = false,
@@ -259,7 +262,10 @@ struct NotchBriefView: View {
     // MARK: - Rows
 
     /// The default view: the Top 3, then what mail and texts are about.
-    private func topList(_ lines: [BriefDetail.Line], glance: [BriefDetail.Line]) -> some View {
+    private func topList(_ all: [BriefDetail.Line], glance: [BriefDetail.Line]) -> some View {
+        // A row the service just confirmed cleared or done leaves at once; the
+        // refreshed plan then fills its place.
+        let lines = all.filter { line in line.need.map { !needActions.isHidden($0) } ?? true }
         let width = Self.labelWidth(lines + glance)
         return VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
@@ -320,8 +326,86 @@ struct NotchBriefView: View {
     }
 
     /// The tab's one row style: a mono label column, then the text. A row
-    /// without a label keeps the column, so every list's text lines up.
-    private func row(_ line: BriefDetail.Line, width: CGFloat, secondary: Bool = false) -> some View {
+    /// without a label keeps the column, so every list's text lines up. A Needs
+    /// you row adds its trailing × (Clear, and Mark done for a reminder).
+    @ViewBuilder private func row(_ line: BriefDetail.Line, width: CGFloat, secondary: Bool = false) -> some View {
+        if let need = line.need, !needActions.actions(for: need).isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    plainRow(line, width: width, secondary: secondary)
+                    needControls(need)
+                }
+                if let failure = needActions.failures[need.id] {
+                    Text(failure).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, width + Self.labelGap)
+                }
+            }
+            .accessibilityElement(children: .contain)
+        } else {
+            plainRow(line, width: width, secondary: secondary)
+        }
+    }
+
+    /// A Needs you row's trailing control: a dim × that opens "Clear · Mark done"
+    /// in its place, never a sheet or alert (the panel doesn't take focus). While
+    /// the service works it says so; the row leaves only on its confirmation.
+    @ViewBuilder private func needControls(_ need: NeedsYouRow) -> some View {
+        let offered = needActions.actions(for: need)
+        if let working = needActions.busy[need.id] {
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini)
+                Text(working.progress).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(working.progress)
+        } else if needActions.open == need.id {
+            HStack(spacing: 6) {
+                ForEach(Array(offered.enumerated()), id: \.element) { index, action in
+                    if index > 0 {
+                        Text("·").font(.system(size: 12)).foregroundStyle(Theme.textMuted).accessibilityHidden(true)
+                    }
+                    Button { answer(action, need) } label: {
+                        Text(action.title).font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.textPrimary).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!needActions.busy.isEmpty)
+                    .help(action.help(need.text))
+                    .accessibilityLabel(action.accessibilityLabel(need.text))
+                }
+                Button { needActions.toggle(need); model.onResize() } label: {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.textMuted).frame(width: 14, height: 14).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Keep it in Needs you")
+                .accessibilityLabel("Cancel")
+            }
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(Capsule().fill(Theme.chipFill))
+            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+        } else {
+            Button { needActions.toggle(need); model.onResize() } label: {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.textMuted).frame(width: 16, height: 16).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(offered.contains(.markDone) ? "Clear from Needs you, or mark done" : "Clear from Needs you")
+            .accessibilityLabel("Options for \u{201C}\(need.text)\u{201D}")
+            .accessibilityHint(offered.map(\.title).joined(separator: " or "))
+        }
+    }
+
+    private func answer(_ action: NeedsYouRowAction, _ need: NeedsYouRow) {
+        Task {
+            let confirmed = await needActions.perform(action, on: need)
+            model.onResize()
+            if confirmed { await today.refresh(afterMutation: true) }
+        }
+    }
+
+    private func plainRow(_ line: BriefDetail.Line, width: CGFloat, secondary: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Self.labelGap) {
             // An empty label still sets a baseline; an empty Text doesn't, and
             // throws the row's first-baseline alignment off.
@@ -459,7 +543,9 @@ struct BriefContent {
         // The service's pick from the same attention items as the Day tab's Needs you.
         let needsList = isToday ? plan.workspace?.needs_you.flatMap { picked in
             DayTimeline.needsYouList(picked.items.map { NeedsYouInput(id: $0.id, kind: $0.kind, text: $0.text,
-                                                                      due: $0.due_ts, allDay: $0.all_day ?? false) },
+                                                                      due: $0.due_ts, allDay: $0.all_day ?? false,
+                                                                      fingerprint: $0.fingerprint,
+                                                                      canComplete: $0.can_complete ?? false) },
                                      more: picked.more, clock: today.clock)
         } : nil
         needsYou = needsList

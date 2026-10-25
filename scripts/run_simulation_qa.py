@@ -241,6 +241,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
+    "tests/test_needs_you_clear.py",
     # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
     "tests/test_messages_read_failure.py",
     # Real ASGI modes over disposable pending owners and fully inert capabilities.
@@ -1014,9 +1016,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 "app/Sources/WispApp/BriefSummary.swift",
                 "app/Sources/WispApp/QuickSettingsText.swift",
                 "app/Sources/WispApp/StaleReminders.swift",
+                "app/Sources/WispApp/NeedsYouActions.swift",
                 "tests/NotchTabChecks.swift", "tests/NotchDayChecks.swift",
                 "tests/BriefSummaryChecks.swift", "tests/QuickSettingsChecks.swift",
-                "tests/StaleReminderChecks.swift", "-o", notch_tab,
+                "tests/StaleReminderChecks.swift", "tests/NeedsYouActionChecks.swift", "-o", notch_tab,
             ],
         ),
         ("native/notch-tab-contract", [notch_tab]),
