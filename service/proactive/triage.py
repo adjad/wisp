@@ -21,7 +21,7 @@ from service.proactive import guard
 TOKENS = (160, 1400)
 # Bump whenever RULES or validate() change what a stored result means: older
 # checkpoints are then read again instead of served.
-VERSION = "6"
+VERSION = "7"
 
 RULES = (
     "You read ONE email thread or text conversation for the user's daily brief. "

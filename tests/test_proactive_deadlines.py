@@ -302,3 +302,11 @@ def test_summaries_that_describe_or_paste_the_message_are_templated():
                            {"source": "messages", "user_wrote": True})
     assert not triage.sane("From Dhruv Kolte: Quality Of Life Updates.", mail)
     assert triage.sane("Devarsh emailed about the 180 Degrees application.", mail)
+
+
+def test_a_reminder_to_attend_something_gets_no_work_block():
+    rows = [{"id": "r-review", "title": "Attend the midterm review session next Monday", "source": "reminders",
+             "kind": "reminder", "when_ts": at(16, 0, 26), "all_day": 0},
+            {"id": "r-lab", "title": "Finish lab report before section", "source": "reminders", "kind": "reminder",
+             "when_ts": at(16, 0, 26), "all_day": 0}]
+    assert [c["title"] for c in deadlines.candidates(rows, NOON, TZ)] == ["Finish lab report before section"]

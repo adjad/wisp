@@ -618,3 +618,26 @@ def test_the_gate_leaves_school_deadlines_and_unknown_read_state_alone():
     assert cycle.card_due({"source": "messages", "person": True, "unread": None, "received_ts": NOW}, NOW)
     assert not cycle.card_due({"source": "mail", "person": True, "unread": False, "received_ts": NOW - 60}, NOW)
     assert cycle.card_due({"source": "mail", "person": True, "unread": False, "received_ts": NOW - 86400}, NOW)
+
+
+def test_a_judged_item_citing_two_sources_does_not_crash_the_judge():
+    items = sources.text_items(mom_texts(), now=NOW, own=ME) + sources.text_items(
+        [(NOW - 500, "Dad", "Dad: can you call Mom tomorrow?", GUID_MOM)], now=NOW, own=ME)
+    survivors = [{"item": i, "result": {"title": "Talk", "summary": "", "junk": False, "sensitive": False,
+                                        "asks_of_me": "Talk with Mom tomorrow"}} for i in items]
+    ids = {f"S{n}": {"kind": "item", "survivor": s} for n, s in enumerate(survivors, 1)}
+    reply = json.dumps({"summary": "", "items": [{"title": "Call Mom tomorrow", "action": "call", "why": "",
+                                                  "due": "tomorrow", "urgency": "high", "sources": ["S1", "S2"]}]})
+    got = judge.validate(reply, ids, now=NOW, tz=TZ, sched={"calendar": [], "reminders": []}, suppressed=set())
+    assert got is not None
+    [item] = got[0]
+    assert item["sources"] == [items[0]["id"], items[1]["id"]]
+
+
+def test_a_chat_is_not_withheld_just_because_summarizing_redacted_a_number():
+    rows = [(NOW - 120, "Mom", "Mom: rent is 1450 this month, can you call me tonight?", GUID_MOM)]
+    item = sources.text_items(rows, now=NOW, own=ME)[0]
+    assert "omitted" in item["text"]               # the summary redactor hid the number
+    assert not triage.withheld(item)
+    otp = sources.text_items([(NOW - 60, "Mom", "Mom: your code is 482913", GUID_MOM)], now=NOW, own=ME)[0]
+    assert triage.withheld(otp)
