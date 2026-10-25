@@ -154,4 +154,4 @@ idle_unload_minutes: 5
 # delivery workflows, router reads/direct calls and verbatim tool
 # short-circuits are skipped. Safety policy and confirmations still apply.
 # WISP_MODEL_ONLY=1/0 overrides it; ~/.moe/config.yaml can set it too.
-model_only: true
+model_only: false
