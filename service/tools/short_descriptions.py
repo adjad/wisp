@@ -30,6 +30,7 @@ SHORT: dict[str, str] = {
     "find_free_time": "Find open gaps in the schedule for a meeting or call.",
     "get_past_events": "Read calendar events from the PAST (up to a year); counterpart to get_upcoming.",
     "get_upcoming": "Read upcoming events, due dates and reminders; use for any schedule question.",
+    "get_my_day_plan": "Read today's prioritized plan from the Brief: due, overdue and to-dos.",
     "plan_meeting": "Read-only private Calendar block proposal; never infer an event's end yourself.",
     "commit_private_meeting": "Create the exact block from plan_meeting, only after explicit user confirmation.",
     "search_reminders": "Search reminders by title, incl. overdue and Wisp-only copies; not events.",
