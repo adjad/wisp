@@ -312,8 +312,14 @@ def _digest_item(raw: dict, item: dict, result: dict, fingerprints: list[str], e
                 due_ts=due_ts, has_clock=has_clock, due_label=label,
                 urgency=raw.get("urgency") if raw.get("urgency") in _URGENCY else "medium",
                 source=item["source"], account=item["account"], who=item.get("who", ""), quote=guard.clean(line, 240),
-                primary=item["id"], sources=[item["id"]] + [e["item"]["id"] for e in extra],
+                primary=item["id"], sources=[item["id"]] + [_extra_item(e)["id"] for e in extra],
                 fingerprints=fingerprints, item=item, result=result)
+
+
+def _extra_item(entry: dict) -> dict:
+    """The item behind a further source: a judge id entry ({"kind": "item",
+    "survivor": {...}}) or an already-unwrapped survivor ({"item": ...})."""
+    return entry["survivor"]["item"] if "survivor" in entry else entry["item"]
 
 
 def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: str, sched: dict,
@@ -324,7 +330,7 @@ def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: st
         item, result = survivor["item"], survivor["result"]
         source_text = "\n".join([item["text"], item.get("who", ""), item.get("title", ""),
                                  result.get("summary", ""), result.get("asks_of_me", "")])
-        fingerprints = [f"{item['id']}:{item['hash']}"] + [f"{e['item']['id']}:{e['item']['hash']}" for e in extra]
+        fingerprints = [f"{item['id']}:{item['hash']}"] + [f"{_extra_item(e)['id']}:{_extra_item(e)['hash']}" for e in extra]
         if all(fp in suppressed for fp in fingerprints[:1]):
             return None
         if item.get("critical"):
@@ -378,7 +384,7 @@ def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: st
                     urgency=raw.get("urgency") if raw.get("urgency") in _URGENCY else "medium",
                     source=item["source"], account=item["account"], who=item.get("who", ""),
                     quote=_best_quote(item.get("lines") or [], " ".join([title, result.get("asks_of_me", "")])),
-                    primary=item["id"], sources=[item["id"]] + [e["item"]["id"] for e in extra],
+                    primary=item["id"], sources=[item["id"]] + [_extra_item(e)["id"] for e in extra],
                     fingerprints=fingerprints, item=item, result=result)
     if primary["kind"] == "reminder":
         row = primary["row"]
