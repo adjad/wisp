@@ -21,13 +21,18 @@ struct OverlayView: View {
     // Replies whose Details the person toggled away from the default (open in
     // Debug Mode, closed otherwise).
     @State private var detailsToggled: Set<UUID> = []
-    // Live display layout: notch on MacBooks (physical or virtual), floating
-    // capsule on monitors. Refreshes when displays change.
+    // Live display layout: notch on notched MacBooks, nothing drawn on other
+    // built-in displays (the menu-bar icon stands in), floating capsule on
+    // monitors. Refreshes when displays change.
     @ObservedObject private var display = DisplayGeometry.shared
 
     var body: some View {
         Group {
-            if model.collapsed { notchBar } else { expandedPanel }
+            if model.collapsed {
+                if layout.barIsVisible { notchBar } else { hiddenBar }
+            } else {
+                expandedPanel
+            }
         }
         .onAppear { breathe = true }
         .onChange(of: model.collapsed) { _, isCollapsed in
@@ -136,8 +141,15 @@ struct OverlayView: View {
         .onExitCommand { model.requestCollapse() }
     }
 
-    // Collapsed: a black bar that wraps the notch (physical or virtual) on a
-    // MacBook; on a monitor, a small capsule under the menu bar. Hover to open.
+    // Collapsed on a built-in display without a notch: nothing at all. Its status
+    // is on the menu-bar icon (AppDelegate.updateMenuBarStatus).
+    private var hiddenBar: some View {
+        Color.clear.frame(width: layout.barSize.width, height: layout.barSize.height)
+            .accessibilityHidden(true)
+    }
+
+    // Collapsed: a black bar that wraps the notch on a notched MacBook; on a
+    // monitor, a small capsule under the menu bar. Hover to open.
     private var notchBar: some View {
         ZStack(alignment: .bottom) {
             Theme.surface
@@ -216,11 +228,7 @@ struct OverlayView: View {
         Divider().overlay(Theme.hairline).padding(.vertical, 10)
     }
 
-    // Due today or overdue, once the day has loaded. Undated items wait in the Brief.
-    private var todayCount: Int {
-        guard todayModel.isShowingCurrentDay, let plan = todayModel.currentPlan else { return 0 }
-        return DayTimeline.badgeCount(plan.dayNeeds, endOfDay: todayModel.dayInterval.end.timeIntervalSince1970)
-    }
+    private var todayCount: Int { todayModel.dueBadgeCount }
 
     private var tabStrip: some View {
         HStack(spacing: 2) {
@@ -944,5 +952,15 @@ struct SourceSyncTip: View {
         }
         .font(.system(size: 11))
         .foregroundStyle(Theme.textMuted)
+    }
+}
+
+extension TodayModel {
+    /// Due today or overdue, once the day has loaded. Undated items wait in the
+    /// Brief. Shown on the collapsed bar, or on the menu-bar icon when no bar is
+    /// drawn.
+    var dueBadgeCount: Int {
+        guard isShowingCurrentDay, let plan = currentPlan else { return 0 }
+        return DayTimeline.badgeCount(plan.dayNeeds, endOfDay: dayInterval.end.timeIntervalSince1970)
     }
 }

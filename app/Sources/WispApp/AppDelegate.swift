@@ -73,6 +73,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverIntent = HoverIntent()
     private var hoverDwell: DispatchWorkItem?
     private var hoverMonitors: [Any] = []
+    // The menu-bar icon carries the bar's status where no bar is drawn
+    // (SurfaceLayout.statusInMenuBar). See observeMenuBarStatus.
+    private var menuBarStatusObservers: [AnyCancellable] = []
+    private var menuBarStatusQueued = false
+    private var shownMenuBarStatus: MenuBarStatus?
+    private var workingPulse: Timer?
+    private var workingPulseDim = false
     // Whether the notch-fused bar is showing at all. The X button turns this
     // off (dismiss from the notch, free the resident model, stay in the menu bar); the
     // menu-bar icon or ⌥Space bring it back. Distinct from `model.collapsed`,
@@ -223,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         buildMenu()
+        observeMenuBarStatus()
         installEditMenu()    // enables ⌘C/⌘V/⌘X/⌘A in the text field
         // ⌥Space summons the overlay
         hotKey = GlobalHotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
@@ -236,8 +244,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.toggleSearch() }
         }
         // Notchbox-style: the panel lives at the top-centre permanently — the
-        // notch (physical or virtual) on a MacBook, a floating capsule on a
-        // monitor. Collapsed it's a small bar; hovering it expands. Layout
+        // notch on a notched MacBook, an invisible top-edge zone on other
+        // built-in displays, a floating capsule on a monitor. Hovering it
+        // expands. Layout
         // follows the displays live, so attaching a monitor or changing
         // resolution re-fits it instead of leaving it stranded.
         DisplayGeometry.shared.onChange = { [weak self] in self?.displaysChanged() }
@@ -278,10 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self else { return }
             self.openAssistant()
-            self.model.showTransientNotice(
-                "Wisp lives in the notch now. Press ⌥Space or hover here to ask. "
-                    + "Click Wisp in the Dock for the full window.",
-                duration: duration)
+            self.model.showTransientNotice(DisplayGeometry.shared.layout.firstRunTip, duration: duration)
             // Tuck back in once the tip is gone, unless the pointer is on the panel
             // (scheduleCollapse also keeps an unsent draft open).
             DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
@@ -731,7 +737,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         hoverDwell = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + HoverIntent.dwell, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + DisplayGeometry.shared.layout.hoverDwell, execute: work)
     }
 
     private func cancelHoverDwell() {
@@ -901,6 +907,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // Monochrome orb glyph for the menu bar (template → adapts to light/dark).
+    // MARK: - Menu-bar status
+
+    /// Where no bar is drawn (a built-in display without a notch), the menu-bar
+    /// icon shows what the bar would: working, due today, or not set up.
+    private func observeMenuBarStatus() {
+        let changed: () -> Void = { [weak self] in self?.queueMenuBarStatus() }
+        menuBarStatusObservers = [
+            model.objectWillChange.sink { _ in changed() },
+            todayModel.objectWillChange.sink { _ in changed() },
+            DisplayGeometry.shared.$layout.sink { _ in changed() },
+        ]
+        updateMenuBarStatus()
+    }
+
+    /// Both publishers fire BEFORE the change lands, and a streaming reply fires
+    /// once per token: read the state once, on the next turn of the run loop.
+    private func queueMenuBarStatus() {
+        guard !menuBarStatusQueued else { return }
+        menuBarStatusQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.menuBarStatusQueued = false
+            self.updateMenuBarStatus()
+        }
+    }
+
+    private func updateMenuBarStatus() {
+        guard let button = statusItem?.button else { return }
+        // The same conditions as the collapsed bar (OverlayView.notchBar).
+        let status = DisplayGeometry.shared.layout.statusInMenuBar
+            ? MenuBarStatus(working: model.isProcessing || model.phase == .streaming,
+                            dueToday: todayModel.dueBadgeCount,
+                            setupSetAside: model.setupCard == .later)
+            : MenuBarStatus(working: false, dueToday: 0, setupSetAside: false)
+        guard status != shownMenuBarStatus else { return }
+        shownMenuBarStatus = status
+        button.title = status.title
+        button.imagePosition = status.title.isEmpty ? .imageOnly : .imageLeading
+        button.setAccessibilityLabel(status.accessibilityLabel)
+        setWorkingPulse(status.mark == .working)
+    }
+
+    /// The bar's breathing dot, on the icon: a slow fade while Wisp works. With
+    /// Reduce Motion it holds dimmed instead.
+    private func setWorkingPulse(_ on: Bool) {
+        workingPulse?.invalidate()
+        workingPulse = nil
+        workingPulseDim = false
+        statusItem.button?.alphaValue = 1
+        guard on else { return }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            statusItem.button?.alphaValue = 0.55
+            return
+        }
+        workingPulse = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let button = self.statusItem.button else { return }
+                self.workingPulseDim.toggle()
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.9
+                    button.animator().alphaValue = self.workingPulseDim ? 0.35 : 1
+                }
+            }
+        }
+    }
+
     private static func menubarOrb() -> NSImage {
         let d: CGFloat = 18
         let img = NSImage(size: NSSize(width: d, height: d))

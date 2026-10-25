@@ -6,11 +6,14 @@ import SwiftUI
 // monitor size without a physical screen; `DisplayGeometry` is the only piece
 // that touches AppKit, and it refreshes whenever displays change.
 //
-// Two styles, chosen per display:
-//   .notch    — any MacBook's built-in display. Fused to the top edge and
-//               centred on the camera housing. Macs without a physical notch
-//               (M1 Air, 13" Pro) get a *virtual* notch of the same size, so
-//               the overlay looks and behaves identically on every MacBook.
+// Three styles, chosen per display:
+//   .notch    — a built-in display with a camera housing. Fused to the top
+//               edge and centred on the notch.
+//   .menuBar  — a built-in display without one (M1 Air, 13" Pro, iMac). Nothing
+//               is drawn at rest: a drawn notch there would cover app menus and
+//               window titles. The menu-bar icon is the visible anchor and
+//               carries the bar's status; pushing the pointer to the top-centre
+//               edge opens the same panel as a card just under the menu bar.
 //   .floating — external monitors. Same hover-to-open behaviour and the same
 //               panel, but no notch is drawn: a detached capsule sits just
 //               under the menu bar and opens into a fully rounded card.
@@ -31,6 +34,16 @@ struct DisplayMetrics: Equatable {
         let width = frame.width - auxLeftWidth - auxRightWidth
         guard width >= 100, width <= 400 else { return nil }
         return CGSize(width: width, height: safeAreaTop)
+    }
+
+    /// Whether the display has a camera housing at all, even one whose side
+    /// areas are too odd to measure.
+    var hasCameraHousing: Bool { safeAreaTop > 0 }
+
+    /// The menu bar's height, or the standard one while it is hidden.
+    var menuBarHeight: CGFloat {
+        let reported = frame.maxY - visibleFrame.maxY
+        return reported > 0 ? reported : SurfaceLayout.standardMenuBarHeight
     }
 
     init(frame: CGRect, visibleFrame: CGRect, safeAreaTop: CGFloat = 0,
@@ -54,10 +67,10 @@ struct DisplayMetrics: Equatable {
 }
 
 struct SurfaceLayout: Equatable {
-    enum Style: Equatable { case notch, floating }
+    enum Style: String, Equatable { case notch, menuBar, floating }
 
-    // Reference notch (14"/16" MacBook Pro, 13"/15" Air): 185 x 32 pt. Used
-    // for the virtual notch on MacBooks that have no camera housing.
+    // Reference notch (14"/16" MacBook Pro, 13"/15" Air): 185 pt wide. Used only
+    // when a display reports a camera housing but implausible side areas.
     static let referenceNotch = CGSize(width: 185, height: 32)
     static let maxExpandedWidth: CGFloat = 640
     /// Collapsed bar overhang on each side of the notch — a hairline of black
@@ -78,21 +91,62 @@ struct SurfaceLayout: Equatable {
     static let floatingGap: CGFloat = 8
     static let floatingBar = CGSize(width: 148, height: 28)
     static let screenMargin: CGFloat = 12
+    /// Menu bar only: the invisible top-centre target. As wide as a notch's zone,
+    /// but only the top few points of the menu bar, because on these displays app
+    /// menus and status items DO run under the centre: people hover them at the
+    /// menu bar's middle, while the open gesture is a push against the top edge
+    /// (macOS pins the pointer there, so a thin strip is easy to hit).
+    static let edgeZoneWidth: CGFloat = 240
+    static let edgeZoneDepth: CGFloat = 4
+    /// Menu bar only: the never-drawn shape the card grows out of and gathers
+    /// back into, at the top-centre of the card. Small, so the close ends on
+    /// almost nothing rather than on a shape that then vanishes.
+    static let edgeSeed = CGSize(width: 64, height: 12)
+    /// Menu bar heights: macOS's standard, used when the menu bar is hidden
+    /// (auto-hide) and the display reports no height of its own.
+    static let standardMenuBarHeight: CGFloat = 24
 
     let style: Style
-    let isVirtualNotch: Bool
     let screenFrame: CGRect
     let usableFrame: CGRect
     let notchSize: CGSize
     let expandedWidth: CGFloat
+    /// The collapsed window. On .menuBar it is never drawn and lets clicks
+    /// through to the menu bar under it (see `barIsVisible`).
     let barFrame: CGRect
     /// Screen coordinates in which the pointer counts as "at the bar".
     let hoverZone: CGRect
 
-    var barCornerRadius: CGFloat { style == .notch ? 10 : 14 }
+    /// Whether anything is drawn while collapsed. Only false on .menuBar, where
+    /// the collapsed window must also ignore the mouse so the menu bar keeps it.
+    var barIsVisible: Bool { style != .menuBar }
+    /// Whether the menu-bar icon carries the bar's status (working, due today,
+    /// not set up), because there is no visible bar to carry it.
+    var statusInMenuBar: Bool { style == .menuBar }
+    /// How long the pointer must rest in the zone. Longer on .menuBar, whose zone
+    /// shares the top edge with whatever menu sits under the centre.
+    var hoverDwell: TimeInterval { style == .menuBar ? 0.2 : HoverIntent.dwell }
+    /// The first-run tip, naming where Wisp lives on this display.
+    var firstRunTip: String {
+        let place: String
+        switch style {
+        case .notch: place = "Wisp lives in the notch now. Press ⌥Space or hover here to ask."
+        case .menuBar: place = "Wisp lives at the top of your screen. Press ⌥Space, push the pointer "
+            + "to the top centre, or click the Wisp icon in the menu bar to ask."
+        case .floating: place = "Wisp lives at the top of your screen. Press ⌥Space or hover here to ask."
+        }
+        return place + " Click Wisp in the Dock for the full window."
+    }
+    var barCornerRadius: CGFloat {
+        switch style {
+        case .notch: return 10
+        case .menuBar: return Self.edgeSeed.height / 2
+        case .floating: return 14
+        }
+    }
     var panelCornerRadius: CGFloat { style == .notch ? 28 : 24 }
-    /// SwiftUI content sits below the camera housing on a notch; a floating
-    /// card just needs ordinary padding.
+    /// SwiftUI content sits below the camera housing on a notch; a card just
+    /// needs ordinary padding.
     var contentTopInset: CGFloat { style == .notch ? notchSize.height + 8 : 16 }
     var windowLevel: NSWindow.Level { style == .notch ? .statusBar : .floating }
     var maskedCorners: CACornerMask {
@@ -110,40 +164,63 @@ struct SurfaceLayout: Equatable {
     var panelShape: UnevenRoundedRectangle { shape(radius: panelCornerRadius) }
     var barShape: UnevenRoundedRectangle { shape(radius: barCornerRadius) }
 
+    /// Top of the expanded panel: the screen edge on a notch, just under the menu
+    /// bar otherwise.
+    private var panelTop: CGFloat {
+        style == .notch ? screenFrame.maxY : usableFrame.maxY - Self.floatingGap
+    }
+
     /// Frame of the expanded panel for a given content height: centred on the
     /// anchor, hanging from the top, and never taller than the screen.
     func expandedFrame(contentHeight: CGFloat) -> CGRect {
-        let top = style == .notch ? screenFrame.maxY
-                                  : usableFrame.maxY - Self.floatingGap
+        let top = panelTop
         let room = top - screenFrame.minY - Self.screenMargin
         let height = min(contentHeight, max(room, 0))
         return CGRect(x: (usableFrame.midX - expandedWidth / 2).rounded(),
                       y: (top - height).rounded(), width: expandedWidth, height: height)
     }
 
-    static func make(for metrics: DisplayMetrics) -> SurfaceLayout {
+    /// The layout for one display. `forcing` overrides the style chosen from the
+    /// hardware, for the debug override (see `DisplayGeometry.forcedStyle`).
+    static func make(for metrics: DisplayMetrics, forcing forced: Style? = nil) -> SurfaceLayout {
         let frame = metrics.frame
         let width = min(maxExpandedWidth, max(frame.width - 2 * screenMargin, 320))
-        if metrics.isBuiltIn {
-            let physical = metrics.physicalNotch
-            let notch = physical ?? referenceNotch
+        let style = forced ?? (metrics.isBuiltIn ? (metrics.hasCameraHousing ? .notch : .menuBar) : .floating)
+        switch style {
+        case .notch:
+            let notch = metrics.physicalNotch
+                ?? CGSize(width: referenceNotch.width,
+                          height: metrics.safeAreaTop > 0 ? metrics.safeAreaTop : referenceNotch.height)
             let barW = (notch.width + 2 * wing).rounded()
             let barH = notch.height.rounded()
             let bar = CGRect(x: (frame.midX - barW / 2).rounded(), y: frame.maxY - barH,
                              width: barW, height: barH)
-            return SurfaceLayout(style: .notch, isVirtualNotch: physical == nil,
-                                 screenFrame: frame, usableFrame: frame, notchSize: notch,
+            return SurfaceLayout(style: .notch, screenFrame: frame, usableFrame: frame, notchSize: notch,
                                  expandedWidth: width, barFrame: bar,
                                  hoverZone: notchZone(around: bar, top: frame.maxY))
+        case .menuBar:
+            // Under the menu bar, even while it is auto-hidden (visibleFrame then
+            // reaches the top edge, and a card there would sit on the menu bar when
+            // it slides back in).
+            var usable = metrics.visibleFrame
+            usable.size.height = min(usable.height, frame.maxY - metrics.menuBarHeight - usable.minY)
+            let seed = edgeSeed
+            let bar = CGRect(x: (usable.midX - seed.width / 2).rounded(),
+                             y: (usable.maxY - floatingGap - seed.height).rounded(),
+                             width: seed.width, height: seed.height)
+            return SurfaceLayout(style: .menuBar, screenFrame: frame, usableFrame: usable, notchSize: .zero,
+                                 expandedWidth: width, barFrame: bar,
+                                 hoverZone: edgeZone(centredOn: frame.midX, top: frame.maxY))
+        case .floating:
+            let usable = metrics.visibleFrame
+            let size = floatingBar
+            let bar = CGRect(x: (usable.midX - size.width / 2).rounded(),
+                             y: (usable.maxY - floatingGap - size.height).rounded(),
+                             width: size.width, height: size.height)
+            return SurfaceLayout(style: .floating, screenFrame: frame, usableFrame: usable, notchSize: .zero,
+                                 expandedWidth: width, barFrame: bar,
+                                 hoverZone: zone(around: bar, top: usable.maxY))
         }
-        let usable = metrics.visibleFrame
-        let size = floatingBar
-        let bar = CGRect(x: (usable.midX - size.width / 2).rounded(),
-                         y: (usable.maxY - floatingGap - size.height).rounded(),
-                         width: size.width, height: size.height)
-        return SurfaceLayout(style: .floating, isVirtualNotch: false, screenFrame: frame,
-                             usableFrame: usable, notchSize: .zero, expandedWidth: width,
-                             barFrame: bar, hoverZone: zone(around: bar, top: usable.maxY))
     }
 
     /// The notch's hover zone: wide, covering the upper part of the notch and the
@@ -157,6 +234,13 @@ struct SurfaceLayout: Equatable {
         let lower = bar.minY + bar.height * notchHoverBottomExclusion
         return CGRect(x: bar.minX - notchHoverMarginX, y: lower,
                       width: bar.width + 2 * notchHoverMarginX, height: top + 1 - lower)
+    }
+
+    /// The menu bar's invisible zone: a thin strip along the top-centre edge,
+    /// reaching one point past it for the same reason as the notch's.
+    private static func edgeZone(centredOn midX: CGFloat, top: CGFloat) -> CGRect {
+        CGRect(x: (midX - edgeZoneWidth / 2).rounded(), y: top - edgeZoneDepth,
+               width: edgeZoneWidth, height: edgeZoneDepth + 1)
     }
 
     private static func zone(around bar: CGRect, top: CGFloat) -> CGRect {
@@ -177,6 +261,39 @@ struct SurfaceLayout: Equatable {
         frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
         visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 950),
         safeAreaTop: 32, auxLeftWidth: 663.5, auxRightWidth: 663.5, isBuiltIn: true))
+}
+
+/// What the menu-bar icon shows when it stands in for the bar (.menuBar): the
+/// same signals, in the same order of precedence, as the collapsed bar.
+struct MenuBarStatus: Equatable {
+    enum Mark: Equatable { case none, working, due(Int), notSetUp }
+    let mark: Mark
+
+    init(working: Bool, dueToday: Int, setupSetAside: Bool) {
+        if working { mark = .working }
+        else if !setupSetAside, dueToday > 0 { mark = .due(dueToday) }
+        else if setupSetAside { mark = .notSetUp }
+        else { mark = .none }
+    }
+
+    /// Text beside the icon.
+    var title: String {
+        switch mark {
+        case .due(let n): return "\(n)"
+        case .notSetUp: return "!"
+        case .none, .working: return ""
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch mark {
+        case .none: return "Wisp"
+        case .working: return "Wisp, working"
+        case .due(1): return "Wisp, 1 thing is due today"
+        case .due(let n): return "Wisp, \(n) things are due today"
+        case .notSetUp: return "Wisp isn't set up yet"
+        }
+    }
 }
 
 /// Pointer-intent rules for the collapsed bar, kept pure so the reliability
@@ -221,7 +338,20 @@ final class DisplayGeometry: ObservableObject {
     var onChange: () -> Void = {}
 
     init(displays: @autoclosure () -> [DisplayMetrics] = DisplayGeometry.currentDisplays()) {
-        layout = SurfaceLayout.target(from: displays()).map(SurfaceLayout.make) ?? .fallback
+        layout = Self.layout(for: displays())
+    }
+
+    /// Debug override for the style, so the menu-bar and floating styles can be
+    /// tried on a notched MacBook (no notchless Mac needed):
+    /// `defaults write <bundle id> wisp.debug.surfaceStyle menuBar` (or
+    /// `floating`, `notch`), then relaunch. Delete the key to follow the hardware.
+    nonisolated static let forcedStyleKey = "wisp.debug.surfaceStyle"
+    nonisolated static var forcedStyle: SurfaceLayout.Style? {
+        UserDefaults.standard.string(forKey: forcedStyleKey).flatMap(SurfaceLayout.Style.init(rawValue:))
+    }
+
+    private static func layout(for displays: [DisplayMetrics]) -> SurfaceLayout {
+        SurfaceLayout.target(from: displays).map { SurfaceLayout.make(for: $0, forcing: forcedStyle) } ?? .fallback
     }
 
     nonisolated static func currentDisplays() -> [DisplayMetrics] {
@@ -250,7 +380,7 @@ final class DisplayGeometry: ObservableObject {
     }
 
     func refresh(displays: [DisplayMetrics] = DisplayGeometry.currentDisplays()) {
-        let next = SurfaceLayout.target(from: displays).map(SurfaceLayout.make) ?? .fallback
+        let next = Self.layout(for: displays)
         guard next != layout else { return }
         layout = next
         onChange()
