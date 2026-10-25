@@ -578,9 +578,10 @@ async def _resident_reply(system: str, material: str, abort, *,
 # --- the tick ---------------------------------------------------------------------
 
 
-def _jobs(now: float) -> list[dict]:
+def _jobs(now: float, *, force: bool = False) -> list[dict]:
     """The overviews whose inputs changed and are due a rewrite: the inbox
-    summary first, then the MAIL and TEXTS lines."""
+    summary first, then the MAIL and TEXTS lines. ``force`` (the hourly idle
+    refresh) rewrites a fresh one too; a failing kind still waits its turn."""
     cache = _load()
     jobs = []
     rows = recent_mail(now)
@@ -603,19 +604,21 @@ def _jobs(now: float) -> list[dict]:
         entry = cache.get(job["kind"])
         if _attempts.get(job["kind"] + ":" + job["key"], 0) >= _MAX_ATTEMPTS or now < _retry_at.get(job["kind"], 0):
             continue
-        if entry and (entry["key"] == job["key"] or now - entry["at"] < _REWRITE_S):
+        if not force and entry and (entry["key"] == job["key"] or now - entry["at"] < _REWRITE_S):
             continue
         due.append(job)
     return due
 
 
-async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
-    """Write the first overview that is due. True when one was written."""
+async def refresh(now: float | None = None, *, synth=None, abort=None, force: bool = False,
+                  kind: str | None = None) -> bool:
+    """Write the first overview that is due (only ``kind``'s, when given). True
+    when one was written."""
     global _next_call_at
     from service import idle
     now = time.time() if now is None else now
     abort = abort or idle.foreground_busy
-    jobs = _jobs(now)
+    jobs = [j for j in (_jobs(now, force=True) if force else _jobs(now)) if kind is None or j["kind"] == kind]
     if not jobs:
         _stood_down("no new mail or texts to describe")
         _next_call_at = now + _IDLE_GAP_S
@@ -659,6 +662,31 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
     _save()
     print(f"[mail_gists] wrote the {job['kind']} gist in {time.monotonic() - started:.1f}s", flush=True)
     return True
+
+
+async def refresh_all(now: float | None = None, *, synth=None, abort=None) -> int:
+    """The hourly idle refresh (service/proactive/cycle.py): rewrite every
+    overview, fresh or not, one call after another. Holds this module's own
+    tick off meanwhile (one resident model, one request at a time) and stops
+    when a turn starts. Returns how many were written."""
+    global _task
+    from service import idle
+    abort = abort or idle.foreground_busy
+    if _remote_background_paused():
+        return 0
+    if _task is not None and not _task.done():
+        return 0                     # a gist call is already running: no second one
+    _task = asyncio.current_task()
+    written = 0
+    try:
+        for kind in KINDS:
+            if abort():
+                break
+            written += bool(await refresh(now, synth=synth, abort=abort, force=True, kind=kind))
+    finally:
+        if _task is asyncio.current_task():
+            _task = None
+    return written
 
 
 def invalidate(kinds: tuple[str, ...] = ("summary", "inbox")) -> list[str]:
