@@ -254,6 +254,27 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.needsYouList([NeedsYouInput(kind: "due", text: "nothing")], more: 4, clock: clock) == nil,
           "junk-only selected items do not create a needs-you section")
 
+    // Each row's actions: Clear for any row the service fingerprinted, Mark done
+    // only for a reminder it can complete; an older service's rows offer nothing.
+    let actionable = DayTimeline.needsYouList([
+        NeedsYouInput(id: "reminders:r", kind: "overdue", text: "Wisp verification timed 2113", due: dayStart - 5 * hour,
+                      fingerprint: "f1", canComplete: true),
+        NeedsYouInput(id: "email:m", kind: "mail", text: "“Lab feedback” from Dr. Patel", fingerprint: "f2"),
+        NeedsYouInput(id: "wisp:t", kind: "plan", text: "Finish slides", fingerprint: "f3"),
+        NeedsYouInput(id: "reminders:old", kind: "due", text: "No fingerprint", due: at(20), canComplete: true),
+        NeedsYouInput(kind: "text", text: "a text from Mom", fingerprint: "f5"),
+    ], more: 0, clock: clock)
+    check(actionable?.rows.map(\.actions) == [[.clear, .markDone], [.clear], [.clear], [], []],
+          "row actions: \(actionable?.rows.map(\.actions) ?? [])")
+    check(actionable?.rows.first?.fingerprint == "f1" && actionable?.rows.first?.dismissalKey == "reminders:r#f1",
+          "a row keeps the service's fingerprint for Clear")
+    check(NeedsYouRowAction.clear.path == "clear" && NeedsYouRowAction.markDone.path == "done",
+          "the two service paths")
+    check(NeedsYouRowAction.clear.accessibilityLabel("Pay rent") == "Clear “Pay rent” from Needs you"
+          && NeedsYouRowAction.markDone.accessibilityLabel("Pay rent") == "Mark “Pay rent” done in Reminders",
+          "each action names its row for VoiceOver")
+    check(NeedsYouRowAction.clear.help("x").contains("stays in Reminders"), "Clear says it never touches the reminder")
+
     // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!
     let light = DayLoad.assess(events: [], allDay: ["PA 2 [CSE-20-04]"], from: now, dayStart: dayStart, isToday: true, zone: utc)

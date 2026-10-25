@@ -1,14 +1,14 @@
 {
   "zip": "mellum-r2-data.zip",
-  "sha256": "2a4a123370f426e6dbccdc823d8dafe5039271d6379cdf49acab5f2af830856c",
-  "bytes": 8041502,
+  "sha256": "edd06917d46a1f8c5f3391a11ced4052cbb335b63a709b7178f7453173c63338",
+  "bytes": 8041503,
   "manifest": {
-    "built": "2026-10-24T22:39:11",
+    "built": "2026-10-25T00:26:26",
     "files": {
       "train.jsonl": "39fce9cbd4afc9d1fa6cc82f4b02cf8f18f2699d6d3aba42036338e878f8460e",
       "dev.jsonl": "85dec979353f42c8e89d9422de1ab3bf35454c35d71056bc97e35f28f39362ca",
       "stats.json": "994e64316a862c27728bef99eb76fb926fe03e0eb0e3ff252110806089c43ac0",
-      "validation.json": "a60f0ea9dc6ad62a55d0bd2969828f83e8ae77266546b7237b1b5db7f96faf53",
+      "validation.json": "64562a771f5d255528c281ee70f8e2628573f8d6386093199833a7d319869607",
       "DATA_CARD.md": "aa97189e0efd9e43815a800ae3658302b0df5098903db016213b6e899821e8ec",
       "train/train.py": "777d8c5438879bc0e500d311c65d8ff6cb5740478fb2d650819798723ff1db8e"
     }

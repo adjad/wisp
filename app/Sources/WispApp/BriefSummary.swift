@@ -149,6 +149,8 @@ struct BriefDetail: Equatable {
         var muted = false
         /// A paragraph, shown whole rather than cut to two lines.
         var paragraph = false
+        /// The Needs you row this line shows, for its Clear and Mark done.
+        var need: NeedsYouRow? = nil
     }
     let lines: [Line]
     let source: DayTimeline.BriefSource
@@ -648,7 +650,7 @@ enum BriefTiles {
     static func top(picked: [NeedsYouRow], todos: [BriefDetail.Line], next: BriefDetail.Line?, limit: Int = 3) -> [BriefDetail.Line] {
         var seen = Set<String>()
         var out: [BriefDetail.Line] = []
-        let candidates = picked.map { BriefDetail.Line(id: "top-" + $0.id, leading: $0.label ?? "", text: $0.text) }
+        let candidates = picked.map { BriefDetail.Line(id: "top-" + $0.id, leading: $0.label ?? "", text: $0.text, need: $0) }
             + todos.filter { !$0.muted } + [next].compactMap { $0 }
         for line in candidates where out.count < limit && seen.insert(key(line.text)).inserted {
             out.append(line)

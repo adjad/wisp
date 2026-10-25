@@ -244,6 +244,9 @@ struct ProactiveBriefSection: View {
     @ObservedObject var model: OverlayModel
     @ObservedObject var today: TodayModel
     @ObservedObject var actions: ProactiveActions = .shared
+    /// Clear (and Mark done for a dated reminder) behind each to-do's and
+    /// thread's trailing ×; shared with the Top 3's Needs you rows.
+    @ObservedObject var itemActions: NeedsYouActionsModel = NotchBriefView.needsYouActions
     /// The rest of today's calendar, for the clock row.
     var events: [(start: Double, title: String)] = []
     /// The tallest an opened row gets before it scrolls, so the tab fits the
@@ -664,7 +667,8 @@ struct ProactiveBriefSection: View {
     // MARK: To-do
 
     @ViewBuilder private func todoList(_ shown: ProactiveState) -> some View {
-        let todos = shown.orderedTodos
+        // A row the service just confirmed cleared or done leaves at once.
+        let todos = shown.orderedTodos.filter { !itemActions.isHidden($0.actionRow) }
         let visible = actions.showAllTodos ? todos : Array(todos.prefix(Self.todoLimit))
         VStack(alignment: .leading, spacing: 2) {
             ForEach(visible) { todo in todoRow(todo) }
@@ -727,13 +731,24 @@ struct ProactiveBriefSection: View {
                             .help("Fit it into today's plan")
                     }
                 }
+                if !busy { rowControls(todo.actionRow) }
             }
             .padding(.vertical, 3)
             if let error = actions.todoErrors[todo.id] {
                 Text(error).font(.system(size: 11)).foregroundStyle(Theme.bad).padding(.leading, 51)
             }
+            if let failure = itemActions.failures[todo.id] {
+                Text(failure).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true).padding(.leading, 51)
+            }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// A row's trailing ×: Clear, and Mark done for a dated reminder.
+    private func rowControls(_ row: NeedsYouRow) -> some View {
+        NeedsYouRowControls(row: row, actions: itemActions, onResize: { model.onResize() },
+                            onConfirmed: { await today.refresh(afterMutation: true) })
     }
 
     // MARK: Summaries
@@ -745,7 +760,7 @@ struct ProactiveBriefSection: View {
     /// What mail and texts need from you, always open: who and what, two lines
     /// each, replies first and brighter.
     @ViewBuilder private func attention(_ shown: ProactiveState) -> some View {
-        let threads = shown.orderedThreads
+        let threads = shown.orderedThreads.filter { !itemActions.isHidden($0.actionRow) }
         let waiting = threads.filter(\.needsReply).count
         let visible = actions.showAllThreads ? threads : Array(threads.prefix(Self.attentionLimit))
         VStack(alignment: .leading, spacing: 2) {
@@ -777,43 +792,52 @@ struct ProactiveBriefSection: View {
         let hot = thread.needsReply
         let hovered = hoveredThread == thread.id
         return VStack(alignment: .leading, spacing: 6) {
-            Button {
-                if open { actions.expanded.remove(thread.id) } else { actions.expanded.insert(thread.id) }
-                model.onResize()
-            } label: {
-                HStack(alignment: .top, spacing: 9) {
-                    Image(systemName: DayTimeline.sourceSymbol(thread.source))
-                        .font(.system(size: 11)).foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted)
-                        .frame(width: 15).padding(.top, 2)
-                    (Text(thread.who.isEmpty ? "Someone" : thread.who).font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(hot ? Theme.textPrimary : Theme.textSecondary)
-                     + Text("  " + thread.line).font(.system(size: 13))
-                        .foregroundColor(hot ? Theme.textSecondary : Theme.textMuted))
-                        .lineLimit(open ? nil : 2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    VStack(alignment: .trailing, spacing: 3) {
-                        Text(hot ? "NEEDS REPLY" : "FYI").font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(hot ? Theme.textPrimary : Theme.textMuted)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .overlay(Capsule().stroke(hot ? Color.white.opacity(0.45) : Theme.chipStroke, lineWidth: 1))
-                            .fixedSize()
-                        Text(timeLabel(thread.receivedTs)).font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Theme.textMuted).fixedSize()
+            HStack(alignment: .top, spacing: 4) {
+                Button {
+                    if open { actions.expanded.remove(thread.id) } else { actions.expanded.insert(thread.id) }
+                    model.onResize()
+                } label: {
+                    HStack(alignment: .top, spacing: 9) {
+                        Image(systemName: DayTimeline.sourceSymbol(thread.source))
+                            .font(.system(size: 11)).foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted)
+                            .frame(width: 15).padding(.top, 2)
+                        (Text(thread.who.isEmpty ? "Someone" : thread.who).font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(hot ? Theme.textPrimary : Theme.textSecondary)
+                         + Text("  " + thread.line).font(.system(size: 13))
+                            .foregroundColor(hot ? Theme.textSecondary : Theme.textMuted))
+                            .lineLimit(open ? nil : 2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .trailing, spacing: 3) {
+                            Text(hot ? "NEEDS REPLY" : "FYI").font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(hot ? Theme.textPrimary : Theme.textMuted)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .overlay(Capsule().stroke(hot ? Color.white.opacity(0.45) : Theme.chipStroke, lineWidth: 1))
+                                .fixedSize()
+                            Text(timeLabel(thread.receivedTs)).font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Theme.textMuted).fixedSize()
+                        }
                     }
+                    .padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 6)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(hovered || open ? 0.05 : hot ? 0.03 : 0)))
+                    .overlay(alignment: .leading) {
+                        // Replies owed get a quiet accent, so they read first.
+                        if hot { RoundedRectangle(cornerRadius: 1).fill(Color.white.opacity(0.6)).frame(width: 2).padding(.vertical, 6) }
+                    }
+                    .contentShape(Rectangle())
                 }
-                .padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(hovered || open ? 0.05 : hot ? 0.03 : 0)))
-                .overlay(alignment: .leading) {
-                    // Replies owed get a quiet accent, so they read first.
-                    if hot { RoundedRectangle(cornerRadius: 1).fill(Color.white.opacity(0.6)).frame(width: 2).padding(.vertical, 6) }
-                }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .onHover { inside in hoveredThread = inside ? thread.id : (hoveredThread == thread.id ? nil : hoveredThread) }
+                .help(open ? "Hide the actions" : "Reply, open or ask about this")
+                .accessibilityValue(open ? "Expanded" : "Collapsed")
+                // Beside the row, not in it: a button inside the row's button
+                // would open the thread instead.
+                rowControls(thread.actionRow).padding(.top, 6)
             }
-            .buttonStyle(.plain)
-            .onHover { inside in hoveredThread = inside ? thread.id : (hoveredThread == thread.id ? nil : hoveredThread) }
-            .help(open ? "Hide the actions" : "Reply, open or ask about this")
-            .accessibilityValue(open ? "Expanded" : "Collapsed")
+            if let failure = itemActions.failures[thread.id] {
+                Text(failure).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true).padding(.leading, 32)
+            }
             if open { threadDetail(thread) }
         }
     }

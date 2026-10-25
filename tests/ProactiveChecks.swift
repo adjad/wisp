@@ -167,6 +167,31 @@ struct ProactiveChecks {
         check(ProactiveThread(id: "x", source: "mail", who: "no-reply@canvas").isOrganization
               && !ProactiveThread(id: "y", source: "mail", who: "Ed").isOrganization, "organizations by name")
 
+        // Each to-do and thread's trailing ×: Clear for every row the service
+        // fingerprinted, Mark done only for an open dated reminder.
+        let actionable = decode("""
+        {"state":"ready","todos":[
+          {"id":"todo:r","title":"Wisp verification timed 2113","source":"reminders","due_ts":1700000000,
+           "due_label":"Overdue · 2 days","kind":"reminder","done":false,"fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaa","can_complete":true},
+          {"id":"todo:m","title":"Reply to Dana","source":"mail","fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbb"},
+          {"id":"todo:d","title":"Done one","source":"reminders","done":true,"fingerprint":"cccccccccccccccccccccccc",
+           "can_complete":true},
+          {"id":"todo:old","title":"Older service","source":"reminders","can_complete":true}],
+         "threads":[{"id":"thread:t","source":"messages","who":"Mom","title":"Dinner Sunday?",
+                     "fingerprint":"dddddddddddddddddddddddd"},
+                    {"id":"thread:o","source":"mail","who":"Ed","title":"Old"}]}
+        """)
+        check(actionable?.todos.map(\.actionRow.actions) == [[.clear, .markDone], [.clear], [.clear], []],
+              "to-do actions: \(actionable?.todos.map(\.actionRow.actions) ?? [])")
+        check(actionable?.todos.first?.actionRow.route == NeedsYouRow.todoRoute
+              && actionable?.todos.first?.actionRow.fingerprint == "aaaaaaaaaaaaaaaaaaaaaaaa", "a to-do's route and fingerprint")
+        check(actionable?.threads.map(\.actionRow.actions) == [[.clear], []], "a thread offers Clear only")
+        check(actionable?.threads.first?.actionRow.route == NeedsYouRow.threadRoute
+              && actionable?.threads.first?.actionRow.text == "Mom: Dinner Sunday?", "a thread's route and label text")
+        check(actionable?.threads.first?.actionRow.help(.clear).contains("Nothing is marked read") == true
+              && actionable?.todos.first?.actionRow.help(.clear).contains("stays in Reminders") == true,
+              "each Clear says what it leaves alone")
+
         print("Proactive checks: \(count) passed")
     }
 }

@@ -81,6 +81,30 @@ struct NeedsYouInput: Equatable {
     var text: String
     var due: Double? = nil
     var allDay = false
+    /// What the row said, as the service fingerprinted it; Clear sends it back.
+    var fingerprint: String? = nil
+    /// A dated reminder the service can complete (daily_workspace.needs_you).
+    var canComplete = false
+}
+
+/// What a Needs you row offers behind its ×. Clear only hides the row from
+/// Needs you (service/assistant/needs_you_api.py); the reminder itself stays.
+/// Mark done completes a reminder through the verified native path.
+enum NeedsYouRowAction: String, Equatable, CaseIterable {
+    case clear, markDone
+
+    var title: String { self == .clear ? "Clear" : "Mark done" }
+    /// Said while the service works on it.
+    var progress: String { self == .clear ? "Clearing…" : "Marking done…" }
+    /// The service path under /assistant/needs_you/<id>/.
+    var path: String { self == .clear ? "clear" : "done" }
+    func accessibilityLabel(_ text: String) -> String {
+        self == .clear ? "Clear \u{201C}\(text)\u{201D} from Needs you" : "Mark \u{201C}\(text)\u{201D} done in Reminders"
+    }
+    func help(_ text: String) -> String {
+        self == .clear ? "Hide this from Needs you. It stays in Reminders, and comes back if it changes."
+            : "Complete this reminder in Reminders"
+    }
 }
 
 /// One scannable row in the Brief's structured Needs you section.
@@ -89,6 +113,32 @@ struct NeedsYouRow: Equatable, Identifiable {
     let label: String?
     let text: String
     let overdue: Bool
+    var fingerprint: String? = nil
+    var canComplete = false
+    /// Where its answers go: <route>/<id>/clear|done. The Brief's Needs you
+    /// rows by default; the proactive Brief's to-dos and threads have their own.
+    var route = NeedsYouRow.needsYouRoute
+
+    static let needsYouRoute = "assistant/needs_you"
+    static let todoRoute = "assistant/proactive/todos"
+    static let threadRoute = "assistant/proactive/threads"
+
+    /// Clear for any row the service identified; Mark done for a reminder too.
+    /// A row with no service id or fingerprint (an older service) offers nothing.
+    var actions: [NeedsYouRowAction] {
+        guard let fingerprint, !fingerprint.isEmpty, !id.hasPrefix("needs-you-") else { return [] }
+        return canComplete ? [.clear, .markDone] : [.clear]
+    }
+
+    /// The tooltip for one action on this row: a thread's Clear marks nothing read.
+    func help(_ action: NeedsYouRowAction) -> String {
+        action == .clear && route == NeedsYouRow.threadRoute
+            ? "Hide this from the Brief. Nothing is marked read; a new message brings it back."
+            : action.help(text)
+    }
+
+    /// What a Clear hides: this id while it still says the same thing.
+    var dismissalKey: String { id + "#" + (fingerprint ?? "") }
 }
 
 /// The items selected by the service plus its count of additional items.
@@ -635,7 +685,8 @@ struct DayTimeline: Equatable {
             default: label = nil
             }
             return NeedsYouRow(id: item.id ?? "needs-you-\(index)", label: label,
-                               text: item.text, overdue: item.kind == "overdue" || item.kind == "alert")
+                               text: item.text, overdue: item.kind == "overdue" || item.kind == "alert",
+                               fingerprint: item.fingerprint, canComplete: item.canComplete)
         }
         return NeedsYouList(rows: rows, more: max(0, more))
     }

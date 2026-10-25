@@ -82,7 +82,7 @@
     "service/tools/recent_tools.py": "cbb2e4b57a70281651f8296a6e0355c43f299577ccf8606bd9ee81353ca01c30",
     "service/tools/reference_tools.py": "8b7cccccc3fe5c9e375814cb2308091d4e7950e17dd90d5441df5c1a36889468",
     "service/tools/registry.py": "c549dee85b1433fd54055c30a004651ea16153dafc93643ca0300d6c7917f9fc",
-    "service/tools/schedule_extras.py": "94d10980fa3a6ab33f8b26678da0fd9e70fe4bb6d3ed9ee4f3fcd4afbcac2b7c",
+    "service/tools/schedule_extras.py": "80801b4728617aaa79ee27046e6b25baaaa36e3e2e31b8bc72287cdae938c43d",
     "service/tools/search_coverage.py": "a4c7e2826733f1dc367b8d68efc94fee947966ceba70efaa49079f918937f66f",
     "service/tools/short_descriptions.py": "2512435818f96cca3070f46cc1f32f31b26fb2e3e65f0be4714106dd210e87be",
     "service/tools/speech_tools.py": "3f9329d495bf9a478234eece25e93c0109e31ed3785604cf5fa7e04f34bab385",

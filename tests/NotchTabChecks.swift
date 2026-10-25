@@ -54,6 +54,7 @@ struct NotchTabChecks {
         dayChecks(check)
         quickSettingsChecks(check)
         staleReminderChecks(check)
+        needsYouActionChecks(check)
 
         print("\(count) notch tab, day, quick settings and stale reminder checks passed.")
     }

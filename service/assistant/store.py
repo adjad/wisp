@@ -413,6 +413,12 @@ class AssistantStore:
                     status TEXT NOT NULL, total INTEGER NOT NULL, stored INTEGER NOT NULL,
                     recorded_at REAL NOT NULL
                 )""")
+                # Rows the user cleared from the Brief's Needs you list, by item id and
+                # what the row said then (daily_workspace.needs_you_fingerprint). Only
+                # hides the row: the reminder, mail or text itself is never changed.
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_needs_you_dismissals (
+                    item_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, dismissed_at REAL NOT NULL
+                )""")
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_completion (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL, completed_at REAL NOT NULL
                 )""")
@@ -2399,6 +2405,28 @@ class AssistantStore:
             if planned is None or planned < matched(task):
                 hidden.add(task["id"])
         return [t for t in tasks if t.get("id") not in hidden]
+
+    # The newest cleared rows kept; older ones lapse (their items are long gone).
+    NEEDS_YOU_DISMISSALS_KEPT = 500
+
+    def dismiss_needs_you(self, item_id: str, fingerprint: str) -> None:
+        """Hide one Needs you row while it still reads ``fingerprint``. Writes only
+        this table: nothing in Reminders, Mail or Messages changes."""
+        with self._write_transaction():
+            self._db.execute(
+                "INSERT INTO assistant_needs_you_dismissals(item_id,fingerprint,dismissed_at) VALUES (?,?,?) "
+                "ON CONFLICT(item_id) DO UPDATE SET fingerprint=excluded.fingerprint,dismissed_at=excluded.dismissed_at",
+                (item_id, fingerprint, time.time()))
+            self._db.execute(
+                "DELETE FROM assistant_needs_you_dismissals WHERE item_id NOT IN (SELECT item_id FROM "
+                "assistant_needs_you_dismissals ORDER BY dismissed_at DESC, item_id LIMIT ?)",
+                (self.NEEDS_YOU_DISMISSALS_KEPT,))
+
+    def needs_you_dismissals(self) -> dict[str, str]:
+        """{item id: fingerprint} for every cleared Needs you row."""
+        with self.transaction(write=False) as db:
+            return {r["item_id"]: r["fingerprint"] for r in
+                    db.execute("SELECT item_id,fingerprint FROM assistant_needs_you_dismissals")}
 
     def keep_stale_reminder(self, source_id: str, title: str) -> None:
         with self._write_transaction():

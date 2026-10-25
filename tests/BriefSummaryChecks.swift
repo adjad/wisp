@@ -273,6 +273,8 @@ func briefTileChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Dou
                              next: BriefDetail.Line(id: "next", leading: "3 PM", text: "Standup"))
     check(top.map(\.text) == ["Return library book", "“Thesis” from Advisor", "Pay rent"],
           "Top 3 names each thing once, the service's pick first: \(top.map(\.text))")
+    check(top.first?.need == picked[0] && top.last?.need == nil,
+          "a Top 3 line from Needs you carries its row for Clear; a to-do line doesn't")
     check(BriefTiles.top(picked: [], todos: [], next: BriefDetail.Line(id: "next", leading: "3 PM", text: "Standup"))
             .map(\.text) == ["Standup"], "a quiet day's Top 3 is the next event")
     check(BriefTiles.top(picked: [], todos: BriefTiles.todayDetail([], now: now, dayStart: dayStart, clock: clock).lines, next: nil).isEmpty,

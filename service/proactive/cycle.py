@@ -175,6 +175,28 @@ def todo_from_item(item: dict, card_ids: dict[str, str]) -> dict:
             "fingerprints": list(item.get("fingerprints") or [])}
 
 
+def item_fingerprint(text, ts) -> str:
+    """What a Brief row said when the user cleared it: its text and its time to
+    the minute (a to-do's due time, a thread's last message). A reminder given
+    a new due date, or a thread with a new message, reads differently and
+    comes back. Never a source write: Clear only hides the row."""
+    finite = isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts == ts and abs(ts) != float("inf")
+    stamp = str(int(ts // 60)) if finite else ""
+    text = " ".join(str(text or "").split())[:200]
+    return hashlib.sha256((text + "\x1f" + stamp).encode()).hexdigest()[:24]
+
+
+def _clearable(rows: list[dict], cleared: dict, text_key: str, ts_key: str) -> list[dict]:
+    """Each row with its ``fingerprint``, less the ones the user cleared while
+    they still read the same."""
+    out = []
+    for row in rows:
+        row = {**row, "fingerprint": item_fingerprint(row.get(text_key), row.get(ts_key))}
+        if cleared.get(row.get("id")) != row["fingerprint"]:
+            out.append(row)
+    return out
+
+
 def deterministic_todos(sched: dict, notes: list[dict], now: float, tz: str) -> list[dict]:
     """Calendar events and reminders, and Notes TODO lines, as to-dos by rule."""
     out = []
@@ -1085,8 +1107,17 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
             merged[card["todo_id"]]["card_id"] = card["id"]
     todos = sorted(merged.values(), key=lambda t: (t["done"], t.get("due_ts") is None, t.get("due_ts") or 0,
                                                    t["title"].casefold()))
+    cleared = store.cleared() if hasattr(store, "cleared") else {}
+    todos = _clearable(todos, cleared, "title", "due_ts")
+    for todo in todos:
+        # A dated reminder (its rule-built to-do) can be completed in Reminders
+        # through the verified path (api.complete_todo); nothing else can.
+        if (todo.get("source") == "reminders" and todo.get("kind") == "reminder" and not todo["done"]
+                and isinstance(todo.get("due_ts"), (int, float))):
+            todo["can_complete"] = True
     names = triage.user_names()
     threads = order_threads([_attended(_served_thread(t, names), now, tz) for t in state.get("threads") or []])
+    threads = _clearable(threads, cleared, "title", "received_ts")
     erased = store.erased_accounts()
     seen = {str(a).casefold() for a in state.get("accounts") or []}
     accounts = account_list(own, {a for a in linked if a in seen or a not in erased}, seen)

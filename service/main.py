@@ -466,6 +466,8 @@ from service.assistant.attention_api import router as attention_router
 app.include_router(attention_router)
 from service.assistant.stale_reminders_api import router as stale_reminders_router
 app.include_router(stale_reminders_router)
+from service.assistant.needs_you_api import router as needs_you_router
+app.include_router(needs_you_router)
 from service.corpus import router as corpus_router
 app.include_router(corpus_router)
 from service.corpus_prompts import router as corpus_prompts_router

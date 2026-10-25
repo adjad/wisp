@@ -258,6 +258,31 @@ class ProactiveStore:
                 out[todo_id] = entry
         return out
 
+    # The newest cleared rows kept; older ones lapse.
+    _CLEARED_KEPT = 500
+
+    def clear_item(self, item_id: str, fingerprint: str, now: float | None = None) -> None:
+        """Hide one to-do or thread from the Brief while it still reads
+        ``fingerprint`` (cycle.item_fingerprint). Only this record changes:
+        nothing in Reminders, Mail or Messages, and no to-do is checked off."""
+        now = time.time() if now is None else now
+        with self._lock:
+            data = self._read("decisions.json")
+            cleared = data.get("cleared") if isinstance(data.get("cleared"), dict) else {}
+            cleared[item_id] = {"fp": fingerprint, "at": now}
+            if len(cleared) > self._CLEARED_KEPT:
+                newest = sorted(cleared.items(), key=lambda kv: -float((kv[1] or {}).get("at") or 0))
+                cleared = dict(newest[:self._CLEARED_KEPT])
+            data["cleared"] = cleared
+            self._write("decisions.json")
+
+    def cleared(self) -> dict[str, str]:
+        """{item id: fingerprint} for every row cleared from the Brief."""
+        value = self._read("decisions.json").get("cleared")
+        if not isinstance(value, dict):
+            return {}
+        return {k: v["fp"] for k, v in value.items() if isinstance(v, dict) and isinstance(v.get("fp"), str)}
+
     def is_done(self, todo_id: str) -> bool:
         return todo_id in self.decisions()["done"]
 

@@ -56,6 +56,15 @@ def fail(exc):
                         404 if isinstance(exc, KeyError) else 422, detail=str(exc)) from exc
 
 
+def cleared_needs():
+    """The Needs you rows the user cleared (needs_you_api); none from a store without them."""
+    read = getattr(assistant_store, "needs_you_dismissals", None)
+    try:
+        return read() if read is not None else None
+    except Exception:  # noqa: BLE001 - a failed read shows every row, never no workspace
+        return None
+
+
 def snapshot(day, timezone, *, debug=False):
     from service import diagnostics
     with diagnostics.span("today") as trace:
@@ -76,7 +85,8 @@ def snapshot(day, timezone, *, debug=False):
             result["workspace"] = daily.assess(day, timezone, state,
                 daily.collect_evidence(assistant_store, state, day, timezone, now=now), now=now,
                 behavior=availability(day, timezone, now),
-                ignored_windows=email_store().ignored(day, timezone))
+                ignored_windows=email_store().ignored(day, timezone),
+                dismissed=cleared_needs())
         except Exception:
             # The original revisioned planner remains usable when an optional
             # source or private workspace settings are unavailable.
