@@ -74,7 +74,7 @@ struct NotchDayView: View {
             if let plan {
                 dayContent(plan)
             } else if today.error.isEmpty {
-                ProcessingRow(label: "Loading your day…")
+                ProcessingRow(label: today.outageNotice ?? "Loading your day…")
             }
             ReportDraftCard(draft: today.report, title: "Report a problem with this plan",
                             detailsLabel: "Include planner details", save: { model.saveReport(today.report) })

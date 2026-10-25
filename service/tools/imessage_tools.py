@@ -1359,12 +1359,43 @@ def _clearly_resolved(records, index: int, reason: str) -> bool:
     return False
 
 
+_reason_memo_lock = _snapshot_threading.Lock()
+# (classifier, {text: reason}) for the texts of the last snapshot classified.
+_reason_memo: tuple[object, dict[str, str | None]] = (None, {})
+
+
+def _message_reasons(texts) -> dict[str, str | None]:
+    """important_message_reason for each text, reusing the last snapshot's answers.
+
+    The classifier is a pure function of the text, and a sync replaces the
+    snapshot with mostly the same lines, so only new texts are classified.
+    Without this, /assistant/today re-ran ~400k regex searches over every
+    cached text twice per read (~0.5 s each, holding the GIL), which stalled
+    the event loop past the app's identity check. The memo keeps only the
+    texts of the latest snapshot, so nothing outlives the cache it came from.
+    """
+    global _reason_memo
+    classify = important_message_reason
+    with _reason_memo_lock:
+        owner, previous = _reason_memo
+    if owner is not classify:
+        previous = {}
+    current: dict[str, str | None] = {}
+    for text in texts:
+        if text not in current:
+            current[text] = previous[text] if text in previous else classify(text)
+    with _reason_memo_lock:
+        _reason_memo = (classify, current)
+    return current
+
+
 def summary_message_rows(*, require_read_state: bool = False) -> list[tuple[float, str, str]]:
     """Select important unresolved items using the full conversation context."""
     from service.tools import message_digest as digest
 
     records = _parse_records()
     source = digest.with_source_positions([(ts, ctx, text) for ts, _, ctx, text, _ in records])
+    classified = _message_reasons(text for _ts, _identity, _context, text, _unread in records)
     # A short correction can inherit importance only from the immediately
     # preceding substantive, explicit event in this chat. Preserve boundaries
     # even when that intervening content is later excluded from the digest.
@@ -1373,7 +1404,7 @@ def summary_message_rows(*, require_read_state: bool = False) -> list[tuple[floa
     for index in sorted(range(len(records)), key=lambda i: records[i][0]):
         ts, identity, context, text, unread = records[index]
         sender, body = digest.split_sender(text)
-        reason = important_message_reason(text)
+        reason = classified[text]
         previous = preceding.get((identity, context))
         implicit = digest._implicit_correction(body.rstrip(".!"))
         if (not reason and implicit and previous and sender == previous[1]
