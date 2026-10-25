@@ -280,6 +280,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_only_quality.py",
     "tests/test_proactive_accounts.py",
     "tests/test_proactive_auto_add.py",
+    "tests/test_proactive_clear.py",
     "tests/test_proactive_deadlines.py",
     "tests/test_proactive_engine.py",
     "tests/test_proactive_idle_refresh.py",

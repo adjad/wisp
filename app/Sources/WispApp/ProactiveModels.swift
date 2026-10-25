@@ -347,8 +347,14 @@ struct ProactiveTodo: Decodable, Equatable, Identifiable {
     var kind = ""
     var done = false
     var cardID: String? = nil
+    /// What Clear sends back (cycle.item_fingerprint); empty from an older service.
+    var fingerprint = ""
+    /// A dated reminder Mark done can complete in Reminders.
+    var canComplete = false
 
-    private enum Keys: String, CodingKey { case id, title, source, account, who, quote, due_ts, due_label, kind, done, card_id }
+    private enum Keys: String, CodingKey {
+        case id, title, source, account, who, quote, due_ts, due_label, kind, done, card_id, fingerprint, can_complete
+    }
 
     init(id: String, title: String, source: String, account: String = "", who: String = "", quote: String = "",
          dueTs: Double? = nil, dueLabel: String = "", kind: String = "", done: Bool = false, cardID: String? = nil) {
@@ -370,6 +376,16 @@ struct ProactiveTodo: Decodable, Equatable, Identifiable {
         kind = c.lenientString(.kind) ?? ""
         done = c.lenient(.done, Bool.self) ?? false
         cardID = c.lenientString(.card_id).flatMap { $0.isEmpty ? nil : $0 }
+        fingerprint = c.lenientString(.fingerprint) ?? ""
+        canComplete = c.lenient(.can_complete, Bool.self) ?? false
+    }
+
+    /// Its trailing × (NeedsYouActionsModel): Clear for every to-do, Mark done
+    /// only for an open dated reminder.
+    var actionRow: NeedsYouRow {
+        NeedsYouRow(id: id, label: nil, text: title, overdue: false,
+                    fingerprint: fingerprint.isEmpty ? nil : fingerprint,
+                    canComplete: canComplete && !done && source == "reminders", route: NeedsYouRow.todoRoute)
     }
 
     /// As the Day tab's timeline takes it.
@@ -395,8 +411,12 @@ struct ProactiveThread: Decodable, Equatable, Identifiable {
     /// What the reply composer (BriefReplyComposer) drafts from:
     /// `{message_id, account, account_id}`, each optional.
     var replyRef: [String: String] = [:]
+    /// What Clear sends back (cycle.item_fingerprint); empty from an older service.
+    var fingerprint = ""
 
-    private enum Keys: String, CodingKey { case id, source, account, who, title, summary, needs_reply, received_ts, reply_ref }
+    private enum Keys: String, CodingKey {
+        case id, source, account, who, title, summary, needs_reply, received_ts, reply_ref, fingerprint
+    }
 
     init(id: String, source: String, account: String = "", who: String = "", title: String = "", summary: String = "",
          needsReply: Bool = false, receivedTs: Double? = nil, replyRef: [String: String] = [:]) {
@@ -415,6 +435,13 @@ struct ProactiveThread: Decodable, Equatable, Identifiable {
         needsReply = c.lenient(.needs_reply, Bool.self) ?? false
         receivedTs = c.lenient(.received_ts, Double.self).flatMap { $0.isFinite ? $0 : nil }
         replyRef = c.lenientRef(.reply_ref)
+        fingerprint = c.lenientString(.fingerprint) ?? ""
+    }
+
+    /// Its trailing ×: Clear only. Nothing is marked read or answered.
+    var actionRow: NeedsYouRow {
+        NeedsYouRow(id: id, label: nil, text: who.isEmpty ? title : who + ": " + title, overdue: false,
+                    fingerprint: fingerprint.isEmpty ? nil : fingerprint, route: NeedsYouRow.threadRoute)
     }
 
     /// From a team, company or mailer rather than a person, by its name.

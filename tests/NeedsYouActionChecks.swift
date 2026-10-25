@@ -88,6 +88,20 @@ func needsYouActionChecks(_ check: (Bool, String) -> Void) {
     run { await model.perform(.clear, on: third) }
     check(model.failures[third.id] == "Couldn't clear it. Try again." && !model.isHidden(third), "a failed Clear")
 
+    // The proactive Brief's rows post to their own routes.
+    status = 200
+    requests = []
+    let todo = NeedsYouRow(id: "todo:abc", label: nil, text: "Wisp verification timed 2113", overdue: false,
+                           fingerprint: "555555555555555555555555", canComplete: true, route: NeedsYouRow.todoRoute)
+    let thread = NeedsYouRow(id: "thread:t1", label: nil, text: "Mom: Dinner?", overdue: false,
+                             fingerprint: "666666666666666666666666", route: NeedsYouRow.threadRoute)
+    run { await model.perform(.markDone, on: todo) }
+    run { await model.perform(.clear, on: thread) }
+    check(requests.map(\.0) == ["POST /assistant/proactive/todos/todo:abc/done",
+                                "POST /assistant/proactive/threads/thread:t1/clear"]
+          && model.isHidden(todo) && model.isHidden(thread), "to-do and thread routes: \(requests.map(\.0))")
+    check(thread.actions == [.clear], "a thread never offers Mark done")
+
     // A row from an older service (no fingerprint) offers nothing and sends nothing.
     let bare = NeedsYouRow(id: "reminders:444444444444444444444444", label: "DUE", text: "Old", overdue: false)
     let before = requests.count

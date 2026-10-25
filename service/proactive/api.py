@@ -59,6 +59,18 @@ class Empty(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class Cleared(BaseModel):
+    """What the row said when the user acted on it (cycle.item_fingerprint)."""
+    model_config = ConfigDict(extra="forbid")
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{24}$")
+
+
+def _item_id(item_id: str) -> str:
+    if not item_id or len(item_id) > 200 or any(ch.isspace() for ch in item_id):
+        raise HTTPException(422, "Invalid id.")
+    return item_id
+
+
 @router.get("")
 def proactive(account: str | None = None):
     from service.proactive.cycle import snapshot
@@ -105,6 +117,54 @@ def _find_todo(todo_id: str) -> dict | None:
                     return {**todo, "fingerprints": stored.get("fingerprints") or []}
             return todo
     return None
+
+
+@router.post("/todos/{todo_id}/clear")
+async def clear_todo(todo_id: str, request: Request):
+    """Hide a to-do from the Brief. Never checks it off and never writes to
+    Reminders, Mail or Messages; it comes back if it changes."""
+    body = await _body(request, Cleared)
+    from service.proactive.store import store
+    store().clear_item(_item_id(todo_id), body.fingerprint)
+    return {"ok": True, "todo_id": todo_id, "decision": "cleared"}
+
+
+@router.post("/threads/{thread_id}/clear")
+async def clear_thread(thread_id: str, request: Request):
+    """Hide a mail or text thread from Needs attention. Nothing is marked read."""
+    body = await _body(request, Cleared)
+    from service.proactive.store import store
+    store().clear_item(_item_id(thread_id), body.fingerprint)
+    return {"ok": True, "thread_id": thread_id, "decision": "cleared"}
+
+
+@router.post("/todos/{todo_id}/done")
+async def complete_todo(todo_id: str, request: Request):
+    """Complete a dated reminder's to-do in Reminders through the verified path
+    (schedule_extras.complete_commitment); the row leaves only on its verified
+    result. Unlike ``{"done": true}``, which only checks the row off in Wisp."""
+    body = await _body(request, Cleared)
+    from service.proactive.cycle import snapshot, todo_id as make_id
+    from service.proactive.store import store
+    todo = next((t for t in snapshot()["todos"] if t["id"] == _item_id(todo_id)), None)
+    if todo is None:
+        raise HTTPException(404, "That to-do is gone. Refresh the Brief.")
+    if todo.get("can_complete") is not True:
+        raise HTTPException(409, "Only a dated reminder can be marked done in Reminders.")
+    if todo.get("fingerprint") != body.fingerprint:
+        raise HTTPException(409, "That reminder changed; nothing was marked done.")
+    from service.assistant.needs_you_api import reminder_where
+    from service.assistant.store import assistant_store
+    row = reminder_where(assistant_store, lambda cid: make_id(str(cid)) == todo_id)
+    if row is None:
+        raise HTTPException(404, "That reminder is no longer in your list.")
+    from service.tools.schedule_extras import complete_commitment
+    ok, message = await complete_commitment(row, assistant_store)
+    if not ok:
+        raise HTTPException(502, message.strip("()").removeprefix("error: ").rstrip(".") + ".")
+    store().set_todo_done(todo, True)
+    store().clear_item(todo_id, body.fingerprint)
+    return {"ok": True, "todo_id": todo_id, "decision": "done"}
 
 
 @router.post("/todos/{todo_id}")

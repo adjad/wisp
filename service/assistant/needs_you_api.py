@@ -61,6 +61,21 @@ async def clear(body: Answer, request: Request, item_id: str = Path(pattern=_ITE
     return {"ok": True, "id": item_id, "decision": "cleared"}
 
 
+def reminder_where(store, matches) -> dict | None:
+    """The one active dated reminder (Reminders or Wisp-only) whose commitment id
+    ``matches``, with its ``duplicate_ids``, or None. The Brief's ids are digests of
+    the commitment id, so they are matched here rather than parsed."""
+    with store.transaction(write=False) as db:
+        ids = [r["id"] for r in db.execute(
+            "SELECT id FROM scheduled_commitments WHERE status='active' AND source IN ('reminders','manual') "
+            "AND when_ts IS NOT NULL AND kind NOT IN ('event','meeting')")]
+    match = next((cid for cid in ids if matches(cid)), None)
+    row = store.get(match) if match else None
+    if row is None:
+        return None
+    return dict(row, duplicate_ids=store.duplicate_ids(row["id"]))
+
+
 def reminder_for(store, item_id: str) -> dict | None:
     """The active dated reminder a Needs you id names, or None. The id is
     daily_workspace.key("reminders", <commitment id>), for a Reminders reminder or a
@@ -68,15 +83,7 @@ def reminder_for(store, item_id: str) -> dict | None:
     from service.assistant.daily_workspace import key
     if not item_id.startswith("reminders:"):
         return None
-    with store.transaction(write=False) as db:
-        ids = [r["id"] for r in db.execute(
-            "SELECT id FROM scheduled_commitments WHERE status='active' AND source IN ('reminders','manual') "
-            "AND when_ts IS NOT NULL AND kind NOT IN ('event','meeting')")]
-    match = next((cid for cid in ids if key("reminders", cid) == item_id), None)
-    row = store.get(match) if match else None
-    if row is None:
-        return None
-    return dict(row, duplicate_ids=store.duplicate_ids(row["id"]))
+    return reminder_where(store, lambda cid: key("reminders", cid) == item_id)
 
 
 @router.post("/{item_id}/done")

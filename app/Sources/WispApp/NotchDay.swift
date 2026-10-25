@@ -115,12 +115,26 @@ struct NeedsYouRow: Equatable, Identifiable {
     let overdue: Bool
     var fingerprint: String? = nil
     var canComplete = false
+    /// Where its answers go: <route>/<id>/clear|done. The Brief's Needs you
+    /// rows by default; the proactive Brief's to-dos and threads have their own.
+    var route = NeedsYouRow.needsYouRoute
+
+    static let needsYouRoute = "assistant/needs_you"
+    static let todoRoute = "assistant/proactive/todos"
+    static let threadRoute = "assistant/proactive/threads"
 
     /// Clear for any row the service identified; Mark done for a reminder too.
     /// A row with no service id or fingerprint (an older service) offers nothing.
     var actions: [NeedsYouRowAction] {
         guard let fingerprint, !fingerprint.isEmpty, !id.hasPrefix("needs-you-") else { return [] }
         return canComplete ? [.clear, .markDone] : [.clear]
+    }
+
+    /// The tooltip for one action on this row: a thread's Clear marks nothing read.
+    func help(_ action: NeedsYouRowAction) -> String {
+        action == .clear && route == NeedsYouRow.threadRoute
+            ? "Hide this from the Brief. Nothing is marked read; a new message brings it back."
+            : action.help(text)
     }
 
     /// What a Clear hides: this id while it still says the same thing.

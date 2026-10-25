@@ -1,8 +1,11 @@
 import Foundation
 import Combine
 
-/// Clear and Mark done for the Brief's Needs you rows
-/// (`POST /assistant/needs_you/<id>/clear|done`, service/assistant/needs_you_api.py).
+/// Clear and Mark done for the Brief's rows: the Needs you rows
+/// (`POST /assistant/needs_you/<id>/clear|done`, service/assistant/needs_you_api.py)
+/// and the proactive Brief's to-dos and mail/text threads
+/// (`POST /assistant/proactive/todos|threads/<id>/clear`, `.../todos/<id>/done`,
+/// service/proactive/api.py), each row naming its own route.
 ///
 /// Clear only hides a row from Needs you; the reminder, mail or text stays where
 /// it is, and the row comes back if it changes. Mark done completes a reminder
@@ -51,8 +54,8 @@ final class NeedsYouActionsModel: ObservableObject {
         busy[row.id] = action
         failures[row.id] = nil
         defer { busy[row.id] = nil }
-        var request = URLRequest(url: baseURL.appendingPathComponent("assistant/needs_you")
-            .appendingPathComponent(row.id).appendingPathComponent(action.path))
+        let base = row.route.split(separator: "/").reduce(baseURL) { $0.appendingPathComponent(String($1)) }
+        var request = URLRequest(url: base.appendingPathComponent(row.id).appendingPathComponent(action.path))
         request.httpMethod = "POST"
         request.timeoutInterval = action == .markDone ? 30 : 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

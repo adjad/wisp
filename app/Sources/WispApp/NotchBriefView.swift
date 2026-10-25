@@ -347,62 +347,9 @@ struct NotchBriefView: View {
         }
     }
 
-    /// A Needs you row's trailing control: a dim × that opens "Clear · Mark done"
-    /// in its place, never a sheet or alert (the panel doesn't take focus). While
-    /// the service works it says so; the row leaves only on its confirmation.
-    @ViewBuilder private func needControls(_ need: NeedsYouRow) -> some View {
-        let offered = needActions.actions(for: need)
-        if let working = needActions.busy[need.id] {
-            HStack(spacing: 5) {
-                ProgressView().controlSize(.mini)
-                Text(working.progress).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(working.progress)
-        } else if needActions.open == need.id {
-            HStack(spacing: 6) {
-                ForEach(Array(offered.enumerated()), id: \.element) { index, action in
-                    if index > 0 {
-                        Text("·").font(.system(size: 12)).foregroundStyle(Theme.textMuted).accessibilityHidden(true)
-                    }
-                    Button { answer(action, need) } label: {
-                        Text(action.title).font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Theme.textPrimary).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!needActions.busy.isEmpty)
-                    .help(action.help(need.text))
-                    .accessibilityLabel(action.accessibilityLabel(need.text))
-                }
-                Button { needActions.toggle(need); model.onResize() } label: {
-                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Theme.textMuted).frame(width: 14, height: 14).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Keep it in Needs you")
-                .accessibilityLabel("Cancel")
-            }
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Capsule().fill(Theme.chipFill))
-            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-        } else {
-            Button { needActions.toggle(need); model.onResize() } label: {
-                Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Theme.textMuted).frame(width: 16, height: 16).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(offered.contains(.markDone) ? "Clear from Needs you, or mark done" : "Clear from Needs you")
-            .accessibilityLabel("Options for \u{201C}\(need.text)\u{201D}")
-            .accessibilityHint(offered.map(\.title).joined(separator: " or "))
-        }
-    }
-
-    private func answer(_ action: NeedsYouRowAction, _ need: NeedsYouRow) {
-        Task {
-            let confirmed = await needActions.perform(action, on: need)
-            model.onResize()
-            if confirmed { await today.refresh(afterMutation: true) }
-        }
+    private func needControls(_ need: NeedsYouRow) -> some View {
+        NeedsYouRowControls(row: need, actions: needActions, onResize: { model.onResize() },
+                            onConfirmed: { await today.refresh(afterMutation: true) })
     }
 
     private func plainRow(_ line: BriefDetail.Line, width: CGFloat, secondary: Bool) -> some View {
@@ -635,5 +582,76 @@ struct BriefContent {
                                           textsOverview: plan.workspace?.texts_overview?.text, soon: .unknown)
         glance = BriefTiles.glance(rows, mailProse: isToday ? plan.workspace?.mail_summary?.text : nil)
         summary = composed?.cutDown ?? []
+    }
+}
+
+/// A Brief row's trailing control (the Top 3's Needs you rows, and the proactive
+/// Brief's to-dos and mail/text threads): a dim × that opens "Clear · Mark done"
+/// in its place, never a sheet or alert (the panel doesn't take focus). While the
+/// service works it says so; the row leaves only on its confirmation.
+struct NeedsYouRowControls: View {
+    let row: NeedsYouRow
+    @ObservedObject var actions: NeedsYouActionsModel
+    var onResize: () -> Void = {}
+    /// After the service confirmed: read the day again.
+    var onConfirmed: () async -> Void = {}
+
+    var body: some View {
+        let offered = actions.actions(for: row)
+        if offered.isEmpty {
+            EmptyView()
+        } else if let working = actions.busy[row.id] {
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini)
+                Text(working.progress).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+            }
+            .fixedSize()
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(working.progress)
+        } else if actions.open == row.id {
+            HStack(spacing: 6) {
+                ForEach(Array(offered.enumerated()), id: \.element) { index, action in
+                    if index > 0 {
+                        Text("·").font(.system(size: 12)).foregroundStyle(Theme.textMuted).accessibilityHidden(true)
+                    }
+                    Button { answer(action) } label: {
+                        Text(action.title).font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.textPrimary).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!actions.busy.isEmpty)
+                    .help(row.help(action))
+                    .accessibilityLabel(action.accessibilityLabel(row.text))
+                }
+                Button { actions.toggle(row); onResize() } label: {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.textMuted).frame(width: 14, height: 14).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Keep it")
+                .accessibilityLabel("Cancel")
+            }
+            .fixedSize()
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(Capsule().fill(Theme.chipFill))
+            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+        } else {
+            Button { actions.toggle(row); onResize() } label: {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.textMuted).frame(width: 16, height: 16).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(offered.contains(.markDone) ? "Clear it, or mark it done" : "Clear it from the Brief")
+            .accessibilityLabel("Options for \u{201C}\(row.text)\u{201D}")
+            .accessibilityHint(offered.map(\.title).joined(separator: " or "))
+        }
+    }
+
+    private func answer(_ action: NeedsYouRowAction) {
+        Task {
+            let confirmed = await actions.perform(action, on: row)
+            onResize()
+            if confirmed { await onConfirmed() }
+        }
     }
 }
