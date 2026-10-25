@@ -300,9 +300,69 @@ struct TodayPlanChecks {
         pending!.resume(returning: (try planData(day: model.day, zone: zone.identifier, blocks: ["After edit"]), response(request)))
         pending = nil
         check(await mutation.value && !model.busy && model.plan?.blocks.first?.title == "After edit")
+        var retryNaps: [Duration] = []
+        var retryWakes: [CheckedContinuation<Void, Error>] = []
+        model.retrySleep = { nap in
+            retryNaps.append(nap)
+            try await withCheckedThrowingContinuation { retryWakes.append($0) }
+        }
         model.transport = { _ in throw URLError(.timedOut) }
         await model.refresh()
-        check(model.plan == nil && !model.error.isEmpty, "Real failures must still clear unsafe planner actions")
+        check(model.plan?.blocks.first?.title == "After edit" && model.error.isEmpty,
+              "A timeout keeps the last good plan on screen and shows no error")
+        check(model.transientFailures == 1 && model.outageNotice == nil)
+        await waitFor("A transient failure schedules a quiet retry") { retryWakes.count == 1 }
+        check(retryNaps == [.seconds(1)], "The first retry comes after a second")
+        model.transport = { req in
+            (try planData(day: model.day, zone: zone.identifier, blocks: ["Recovered"]), response(req))
+        }
+        retryWakes.removeFirst().resume()
+        await waitFor("The retry reloads the day by itself") { model.plan?.blocks.first?.title == "Recovered" }
+        check(model.transientFailures == 0 && model.error.isEmpty && retryWakes.isEmpty)
+        model.transport = { _ in throw URLError(.cannotConnectToHost, userInfo: [NSLocalizedDescriptionKey: "Wisp's service isn't running yet."]) }
+        await model.refresh()
+        check(model.plan?.blocks.first?.title == "Recovered" && model.error.isEmpty,
+              "The identity check's 'not running yet' never reaches the Brief")
+        await waitFor("A second failure retries again") { retryWakes.count == 1 }
+        model.transport = { req in
+            (Data("{\"detail\":\"Today is unavailable\"}".utf8),
+             HTTPURLResponse(url: req.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!)
+        }
+        retryWakes.removeFirst().resume()
+        await waitFor("A 503 is also retried quietly") { retryWakes.count == 1 && model.transientFailures == 2 }
+        check(retryNaps.last == .seconds(2) && model.error.isEmpty, "Retries back off")
+        check(TodayModel.retryDelay(after: 3) == .seconds(4) && TodayModel.retryDelay(after: 9) == .seconds(15))
+        model.transport = { req in
+            (Data("{\"detail\":\"Refresh before editing\"}".utf8),
+             HTTPURLResponse(url: req.url!, statusCode: 409, httpVersion: nil, headerFields: nil)!)
+        }
+        retryWakes.removeFirst().resume()
+        await waitFor("A refusal is a real error") { model.error == "Refresh before editing" }
+        check(model.plan == nil && model.transientFailures == 0 && retryWakes.isEmpty,
+              "Real failures still clear unsafe planner actions, once, without retrying")
+        model.transport = { req in (Data("{\"day\": 3}".utf8), response(req)) }
+        await model.refresh()
+        check(model.error == "Wisp couldn't read today's plan from its service.",
+              "An unreadable reply is said plainly")
+        // Nothing on screen and the service still not answering: the loading row says so.
+        let starting = TodayModel(now: { now }, timeZoneProvider: { currentZone })
+        var startingWakes: [CheckedContinuation<Void, Error>] = []
+        starting.retrySleep = { _ in try await withCheckedThrowingContinuation { startingWakes.append($0) } }
+        starting.transport = { _ in throw URLError(.cannotConnectToHost) }
+        await starting.refresh()
+        for attempt in 2...4 {
+            await waitFor("Each failed start retries") { startingWakes.count == 1 }
+            startingWakes.removeFirst().resume()
+            await waitFor("The retry ran") { starting.transientFailures == attempt }
+        }
+        check(starting.plan == nil && starting.error.isEmpty
+              && starting.outageNotice == "Wisp's service isn't answering yet. Still trying…")
+        await waitFor("It keeps trying") { startingWakes.count == 1 }
+        starting.transport = good
+        startingWakes.removeFirst().resume()
+        await waitFor("The day loads once the service answers") { starting.plan != nil }
+        check(starting.outageNotice == nil && starting.transientFailures == 0)
+        model.retrySleep = { try await Task.sleep(for: $0) }
 
         // Drive the model's app-owned loop without a view or wall-clock waits.
         var todayReads = 0, upcomingReads = 0, briefReads = 0
@@ -384,8 +444,116 @@ struct TodayPlanChecks {
         }
     }
 
+    /// The live /assistant/today shape (2026-10-24, proactive engine on), every
+    /// value replaced with a synthetic one.
+    static let liveShape = #"""
+    {"day":"2026-10-24","timezone":"America/Los_Angeles","generated_at":1792905200.27,
+     "preferences":{"start_minute":540,"end_minute":1080,"not_before":null},
+     "sources":{"calendar":{"ready":true,"last_sync":1792905168.6,"reason":"Up to date"},
+                "reminders":{"ready":true,"last_sync":1792905168.7,"reason":"Up to date"}},
+     "provisional":false,"warnings":[],
+     "tasks":[{"kind":"task","priority":2,"status":"active","title":"Fixture task","day":"2026-10-24",
+               "timezone":"America/Los_Angeles","duration_minutes":30,"due_ts":1792950000.0,"id":"task-1",
+               "revision":4,"pinned_start":null}],
+     "blocks":[{"id":"b1","title":"Fixture block","start":1792940000.0,"end":1792941800.0,"kind":"task",
+                "task_id":"task-1","warnings":["Estimated"]}],
+     "deadlines":[],
+     "all_day":[{"id":"a1","title":"Fixture holiday","start":1792911600.0,"end":1792998000.0,"kind":"calendar",
+                 "task_id":null,"warnings":[]}],
+     "unscheduled":[],"revision":4,"trace_id":"0123456789abcdef0123456789abcdef",
+     "workspace":{
+       "day":"2026-10-24","timezone":"America/Los_Angeles","generated_at":1792905200.3,
+       "attention":[{"id":"att-1","source":"email","title":"Fixture mail","reason":"Due soon","quote":"Fixture quote",
+                     "due_ts":1792950000.0,"priority":1,"reference":"ref-1","suggested_minutes":15,"needs_review":false}],
+       "attention_omitted":0,
+       "source_coverage":[{"source":"email","ready":true,"detail":"Read 50","inspected":50,"omitted":0}],
+       "behavior_detail":"","behavior_context":{"any":"new field"},"explanation":"Fixture explanation",
+       "suggested_count":0,"tentative_count":0,
+       "proposed_plan":{"day":"2026-10-24","timezone":"America/Los_Angeles","blocks":[
+           {"id":"b1","title":"Fixture block","start":1792940000.0,"end":1792941800.0,"kind":"task",
+            "task_id":"task-1","warnings":[]}],"unscheduled":[],"warnings":[]},
+       "mail_overview":{"text":"Two fixture emails.","source":"model"},
+       "texts_overview":{"text":"One fixture text.","source":"summary"},
+       "mail_summary":{"text":"Fixture inbox summary.","source":"summary"},
+       "needs_you":{"items":[{"id":"n1","kind":"alert","text":"Fixture security alert","due_ts":null,"all_day":false},
+                             {"id":"n2","kind":"overdue","text":"Fixture overdue","due_ts":null,"all_day":false},
+                             {"id":"n3","kind":"plan","text":"Fixture plan","due_ts":null,"all_day":false}],"more":0},
+       "proactive":{"state":"ready","as_of":1792905000.0,"progress":{"done":0,"total":0},
+         "accounts":["owner@example.com"],"owner":{"id":"owner@example.com","label":"You"},"summary":"Fixture summary",
+         "cards":[{"id":"card:1","meta":"Mail","title":"Fixture alert card","body":"Fixture body","why":"Fixture why",
+                   "account":"owner@example.com","critical":true,"todo_id":"todo:1","due_ts":null,
+                   "sources":[{"kind":"mail","ref":"m1","who":"Fixture Sender","quote":"Fixture quote"}],
+                   "action":{"method":"read","button":"Open","draft":"","recipient":"","event":null,
+                             "envelope":{"kind":"none"},"to":[],"cc":[],"subject":"","reply_all":false,
+                             "reply_ref":{"message_id":"m1","account":"owner@example.com","account_id":"acct"},
+                             "open_url":"message://fixture","open_label":"Open in Mail"}},
+                  {"id":"card:2","meta":"Added","title":"Fixture auto-added event","body":"Fixture body","why":"",
+                   "account":"owner@example.com","todo_id":null,"due_ts":1792950000.0,"sources":[],
+                   "action":{"method":"undo_add","button":"Undo","undo":{"kind":"calendar","id":"evt-1"}}}],
+         "todos":[{"id":"todo:1","title":"Fixture to-do","source":"mail","account":"owner@example.com","who":"Fixture",
+                   "quote":"Fixture","due_ts":1792950000.0,"due_label":"Today","kind":"reply","done":false,
+                   "card_id":null,"timed":true,"added_to_day":false}],
+         "threads":[{"id":"t1","source":"mail","account":"owner@example.com","who":"Fixture","title":"Fixture thread",
+                     "summary":"Fixture summary","user_wrote":false,"needs_reply":true,"replied":false,
+                     "received_ts":1792900000.0,"reply_ref":"m1","attention":"high","attention_reason":"Fixture"}],
+         "lede":"Fixture lede",
+         "stats":{"read":10,"found":3,"drafted":1,"filtered":2,"read_breakdown":{"mail":5,"texts":4,"notes":1},
+                  "as_of":1792905000.0},
+         "debug":{"waiting":[{"who":"Fixture","waiting":false,"reason":"read, under a day"}]}}}}
+    """#
+
+    /// Decoding stays whole when the service adds, drops or reshapes a field.
+    static func tolerantDecodeChecks() throws {
+        func decode(_ text: String) throws -> TodayPlan { try JSONDecoder().decode(TodayPlan.self, from: Data(text.utf8)) }
+        func edited(_ edit: (inout [String: Any]) -> Void) throws -> TodayPlan {
+            var object = try JSONSerialization.jsonObject(with: Data(liveShape.utf8)) as! [String: Any]
+            edit(&object)
+            return try JSONDecoder().decode(TodayPlan.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        let live = try decode(liveShape)
+        precondition(live.workspace?.proactive?.cards.count == 2, "The live shape decodes with every card")
+        precondition(live.workspace?.needs_you?.items.map(\.kind) == ["alert", "overdue", "plan"])
+        precondition(live.workspace?.mail_overview?.text == "Two fixture emails." && live.workspace_error == nil)
+        precondition(live.tasks.count == 1 && live.displayBlocks.count == 1 && live.all_day.count == 1)
+
+        // A needs-you item, a block and a task this build can't read are dropped, not the plan.
+        let rows = try edited { plan in
+            var workspace = plan["workspace"] as! [String: Any]
+            var needs = workspace["needs_you"] as! [String: Any]
+            needs["items"] = (needs["items"] as! [[String: Any]]) + [["id": "n4", "kind": "brand_new"]]
+            workspace["needs_you"] = needs
+            workspace["mail_overview"] = "a string where an object was"
+            workspace["attention"] = (workspace["attention"] as! [[String: Any]]) + [["id": "broken"]]
+            plan["workspace"] = workspace
+            plan["blocks"] = (plan["blocks"] as! [[String: Any]]) + [["id": "no-start", "title": "x", "kind": "task"]]
+            plan["tasks"] = (plan["tasks"] as! [[String: Any]]) + [["id": "half"]]
+            plan["brand_new_top_level"] = ["anything": true]
+        }
+        precondition(rows.workspace?.needs_you?.items.count == 3 && rows.workspace?.mail_overview == nil
+                     && rows.workspace?.attention.count == 1 && rows.blocks.count == 1 && rows.tasks.count == 1
+                     && rows.workspace?.proactive?.cards.count == 2 && rows.workspace_error == nil,
+                     "Unreadable rows are skipped and the rest of the Brief stays")
+
+        // Missing optional parts: a minimal service reply still decodes.
+        let minimal = try decode(#"{"day":"2026-10-24","timezone":"America/Los_Angeles"}"#)
+        precondition(minimal.blocks.isEmpty && minimal.workspace == nil && minimal.revision == 0
+                     && minimal.preferences.start_minute == 540 && minimal.workspace_error == nil)
+
+        // A workspace whose plan can't be read is left out with a note; the saved plan shows.
+        let reshaped = try edited { plan in
+            var workspace = plan["workspace"] as! [String: Any]
+            workspace["proposed_plan"] = ["blocks": "not a list"]
+            plan["workspace"] = workspace
+        }
+        precondition(reshaped.workspace == nil && reshaped.workspace_error == TodayPlan.unreadableWorkspace
+                     && reshaped.displayBlocks.count == 1, "An unreadable workspace never blanks the Day")
+        // Only the day and zone it is for are required.
+        precondition((try? decode(#"{"timezone":"America/Los_Angeles"}"#)) == nil)
+    }
+
     @MainActor
     static func main() async throws {
+        try tolerantDecodeChecks()
         try evidenceLabelChecks()
         await storedBriefChecks()
         try await refreshLifecycleChecks()

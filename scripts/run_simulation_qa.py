@@ -101,6 +101,7 @@ PROFILE_TESTS = {
         "tests/test_message_attribution.py",
         "tests/test_message_content.py",
         "tests/test_message_digest.py",
+        "tests/test_message_reason_memo.py",
         "tests/test_multi_source_fallback.py",
         "tests/test_privacy_sync.py",
         "tests/test_reply_bridge_simulation.py",

@@ -97,7 +97,14 @@ struct NotchBriefView: View {
                     legacy(plan, brief)
                 }
             } else if today.error.isEmpty {
-                ProcessingRow(label: "Loading your day…")
+                // Nothing loaded yet, or the service is starting or busy: the
+                // read retries itself, so this is a wait, never an error.
+                ProcessingRow(label: today.outageNotice ?? "Loading your day…")
+            } else {
+                NotchChrome.chip("Try again", icon: "arrow.clockwise", help: "Reload your day") {
+                    Task { await today.refresh() }
+                }
+                .disabled(today.busy)
             }
         }
     }

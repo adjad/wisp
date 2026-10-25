@@ -62,6 +62,43 @@ struct DailyWorkspace: Decodable {
     var proactive: ProactiveState? = nil
 }
 
+extension DailyProposal {
+    private enum CodingKeys: String, CodingKey { case blocks, unscheduled, warnings }
+
+    /// Rows that don't decode are dropped rather than failing the plan.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        blocks = try c.decode(LossyList<TodayBlock>.self, forKey: .blocks).items
+        unscheduled = c.lenient(.unscheduled, LossyList<TodayUnscheduled>.self)?.items ?? []
+        warnings = c.lenient(.warnings, LossyList<String>.self)?.items ?? []
+    }
+}
+
+extension DailyWorkspace {
+    private enum CodingKeys: String, CodingKey {
+        case attention, attention_omitted, source_coverage, behavior_detail, proposed_plan, explanation,
+             mail_overview, texts_overview, mail_summary, needs_you, proactive
+    }
+
+    /// Only the proposed plan is required (the Day draws from it). Every other
+    /// part decodes on its own: a missing, null or changed field leaves that part
+    /// out, never the whole workspace.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        proposed_plan = try c.decode(DailyProposal.self, forKey: .proposed_plan)
+        attention = c.lenient(.attention, LossyList<DailyAttentionItem>.self)?.items ?? []
+        attention_omitted = c.lenient(.attention_omitted, Int.self) ?? 0
+        source_coverage = c.lenient(.source_coverage, LossyList<DailySourceCoverage>.self)?.items ?? []
+        behavior_detail = c.lenient(.behavior_detail, String.self) ?? ""
+        explanation = c.lenient(.explanation, String.self) ?? ""
+        mail_overview = c.lenient(.mail_overview, DailyOverview.self)
+        texts_overview = c.lenient(.texts_overview, DailyOverview.self)
+        mail_summary = c.lenient(.mail_summary, DailyOverview.self)
+        needs_you = c.lenient(.needs_you, DailyNeedsYou.self)
+        proactive = c.lenient(.proactive, ProactiveState.self)
+    }
+}
+
 struct DailyNeedsYou: Decodable, Equatable {
     struct Item: Decodable, Equatable {
         let id: String
@@ -72,6 +109,15 @@ struct DailyNeedsYou: Decodable, Equatable {
     }
     let items: [Item]
     let more: Int
+
+    private enum CodingKeys: String, CodingKey { case items, more }
+
+    /// An item of a kind or shape this build doesn't know is dropped, not the line.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        items = c.lenient(.items, LossyList<Item>.self)?.items ?? []
+        more = c.lenient(.more, Int.self) ?? 0
+    }
 }
 
 struct DailyOverview: Decodable, Equatable {
