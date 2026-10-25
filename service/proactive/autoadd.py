@@ -171,6 +171,36 @@ def _resolve(sentence: str, arrival: float, tz: str):
         return None
 
 
+def _saved_contact(item: dict) -> bool:
+    """A text conversation labelled by a contact's name, not a bare number."""
+    if item.get("source") != "messages":
+        return False
+    label = str(item.get("title") or "")
+    return bool(label) and not re.match(r"^[+\d(][\d() .+-]{2,}$|^\S+@\S+$", label)
+
+
+_FREE_MAIL = frozenset({"gmail.com", "googlemail.com", "icloud.com", "me.com", "mac.com", "yahoo.com",
+                        "outlook.com", "hotmail.com", "live.com", "aol.com", "proton.me", "protonmail.com"})
+
+
+def _same_org(item: dict) -> bool:
+    """Mail from the user's own organisation (a professor at the user's
+    university): the sender's domain is one of the user's own, and not a
+    free-mail provider anyone can sign up at."""
+    if item.get("source") != "mail":
+        return False
+    sender = str((item.get("ref") or {}).get("to") or "").rpartition("@")[2].casefold()
+    if not sender or sender in _FREE_MAIL:
+        return False
+    try:
+        from service.memory.identity import user_emails
+        own = {str(e).rpartition("@")[2].casefold() for e in user_emails() or []}
+    except Exception:  # noqa: BLE001 — no identity: no organisation to match
+        own = set()
+    own.add(str(item.get("account") or "").rpartition("@")[2].casefold())
+    return sender in own or any(sender.endswith("." + d) for d in own if d)
+
+
 def _explicit(got, relative_ok: bool) -> bool:
     """A date the sender actually wrote: a month and day, a numeric date, or (in
     the newest message) a weekday or "tomorrow". A bare clock ("at 7"), "today",
@@ -320,13 +350,18 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
     if not isinstance(result, dict) or result.get("sensitive") or result.get("junk"):
         return None, "sensitive or junk"
     text = f"{item.get('title') or ''}\n{item.get('text') or ''}"
+    person = bool(item.get("person", False))
     if source == "mail":
         if _PROMO.search(text):
             return None, "promotional"
-        if not item.get("person", True) and not (_TRANSACTIONAL.search(text) or triage._DEADLINE.search(text)):
+        if not person and not (_TRANSACTIONAL.search(text) or triage._DEADLINE.search(text)):
             return None, "not a person, school or confirmation"
-    elif not item.get("person", True):
+    elif not person:
         return None, "not a person"
+    # A stranger never writes to the user's calendar: a person must be someone
+    # the user has written to, or a saved contact (a text labelled by name).
+    if person and not (item.get("user_wrote") or _saved_contact(item) or _same_org(item)):
+        return None, "unknown sender: tap to add"
     arrival = item.get("received_ts")
     if type(arrival) not in (int, float):
         return None, "no arrival time"
@@ -641,6 +676,10 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     gone = set(decided["dismissed"]) | set(decided["fired"])
     suppressed = set(decided["suppressed"])
     records = store.auto_added()
+    # An undone add retires its whole thread: a later message with a nudged
+    # time, or the same plan as a reminder, is never added again.
+    retired = {r.get("item_id") for r in records.values()
+               if isinstance(r, dict) and r.get("status") in ("undone", "undo_unknown") and r.get("item_id")}
     today = store.auto_added_since(now - DAY_S)
     from service.proactive.prepare import card_id
     tap, added = [], []
@@ -660,6 +699,9 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         if item.get("id") in seen:
             continue
         seen.add(item["id"])
+        if item.get("id") in retired:
+            note(item, "undone before")
+            continue
         fp = plan["fingerprint"]
         record = records.get(fp) or {}
         if record.get("status") in _RECORD_STATES_BLOCKING or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
@@ -674,7 +716,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         if (dup := already_there(plan, rows, tz)) is not None:
             note(item, f"already on {'Calendar' if dup.get('source') == 'calendar' else 'your list'}")
             continue
-        if not on or attempts >= MAX_PER_CYCLE or today + len(added) >= MAX_PER_DAY:
+        if not on or attempts >= MAX_PER_CYCLE or today + attempts >= MAX_PER_DAY:
             tap.append(tap_card(plan, now))
             note(item, "tap to add" if not on else "cap reached: tap to add")
             continue

@@ -24,7 +24,7 @@ from service.proactive.store import ProactiveStore
 TZ = "America/Los_Angeles"
 ZONE = ZoneInfo(TZ)
 NOW = datetime(2026, 10, 24, 10, 0, tzinfo=ZONE).timestamp()        # Sat Oct 24, 10 AM
-ME = "me@example.com"
+ME = "me@ucsc.edu"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -436,3 +436,38 @@ def test_prepare_still_has_no_send_or_write_capability():
 def test_the_new_test_file_is_in_the_simulation_manifest():
     manifest = (ROOT / "scripts/run_simulation_qa.py").read_text()
     assert '"tests/test_proactive_auto_add.py"' in manifest
+
+
+# --- release audit follow-ups ---------------------------------------------------------------
+
+
+def test_a_stranger_never_writes_to_the_calendar_but_still_gets_a_tap_card(store):
+    cold = mail("Recruiter", "talent@gmail.com", "Interview", "Interview Fri Oct 30 at 3pm, see you then.")
+    unsaved = text("+14085550199", "Interview Fri Oct 30 at 3pm, see you then.")
+    writers = Writers()
+    step(store, survivors(cold, unsaved), writers)
+    assert writers.calls == []
+
+
+def test_an_undone_thread_is_never_added_again_even_at_a_nudged_time(store):
+    writers = Writers()
+    step(store, survivors(text("Maya", RECITAL)), writers)
+    [record_id] = list(store.auto_added())
+    store.auto_add_put(record_id, {**store.auto_added()[record_id], "status": "undone"})
+    again = Writers()
+    step(store, survivors(text("Maya", "can you come to my recital Sat Oct 31 at 6:15pm?")), again)
+    assert again.calls == []
+
+
+def test_unconfirmed_writes_count_toward_the_daily_cap(store, monkeypatch):
+    monkeypatch.setattr(store, "auto_added_since", lambda since: autoadd.MAX_PER_DAY - 1)
+    writers = Writers(outcome={"ok": False, "status": "unknown"})
+    step(store, survivors(text("Maya", RECITAL), text("Sam", "dinner Sun Nov 1 at 7pm?"),
+                          text("Ava", "game Mon Nov 2 at 5pm?")), writers)
+    assert len(writers.calls) == 1
+
+
+def test_the_card_fire_route_is_denied_from_the_shell():
+    from service.safety import policy
+    assert policy.local_send_endpoint_hit(
+        "curl -X POST http://127.0.0.1:8765/assistant/proactive/cards/card:abc/fire -d '{}'")
