@@ -340,7 +340,7 @@ def recall_reason(row: dict) -> str | None:
 # A course system's roll-up ("Recent Canvas Notifications") lists each item with
 # its own due line: "Assignment Created - Worksheet 3, Statistics … due: Oct 25 at 11:59pm".
 _DIGEST_ENTRY = re.compile(
-    r"^[ \t]*(?:Assignment|Quiz|Discussion|Exam)\s+(?:Created|Updated|Due Date Changed)\s*[-:–]\s*"
+    r"^[ \t]*(?:Assignment|Quiz|Discussion|Exam)\s+(?P<verb>Created|Updated|Due Date Changed)\s*[-:–]\s*"
     r"(?P<name>[^\n]{3,140}?)\s*\n(?:[ \t]*\n)*[ \t]*due:\s*(?P<due>[^\n]{3,40}?)\s*$", re.I | re.M)
 
 
@@ -355,16 +355,26 @@ def digest_entries(row: dict, *, now: float, tz: str) -> list[dict] | None:
     found = list(_DIGEST_ENTRY.finditer(str(row.get("body") or "")))
     if not found:
         return None
-    entries, seen = [], set()
+    # One entry per item, its latest word: "Due Date Changed" replaces the date
+    # an item was created with ("HW3 … due: Apr 29" then "… changed … due: Oct 26").
+    latest: dict[str, tuple[bool, str, str]] = {}
     for match in found:
         name = clean(re.sub(r"\s+,", ",", match.group("name")), 120).strip(" ,-")
         phrase = clean(match.group("due"), 40)
-        if not name or re.search(r"no due date", phrase, re.I) or redact_summary_codes(name) != name:
+        if not name or redact_summary_codes(name) != name:
+            continue
+        changed = match.group("verb").casefold() == "due date changed"
+        key = name.casefold()
+        if key in latest and latest[key][0] and not changed:
+            continue
+        latest[key] = (changed, name, phrase)
+    entries = []
+    for _changed, name, phrase in latest.values():
+        if re.search(r"no due date", phrase, re.I):
             continue
         due_ts, _, has_clock = resolve_due(phrase, float(row["ts"]), tz)
-        if due_ts is None or due_ts <= now or name.casefold() in seen:
+        if due_ts is None or due_ts <= now:
             continue
-        seen.add(name.casefold())
         entries.append(dict(name=name, due_phrase=phrase, due_ts=due_ts, has_clock=has_clock))
     entries.sort(key=lambda e: e["due_ts"])
     return entries

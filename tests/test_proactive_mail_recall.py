@@ -288,3 +288,13 @@ def test_the_card_cap_stays_five():
     many = [dict(org_item(due + n * 3600, title=f"Finish Worksheet {n}, Statistics"), primary=f"mail:{n}",
                  fingerprints=[f"mail:{n}:1"]) for n in range(8)]
     assert len(cards_for(many)) == 5
+
+
+def test_a_due_date_change_replaces_the_date_an_item_was_created_with():
+    row = rollup([("HW3 , Statistics", "Apr 29 at 11:59pm")])
+    row["body"] = row["body"].replace(
+        " <link>\n", " <link>\n--------------------------------\n\n Assignment Due Date Changed: HW3 , Statistics\n\n"
+                     " due: Oct 26 at 11:59pm\n\n <link>\n", 1)
+    entries = sources.digest_entries(row, now=NOW, tz=TZ)
+    assert [(e["name"], e["due_ts"]) for e in entries] == [
+        ("HW3, Statistics", datetime(2026, 10, 26, 23, 59, tzinfo=ZONE).timestamp())]
