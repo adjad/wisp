@@ -275,7 +275,7 @@ def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, no
     """Card order, made deterministic for people: the judge's items from
     people, then every one-to-one conversation whose last message is an
     unanswered incoming text under 3 days old (even when the judge left it
-    out), then everything else. The 5-card cap applies after this."""
+    out), then everything else. Critical account alerts go ahead of all of it. The 5-card cap applies after this."""
     have = {i["primary"] for i in ranked if not i.get("unranked")}
     waiting = []
     for candidate in sorted(pool, key=lambda s: -(s["item"].get("received_ts") or 0)):
@@ -297,10 +297,12 @@ def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, no
             waiting.append(made)
     taken = {w["primary"] for w in waiting}
     judged = [i for i in ranked if not i.get("unranked")]
-    people = [i for i in judged if (i.get("item") or {}).get("person")]
-    others = [i for i in judged if not (i.get("item") or {}).get("person")]
+    critical = [i for i in judged if (i.get("item") or {}).get("critical")]
+    people = [i for i in judged if (i.get("item") or {}).get("person") and i not in critical]
+    others = [i for i in judged if not (i.get("item") or {}).get("person") and i not in critical]
     rest = [i for i in ranked if i.get("unranked") and i["primary"] not in taken]
-    return people + waiting + others + rest
+    # A security or account alert comes before everything, so people never push it past the cap.
+    return critical + people + waiting + others + rest
 
 
 def _served_thread(thread: dict, names: list[str]) -> dict:
@@ -653,11 +655,12 @@ _REPLY_METHODS = ("email_reply", "text_reply")
 
 
 def order_cards(cards: list[dict], deadline_cards: list[dict], limit: int = prepare_mod.MAX_CARDS) -> list[dict]:
-    """Someone waiting on the user comes first; deadline cards fill the slots
-    that leaves, ahead of the rest."""
-    replies = [c for c in cards if c["action"]["method"] in _REPLY_METHODS]
-    rest = [c for c in cards if c["action"]["method"] not in _REPLY_METHODS]
-    return (replies + deadline_cards + rest)[:limit]
+    """A security or account alert first, then someone waiting on the user;
+    deadline cards fill the slots that leaves, ahead of the rest."""
+    alerts = [c for c in cards if c.get("critical")]
+    replies = [c for c in cards if c["action"]["method"] in _REPLY_METHODS and not c.get("critical")]
+    rest = [c for c in cards if c["action"]["method"] not in _REPLY_METHODS and not c.get("critical")]
+    return (alerts + replies + deadline_cards + rest)[:limit]
 
 
 def _default_deadlines(now: float, tz: str, skip: set[str], own: str, linked: set[str]) -> list[dict]:

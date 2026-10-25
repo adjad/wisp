@@ -220,3 +220,18 @@ def test_the_five_card_cap_holds_with_six_critical_alerts(store):
     assert all(c["action"]["method"] == "read" for c in view["cards"])
     result = picked([attention_item(r) for r in rows])
     assert len(result["items"]) == dw.NEEDS_YOU_SHOWN and result["more"] == 6 - dw.NEEDS_YOU_SHOWN
+
+
+def test_alert_cards_come_before_people_and_deadlines():
+    from service.proactive import cycle
+
+    def card(i, method, critical=False):
+        c = {"id": f"c{i}", "action": {"method": method}}
+        if critical:
+            c["critical"] = True
+        return c
+
+    replies = [card(i, "text_reply") for i in range(5)]
+    alert = card(9, "read", critical=True)
+    ordered = cycle.order_cards(replies + [alert], [card(8, "block_time")])
+    assert ordered[0]["id"] == "c9" and len(ordered) == 5
