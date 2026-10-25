@@ -61,6 +61,30 @@ def card_id(fingerprint: str, method: str) -> str:
 # --- what each card does ------------------------------------------------------------
 
 
+DEADLINE_LEAD_S = 3 * 3600
+
+
+def _reminder_times(item: dict, now: float, tz: str) -> list[float]:
+    """Every reminder for this item, earliest first. A deadline with a clock
+    time ("HW3 due Mon 11:59 PM") gets two: 9 AM on the due day and 3 hours
+    before it, keeping whichever are still ahead. Anything else gets one."""
+    due = item.get("due_ts")
+    if due is None or due <= now or not item.get("has_clock") or item.get("kind") in ("meet", "call"):
+        one = _reminder_due(item, now, tz)
+        return [one] if one is not None else []
+    zone = ZoneInfo(tz)
+    day = datetime.fromtimestamp(due, zone).date()
+    nine = datetime.combine(day, datetime.min.time(), zone).replace(hour=9).timestamp()
+    times = [t for t in (nine, due - DEADLINE_LEAD_S) if now + 5 * 60 <= t < due]
+    times = sorted(set(times))
+    if len(times) == 2 and times[1] - times[0] < 3600:
+        times = times[1:]                # 9 AM and "3 hours before" nearly coincide
+    if not times:
+        one = _reminder_due(item, now, tz)
+        return [one] if one is not None else []
+    return times
+
+
 def _reminder_due(item: dict, now: float, tz: str) -> float | None:
     """When a reminder for this item should go off: 15 minutes before a stated
     clock time, else 9 AM on the due day (or in 5 minutes if that has passed)."""
@@ -113,11 +137,13 @@ def choose(item: dict, *, now: float, tz: str, linked: set[str], handle: str | N
                                            "conversation": (raw.get("ref") or {}).get("conversation", "")}}
     if event is not None:
         return "calendar_event", {"recipient": "", "event": event, "envelope": {"kind": "calendar", **event}}
-    remind_at = _reminder_due(item, now, tz) if source != "reminders" else None
-    if remind_at is not None and remind_at > now:
+    times = [t for t in _reminder_times(item, now, tz) if t > now] if source != "reminders" else []
+    if times:
         title = guard.clean(item["title"], 120)
-        return "reminder", {"recipient": "", "event": None,
-                            "envelope": {"kind": "reminder", "title": title, "due_ts": remind_at}}
+        envelope = {"kind": "reminder", "title": title, "due_ts": times[0]}
+        if len(times) > 1:
+            envelope["alerts"] = [{"title": title, "due_ts": t} for t in times]
+        return "reminder", {"recipient": "", "event": None, "envelope": envelope}
     if source in ("reminders", "notes") or kind in ("errand", "task", "meet", "call"):
         return "add_to_day", {"recipient": "", "event": None,
                               "envelope": {"kind": "add_to_day", "title": guard.clean(item["title"], 200),
@@ -233,6 +259,15 @@ def _plan_when(method: str, plan: dict, tz: str) -> str:
     """The resolved time a reminder or calendar hold is for, formatted by code
     ("Tue, Oct 27, 12 PM"): never the source's phrase."""
     envelope = plan.get("envelope") or {}
+    if method == "reminder" and envelope.get("alerts"):
+        times = [a["due_ts"] for a in envelope["alerts"]]
+        zone = ZoneInfo(tz)
+        words = [guard.when_words(times[0], tz)]
+        for prev, t in zip(times, times[1:]):
+            same_day = datetime.fromtimestamp(prev, zone).date() == datetime.fromtimestamp(t, zone).date()
+            words.append(datetime.fromtimestamp(t, zone).strftime("%-I:%M %p").replace(":00 ", " ")
+                         if same_day else guard.when_words(t, tz))
+        return " and ".join(words)
     if method == "reminder" and envelope.get("due_ts"):
         return guard.when_words(envelope["due_ts"], tz)
     if method == "calendar_event" and (plan.get("event") or {}).get("start_ts"):
