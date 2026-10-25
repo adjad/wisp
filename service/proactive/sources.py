@@ -315,6 +315,7 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         items.append(dict(id=item_id, source="mail", account=bucket,
                           raw_account=account, who=who, title=subject, text=text, lines=quotes,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
+                          unread=last_in.get("unread"),
                           person=bool(people), user_wrote=any(_address(m) in mine for m in messages),
                           hash=_digest(text, replied)))
     items.sort(key=lambda i: i["received_ts"], reverse=True)
@@ -330,10 +331,11 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
 # --- texts ----------------------------------------------------------------------
 
 
-def text_records() -> list[tuple[float, str, str, str]]:
-    """(ts, conversation, "Sender: text", chat guid) for every cached message,
-    oldest first. The chat guid comes from the native record with the same
-    timestamp (the V3 feed), "" when there is none."""
+def text_records() -> list[tuple[float, str, str, str, bool | None]]:
+    """(ts, conversation, "Sender: text", chat guid, unread) for every cached
+    message, oldest first. The chat guid comes from the native record with the
+    same timestamp (the V3 feed), "" when there is none; unread is None when
+    the cache has no read state."""
     from service.tools import imessage_tools as im
     if im.messages_sync_state() != "ready":
         return []
@@ -348,9 +350,9 @@ def text_records() -> list[tuple[float, str, str, str]]:
     except Exception:  # noqa: BLE001 — no native ids: no text replies, everything else stands
         guids = {}
     out = []
-    for ts, _identity, context, text, _unread in im._parse_records():
+    for ts, _identity, context, text, unread in im._parse_records():
         found = guids.get(round(float(ts), 3)) or set()
-        out.append((float(ts), context, text, next(iter(found)) if len(found) == 1 else ""))
+        out.append((float(ts), context, text, next(iter(found)) if len(found) == 1 else "", unread))
     return sorted(out, key=lambda r: r[0])
 
 
@@ -417,9 +419,11 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
     chats: dict[str, set[str]] = {}
     ever_sent: set[str] = set()
     raw_texts: dict[str, list[tuple[float, str, str]]] = {}
+    unread_at: dict[tuple[str, float], bool | None] = {}
     for record in records:
         ts, context, text = record[:3]
         guid = record[3] if len(record) > 3 else ""
+        unread_at[(context, ts)] = record[4] if len(record) > 4 else None
         if text.partition(":")[0].strip() == "Me":
             ever_sent.add(context)
         if now - TEXT_WINDOW_S <= ts <= now + 300:
@@ -459,7 +463,7 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         who = label if not group else (f"{speaker} in {label}" if speaker else label)
         items.append(dict(id="messages:" + _digest(context), source="messages", account=own, raw_account="",
                           who=who, title=label, text=text, lines=quotes, received_ts=last_in[0],
-                          replied=replied, group=group, person=True,
+                          replied=replied, group=group, person=True, unread=unread_at.get((context, last_in[0])),
                           user_wrote=any(r[2].partition(":")[0].strip() == "Me" for r in rows),
                           handle="" if group else chat_handle(chats.get(context, set())),
                           ref={"kind": "text", "conversation": context, "label": label},

@@ -438,7 +438,7 @@ def test_meta_summaries_are_dropped():
 def test_a_waiting_contact_gets_a_reply_card_even_when_the_judge_omits_it(store):
     items = sources.text_items(mom_texts(), now=NOW, own=ME)
     model = Model(triage_reply=lambda m: {"title": "Chat", "summary": "Mom wants to talk tomorrow.", "junk": True,
-                                          "sensitive": False, "asks_of_me": ""},
+                                          "sensitive": False, "asks_of_me": "Talk with Mom tomorrow"},
                   judge_reply=lambda m: {"summary": "", "items": []})
     run(store, model, items)
     card = next(c for c in snap(store)["cards"])
@@ -563,3 +563,58 @@ def test_a_friend_texting_from_an_unsaved_number_is_an_item_but_a_campaign_is_no
          (NOW - 50, "+15102917003", "+15102917003: Reply STOP to opt out of city updates", "")],
         now=NOW, own=ME)
     assert campaign == []
+
+
+# --- read state: a card for an unread action item, or one read a day ago and still unanswered ----------------
+
+
+def _read_mom(age, unread):
+    return [(NOW - age - 100, "Mom", "Me: Hey Mom, want to get coffee this week?", GUID_MOM, False),
+            (NOW - age, "Mom", "Mom: can you call me tonight?", GUID_MOM, unread)]
+
+
+def _asks_call():
+    return Model(triage_reply=lambda m: {"title": "Call", "summary": "Mom asked you to call tonight.", "junk": False,
+                                         "sensitive": False, "asks_of_me": "Call Mom tonight"},
+                 judge_reply=lambda m: {"summary": "", "items": []})
+
+
+def test_text_items_carry_the_latest_incoming_read_state():
+    assert sources.text_items(_read_mom(60, True), now=NOW, own=ME)[0]["unread"] is True
+    assert sources.text_items(_read_mom(60, False), now=NOW, own=ME)[0]["unread"] is False
+    assert sources.text_items(mom_texts(), now=NOW, own=ME)[0]["unread"] is None
+
+
+def test_an_unread_action_item_is_a_card(store):
+    run(store, _asks_call(), sources.text_items(_read_mom(600, True), now=NOW, own=ME))
+    assert [c["action"]["method"] for c in snap(store)["cards"]] == ["text_reply"]
+
+
+def test_a_read_message_under_a_day_old_is_a_todo_not_a_card(store):
+    run(store, _asks_call(), sources.text_items(_read_mom(3600, False), now=NOW, own=ME))
+    state = snap(store)
+    assert state["cards"] == []
+    assert {"who": "Mom", "waiting": False, "reason": "read, under a day"} in state["debug"]["waiting"]
+
+
+def test_a_read_message_unanswered_for_a_day_is_a_card(store):
+    run(store, _asks_call(), sources.text_items(_read_mom(90000, False), now=NOW, own=ME))
+    assert [c["action"]["method"] for c in snap(store)["cards"]] == ["text_reply"]
+
+
+def test_an_unread_text_with_no_action_item_is_not_a_card(store):
+    rows = [(NOW - 600, "Mom", "Mom: lol that's so funny", GUID_MOM, True)]
+    run(store, Model(triage_reply=lambda m: {"title": "Joke", "summary": "Mom laughed.", "junk": True,
+                                             "sensitive": False, "asks_of_me": ""},
+                     judge_reply=lambda m: {"summary": "", "items": []}),
+        sources.text_items(rows, now=NOW, own=ME))
+    state = snap(store)
+    assert state["cards"] == []
+    assert state["debug"]["waiting"] == [{"who": "Mom", "waiting": False, "reason": "no action item"}]
+
+
+def test_the_gate_leaves_school_deadlines_and_unknown_read_state_alone():
+    assert cycle.card_due({"source": "mail", "person": False, "unread": False, "received_ts": NOW}, NOW)
+    assert cycle.card_due({"source": "messages", "person": True, "unread": None, "received_ts": NOW}, NOW)
+    assert not cycle.card_due({"source": "mail", "person": True, "unread": False, "received_ts": NOW - 60}, NOW)
+    assert cycle.card_due({"source": "mail", "person": True, "unread": False, "received_ts": NOW - 86400}, NOW)

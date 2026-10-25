@@ -236,6 +236,31 @@ def _any_result(item: dict, store, offline_results: dict) -> dict | None:
     return {"item": item, "result": result}
 
 
+READ_GRACE_S = 86400
+
+
+def card_due(item: dict, now: float) -> bool:
+    """A person's text or email earns a Before-you-ask card while it is unread,
+    or once it has sat read and unanswered for a day. A message the user has
+    already opened gets that day to answer it before Wisp brings it up.
+    Unknown read state (an older cache) counts as unread; school deadlines and
+    other non-person items are not gated."""
+    if item.get("source") not in ("mail", "messages") or not item.get("person", True):
+        return True
+    if item.get("unread") is False:
+        return now - float(item.get("received_ts") or 0) >= READ_GRACE_S
+    return True
+
+
+def _asks_something(candidate: dict) -> bool:
+    """An unanswered text carries an action item: triage named what it asks
+    of the user, or the latest incoming line is a question."""
+    if str((candidate.get("result") or {}).get("asks_of_me") or "").strip():
+        return True
+    lines = candidate["item"].get("lines") or []
+    return bool(lines) and "?" in lines[-1]
+
+
 def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, now: float, tz: str,
                         suppressed: set[str], allowed: set[str], debug: list | None = None) -> list[dict]:
     """Card order, made deterministic for people: the judge's items from
@@ -248,7 +273,8 @@ def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, no
         item = candidate["item"]
         reason = ("group chat" if item.get("group") else "you answered last" if item.get("replied")
                   else "not a person" if not item.get("person") else "already judged" if item["id"] in have
-                  else "older than 7 days" if now - (item.get("received_ts") or 0) > WAITING_S else "")
+                  else "older than 7 days" if now - (item.get("received_ts") or 0) > WAITING_S
+                  else "no action item" if not _asks_something(candidate) else "")
         made = None
         if not reason:
             made = judge_mod._finalize({"title": "", "action": "reply", "why": "", "due": "", "urgency": "high"},
@@ -498,6 +524,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                        "c": [r["id"] for r in acct_sched["calendar"]], "r": [r["id"] for r in acct_sched["reminders"]],
                        "p": [r["id"] for r in acct_sched["past_calendar"]],
                        "x": sorted(suppressed), "day": datetime.fromtimestamp(now, ZoneInfo(tz)).date().isoformat(),
+                       "g": sorted(s["item"]["id"] for s in mine if not card_due(s["item"], now)),
                        "m": model_ok})
         last = judged.get(acct) or {}
         if not force and last.get("key") == key and now - float(last.get("at") or 0) < JUDGE_EVERY_S:
@@ -531,7 +558,13 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         ranked = with_waiting_people(ranked, waiting_pool, acct_sched, now=now, tz=tz, suppressed=suppressed,
                                      allowed=allowed, debug=waiting_debug)
         _status["phase"] = "preparing"
-        state, cards = await prepare_mod.prepare(ranked, acct_sched, reply_fn if model_ok else _offline, abort,
+        # Read and under a day old: still a to-do, not yet a card.
+        for entry in ranked:
+            if not card_due(entry.get("item") or {}, now):
+                waiting_debug.append({"who": (entry.get("item") or {}).get("who", ""), "waiting": False,
+                                      "reason": "read, under a day"})
+        card_ranked = [e for e in ranked if card_due(e.get("item") or {}, now)]
+        state, cards = await prepare_mod.prepare(card_ranked, acct_sched, reply_fn if model_ok else _offline, abort,
                                                  now=now, tz=tz, linked=linked, resolve_handle=resolve or resolve_handle,
                                                  allowed=allowed, freeze=freeze, debug=waiting_debug)
         debug_by_account[acct] = waiting_debug
@@ -539,7 +572,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             if abort():
                 yielded = True
                 break
-            state, cards = await prepare_mod.prepare(ranked, acct_sched, _offline, abort, now=now, tz=tz,
+            state, cards = await prepare_mod.prepare(card_ranked, acct_sched, _offline, abort, now=now, tz=tz,
                                                      linked=linked, resolve_handle=resolve or resolve_handle,
                                                      allowed=allowed, freeze=freeze)
         dismissed = set(store.decisions()["dismissed"]) | set(store.decisions()["fired"])
