@@ -176,6 +176,8 @@ _SHELL_DENY = [
 _LOCAL_SEND_DENY = [
     r"assistant/+(email_reply|send_message_draft)\b",
     r"assistant/+proactive/+cards/+[^/\s'\"]+/+fire\b",
+    r"assistant/+needs_you/+[^/\s'\"]+/+(?:done|clear)\b",
+    r"assistant/+proactive/+(?:todos|threads)/+[^/\s'\"]+/+(?:done|clear)\b",
     r"(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^\s'\"]*?:8765\b[^\s'\"]*?(email_reply|send_message_draft)",
 ]
 

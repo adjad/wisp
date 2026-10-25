@@ -193,3 +193,11 @@ def test_mark_done_refuses_changed_and_non_reminder_rows(client, store, monkeypa
     assert client.post(f"/assistant/proactive/todos/{todo['id']}/done", json={"fingerprint": stale}).status_code == 409
     assert client.post("/assistant/proactive/todos/todo:nope/done", json={"fingerprint": stale}).status_code == 404
     native.assert_not_called()
+
+
+def test_the_clear_and_done_routes_are_denied_from_the_shell():
+    from service.safety import policy
+    for path in ("needs_you/reminders:abc/done", "needs_you/reminders:abc/clear",
+                 "proactive/todos/todo:abc/done", "proactive/threads/messages:abc/clear"):
+        assert policy.local_send_endpoint_hit(
+            f"curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:8765/assistant/{path} -d '{{}}'")

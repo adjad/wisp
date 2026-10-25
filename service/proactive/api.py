@@ -158,6 +158,10 @@ async def complete_todo(todo_id: str, request: Request):
     row = reminder_where(assistant_store, lambda cid: make_id(str(cid)) == todo_id)
     if row is None:
         raise HTTPException(404, "That reminder is no longer in your list.")
+    # The live reminder, not only the snapshot, must still be what the row showed.
+    from service.proactive.cycle import item_fingerprint
+    if item_fingerprint(row.get("title"), row.get("when_ts")) != item_fingerprint(todo.get("title"), todo.get("due_ts")):
+        raise HTTPException(409, "That reminder changed; nothing was marked done.")
     from service.tools.schedule_extras import complete_commitment
     ok, message = await complete_commitment(row, assistant_store)
     if not ok:
