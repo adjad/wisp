@@ -8,7 +8,9 @@ Three private JSON files, each written atomically with 0600 permissions:
 - ``state.json``: the last cycle's output (cards, model to-dos, threads, day
   summary) plus the judge's input key and when it ran.
 - ``decisions.json``: what the user did — dismissed cards, done to-dos, fired
-  cards — keyed so that nothing they finished or waved away resurfaces.
+  cards — keyed so that nothing they finished or waved away resurfaces —
+  and ``auto_added``: each auto-add's outcome by fingerprint, holding the
+  native identifier Undo deletes (autoadd.py).
 
 Nothing here calls a model or a native source.
 """
@@ -23,6 +25,7 @@ from pathlib import Path
 
 _DONE_SHOWN_S = 24 * 3600
 _KEEP_S = 14 * 86400
+_AUTO_KEEP_S = 90 * 86400
 
 
 def base_dir() -> Path:
@@ -140,7 +143,30 @@ class ProactiveStore:
                 return float(v.get("at") or 0) if isinstance(v, dict) else float(v or 0)
             for key in ("dismissed", "fired", "suppressed", "done", "unknown", "unknown_threads"):
                 data[key] = {k: v for k, v in data[key].items() if now - stamp(v) < _KEEP_S}
+            # Auto-add fingerprints outlive every source window many times over.
+            data["auto_added"] = {k: v for k, v in self.auto_added().items() if now - stamp(v) < _AUTO_KEEP_S}
             self._write("decisions.json")
+
+    # --- auto-add (autoadd.py) -------------------------------------------------
+
+    def auto_added(self) -> dict[str, dict]:
+        """Every auto-add outcome by fingerprint: added (with the native
+        identifier Undo deletes), undone, unknown, failed or blocked."""
+        data = self._read("decisions.json")
+        if not isinstance(data.get("auto_added"), dict):
+            data["auto_added"] = {}
+        return data["auto_added"]
+
+    def auto_add_put(self, fingerprint: str, entry: dict) -> None:
+        with self._lock:
+            self.auto_added()[fingerprint] = dict(entry)
+            self._write("decisions.json")
+
+    def auto_added_since(self, since: float) -> int:
+        """Writes dispatched since `since` that may have landed (the daily cap)."""
+        return sum(1 for v in self.auto_added().values()
+                   if isinstance(v, dict) and v.get("status") in ("added", "undone", "unknown", "undo_unknown")
+                   and float(v.get("at") or 0) >= since)
 
     def suppressed_fingerprints(self) -> set[str]:
         """Source fingerprints (item id + content hash) the user already handled:
@@ -277,6 +303,13 @@ class ProactiveStore:
             self._write("triage.json")
             data = self.decisions()
             data["done"] = {k: v for k, v in data["done"].items() if not mine((v or {}).get("todo"))}
+            # Auto-add records keep only their fingerprint and outcome (so an
+            # erased account's item is still never re-added): no words, no who.
+            for key, record in list(self.auto_added().items()):
+                if isinstance(record, dict) and str(record.get("account") or "").casefold() == account \
+                        and record.get("source") not in _OWNER_ONLY:
+                    data["auto_added"][key] = {k: record[k] for k in ("status", "at", "attempts", "fingerprint")
+                                               if k in record}
             data.setdefault("erased_at", {})[account] = time.time()
             self._write("decisions.json")
 
