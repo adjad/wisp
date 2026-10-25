@@ -99,7 +99,7 @@ def test_a_deadline_card_holds_a_real_free_hour_after_the_event():
     card = cards[0]
     assert card["meta"] == "DUE TOMORROW · CALENDAR"
     assert card["title"] == "Worksheet 3 for STAT 5"
-    assert card["body"] == "You're free 5–6 PM after CruzHacks Hack Day. I'll hold that hour."
+    assert card["body"] == "You're free 5–6 PM after CruzHacks Hack Day. I can hold that hour."
     assert card["action"]["button"] == "Block 5–6 PM?"
     assert card["action"]["method"] == "block_time"
     assert card["action"]["slot"] == {"start": at(17), "end": at(18)}

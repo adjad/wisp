@@ -2,7 +2,7 @@
 
 An assignment on the calendar or a reminder due in the next three days
 becomes a "block_time" card: "Worksheet 3 for STAT 5 · You're free 2–3 PM
-after Hack Day. I'll hold that hour." The slot comes from the Day planner
+after Hack Day. I can hold that hour." The slot comes from the Day planner
 (service/assistant/today.build_plan) run over the user's real calendar,
 working hours and Day tasks, so it is free by the same rules the Day tab
 uses. Firing it pins a Wisp Day task there; nothing is written to Calendar.
@@ -219,7 +219,7 @@ def card(candidate: dict, slot: dict, now: float, tz: str) -> dict:
         "id": card_id("deadline:" + candidate["id"], "block_time"),
         "meta": f"{meta_day} · {label}",
         "title": title[:1].upper() + title[1:],
-        "body": f"You're free {when}{near}. I'll hold {hold}.",
+        "body": f"You're free {when}{near}. I can hold {hold}.",
         "why": f"{title} is {due_words(candidate, now, tz)}.",
         "account": candidate.get("account", ""),
         "sources": [{"kind": candidate["source"], "ref": candidate["id"], "who": "", "quote": candidate["raw_title"]}],

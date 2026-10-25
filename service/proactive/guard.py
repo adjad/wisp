@@ -202,10 +202,23 @@ def resolve_due(phrase: str, arrival_ts: float, tz: str) -> tuple[float | None, 
     except Exception:  # noqa: BLE001 — an unreadable phrase dates nothing
         got = None
     if got is not None and got.blocked is None:
-        if got.has_clock and got.start is not None:
-            return got.start.timestamp(), "", True
-        if got.day is not None:
-            end = datetime.combine(got.day, datetime.min.time(), zone) + timedelta(hours=23, minutes=59)
+        start, day = got.start, got.day
+        if day is not None and "date:year" in (got.inferred or ()) and day.year == arrival.year + 1:
+            # A yearless date the resolver rolled into next year ("due: Oct 19"
+            # in mail from Oct 24) is, in a source's own words, the recent past
+            # date: a deadline 11 months out is never written without a year.
+            try:
+                recent = day.replace(year=arrival.year)
+            except ValueError:
+                recent = None
+            if recent is not None and arrival.date() - timedelta(days=120) <= recent < arrival.date():
+                if start is not None:
+                    start = start.replace(year=arrival.year)
+                day = recent
+        if got.has_clock and start is not None:
+            return start.timestamp(), "", True
+        if day is not None:
+            end = datetime.combine(day, datetime.min.time(), zone) + timedelta(hours=23, minutes=59)
             return end.timestamp(), "", False
     if _TONIGHT.search(text) or _TODAY.search(text):
         end = arrival.replace(hour=23, minute=59, second=0, microsecond=0)
@@ -215,6 +228,16 @@ def resolve_due(phrase: str, arrival_ts: float, tz: str) -> tuple[float | None, 
         end = (arrival + timedelta(days=days)).replace(hour=23, minute=59, second=0, microsecond=0)
         return end.timestamp(), "This week", False
     return None, "", False
+
+
+def when_words(ts: float, tz: str, *, has_clock: bool = True) -> str:
+    """A resolved time as a card shows it: "Tue, Oct 27, 12 PM", "Sun, Oct 25,
+    11:59 PM", or "Mon, Oct 26" without a clock. Never a source's raw phrase."""
+    local = datetime.fromtimestamp(ts, ZoneInfo(tz))
+    text = local.strftime("%a, %b %-d")
+    if has_clock:
+        text += ", " + (local.strftime("%-I %p") if local.minute == 0 else local.strftime("%-I:%M %p"))
+    return text
 
 
 def due_label(due_ts: float | None, now: float, tz: str, *, has_clock: bool = False, fixed: str = "") -> str:

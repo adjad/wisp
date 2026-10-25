@@ -234,12 +234,156 @@ def _deadline(row: dict) -> bool:
     return bool(_DEADLINE.search(normalize_slang(f"{row.get('subject') or ''} {row.get('body') or ''}")))
 
 
+def _school_sender(row: dict) -> bool:
+    """A course system (Canvas, Ed, Gradescope…) or a school's own domain."""
+    from service.tools.email_tools import _COURSE_RE
+    address = _address(row)
+    domain = address.rpartition("@")[2]
+    return domain.endswith(".edu") or bool(_COURSE_RE.search(domain) or _COURSE_RE.search(str(row.get("sender") or "")))
+
+
 def school_mail(row: dict) -> bool:
+    """School mail: digest_category's "school", or its "attention" for a course
+    system's own action mail ("Reminder: Quiz 2 on 10/23"), which it files
+    under attention, not school, and so used to be dropped."""
     try:
         from service.tools.email_tools import digest_category
-        return digest_category(row) == "school"
+        category = digest_category(row)
+        return category == "school" or (category == "attention" and _school_sender(row))
     except Exception:  # noqa: BLE001
         return False
+
+
+# A course's own action wording, read from the subject and the current body's
+# lead: "attendance required", "Makeup Quiz 2", "Practice Midterm (10/26)".
+_SCHOOL_ACTION = re.compile(
+    r"\b(?:due|deadline|grade[sd]?|exams?|midterms?|finals? exam|quiz(?:zes)?|action required|required|mandatory|"
+    r"reminder|assignments?|homework|hw ?\d+|pa ?\d+|lab ?\d+|problem set|pset|worksheet|submit|extension|"
+    r"makeup|retake|attendance)\b", re.I)
+# A submission receipt is the user's own finished work, not something to do.
+_SCHOOL_RECEIPT = re.compile(r"\bsuccessfully submitted\b|\bsubmission (?:received|confirm\w*)\b|"
+                             r"\byou(?:'|’)ve (?:successfully )?submitted\b", re.I)
+
+
+def school_action(row: dict) -> bool:
+    """School mail that asks for something: a deadline, or a course's own
+    action wording. A submission receipt never counts."""
+    from service.assistant.daily_workspace import _QUOTED_HISTORY
+    subject = str(row.get("subject") or "")
+    if _SCHOOL_RECEIPT.search(subject):
+        return False
+    lead = _QUOTED_HISTORY.split(str(row.get("body") or ""))[0][:600]
+    return _deadline(row) or bool(_SCHOOL_ACTION.search(f"{subject} {lead}"))
+
+
+# Automated mail that is still about the user's own business: an appointment, a
+# bill that is due, an application's status, an account at its limit. Subject
+# only, and never from a marketing, newsletter, job-alert or social sender.
+_PERSONAL_NOTICE = re.compile(
+    r"\b(?:payment|bill|invoice|balance|rent|tuition|premium)\b[^.!?]{0,30}\b(?:is |was )?(?:due|overdue|past due)\b|"
+    r"\bpast due\b|\bpayment reminder\b|\bautopay (?:failed|scheduled)\b|"
+    r"\bappointment\b[^.!?]{0,30}\b(?:confirm\w*|reminder|scheduled|rescheduled|cancel\w*|tomorrow|today)\b|"
+    r"\b(?:confirm|reminder:?|upcoming|your) (?:\w+ )?appointment\b|"
+    r"\b(?:your )?application\b[^.!?]{0,30}\b(?:status|update|received|decision|next steps|under review|"
+    r"incomplete|was submitted)\b|\binterview (?:invitation|request|scheduled|confirm\w*)\b|\boffer letter\b|"
+    r"\b(?:you(?:'|’)ve|you have) used \d{2,3}% of\b|\bstorage (?:is )?(?:almost )?full\b|"
+    r"\b(?:quota|limit) (?:reached|exceeded)\b", re.I)
+
+
+def personal_notice(row: dict) -> bool:
+    from service.assistant.daily_workspace import _PROMO_SENDER, _PROMO_SUBJECT
+    from service.tools.email_tools import (_MARKETING_SUBJECT, _NEWSLETTER_RE, _SOCIAL_RE, _CRITICAL_PROMO,
+                                           is_broadcast)
+    subject = str(row.get("subject") or "")
+    if not _PERSONAL_NOTICE.search(subject):
+        return False
+    identity = f"{row.get('sender') or ''} {_address(row)}"
+    return not (_MARKETING_SUBJECT.search(subject) or _CRITICAL_PROMO.search(subject) or _PROMO_SUBJECT.search(subject)
+                or _NEWSLETTER_RE.search(identity) or _PROMO_SENDER.search(identity) or _SOCIAL_RE.search(identity)
+                or is_broadcast(row))
+
+
+# A collaborator's comment in a shared Google doc arrives from Google's
+# no-reply address under the person's name: a person's words, not a notice.
+# A notice that only says a comment was resolved asks nothing.
+_DOC_COMMENT_SENDER = re.compile(r"^comments-noreply@docs\.google\.com$", re.I)
+_DOC_RESOLVED_ONLY = re.compile(r"\bresolved a comment\b", re.I)
+_DOC_NEW = re.compile(r"\bnew activity\b|\bmentioned you\b|\bassigned (?:you|to you)\b|\breplied to\b|\badded a comment\b",
+                      re.I)
+_DOC_APP = re.compile(r"\s*\((?:google )?(?:docs|sheets|slides|drive|forms)\)\s*$", re.I)
+
+
+def doc_comment(row: dict) -> bool:
+    if not _DOC_COMMENT_SENDER.match(_address(row)):
+        return False
+    body = str(row.get("body") or "")
+    return not (_DOC_RESOLVED_ONLY.search(body) and not _DOC_NEW.search(body))
+
+
+def recall_reason(row: dict) -> str | None:
+    """Why automated mail that the bulk filters drop is still read: "school"
+    (a course or the school asking for something), "notice" (the user's own
+    appointment, bill, application or account), "doc_comment" (a person's
+    comment in a shared doc). None for everything else."""
+    try:
+        if school_mail(row) and school_action(row):
+            return "school"
+        if doc_comment(row):
+            return "doc_comment"
+        if personal_notice(row):
+            return "notice"
+    except Exception:  # noqa: BLE001 — a classifier failure recalls nothing
+        return None
+    return None
+
+
+# A course system's roll-up ("Recent Canvas Notifications") lists each item with
+# its own due line: "Assignment Created - Worksheet 3, Statistics … due: Oct 25 at 11:59pm".
+_DIGEST_ENTRY = re.compile(
+    r"^[ \t]*(?:Assignment|Quiz|Discussion|Exam)\s+(?:Created|Updated|Due Date Changed)\s*[-:–]\s*"
+    r"(?P<name>[^\n]{3,140}?)\s*\n(?:[ \t]*\n)*[ \t]*due:\s*(?P<due>[^\n]{3,40}?)\s*$", re.I | re.M)
+
+
+def digest_entries(row: dict, *, now: float, tz: str) -> list[dict] | None:
+    """For a course roll-up, its entries still due after `now`, soonest first,
+    as {name, due_phrase, due_ts, has_clock}; None when the mail is no roll-up."""
+    from service.assistant.daily_workspace import _DIGEST_SUBJECT
+    from service.proactive.guard import resolve_due
+    from service.tools.imessage_tools import redact_summary_codes
+    if not (_school_sender(row) and _DIGEST_SUBJECT.search(str(row.get("subject") or ""))):
+        return None
+    found = list(_DIGEST_ENTRY.finditer(str(row.get("body") or "")))
+    if not found:
+        return None
+    entries, seen = [], set()
+    for match in found:
+        name = clean(re.sub(r"\s+,", ",", match.group("name")), 120).strip(" ,-")
+        phrase = clean(match.group("due"), 40)
+        if not name or re.search(r"no due date", phrase, re.I) or redact_summary_codes(name) != name:
+            continue
+        due_ts, _, has_clock = resolve_due(phrase, float(row["ts"]), tz)
+        if due_ts is None or due_ts <= now or name.casefold() in seen:
+            continue
+        seen.add(name.casefold())
+        entries.append(dict(name=name, due_phrase=phrase, due_ts=due_ts, has_clock=has_clock))
+    entries.sort(key=lambda e: e["due_ts"])
+    return entries
+
+
+def shown_title(subject: str, who: str, *, school: bool = False) -> str:
+    """The subject as a thread title, never the privacy stand-in itself: a
+    withheld subject ("Private details omitted.") is named by its class and
+    sender instead ("Gradescope: new course update")."""
+    from service.assistant.daily_workspace import _PLACEHOLDER_KINDS
+    text = str(subject or "")
+    tail = text.rpartition(": ")[2] if ": " in text else text
+    for pattern, kind in _PLACEHOLDER_KINDS:
+        if pattern.search(tail):
+            noun = "security notice" if kind == "security" else re.sub(r"^(?:an?|the) ", "", kind)
+            if noun == "email":
+                noun = "course update" if school else "email"
+            return f"{who}: new {noun}" if who else f"New {noun}"
+    return text
 
 
 def _excerpt(row: dict) -> str:
@@ -286,27 +430,43 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         # A person wrote, or a school sent something with a deadline: anything
         # else (newsletters, job alerts, launches, campaigns) is not read at all.
         people = [m for m in incoming if not skip(m) and not bulk_mail(m)]
-        school = [m for m in incoming if school_mail(m) and _deadline(m)]
+        # Automated mail that still needs the user: a course's own action mail,
+        # their appointment, bill or application, a collaborator's doc comment.
+        recalled = [] if people else [m for m in incoming if recall_reason(m)]
         # A critical account alert (an exposed secret, a new sign-in, a failed
         # payment) is machine mail that still matters: it skips the bulk filters.
         critical = [] if people else [m for m in incoming if critical_account_mail(m)]
+        entries = None
+        if recalled and not critical:
+            # A course roll-up counts only for what in it is still due: its
+            # past entries ("due: Oct 19") are no card, and it is named by them.
+            entries = digest_entries(recalled[-1], now=now, tz=tz)
+            if entries == []:
+                recalled = []
         if counts is not None:
-            used = {id(m) for m in people + school + critical}
+            used = {id(m) for m in people + recalled + critical}
             tally(counts, bucket, mail=len(incoming),
                   filtered=sum(1 for m in incoming if id(m) not in used))
-        if not people and not school and not critical:
+        if not people and not recalled and not critical:
             continue
-        last_in = (people or critical or school)[-1]
+        last_in = (people or critical or recalled)[-1]
+        reason = None if people or critical else recall_reason(last_in)
         last = messages[-1]
         replied = _address(last) in mine and last["ts"] >= last_in["ts"]
-        subject = redact_summary_codes(clean(last_in.get("subject"), 200))
+        raw_subject = redact_summary_codes(clean(last_in.get("subject"), 200))
         who = display_name(last_in.get("sender"), _address(last_in)) or "Unknown sender"
+        if reason == "doc_comment":
+            who = _DOC_APP.sub("", who).strip() or who
+        subject = shown_title(raw_subject, who, school=reason == "school" or school_mail(last_in))
         # Whether the source itself, before redaction, carries a real secret.
         secret = any(raw_secret(f"{m.get('subject') or ''}\n{m.get('body') or ''}") for m in messages[-3:])
-        item_id = "mail:" + _digest(account, bare_subject(subject).casefold())
+        # A withheld subject is keyed by the raw thread subject, so two threads
+        # whose subjects redact alike stay separate items.
+        item_id = "mail:" + _digest(account, bare_subject(raw_subject).casefold() if subject == raw_subject
+                                    else "withheld:" + thread_subject)
         ref = {"kind": "email", "message_id": str(last_in.get("message_id") or ""), "account": account,
                "account_id": str(last_in.get("account_id") or ""), "to": _address(last_in),
-               "subject": subject, "has_body": bool(last_in.get("body"))}
+               "subject": raw_subject, "has_body": bool(last_in.get("body"))}
         if critical:
             # Only a fixed sentence built from the sender and the alert's class:
             # no body, no subject words, no code, token or link reaches the
@@ -322,10 +482,24 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                               user_wrote=any(_address(m) in mine for m in messages),
                               hash=_digest(text, replied, last_in["ts"])))
             continue
+        if entries:
+            # Only the roll-up's entries still due, one line each, by code.
+            lines = [f"{e['name']} is due {e['due_phrase']}" for e in entries[:8]]
+            title = f"{who}: {len(entries)} item{'s' if len(entries) != 1 else ''} due soon"
+            text = (f"Subject: {title}\n" + "\n".join(lines))[:MAX_ITEM_CHARS]
+            items.append(dict(id=item_id, source="mail", account=bucket, raw_account=account, who=who, title=title,
+                              text=text, lines=lines, received_ts=float(last_in["ts"]), replied=replied, ref=ref,
+                              reply_ref=reply_ref_for_row(last_in), unread=last_in.get("unread"), person=False,
+                              secret=secret, user_wrote=False, recall="school", digest=True,
+                              entries=[{k: e[k] for k in ("name", "due_phrase")} for e in entries[:8]],
+                              hash=_digest(text, replied)))
+            continue
         blocks, quotes = [], [subject]
         for message in messages[-3:]:
             from_user = _address(message) in mine
             speaker = "You (the user)" if from_user else (display_name(message.get("sender"), _address(message)) or "Unknown sender")
+            if not from_user and reason == "doc_comment":
+                speaker = _DOC_APP.sub("", speaker).strip() or speaker
             stamp = datetime.fromtimestamp(message["ts"], zone).strftime("%a %b %-d %-I:%M %p")
             excerpt = _excerpt(message) if message.get("body") else ""
             blocks.append(f"From {speaker} · {stamp}:\n{excerpt or '(subject only)'}")
@@ -333,12 +507,15 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                 quotes.extend(_sentences(excerpt))
         text = f"Subject: {subject}\n" + "\n".join(blocks)
         text = text[:MAX_ITEM_CHARS]
-        reply_ref = reply_ref_for_row(last_in)
+        # A doc comment came from Google's no-reply address: nothing to answer by email.
+        reply_ref = None if reason == "doc_comment" else reply_ref_for_row(last_in)
         items.append(dict(id=item_id, source="mail", account=bucket,
                           raw_account=account, who=who, title=subject, text=text, lines=quotes,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
                           unread=last_in.get("unread"),
-                          person=bool(people), secret=secret, user_wrote=any(_address(m) in mine for m in messages),
+                          person=bool(people) or reason == "doc_comment", secret=secret,
+                          user_wrote=any(_address(m) in mine for m in messages),
+                          **({"recall": reason} if reason else {}),
                           hash=_digest(text, replied)))
     items.sort(key=lambda i: i["received_ts"], reverse=True)
     # The cap is per account: a busy linked inbox never pushes out the owner's mail.
