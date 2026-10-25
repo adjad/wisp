@@ -126,6 +126,49 @@ struct TodayPlan: Decodable {
     var displayWarnings: [String] { workspace?.proposed_plan.warnings ?? warnings }
 }
 
+extension TodayPlan {
+    private enum CodingKeys: String, CodingKey {
+        case day, timezone, generated_at, trace_id, revision, provisional, warnings, preferences, sources,
+             tasks, blocks, deadlines, all_day, unscheduled, workspace, workspace_error
+    }
+
+    /// What the Brief shows when the service's workspace was there but couldn't be read.
+    static let unreadableWorkspace = "Some of today's details couldn't be read; your saved day plan is shown."
+
+    /// Tolerant: only the day and time zone it is for are required. A row that
+    /// doesn't decode is dropped, a missing list is empty, and a workspace this
+    /// build can't read (a field changed shape) is left out with a note, so one
+    /// new or changed field never blanks the whole Brief and Day.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        day = try c.decode(String.self, forKey: .day)
+        timezone = try c.decode(String.self, forKey: .timezone)
+        generated_at = c.lenient(.generated_at, Double.self) ?? 0
+        trace_id = c.lenient(.trace_id, String.self)
+        revision = c.lenient(.revision, Int.self) ?? 0
+        provisional = c.lenient(.provisional, Bool.self) ?? false
+        warnings = c.lenient(.warnings, LossyList<String>.self)?.items ?? []
+        preferences = c.lenient(.preferences, TodayPreferences.self)
+            ?? TodayPreferences(start_minute: 540, end_minute: 1080, not_before: nil)
+        var sources: [String: TodaySource] = [:]
+        if let nested = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: .sources) {
+            for key in nested.allKeys {
+                if let source = nested.lenient(key, TodaySource.self) { sources[key.stringValue] = source }
+            }
+        }
+        self.sources = sources
+        tasks = c.lenient(.tasks, LossyList<TodayTask>.self)?.items ?? []
+        blocks = c.lenient(.blocks, LossyList<TodayBlock>.self)?.items ?? []
+        deadlines = c.lenient(.deadlines, LossyList<TodayDeadline>.self)?.items ?? []
+        all_day = c.lenient(.all_day, LossyList<TodayBlock>.self)?.items ?? []
+        unscheduled = c.lenient(.unscheduled, LossyList<TodayUnscheduled>.self)?.items ?? []
+        workspace = c.lenient(.workspace, DailyWorkspace.self)
+        let present = (try? c.decodeNil(forKey: .workspace)) == false
+        workspace_error = c.lenient(.workspace_error, String.self)
+            ?? (present && workspace == nil ? Self.unreadableWorkspace : nil)
+    }
+}
+
 /// A composed Daily Summary the service kept (`/assistant/daily_summary/latest`),
 /// read again after a relaunch, when the live event and Refresh are gone.
 struct StoredBrief: Equatable {
@@ -176,6 +219,13 @@ final class TodayModel: ObservableObject {
     @Published private(set) var storedBriefChecked = false
     @Published var error = ""
     @Published var busy = false
+    /// Reads in a row that failed for a passing reason: the service starting,
+    /// restarting or busy (a timeout, no connection, a 5xx). These never show
+    /// as an error and never clear what is on screen; the read retries itself.
+    @Published private(set) var transientFailures = 0
+    /// How a retry waits; checks drive it by hand.
+    var retrySleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    private var retryTask: Task<Void, Never>?
     /// When the plan last loaded, so Brief and Day can skip a refresh right after one.
     private(set) var lastRefreshed: Date?
     /// The person's locale decides 12- or 24-hour clocks; checks pin a fixed one.
@@ -411,16 +461,70 @@ final class TodayModel: ObservableObject {
             }
             reportDetails = capturing && capturePlannerDetails ? ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) : nil
             error = ""
+            transientFailures = 0
+            retryTask?.cancel()
+            retryTask = nil
         } catch {
             guard ticket == generation, selected == currentKey else { return }
             // View/task cancellation is normal navigation, not a failed day.
             if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { return }
-            self.error = error.localizedDescription
+            if Self.isTransient(error) {
+                // The service is starting, restarting or busy. Keep the last good
+                // plan on screen (or the loading row), say nothing, and try again.
+                transientFailures += 1
+                reportMetadata["client_outcome"] = "refresh_retrying"
+                reportMetadata["client_error_code"] = (error as NSError).code
+                scheduleRetry()
+                return
+            }
+            self.error = error is DecodingError
+                ? "Wisp couldn't read today's plan from its service." : error.localizedDescription
             reportMetadata = ["surface": "today", "client_outcome": "refresh_failed", "journal_available": false,
                               "client_error_code": (error as NSError).code]
             reportDetails = nil
-            // A failed refresh must not leave stale slots looking actionable.
+            transientFailures = 0
+            // A refused or unreadable plan must not leave stale slots looking actionable.
             plan = nil
+        }
+    }
+
+    /// Whether a failed read is a passing condition worth retrying quietly: no
+    /// connection yet, a timeout, a dropped connection, or the service saying it
+    /// is busy or failing (429, 5xx). A refusal (4xx) or an unreadable reply is real.
+    nonisolated static func isTransient(_ error: Error) -> Bool {
+        let failure = error as NSError
+        if failure.domain == NSURLErrorDomain {
+            return [NSURLErrorCannotConnectToHost, NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost,
+                    NSURLErrorNotConnectedToInternet, NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed,
+                    NSURLErrorBadServerResponse, NSURLErrorResourceUnavailable,
+                    NSURLErrorZeroByteResource].contains(failure.code)
+        }
+        if failure.domain == "Today" {
+            return failure.code == 0 || failure.code == 429 || (500...599).contains(failure.code)
+        }
+        return false
+    }
+
+    /// Seconds before the next quiet retry after `failures` failed reads in a row.
+    nonisolated static func retryDelay(after failures: Int) -> Duration {
+        .seconds(min(15, 1 << min(max(failures - 1, 0), 4)))
+    }
+
+    /// Wisp still can't reach its service after several quiet retries, with
+    /// nothing to show yet: said once, in the loading row, while it keeps trying.
+    var outageNotice: String? {
+        plan == nil && transientFailures >= 4 ? "Wisp's service isn't answering yet. Still trying…" : nil
+    }
+
+    private func scheduleRetry() {
+        guard retryTask == nil else { return }
+        let delay = Self.retryDelay(after: transientFailures)
+        let sleep = retrySleep
+        retryTask = Task { [weak self] in
+            do { try await sleep(delay) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            self.retryTask = nil
+            await self.refresh()
         }
     }
 
