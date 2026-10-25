@@ -267,6 +267,22 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_step_trace.py",
     # Pure switch parsing over monkeypatched env/config; no model, store or network.
     "tests/test_model_only_switch.py",
+    # Proactive Brief engine, critical-mail, email-reply and Google/remote-inference
+    # contracts: fake model clients over a scratch WISP_HOME; no native reader,
+    # live model, network or send.
+    "tests/test_critical_mail.py",
+    "tests/test_email_reply_api.py",
+    "tests/test_google_calendar_source.py",
+    "tests/test_mcp_large_tool_list.py",
+    "tests/test_model_only_quality.py",
+    "tests/test_proactive_accounts.py",
+    "tests/test_proactive_deadlines.py",
+    "tests/test_proactive_engine.py",
+    "tests/test_proactive_idle_refresh.py",
+    "tests/test_proactive_past_week.py",
+    "tests/test_proactive_quality.py",
+    "tests/test_remote_model_only.py",
+    "tests/test_workspace_accounts.py",
     "tests/test_wisp_cowork.py",
     # Bounded public-manifest JS fixtures only; no DOM, browser or network access.
     "tests/browser_dom/test_page_extractor.py",
