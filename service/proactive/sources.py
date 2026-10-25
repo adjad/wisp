@@ -617,6 +617,13 @@ def _pretty_number(label: str) -> str:
     return label
 
 
+def _raw_secret(text: str) -> bool:
+    """A real credential in the raw lines, or a source that arrived already
+    withheld (its own placeholder, not one Wisp added while summarizing)."""
+    from service.proactive.triage import _WITHHELD, raw_secret
+    return raw_secret(text) or bool(_WITHHELD.search(text))
+
+
 def text_items(records: list[tuple], *, now: float, own: str | None = None,
                counts: dict | None = None) -> list[dict]:
     """One item per conversation active in the last few days: its latest lines,
@@ -675,6 +682,9 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
                           replied=replied, group=group, person=True, unread=unread_at.get((context, last_in[0])),
                           user_wrote=any(r[2].partition(":")[0].strip() == "Me" for r in rows),
                           handle="" if group else chat_handle(chats.get(context, set())),
+                          # Read from the raw lines before redaction: Wisp's own
+                          # "(private details omitted)" alone never withholds a chat.
+                          secret=_raw_secret("\n".join(r[2] for r in raw_texts.get(context, [])[-MAX_TEXT_LINES:])),
                           ref={"kind": "text", "conversation": context, "label": label},
                           reply_ref="messages:" + context, hash=_digest(text, replied)))
     items.sort(key=lambda i: i["received_ts"], reverse=True)

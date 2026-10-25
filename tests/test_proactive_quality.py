@@ -632,3 +632,12 @@ def test_a_judged_item_citing_two_sources_does_not_crash_the_judge():
     assert got is not None
     [item] = got[0]
     assert item["sources"] == [items[0]["id"], items[1]["id"]]
+
+
+def test_a_chat_is_not_withheld_just_because_summarizing_redacted_a_number():
+    rows = [(NOW - 120, "Mom", "Mom: rent is 1450 this month, can you call me tonight?", GUID_MOM)]
+    item = sources.text_items(rows, now=NOW, own=ME)[0]
+    assert "omitted" in item["text"]               # the summary redactor hid the number
+    assert not triage.withheld(item)
+    otp = sources.text_items([(NOW - 60, "Mom", "Mom: your code is 482913", GUID_MOM)], now=NOW, own=ME)[0]
+    assert triage.withheld(otp)
