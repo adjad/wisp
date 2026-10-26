@@ -472,9 +472,13 @@ def test_smoke_prompts_read_los_angeles_current_conditions(prompt, monkeypatch):
     plan, result = run_read(prompt)
     assert plan[0] == [("get_weather", {"location": "Los Angeles", "period": ""})]
     assert result.status == "completed"
-    assert "Weather for Los Angeles, California, United States of America" in result.response
-    assert "assumed Los Angeles, California" in result.response
-    assert "now: 99°F" in result.response and "(error" not in result.response
+    # The person reads a sentence; the tool result keeps the full report.
+    assert result.response.startswith("It's 99°F (37°C) and sunny in Los Angeles right now")
+    assert "I assumed Los Angeles, California" in result.response
+    assert "(error" not in result.response and "Weather for" not in result.response
+    raw = result.tool_results[0]["result"]
+    assert "Weather for Los Angeles, California, United States of America" in raw
+    assert "assumed Los Angeles, California" in raw and "now: 99°F" in raw
     assert unquote(urlparse(calls[0]).path) == provider_path("Los Angeles")
 
 
