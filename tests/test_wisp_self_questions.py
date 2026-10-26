@@ -28,10 +28,12 @@ SELF_QUESTIONS = {
     "identity": ["Who are you?", "who are you", "What is Wisp?", "tell me about yourself",
                  "What's your name?", "are you an AI?"],
     "privacy": ["Is my data private?", "is my data safe", "Where does my data go?",
-                "Do you send my data to the cloud?", "is this private", "privacy?",
-                "does anything leave my Mac?"],
+                "Do you send my data to the cloud?", "is wisp private", "privacy?",
+                "does anything leave my Mac?", "is this app safe?"],
     "howto": ["How do I use Wisp?", "how do I use you", "How do I connect Google?",
-              "how does wisp work", "help", "How do I get started?", "how do I quit wisp"],
+              "how does wisp work", "help", "How do I get started?", "how do I quit wisp",
+              "how do I turn off wisp", "how do I open the brief tab",
+              "how do I change your settings", "How do I change the tone in Wisp?"],
 }
 
 # Requests with work in them, or about something other than Wisp, stay with
@@ -42,6 +44,10 @@ NOT_SELF_QUESTIONS = [
     "is my data plan running out", "help me write an email to Sam",
     "can you send text messages and create reminders?", "what do you know about me",
     "what's on my calendar today?", "privacy policy for my website",
+    # Follow-ups and requests that only address Wisp by name (audit 32649065).
+    "is it private?", "is this private", "is this safe?", "is it secure", "how private is this",
+    "how do I reply to Sam, Wisp?", "Wisp, how do I reply to Sam?", "how do I free up memory",
+    "how do I change my iphone settings", "how do I send this to Sam with wisp",
 ]
 
 
@@ -159,3 +165,4 @@ def test_specific_howto_answers_only_that_step():
     assert "Settings → Google" in text and "Research" not in text
     full = wisp_about.howto("How do I use Wisp?")
     assert full.startswith("**Getting started with Wisp**") and "⌥Space" in full
+

@@ -1246,8 +1246,10 @@ _SELF_OVERVIEW_RE = re.compile(
 _SELF_PRIVACY_RE = re.compile(
     _SELF_LEAD + r"(?:(?:is|are)\s+(?:my\s+)?(?:data|info|information|stuff|files|emails?|messages?|chats?)"
     r"\s+(?:private|safe|secure|kept\s+local|local|on\s+my\s+mac)|"
-    r"(?:is|are)\s+(?:this|wisp|you|it)\s+(?:private|safe|secure|local)|"
-    r"how\s+(?:private|safe|secure)\s+(?:is\s+(?:my\s+data|wisp|this)|are\s+you)|"
+    # Not "is it/this private?": mid-conversation that is about the thing just
+    # discussed (a document, a link), not about Wisp.
+    r"(?:is|are)\s+(?:wisp|you|this\s+app)\s+(?:private|safe|secure|local)|"
+    r"how\s+(?:private|safe|secure)\s+(?:is\s+(?:my\s+data|wisp|this\s+app)|are\s+you)|"
     r"where\s+(?:does|do|is|are)\s+my\s+(?:data|info|information|emails?|messages?)"
     r"\s+(?:go|goes|stored|kept|sent|saved)|"
     r"(?:do|does|will)\s+(?:you|wisp)\s+(?:send|share|upload|sell|store|keep|see|read)\s+my\s+"
@@ -1263,7 +1265,12 @@ _SELF_HOWTO_RE = re.compile(
     r"how\s+(?:do|can)\s+i\s+get\s+started|how\s+(?:does|do)\s+(?:wisp|you)\s+work|"
     r"how\s+(?:do|can)\s+i\s+(?:connect|link|add|set\s+up)\s+(?:my\s+)?(?:google|gmail|google\s+calendar)"
     r"(?:\s+account)?(?:\s+(?:to|with)\s+(?:you|wisp))?|"
-    r"how\s+(?:do|can)\s+i\s+[^?.!]{1,60}\b(?:(?:in|with|on|to|from|using)\s+)?wisp)" + _SELF_END, re.I)
+    # The catch-all needs Wisp itself as the object ("quit wisp", "open the
+    # brief tab", "change settings in wisp"). A trailing ", Wisp" is only an
+    # address: "how do I reply to Sam, Wisp?" is a request about Sam.
+    r"how\s+(?:do|can)\s+i\s+(?:[a-z']+\s+){1,3}?(?:wisp|this\s+app|the\s+notch|"
+    r"the\s+(?:brief|day|ask)\s+tab|(?:wisp'?s|your)\s+(?:settings|shortcuts?|hotkey|notch|panel|memory))|"
+    r"how\s+(?:do|can)\s+i\s+[^?.!,]{1,60}?\s+in\s+wisp)" + _SELF_END, re.I)
 
 
 def _self_question_topic(t: str) -> str:
