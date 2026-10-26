@@ -58,6 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let backend = BackendManager()
     private var settingsWindow: NSWindow?
     private var setupWindow: NSWindow?
+    // The first-launch window: model, permissions, how to use. Only on a Mac that
+    // has never run Wisp (FirstRunSetup.shouldShow).
+    private var firstRunWindow: NSWindow?
+    private var firstRunCloseObserver: NSObjectProtocol?
+    private var firstRunFinishing = false
     private var setupObserver: NSObjectProtocol?
     private static let setupGuideShownKey = "wisp.setupGuide.shown"
     private static let notchTipShownKey = "wisp.notchTip.shown"
@@ -258,14 +263,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.openSetupGuide() }
         }
-        offerSetupGuideOnFirstRun()
-        offerKnowYouWhenReady()
+        let defaults = UserDefaults.standard
+        let firstRun = FirstRunSetup.shouldShow { defaults.bool(forKey: $0) }
+        if firstRun {
+            // The window asks for permissions, gets the model and shows where Wisp
+            // lives, in that order; the old launch did each of these on its own.
+            FirstRunSetup.takeOverLaunchPrompts { defaults.set(true, forKey: $0) }
+        } else {
+            offerSetupGuideOnFirstRun()
+            offerKnowYouWhenReady()
+        }
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
         // Wisp starts in the notch. The Wisp window opens only when asked for:
         // the Dock icon, the menu bar, or a hand-off from the notch.
-        showNotchTipOnce()
+        if firstRun { openFirstRunSetup() } else { showNotchTipOnce() }
+    }
+
+    private func openFirstRunSetup() {
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 600),
+                           styleMask: [.titled, .closable, .fullSizeContentView],
+                           backing: .buffered, defer: false)
+        win.title = "Welcome to Wisp"
+        win.titlebarAppearsTransparent = true
+        win.appearance = NSAppearance(named: .darkAqua)
+        win.isReleasedWhenClosed = false
+        win.contentView = NSHostingView(rootView: FirstRunSetupView(
+            setup: setupModel,
+            openDetailedSetup: { [weak self] in self?.openSetupGuide() },
+            finish: { [weak self] tellAboutYou in self?.finishFirstRun(tellAboutYou: tellAboutYou) }))
+        win.center()
+        firstRunWindow = win
+        // Closing it early counts as finishing: the download keeps going in the
+        // engine, and the notch's setup card takes over until Wisp can answer.
+        firstRunCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: win, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.firstRunClosed() }
+        }
+        setupModel.show(in: "first-run")
+        NSApp.activate(ignoringOtherApps: true)
+        win.makeKeyAndOrderFront(nil)
+    }
+
+    private func finishFirstRun(tellAboutYou: Bool) {
+        firstRunFinishing = true
+        firstRunWindow?.close()
+        if tellAboutYou {
+            tellWispAboutYou()
+        } else {
+            openAssistant()
+            offerKnowYouWhenReady()
+        }
+    }
+
+    private func firstRunClosed() {
+        UserDefaults.standard.set(true, forKey: FirstRunSetup.doneKey)
+        setupModel.hide(from: "first-run")
+        if let observer = firstRunCloseObserver { NotificationCenter.default.removeObserver(observer) }
+        firstRunCloseObserver = nil
+        defer { firstRunFinishing = false }
+        guard !firstRunFinishing else { return }
+        if setupModel.status?.ready != true { openSetupInNotch() }
+        offerKnowYouWhenReady()
     }
 
     // Clicking the Dock icon, or opening Wisp again from Finder or Spotlight while it
@@ -1313,7 +1374,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Not over the setup card, a reply in progress, or a flow already
                 // up; and never over a panel the person is using (open, holding
                 // typed text) or dismissed to the menu bar.
-                if self.setupWindow?.isVisible == true || self.model.setupCard == .open
+                if self.setupWindow?.isVisible == true || self.firstRunWindow?.isVisible == true
+                    || self.model.setupCard == .open
                     || self.model.isProcessing || self.model.knowYou != nil
                     || !self.model.collapsed || self.model.holdsOpen || !self.notchDocked {
                     continue
