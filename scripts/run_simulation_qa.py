@@ -545,6 +545,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_travel.py",
     "tests/test_workflow20_weather.py",
     "tests/workflow20/test_contract.py",
+    # Demo home swap over a scratch home and a throwaway defaults domain; never
+    # ~/.moe. Skips where defaults(1) cannot write (the sandboxed gate).
+    "tests/test_wisp_demo.py",
 }
 # Integrated runtime contracts are mandatory; missing files fail selection.
 MINI_RUNTIME_INTEGRATION_TESTS = {
