@@ -21,7 +21,8 @@ from typing import Awaitable, Callable, Sequence
 from service import debug_capture, diagnostics
 from service.user_text import user_facing_failure as _user_facing_failure
 from service.config import (narration_mode, no_thinking_kwargs, role_to_model,
-                            thinking_kwargs, thinks_explicitly)
+                            thinking_after_tool_required, thinking_kwargs,
+                            thinks_explicitly)
 from service.inference.omlx_client import OMLXClient
 from service.memory import prompt_blocks
 from service.safety import Tier, audit, decide
@@ -105,7 +106,10 @@ SYSTEM = (
     "here), no asking the user to confirm first.\n"
     "- To do something, CALL THE TOOL directly. Do NOT ask the user for "
     "permission in text and do NOT just describe what you would do — the system "
-    "automatically asks the user to confirm any risky action before it runs.\n"
+    "shows the user a confirmation before the action runs when one is needed.\n"
+    "- Sends, calendar changes, AppleScript, and shell commands that reach the "
+    "network or delete folders or many files are always confirmed. In Full access, "
+    "other actions may run immediately without a confirmation.\n"
     "- Read-only actions run automatically. If an action is blocked or the user "
     "denies it, acknowledge briefly and continue.\n"
     "- After a tool runs, report the actual result; never claim you still need "
@@ -750,6 +754,14 @@ def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False,
                 else no_thinking_kwargs(model))
     if thinks_explicitly(model):
         return thinking_kwargs(model, on=think_on)
+    if no_thinking and thinking_after_tool_required(model):
+        # `no_thinking` is only ever set on a narration step, i.e. after a
+        # tool result. Gemma 4 E4B writes nothing there with thinking off
+        # (models.yaml thinking_required_after_tool), so state it ON — the
+        # same answer model-only narration reaches through its config flag.
+        # Explicit, not {}: the template default and the oMLX profile toggle
+        # are both invisible to Wisp.
+        return {"chat_template_kwargs": {"enable_thinking": True}}
     return no_thinking_kwargs(model) if no_thinking else {}
 
 
@@ -3576,6 +3588,11 @@ async def run_agent(
             attempt_temperature = step_temperature
             if retry_for_empty and step_temperature is not None:
                 attempt_temperature = step_temperature + 0.7
+            # A narration step that came back empty retries with the think
+            # block left to the template: a model that writes nothing after a
+            # tool result with thinking off (Gemma 4 E4B, measured 2026-10-24)
+            # would otherwise spend its retry reproducing the same nothing.
+            attempt_no_thinking = narrating and not retry_for_empty
             if planner and choice != "none" and step_schemas:
                 msg, reasoning, content_streamed = await _plan_step(
                     step_msgs, step_schemas, allowed_names, choice == "required",
@@ -3586,7 +3603,7 @@ async def run_agent(
                     msg, reasoning, content_streamed = await _run_step(
                         client, model, step_msgs, step_schemas, choice, step_max_tokens, emit,
                         stream_content=stream, temperature=attempt_temperature,
-                        no_thinking=narrating, think_on=step_think_on,
+                        no_thinking=attempt_no_thinking, think_on=step_think_on,
                         think_off=ask_narrating, debug=debug)
                 except Exception as exc:  # noqa: BLE001 - re-raised unless it is the guard
                     from service.model_only import guard_rejection
@@ -3615,7 +3632,7 @@ async def run_agent(
                         msg, reasoning, content_streamed = await _run_step(
                             client, model, step_msgs, step_schemas, choice, step_max_tokens, emit,
                             stream_content=stream, temperature=attempt_temperature,
-                            no_thinking=narrating, think_on=step_think_on,
+                            no_thinking=attempt_no_thinking, think_on=step_think_on,
                             think_off=ask_narrating, debug=debug)
                     except Exception as again:  # noqa: BLE001
                         if not guard_rejection(again):

@@ -27,7 +27,39 @@ class SanitizedHTTPStatusError(httpx.HTTPStatusError):
     """Remote status failure with no provider-controlled request or response data."""
 
 
-from .inference_errors import EngineGuardUnavailableError, ModelLoadError, ModelMemoryLimitError
+from .inference_errors import (EngineGuardUnavailableError, ModelLoadError, ModelMemoryLimitError,
+                               ModelNotDownloadedError)
+
+
+def _model_label(model: str) -> str:
+    """The catalog's display name for a model id ("Gemma 4 E4B"), else the id.
+    Optional import: the mini bundle ships this module without service.setup."""
+    try:
+        from service.setup.catalog import by_id
+        entry = by_id(model)
+    except Exception:  # noqa: BLE001 - a label is cosmetic
+        return model
+    return entry.label if entry else model
+
+
+async def _download_progress(model: str) -> float | None:
+    """Percent done of an active built-in download of `model`, else None.
+
+    Best effort and bounded: only the bundled engine has a download inventory,
+    and a missing-model error must never wait long on it."""
+    import asyncio
+    try:
+        from service.engine import downloads, mode
+        if not mode.is_bundled():
+            return None
+        async with asyncio.timeout(3):
+            tasks = await downloads._inventory()
+        for _created, _task_id, task in tasks:
+            if task.get("model") == model and task.get("state") in ("pending", "downloading"):
+                return float(task.get("progress") or 0)
+    except Exception:  # noqa: BLE001 - the plain "not downloaded" message still applies
+        return None
+    return None
 
 
 # Remote output is untrusted and must stay bounded independently of timeouts.
@@ -595,7 +627,18 @@ class OMLXClient:
             # The managed engine refused admission. Do not echo its diagnostics
             # or convert a refusal into a successful residency/automatic retry.
             raise ModelMemoryLimitError() from None
+        if r.status_code == 404 and await self._not_installed(model):
+            # The bundled engine (oMLX 0.7.0+) answers an unknown id with 404
+            # at once. Confirmed against the inventory, so an engine without
+            # the load route still reports its plain HTTP error instead.
+            raise ModelNotDownloadedError(await _download_progress(model)) from None
         self._check_response(r)
+
+    async def _not_installed(self, model: str) -> bool:
+        try:
+            return model not in await self.models()
+        except Exception:  # noqa: BLE001 - unknown: keep the original failure
+            return False
 
     async def ensure_only(self, model: str, *, settle_timeout: float = 60.0,
                           exclusive: bool = False, emit=None) -> None:
@@ -619,6 +662,17 @@ class OMLXClient:
                 await self._ensure_managed(model, settle_timeout=settle_timeout,
                                            exclusive=exclusive, emit=emit)
         except TimeoutError as exc:
+            # An engine that accepts a load for an id it doesn't have (desktop
+            # oMLX) never reports it; the wait just runs out. Say what is wrong.
+            if self.managed:
+                import asyncio
+                try:
+                    async with asyncio.timeout(3):
+                        missing = await self._not_installed(model)
+                except TimeoutError:
+                    missing = False
+                if missing:
+                    raise ModelNotDownloadedError(await _download_progress(model)) from exc
             raise ModelLoadError(f"Inference readiness timed out on {self.endpoint_name}") from exc
 
     async def _ensure_managed(self, model: str, *, settle_timeout: float = 60.0,
@@ -652,7 +706,7 @@ class OMLXClient:
         sits BETWEEN the `routed` event and the first token/tool-call — a gap
         with no client-visible signal otherwise, which reads as a hung
         request. When given, this sends `status` events naming what's
-        actually happening ("Loading <model>… (Ns)") so the UI can show real
+        actually happening ("Loading <catalog label>… (Ns)") so the UI can show real
         progress instead of a static "Thinking…"/"Working…" the whole time.
         A no-op when nothing needs evicting/loading (the common case).
 
@@ -683,7 +737,8 @@ class OMLXClient:
                     break
                 if emit:
                     await emit({"type": "status",
-                                "text": f"Freeing memory… ({int(loop.time() - start)}s)"})
+                                "text": (f"Making room for {_model_label(model)}… "
+                                         f"({int(loop.time() - start)}s)")})
                 await asyncio.sleep(1.0)
 
         # 2. Load the TARGET if it isn't already resident (it always wins).
@@ -697,9 +752,15 @@ class OMLXClient:
         # burned 60s and returned "OK" with loaded == []. Failing loudly here
         # is what turns that from "Wisp is mysteriously broken" into one clear
         # message naming the model that couldn't load.
+        #
+        # The bundled engine (oMLX 0.7.0+) now refuses an unknown id with 404
+        # straight away; load() turns that into the "finish setup" message.
+        # The polling fallback below still covers an engine that accepts it.
         if model not in loaded:
+            label = _model_label(model)
             if emit:
-                await emit({"type": "status", "text": f"Loading {model}…"})
+                await emit({"type": "status", "text": (
+                    f"Loading {label}… The first answer after a rest takes a little longer.")})
             await self.load(model)
             start = loop.time()
             deadline = start + settle_timeout
@@ -708,15 +769,15 @@ class OMLXClient:
                 if model in loaded:
                     break
                 if emit:
-                    await emit({"type": "status",
-                                "text": f"Loading {model}… ({int(loop.time() - start)}s)"})
+                    await emit({"type": "status", "text": (
+                        f"Loading {label}… ({int(loop.time() - start)}s) "
+                        "The first answer after a rest takes a little longer.")})
                 await asyncio.sleep(1.0)
             else:
-                installed = await self.models()
-                why = ("it is not installed in oMLX"
-                       if model not in installed
-                       else f"it did not become resident within {settle_timeout:.0f}s")
-                raise ModelLoadError(f"could not load {model!r}: {why}.")
+                if model not in await self.models():
+                    raise ModelNotDownloadedError(await _download_progress(model))
+                raise ModelLoadError(f"Wisp's model ({label}) didn't finish loading within "
+                                     f"{settle_timeout:.0f} seconds. Try again in a moment.")
 
         # 3. Best-effort: reload any keep-warm model missing from the status we
         #    already have — no extra fetch needed to check this. Skipped when
