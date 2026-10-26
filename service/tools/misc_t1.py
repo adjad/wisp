@@ -88,15 +88,16 @@ def _where_inference_runs() -> str:
     cloud_detail() as Wisp's privacy and "who are you" answers, so the two can't
     disagree. A remote-only build never reaches here (wisp_status reports it
     first)."""
-    from service.wisp_about import cloud_detail
+    from service.wisp_about import cloud_detail, until_restart
     detail = cloud_detail()
     cloud, host = detail["mode"], detail["host"]
     if cloud == "everything" and detail["pending"]:
         # Turned on but not yet active: remote_only_profile() is None until
-        # Wisp restarts, so the local model above is still the one answering.
+        # Wisp restarts, so the local model above is still the one answering,
+        # apart from any role still bound to the optional cloud model.
         return ("Cloud \"Everything\" is turned on and takes over when Wisp restarts. From then "
-                f"on, what you ask, and the data a reply needs, is sent to {host}. Until then, "
-                "the model above answers on this Mac.")
+                f"on, what you ask, and the data a reply needs, is sent to {host}. "
+                + until_restart(detail))
     if not detail["known"]:
         return ("I couldn't read the cloud settings, so I can't confirm that every answer comes "
                 "from this Mac. Check the cloud model in **Settings**.")

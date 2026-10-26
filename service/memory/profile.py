@@ -461,15 +461,18 @@ _DETAIL_RULES = {
 
 
 def _everything_host() -> str | None:
-    """The host while Cloud "Everything" is on (a remote-only build, or the
-    setting turned on), "" while it is off, None when that can't be read."""
+    """The host while Cloud "Everything" is answering (a remote-only build, or
+    the setting turned on and Wisp restarted since), "" while it isn't, None
+    when that can't be read. Turned on but waiting for a restart counts as
+    off: until then this Mac answers, and a role still bound to an optional
+    cloud model must not get the profile in the meantime."""
     try:
         from service.wisp_about import cloud_detail
         detail = cloud_detail()
     except Exception:  # noqa: BLE001
         return None
     if detail["mode"] == "everything" and detail["known"]:
-        return detail["host"] or "your cloud provider"
+        return "" if detail["pending"] else (detail["host"] or "your cloud provider")
     if not detail["known"]:
         return None
     return ""

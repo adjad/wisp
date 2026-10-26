@@ -101,16 +101,19 @@ def cloud_detail() -> dict:
     host     the provider's host, or "your cloud provider" when the config
              can't name it
     pending  Cloud "Everything" is turned on but takes over only after Wisp
-             restarts; until then this Mac answers
+             restarts; until then this Mac answers, except roles still bound
+             to the optional cloud model (super_model/roles/cloud_host say
+             which: turning Everything on doesn't unbind them)
     super_model, roles   which optional cloud model is on: the Super Model,
              and/or roles bound to the cloud endpoint
     known    False when a setting couldn't be read. Unknown is never read as
              local: an unreadable Everything setting reports "everything", an
              unreadable optional model "super", each with the generic host.
              (profile.may_send_to treats unknown as "send nothing".)"""
-    def result(mode="", host="", *, pending=False, super_model=False, roles=(), known=True):
+    def result(mode="", host="", *, pending=False, super_model=False, roles=(), known=True,
+               cloud_host=""):
         return {"mode": mode, "host": host, "pending": pending, "super_model": super_model,
-                "roles": list(roles), "known": known}
+                "roles": list(roles), "known": known, "cloud_host": cloud_host or host}
 
     try:
         from service import config
@@ -125,8 +128,11 @@ def cloud_detail() -> dict:
         remote = _read(lambda: (config.models_config().get("inference") or {}).get("remote_only"))
         host = _host(remote.get("base_url")) if isinstance(remote, dict) else _GENERIC_HOST
         if everything is True and profile is None:
-            # Turned on but not active: remote_only_profile() is None until a restart.
-            return result("everything", host, pending=True)
+            # Turned on but not active: remote_only_profile() is None until a
+            # restart, and until then the role bindings still apply.
+            super_model, roles, cloud_host = _optional_cloud_now(config)
+            return result("everything", host, pending=True, super_model=super_model,
+                          roles=roles, cloud_host=cloud_host)
         return result("everything", host if everything is True else _GENERIC_HOST, known=False)
     settings = _read(config.cloud_provider_settings)
     super_model = _read(config.cloud_super_model_enabled)
@@ -142,6 +148,22 @@ def cloud_detail() -> dict:
     if not known:
         return result("super", _GENERIC_HOST, known=False)
     return result()
+
+
+def _optional_cloud_now(config) -> tuple[bool, list[str], str]:
+    """(Super Model on, roles bound to the cloud endpoint, its host), read
+    from the bindings themselves: cloud_provider_settings() reports only
+    "Everything" once that is turned on."""
+    super_model = _read(config.cloud_super_model_enabled) is True
+    cfg = _read(config.models_config)
+    inference = (cfg.get("inference") or {}) if isinstance(cfg, dict) else {}
+    endpoint = (inference.get("endpoints") or {}).get("cloud")
+    enabled = isinstance(endpoint, dict) and endpoint.get("enabled", True) is True
+    bindings = inference.get("bindings") or {}
+    roles = [role for role in _ROLE_LABELS if enabled and isinstance(bindings.get(role), dict)
+             and bindings[role].get("endpoint") == "cloud"]
+    host = _host(endpoint.get("base_url")) if isinstance(endpoint, dict) else _GENERIC_HOST
+    return super_model, roles, host
 
 
 def cloud_state() -> tuple[str, str]:
@@ -247,9 +269,22 @@ def _can_lines(tools: set[str]) -> list[str]:
     return lines
 
 
-def _pending_line(host: str) -> str:
+def until_restart(detail: dict) -> str:
+    """Who answers before Cloud "Everything" takes over: this Mac, except any
+    role still bound to the optional cloud model."""
+    still = [_ROLE_LABELS[r] for r in detail.get("roles") or ()]
+    if detail.get("super_model"):
+        still.append("questions the Super Model takes")
+    if not still:
+        return "Until then, this Mac answers."
+    return (f"Until then, this Mac answers, except {_join(still)}, which still go to "
+            f"{detail.get('cloud_host') or detail['host']}.")
+
+
+def _pending_line(detail: dict) -> str:
     return (f"Cloud \"Everything\" is turned on and takes over after Wisp restarts. From then on, "
-            f"what you ask, and the data a reply needs, is sent to {host}. Until then, this Mac answers.")
+            f"what you ask, and the data a reply needs, is sent to {detail['host']}. "
+            + until_restart(detail))
 
 
 _UNKNOWN_LINE = ("I couldn't read the cloud settings just now, so I can't promise everything stays "
@@ -263,7 +298,7 @@ def _greeting() -> str:
     if not detail["known"]:
         return "**Hi, I'm Wisp.** " + _UNKNOWN_LINE
     if detail["mode"] == "everything" and detail["pending"]:
-        return "**Hi, I'm Wisp.** " + _pending_line(host)
+        return "**Hi, I'm Wisp.** " + _pending_line(detail)
     if detail["mode"] == "everything":
         return (f"**Hi, I'm Wisp.** Right now I'm answering with a cloud model at {host}, not on "
                 "this Mac. Turn it off in **Settings** to keep everything here.")
@@ -307,7 +342,7 @@ def identity() -> str:
                  "reminders, mail, messages and notes. " + _UNKNOWN_LINE)
     elif cloud == "everything" and detail["pending"]:
         intro = ("I'm **Wisp**, your assistant in the Mac's notch. I help with your calendar, "
-                 "reminders, mail, messages and notes. " + _pending_line(host))
+                 "reminders, mail, messages and notes. " + _pending_line(detail))
     elif cloud == "everything":
         intro = ("I'm **Wisp**, your assistant in the Mac's notch. I help with your calendar, "
                  "reminders, mail, messages and notes. Right now a cloud model is on, so what you "
@@ -365,11 +400,14 @@ def privacy() -> str:
                "- What you told me in Getting to know you goes only to Wisp's own model on this Mac "
                "while I can't check."]
     elif cloud == "everything" and detail["pending"]:
-        out = ["**Cloud \"Everything\" is turned on.** It takes over after Wisp restarts; until "
-               "then this Mac answers.", "",
+        out = ["**Cloud \"Everything\" is turned on.** It takes over after Wisp restarts. "
+               + until_restart(detail), "",
                f"- After the restart, what you ask, and the data a reply needs (your mail, "
                f"messages, calendar and what you told me about yourself), is sent to {host}.",
+               "- Until the restart, what you told me in Getting to know you stays on this Mac.",
                "- To keep everything on this Mac, turn it off in **Settings** before restarting."]
+        if detail["roles"] or detail["super_model"]:
+            out += _optional_cloud_lines({**detail, "host": detail["cloud_host"]})[:-1]
     elif cloud == "everything":
         out = ["**Right now a cloud model is on**, so this is different from usual.", "",
                f"- What you ask, and the data a reply needs (your mail, messages, calendar and what "

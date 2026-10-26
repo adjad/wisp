@@ -37,14 +37,15 @@ SAMPLE = {
 }
 
 
-def _patch_cloud(monkeypatch, mode="", host="", *, pending=False, super_model=None, roles=(), known=True):
+def _patch_cloud(monkeypatch, mode="", host="", *, pending=False, super_model=None, roles=(), known=True,
+                 cloud_host=""):
     """Stand in for wisp_about.cloud_detail(): one mode for every answer."""
     from service import wisp_about as about
     if super_model is None:
         super_model = mode == "super" and not roles
     monkeypatch.setattr(about, "cloud_detail", lambda: {
         "mode": mode, "host": host, "pending": pending, "super_model": super_model,
-        "roles": list(roles), "known": known})
+        "roles": list(roles), "known": known, "cloud_host": cloud_host or host})
 
 
 # --- store -----------------------------------------------------------------
@@ -448,6 +449,16 @@ def test_api_keeps_the_profile_local_under_an_optional_cloud_model(client, monke
 def test_may_send_to(monkeypatch, mode, managed, rides):
     _patch_cloud(monkeypatch, mode, "openrouter.ai" if mode else "")
     assert P.may_send_to(managed=managed) is rides
+
+
+def test_pending_everything_is_not_on_yet(client, monkeypatch):
+    # Turned on, waiting for a restart: this Mac still answers, and a role
+    # still bound to OpenRouter must not get About you in the meantime.
+    _patch_cloud(monkeypatch, "everything", "gpu.example.net", pending=True)
+    assert P.may_send_to(managed=False) is False and P.may_send_to(managed=True) is True
+    assert P.sent_to() == ""
+    status = client.get("/profile").json()["status"]
+    assert status["local_only"] is True and status["sent_to"] == ""
 
 
 def test_unknown_cloud_state_sends_the_profile_nowhere_but_this_mac(monkeypatch):
