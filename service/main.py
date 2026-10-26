@@ -3639,10 +3639,12 @@ async def google_workspace_enable(body: dict[str, Any]) -> dict[str, Any]:
     same client Connect would (the user's own, else the built-in one)."""
     from service import gmail_source, google_workspace
     client_id, secret = str(body.get("client_id") or ""), str(body.get("client_secret") or "")
+    source = "user"
     if not client_id.strip():
-        client_id, secret, _ = gmail_source.resolve_client()
+        client_id, secret, source = gmail_source.resolve_client()
     return await google_workspace.enable(
-        client_id, secret, str(body.get("email") or ""), str(body.get("tier") or "core"))
+        client_id, secret, str(body.get("email") or ""), str(body.get("tier") or "core"),
+        client_source="builtin" if source == "builtin" else "user")
 
 
 @app.post("/assistant/google/workspace/disable")
