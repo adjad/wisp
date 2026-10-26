@@ -515,6 +515,26 @@ def _thinking_off(model: str) -> bool:
     return thinks_explicitly(model) or model in no_thinking_capable()
 
 
+def _unreachable_errors() -> tuple[type[BaseException], ...]:
+    """Errors that mean the engine couldn't answer at all (not running,
+    restarting, refusing to load the model): a background call stands down."""
+    errors: list[type[BaseException]] = []
+    try:
+        import httpx
+        errors += [httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError]
+    except ImportError:  # pragma: no cover
+        pass
+    try:
+        from service.inference.inference_errors import ModelLoadError
+        errors.append(ModelLoadError)   # EngineGuardUnavailableError is one too
+    except ImportError:  # pragma: no cover
+        pass
+    return tuple(errors) or (ConnectionError,)
+
+
+_UNREACHABLE = _unreachable_errors()
+
+
 async def _resident_reply(system: str, material: str, abort, *,
                           tokens: tuple[int, int] = (_TOKENS, _THINKING_TOKENS)) -> str | None:
     """The model's reply, or None to stand down without spending anything.
@@ -533,7 +553,11 @@ async def _resident_reply(system: str, material: str, abort, *,
         # stand-down is a user's turn.
         loaded, warm = {model}, set()
     else:
-        loaded = set(await client.loaded_models())
+        try:
+            loaded = set(await client.loaded_models())
+        except _UNREACHABLE as exc:
+            _stood_down(f"the engine isn't reachable ({type(exc).__name__})")
+            return None
         try:
             warm = set(client.keep_warm())
         except Exception:  # noqa: BLE001 — unknown keep-warm set: assume nothing extra is allowed
@@ -562,7 +586,13 @@ async def _resident_reply(system: str, material: str, abort, *,
                 request.cancel()
                 raise TimeoutError(f"gist reply took over {_TIMEOUT_S:.0f}s")
             await asyncio.wait({request}, timeout=0.5)
-        response = request.result()
+        try:
+            response = request.result()
+        except _UNREACHABLE as exc:
+            # The engine went away or refused the load: no answer was judged, so
+            # this is a stand-down, never a failed attempt (cycle/triage retry).
+            _stood_down(f"the engine isn't reachable ({type(exc).__name__})")
+            return None
     finally:
         if not request.done():
             request.cancel()
