@@ -74,6 +74,80 @@ struct SetupStatus: Decodable {
     static func canAnswer(ready: Bool, remoteOnly: Bool) -> Bool { ready || remoteOnly }
 }
 
+// MARK: - Download hold
+
+/// When setup's download host is held: the poll and the idle-sleep assertion
+/// that keep a transfer watched while no setup is on screen. Pure, so each rule
+/// can be checked with a clock.
+///
+/// Held while a transfer is starting or running, and for `finishingGrace` after
+/// one finishes until Wisp can answer. Let go, so nothing is held forever, when:
+/// - the transfers haven't moved for `stallLimit` (an engine left "downloading"
+///   at 0 B/s);
+/// - `failureLimit` reads in a row failed (the service or engine is down, and
+///   the last snapshot is stale);
+/// - it has been held for `cap`, the backend's own watch (_WATCH_FOR_S). The cap
+///   lasts until nothing is transferring, so it is never retaken by the same
+///   transfer.
+/// After a stall or failures it is taken again once the transfers move or a read
+/// succeeds, which needs setup on screen, since letting go stops the poll.
+struct SetupDownloadHold: Equatable {
+    static let finishingGrace: TimeInterval = 120
+    static let stallLimit: TimeInterval = 10 * 60
+    static let failureLimit = 3
+    static let cap: TimeInterval = 6 * 3600
+
+    /// When the host was taken.
+    var since: Date?
+    /// Download pressed; the request to start it hasn't answered yet.
+    var starting = false
+    private(set) var movedAt: Date?
+    private(set) var signature: [String] = []
+    private(set) var failures = 0
+    private(set) var capped = false
+    private(set) var finishedAt: Date?
+
+    /// A fresh read of the transfers.
+    mutating func observe(_ downloads: [SetupGuideModel.DownloadTask],
+                          previous: [SetupGuideModel.DownloadTask], now: Date) {
+        failures = 0
+        let active = downloads.filter(\.active)
+        let next = active.map { "\($0.model):\($0.state):\(Int64($0.downloadedBytes))" }.sorted()
+        if next != signature || movedAt == nil {
+            signature = next
+            movedAt = now
+        }
+        let wasActive = Set(previous.filter(\.active).map(\.model))
+        if downloads.contains(where: { $0.state == "completed" && wasActive.contains($0.model) }) {
+            finishedAt = now
+        }
+        if active.isEmpty { capped = false }
+    }
+
+    /// A read that failed: what is on screen is the last snapshot.
+    mutating func failed() { failures += 1 }
+
+    /// Whether to hold now. Notes the cap when it is reached.
+    mutating func decide(_ downloads: [SetupGuideModel.DownloadTask], ready: Bool, now: Date) -> Bool {
+        if let since, now.timeIntervalSince(since) >= Self.cap { capped = true }
+        if capped { return false }
+        if starting { return true }
+        if failures >= Self.failureLimit { return false }
+        if downloads.contains(where: \.active) {
+            guard let movedAt else { return true }
+            return now.timeIntervalSince(movedAt) < Self.stallLimit
+        }
+        guard let finishedAt, !ready else { return false }
+        return now.timeIntervalSince(finishedAt) < Self.finishingGrace
+    }
+
+    /// The host was let go.
+    mutating func released() {
+        since = nil
+        finishedAt = nil
+    }
+}
+
 // MARK: - Model
 
 @MainActor
@@ -136,14 +210,10 @@ final class SetupGuideModel: ObservableObject {
     @Published private(set) var hosts: [String: Int] = [:]
     /// The host a transfer holds while it runs, so collapsing the notch panel
     /// or closing a window doesn't stop the poll (and with it the automatic
-    /// switch to the new model). It is taken only while setup is on screen, and
-    /// let go once nothing is transferring and the finished model has had time
-    /// to arrive.
+    /// switch to the new model). It is taken only while setup is on screen;
+    /// SetupDownloadHold says when it is let go.
     static let downloadHost = "download"
-    /// How long a finished download keeps the poll going while the engine lists
-    /// the model and Wisp switches over to it.
-    nonisolated static let finishingGrace: TimeInterval = 120
-    private var finishedAt: Date?
+    private(set) var downloadHold = SetupDownloadHold()
     private var keepAwake: NSObjectProtocol?
     private var monitorTask: Task<Void, Never>?
     private var configurationObserver: AnyCancellable?
@@ -178,34 +248,20 @@ final class SetupGuideModel: ObservableObject {
         stopMonitoring()
     }
 
-    /// Whether a transfer still needs the poll: one is running, or one finished
-    /// within `finishingGrace` and Wisp can't answer yet. Pure.
-    nonisolated static func holdsDownloadHost(_ downloads: [DownloadTask], finishedAt: Date?,
-                                              ready: Bool, now: Date) -> Bool {
-        if downloads.contains(where: \.active) { return true }
-        guard let finishedAt, !ready else { return false }
-        return now.timeIntervalSince(finishedAt) < finishingGrace
-    }
-
-    /// Take or let go of the download host after each look at the transfers.
-    /// `previous`: the transfers seen before, to notice one that just finished.
+    /// Take or let go of the download host after each look at the transfers,
+    /// successful or not. `previous`: the transfers seen before a fresh read.
     private func updateDownloadHost(previous: [DownloadTask]? = nil, now: Date = Date()) {
-        if let previous {
-            let wasActive = Set(previous.filter(\.active).map(\.model))
-            if downloads.contains(where: { $0.state == "completed" && wasActive.contains($0.model) }) {
-                finishedAt = now
-            }
-        }
+        if let previous { downloadHold.observe(downloads, previous: previous, now: now) }
         let holding = hosts[Self.downloadHost] != nil
-        let hold = Self.holdsDownloadHost(downloads, finishedAt: finishedAt,
-                                          ready: statusIsCurrent && status?.ready == true, now: now)
+        let hold = downloadHold.decide(downloads, ready: statusIsCurrent && status?.ready == true, now: now)
         if hold, !holding, isShown {
+            downloadHold.since = now
             show(in: Self.downloadHost)
             // Idle sleep would pause the transfer; a closed lid still sleeps.
             keepAwake = ProcessInfo.processInfo.beginActivity(
                 options: [.idleSystemSleepDisabled], reason: "Downloading Wisp's model")
         } else if !hold, holding {
-            finishedAt = nil
+            downloadHold.released()
             if let keepAwake { ProcessInfo.processInfo.endActivity(keepAwake) }
             keepAwake = nil
             hide(from: Self.downloadHost)
@@ -438,6 +494,10 @@ final class SetupGuideModel: ObservableObject {
         } catch {
             guard generation == downloadGeneration, !monitoringStopped, !Task.isCancelled else { return }
             downloadError = "Wisp couldn't check the download. Choose Check again to retry."
+            // The last snapshot is stale now: a service that stays down must not
+            // keep the poll and the sleep assertion forever.
+            downloadHold.failed()
+            updateDownloadHost()
         }
     }
 
@@ -446,6 +506,19 @@ final class SetupGuideModel: ObservableObject {
         downloadGeneration += 1
         busy = cancel ? "Cancelling download…" : "Starting download…"
         defer { busy = nil }
+        // Pressing Download holds the poll at once, so collapsing the panel while
+        // the request is in flight (minutes, if the engine is starting too) can't
+        // leave the transfer unwatched.
+        if !cancel {
+            downloadHold.starting = true
+            updateDownloadHost()
+        }
+        defer {
+            if !cancel {
+                downloadHold.starting = false
+                updateDownloadHost()
+            }
+        }
         do {
             _ = try await call("POST", cancel ? "engine/downloads/cancel" : "engine/downloads",
                                body: ["model": model], timeout: 180)
