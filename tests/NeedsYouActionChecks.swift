@@ -33,19 +33,15 @@ func needsYouActionChecks(_ check: (Bool, String) -> Void) {
         precondition(done, "Timed out waiting for the Needs you actions model")
     }
 
-    // The × opens the row's actions inline and closes them again.
-    model.toggle(reminder)
-    check(model.open == reminder.id, "the × opens Clear · Mark done on its row")
-    model.toggle(reminder)
-    check(model.open == nil, "a second × closes them")
+    // The × clears at once; a reminder also offers its ✓ Mark done.
+    check(model.actions(for: reminder).contains(.markDone), "a reminder offers Mark done")
     check(model.actions(for: mail) == [.clear], "mail offers Clear only")
 
     // Clear: one POST with the row's fingerprint, then the row hides.
-    model.toggle(mail)
     run { await model.perform(.clear, on: mail) }
     check(requests.map(\.0) == ["POST /assistant/needs_you/email:cccccccccccccccccccccccc/clear"]
           && requests.first?.1 == mail.fingerprint, "Clear posts the id and fingerprint: \(requests)")
-    check(model.isHidden(mail) && model.open == nil && model.failures.isEmpty, "a confirmed Clear hides the row")
+    check(model.isHidden(mail) && model.failures.isEmpty, "a confirmed Clear hides the row")
     let changed = NeedsYouRow(id: mail.id, label: "MAIL", text: "“Thesis v2” from Advisor", overdue: false,
                               fingerprint: "eeeeeeeeeeeeeeeeeeeeeeee")
     check(!model.isHidden(changed), "the same item, changed, shows again")

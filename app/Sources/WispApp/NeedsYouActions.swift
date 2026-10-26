@@ -14,8 +14,6 @@ import Combine
 /// click. Its own transport, so render fixtures never reach the service.
 @MainActor
 final class NeedsYouActionsModel: ObservableObject {
-    /// The row whose × is open, showing "Clear · Mark done" in its place.
-    @Published var open: String?
     /// The row waiting on the service, and for what.
     @Published private(set) var busy: [String: NeedsYouRowAction] = [:]
     /// A failed answer's message, by row id.
@@ -43,10 +41,6 @@ final class NeedsYouActionsModel: ObservableObject {
         row.actions.filter { $0 != .markDone || !doneBlocked.contains(row.id) }
     }
 
-    func toggle(_ row: NeedsYouRow) {
-        open = open == row.id ? nil : row.id
-    }
-
     /// Runs one answer; true when the service confirmed it.
     @discardableResult
     func perform(_ action: NeedsYouRowAction, on row: NeedsYouRow) async -> Bool {
@@ -65,7 +59,6 @@ final class NeedsYouActionsModel: ObservableObject {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             if status == 200 {
                 hidden.insert(row.dismissalKey)
-                if open == row.id { open = nil }
                 return true
             }
             let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String

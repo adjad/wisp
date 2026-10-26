@@ -586,9 +586,10 @@ struct BriefContent {
 }
 
 /// A Brief row's trailing control (the Top 3's Needs you rows, and the proactive
-/// Brief's to-dos and mail/text threads): a dim × that opens "Clear · Mark done"
-/// in its place, never a sheet or alert (the panel doesn't take focus). While the
-/// service works it says so; the row leaves only on its confirmation.
+/// Brief's to-dos and mail/text threads): a dim × that clears the row at once,
+/// with no confirm step, plus a ✓ for Mark done when the row is a reminder.
+/// Never a sheet or alert (the panel doesn't take focus). While the service
+/// works it says so; the row leaves only on its confirmation.
 struct NeedsYouRowControls: View {
     let row: NeedsYouRow
     @ObservedObject var actions: NeedsYouActionsModel
@@ -608,43 +609,28 @@ struct NeedsYouRowControls: View {
             .fixedSize()
             .accessibilityElement(children: .combine)
             .accessibilityLabel(working.progress)
-        } else if actions.open == row.id {
-            HStack(spacing: 6) {
-                ForEach(Array(offered.enumerated()), id: \.element) { index, action in
-                    if index > 0 {
-                        Text("·").font(.system(size: 12)).foregroundStyle(Theme.textMuted).accessibilityHidden(true)
-                    }
-                    Button { answer(action) } label: {
-                        Text(action.title).font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Theme.textPrimary).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!actions.busy.isEmpty)
-                    .help(row.help(action))
-                    .accessibilityLabel(action.accessibilityLabel(row.text))
+        } else {
+            HStack(spacing: 4) {
+                if offered.contains(.markDone) {
+                    icon("checkmark", action: .markDone)
                 }
-                Button { actions.toggle(row); onResize() } label: {
-                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Theme.textMuted).frame(width: 14, height: 14).contentShape(Rectangle())
+                if offered.contains(.clear) {
+                    icon("xmark", action: .clear)
                 }
-                .buttonStyle(.plain)
-                .help("Keep it")
-                .accessibilityLabel("Cancel")
             }
             .fixedSize()
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Capsule().fill(Theme.chipFill))
-            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-        } else {
-            Button { actions.toggle(row); onResize() } label: {
-                Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Theme.textMuted).frame(width: 16, height: 16).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(offered.contains(.markDone) ? "Clear it, or mark it done" : "Clear it from the Brief")
-            .accessibilityLabel("Options for \u{201C}\(row.text)\u{201D}")
-            .accessibilityHint(offered.map(\.title).joined(separator: " or "))
         }
+    }
+
+    private func icon(_ symbol: String, action: NeedsYouRowAction) -> some View {
+        Button { answer(action) } label: {
+            Image(systemName: symbol).font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.textMuted).frame(width: 16, height: 16).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!actions.busy.isEmpty)
+        .help(row.help(action))
+        .accessibilityLabel(action.accessibilityLabel(row.text))
     }
 
     private func answer(_ action: NeedsYouRowAction) {

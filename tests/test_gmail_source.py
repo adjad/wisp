@@ -2676,6 +2676,30 @@ class GoogleConnectAndErase(unittest.TestCase):
         self.assertEqual(sorted(fetched), ["a", "b", "c", "d"])
         self.assertEqual(len(cached), 1)
 
+    def test_sent_sync_lists_only_the_sent_label_and_erase_drops_it(self):
+        calls = []
+        async def fake_get(http, path, params=()):
+            params = list(params)
+            if path == "messages":
+                calls.append(params)
+                return {"messages": [{"id": "s1"}]}
+            return msg(path.split("/")[-1], "Re: Thesis draft")
+        token = G._context.set((ME, {}, 0))
+        try:
+            with patch.object(G, "_get", fake_get), patch.object(G, "_still_connected", lambda: True):
+                asyncio.run(G._sync_sent(None, ME))
+        finally:
+            G._context.reset(token)
+        self.assertEqual([("labelIds", "SENT")], [p for p in calls[0] if p[0] == "labelIds"])
+        self.assertIn(("q", f"newer_than:{G.SENT_DAYS}d"), calls[0])
+        self.assertEqual([r["subject"] for r in G._sent[ME]], ["Re: Thesis draft"])
+        with patch.object(G, "connected_accounts", lambda *a: {ME: {}}):
+            self.assertEqual([r["account"] for r in G.sent_rows()], [ME])
+        with patch.object(G, "connected_accounts", lambda *a: {}):
+            self.assertEqual(G.sent_rows(), [], "a disconnected account's sent mail is never read")
+        G.erase_account_data(ME)
+        self.assertNotIn(ME, G._sent)
+
     def test_late_phase_never_overwrites_a_newer_sign_in(self):
         G._authorization.update(phase="reading", phase_email="someone@else.test")
         G._set_phase(JUDGE, "ready")

@@ -368,7 +368,9 @@ def test_stubs_are_limited_to_the_rank_and_core(synthetic):
     assert "obscure_tool_b" in {s["function"]["name"] for s in client.requests[0]["tools"]}
 
 
-def test_narration_step_runs_thinking_off_by_default(synthetic, monkeypatch):
+def test_narration_step_runs_thinking_off_when_the_flag_is_off(synthetic, monkeypatch):
+    # The packaged default turns narration thinking on for Gemma 4 E4B.
+    monkeypatch.setenv("WISP_MODEL_ONLY_NARRATION_THINKING", "0")
     client, _, _ = ask([[call("get_upcoming", days=1)], "Tomorrow: a workshop."])
     assert client.requests[0]["chat_template_kwargs"] == {"enable_thinking": True}
     assert client.requests[1]["chat_template_kwargs"] == {"enable_thinking": False}
@@ -703,7 +705,8 @@ def test_direct_writing_answer_is_not_nudged(synthetic):
     assert len(client.requests) == 1 and answer == "Leaves drift down."
 
 
-def test_direct_step_runs_with_thinking_off(synthetic):
+def test_direct_step_runs_with_thinking_off(synthetic, monkeypatch):
+    monkeypatch.setenv("WISP_MODEL_ONLY_NARRATION_THINKING", "0")
     client, _, _ = ask(["Leaves drift down."], prompt="Write a haiku about autumn.", ask_direct=True)
     assert client.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
 

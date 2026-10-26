@@ -29,6 +29,12 @@ MELLUM_R1_Q4 = CatalogModel(
     "Optional Wisp fine-tune. Model validation is pending.", tested=False)
 
 
+GEMMA4_E4B = CatalogModel(
+    "gemma-4-E4B-it-oQ4e-mtp", "Gemma 4 E4B", "4-bit (oQ4e, MTP)", 5.2, 16,
+    "Jundot/gemma-4-E4B-it-oQ4e-mtp",
+    "Default. Fast with multi-token prediction, and calls tools in model-only mode.", tested=True)
+
+
 LING_Q6 = CatalogModel(
     "Ling-3.0-tiny-oQ6e", "Ling 3.0 tiny", "6-bit (oQ6e)", 6.6, 24,
     "mlx-works/Ling-3.0-tiny-oQ6e",
@@ -41,7 +47,7 @@ LING_Q4 = CatalogModel(
     "mlx-works/Ling-3.0-tiny-oQ4e",
     "Smallest build that keeps tool selection reliable. Comfortable on 16 GB.", tested=True)
 
-PRIMARY_MODELS = (LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
+PRIMARY_MODELS = (GEMMA4_E4B, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
 
 EMBEDDING_MODEL = CatalogModel(
     "Qwen3-Embedding-0.6B-4bit-DWQ", "Qwen3 Embedding 0.6B", "4-bit", 0.35, 8,
@@ -62,11 +68,11 @@ def ranked_for(ram_gb: int, installed: list[str] | None = None) -> tuple[Catalog
     available private builds eligible for the memory-appropriate ranking.
     """
     if ram_gb >= 24:
-        order = (LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
+        order = (GEMMA4_E4B, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
     elif ram_gb >= 16:
-        order = (LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
+        order = (GEMMA4_E4B, LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
     else:
-        order = (LING_Q4, LING_Q5, LING_Q6, MELLUM_R1_Q4)
+        order = (LING_Q4, GEMMA4_E4B, LING_Q5, LING_Q6, MELLUM_R1_Q4)
     if installed is None:
         return order
     have = set(installed)
