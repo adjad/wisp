@@ -133,7 +133,7 @@ def test_overview_says_when_google_is_connected(monkeypatch):
 
 
 def test_privacy_is_local_by_default(monkeypatch):
-    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("", ""))
+    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("", ""))
     text = wisp_about.privacy()
     assert text.startswith("**Your data stays on this Mac.**")
     assert "No cloud AI is used unless you turn one on" in text
@@ -142,14 +142,14 @@ def test_privacy_is_local_by_default(monkeypatch):
 
 
 def test_privacy_never_claims_local_when_a_cloud_model_runs_everything(monkeypatch):
-    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("everything", "api.example.com"))
+    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("everything", "api.example.com"))
     text = wisp_about.privacy()
     assert "stays on this Mac" not in text.split("\n")[0]
     assert "api.example.com" in text and "turn the cloud model off" in text
 
 
 def test_privacy_mentions_an_optional_cloud_model(monkeypatch):
-    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("super", "your cloud provider"))
+    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("super", "your cloud provider"))
     assert "You've turned on a cloud model" in wisp_about.privacy()
 
 
@@ -174,7 +174,7 @@ LOCAL_CLAIMS = ("runs right here on this Mac", "without sending them to a server
 
 @pytest.mark.parametrize("host", ["api.example.com", "your cloud provider"])
 def test_overview_and_identity_never_claim_local_when_everything_runs_in_the_cloud(monkeypatch, host):
-    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("everything", host))
+    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("everything", host))
     for text in (wisp_about.overview(), wisp_about.identity()):
         for claim in LOCAL_CLAIMS:
             assert claim not in text, (claim, text[:200])
@@ -182,13 +182,13 @@ def test_overview_and_identity_never_claim_local_when_everything_runs_in_the_clo
 
 
 def test_overview_and_identity_say_local_when_it_is(monkeypatch):
-    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("", ""))
+    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("", ""))
     assert wisp_about.overview().startswith("**Hi, I'm Wisp.** My AI runs right here on this Mac.")
     assert "without sending them to a server" in wisp_about.identity()
 
 
 def test_overview_and_identity_name_an_optional_cloud_model(monkeypatch):
-    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("super", "api.example.com"))
+    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("super", "api.example.com"))
     for text in (wisp_about.overview(), wisp_about.identity()):
         assert "You've also turned on a cloud model" in text and "api.example.com" in text
         assert "without sending them to a server" not in text
@@ -199,7 +199,7 @@ def test_remote_only_build_reads_as_everything(monkeypatch):
     import service.inference.remote_policy as remote_policy
     monkeypatch.setattr(remote_policy, "remote_only_profile",
                         lambda: SimpleNamespace(base_url="https://gpu.example.net/v1"))
-    assert wisp_about._cloud_state() == ("everything", "gpu.example.net")
+    assert wisp_about.cloud_state() == ("everything", "gpu.example.net")
     assert "runs right here on this Mac" not in wisp_about.overview()
 
 
@@ -211,3 +211,72 @@ def test_calendar_promise_follows_auto_add(monkeypatch):
     for text in (wisp_about.privacy(), wisp_about.overview()):
         assert "change your calendar" not in text and "calendar changes" not in text
         assert "auto-add is on" in text and "Undo" in text
+
+
+# The models report (wisp_status) and the self-answers read one cloud_state(),
+# so "runs on this Mac" can't be claimed in one place and denied in another.
+def _cloud_config(monkeypatch, *, everything=False, super_model=False, roles=(), remote_url=""):
+    import service.config as config
+    import service.inference.remote_policy as remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)
+    monkeypatch.setattr(config, "cloud_everything_enabled", lambda: everything)
+    monkeypatch.setattr(config, "cloud_super_model_enabled", lambda: super_model)
+    monkeypatch.setattr(config, "cloud_provider_settings",
+                        lambda: {"enabled": True, "base_url": "https://openrouter.ai", "roles": list(roles)})
+    real = config.models_config
+    monkeypatch.setattr(config, "models_config", lambda: {
+        **real(), "inference": {**(real().get("inference") or {}),
+                                "remote_only": {"base_url": remote_url} if remote_url else {}}})
+
+
+def _models_report(monkeypatch) -> str:
+    from service.inference.omlx_client import OMLXClient
+    from service.tools.registry import REGISTRY
+
+    async def loaded(self):  # never contact the inference server
+        return {"local-model"}
+    monkeypatch.setattr(OMLXClient, "loaded_models", loaded)
+    return asyncio.run(REGISTRY["wisp_status"].func("models"))
+
+
+def test_cloud_state_reads_each_mode(monkeypatch):
+    _cloud_config(monkeypatch)
+    assert wisp_about.cloud_state() == ("", "")
+    _cloud_config(monkeypatch, super_model=True)
+    assert wisp_about.cloud_state() == ("super", "openrouter.ai")
+    _cloud_config(monkeypatch, roles=("reasoning",))
+    assert wisp_about.cloud_state() == ("super", "openrouter.ai"), "a role bound to the cloud counts"
+    _cloud_config(monkeypatch, everything=True, remote_url="https://gpu.example.net/v1")
+    assert wisp_about.cloud_state() == ("everything", "gpu.example.net")
+
+
+def test_models_report_says_local_only_when_it_is(monkeypatch):
+    _cloud_config(monkeypatch)
+    text = _models_report(monkeypatch)
+    assert "Inference runs on this Mac: no question or data is sent to a cloud model." in text
+    assert "no request leaves the machine" not in text
+
+
+def test_models_report_names_an_optional_cloud_model(monkeypatch):
+    _cloud_config(monkeypatch, super_model=True)
+    text = _models_report(monkeypatch)
+    assert "You've also turned on a cloud model" in text and "openrouter.ai" in text
+    assert "no question or data is sent" not in text and "no request leaves" not in text
+
+
+def test_models_report_under_cloud_everything(monkeypatch):
+    _cloud_config(monkeypatch, everything=True, remote_url="https://gpu.example.net/v1")
+    text = _models_report(monkeypatch)
+    assert 'Cloud "Everything" is turned on' in text and "gpu.example.net" in text
+    assert "no question or data is sent" not in text and "no request leaves" not in text
+
+
+def test_models_report_on_a_remote_only_build(monkeypatch):
+    from types import SimpleNamespace
+    import service.inference.remote_policy as remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: SimpleNamespace(
+        model_id="example-model", base_url="https://gpu.example.net/v1"))
+    text = _models_report(monkeypatch)
+    assert "gpu.example.net" in text and "not on this Mac" in text
+    assert "runs on this Mac" not in text and "no request leaves" not in text
+    assert wisp_about.cloud_state() == ("everything", "gpu.example.net")

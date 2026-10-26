@@ -20,8 +20,8 @@ def _local_only() -> bool:
     """False while a cloud model answers everything: the profile then rides in
     that model's prompt, and the app must not say "Stays on this Mac"."""
     try:
-        from service.wisp_about import _cloud_state
-        return _cloud_state()[0] != "everything"
+        from service.wisp_about import cloud_state
+        return cloud_state()[0] != "everything"
     except Exception:  # noqa: BLE001 - unknown reads as the shipped default
         return True
 

@@ -405,7 +405,7 @@ def test_api_dismiss_counts(client):
 
 def test_api_says_whether_the_answers_stay_on_this_mac(client, monkeypatch):
     from service import wisp_about
-    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("", ""))
+    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("", ""))
     assert client.get("/profile").json()["status"]["local_only"] is True
-    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("everything", "api.example.com"))
+    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("everything", "api.example.com"))
     assert client.get("/profile").json()["status"]["local_only"] is False

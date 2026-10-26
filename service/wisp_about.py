@@ -66,22 +66,40 @@ def _google_connected() -> bool:
         return False
 
 
-def _cloud_state() -> tuple[str, str]:
-    """("everything" | "super" | "", provider host). Remote-only builds count as everything."""
+def _host(url: object) -> str:
+    from urllib.parse import urlsplit
+    try:
+        return urlsplit(str(url or "")).hostname or "your cloud provider"
+    except ValueError:
+        return "your cloud provider"
+
+
+def cloud_state() -> tuple[str, str]:
+    """Where Wisp's AI runs, for every answer that says so (this module, the
+    profile's "Stays on this Mac", wisp_status's models report): one helper, so
+    the claims can't drift apart.
+
+    ("everything", host): a remote-only build, or Cloud "Everything" turned on
+    (it takes over once Wisp restarts). ("super", host): an optional cloud
+    model answers some questions (the Super Model, or a role bound to the cloud
+    endpoint). ("", ""): everything runs on this Mac. Unknown reads as local
+    only when nothing could be read at all."""
     try:
         from service.inference.remote_policy import remote_only_profile
         profile = remote_only_profile()
         if profile is not None:
-            from urllib.parse import urlsplit
-            return "everything", urlsplit(profile.base_url).hostname or "your cloud provider"
+            return "everything", _host(profile.base_url)
     except Exception:  # noqa: BLE001
         pass
     try:
-        from service.config import cloud_everything_enabled, cloud_super_model_enabled
+        from service.config import (cloud_everything_enabled, cloud_provider_settings,
+                                    cloud_super_model_enabled, models_config)
+        settings = cloud_provider_settings()
         if cloud_everything_enabled():
-            return "everything", "your cloud provider"
-        if cloud_super_model_enabled():
-            return "super", "your cloud provider"
+            remote = (models_config().get("inference") or {}).get("remote_only") or {}
+            return "everything", _host(remote.get("base_url") if isinstance(remote, dict) else "")
+        if cloud_super_model_enabled() or (settings.get("enabled") and settings.get("roles")):
+            return "super", _host(settings.get("base_url"))
     except Exception:  # noqa: BLE001
         pass
     return "", ""
@@ -184,7 +202,7 @@ def _can_lines(tools: set[str]) -> list[str]:
 
 def _greeting() -> str:
     """The overview's first line. "Runs on this Mac" is said only when it is true."""
-    cloud, host = _cloud_state()
+    cloud, host = cloud_state()
     if cloud == "everything":
         return (f"**Hi, I'm Wisp.** Right now I'm answering with a cloud model at {host}, not on "
                 "this Mac. Turn it off in **Settings** to keep everything here.")
@@ -221,7 +239,7 @@ def overview() -> str:
 
 def identity() -> str:
     name = _user_name()
-    cloud, host = _cloud_state()
+    cloud, host = cloud_state()
     if cloud == "everything":
         intro = ("I'm **Wisp**, your assistant in the Mac's notch. I help with your calendar, "
                  "reminders, mail, messages and notes. Right now a cloud model is on, so what you "
@@ -247,7 +265,7 @@ def identity() -> str:
 
 
 def privacy() -> str:
-    cloud, host = _cloud_state()
+    cloud, host = cloud_state()
     out = ["**Your data stays on this Mac.**", ""]
     if cloud == "everything":
         out = ["**Right now a cloud model is on**, so this is different from usual.", "",

@@ -83,6 +83,25 @@ async def weather_alerts_at(lat: float, lon: float, name: str, country: str) -> 
 # --------------------------------------------------------------------------
 # Wisp's own state
 # --------------------------------------------------------------------------
+def _where_inference_runs() -> str:
+    """The models report's line on where answers come from. It reads the same
+    cloud_state() as Wisp's privacy and "who are you" answers, so the two can't
+    disagree. A remote-only build never reaches here (wisp_status reports it
+    first)."""
+    from service.wisp_about import cloud_state
+    cloud, host = cloud_state()
+    if cloud == "everything":
+        # Configured but not yet active: remote_only_profile() is None until
+        # Wisp restarts, so the local model above is still the one answering.
+        return ("Cloud \"Everything\" is turned on and takes over when Wisp restarts. From then "
+                f"on, what you ask, and the data a reply needs, is sent to {host}. Until then, "
+                "the model above answers on this Mac.")
+    if cloud == "super":
+        return ("The model above runs on this Mac. You've also turned on a cloud model: questions "
+                f"it answers, and the data they need, are sent to {host}.")
+    return "Inference runs on this Mac: no question or data is sent to a cloud model."
+
+
 @register(
     "wisp_status",
     "Report Wisp's own state. topic='models' (default): which model is answering, "
@@ -134,7 +153,7 @@ async def wisp_status(topic: str = "models") -> str:
 
     lines = [f"Answering with: {agent}",
              f"Embedder (search + tool routing): {embed}",
-             "Everything runs on this Mac — no request leaves the machine."]
+             _where_inference_runs()]
 
     try:
         from service.inference.omlx_client import OMLXClient
