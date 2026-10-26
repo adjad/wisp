@@ -8,13 +8,27 @@ A tester build can carry a built-in OAuth client, supplied at build time with `W
 mode, so only the Google accounts on its **Test users** list can sign in (sections 3 to 5 below). Testers
 see an "unverified app" warning and choose Continue, and their sign-in expires every 7 days. A build with
 no built-in client, or someone who prefers their own project, creates a client once (sections 1 to 8) and
-pastes it into **Settings ▸ Google**. Wisp always uses a client you paste in before the built-in one.
-Allow about 15 minutes.
+pastes it into **Settings ▸ Google ▸ Advanced ▸ Use your own OAuth client**. Wisp always uses a client you
+paste in before the built-in one. Allow about 15 minutes.
 
-Wisp asks for exactly two read-only scopes:
+Wisp makes one sign-in per Google account and asks for these read-only scopes in that one consent
+(`service/gmail_source.py` `_consent_scopes`, `service/google_workspace.py` `WORKSPACE_SCOPES`):
 
-- `https://www.googleapis.com/auth/gmail.readonly` (required; Google calls it a **restricted** scope)
-- `https://www.googleapis.com/auth/calendar.readonly` (optional; a **sensitive** scope)
+| Scope (after `https://www.googleapis.com/auth/`) | Google API to enable | Needed |
+| --- | --- | --- |
+| `gmail.readonly` | Gmail API | Required. Google calls it a **restricted** scope. |
+| `calendar.readonly` | Google Calendar API | Optional. Brief and Day read the next 7 days. |
+| `drive.readonly` | Google Drive API | Optional. Google calls it a **restricted** scope. |
+| `documents.readonly` | Google Docs API | Optional. |
+| `spreadsheets.readonly` | Google Sheets API | Optional. |
+| `presentations.readonly` | Google Slides API | Optional. |
+| `chat.messages.readonly`, `chat.spaces.readonly` | Google Chat API | Optional. |
+| `tasks.readonly` | Google Tasks API | Optional. |
+| `contacts.readonly` | People API | Optional. |
+
+Nothing here can send, edit or delete anything in Google. The person signing in can untick any scope
+except Gmail on Google's consent screen: Wisp refuses a sign-in without Gmail, and otherwise connects
+with whatever was granted (Settings then offers **Reconnect** to add the rest).
 
 Google's console moves things around often. The names below match the "Google Auth Platform" layout
 (Overview / Branding / Audience / Clients / Data Access / Verification Center). Where I'm unsure of a
@@ -29,14 +43,25 @@ label it says *(unverified)*.
 3. Name it `Wisp`. Leave Organization as is, or "No organization" for a personal account. Click **Create**.
 4. Make sure the picker now shows **Wisp** before you go on.
 
-## 2. Enable the two APIs
+## 2. Enable the APIs
+
+The project needs one API for each scope in the table above. For the built-in tester client, enable all
+nine:
+
+**Gmail API, Google Calendar API, Google Drive API, Google Docs API, Google Sheets API, Google Slides API,
+Google Chat API, Google Tasks API and People API.**
 
 1. Go to **☰ ▸ APIs & Services ▸ Library**, or open <https://console.cloud.google.com/apis/library>.
-2. Search **Gmail API**, open it, and click **Enable**.
-3. Go back to the Library. Search **Google Calendar API**, open it, and click **Enable**.
+2. For each name above, search it, open it, and click **Enable**.
 
-If you skip the Calendar API, mail still works. Wisp then shows "Turn on the Google Calendar API in your
-Google Cloud project…" for each account until you enable it. It can take a minute to take effect.
+Skipping the optional ones does not stop the others. If you skip the Calendar API, mail still works and
+Wisp shows "Turn on the Google Calendar API in your Google Cloud project…" for each account until you
+enable it. For the Workspace APIs (Drive through People), the Google tool for that product fails until its
+API is on *(unverified: Wisp has no message of its own for these)*. A new API can take a minute to take
+effect.
+
+The People API is the one behind the `contacts.readonly` scope. That mapping comes from Google's scope
+documentation, not from Wisp's code.
 
 ## 3. Google Auth Platform: branding, audience, contact
 
@@ -55,13 +80,18 @@ Google Cloud project…" for each account until you enable it. It can take a min
 
 1. Go to **Google Auth Platform ▸ Data Access**.
 2. Click **Add or remove scopes**.
-3. In the panel, filter for and tick:
+3. In the panel, filter for and tick the scopes from the table at the top:
    - `.../auth/gmail.readonly` (Gmail API, "View your email messages and settings"), listed under
      **restricted** scopes.
    - `.../auth/calendar.readonly` (Google Calendar API, "See and download any calendar you can access…"),
      listed under **sensitive** scopes.
-   - If a scope doesn't appear, use **Manually add scopes** at the bottom of the panel. Paste both URLs
-     above, one per line, then click **Add to table**.
+   - `.../auth/drive.readonly` (Google Drive API), listed under **restricted** scopes.
+   - `.../auth/documents.readonly`, `.../auth/spreadsheets.readonly`, `.../auth/presentations.readonly`,
+     `.../auth/chat.messages.readonly`, `.../auth/chat.spaces.readonly`, `.../auth/tasks.readonly` and
+     `.../auth/contacts.readonly`, listed under **sensitive** scopes *(unverified: Google's console
+     groups them and the grouping changes)*.
+   - If a scope doesn't appear, use **Manually add scopes** at the bottom of the panel. Paste the URLs
+     from the table, one per line, then click **Add to table**.
 4. Click **Update**, then **Save** on the Data Access page.
 
 You don't need to submit for verification for testing. Section 6 covers what that means.
@@ -94,9 +124,10 @@ Testing-mode limits:
    1. The Google account chooser.
    2. **"Google hasn't verified this app"**: the app is asking for sensitive info.
    3. The tester clicks **Advanced**, then **Go to Wisp (unsafe)**.
-   4. The consent screen, with checkboxes for "View your email messages and settings" and "See … your
-      calendars". They should tick both.
-      - If they untick Calendar, Wisp still connects mail and shows "Mail only (calendar not shared)".
+   4. The consent screen, with a checkbox for each scope in the table. Gmail is the one they must tick.
+      - If they untick Calendar, Wisp still connects mail, and Brief and Day show no Google events.
+      - If they untick some Workspace scopes (Drive, Docs, Chat…), the account connects and Settings
+        shows "Some Google tools (Drive, Docs, Chat…) weren't shared. Reconnect to add them."
       - If they untick Gmail, Wisp refuses the sign-in and explains why.
    5. "Google connected. You can close this tab and return to Wisp."
 3. Caveats:
@@ -127,17 +158,18 @@ Testing-mode limits:
 ## 8. Paste it into Wisp and connect your own account
 
 1. Open Wisp's Settings window (**⌘,** or the notch gear ▸ **All settings**) ▸ **Google**.
-2. Under **Your Google OAuth client**:
+2. Open **Advanced ▸ Use your own OAuth client**:
    - Paste the **OAuth client ID**.
    - Paste the **Client secret**.
-3. Under **Email and calendar with Mail closed**, click **Connect or reconnect an email account**.
-   - Sign in with **your** Google account in the browser and allow both permissions.
+3. Click **Connect Google account** (above Advanced).
+   - Sign in with **your** Google account in the browser and allow the permissions.
    - This also saves the client to `~/.moe/gmail.json` (mode 0600).
-4. Within about a minute your account shows "Mail & calendar". Your Google events for the next 7 days
+4. Within about a minute your account shows as connected. Your Google events for the next 7 days
    appear in Day and Brief.
 
-From then on the notch **Connect Google** button reuses the saved client. If no client is saved, the notch
-shows "Add your Google OAuth client in Settings ▸ Google first."
+From then on the notch **Connect Google** button reuses the saved client. If there is no saved client and
+the build has no built-in one, Settings says "This copy of Wisp has no built-in Google sign-in. Add your own
+OAuth client under Advanced."
 
 ## 9. When a tester connects
 
@@ -166,6 +198,7 @@ confirmed. Anything else is listed as "Not confirmed erased".
 
 **Erased:**
 - the OAuth token, revoked with Google and removed from `~/.moe/gmail.json`
+- the account's saved sign-in for Wisp's Google tools (a file under `~/.moe/google_workspace/credentials`)
 - mail headers, history, bodies and identity entries, in memory and in `~/.moe/cache`
 - the account's Google Calendar events (`gcal:<email>:…` rows) and their side rows
 - schedule versions of those rows

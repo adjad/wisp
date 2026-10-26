@@ -216,6 +216,101 @@ Pin provenance, reviewed September 10, 2026:
   [upload-artifact v4.6.2](https://github.com/actions/upload-artifact/releases/tag/v4.6.2)
   resolve to the full commit SHAs pinned in the workflow.
 
+## Built-in Google sign-in (`WISP_GOOGLE_OAUTH_CLIENT`)
+
+A tester build carries one Google OAuth client so testers can connect Google without making their
+own (see [google-cloud-setup.md](google-cloud-setup.md)). The repository is public, so the client is
+never committed. It comes from the GitHub Actions secret `WISP_GOOGLE_OAUTH_CLIENT`, or from a local
+file for a local build, and goes straight into the app bundle.
+
+**What the secret holds.** One JSON object for a Google Cloud **Desktop app** OAuth client, in either
+of two shapes. Never write a real value into the repository, a log, an issue or a pull request:
+
+```json
+{"client_id": "<client id>", "client_secret": "<client secret>"}
+```
+
+or the file the Google Cloud console downloads, which wraps the same two fields in an `installed`
+object. Both fields must be non-empty strings. Anything else fails the build with a message that does
+not echo the input (`build-support/pipeline.py`, `_google_oauth_client_json`).
+
+**Where the build puts it.** `wisp-build all` and `wisp-build preview` read the variable once at the
+start and remove it from the process environment, so no later step inherits it (`clean_env` leaves it
+out of every child as well). `--google-oauth-client PATH` reads a local JSON file instead and wins over
+the variable. The build writes the canonical form (the two fields, sorted keys, compact) directly into
+the bundle at
+
+`Contents/Resources/backend/service/google_oauth_client.json`
+
+with mode 0644, never through a command line or a log. In the source tree that path is
+`service/google_oauth_client.json`, which `.gitignore` lists; the build refuses to run if tracked
+source already provides one. `build-info` and provenance record only whether a client is present
+(`google_oauth_client: true or false`), never the value, and bundle validation checks that the file
+exists exactly when `build-info` says so and is in canonical form.
+
+The client secret of a Desktop app is not confidential once shipped: anyone who downloads the app can
+read it from the bundle. That is why the project stays in Google's Testing mode with a tester list.
+
+**Where CI supplies it.** The `wisp-build.yml` steps that run `wisp-build preview` (the pull request
+preview build) and `wisp-build all` (the full build on push, the signed `release` job and the ad-hoc
+`publish-ad-hoc-release` job) set it from `secrets.WISP_GOOGLE_OAUTH_CLIENT`. It is the only secret in
+the preview job. GitHub passes an empty value to pull requests from forks, so those builds ship
+without a client. Define it as a repository secret so all four steps can read it.
+
+**A release build requires it.** `require_release_features` in `build-support/release.py` runs before
+both publishing paths (`release-ad-hoc` and the signed `release`). A candidate built without a client
+stops with:
+
+`Release candidate has no built-in Google OAuth client; set the WISP_GOOGLE_OAUTH_CLIENT secret for the build`
+
+Without the secret, an ordinary `wisp-build all` still succeeds and produces an app with no built-in
+sign-in. In that app **Settings > Google** says "This copy of Wisp has no built-in Google sign-in. Add
+your own OAuth client under Advanced.", and a client pasted there still works. A PR preview or local
+build is fine that way; a published one is not, which is why the check sits in the release step and
+fails there instead of on testers' Macs.
+
+## Bundled uv (version and checksum pin)
+
+Wisp's Google tools run the `workspace-mcp` server through `uvx`, and testers' Macs do not have uv. So
+the build ships Astral's `uv` and `uvx` binaries inside the app, signed with it:
+
+`Contents/Resources/bin/uv` and `Contents/Resources/bin/uvx` (mode 0755)
+
+`build-support/uv_tool.py` pins the release by version, size and SHA-256:
+
+| | |
+| --- | --- |
+| Version | 0.12.23 |
+| Asset | `uv-aarch64-apple-darwin.tar.gz` |
+| URL | `https://github.com/astral-sh/uv/releases/download/0.12.23/uv-aarch64-apple-darwin.tar.gz` |
+| Size | 17,044,217 bytes |
+| SHA-256 | `50487ae565ccd96e499056b4674d438f4c53170202617b4c759defe0c6a1b544` |
+
+How it is enforced:
+
+- The driver downloads it before any test runs, with HTTPS-only `curl` and the system trust store, into
+  a cache at `.wisp-build/uv-tool-cache`. An existing cache entry is re-checked for size and SHA-256 on
+  every use, and a partial or different file is deleted, not reused. A download that does not match
+  fails the build.
+- Only the two expected regular files (`uv`, `uvx`) are read from the tarball, each must start with the
+  64-bit Mach-O header, and links, other members and oversized entries are refused. Nothing from the
+  archive is executed during the build.
+- `build-info` records `{version, asset, sha256, path}`, and bundle validation requires the record to
+  match the pinned release and both binaries to be present and executable. A bundle that holds uv
+  binaries its `build-info` does not declare also fails.
+- `--offline` needs the verified tarball already in the cache. `--no-uv` skips the bundled uv; the
+  Google tools then need uv installed on the Mac. A release candidate built that way is refused:
+  `Release candidate has no bundled uv; rebuild without --no-uv`.
+- At run time Wisp uses the bundled `uvx` first, with its own uv folders under `~/.moe/uv` and the
+  user's uv settings ignored. `workspace-mcp` itself is pinned in `service/google_workspace.py`
+  (`PACKAGE`, with dependency and Python date cutoffs), and the first Google connection downloads it
+  from the Python package index.
+
+This is a different uv from the build-tool uv in `toolchain.json` (0.12.1), which runs the build itself
+and is described under "Reviewed inputs and offline builds". To change the bundled one, update
+`UV_VERSION`, `UV_SIZE` and `UV_SHA256` together in `uv_tool.py` from the new official release asset,
+check them against Astral's published checksum, and rebuild.
+
 ## Test and packaging gates
 
 `build-support/simulation.py` adapts `scripts/run_simulation_qa.py`. It preserves
