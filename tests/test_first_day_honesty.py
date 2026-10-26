@@ -273,24 +273,49 @@ def test_the_proactive_brief_never_says_nothing_on_an_unread_calendar():
     assert same["summary"] == cycle.NO_EVENTS_SENTENCE and same["unread"] == [] and same["mail_read_by"] == []
 
 
-def test_mail_counts_as_read_only_through_a_connected_fresh_google_account(monkeypatch):
-    from service import gmail_source
+def test_mail_counts_as_read_only_through_a_connected_fresh_google_account():
     from service.proactive import cycle
     coverage = [dict(source="email", ready=False), dict(source="messages", ready=False)]
     assert cycle.honest({}, coverage)["unread"] == ["email", "messages"]
     read = cycle.honest({}, coverage, ["ada@gmail.com"])
     assert read["unread"] == ["messages"] and read["mail_read_by"] == ["ada@gmail.com"]
-    rows = [dict(email="ok@gmail.com", state="connected", fresh=True),
-            dict(email="stale@gmail.com", state="connected", fresh=False),
-            dict(email="expired@gmail.com", state="expired", fresh=True),
-            dict(email="failing@gmail.com", state="attention", fresh=True),
-            dict(email="old@gmail.com", state="needs_reconnect", fresh=True)]
-    monkeypatch.setattr(gmail_source, "status", lambda: {"accounts": rows})
-    assert cycle.google_mail_read() == ["ok@gmail.com"]
-    def broken():
-        raise RuntimeError("config unreadable")
-    monkeypatch.setattr(gmail_source, "status", broken)
-    assert cycle.google_mail_read() == [], "unknown Google status is never a read"
+
+
+def test_google_mail_read_is_narrow_and_strict(monkeypatch, tmp_path):
+    """Only connected accounts with a fresh mail sync count, and the reader
+    never takes the history guard or re-parses headers (status/load_config)."""
+    import json
+    from service import gmail_source
+    from service import google_calendar_source as calendar
+    from service import google_workspace as workspace
+    from service.proactive import cycle
+    from service.tools import email_tools as E
+    def forbidden(*a, **k):
+        raise AssertionError("the narrow reader must not call this")
+    monkeypatch.setattr(gmail_source, "status", forbidden)
+    monkeypatch.setattr(gmail_source, "load_config", forbidden)
+    monkeypatch.setattr(E, "email_source_details", forbidden)
+    monkeypatch.setattr(workspace, "has_full_scopes", lambda email, item: True)
+    monkeypatch.setattr(calendar, "account_status",
+                        lambda email: {"calendar_error": "Calendar isn't syncing" if email.startswith("cal") else ""})
+    monkeypatch.setattr(gmail_source, "_errors", {"failing@gmail.com": "Mail read access is missing"})
+    good = dict(refresh_token="r", client_id="c", workspace=True, workspace_requested=True)
+    names = ["ok", "stale", "expired", "failing", "old", "cal", "unsynced"]
+    accounts = {f"{n}@gmail.com": dict(good) for n in names}
+    accounts["expired@gmail.com"]["auth_expired"] = 1.0
+    accounts["old@gmail.com"] = dict(refresh_token="r", client_id="c")       # needs_reconnect
+    config = tmp_path / "gmail.json"
+    config.write_text(json.dumps({"accounts": accounts}))
+    monkeypatch.setattr(gmail_source, "CONFIG_PATH", config)
+    now = 1_790_000_000.0
+    receipt = dict(headers_verified=True, headers_at=now - 30)
+    external = {f"{n}@gmail.com": dict(receipt) for n in names if n != "unsynced"}
+    external["stale@gmail.com"]["headers_at"] = now - 3600
+    monkeypatch.setattr(E, "_external_accounts", external)
+    monkeypatch.setattr(E, "_source_receipt", lambda value: float(value or 0))
+    assert cycle.google_mail_read(now) == ["ok@gmail.com"]
+    config.write_text("{not json")
+    assert cycle.google_mail_read(now) == [], "unknown Google status is never a read"
 
 
 # --- The evening check-in on day one --------------------------------------------------
@@ -562,3 +587,26 @@ def test_the_notes_handler_keeps_the_reason_and_kind(notes_state):
     asyncio.run(handler({"raw": "", "diagnostics": {"available": True}}))
     row = S.source_status("notes")
     assert row["state"] == "ready" and row["reason"] == "" and row["reason_kind"] == ""
+
+
+
+# --- Publication boundaries stay on the writers ----------------------------------------
+
+
+def test_the_writers_keep_their_mutation_boundary_and_the_readers_take_none():
+    """A reader inserted between `@mutating` and its writer once took the
+    decorator: the writer lost its publication boundary and every read took the
+    global barrier. `mutating` wraps with functools.wraps (__wrapped__)."""
+    from service.tools import email_tools as E
+    from service.tools import notes_tools as N
+    assert hasattr(E.set_email_availability, "__wrapped__") and hasattr(N.cache_notes, "__wrapped__")
+    for reader in (E.email_reason_kind, N._clean_kind, N.notes_unavailable, E._no_inbox_message):
+        assert not hasattr(reader, "__wrapped__"), reader.__name__
+
+
+def test_no_mail_account_check_fails_closed(monkeypatch):
+    from service.tools import email_tools as E
+    def busy():
+        raise RuntimeError("publication busy")
+    monkeypatch.setattr(E, "email_reason_kind", busy)
+    assert W._no_mail_account() is True, "an unreadable flag is not an all-clear"

@@ -1191,18 +1191,42 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     return result
 
 
-def google_mail_read() -> list[str]:
-    """Linked Google accounts whose mail Wisp has read recently: the unified
-    Google status says the account is connected (not expired, not failing)
-    and its mail sync is fresh. Any doubt is an empty list, never a read."""
+def google_mail_read(now: float | None = None) -> list[str]:
+    """Linked Google accounts whose mail Wisp has read recently: the account's
+    unified Google state (gmail_source.account_state) is "connected" (not
+    expired, failing or awaiting a reconnect) and its mail sync is fresh.
+
+    Narrow on purpose, since every Today snapshot asks: it reads the Google
+    config file and in-memory sync receipts only. It never takes the history
+    guard or re-parses the header snapshot (gmail_source.status() does both).
+    Any doubt is an empty list, never a read."""
     try:
         from service import gmail_source
-        rows = gmail_source.status().get("accounts") or []
+        from service import google_calendar_source as calendar
+        from service import google_workspace as workspace
+        from service.tools import email_tools as mail
+        cfg = json.loads(gmail_source.CONFIG_PATH.read_text(encoding="utf-8"))
+        accounts = gmail_source.connected_accounts(cfg if isinstance(cfg, dict) else {})
+        now = time.time() if now is None else now
+        read = []
+        for email, item in accounts.items():
+            receipt = mail._external_accounts.get(email) or {}
+            stamp = mail._source_receipt(receipt.get("headers_at"))
+            error = str(receipt.get("headers_error") or "")
+            fresh = bool(receipt.get("headers_verified") and stamp and not error
+                         and 0 <= now - stamp <= mail._EXTERNAL_MAX_AGE)
+            expired = bool(item.get("auth_expired"))
+            row = {"expired": expired, "client_source": "builtin" if item.get("client_source") == "builtin" else "user",
+                   "last_error": gmail_source.SIGNIN_EXPIRED if expired else (gmail_source._errors.get(email) or error),
+                   "workspace": bool(item.get("workspace")),
+                   "workspace_full": workspace.has_full_scopes(email, item),
+                   "workspace_requested": bool(item.get("workspace_requested")),
+                   **calendar.account_status(email)}
+            if fresh and not expired and gmail_source.account_state(row).get("state") == "connected":
+                read.append(email)
+        return sorted(read)
     except Exception:  # noqa: BLE001 — status unknown: nothing counts as read
         return []
-    return sorted(str(row["email"]) for row in rows
-                  if isinstance(row, dict) and row.get("email")
-                  and row.get("state") == "connected" and row.get("fresh") is True)
 
 
 def honest(view: dict, coverage, google_mail=()) -> dict:
