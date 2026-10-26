@@ -86,6 +86,11 @@ BODY_CAP = 20000
 FETCH_CONCURRENCY = 4        # metadata get = 5 quota units; the cap is 250/s
 
 HEADERS_EVERY = 300
+# The user's own sent mail (headers only), so a thread they answered from
+# Gmail, Mail or a phone reads as answered (service/proactive/handled.py).
+SENT_LIMIT = 200
+SENT_DAYS = 8
+SENT_EVERY = 120
 HISTORY_EVERY = 1800
 # Recent bodies (RAW_LIMIT) on the same 15-minute cadence MailReader.swift uses
 # for Mail.app, so the background proactive engine can read what people asked.
@@ -97,6 +102,8 @@ _RS = "\x02"
 _meta: dict[tuple[str, str], dict] = {}
 _last: dict[str, dict[str, float]] = {}
 _errors: dict[str, str] = {}
+# account -> the user's sent messages: {ts, to, subject, message_id, in_reply_to}.
+_sent: dict[str, list[dict]] = {}
 _access: dict[str, dict] = {}
 _epochs: dict[str, int] = {}
 _locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -339,6 +346,7 @@ def parse_metadata(message: dict) -> dict:
             "to": _clean(_decode(_header(payload, "To"))),
             "subject": _clean(_decode(_header(payload, "Subject"))),
             "message_id": _clean(_header(payload, "Message-ID")),
+            "in_reply_to": _clean(_header(payload, "In-Reply-To")),
             "unread": "UNREAD" in (message.get("labelIds") or [])}
 
 
@@ -390,11 +398,12 @@ def raw_record(message: dict, account: str) -> str:
 
 # --- syncing ------------------------------------------------------------------
 
-async def _list_ids(http, limit: int, *, query: str = "", unread: bool = False) -> list[str]:
+async def _list_ids(http, limit: int, *, query: str = "", unread: bool = False,
+                    label: str = "INBOX") -> list[str]:
     ids: list[str] = []
     page = ""
     while len(ids) < limit:
-        params: list[tuple[str, str]] = [("labelIds", "INBOX"),
+        params: list[tuple[str, str]] = [("labelIds", label),
                                          ("maxResults", str(min(500, limit - len(ids))))]
         if unread:
             params.append(("labelIds", "UNREAD"))
@@ -420,7 +429,7 @@ async def _ensure_meta(http, ids: list[str]) -> None:
             data = await _get(http, f"messages/{message_id}", [
                 ("format", "metadata"), ("metadataHeaders", "From"),
                 ("metadataHeaders", "To"), ("metadataHeaders", "Subject"),
-                ("metadataHeaders", "Message-ID")])
+                ("metadataHeaders", "Message-ID"), ("metadataHeaders", "In-Reply-To")])
             _meta[(account, message_id)] = parse_metadata(data)
 
     await asyncio.gather(*(one(i) for i in missing))
@@ -443,6 +452,24 @@ async def _sync_headers(http, account: str) -> None:
     headers = _lines(ids, unread, account) + f"\nC2\x01{account}\x01{account}\x01{len(ids)}\x010\x01{cap}"
     email_tools.cache_external_emails(account=account, headers=headers)
     _last.setdefault(account, {})["headers"] = time.time()
+
+
+async def _sync_sent(http, account: str) -> None:
+    """The last week of the user's own sent mail, headers only, kept in memory."""
+    ids = await _list_ids(http, SENT_LIMIT, query=f"newer_than:{SENT_DAYS}d", label="SENT")
+    await _ensure_meta(http, ids)
+    if not _still_connected():
+        return
+    _sent[account] = [{k: _meta[(account, i)].get(k, "") for k in ("ts", "to", "subject", "message_id", "in_reply_to")}
+                      for i in ids if (account, i) in _meta]
+    _last.setdefault(account, {})["sent"] = time.time()
+
+
+def sent_rows() -> list[dict]:
+    """Every connected account's recent sent mail, each row naming its account."""
+    accounts = connected_accounts()
+    return [{**row, "account": account} for account, rows in list(_sent.items()) if account in accounts
+            for row in rows]
 
 
 async def _sync_raw(http, account: str) -> None:
@@ -493,7 +520,7 @@ async def _sync_account(account: str, parts: tuple[str, ...]) -> bool:
         try:
             async with httpx.AsyncClient(timeout=10) as http:
                 for part in parts:
-                    await {"headers": _sync_headers, "raw": _sync_raw,
+                    await {"headers": _sync_headers, "raw": _sync_raw, "sent": _sync_sent,
                            "history": _sync_history}[part](http, account)
             if not _still_connected():
                 return False
@@ -567,7 +594,8 @@ async def run() -> None:
         now = time.time()
         await asyncio.gather(*(update(account, part) for account in accounts
                                for part, every in (("headers", HEADERS_EVERY), ("history", HISTORY_EVERY),
-                                                   ("raw", RAW_EVERY))
+                                                   ("raw", RAW_EVERY),
+                                                   ("sent", SENT_EVERY))
                                if now - _last.get(account, {}).get(part, 0) >= every))
         # Google Calendar for accounts that granted it (every CALENDAR_EVERY).
         from service import google_calendar_source as C
@@ -710,6 +738,7 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         _epochs[email] = _epochs.get(email, 0) + 1
         _access.pop(email, None)
         _last.pop(email, None)
+        _sent.pop(email, None)
         # New accounts get the Workspace tools; a reconnect keeps the user's choice.
         workspace = accounts.get(email, {}).get("workspace", True)
         accounts[email] = {"client_id": client_id, "client_secret": client_secret,
@@ -857,6 +886,7 @@ async def disconnect(account: str = "") -> dict:
             _epochs[email] = _epochs.get(email, 0) + 1
             _access.pop(email, None)
             _last.pop(email, None)
+            _sent.pop(email, None)
             _errors.pop(email, None)
             for key in list(_meta):
                 if key[0] == email:
@@ -911,6 +941,7 @@ def erase_account_data(account: str) -> dict:
     for key in list(_meta):
         if key[0] == account:
             _meta.pop(key, None)
+    _sent.pop(account, None)
     try:
         from service import google_workspace
         google_workspace.credentials_path(account).unlink(missing_ok=True)

@@ -118,6 +118,33 @@ def account_of(raw: str | None, *, linked: set[str] | None = None, own: str | No
 _PREFIX = re.compile(r"^\s*(?:re|fwd?|aw|sv)\s*:\s*", re.I)
 
 
+def sent_rows() -> list[dict]:
+    """The user's own recent sent mail from the Google-linked accounts (headers
+    only: gmail_source._sync_sent). Empty when nothing is linked."""
+    try:
+        from service import gmail_source
+        return gmail_source.sent_rows()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def answered_by_sent(sent: list[dict], *, account: str, subject: str, message_id: str, after: float) -> bool:
+    """The user sent mail in this thread after its last incoming message: a
+    reply to that exact message, or one in the same account under the same
+    subject ("Re: …" included)."""
+    want = bare_subject(subject).casefold()
+    account = str(account or "").casefold()
+    for row in sent:
+        if float(row.get("ts") or 0) <= after:
+            continue
+        if message_id and str(row.get("in_reply_to") or "").strip() == message_id.strip():
+            return True
+        if want and str(row.get("account") or "").casefold() == account \
+                and bare_subject(row.get("subject") or "").casefold() == want:
+            return True
+    return False
+
+
 def bare_subject(subject: str) -> str:
     subject = str(subject or "")
     while (match := _PREFIX.match(subject)):
@@ -411,9 +438,10 @@ def _sentences(text: str) -> list[str]:
 
 def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                linked: set[str] | None = None, own: str | None = None,
-               counts: dict | None = None) -> list[dict]:
+               counts: dict | None = None, sent: list[dict] | None = None) -> list[dict]:
     """One item per thread (account + bare subject), newest first. Threads made
-    only of mass mail, or only of the user's own mail, are left out."""
+    only of mass mail, or only of the user's own mail, are left out. `sent`
+    (the user's own sent mail, sent_rows) marks a thread answered elsewhere."""
     from service.assistant.daily_workspace import display_name, mass_mail_filter
     from service.proactive.triage import raw_secret
     from service.tools.email_tools import critical_account_mail, critical_mail_title
@@ -463,6 +491,9 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         reason = None if people or critical else recall_reason(last_in)
         last = messages[-1]
         replied = _address(last) in mine and last["ts"] >= last_in["ts"]
+        if not replied and sent:
+            replied = answered_by_sent(sent, account=account, subject=str(last_in.get("subject") or ""),
+                                       message_id=str(last_in.get("message_id") or ""), after=float(last_in["ts"]))
         raw_subject = redact_summary_codes(clean(last_in.get("subject"), 200))
         who = display_name(last_in.get("sender"), _address(last_in)) or "Unknown sender"
         if reason == "doc_comment":
@@ -804,7 +835,7 @@ def collect(now: float | None = None, tz: str = "UTC", counts: dict | None = Non
         mine = set()
     try:
         items += mail_items(mail_rows(now, linked), mine=mine, now=now, tz=tz, linked=linked, own=own,
-                            counts=counts)
+                            counts=counts, sent=sent_rows())
     except Exception:  # noqa: BLE001
         import traceback
         traceback.print_exc()

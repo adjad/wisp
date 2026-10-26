@@ -36,7 +36,7 @@ import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from service.proactive import guard, judge as judge_mod, prepare as prepare_mod, sources, triage
+from service.proactive import guard, handled, judge as judge_mod, prepare as prepare_mod, sources, triage
 from service.proactive.prepare import todo_id
 
 JUDGE_EVERY_S = 30 * 60
@@ -674,6 +674,9 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         todos=[t for a in accounts for t in todos_by_account.get(a, [])],
         notes=[{k: n[k] for k in ("id", "title", "account", "who", "hash")} for n in notes],
         threads=_threads(survivors, now, tz), summaries=summaries, judged=judged, model=model_ok,
+        # What handled.py needs to see the user answer a conversation themselves.
+        seen={i["id"]: e for i in items if (i.get("account") or own) not in erased
+              and (e := handled.seen_entry(i)) is not None},
         debug={a: v for a, v in debug_by_account.items() if a in accounts},
         # Every account looked at counts, even one whose mail was all bulk.
         stats={a: _looked_stats(looked.get(a)) for a in sorted(set(accounts) | (set(looked) - erased))})
@@ -854,6 +857,31 @@ async def _tick() -> None:
         await run_cycle(force=True, patient=True, account=request.get("account"))
 
 
+async def _sweep_handled() -> None:
+    """Retire what the user handled themselves (handled.py): the reads off the
+    event loop, the store writes on it."""
+    try:
+        from service.proactive.store import store as default_store
+        texts = await asyncio.to_thread(lambda: handled.latest_sent_texts(sources.text_records()))
+        sent = sources.sent_rows()
+        store = default_store()
+        now = time.time()
+        tz = store.state().get("timezone") or _zone()
+        own, linked = sources.own_account(), sources.gmail_accounts()
+        try:
+            sched = _default_schedule(now, tz, own=own, linked=linked)
+        except Exception:  # noqa: BLE001
+            sched = None
+        if running():
+            return                         # the cycle reads the same and saves its own state
+        changed = handled.sweep(store, now=now, texts=texts, sent=sent, sched=sched)
+        if any(changed.values()):
+            _log(f"handled by you: {len(changed['cards'])} cards, {len(changed['todos'])} to-dos, "
+                 f"{len(changed['threads'])} threads")
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+
+
 def _remote_background_paused() -> bool:
     """On a remote model (Gemini), automatic background calls would spend the
     provider's rate limit that live questions need: only an explicit Analyze
@@ -872,6 +900,12 @@ def schedule_tick() -> asyncio.Task | None:
     from service.assistant.hub import hub
     if running():
         return None
+    if handled.due():
+        handled.mark_swept()
+        try:
+            asyncio.get_running_loop().create_task(_sweep_handled())
+        except RuntimeError:
+            pass                           # no loop here (a synchronous caller): the next tick sweeps
     if _rerun is not None:
         # An Analyze request made where no event loop was running (request_analyze).
         request, _rerun = _rerun, None
@@ -1117,6 +1151,9 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
             todo["can_complete"] = True
     names = triage.user_names()
     threads = order_threads([_attended(_served_thread(t, names), now, tz) for t in state.get("threads") or []])
+    # Answered by the user (here or in Messages/Mail): no longer needs attention,
+    # unless it names a deadline still ahead.
+    threads = [t for t in threads if not t.get("replied") or t.get("attention") == "deadline"]
     threads = _clearable(threads, cleared, "title", "received_ts")
     erased = store.erased_accounts()
     seen = {str(a).casefold() for a in state.get("accounts") or []}

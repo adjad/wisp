@@ -556,7 +556,7 @@ def needs_you(attention, *, now, day_end, dismissed=None):
                 # completes it through the verified path (needs_you_api.done).
                 entry["can_complete"] = True
             (overdue if entry["kind"] == "overdue" else due if dated else plan).append(entry)
-        elif source == "email" and item.get("person") is True:
+        elif source == "email" and item.get("person") is True and item.get("replied") is not True:
             sender = clean(item.get("sender"), 80)
             named = review_title(title, sender)
             if named.startswith("Review: "):
@@ -928,9 +928,21 @@ def collect_evidence(store, state, day, timezone, *, now):
         from service.tools import email_tools as mail
         from service.tools.email_tools import raw_email_snapshot, digest_category, critical_account_mail
         from service.tools.imessage_tools import redact_summary_codes, important_message_reason
+        from service.proactive.sources import answered_by_sent, sent_rows
         snapshot = raw_email_snapshot()
         records = []
         header_count, header_eligible = 0, False
+        sent = sent_rows()
+
+        def answered(row) -> dict:
+            # Answered from Gmail, Mail or a phone since it arrived (the user's
+            # own sent mail): no longer something that needs them.
+            stamp = row.get("ts")
+            if not sent or type(stamp) not in (int, float):
+                return {}
+            return {"replied": True} if answered_by_sent(
+                sent, account=str(row.get("account") or ""), subject=str(row.get("subject") or ""),
+                message_id=str(row.get("message_id") or ""), after=float(stamp)) else {}
         if snapshot is not None:
             # Ranking is a reason to inspect the source, never proof a reply
             # or payment is owed. Bodies cannot control destinations/actions.
@@ -942,7 +954,7 @@ def collect_evidence(store, state, day, timezone, *, now):
                 records.append(dict(id=email_record_id(row),
                     title=subject, quote=redact_summary_codes(current_lines[0]) if current_lines else subject, reference="email:" + row["account_id"] + ":" + row["message_id"],
                     review_reason="Review this source for requests or changes; ownership, reply status and deadlines are unverified.",
-                    **_sender_fields(row)))
+                    **_sender_fields(row), **answered(row)))
         elif callable(getattr(mail, "email_source_details", None)):
             # The independently owned direct-mail integration exports this
             # per-account freshness contract. Older builds without it withhold
@@ -957,7 +969,7 @@ def collect_evidence(store, state, day, timezone, *, now):
                 records.append(dict(id=header_record_id(row, subject), title=subject, quote=subject,
                     reference="email-header-cache:" + key("item", _header_identity(row, subject)),
                     review_reason="Header-only review suggestion; read the original email. Body, ownership, reply status and deadlines are unverified.",
-                    **_sender_fields(row)))
+                    **_sender_fields(row), **answered(row)))
         result["email"] = dict(ready=snapshot is not None or header_eligible, records=records,
             inspected=min(200, len(snapshot.rows)) if snapshot else min(200, header_count),
             omitted=max(0, len(snapshot.rows) - 200) if snapshot else max(0, header_count - 200),
