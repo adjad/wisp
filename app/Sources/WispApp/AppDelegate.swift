@@ -1254,7 +1254,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notesReader?.start()
         }
         if contactsReader == nil, gate.allows(.contacts) {
-            contactsReader = ContactsReader()
+            // Names are for Messages: Contacts is asked for once Messages can be
+            // read (or from the first-run window's own row), not at every launch.
+            contactsReader = ContactsReader(mayAsk: { FirstRunPermissions.messagesReadable() })
             contactsReader?.start()
         }
     }

@@ -222,6 +222,12 @@ struct FirstRunSetupChecks {
         check(!FirstRunSetupView.examples([.calendar: .notAllowed, .mail: .allowed]).contains("What's on my calendar today?"),
               "No calendar question without Calendar")
 
+        // Contacts is asked for only while undecided and once Messages can be read.
+        check(ContactsReader.shouldRequest(.notDetermined, mayAsk: true), "Undecided and useful: ask")
+        check(!ContactsReader.shouldRequest(.notDetermined, mayAsk: false), "Messages unreadable: not at launch")
+        check(!ContactsReader.shouldRequest(.denied, mayAsk: true) && !ContactsReader.shouldRequest(.authorized, mayAsk: true),
+              "Decided: never again")
+
         // A cold start says how long it has taken, once that is worth saying.
         check(FirstRunBrain.waited(5) == nil && FirstRunBrain.waited(19) == nil, "A few seconds: nothing")
         check(FirstRunBrain.waited(45) == "45 s so far" && FirstRunBrain.waited(150) == "2 min so far", "Then the time")

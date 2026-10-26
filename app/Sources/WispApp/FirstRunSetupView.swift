@@ -450,6 +450,14 @@ final class FirstRunPermissions: ObservableObject {
         "Library/Group Containers/group.com.apple.notes/NoteStore.sqlite",
     ]
 
+    /// Whether Messages' history really opens (TCC, not file modes: access(2)
+    /// says yes either way).
+    nonisolated static func messagesReadable(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+        let fd = open(home.appendingPathComponent("Library/Messages/chat.db").path, O_RDONLY)
+        if fd >= 0 { close(fd); return true }
+        return false
+    }
+
     /// Full Disk Access shows only in whether those files really read: any one that
     /// does means it is on. None of them existing means nothing here needs it yet.
     nonisolated static func fullDiskAccessState(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> State {
