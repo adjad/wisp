@@ -1365,11 +1365,15 @@ final class MailReader {
     private var backendRetryAttempts: [String: Int] = [:]
     private var backendRetryPending: Set<String> = []
 
-    /// Only "nothing is listening" failures are retried. An HTTP error or a
-    /// cancelled request is an answer from the backend, not its absence.
+    /// Only "nothing is listening" failures are retried. An HTTP error, a
+    /// cancelled request or a timeout is an answer, not the backend's absence.
+    /// The next completed begin resets the lane (backendReached), so a later
+    /// backend restart gets the full schedule again.
     private static func backendUnreachable(_ error: Error?) -> Bool {
         guard let error = error as? URLError else { return false }
-        return [.cannotConnectToHost, .networkConnectionLost, .timedOut,
+        // A timeout is not on the list: something accepted the connection
+        // and was slow, which a re-read can't help and could pile onto.
+        return [.cannotConnectToHost, .networkConnectionLost,
                 .cannotFindHost, .notConnectedToInternet, .dnsLookupFailed].contains(error.code)
     }
 

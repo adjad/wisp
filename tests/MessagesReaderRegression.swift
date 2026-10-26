@@ -412,6 +412,33 @@ enum MessagesReaderRegression {
         precondition(T.decode(Data(Array(typedHello[..<tag]))) == nil, "a cut-off stream is refused")
         precondition(T.decode(Data("NSString+\u{05}Hello".utf8)) == nil, "the header is required")
 
+        // Every length form and tag, on the real layout: bytes up to "+", then
+        // the length field under test, then the body and the real tail.
+        let head = Array(typedHello[...tag]), tail = Array(typedHello[(tag + 2 + 11)...])
+        func stream(_ length: [UInt8], _ body: [UInt8]) -> Data { Data(head + length + body + tail) }
+        let word = Array("Hello there".utf8)
+        precondition(T.decode(stream([0x0b], word)) == "Hello there", "one-byte length")
+        precondition(T.decode(stream([0x81, 0x0b, 0x00], word)) == "Hello there", "0x81: 2-byte length")
+        precondition(T.decode(stream([0x82, 0x0b, 0x00, 0x00, 0x00], word)) == "Hello there", "0x82: 4-byte length")
+        let big = Array(String(repeating: "a", count: 70_000).utf8)
+        precondition(T.decode(stream([0x82, 0x70, 0x11, 0x01, 0x00], big)) == String(repeating: "a", count: 70_000),
+                     "0x82 carries a length past 65535")
+        precondition(T.decode(Data(head + [0x81, 0x0b])) == nil, "a 0x81 length cut off mid-field")
+        precondition(T.decode(Data(head + [0x82, 0x0b, 0x00, 0x00])) == nil, "a 0x82 length cut off mid-field")
+        precondition(T.decode(Data(head + [0x81])) == nil && T.decode(Data(head + [0x82])) == nil,
+                     "a length tag with nothing after it")
+        precondition(T.decode(stream([0x82, 0xff, 0xff, 0xff, 0x7f], word)) == nil, "a huge 0x82 length is refused")
+        precondition(T.decode(stream([0x82, 0xff, 0xff, 0xff, 0xff], word)) == nil, "a 0xFFFFFFFF length is refused")
+        precondition(T.decode(stream([0x80], word)) == nil, "0x80 is not a length")
+        precondition(T.decode(stream([0x83], word)) == nil, "0x83 (a float tag) is not a length")
+        precondition(T.decode(stream([0x84], word)) == nil, "an object tag is not a length")
+        precondition(T.decode(stream([0x00], word)) == nil, "a zero length is not a message")
+        precondition(T.decode(Data(head)) == nil, "the stream ends right after the + tag")
+        var noPlus = typedHello
+        noPlus[tag] = 0x2a
+        precondition(T.decode(Data(noPlus)) == nil, "no + tag within reach of NSString, no text")
+        precondition(T.decode(Data(Array(typedHello[...(tag - 5)]))) == nil, "a stream that ends at the class name")
+
         // Through the reader: NULL text plus a typedstream body is now a message.
         let path = root.appendingPathComponent("typedstream.db").path
         var db: OpaquePointer?
@@ -465,7 +492,6 @@ enum MessagesReaderRegression {
         typealias R = NativeBackendRetry
         precondition(R.isBackendUnreachable(URLError(.cannotConnectToHost)))
         precondition(R.isBackendUnreachable(NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost)))
-        precondition(R.isBackendUnreachable(URLError(.timedOut)))
         precondition(!R.isBackendUnreachable(nil))
         precondition(!R.isBackendUnreachable(URLError(.cancelled)), "a cancelled request is not an outage")
         precondition(!R.isBackendUnreachable(URLError(.badServerResponse)))
@@ -481,11 +507,36 @@ enum MessagesReaderRegression {
                      "about five minutes, then the reader's own timer")
         retry.reached()
         precondition(retry.nextDelay() == 3, "a completed request starts the schedule over")
-        // A completed request or a cancelled one schedules nothing.
+        precondition(!R.isBackendUnreachable(URLError(.timedOut)),
+                     "a timeout means something answered; it is not the backend being down")
+        // A completed request, a cancelled one or a timeout schedules nothing.
         var ran = false
         R().handle(error: nil) { ran = true }
         R().handle(error: URLError(.cancelled)) { ran = true }
-        precondition(!ran)
+        R().handle(error: URLError(.timedOut)) { ran = true }
+        // The real path: handle() with nothing listening runs the retry on the
+        // main queue, once, even when asked twice while it is pending.
+        let short = R(delays: [0.01, 0.01])
+        var runs = 0
+        short.handle(error: URLError(.cannotConnectToHost)) { runs += 1 }
+        short.handle(error: URLError(.cannotConnectToHost)) { runs += 1 }
+        func spin(until done: () -> Bool) {
+            let deadline = Date().addingTimeInterval(5)
+            while !done() && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        }
+        spin { runs == 1 }
+        precondition(runs == 1 && !ran, "one retry ran for two failures while pending")
+        short.handle(error: URLError(.networkConnectionLost)) { runs += 1 }
+        spin { runs == 2 }
+        precondition(runs == 2, "the second scheduled retry ran")
+        short.handle(error: URLError(.cannotConnectToHost)) { runs += 1 }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        precondition(runs == 2, "a spent schedule schedules nothing more")
+        // Seen reachable again: a later outage gets the whole schedule.
+        short.handle(error: nil) { runs += 1 }
+        short.handle(error: URLError(.cannotConnectToHost)) { runs += 1 }
+        spin { runs == 3 }
+        precondition(runs == 3, "the schedule resets once the backend answers")
     }
 
     /// Full Disk Access only when the error says so: macOS refused the file

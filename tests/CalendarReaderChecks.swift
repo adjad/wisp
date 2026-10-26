@@ -18,21 +18,27 @@ import Foundation
     // Whole words only: these titles used to read as exams and assignments.
     static func classifyChecks() {
         typealias P = CalendarEventPolicy
-        for title in ["Latest numbers review", "Contest finals viewing", "Lunch with Ashwin",
+        for title in ["Latest numbers review", "Contest viewing", "Lunch with Ashwin",
                       "Southwest flight 221", "Hwy 101 road trip", "Overdue library books chat",
-                      "Quizlet study group", "Examine the budget", "Team sync", ""] {
+                      "Quizlet study group", "Examine the budget", "Team sync", "Finalize the slides",
+                      "Testing the new oven", "Collaboration chat", "Paperwork pickup", "Problem solving club",
+                      "Set the table", ""] {
             check(P.classify(title) == "event", "\(title) is an ordinary event")
         }
         for title in ["CS 101 Exam", "Midterm", "midterms week", "Pop QUIZ", "Quiz2",
-                      "Bio exam: chapters 3-5", "Two quizzes today", "Exams"] {
+                      "Bio exam: chapters 3-5", "Two quizzes today", "Exams", "CS 161 Final",
+                      "Chem test", "Finals week", "Driving test"] {
             check(P.classify(title) == "exam", "\(title) is an exam")
         }
         for title in ["Essay due", "HW3", "Homework 4", "Assignment: lab report",
-                      "Math hw", "Rent DUE", "assignments review", "Problem set 2 (due Friday)"] {
+                      "Math hw", "Rent DUE", "assignments review", "Problem set 2 (due Friday)",
+                      "Project deadline", "Term paper", "Problem set 3", "Problem Sets", "Chem lab",
+                      "Lab3", "pset 4", "Pset4", "History essay", "Grant submission", "Deadline"] {
             check(P.classify(title) == "assignment", "\(title) is an assignment")
         }
         // An exam word wins over an assignment word, as before.
         check(P.classify("Exam prep homework") == "exam", "exam beats assignment")
+        check(P.classify("Final project") == "exam", "an exam word beats an assignment word, as before")
     }
 
     // Declined and cancelled events are not on the day.
@@ -47,6 +53,13 @@ import Foundation
         check(!P.include(cancelled: false, attendees: [otherDeclined, meDeclined]),
               "an event the person declined is dropped")
         check(!P.include(cancelled: true, attendees: [me]), "a cancelled event is dropped")
+        check(!P.include(cancelled: true, attendees: []), "a cancelled event with no attendees is dropped")
+        // The person organizes it: EventKit lists them as an accepted attendee.
+        // Every invitee declining doesn't take it off the organizer's day.
+        let organizer = P.Attendee(isCurrentUser: true, declined: false)
+        check(P.include(cancelled: false, attendees: [organizer, otherDeclined, otherDeclined]),
+              "an organizer's event stays when the invitees decline")
+        check(!P.include(cancelled: true, attendees: [organizer]), "an organizer's cancelled event is dropped")
     }
 
     // Calendar uses Reminders' permission rules, with its own name, Settings page
@@ -73,6 +86,23 @@ import Foundation
         check(!x.syncing && !x.needsRequest && x.reasonKind == "calendar_access", "finished-undecided is terminal")
         x = report(.notDetermined, last: 1000, now: 1000 + r + 1)
         check(!x.syncing && x.needsRequest, "it asks again after the retry interval")
+        // Re-asks back off and stop: about three per launch, with growing waits.
+        let waits = A.reaskDelays
+        check(waits.count == 3 && waits[0] < waits[1] && waits[1] < waits[2], "growing, capped re-asks")
+        for (made, wait) in zip(1..., waits) {
+            check(!A.report(status: .notDetermined, requestOutstanding: false, lastRequestAt: 1000,
+                            now: 1000 + wait - 1, source: .calendar, requestsMade: made).needsRequest,
+                  "re-ask \(made) waits its full interval")
+            check(A.report(status: .notDetermined, requestOutstanding: false, lastRequestAt: 1000,
+                           now: 1000 + wait, source: .calendar, requestsMade: made).needsRequest,
+                  "re-ask \(made) is due after its interval")
+        }
+        let spent = A.report(status: .notDetermined, requestOutstanding: false, lastRequestAt: 1000,
+                             now: 1000 + 86400 * 30, source: .calendar, requestsMade: waits.count + 1)
+        check(!spent.needsRequest && spent.reasonKind == "calendar_access" && !spent.syncing,
+              "after the last re-ask Wisp stops asking and the reason stays")
+        check(A.shouldActivate(requestsMade: 0), "the first ask brings Wisp forward")
+        for made in 1...5 { check(!A.shouldActivate(requestsMade: made), "a re-ask never takes focus") }
 
         x = report(.deniedOrRestricted, last: nil, now: 1000)
         check(!x.syncing && !x.needsRequest && !x.authorized, "denied is terminal and never re-asks")
