@@ -102,7 +102,8 @@ tool_capable:
 # straight unfairness in any head-to-head timing.
 no_thinking_capable:
   # Gemma 4 E4B MTP, 2026-10-24: thinking-off summaries are fine (no tool
-  # messages on that path). NOT safe after a tool result: see its catalog entry.
+  # messages on that path). NOT safe after a tool result: see
+  # thinking_required_after_tool below.
   - "gemma-4-E4B-it-oQ4e-mtp"
   - "Agents-A1-4B-oQe6"
   - "Ling-3.0-tiny-oQ6e"
@@ -111,6 +112,16 @@ no_thinking_capable:
   # Omitting it here would silently reinstate a chain of thought on every
   # summarize_emails/summarize_messages call.
   - "Ling-3.0-tiny-oQ4e"
+
+# Models that return ZERO tokens when asked to write with thinking off after
+# a `role: tool` message. Measured 2026-10-24 on Gemma 4 E4B MTP: the step
+# after a tool result came back with completion_tokens 0 whenever
+# `enable_thinking: false` was sent, so every tool-using Ask answer was empty.
+# The agent loop's narration step (config.thinking_after_tool_required)
+# states thinking ON for these models instead of OFF. Summary paths, which
+# carry no tool messages, still use no_thinking_capable above.
+thinking_required_after_tool:
+  - "gemma-4-E4B-it-oQ4e-mtp"
 
 # Models whose think block Wisp states EXPLICITLY on every request, both
 # `enable_thinking: true` and `false`, instead of omitting the kwarg to mean

@@ -50,6 +50,7 @@ class FakeOmlx:
         self.chat_bodies: list[dict] = []
         self.failures: dict[str, list] = {}   # purpose -> [status | Exception, ...]
         self.on_chat = None             # callable(body) run before each completion
+        self.empty_when = None          # callable(body) -> True answers with zero tokens
         self.delays: dict[str, list[float]] = {}   # purpose -> seconds to stall, per call
         self.hooks: dict[str, object] = {}         # purpose -> callable run on arrival
         self.down = False
@@ -141,6 +142,11 @@ class FakeOmlx:
             if self.on_chat:
                 self.on_chat(body)
             self.loaded.add(body["model"])
+            if self.empty_when and self.empty_when(body):
+                # What Gemma 4 E4B does after a tool result with thinking off:
+                # a clean stop with completion_tokens 0.
+                return httpx.Response(200, content=self._sse_empty(), headers={
+                    "content-type": "text/event-stream"})
             names = self.script.pop(0) if self.script else None
             if body.get("stream"):
                 return httpx.Response(200, content=self._sse(names), headers={
@@ -158,6 +164,13 @@ class FakeOmlx:
                 "id": f"call_{i}", "type": "function",
                 "function": {"name": n, "arguments": "{}"}} for i, n in enumerate(names)]}
         return {"role": "assistant", "content": "Done."}
+
+    @staticmethod
+    def _sse_empty() -> bytes:
+        def event(delta, reason=None):
+            return "data: " + json.dumps({"choices": [
+                {"index": 0, "delta": delta, "finish_reason": reason}]}) + "\n\n"
+        return (event({"role": "assistant"}) + event({}, "stop") + "data: [DONE]\n\n").encode()
 
     @classmethod
     def _sse(cls, names) -> bytes:
@@ -328,6 +341,63 @@ def test_tool_turn_with_early_engine_start_reads_status_once(engine, monkeypatch
     loop_turn(engine, tools, retrieval_engine=True)
     show("one tool, early engine start", engine)
     assert engine.fake.sequence() == ["status", "chat", "chat"]
+
+
+# ------------------------------------- narration after a tool result
+
+GEMMA = "gemma-4-E4B-it-oQ4e-mtp"
+
+
+def _thinking(body):
+    return (body.get("chat_template_kwargs") or {}).get("enable_thinking")
+
+
+def _empty_after_tool_when_thinking_off(body):
+    """Gemma 4 E4B, measured 2026-10-24: zero tokens on the step after a tool
+    message whenever enable_thinking is false."""
+    return (_thinking(body) is False
+            and any(m.get("role") == "tool" for m in body["messages"]))
+
+
+def test_gemma_narration_never_states_thinking_off():
+    from service import config
+    from service.agent import loop
+    assert config.thinking_after_tool_required(GEMMA)
+    assert loop._template_kwargs(GEMMA, no_thinking=True) == {
+        "chat_template_kwargs": {"enable_thinking": True}}
+    assert loop._template_kwargs(GEMMA, no_thinking=False) == {}
+    # The summary paths carry no tool messages and keep thinking off.
+    assert config.no_thinking_kwargs(GEMMA) == {
+        "chat_template_kwargs": {"enable_thinking": False}}
+    # Other models' narration is unchanged.
+    assert loop._template_kwargs("Ling-3.0-tiny-oQ6e", no_thinking=True) == {
+        "chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_default_roster_tool_turn_answers_after_the_tool(engine, monkeypatch):
+    """The default (Gemma) Ask path: the narration step must not send
+    enable_thinking=false, or the answer comes back empty."""
+    assert MODEL == GEMMA
+    tools = register_tools(monkeypatch)
+    engine.fake.script = [["fake_a"], None]
+    engine.fake.empty_when = _empty_after_tool_when_thinking_off
+    final, events = loop_turn(engine, tools)
+    assert final == "Done."
+    assert [_thinking(b) for b in engine.fake.chat_bodies] == [None, True]
+    assert engine.fake.sequence() == ["status", "chat", "chat"]
+
+
+def test_empty_narration_retries_without_thinking_off(engine, monkeypatch):
+    """A model not on the list that still answers nothing with thinking off:
+    the empty-response retry drops the thinking-off kwarg instead of repeating it."""
+    from service.agent import loop
+    monkeypatch.setattr(loop, "thinking_after_tool_required", lambda model: False)
+    tools = register_tools(monkeypatch)
+    engine.fake.script = [["fake_a"], None]
+    engine.fake.empty_when = _empty_after_tool_when_thinking_off
+    final, events = loop_turn(engine, tools)
+    assert final == "Done."
+    assert [_thinking(b) for b in engine.fake.chat_bodies] == [None, False, None]
 
 
 # ------------------------------------------------ invariants: full check
