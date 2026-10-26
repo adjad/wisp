@@ -70,6 +70,15 @@ struct FirstRunSetupChecks {
         check(!FirstRunSetup.closeFinishes(finished: false, ready: false), "An early close before Wisp can answer keeps it unfinished")
         check(FirstRunSetup.closeFinishes(finished: true, ready: false), "Start using Wisp finishes it")
         check(FirstRunSetup.closeFinishes(finished: false, ready: true), "Closing once Wisp can answer finishes it")
+        check(FirstRunSetup.canAnswer(ready: false, remoteOnly: true), "Remote-only (Cloud Everything) counts as able to answer")
+        check(FirstRunSetup.canAnswer(ready: true, remoteOnly: false) && !FirstRunSetup.canAnswer(ready: false, remoteOnly: false),
+              "Otherwise only a ready local model can answer")
+        // The readers that make macOS ask: held while the window is up and after an early close.
+        check(!FirstRunSetup.readerGateLifts(windowUp: true, finished: true, canAnswer: true), "Never while the window is up")
+        check(!FirstRunSetup.readerGateLifts(windowUp: false, finished: false, canAnswer: false),
+              "An early close keeps the prompting readers held")
+        check(FirstRunSetup.readerGateLifts(windowUp: false, finished: true, canAnswer: false), "Start using Wisp lifts it")
+        check(FirstRunSetup.readerGateLifts(windowUp: false, finished: false, canAnswer: true), "Wisp able to answer lifts it")
 
         // Every launch: Wisp can't answer and no window is up → the quiet cue, never the full card.
         check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false) == .later, "Not set up: the ! cue")
@@ -106,6 +115,7 @@ struct FirstRunSetupChecks {
             ("the flow already open", \.flowOpen), ("an open panel", \.panelInUse),
             ("the notch dismissed to the menu bar", \.dismissedToMenuBar),
             ("Tell Wisp about you chosen this session", \.chosenThisSession),
+            ("a completed About you (no more GET /profile)", \.profileComplete),
         ]
         for (name, key) in busy {
             var moment = calm
@@ -285,6 +295,6 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .allowed, "Readable Mail folder")
         try? FileManager.default.removeItem(at: scratch)
 
-        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, reader gate, reopen cap, Full Disk Access")
+        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, reader gate, early-close hold, remote-only, reopen cap, Full Disk Access")
     }
 }
