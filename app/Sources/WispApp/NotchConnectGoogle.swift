@@ -1,78 +1,64 @@
 import AppKit
 import SwiftUI
 
-/// "Connect Google" in the notch: a judge (or the user) signs in with Google in
-/// their browser and, within about a minute, Wisp shows their own proactive
-/// to-dos. Connected accounts are listed with "Disconnect & erase", which
-/// removes the account and everything Wisp derived from it.
+/// "Connect Google" in the notch's Quick Settings, for a new user only.
+///
+/// This is the user's deliberate exception to the rule that controls which
+/// widen what Wisp reads stay in the Settings window: the very first connect
+/// may start here. QuickSettingsView shows the row only while no Google
+/// account is connected and an OAuth client exists
+/// (NotchGoogleVisibility.showsConnect); once an account is connected the row
+/// disappears entirely. Accounts, their status, Reconnect and
+/// "Disconnect & erase" live in Settings ▸ Google only.
 ///
 /// All OAuth work stays in the backend (gmail_source.py); this view only calls
-/// the existing loopback routes:
-///   GET  /assistant/gmail/status      accounts, the OAuth client, sign-in progress
-///   POST /assistant/gmail/connect {}  uses the client saved in Settings ▸ Google
-///   POST /assistant/gmail/disconnect {"account"}   disconnect & erase
-///
-/// No sheets or alerts: the notch is a non-activating panel, so the erase
-/// confirmation is an inline second tap. Quick Settings passes `openSetup`:
-/// with no OAuth client saved, connecting is a dead end there, so the view is
-/// one quiet line that opens Settings ▸ Google instead.
+///   GET  /assistant/gmail/status      accounts, the client source, sign-in progress
+///   POST /assistant/gmail/connect {}  the user's own client, else the built-in one
 @MainActor
 final class NotchGoogleModel: ObservableObject {
-    struct Account: Identifiable, Equatable {
-        let id: String
-        let calendar: Bool
-        let error: String
-    }
-
-    @Published var accounts: [Account] = []
-    @Published var configured = true
-    /// A status read has landed; until then `configured` is only a guess.
+    @Published var status = GoogleStatus()
+    /// A status read has landed; until then nothing is shown.
     @Published var loaded = false
-    /// Accounts whose next sign-in also asks for the Workspace scopes: the user
-    /// switched Workspace tools on for them in Settings ▸ Google.
-    @Published var workspaceConsent: [String] = []
     @Published var stage: NotchGoogleStage = .idle
-    @Published var confirming: String?
-    @Published var erasing: String?
-    @Published var note = ""
 
     private var watch: Task<Void, Never>?
+
+    /// Whether Quick Settings shows the Google row at all.
+    var showsRow: Bool {
+        NotchGoogleVisibility.showsConnect(loaded: loaded, status: status, signInInProgress: stage.busy)
+    }
 
     func refresh() async {
         guard let s = await request("GET", "assistant/gmail/status") else { return }
         apply(s)
     }
 
-    private func apply(_ s: [String: Any], generation: Int? = nil) {
-        configured = !((s["client_id"] as? String) ?? "").isEmpty
-        loaded = true
-        workspaceConsent = s["workspace_consent"] as? [String] ?? []
-        accounts = (s["accounts"] as? [[String: Any]] ?? []).compactMap { row in
-            guard let email = row["email"] as? String else { return nil }
-            let error = (row["last_error"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                ?? (row["calendar_error"] as? String ?? "")
-            return Account(id: email, calendar: row["calendar"] as? Bool ?? false, error: error)
+    /// Keep the decision current while Quick Settings is open (Settings may
+    /// connect or erase an account meanwhile).
+    func keepCurrent() async {
+        await refresh()
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled else { return }
+            if !stage.busy { await refresh() }
         }
+    }
+
+    private func apply(_ s: [String: Any], generation: Int? = nil) {
+        status = GoogleStatus.parse(s)
+        loaded = true
         if let generation {
             stage = NotchGoogleStage.from(authorization: s["authorization"] as? [String: Any] ?? [:],
                                           generation: generation, current: stage)
         }
     }
 
-    /// Exactly what Connect Google asks Google for (gmail_source._consent_scopes):
-    /// mail and calendar, read-only, and the Workspace scopes only for an account
-    /// the user switched Workspace tools on for.
     var consentLine: String {
-        guard !workspaceConsent.isEmpty else {
-            return "Read-only mail & calendar. Wisp builds your to-dos on this Mac."
-        }
-        return "Read-only mail & calendar, plus read-only Drive, Docs, Sheets, Slides, Chat, Tasks and Contacts for "
-            + ListFormatter.localizedString(byJoining: workspaceConsent) + "."
+        "Gmail, Calendar, Drive, Docs and Chat, read-only. Wisp builds your to-dos on this Mac."
     }
 
     func connect() {
         guard !stage.busy else { return }
-        note = ""
         stage = .starting
         watch?.cancel()
         Task {
@@ -84,8 +70,8 @@ final class NotchGoogleModel: ObservableObject {
                   let generation = r["generation"] as? Int,
                   let url = URL(string: s), url.scheme == "https", url.host == "accounts.google.com" else {
                 let error = r["error"] as? String ?? ""
-                if error.contains("client_id") { configured = false; stage = .idle; return }
-                stage = .failed(error.isEmpty ? "Couldn't start Google sign-in." : error)
+                stage = .failed(error.contains("client_id") ? "Set up Google in Settings ▸ Google."
+                                : error.isEmpty ? "Couldn't start Google sign-in." : error)
                 return
             }
             NSWorkspace.shared.open(url)
@@ -111,19 +97,6 @@ final class NotchGoogleModel: ObservableObject {
         }
     }
 
-    func disconnect(_ account: String) {
-        guard confirming == account else { confirming = account; return }
-        confirming = nil
-        erasing = account
-        Task {
-            let r = await request("POST", "assistant/gmail/disconnect", body: ["account": account], timeout: 20)
-            erasing = nil
-            note = GoogleErase.note(account: account, response: r)
-            if r != nil, case .connected(let email, _) = stage, email == account { stage = .idle }
-            await refresh()
-        }
-    }
-
     private func request(_ method: String, _ path: String, body: [String: Any]? = nil,
                          timeout: TimeInterval = 10) async -> [String: Any]? {
         var req = URLRequest(url: WispClient.baseURL.appendingPathComponent(path))
@@ -137,30 +110,6 @@ final class NotchGoogleModel: ObservableObject {
               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode)
         else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    }
-}
-
-/// What a Disconnect & erase response proves was erased. Pure. Only parts the
-/// backend reported as "erased" are named; anything else is called out.
-enum GoogleErase {
-    static func note(account: String, response r: [String: Any]?) -> String {
-        guard let r else { return "Couldn't confirm the erase. Try again." }
-        let parts = (r["erased"] as? [String: Any])?[account] as? [String: Any] ?? [:]
-        func erased(_ key: String) -> Bool { (parts[key] as? String)?.hasPrefix("erased") == true }
-        var done: [String] = []
-        if erased("mail") { done.append("mail") }
-        if erased("calendar") { done.append("calendar events") }
-        if erased("proactive") { done.append("to-dos") }
-        let removed = (r["removed"] as? [String] ?? []).contains(account)
-        var line = removed ? "Disconnected \(account)" : "\(account) was not connected"
-        if !done.isEmpty { line += " and erased its " + ListFormatter.localizedString(byJoining: done) }
-        line += "."
-        let missing = ["mail": "mail", "calendar": "calendar events", "mail_overviews": "mail summary",
-                       "proactive": "to-dos"].filter { !erased($0.key) }.map(\.value).sorted()
-        if r["ok"] as? Bool != true && !missing.isEmpty {
-            line += " Not confirmed erased: " + missing.joined(separator: ", ") + "."
-        }
-        return line
     }
 }
 
@@ -216,49 +165,12 @@ enum NotchGoogleStage: Equatable {
     }
 }
 
+/// The notch's one Google row: a Connect button for a new user, with the
+/// unverified-app notice before the browser opens and the sign-in's progress.
 struct NotchConnectGoogle: View {
-    @StateObject private var model = NotchGoogleModel()
-    /// Opens Settings ▸ Google. When given, a missing OAuth client shows only
-    /// the quiet setup line (see the type comment above).
-    var openSetup: (() -> Void)? = nil
+    @ObservedObject var model: NotchGoogleModel
 
     var body: some View {
-        Group {
-            if let openSetup, !model.loaded || !model.configured {
-                setupLine(openSetup)
-            } else {
-                card
-            }
-        }
-        .task {
-            await model.refresh()
-            // Keep the list current while visible (another surface may connect or erase).
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                guard !Task.isCancelled else { return }
-                if !model.stage.busy { await model.refresh() }
-            }
-        }
-    }
-
-    private func setupLine(_ open: @escaping () -> Void) -> some View {
-        Button(action: open) {
-            HStack(spacing: 8) {
-                Text("Google (advanced) — set up in Settings")
-                    .font(.system(size: 12.5)).foregroundStyle(Theme.textMuted)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(Theme.textMuted)
-            }
-            .padding(.horizontal, 14).padding(.vertical, 11)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Connecting Google needs your own OAuth client. Opens Settings ▸ Google.")
-        .accessibilityHint("Opens Settings at Google")
-    }
-
-    private var card: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "person.crop.circle.badge.plus").foregroundStyle(Theme.textPrimary)
@@ -270,16 +182,14 @@ struct NotchConnectGoogle: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
-                if model.configured {
-                    chip(model.stage.busy ? "Connecting…" : "Connect Google", primary: !model.stage.busy) {
-                        model.connect()
-                    }
-                    .disabled(model.stage.busy)
+                chip(model.stage.busy ? "Connecting…" : "Connect Google", primary: !model.stage.busy) {
+                    model.connect()
                 }
+                .disabled(model.stage.busy)
             }
-            if !model.configured {
-                Text("Add your Google OAuth client in Settings ▸ Google first.")
-                    .font(.system(size: 11.5)).foregroundStyle(Color.orange)
+            let notice = GoogleConsentCopy.notice(model.status)
+            if !notice.isEmpty && !model.stage.busy {
+                Text(notice).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !model.stage.line.isEmpty {
@@ -290,13 +200,6 @@ struct NotchConnectGoogle: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            ForEach(model.accounts) { account in
-                accountRow(account)
-            }
-            if !model.note.isEmpty {
-                Text(model.note).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
@@ -306,30 +209,6 @@ struct NotchConnectGoogle: View {
     private var isFailure: Bool {
         if case .failed = model.stage { return true }
         return false
-    }
-
-    private func accountRow(_ account: NotchGoogleModel.Account) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: account.error.isEmpty ? "checkmark.circle.fill" : "exclamationmark.circle")
-                .foregroundStyle(account.error.isEmpty ? Theme.textPrimary : Color.orange)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(account.id).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1).truncationMode(.middle)
-                Text(account.error.isEmpty ? (account.calendar ? "Mail & calendar" : "Mail only (calendar not shared)")
-                                           : account.error)
-                    .font(.system(size: 10.5)).foregroundStyle(account.error.isEmpty ? Theme.textMuted : Color.orange)
-                    .lineLimit(2)
-            }
-            Spacer(minLength: 6)
-            if model.erasing == account.id {
-                ProgressView().controlSize(.mini)
-            } else if model.confirming == account.id {
-                chip("Erase", primary: true) { model.disconnect(account.id) }
-                chip("Keep") { model.confirming = nil }
-            } else {
-                chip("Disconnect & erase") { model.disconnect(account.id) }
-            }
-        }
     }
 
     private func chip(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {

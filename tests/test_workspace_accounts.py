@@ -111,12 +111,11 @@ class WorkspaceAccounts(unittest.TestCase):
         import re
         self.assertRegex(W.PACKAGE, re.compile(r"^workspace-mcp==\d+\.\d+\.\d+$"))
 
-    def test_consent_asks_for_workspace_scopes_only_when_asked_to(self):
-        self.assertEqual(GS._consent_scopes(), (GS.SCOPE, GS.CALENDAR_SCOPE))
-        scopes = GS._consent_scopes(workspace=True)
-        self.assertEqual(scopes[:2], (GS.SCOPE, GS.CALENDAR_SCOPE))
+    def test_every_consent_asks_for_mail_calendar_and_workspace_read_scopes(self):
+        scopes = GS._consent_scopes()
+        self.assertEqual(scopes, (GS.SCOPE, GS.CALENDAR_SCOPE, *W.WORKSPACE_SCOPES))
         self.assertIn(W.FULL_SCOPE, scopes)
-        self.assertTrue(all("readonly" in s for s in scopes))
+        self.assertTrue(all(s.endswith(".readonly") for s in scopes))
 
     def test_workspace_consent_lists_switched_on_accounts_still_lacking_the_scopes(self):
         self.account(ME, True)

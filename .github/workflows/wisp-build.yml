@@ -82,6 +82,11 @@ jobs:
       # and relocated-backend smoke as `all`. Simulation QA runs in its own job;
       # the artifact is marked preview and every release command refuses it.
       - name: Build, sign and smoke-test preview from source
+        # The only secret in this job: the built-in Google OAuth client, read
+        # once by the build driver and written into the bundle (never logged).
+        # Empty for fork pull requests, which then build without one.
+        env:
+          WISP_GOOGLE_OAUTH_CLIENT: ${{ secrets.WISP_GOOGLE_OAUTH_CLIENT }}
         run: ./scripts/wisp-build preview --strict-toolchain --fetch-engine --output dist/preview
       - name: Verify synthetic publisher signatures and provisioning transactions
         run: |
@@ -210,6 +215,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Build and verify from source
+        env:
+          WISP_GOOGLE_OAUTH_CLIENT: ${{ secrets.WISP_GOOGLE_OAUTH_CLIENT }}
         run: ./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate
       - name: Verify synthetic publisher signatures and provisioning transactions
         run: |
@@ -308,6 +315,8 @@ jobs:
       # Rebuild without an untrusted artifact handoff or restored dependency cache.
       # Credentials are exposed only to the explicit external release step.
       - name: Rebuild approved source with strict validation
+        env:
+          WISP_GOOGLE_OAUTH_CLIENT: ${{ secrets.WISP_GOOGLE_OAUTH_CLIENT }}
         run: ./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate
       - name: Sign, notarize, verify and publish
         env:
@@ -357,6 +366,8 @@ jobs:
           persist-credentials: false
       # Rebuild and verify the exact tagged source with no artifact handoff or cache.
       - name: Rebuild ad-hoc source with strict validation
+        env:
+          WISP_GOOGLE_OAUTH_CLIENT: ${{ secrets.WISP_GOOGLE_OAUTH_CLIENT }}
         run: ./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate
       - name: Publish verified ad-hoc assets
         env:
