@@ -1261,12 +1261,13 @@ _SELF_PRIVACY_RE = re.compile(
 # How-to verbs and Wisp's own features, for "how do I <verb> <feature> in Wisp".
 _SELF_FEATURE_VERB = (r"(?:set\s+up|setup|connect|disconnect|link|turn\s+(?:on|off)|switch\s+(?:on|off)|"
                       r"enable|disable|change|edit|reset|open|find|use|see|view|show|hide|pin|unpin|"
-                      r"add|remove|erase|clear|delete|grant|allow)")
+                      r"add|remove|erase|clear|delete|grant|allow|update|"
+                      r"(?:log|sign)\s*(?:in|out)(?:\s*to|\s+of)?|give|send|leave|get)")
 _SELF_FEATURE = (r"(?:notch|brief|day(?:\s+tab)?|ask(?:\s+tab)?|settings?|tone|name|memory|memories|"
                  r"about\s+you|profile|google(?:\s+account)?|gmail|shortcuts?|hotkey|keyboard\s+shortcut|"
                  r"notifications?|sources?|permissions?|access|model|cloud(?:\s+model)?|"
                  r"research(?:\s+mode)?|debug\s+mode|chats?|chat\s+history|history|"
-                 r"getting\s+to\s+know\s+you|menu\s+bar\s+icon)")
+                 r"getting\s+to\s+know\s+you|menu\s+bar\s+icon|feedback|help|account)")
 _SELF_HOWTO_RE = re.compile(
     _SELF_LEAD + r"(?:help|help\s+me\s+get\s+started|getting\s+started|"
     r"how\s+(?:do|can|should)\s+i\s+(?:use|get\s+started\s+with|start\s+using|set\s+up|work\s+with|"
@@ -1279,6 +1280,11 @@ _SELF_HOWTO_RE = re.compile(
     # ("change the tone in Wisp"). A trailing ", Wisp" is only an address:
     # "how do I reply to Sam, Wisp?" is a request about Sam, and "how do I
     # write a cover letter in Wisp" is a task to do, not a feature to explain.
+    # Help, feedback and signing in are about Wisp even with a preposition:
+    # "how can I get help with Wisp", "give feedback on Wisp", "log in to Wisp".
+    r"how\s+(?:do|can)\s+i\s+(?:get\s+(?:some\s+)?help\s+(?:with|using|on|for)|"
+    r"(?:give|send|leave|share)\s+(?:some\s+)?feedback\s+(?:on|about|for|to)|"
+    r"(?:log|sign)\s*(?:in|on)(?:\s*to)?|(?:log|sign)\s+out\s+of)\s+(?:wisp|this\s+app)|"
     r"how\s+(?:do|can)\s+i\s+(?:(?!(?:in|with|on|to|from|using|for|via)\s)[a-z']+\s+){1,3}?"
     r"(?:wisp|this\s+app|the\s+notch|"
     r"the\s+(?:brief|day|ask)\s+tab|(?:wisp'?s|your)\s+(?:settings|shortcuts?|hotkey|notch|panel|memory))|"

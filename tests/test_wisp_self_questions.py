@@ -35,7 +35,11 @@ SELF_QUESTIONS = {
               "how do I turn off wisp", "how do I open the brief tab",
               "how do I change your settings", "How do I change the tone in Wisp?",
               "how do I connect my google account in wisp", "how do I turn off notifications in Wisp?",
-              "how do I erase my profile in wisp"],
+              "how do I erase my profile in wisp",
+              # Help, feedback and signing in are about Wisp (re-review f778a282).
+              "how can I get help with wisp", "how do I give feedback on wisp",
+              "how do I log in to wisp", "how do I sign in to Wisp?", "how can I update wisp",
+              "how do I send feedback in wisp"],
 }
 
 # Requests with work in them, or about something other than Wisp, stay with
@@ -370,3 +374,9 @@ def test_pending_everything_names_roles_still_bound_to_the_cloud(monkeypatch):
     assert "stays on this Mac" in privacy and "gpu.example.net" in privacy
     # And About you doesn't go to that role in the meantime.
     assert profile.may_send_to(managed=False) is False and profile.sent_to() == ""
+
+
+def test_signing_in_and_feedback_have_their_own_steps():
+    signin = wisp_about.howto("how do I log in to wisp")
+    assert "no account of its own" in signin and "Settings → Google" in signin
+    assert "/report" in wisp_about.howto("how do I give feedback on wisp")

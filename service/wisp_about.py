@@ -468,6 +468,9 @@ _HOWTO = (
     (r"problem|bug|broken|wrong|report|feedback",
      "**Something wrong?** Type **/report**, or choose **Report a Problem…** from the menu "
      "bar icon."),
+    (r"log ?in|sign ?in|login|signin|password",
+     "**Signing in**: Wisp has no account of its own, so there's nothing to sign in to. "
+     "To read a Google account's Gmail and Calendar, connect it in **Settings → Google**."),
     (r"quit|close|stop|turn off",
      "**Close or quit**: × closes the panel and Wisp stays in the menu bar. To quit, choose "
      "**Quit Wisp** from the menu bar icon."),
