@@ -94,9 +94,22 @@ def test_know_you_is_a_window_step_not_a_notch_offer():
     setup = _sources()["FirstRunSetupView.swift"]
     assert "KnowYouView(model: knowYou, inWindow: true)" in setup
     quiet = _body(setup, "static func quiet(_ m: Moment)")
-    assert "m.setUpInWindow" in quiet
+    assert "m.aboutYouDecidedInWindow" in quiet
     app = _sources()["AppDelegate.swift"]
-    assert "setUpInWindow: FirstRunSetup.setUpInWindow" in app
+    assert "aboutYouDecidedInWindow: FirstRunSetup.aboutYouDecidedInWindow" in app
+    # The key is set only by the step's own Done or Skip for now, never by showing it.
+    assert app.count("FirstRunSetup.aboutYouDecidedKey") == 1
+    assert setup.count("aboutYouDecided()") == 2
     # Finishing setup no longer opens Getting to know you in the notch.
     finish = _body(app, "private func finishFirstRun(")
     assert "startKnowYou" not in finish and "tellWispAboutYou" not in finish
+
+
+def test_reopened_window_leaves_the_model_alone():
+    """Opened again from Permissions… or a Brief link, the window must not
+    switch the model or run its test by itself."""
+    setup = _sources()["FirstRunSetupView.swift"]
+    drive = _body(setup, "private func drive(_ state: FirstRunBrain)")
+    assert drive.lstrip("{ \n").startswith("guard FirstRunSetup.drivesModel(setupDone: setupDone) else { return }")
+    app = _sources()["AppDelegate.swift"]
+    assert "setupDone: defaults.bool(forKey: FirstRunSetup.doneKey)" in app

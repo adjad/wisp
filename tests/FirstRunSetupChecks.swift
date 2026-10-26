@@ -57,8 +57,15 @@ struct FirstRunSetupChecks {
         FirstRunSetup.takeOverLaunchPrompts { set.append($0) }
         check(Set(set) == [FirstRunSetup.startedKey, FirstRunSetup.setupGuideShownKey, FirstRunSetup.notchTipShownKey],
               "The old launch tip and card are taken over, and the window is marked started")
-        check(FirstRunSetup.setUpInWindow { set.contains($0) } && !FirstRunSetup.setUpInWindow { _ in false },
-              "Started the window: set up in it")
+        // The notch's offer of Getting to know you stops only once the window's
+        // About you was finished or skipped; starting the window doesn't count.
+        check(!FirstRunSetup.aboutYouDecidedInWindow { set.contains($0) },
+              "Started the window, never reached About you: the notch may still offer it")
+        check(FirstRunSetup.aboutYouDecidedInWindow { $0 == FirstRunSetup.aboutYouDecidedKey },
+              "Finished or skipped About you: never in the notch")
+        // Opened again after setup (Permissions…, a Brief link): hands off the model.
+        check(FirstRunSetup.drivesModel(setupDone: false) && !FirstRunSetup.drivesModel(setupDone: true),
+              "Only first-run setup switches the model or tests it by itself")
         // Quitting part-way: started and the taken-over keys are set, done is not.
         check(FirstRunSetup.shouldShow { set.contains($0) }, "Quit before finishing: the window opens again")
         check(!FirstRunSetup.shouldShow { set.contains($0) || $0 == FirstRunSetup.doneKey },
@@ -80,16 +87,14 @@ struct FirstRunSetupChecks {
         check(FirstRunSetup.canAnswer(ready: false, remoteOnly: true), "Remote-only (Cloud Everything) counts as able to answer")
         check(FirstRunSetup.canAnswer(ready: true, remoteOnly: false) && !FirstRunSetup.canAnswer(ready: false, remoteOnly: false),
               "Otherwise only a ready local model can answer")
-        // "Wisp is ready" only for someone who isn't looking at setup.
-        check(!FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false, appActive: true),
-              "Window up and in front: no notification")
-        check(FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: true, appActive: true),
+        // No Wisp notification while the setup window is on screen.
+        check(!FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false),
+              "Window up, even behind System Settings or the browser: no notification")
+        check(FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: true),
               "Window minimized: notify")
-        check(FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false, appActive: false),
-              "Another app in front: notify")
-        check(FirstRunSetup.notifiesReady(promised: true, windowUp: false, windowMinimized: false, appActive: true),
+        check(FirstRunSetup.notifiesReady(promised: true, windowUp: false, windowMinimized: false),
               "Window closed or finished: notify")
-        check(!FirstRunSetup.notifiesReady(promised: false, windowUp: false, windowMinimized: false, appActive: false),
+        check(!FirstRunSetup.notifiesReady(promised: false, windowUp: false, windowMinimized: false),
               "Never promised: never")
 
         // Every launch: Wisp can't answer and no window is up → the quiet cue, never the full card.
@@ -127,6 +132,27 @@ struct FirstRunSetupChecks {
               && Permissions.needsAskingInWisp(BriefDetail.remindersAccess.url, calendarUndecided: false, remindersUndecided: true)
               && !Permissions.needsAskingInWisp(BriefDetail.fullDiskAccess.url, calendarUndecided: true, remindersUndecided: true),
               "Undecided Calendar or Reminders: Wisp's Permissions step; anything else: System Settings")
+        check(Permissions.needsAskingInWisp(BriefDetail.automationAccess.url, calendarUndecided: false,
+                                            remindersUndecided: false, automationUndecided: true)
+              && !Permissions.needsAskingInWisp(BriefDetail.automationAccess.url, calendarUndecided: true,
+                                                remindersUndecided: true, automationUndecided: false),
+              "Undecided Automation: Wisp's Mail & Notes row; decided: System Settings")
+        // Mail or Notes open with Automation never decided: point at Wisp's row, not "Open Mail".
+        let closed = (kind: "full_disk_access", reason: "Wisp reads Mail while Mail is open. Open Mail, or …")
+        let unasked = Permissions.unaskedAutomation(app: "Mail", appRunning: true, automationDecided: false, failure: closed)
+        check(unasked.kind == "mail_automation" && unasked.reason.contains("Permissions…")
+              && unasked.reason.contains("Mail & Notes") && !unasked.reason.contains("Open Mail"),
+              "Open but never asked: the Permissions row")
+        check(Permissions.unaskedAutomation(app: "Mail", appRunning: false, automationDecided: false, failure: closed) == closed
+              && Permissions.unaskedAutomation(app: "Notes", appRunning: true, automationDecided: true, failure: closed) == closed,
+              "Closed, or Automation decided: the on-disk reason as before")
+        // The Google step: an outage is not a sign-in problem; Gmail unticked is said plainly.
+        check(OnboardingGoogleCopy.signInProblem(GoogleAccountModel.serviceDown) == nil
+              && OnboardingGoogleCopy.signInProblem("Account connected.") == nil
+              && OnboardingGoogleCopy.signInProblem("") == nil, "Outage, success, nothing: no sign-in problem")
+        check(OnboardingGoogleCopy.signInProblem("Wisp could not connect Gmail: Gmail read access wasn't granted — on "
+                  + "Google's consent screen, tick the box to view your email messages, then try again")
+              == GoogleGrantNames.gmailNotGrantedMessage, "Gmail unticked: the tick-box message")
 
         // Getting to know you, offered by Wisp itself: due by the service's word,
         // shown only in a quiet moment, and never waiting on the model.
@@ -140,7 +166,7 @@ struct FirstRunSetupChecks {
             ("the notch dismissed to the menu bar", \.dismissedToMenuBar),
             ("Tell Wisp about you chosen this session", \.chosenThisSession),
             ("a completed About you (no more GET /profile)", \.profileComplete),
-            ("someone set up by the onboarding window, which asks it as a step", \.setUpInWindow),
+            ("About you finished or skipped in the onboarding window", \.aboutYouDecidedInWindow),
         ]
         for (name, key) in busy {
             var moment = calm

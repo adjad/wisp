@@ -117,8 +117,12 @@ struct OnboardingGoogleStep: View {
             } else {
                 connectRow
             }
-            if !model.authorizing, let problem {
-                problemRow(problem)
+            if model.message == GoogleAccountModel.serviceDown {
+                // The service didn't answer: nothing about the sign-in itself, so
+                // the action reads again instead of starting a new sign-in.
+                noticeRow(OnboardingGoogleCopy.serviceDown, button: "Check again") { Task { await model.refresh() } }
+            } else if !model.authorizing, let problem {
+                noticeRow(problem, button: "Try again") { model.connect() }
             }
         }
         .task {
@@ -133,11 +137,7 @@ struct OnboardingGoogleStep: View {
     }
 
     /// The last sign-in's trouble, when there is one worth showing.
-    private var problem: String? {
-        let text = model.message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, text != "Account connected.", text != "Finish signing in with Google in your browser." else { return nil }
-        return GoogleGrantNames.gmailNotGranted(text) ? GoogleGrantNames.gmailNotGrantedMessage : text
-    }
+    private var problem: String? { OnboardingGoogleCopy.signInProblem(model.message) }
 
     @ViewBuilder private var connectRow: some View {
         if model.loaded && !model.canConnect {
@@ -159,13 +159,13 @@ struct OnboardingGoogleStep: View {
         }
     }
 
-    private func problemRow(_ text: String) -> some View {
+    private func noticeRow(_ text: String, button: String, action: @escaping () -> Void) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.circle").foregroundStyle(Color.orange).accessibilityHidden(true)
             Text(text).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
-            Button("Try again") { model.connect() }.buttonStyle(FirstRunButtonStyle())
+            Button(button, action: action).buttonStyle(FirstRunButtonStyle())
                 .disabled(model.authorizing)
         }
         .padding(.top, 2).padding(.bottom, 9)
@@ -214,6 +214,21 @@ struct OnboardingGoogleStep: View {
                 + Text(names.joined(separator: ", ")).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
         }
         .padding(.leading, 42)
+    }
+}
+
+/// What the Google step says under its rows. Pure.
+enum OnboardingGoogleCopy {
+    static let serviceDown = "Wisp's service didn't answer just now, so this can't show your accounts yet."
+
+    /// A sign-in's outcome worth showing as a problem, in plain words; nil for
+    /// none (success, the "finish in your browser" hint, or a service outage,
+    /// which is not a sign-in problem).
+    static func signInProblem(_ message: String) -> String? {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text != "Account connected.", text != "Finish signing in with Google in your browser.",
+              text != GoogleAccountModel.serviceDown else { return nil }
+        return GoogleGrantNames.gmailNotGranted(text) ? GoogleGrantNames.gmailNotGrantedMessage : text
     }
 }
 

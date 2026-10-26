@@ -72,8 +72,11 @@ final class NotesReader {
     // on its own. Bundle ID, not app name, since Notes' display name can be
     // localized.
     private func isNotesRunning() -> Bool {
+        notesAppOpen() && Self.automationDecided("com.apple.Notes")
+    }
+
+    private func notesAppOpen() -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.Notes" }
-            && Self.automationDecided("com.apple.Notes")
     }
 
     /// Whether macOS has an answer about Wisp scripting this app. A scripted
@@ -139,8 +142,10 @@ final class NotesReader {
             } else {
                 // The reader says why, from the error: only macOS's privacy
                 // denial points at Full Disk Access.
-                let failure = self.dbReader.lastFailure
-                    ?? NotesDBReader.failure(openErrno: 0)
+                let failure = Permissions.unaskedAutomation(
+                    app: "Notes", appRunning: self.notesAppOpen(),
+                    automationDecided: Self.automationDecided("com.apple.Notes"),
+                    failure: self.dbReader.lastFailure ?? NotesDBReader.failure(openErrno: 0))
                 self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false,
                           reason: failure.reason, kind: failure.kind)
             }

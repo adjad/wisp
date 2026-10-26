@@ -393,7 +393,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             permissionsChanged: { [weak self] states in self?.firstRunPermissionsChanged(states) },
             stepChanged: { step in UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey) },
             askKeyRegistered: hotKey?.registered ?? false,
-            searchKeyRegistered: searchHotKey?.registered ?? false))
+            searchKeyRegistered: searchHotKey?.registered ?? false,
+            setupDone: defaults.bool(forKey: FirstRunSetup.doneKey),
+            aboutYouDecided: { UserDefaults.standard.set(true, forKey: FirstRunSetup.aboutYouDecidedKey) }))
     }
 
     /// Done, or one of the last step's prompts: close the window and open the
@@ -484,8 +486,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if cue != self.model.setupCard { self.model.setupCard = cue }
                 guard canAnswer else { continue }
                 if FirstRunSetup.notifiesReady(promised: self.notifyOnReady, windowUp: self.firstRunWindow != nil,
-                                               windowMinimized: self.firstRunWindow?.isMiniaturized == true,
-                                               appActive: NSApp.isActive) {
+                                               windowMinimized: self.firstRunWindow?.isMiniaturized == true) {
                     Notifications.post(id: Notifications.readyId, title: "Wisp is ready",
                                        body: "Press ⌥ Space and ask about your day.")
                 }
@@ -503,7 +504,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // also bring back a minimized window of its own choosing: that, and opening
     // chat while unfinished setup sat in the notch, was the "two windows" bug.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        let unfinished = firstRunWindow != nil || (firstRunHiddenForGuide && setupWindow?.isVisible == true)
+        let guideStandsIn = firstRunHiddenForGuide && (setupWindow?.isVisible == true || setupWindow?.isMiniaturized == true)
+        let unfinished = firstRunWindow != nil || guideStandsIn
             || FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) })
         let windows = reopenCandidates()
         switch WispReopen.choose(setupUnfinished: unfinished, windows: windows.map(\.candidate)) {
@@ -541,7 +543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// stands in for the first-run window, else the first-run window (reopened at
     /// its step when setup is unfinished), else the notch's setup card.
     private func bringSetupForward() {
-        if firstRunHiddenForGuide, let guide = setupWindow, guide.isVisible {
+        if firstRunHiddenForGuide, let guide = setupWindow, guide.isVisible || guide.isMiniaturized {
             NSApp.activate(ignoringOtherApps: true)
             if guide.isMiniaturized { guide.deminiaturize(nil) }
             guide.makeKeyAndOrderFront(nil)
@@ -1698,7 +1700,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || !model.collapsed || model.holdsOpen,
             dismissedToMenuBar: !notchDocked, chosenThisSession: knowYouChosen,
             profileComplete: knowYouProfileComplete,
-            setUpInWindow: FirstRunSetup.setUpInWindow { UserDefaults.standard.bool(forKey: $0) })
+            aboutYouDecidedInWindow: FirstRunSetup.aboutYouDecidedInWindow { UserDefaults.standard.bool(forKey: $0) })
     }
 
     /// One check, after `seconds` (a panel that just closed gets a moment before

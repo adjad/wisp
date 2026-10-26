@@ -125,6 +125,7 @@ final class KnowYouModel: ObservableObject {
         ended = true
         profile = envelope.profile
         preview = envelope.preview
+        status = envelope.status
         onClose(KnowYouNotice.thanks(name: profile.name))
     }
 
@@ -141,6 +142,7 @@ final class KnowYouModel: ObservableObject {
         ended = true
         profile = envelope.profile
         preview = envelope.preview
+        status = envelope.status
         onShowBrief()
     }
 

@@ -581,8 +581,11 @@ final class MailReader {
     // picks it up. Bundle ID, not app name, since Mail's display name can be
     // localized.
     private func isMailRunning() -> Bool {
+        mailAppOpen() && Self.automationDecided("com.apple.mail")
+    }
+
+    private func mailAppOpen() -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.mail" }
-            && Self.automationDecided("com.apple.mail")
     }
 
     /// Whether macOS has an answer about Wisp scripting this app. A scripted
@@ -826,7 +829,10 @@ final class MailReader {
                                   readSource: "local_index", history: history,
                                   historyGeneration: generation)
                     } else {
-                        let failure = self.dbReader.closedReadFailure()
+                        let failure = Permissions.unaskedAutomation(
+                            app: "Mail", appRunning: self.mailAppOpen(),
+                            automationDecided: Self.automationDecided("com.apple.mail"),
+                            failure: self.dbReader.closedReadFailure())
                         self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
                     }
                     return

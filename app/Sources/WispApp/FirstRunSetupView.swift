@@ -32,6 +32,10 @@ enum FirstRunSetup {
     static let stepKey = "wisp.firstRun.step"
     /// Launches that opened the window again by themselves.
     static let reopensKey = "wisp.firstRun.reopens"
+    /// Set when the window's About you step was finished (Done) or explicitly
+    /// skipped. Only then does the notch stop offering Getting to know you: being
+    /// shown the step, or closing the window before it, doesn't count.
+    static let aboutYouDecidedKey = "wisp.firstRun.aboutYouDecided"
     /// After this many, an unfinished setup stops opening at launch and is carried
     /// by the notch's quiet setup cue instead; Continue setup there still opens it.
     static let maxAutomaticReopens = 3
@@ -56,9 +60,15 @@ enum FirstRunSetup {
     /// Started and not finished: Continue setup opens this window again.
     static func isUnfinished(_ flag: (String) -> Bool) -> Bool { flag(startedKey) && !flag(doneKey) }
 
-    /// This person was set up by the window (it asks Getting to know you as a
-    /// step), so the notch never offers it on its own.
-    static func setUpInWindow(_ flag: (String) -> Bool) -> Bool { flag(startedKey) }
+    /// About you was answered or skipped in the window, so the notch never offers
+    /// Getting to know you on its own.
+    static func aboutYouDecidedInWindow(_ flag: (String) -> Bool) -> Bool { flag(aboutYouDecidedKey) }
+
+    /// Whether the window may act on the model by itself (switch Wisp over to a
+    /// downloaded model, run its one test). Only during first-run setup: opened
+    /// later from Permissions… or a Brief link, it never touches the model of
+    /// someone already set up.
+    static func drivesModel(setupDone: Bool) -> Bool { !setupDone }
 
     /// Closing the window ends setup only when the person finished it or Wisp can
     /// already answer. An early close (the red button, ⌘W) before that keeps it
@@ -80,10 +90,11 @@ enum FirstRunSetup {
         return !firstRunWindowUp && current == .hidden ? .later : current
     }
 
-    /// "Wisp is ready" is said only to someone who isn't looking at setup: the
-    /// window was closed or finished, minimized, or Wisp isn't the active app.
-    static func notifiesReady(promised: Bool, windowUp: Bool, windowMinimized: Bool, appActive: Bool) -> Bool {
-        promised && (!windowUp || windowMinimized || !appActive)
+    /// No Wisp notification while the setup window is on screen, even with
+    /// System Settings or the browser in front of it: "Wisp is ready" is said
+    /// only once the window was closed, finished or minimized.
+    static func notifiesReady(promised: Bool, windowUp: Bool, windowMinimized: Bool) -> Bool {
+        promised && (!windowUp || windowMinimized)
     }
 
     /// The old first launch showed a tip before Wisp could answer and opened the
@@ -112,8 +123,8 @@ enum KnowYouOffer {
         var chosenThisSession = false
         /// The service said About you is complete: no more checks this session.
         var profileComplete = false
-        /// Set up by the onboarding window, which asks it as a step.
-        var setUpInWindow = false
+        /// Answered or skipped as the onboarding window's About you step.
+        var aboutYouDecidedInWindow = false
     }
 
     /// Nothing else on screen and nothing the person is doing. Checked before
@@ -121,7 +132,7 @@ enum KnowYouOffer {
     static func quiet(_ m: Moment) -> Bool {
         !(m.firstRunWindowUp || m.setupWindowUp || m.setupCardOpen || m.replying || m.flowOpen
           || m.panelInUse || m.dismissedToMenuBar || m.chosenThisSession || m.profileComplete
-          || m.setUpInWindow)
+          || m.aboutYouDecidedInWindow)
     }
 
     static func shouldOffer(_ m: Moment, serviceOffers: Bool) -> Bool { serviceOffers && quiet(m) }
@@ -502,22 +513,25 @@ final class FirstRunPermissions: ObservableObject {
     /// Allowed only when both Mail and Notes are. A target that isn't running can't
     /// be asked about, which reads as not asked yet.
     private static func automationState(ask: Bool) async -> State {
-        await Task.detached {
-            var states: [OSStatus] = []
-            for id in automationTargets {
-                var target = AEAddressDesc()
-                let created = id.withCString { pointer in
-                    AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
-                }
-                guard created == noErr else { states.append(OSStatus(procNotFound)); continue }
-                states.append(AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
-                                                                    AEEventID(typeWildCard), ask))
-                AEDisposeDesc(&target)
+        await Task.detached { automationStateNow(ask: ask) }.value
+    }
+
+    /// The same answer, on the calling thread (quick unless `ask` shows a prompt).
+    nonisolated static func automationStateNow(ask: Bool) -> State {
+        var states: [OSStatus] = []
+        for id in automationTargets {
+            var target = AEAddressDesc()
+            let created = id.withCString { pointer in
+                AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
             }
-            if states.allSatisfy({ $0 == noErr }) { return State.allowed }
-            if states.contains(OSStatus(errAEEventNotPermitted)) { return State.notAllowed }
-            return State.notAsked
-        }.value
+            guard created == noErr else { states.append(OSStatus(procNotFound)); continue }
+            states.append(AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
+                                                                AEEventID(typeWildCard), ask))
+            AEDisposeDesc(&target)
+        }
+        if states.allSatisfy({ $0 == noErr }) { return State.allowed }
+        if states.contains(OSStatus(errAEEventNotPermitted)) { return State.notAllowed }
+        return State.notAsked
     }
 
     private static func launchHidden(_ bundleID: String) async {
@@ -548,8 +562,6 @@ struct FirstRunSetupView: View {
     @State private var stuckDownload: String?
     /// The one automatic test once Wisp is ready (it also loads the model).
     @State private var testedOnce = false
-    /// Getting to know you ended with Done (its answers are saved and complete).
-    @State private var knowYouFinished = false
     @State private var showAdvanced = false
     var openDetailedSetup: () -> Void
     /// Closes the window and opens the notch on Ask; with a prompt, Ask's box
@@ -562,6 +574,11 @@ struct FirstRunSetupView: View {
     /// Whether ⌥Space and ⌘⇧F really belong to Wisp on this Mac.
     var askKeyRegistered: Bool
     var searchKeyRegistered: Bool
+    /// First-run setup already finished: the window was opened again (Permissions…,
+    /// a Brief link), so it leaves the model alone (FirstRunSetup.drivesModel).
+    var setupDone: Bool
+    /// About you was finished or explicitly skipped here.
+    var aboutYouDecided: () -> Void
     /// NotchQA's renders: the Google step shows its fixture and never asks the service.
     var qaFixture = false
 
@@ -571,8 +588,11 @@ struct FirstRunSetupView: View {
          finish: @escaping (_ prompt: String?) -> Void,
          permissionsChanged: @escaping ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void = { _ in },
          stepChanged: @escaping (Step) -> Void = { _ in },
-         askKeyRegistered: Bool = true, searchKeyRegistered: Bool = true, qaFixture: Bool = false) {
+         askKeyRegistered: Bool = true, searchKeyRegistered: Bool = true,
+         setupDone: Bool = false, aboutYouDecided: @escaping () -> Void = {}, qaFixture: Bool = false) {
         self.setup = setup
+        self.setupDone = setupDone
+        self.aboutYouDecided = aboutYouDecided
         self.qaFixture = qaFixture
         self.knowYou = knowYou
         self.google = google
@@ -634,8 +654,9 @@ struct FirstRunSetupView: View {
             // One read up front: the last step's prompts follow what is allowed.
             Task { await permissions.refresh() }
             if step == .permissions { permissions.start() }
+            if !qaFixture { Task { await knowYou.load() } }
             knowYou.onClose = { _ in
-                knowYouFinished = true
+                aboutYouDecided()
                 step = .tour
             }
         }
@@ -652,6 +673,7 @@ struct FirstRunSetupView: View {
     /// has arrived, and notice a finished download the engine never lists. Starting
     /// the engine is SetupGuideModel's own (autoAdvanceFirstSetup), once a session.
     private func drive(_ state: FirstRunBrain) {
+        guard FirstRunSetup.drivesModel(setupDone: setupDone) else { return }
         switch state {
         case .switching(let model, _) where appliedModel != model && setup.busy == nil:
             appliedModel = model
@@ -681,7 +703,7 @@ struct FirstRunSetupView: View {
         case .brain: return brain.isReady
         case .permissions: return permissions.allAnswered
         case .google: return !google.status.accounts.isEmpty
-        case .knowYou: return knowYouFinished || knowYou.status.completed
+        case .knowYou: return knowYouFinished
         case .tour: return false
         }
     }
@@ -724,6 +746,10 @@ struct FirstRunSetupView: View {
     }
 
     private func go(_ s: Step?) { if let s { step = s } }
+
+    /// About you is finished by the service's word (refreshed by Done), so the
+    /// tick and the thank-you survive closing and reopening the window.
+    private var knowYouFinished: Bool { knowYou.status.completed }
 
     private var footer: some View {
         HStack(spacing: 10) {
@@ -772,9 +798,12 @@ struct FirstRunSetupView: View {
                         .buttonStyle(FirstRunButtonStyle(primary: true))
                         .keyboardShortcut(.defaultAction)
                 } else {
-                    Button("Skip for now") { go(step.next) }
-                        .buttonStyle(FirstRunButtonStyle())
-                        .help("Nothing more is saved. Tell Wisp About You… in the menu bar icon asks these any time.")
+                    Button("Skip for now") {
+                        aboutYouDecided()
+                        go(step.next)
+                    }
+                    .buttonStyle(FirstRunButtonStyle())
+                    .help("Nothing more is saved. Tell Wisp About You… in the menu bar icon asks these any time.")
                 }
             case .tour:
                 Button("Back") { go(step.previous) }.buttonStyle(FirstRunButtonStyle())

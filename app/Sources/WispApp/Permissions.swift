@@ -36,7 +36,8 @@ enum Permissions {
     static func openFix(_ url: URL) {
         if needsAskingInWisp(url.absoluteString,
                              calendarUndecided: EKEventStore.authorizationStatus(for: .event) == .notDetermined,
-                             remindersUndecided: EKEventStore.authorizationStatus(for: .reminder) == .notDetermined) {
+                             remindersUndecided: EKEventStore.authorizationStatus(for: .reminder) == .notDetermined,
+                             automationUndecided: FirstRunPermissions.automationStateNow(ask: false) == .notAsked) {
             NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
         } else {
             NSWorkspace.shared.open(url)
@@ -44,9 +45,23 @@ enum Permissions {
     }
 
     /// Pure: whether a settings link is for a permission macOS hasn't asked about yet.
-    static func needsAskingInWisp(_ url: String, calendarUndecided: Bool, remindersUndecided: Bool) -> Bool {
+    static func needsAskingInWisp(_ url: String, calendarUndecided: Bool, remindersUndecided: Bool,
+                                  automationUndecided: Bool = false) -> Bool {
         (url.hasSuffix("Privacy_Calendars") && calendarUndecided)
             || (url.hasSuffix("Privacy_Reminders") && remindersUndecided)
+            || (url.hasSuffix("Privacy_Automation") && automationUndecided)
+    }
+
+    /// What a Mail or Notes read says when its on-disk copy failed. When the app
+    /// is open but Automation was never decided, Wisp skipped reading it through
+    /// the app (asking would prompt), so "open Mail" would be wrong: the reason
+    /// points at the Mail & Notes row instead, and its Brief link (Automation's
+    /// kind) opens that row through openFix. Pure.
+    static func unaskedAutomation(app: String, appRunning: Bool, automationDecided: Bool,
+                                  failure: (kind: String, reason: String)) -> (kind: String, reason: String) {
+        guard appRunning, !automationDecided else { return failure }
+        return ("mail_automation", "\(app) is open, but Wisp hasn't been allowed to read it yet. Right-click Wisp's "
+                + "menu bar icon, choose Permissions…, and click Allow next to Mail & Notes.")
     }
 
     // MARK: Grant More Access
