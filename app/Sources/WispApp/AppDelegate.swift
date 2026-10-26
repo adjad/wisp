@@ -58,6 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let backend = BackendManager()
     private var settingsWindow: NSWindow?
     private var setupWindow: NSWindow?
+    // The first-launch window: model, permissions, how to use. Only on a Mac that
+    // has never run Wisp (FirstRunSetup.shouldShow).
+    private var firstRunWindow: NSWindow?
+    private var firstRunCloseObserver: NSObjectProtocol?
+    private var firstRunFinishing = false
     private var setupObserver: NSObjectProtocol?
     private static let setupGuideShownKey = "wisp.setupGuide.shown"
     private static let notchTipShownKey = "wisp.notchTip.shown"
@@ -73,6 +78,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverIntent = HoverIntent()
     private var hoverDwell: DispatchWorkItem?
     private var hoverMonitors: [Any] = []
+    // The menu-bar icon carries the bar's status where no bar is drawn
+    // (SurfaceLayout.statusInMenuBar). See observeMenuBarStatus.
+    private var menuBarStatusObservers: [AnyCancellable] = []
+    private var menuBarStatusQueued = false
+    private var shownMenuBarStatus: MenuBarStatus?
+    private var workingPulse: Timer?
+    private var workingPulseDim = false
     // Whether the notch-fused bar is showing at all. The X button turns this
     // off (dismiss from the notch, free the resident model, stay in the menu bar); the
     // menu-bar icon or ⌥Space bring it back. Distinct from `model.collapsed`,
@@ -238,6 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         buildMenu()
+        observeMenuBarStatus()
         installEditMenu()    // enables ⌘C/⌘V/⌘X/⌘A in the text field
         // ⌥Space summons the overlay
         hotKey = GlobalHotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
@@ -251,8 +264,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.toggleSearch() }
         }
         // Notchbox-style: the panel lives at the top-centre permanently — the
-        // notch (physical or virtual) on a MacBook, a floating capsule on a
-        // monitor. Collapsed it's a small bar; hovering it expands. Layout
+        // notch on a notched MacBook, an invisible top-edge zone on other
+        // built-in displays, a floating capsule on a monitor. Hovering it
+        // expands. Layout
         // follows the displays live, so attaching a monitor or changing
         // resolution re-fits it instead of leaving it stranded.
         DisplayGeometry.shared.onChange = { [weak self] in self?.displaysChanged() }
@@ -264,14 +278,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.openSetupGuide() }
         }
-        offerSetupGuideOnFirstRun()
-        offerKnowYouWhenReady()
+        let defaults = UserDefaults.standard
+        let firstRun = FirstRunSetup.shouldShow { defaults.bool(forKey: $0) }
+        if firstRun {
+            // The window asks for permissions, gets the model and shows where Wisp
+            // lives, in that order; the old launch did each of these on its own.
+            FirstRunSetup.takeOverLaunchPrompts { defaults.set(true, forKey: $0) }
+        } else {
+            offerSetupGuideOnFirstRun()
+            offerKnowYouWhenReady()
+        }
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
         // Wisp starts in the notch. The Wisp window opens only when asked for:
         // the Dock icon, the menu bar, or a hand-off from the notch.
-        showNotchTipOnce()
+        if firstRun { openFirstRunSetup() } else { showNotchTipOnce() }
+    }
+
+    private func openFirstRunSetup() {
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 600),
+                           styleMask: [.titled, .closable, .fullSizeContentView],
+                           backing: .buffered, defer: false)
+        win.title = "Welcome to Wisp"
+        win.titlebarAppearsTransparent = true
+        win.appearance = NSAppearance(named: .darkAqua)
+        win.isReleasedWhenClosed = false
+        win.contentView = NSHostingView(rootView: FirstRunSetupView(
+            setup: setupModel,
+            openDetailedSetup: { [weak self] in self?.openSetupGuide() },
+            finish: { [weak self] tellAboutYou in self?.finishFirstRun(tellAboutYou: tellAboutYou) }))
+        win.center()
+        firstRunWindow = win
+        // Closing it early counts as finishing: the download keeps going in the
+        // engine, and the notch's setup card takes over until Wisp can answer.
+        firstRunCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: win, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.firstRunClosed() }
+        }
+        setupModel.show(in: "first-run")
+        NSApp.activate(ignoringOtherApps: true)
+        win.makeKeyAndOrderFront(nil)
+    }
+
+    private func finishFirstRun(tellAboutYou: Bool) {
+        firstRunFinishing = true
+        firstRunWindow?.close()
+        if tellAboutYou {
+            tellWispAboutYou()
+        } else {
+            openAssistant()
+            offerKnowYouWhenReady()
+        }
+    }
+
+    private func firstRunClosed() {
+        UserDefaults.standard.set(true, forKey: FirstRunSetup.doneKey)
+        setupModel.hide(from: "first-run")
+        if let observer = firstRunCloseObserver { NotificationCenter.default.removeObserver(observer) }
+        firstRunCloseObserver = nil
+        defer { firstRunFinishing = false }
+        guard !firstRunFinishing else { return }
+        if setupModel.status?.ready != true { openSetupInNotch() }
+        offerKnowYouWhenReady()
     }
 
     // Clicking the Dock icon, or opening Wisp again from Finder or Spotlight while it
@@ -293,10 +363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self else { return }
             self.openAssistant()
-            self.model.showTransientNotice(
-                "Wisp lives in the notch now. Press ⌥Space or hover here to ask. "
-                    + "Click Wisp in the Dock for the full window.",
-                duration: duration)
+            self.model.showTransientNotice(DisplayGeometry.shared.layout.firstRunTip, duration: duration)
             // Tuck back in once the tip is gone, unless the pointer is on the panel
             // (scheduleCollapse also keeps an unsent draft open).
             DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
@@ -746,7 +813,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         hoverDwell = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + HoverIntent.dwell, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + DisplayGeometry.shared.layout.hoverDwell, execute: work)
     }
 
     private func cancelHoverDwell() {
@@ -916,6 +983,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // Monochrome orb glyph for the menu bar (template → adapts to light/dark).
+    // MARK: - Menu-bar status
+
+    /// Where no bar is drawn (a built-in display without a notch), the menu-bar
+    /// icon shows what the bar would: working, due today, or not set up.
+    private func observeMenuBarStatus() {
+        let changed: () -> Void = { [weak self] in self?.queueMenuBarStatus() }
+        menuBarStatusObservers = [
+            model.objectWillChange.sink { _ in changed() },
+            todayModel.objectWillChange.sink { _ in changed() },
+            DisplayGeometry.shared.$layout.sink { _ in changed() },
+        ]
+        updateMenuBarStatus()
+    }
+
+    /// Both publishers fire BEFORE the change lands, and a streaming reply fires
+    /// once per token: read the state once, on the next turn of the run loop.
+    private func queueMenuBarStatus() {
+        guard !menuBarStatusQueued else { return }
+        menuBarStatusQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.menuBarStatusQueued = false
+            self.updateMenuBarStatus()
+        }
+    }
+
+    private func updateMenuBarStatus() {
+        guard let button = statusItem?.button else { return }
+        // The same conditions as the collapsed bar (OverlayView.notchBar).
+        let status = DisplayGeometry.shared.layout.statusInMenuBar
+            ? MenuBarStatus(working: model.isProcessing || model.phase == .streaming,
+                            dueToday: todayModel.dueBadgeCount,
+                            setupSetAside: model.setupCard == .later)
+            : MenuBarStatus(working: false, dueToday: 0, setupSetAside: false)
+        guard status != shownMenuBarStatus else { return }
+        shownMenuBarStatus = status
+        button.title = status.title
+        button.imagePosition = status.title.isEmpty ? .imageOnly : .imageLeading
+        button.setAccessibilityLabel(status.accessibilityLabel)
+        setWorkingPulse(status.mark == .working)
+    }
+
+    /// The bar's breathing dot, on the icon: a slow fade while Wisp works. With
+    /// Reduce Motion it holds dimmed instead.
+    private func setWorkingPulse(_ on: Bool) {
+        workingPulse?.invalidate()
+        workingPulse = nil
+        workingPulseDim = false
+        statusItem.button?.alphaValue = 1
+        guard on else { return }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            statusItem.button?.alphaValue = 0.55
+            return
+        }
+        workingPulse = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let button = self.statusItem.button else { return }
+                self.workingPulseDim.toggle()
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.9
+                    button.animator().alphaValue = self.workingPulseDim ? 0.35 : 1
+                }
+            }
+        }
+    }
+
     private static func menubarOrb() -> NSImage {
         let d: CGFloat = 18
         let img = NSImage(size: NSSize(width: d, height: d))
@@ -1256,7 +1389,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Not over the setup card, a reply in progress, or a flow already
                 // up; and never over a panel the person is using (open, holding
                 // typed text) or dismissed to the menu bar.
-                if self.setupWindow?.isVisible == true || self.model.setupCard == .open
+                if self.setupWindow?.isVisible == true || self.firstRunWindow?.isVisible == true
+                    || self.model.setupCard == .open
                     || self.model.isProcessing || self.model.knowYou != nil
                     || !self.model.collapsed || self.model.holdsOpen || !self.notchDocked {
                     continue

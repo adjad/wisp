@@ -5,7 +5,7 @@ builds without a verified public repository remain discoverable, not downloadabl
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,10 @@ class CatalogModel:
     repo: str | None        # Hugging Face repo, or None when nothing is published
     note: str
     tested: bool = False
+    # Per-model settings Wisp seeds into the bundled engine's model_settings.json
+    # (see service/engine/profiles.py). Wisp omits sampling from its requests, so
+    # these are what the model actually runs with. Empty: the engine's defaults.
+    engine_profile: dict = field(default_factory=dict, compare=False, hash=False)
 
 
 # The repo's name is the model id on purpose: the engine downloads into
@@ -29,10 +33,23 @@ MELLUM_R1_Q4 = CatalogModel(
     "Optional Wisp fine-tune. Model validation is pending.", tested=False)
 
 
-GEMMA4_E4B = CatalogModel(
-    "gemma-4-E4B-it-oQ4e-mtp", "Gemma 4 E4B", "4-bit (oQ4e, MTP)", 5.2, 16,
+# The default. Gemma 4 E4B with its multi-token-prediction head (oQ4e mixed
+# 4-bit): the model the live roster runs. Thinking must stay ON in its profile:
+# with enable_thinking false it returns zero tokens on the step after a tool
+# result, so every tool-using answer came back empty (measured 2026-10-24).
+# Sampling: the model card's top_p/top_k, with temperature lowered from its 1.0
+# to 0.8 (user decision, 2026-10-25).
+GEMMA_E4B_MTP = CatalogModel(
+    "gemma-4-E4B-it-oQ4e-mtp", "Gemma 4 E4B", "4-bit (oQ4e) + MTP", 5.5, 8,
     "Jundot/gemma-4-E4B-it-oQ4e-mtp",
-    "Default. Fast with multi-token prediction, and calls tools in model-only mode.", tested=True)
+    "Wisp's default. Fast on every Apple silicon Mac, with clean tool calls.", tested=True,
+    engine_profile={
+        "temperature": 0.8, "top_p": 0.95, "top_k": 64,
+        "enable_thinking": True,
+        "mtp_enabled": True, "mtp_adaptive_max_depth": 4,
+        "max_context_window": 16384,
+        "trust_remote_code": True,
+    })
 
 
 LING_Q6 = CatalogModel(
@@ -47,7 +64,7 @@ LING_Q4 = CatalogModel(
     "mlx-works/Ling-3.0-tiny-oQ4e",
     "Smallest build that keeps tool selection reliable. Comfortable on 16 GB.", tested=True)
 
-PRIMARY_MODELS = (GEMMA4_E4B, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
+PRIMARY_MODELS = (GEMMA_E4B_MTP, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
 
 EMBEDDING_MODEL = CatalogModel(
     "Qwen3-Embedding-0.6B-4bit-DWQ", "Qwen3 Embedding 0.6B", "4-bit", 0.35, 8,
@@ -67,12 +84,13 @@ def ranked_for(ram_gb: int, installed: list[str] | None = None) -> tuple[Catalog
     Once any catalog model is installed the full order applies, keeping locally
     available private builds eligible for the memory-appropriate ranking.
     """
+    # Gemma first on every Mac; the Ling builds follow in their memory order.
     if ram_gb >= 24:
-        order = (GEMMA4_E4B, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
+        order = (GEMMA_E4B_MTP, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
     elif ram_gb >= 16:
-        order = (GEMMA4_E4B, LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
+        order = (GEMMA_E4B_MTP, LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
     else:
-        order = (LING_Q4, GEMMA4_E4B, LING_Q5, LING_Q6, MELLUM_R1_Q4)
+        order = (GEMMA_E4B_MTP, LING_Q4, LING_Q5, LING_Q6, MELLUM_R1_Q4)
     if installed is None:
         return order
     have = set(installed)
@@ -112,7 +130,7 @@ def recommend(ram_gb: int, installed: list[str]) -> dict:
     if ram_gb == 0:
         warning = "Wisp could not read this Mac's memory, so it is recommending the smallest build."
     elif ram_gb < 16:
-        warning = ("This Mac has less than 16 GB. Wisp will run the 4-bit model, but "
+        warning = ("This Mac has less than 16 GB. Wisp will run, but "
                    "close other heavy apps and expect slower replies.")
     return {"first_choice": ranked[0].id, "use": use.id if use else None,
             "get": get.id if get else None, "warning": warning}
