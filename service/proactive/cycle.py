@@ -1245,21 +1245,22 @@ def google_mail_status(now: float | None = None) -> tuple[list[str], list[str], 
 
 
 def _unread_reason(email: str, item: dict, error: str, headers_error: str) -> str:
-    """"reconnect" only when the person must act on the sign-in; else "syncing"."""
+    """"reconnect" only when the sign-in itself stops mail: it expired, Google
+    refused its mail authorization, or it never granted the Gmail read scope.
+    Workspace tools being off, or a sign-in from before the Workspace consent,
+    never stop mail sync, so they are never a reason to reconnect. Anything
+    else is "syncing": Wisp hasn't finished checking."""
     if item.get("auth_expired"):
         return "reconnect"
-    if not item.get("workspace") or not item.get("workspace_requested"):
-        # Settings' needs_reconnect (gmail_source.account_state), read only for
-        # an account already left unchecked.
-        try:
-            from service import google_workspace
-            full = google_workspace.has_full_scopes(email, item)
-        except Exception:  # noqa: BLE001
-            full = False
-        if not item.get("workspace") or not full:
+    try:
+        from service import gmail_source
+        if gmail_source.SCOPE not in gmail_source.granted_scopes(email, item):
             return "reconnect"
+    except Exception:  # noqa: BLE001 — unknown scopes: not a reason to reconnect
+        pass
     low = f"{error} {headers_error}".lower()
-    if "read access is missing" in low or "wasn't granted" in low or "invalid_grant" in low:
+    if any(sign in low for sign in ("read access is missing", "wasn't granted", "invalid_grant",
+                                    "unauthorized", "insufficient authentication", "insufficientpermissions")):
         return "reconnect"
     return "syncing"
 
@@ -1282,7 +1283,9 @@ def _mail_app_read_accounts(now: float) -> set[tuple[str, str]]:
         excluded = set()
         for line in lines:
             parts = line.rstrip("\r").split("\x01")
-            if len(parts) == 4 and parts[0] == "C3":
+            if len(parts) == 4 and parts[0] == "C3" and parts[3] in ("failed", "interrupted"):
+                if (parts[2] or parts[1]) == "*":
+                    return set()   # the whole scan stopped (header_scan_coverage's "*"): nothing was read
                 excluded.add((parts[1], parts[2]))
             elif len(parts) == 6 and parts[0] == "C2":
                 try:
@@ -1292,11 +1295,15 @@ def _mail_app_read_accounts(now: float) -> set[tuple[str, str]]:
                 if attempted > 0 and skipped >= attempted:
                     excluded.add((parts[1], parts[2]))
         bad_ids = {native_id for _, native_id in excluded if native_id}
+        # A marker without an id names its account by label for every row; one
+        # with an id still names, by label, rows that carry no id of their own.
         bad_labels = {label.casefold() for label, native_id in excluded if not native_id}
+        marked_labels = {label.casefold() for label, _ in excluded if label}
         held = set()
         for row in rows:
             label, native_id = str(row.get("account") or ""), str(row.get("account_id") or "")
-            if (native_id and native_id in bad_ids) or label.casefold() in bad_labels:
+            if (native_id and native_id in bad_ids) or label.casefold() in bad_labels \
+                    or (not native_id and label.casefold() in marked_labels):
                 continue
             held.add((label, native_id))
         return held

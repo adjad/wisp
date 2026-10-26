@@ -344,6 +344,29 @@ def test_reconnect_only_when_the_person_must_act(monkeypatch, tmp_path):
     assert view["unread"] == ["email"] and view["mail_unread_reasons"] == reasons
 
 
+def test_workspace_state_never_asks_for_a_reconnect(monkeypatch, tmp_path):
+    """Workspace tools off, or a sign-in from before the Workspace consent,
+    still sync mail: a stale account like that is "syncing". Only an expired
+    sign-in, a refused mail authorization or a missing Gmail scope reconnect."""
+    import json
+    from service import gmail_source
+    from service.proactive import cycle
+    now = 1_790_000_000.0
+    names = ["off", "legacy", "noscope", "refused", "expired"]
+    _google_accounts(monkeypatch, tmp_path, now, fresh=[], stale=[f"{n}@gmail.com" for n in names])
+    cfg = json.loads(gmail_source.CONFIG_PATH.read_text())
+    accounts = cfg["accounts"]
+    accounts["off@gmail.com"]["workspace"] = False                          # Workspace tools switched off
+    accounts["legacy@gmail.com"] = dict(refresh_token="r", client_id="c")   # pre-Workspace sign-in
+    accounts["noscope@gmail.com"]["scopes"] = [gmail_source.CALENDAR_SCOPE]
+    accounts["expired@gmail.com"]["auth_expired"] = 1.0
+    gmail_source.CONFIG_PATH.write_text(json.dumps(cfg))
+    monkeypatch.setattr(gmail_source, "_errors", {"refused@gmail.com": "Google said invalid_grant"})
+    assert cycle.google_mail_status(now)[2] == {
+        "off@gmail.com": "syncing", "legacy@gmail.com": "syncing", "noscope@gmail.com": "reconnect",
+        "refused@gmail.com": "reconnect", "expired@gmail.com": "reconnect"}
+
+
 def _h2(account, account_id, n=1, ts=1_789_999_000.0):
     return "\n".join(f"H2\x01{ts}\x01U\x01{account}\x01{account_id}\x01Ann\x01ann@example.com\x01<m{n}-{i}@x>\x01Hi {i}"
                      for i in range(n))
@@ -388,6 +411,17 @@ def test_an_interrupted_or_skipped_scan_never_covers_the_account(monkeypatch, tm
     # Rows from before an interruption in the same snapshot don't count either.
     _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "UUID-W") + "\nC3\x01work@gmail.com\x01UUID-W\x01failed")
     assert cycle.google_mail_status(now)[1] == ["work@gmail.com"]
+    # A whole-scan stop ("*") excludes every account, even one with header rows.
+    _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "UUID-W") + "\nC3\x01*\x01*\x01interrupted")
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"]
+    _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "UUID-W") + "\nC3\x01\x01*\x01failed")
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"]
+    # A marker with an id also excludes, by label, a row that carries no id.
+    _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "") + "\nC3\x01work@gmail.com\x01UUID-W\x01interrupted")
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"]
+    # A marker for another account leaves this one's header rows counting.
+    _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "") + "\nC3\x01other@gmail.com\x01UUID-O\x01interrupted")
+    assert cycle.google_mail_status(now)[1] == []
     # Every header skipped (C2 attempted == skipped).
     _mail_app(monkeypatch, E, now, "C2\x01work@gmail.com\x01UUID-W\x013\x013\x011")
     assert cycle.google_mail_status(now)[1] == ["work@gmail.com"]
