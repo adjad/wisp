@@ -353,6 +353,9 @@ struct ProfileStatus: Equatable {
     var localOnly = true
     /// The host they're sent to while localOnly is false ("" when unnamed).
     var sentTo = ""
+    /// The user's own verified Macs on their tailnet that also get them
+    /// ("mini"): the user decided their data may cross the tailnet to these.
+    var tailnetNodes: [String] = []
 
     init() {}
     init(json: [String: Any]) {
@@ -366,11 +369,17 @@ struct ProfileStatus: Equatable {
         }
         localOnly = json["local_only"] as? Bool ?? true
         sentTo = (json["sent_to"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        tailnetNodes = ((json["tailnet_nodes"] as? [Any]) ?? []).compactMap { $0 as? String }.filter { !$0.isEmpty }
     }
 
     /// The lock line under every Getting to know you screen and in About you.
     var whereItLives: String {
-        if localOnly { return "Stays on this Mac" }
+        if localOnly {
+            guard !tailnetNodes.isEmpty else { return "Stays on this Mac" }
+            let names = tailnetNodes.count == 1 ? tailnetNodes[0]
+                : tailnetNodes.dropLast().joined(separator: ", ") + " and " + tailnetNodes.last!
+            return "Stays on this Mac and your \(names) on your tailnet"
+        }
         return sentTo.isEmpty ? "Sent with your questions to your cloud model"
                               : "Sent with your questions to \(sentTo)"
     }

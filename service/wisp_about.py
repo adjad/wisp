@@ -150,6 +150,57 @@ def cloud_detail() -> dict:
     return result()
 
 
+# The user's own Mac (a mini or an Air) on their tailnet. The user decided that
+# their data may cross the tailnet to it (docs: mini = proactive node). It is
+# recognised only by its provisioning record, never by its hostname or URL:
+# the endpoint must use the mini inference credential, and
+# credentials.verify_binding must accept its exact origin (an owner-only
+# record naming a *.ts.net host).
+_NODE_CREDENTIAL = "env:WISP_MINI_INFERENCE_KEY"
+
+
+def own_node(endpoint) -> str:
+    """A short name for `endpoint` ("mini") when it is the user's own verified
+    tailnet node, else ""."""
+    if endpoint is None or getattr(endpoint, "credential_ref", None) != _NODE_CREDENTIAL:
+        return ""
+    url = str(getattr(endpoint, "base_url", "") or "")
+    try:
+        from service.config.credentials import verify_binding
+        verify_binding(_NODE_CREDENTIAL.removeprefix("env:"), url, purpose="inference")
+    except Exception:  # noqa: BLE001 - unverified is not the user's node
+        return ""
+    from urllib.parse import urlsplit
+    host = urlsplit(url).hostname or ""
+    return host.split(".")[0] or "node"
+
+
+def own_nodes() -> list[str]:
+    """Short names of the user's verified tailnet nodes that a role answers on now."""
+    try:
+        from service.config import models_config
+        from service.config.endpoints import endpoint
+        bindings = (models_config().get("inference") or {}).get("bindings") or {}
+    except Exception:  # noqa: BLE001
+        return []
+    names = sorted({str(b.get("endpoint")) for b in bindings.values()
+                    if isinstance(b, dict) and b.get("endpoint")} - {"local", "local_provider", "cloud"})
+    labels: list[str] = []
+    for name in names:
+        try:
+            label = own_node(endpoint(name))
+        except Exception:  # noqa: BLE001
+            continue
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def nodes_phrase(nodes: list[str]) -> str:
+    """"your mini on your tailnet" for the lock line and the answers."""
+    return f"your {_join(nodes)} on your tailnet" if nodes else ""
+
+
 def _optional_cloud_now(config) -> tuple[bool, list[str], str]:
     """(Super Model on, roles bound to the cloud endpoint, its host), read
     from the bindings themselves: cloud_provider_settings() reports only
@@ -305,6 +356,9 @@ def _greeting() -> str:
     if detail["mode"] == "super":
         return (f"**Hi, I'm Wisp.** My AI runs right here on this Mac. You've also turned on a "
                 f"cloud model, so questions it answers go to {host}.")
+    nodes = own_nodes()
+    if nodes:
+        return f"**Hi, I'm Wisp.** My AI runs right here on this Mac and {nodes_phrase(nodes)}."
     return "**Hi, I'm Wisp.** My AI runs right here on this Mac."
 
 
@@ -351,6 +405,10 @@ def identity() -> str:
         intro = ("I'm **Wisp**, your assistant in the Mac's notch. My AI runs on this Mac and helps "
                  "with your calendar, reminders, mail, messages and notes. You've also turned on a "
                  f"cloud model, so questions it answers go to {host}.")
+    elif own_nodes():
+        intro = ("I'm **Wisp**, your assistant in the Mac's notch. My AI runs on this Mac and "
+                 f"{nodes_phrase(own_nodes())}, so I can help with your calendar, reminders, mail, "
+                 "messages and notes while keeping them on your own Macs.")
     else:
         intro = ("I'm **Wisp**, your assistant in the Mac's notch. My AI runs on this Mac, so I can "
                  "help with your calendar, reminders, mail, messages and notes without sending them "
@@ -399,7 +457,8 @@ def privacy() -> str:
                "- " + _UNKNOWN_LINE,
                "- Your mail, messages, calendar, notes and what you tell me are stored on this Mac.",
                "- What you told me in Getting to know you goes only to Wisp's own model on this Mac "
-               "while I can't check."]
+               + (f"and {nodes_phrase(own_nodes())} " if own_nodes() else "")
+               + "while I can't check."]
     elif cloud == "everything" and detail["pending"]:
         out = ["**Cloud \"Everything\" is turned on.** It takes over after Wisp restarts. "
                + until_restart(detail), "",
@@ -420,11 +479,21 @@ def privacy() -> str:
                "- My main AI model runs here, on your Mac. Your mail, messages, calendar, notes, "
                "and what you tell me are read and stored on this Mac."]
         out += _optional_cloud_lines(detail)
+    elif own_nodes():
+        out = ["**Your data stays on your own Macs.**", "",
+               "- My AI model runs here, on your Mac. Your mail, messages, calendar, notes, "
+               "and what you tell me are read and kept on your own Macs, not on anyone else's server.",
+               "- No cloud AI is used unless you turn one on in **Settings**."]
     else:
         out = ["**Your data stays on this Mac.**", "",
                "- My AI model runs here, on your Mac. Your mail, messages, calendar, notes, "
                "and what you tell me are read and kept on this Mac, not on a server.",
                "- No cloud AI is used unless you turn one on in **Settings**."]
+    nodes = own_nodes() if not (cloud == "everything" and not detail["pending"]) else []
+    if nodes:
+        out.append(f"- Some questions are answered by {nodes_phrase(nodes)}, your own Mac. What a "
+                   "reply needs, including what you told me in Getting to know you, goes there "
+                   "over your tailnet and nowhere else.")
     out += ["- Some things have to go online: web searches, weather, stocks and research. "
             "If you connect Google, I fetch that account's mail and calendar from Google.",
             ("- I never send a message or email without showing it to you first. Because "

@@ -556,3 +556,121 @@ def test_erase_also_removes_a_torn_temporary_write():
     tmp.write_text(json.dumps(SAMPLE))
     P.clear()
     assert not tmp.exists()
+
+
+# --- the user's own Macs on their tailnet (re-review f778a282) ---------------
+# The user decided their data may cross the tailnet to their own mini or Air.
+# A node is recognised only by its provisioning record, never its hostname.
+
+_NODE_RECORD = {"schema_version": 1, "node_id": "nFIXTURE", "host": "mini.fixture.ts.net"}
+
+
+def _node_endpoint(url="https://mini.fixture.ts.net", credential="env:WISP_MINI_INFERENCE_KEY"):
+    from service.config.endpoints import endpoint_from_config
+    return endpoint_from_config("mini", {"base_url": url, "credential_ref": credential})
+
+
+@pytest.fixture
+def provisioned(monkeypatch):
+    """A provisioning record for mini.fixture.ts.net (never the real ~/.moe one)."""
+    from service.config import credentials
+    monkeypatch.setattr(credentials, "reviewed_bindings", lambda: dict(_NODE_RECORD))
+
+
+@pytest.fixture
+def unprovisioned(monkeypatch):
+    from service.config import credentials
+
+    def missing():
+        raise ValueError("Reviewed credential binding unavailable")
+    monkeypatch.setattr(credentials, "reviewed_bindings", missing)
+
+
+def test_a_verified_node_gets_the_profile(provisioned, monkeypatch):
+    from service import main
+    _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("reasoning",))
+    P.update(SAMPLE)
+    node = _node_endpoint()
+    assert P.may_send_to(node) is True
+    assert "ABOUT THE USER" in main._profile_block(node)
+
+
+def test_an_unverified_tailnet_url_does_not(unprovisioned, monkeypatch):
+    from service import main
+    _patch_cloud(monkeypatch)
+    P.update(SAMPLE)
+    node = _node_endpoint()
+    assert P.may_send_to(node) is False and main._profile_block(node) == ""
+
+
+def test_a_tailnet_url_the_record_does_not_name_does_not(provisioned, monkeypatch):
+    _patch_cloud(monkeypatch)
+    assert P.may_send_to(_node_endpoint("https://other.fixture.ts.net")) is False
+    assert P.may_send_to(_node_endpoint("https://mini.fixture.ts.net:8443")) is False
+
+
+def test_a_keychain_cloud_endpoint_does_not_even_at_a_tailnet_url(provisioned, monkeypatch):
+    from service.config.endpoints import endpoint_from_config
+    _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("reasoning",))
+    cloud = endpoint_from_config("cloud", {"base_url": "https://openrouter.ai", "provider": "openai-compatible",
+                                           "api_prefix": "/api/v1", "credential_ref": "keychain:cloud"})
+    assert P.may_send_to(cloud) is False
+    lookalike = endpoint_from_config("cloud", {"base_url": "https://mini.fixture.ts.net",
+                                               "credential_ref": "keychain:cloud"})
+    assert P.may_send_to(lookalike) is False, "the hostname alone never decides"
+
+
+def test_agent_loop_sends_the_profile_to_a_verified_node(provisioned, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from service.agent import loop
+    from service.memory import identity
+    P.update(SAMPLE)
+    _patch_cloud(monkeypatch)
+    monkeypatch.setattr(identity, "identity_prompt_block", lambda **kw: "\nIDENTITY")
+    monkeypatch.setattr(loop.prompt_blocks, "memory_block", lambda **kw: "")
+    monkeypatch.setattr(loop, "audit", lambda *a, **k: None)
+    client = _PromptClient(False)
+    client.target = SimpleNamespace(endpoint=_node_endpoint())
+
+    async def emit(event):
+        pass
+
+    class _Approver:
+        async def confirm(self, action):
+            return False
+
+    asyncio.run(loop.run_agent(client, "Ling-3.0-tiny-oQ4e", [{"role": "user", "content": "Plan my week."}],
+                               emit, _Approver(), debug=False, max_steps=1, tools=["get_upcoming"]))
+    assert "ABOUT THE USER" in client.systems[0]
+
+
+def _bind_reasoning_to_the_node(monkeypatch):
+    import service.config as config
+    real = config.models_config()
+    inference = {**(real.get("inference") or {}),
+                 "endpoints": {"mini": {"base_url": "https://mini.fixture.ts.net",
+                                        "credential_ref": "env:WISP_MINI_INFERENCE_KEY"}},
+                 "bindings": {"reasoning": {"endpoint": "mini", "model_id": "big"}}}
+    monkeypatch.setattr(config, "models_config", lambda: {**real, "inference": inference})
+
+
+def test_the_lock_line_and_answers_name_the_node_not_the_cloud(client, provisioned, monkeypatch):
+    from service import wisp_about
+    _bind_reasoning_to_the_node(monkeypatch)
+    _patch_cloud(monkeypatch)
+    assert wisp_about.own_nodes() == ["mini"]
+    status = client.get("/profile").json()["status"]
+    assert status["local_only"] is True and status["tailnet_nodes"] == ["mini"]
+    for text in (wisp_about.privacy(), wisp_about.overview(), wisp_about.identity()):
+        assert "your mini on your tailnet" in text
+        assert "cloud model is on" not in text
+    assert "including what you told me in Getting to know you" in wisp_about.privacy()
+
+
+def test_an_unverified_node_binding_is_not_named(client, unprovisioned, monkeypatch):
+    from service import wisp_about
+    _bind_reasoning_to_the_node(monkeypatch)
+    _patch_cloud(monkeypatch)
+    assert wisp_about.own_nodes() == []
+    assert client.get("/profile").json()["status"]["tailnet_nodes"] == []

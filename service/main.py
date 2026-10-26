@@ -1363,11 +1363,12 @@ async def chat(body: dict[str, Any]):
 def _profile_block(endpoint) -> str:
     """The user's own description of themselves (About you), for a prompt to
     `endpoint`, only where profile.may_send_to allows: Wisp's own on-Mac model,
-    or any model while Cloud "Everything" is on. Never an optional cloud model.
+    the user's own verified Mac on their tailnet, or any model while Cloud
+    "Everything" is answering. Never an optional cloud model.
     Best-effort: a missing or unreadable profile never breaks a turn."""
     try:
         from service.memory.profile import may_send_to, profile_block
-        if not may_send_to(managed=getattr(endpoint, "managed", False)):
+        if not may_send_to(endpoint):
             return ""
         return profile_block()
     except Exception:  # noqa: BLE001

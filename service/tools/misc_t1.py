@@ -104,7 +104,10 @@ def _where_inference_runs() -> str:
     if cloud == "super":
         return ("The model above runs on this Mac. You've also turned on a cloud model: questions "
                 f"it answers, and the data they need, are sent to {host}.")
-    return "Inference runs on this Mac: no question or data is sent to a cloud model."
+    from service.wisp_about import nodes_phrase, own_nodes
+    nodes = own_nodes()
+    where = "this Mac and " + nodes_phrase(nodes) if nodes else "this Mac"
+    return f"Inference runs on {where}: no question or data is sent to a cloud model."
 
 
 @register(

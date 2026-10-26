@@ -163,6 +163,8 @@ struct KnowYouChecks {
               == "Sent with your questions to openrouter.ai", "Cloud Everything names the host")
         check(ProfileStatus(json: ["local_only": true, "sent_to": ""]).whereItLives == "Stays on this Mac",
               "an optional cloud model keeps the profile here")
+        check(ProfileStatus(json: ["local_only": true, "tailnet_nodes": ["mini"]]).whereItLives
+              == "Stays on this Mac and your mini on your tailnet", "the user's own node is named, not cloud")
 
         // The notices after the flow.
         check(KnowYouNotice.notNow.contains("/about") && KnowYouNotice.notNow.contains("Tell Wisp About You…"),
