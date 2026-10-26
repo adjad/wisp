@@ -502,7 +502,7 @@ async def _omlx_cli_wait(*args: str, seconds: float) -> bool:
     try:
         proc = subprocess.Popen([OMLX_CLI, *args], stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, start_new_session=True)
-    except FileNotFoundError:
+    except OSError:
         return False
     try:
         return await asyncio.to_thread(proc.wait, seconds) == 0
@@ -553,6 +553,9 @@ async def ensure_omlx() -> None:
         return
     if await _await_omlx(2):
         return
+    if _quitting:
+        # A model call still in flight at quit must not start the oMLX.app it just stopped.
+        raise ModelLoadError("Wisp is quitting; the local AI engine stays stopped")
     client.invalidate_connections()
     if not await _omlx_cli("start", "--no-wait"):
         raise ModelLoadError("The local oMLX CLI is unavailable")
@@ -612,6 +615,8 @@ async def health() -> dict[str, Any]:
 # loaded after Wisp has gone.
 _QUIT_UNLOAD_SECONDS = 3.0
 _QUIT_STOP_SECONDS = 5.0
+# Set once quitting starts: a user's oMLX.app is not started again after it was stopped.
+_quitting = False
 
 
 async def _unload_resident(seconds: float) -> list[str]:
@@ -621,7 +626,12 @@ async def _unload_resident(seconds: float) -> list[str]:
     try:
         async with asyncio.timeout(seconds):
             for model in await client.loaded_models():
-                await client.unload(model)
+                try:
+                    await client.unload(model)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 — one refusal must not keep the rest loaded
+                    continue
                 unloaded.append(model)
     except Exception:  # noqa: BLE001 — quitting goes on to stop the engine either way
         pass
@@ -632,11 +642,14 @@ async def _unload_resident(seconds: float) -> list[str]:
 async def shutdown_omlx() -> dict[str, Any]:
     """Stop the oMLX engine entirely: its models and its ~2GB baseline. Called on app quit.
 
-    Waits for the stop, within the app's wait, instead of firing it off: a stop still
-    starting up when Wisp exits never ran. A user's oMLX.app has its models unloaded
-    first, so its memory is freed even if the stop fails."""
+    Waits for `omlx-cli stop` to deliver its request, within the app's wait, instead of
+    firing it off: a stop still starting up when Wisp exits never ran. The CLI does not
+    wait for the server to exit, so a user's oMLX.app has its models unloaded first: that
+    frees their memory even if the stop is slow or fails."""
+    global _quitting
     if not getattr(client, "managed", True):
         return {"stopped": False}
+    _quitting = True
     if is_bundled():
         from service.engine.runtime import stop_if_running
         return {"stopped": await asyncio.to_thread(

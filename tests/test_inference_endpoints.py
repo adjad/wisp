@@ -236,9 +236,49 @@ def test_quit_unloads_the_users_omlx_then_waits_for_the_stop(monkeypatch, tmp_pa
     monkeypatch.setattr(main, "client", Local(), raising=False)
     monkeypatch.setattr(main, "is_bundled", lambda: False)
     monkeypatch.setattr(main, "OMLX_CLI", str(cli))
+    monkeypatch.setattr(main, "_quitting", False)
     assert asyncio.run(main.shutdown_omlx()) == {"stopped": True, "unloaded": ["a", "b"]}
     assert order == ["status", "unload a", "unload b"]
     assert seen.read_text().split() == ["stop", "--timeout", "5"]
+
+
+def test_after_quit_a_late_model_call_does_not_restart_omlx(monkeypatch):
+    from service import main
+    cli = AsyncMock(return_value=True)
+
+    async def down(seconds):
+        return False
+
+    monkeypatch.setattr(main, "client", type("Local", (), {"managed": True})(), raising=False)
+    monkeypatch.setattr(main, "is_bundled", lambda: False)
+    monkeypatch.setattr(main, "_await_omlx", down)
+    monkeypatch.setattr(main, "_omlx_cli", cli)
+    monkeypatch.setattr(main, "_quitting", True)
+    monkeypatch.setattr(main, "require_local_models_disabled", lambda *a: None, raising=False)
+    with pytest.raises(ModelLoadError):
+        asyncio.run(main.ensure_omlx())
+    cli.assert_not_called()
+
+
+def test_one_refused_unload_does_not_keep_the_rest_loaded(monkeypatch, tmp_path):
+    from service import main
+
+    class Local:
+        managed = True
+
+        async def loaded_models(self):
+            return ["pinned", "b"]
+
+        async def unload(self, model):
+            if model == "pinned":
+                raise RuntimeError("busy")
+
+    cli, _ = _quit_cli(tmp_path)
+    monkeypatch.setattr(main, "client", Local(), raising=False)
+    monkeypatch.setattr(main, "is_bundled", lambda: False)
+    monkeypatch.setattr(main, "OMLX_CLI", str(cli))
+    monkeypatch.setattr(main, "_quitting", False)
+    assert asyncio.run(main.shutdown_omlx()) == {"stopped": True, "unloaded": ["b"]}
 
 
 def test_quit_still_stops_when_the_engine_does_not_answer(monkeypatch, tmp_path):
@@ -255,6 +295,7 @@ def test_quit_still_stops_when_the_engine_does_not_answer(monkeypatch, tmp_path)
     monkeypatch.setattr(main, "is_bundled", lambda: False)
     monkeypatch.setattr(main, "OMLX_CLI", str(cli))
     monkeypatch.setattr(main, "_QUIT_UNLOAD_SECONDS", 0.05)
+    monkeypatch.setattr(main, "_quitting", False)
     assert asyncio.run(main.shutdown_omlx()) == {"stopped": False, "unloaded": []}
     assert seen.read_text().split()[0] == "stop"
     monkeypatch.setattr(main, "OMLX_CLI", str(tmp_path / "missing"))
@@ -268,6 +309,7 @@ def test_quit_bounds_the_bundled_stop(monkeypatch):
     monkeypatch.setattr(main, "client", type("Local", (), {"managed": True})(), raising=False)
     monkeypatch.setattr(main, "is_bundled", lambda: True)
     monkeypatch.setattr(runtime, "stop_if_running", lambda **kw: seen.append(kw) or True)
+    monkeypatch.setattr(main, "_quitting", False)
     assert asyncio.run(main.shutdown_omlx()) == {"stopped": True}
     assert seen == [{"final": True, "grace": main._QUIT_STOP_SECONDS}]
 
