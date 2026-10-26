@@ -27,8 +27,9 @@ IMPORTANT rules:
 - Undo deletes exactly the item Wisp created, by the identifier stored here
   (never one from a request or a card), through the verified cancel/delete
   paths, and blocks the item from ever being added again.
-- `proactive_auto_add: false` in config.yaml turns writing off: the same items
-  become ordinary tap-to-add cards (the executor's calendar_event/reminder).
+- Off by default: writing needs `proactive_auto_add: true` in config.yaml (the
+  user's standing approval). Off, the same items become ordinary tap-to-add
+  cards (the executor's calendar_event/reminder).
 """
 from __future__ import annotations
 

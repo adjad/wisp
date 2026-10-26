@@ -327,15 +327,34 @@ def test_with_the_flag_off_nothing_is_written_and_tap_cards_stand_in(store):
     assert event["start_ts"] == at(10, 31, 18) and event["duration_min"] == 60
 
 
-def test_the_config_flag_defaults_on_and_reads_false(monkeypatch):
+def test_the_config_flag_defaults_off_and_only_true_turns_it_on(monkeypatch):
     import service.config as config
     monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
     monkeypatch.setattr(config, "models_config", lambda: {})
-    assert config.proactive_auto_add_enabled() is True
+    assert config.proactive_auto_add_enabled() is False
+    for value in (None, "true", 1, "yes"):
+        monkeypatch.setattr(config, "models_config", lambda value=value: {"proactive_auto_add": value})
+        assert config.proactive_auto_add_enabled() is False
     monkeypatch.setattr(config, "models_config", lambda: {"proactive_auto_add": False})
     assert config.proactive_auto_add_enabled() is False
+    monkeypatch.setattr(config, "models_config", lambda: {"proactive_auto_add": True})
+    assert config.proactive_auto_add_enabled() is True
     monkeypatch.setattr(config, "user_overlay_valid", lambda: False)
     assert config.proactive_auto_add_enabled() is False
+
+
+def test_a_fresh_install_gets_tap_cards_and_writes_nothing(store, monkeypatch):
+    """No `proactive_auto_add` in config: the production setting (not an
+    injected one) keeps every item a tap-to-add card."""
+    import service.config as config
+    monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
+    monkeypatch.setattr(config, "models_config", lambda: {})
+    writers = Writers()
+    out = asyncio.run(autoadd.step(survivors(text("Maya", RECITAL)), {"calendar": [], "reminders": []},
+                                   now=NOW, tz=TZ, store=store, abort=lambda: False,
+                                   writers=writers.table(), existing=lambda n: []))
+    assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}
+    assert [c["action"]["method"] for c in out["tap"]] == ["calendar_event"]
 
 
 @pytest.mark.parametrize("outcome", [

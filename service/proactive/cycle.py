@@ -21,8 +21,9 @@ Rules:
   the whole Brief regenerates: a forced cycle, then every mail/texts overview
   (idle_refresh). Never during a turn; a failed idle probe counts as "in use".
 - Auto-add (autoadd.py) runs last, in this background cycle only and never
-  once a turn has started: a missed, time-sensitive event or deadline goes on
-  Calendar/Reminders through the verified writes, and its "Wisp did this"
+  once a turn has started. Off by default, a missed, time-sensitive event or
+  deadline becomes a tap-to-add card; with `proactive_auto_add: true` it goes
+  on Calendar/Reminders through the verified writes, and its "Wisp did this"
   card leads the cards (it counts toward the 5).
 """
 from __future__ import annotations
