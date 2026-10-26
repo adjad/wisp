@@ -35,7 +35,10 @@ FILE_VERSION = 1
 # The merge in seed() keeps keys outside the profile, so without this they would
 # outlive the profile that set them. Removed only while they still hold exactly
 # what Wisp wrote, so a value the person chose later in the engine's admin UI
-# stays. TurboQuant 6-bit KV was briefly Gemma's default and was withdrawn.
+# stays. Each cleanup runs once per install: the record notes it under
+# RETIRED_KEY, so a forced reseed never takes back a value the person turned on
+# again themselves. TurboQuant 6-bit KV was briefly Gemma's default and was withdrawn.
+RETIRED_KEY = "_retired"
 RETIRED = {
     "gemma-4-E4B-it-oQ4e-mtp": {"turboquant_kv_enabled": True, "turboquant_kv_bits": 6},
 }
@@ -92,9 +95,7 @@ def seed(settings_path: Path, record_path: Path,
         if record.get(model.id) == mark and model.id not in forced:
             continue
         entry = entries.get(model.id) if isinstance(entries.get(model.id), dict) else {}
-        retired = {k: v for k, v in RETIRED.get(model.id, {}).items() if k not in model.engine_profile}
-        if retired and all(entry.get(k) == v for k, v in retired.items()):
-            entry = {k: v for k, v in entry.items() if k not in retired}
+        entry = _retire_once(model, entry, record)
         entries[model.id] = {**entry, **model.engine_profile}
         record[model.id] = mark
         written.append(model.id)
@@ -104,6 +105,21 @@ def seed(settings_path: Path, record_path: Path,
         _write_private(settings_path, doc)
         _write_private(record_path, record)
     return written
+
+
+def _retire_once(model: catalog.CatalogModel, entry: dict, record: dict) -> dict:
+    """The entry without the values RETIRED lists for it, the first time only."""
+    retired = {k: v for k, v in RETIRED.get(model.id, {}).items() if k not in model.engine_profile}
+    if not retired:
+        return entry
+    done = record.get(RETIRED_KEY) if isinstance(record.get(RETIRED_KEY), dict) else {}
+    mark = fingerprint(retired)
+    if done.get(model.id) == mark:
+        return entry
+    record[RETIRED_KEY] = {**done, model.id: mark}
+    if all(entry.get(k) == v for k, v in retired.items()):
+        return {k: v for k, v in entry.items() if k not in retired}
+    return entry
 
 
 def push_body(entry: dict, allowed: set[str] | None) -> dict:

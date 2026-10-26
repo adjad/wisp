@@ -96,3 +96,20 @@ def test_memory_guard_decision():
     assert memory_guard({"memory": {"memory_guard_tier": "balanced"}}, already_set=True) is None
     for tier in ("safe", "custom", "aggressive", "SAFE"):
         assert memory_guard({"memory": {"memory_guard_tier": tier}}, already_set=False) is None
+
+
+@pytest.mark.parametrize("text", ["{not json", "[1, 2]", "", '{"memory": [1]}',
+                                  '{"memory": {"memory_guard_tier": 5, "soft_threshold": 0.8}}'])
+def test_a_corrupt_settings_file_gets_a_valid_aggressive_guard(tmp_path, text):
+    m = _manager(tmp_path)
+    m.prepare()
+    m.layout.settings_path.write_text(text)          # the record already exists
+    again = _manager(tmp_path)
+    again.prepare()
+    doc = _settings(again)
+    assert doc["memory"]["memory_guard_tier"] == "aggressive"
+    assert doc["auth"]["api_key"] == again.api_key and doc["server"]["port"] == again.port
+    if "soft_threshold" in text:
+        assert doc["memory"]["soft_threshold"] == 0.8
+    again.prepare()
+    assert _settings(again) == doc

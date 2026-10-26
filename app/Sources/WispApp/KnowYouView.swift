@@ -74,8 +74,15 @@ final class KnowYouModel: ObservableObject {
     /// Reaching the last screen counts as complete even if Done wasn't pressed.
     /// It never calls onClose: the panel has already dropped this flow.
     func leave() async {
-        guard !ended, loaded else { return }
+        guard !ended else { return }
         ended = true
+        // Left before the profile loaded (or while its load failed): still a
+        // Later, so Wisp's own offer waits its few days instead of coming back
+        // at the next panel close. The service ignores it for a finished profile.
+        guard loaded else {
+            _ = await client.dismissProfile()
+            return
+        }
         if flow.isDone {
             _ = await client.completeProfile()
         } else if profile.completedAt == nil {
