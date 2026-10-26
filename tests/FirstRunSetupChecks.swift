@@ -211,6 +211,17 @@ struct FirstRunSetupChecks {
         check(FirstRunBrain.plainLabel(realLabel) == "Gemma 4 E4B" && FirstRunBrain.plainLabel("Ling") == "Ling",
               "Plain model name")
 
+        // The tour teaches only shortcuts Wisp really holds, and examples that can work.
+        check(FirstRunSetupView.shortcutsLine(ask: true, search: true).hasPrefix("⌥ Space to ask"), "Both keys")
+        check(!FirstRunSetupView.shortcutsLine(ask: false, search: true).hasPrefix("⌥ Space to ask")
+              && FirstRunSetupView.shortcutsLine(ask: false, search: true).contains("top of the screen"),
+              "Another app owns ⌥Space: point at the top of the screen instead")
+        check(!FirstRunSetupView.shortcutsLine(ask: true, search: false).contains("⌘ ⇧ F"), "No ⌘⇧F when it isn't Wisp's")
+        check(FirstRunSetupView.examples([:]) == ["Remind me to call the dentist tomorrow at 10"], "Nothing allowed: the reminder only")
+        check(FirstRunSetupView.examples([.calendar: .allowed, .fullDiskAccess: .allowed]).count == 3, "Calendar and mail readable: all three")
+        check(!FirstRunSetupView.examples([.calendar: .notAllowed, .mail: .allowed]).contains("What's on my calendar today?"),
+              "No calendar question without Calendar")
+
         // A cold start says how long it has taken, once that is worth saying.
         check(FirstRunBrain.waited(5) == nil && FirstRunBrain.waited(19) == nil, "A few seconds: nothing")
         check(FirstRunBrain.waited(45) == "45 s so far" && FirstRunBrain.waited(150) == "2 min so far", "Then the time")

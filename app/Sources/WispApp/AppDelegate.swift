@@ -337,7 +337,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openDetailedSetup: { [weak self] in self?.openSetupGuide() },
             finish: { [weak self] tellAboutYou in self?.finishFirstRun(tellAboutYou: tellAboutYou) },
             permissionsChanged: { [weak self] states in self?.firstRunPermissionsChanged(states) },
-            stepChanged: { step in UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey) }))
+            stepChanged: { step in UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey) },
+            tryAsking: { [weak self] prompt in self?.finishFirstRun(tellAboutYou: false, asking: prompt) },
+            askKeyRegistered: hotKey?.registered ?? false,
+            searchKeyRegistered: searchHotKey?.registered ?? false))
         win.center()
         firstRunWindow = win
         // Closing it early does not give setup up: the download keeps going in the
@@ -353,7 +356,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.makeKeyAndOrderFront(nil)
     }
 
-    private func finishFirstRun(tellAboutYou: Bool) {
+    /// `asking`: one of the tour's examples. It is sent from Ask once Wisp can
+    /// answer; before that it waits in Ask's box under the setup card.
+    private func finishFirstRun(tellAboutYou: Bool, asking prompt: String? = nil) {
         firstRunFinishing = true
         let ready = setupModel.status?.ready == true
         firstRunWindow?.close()
@@ -366,6 +371,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start using Wisp opens Ask; Getting to know you is offered once the
         // panel closes again (KnowYouOffer), not on top of it.
         if tellAboutYou { tellWispAboutYou() } else { openAssistant() }
+        if let prompt {
+            model.showingQuickSettings = false
+            model.tab = .ask
+            model.input = prompt
+            if ready { model.submit() }
+        }
     }
 
     private func firstRunClosed() {

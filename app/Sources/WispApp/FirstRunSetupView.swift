@@ -531,18 +531,28 @@ struct FirstRunSetupView: View {
     var permissionsChanged: ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void
     /// Where the person is, saved so setup picks up there after a quit.
     var stepChanged: (Step) -> Void
+    /// Finishes setup and asks Wisp this, from the tour's examples.
+    var tryAsking: (String) -> Void
+    /// Whether ⌥Space and ⌘⇧F really belong to Wisp on this Mac.
+    var askKeyRegistered: Bool
+    var searchKeyRegistered: Bool
 
     init(setup: SetupGuideModel, initialStep: Step = .brain,
          openDetailedSetup: @escaping () -> Void,
          finish: @escaping (_ tellAboutYou: Bool) -> Void,
          permissionsChanged: @escaping ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void = { _ in },
-         stepChanged: @escaping (Step) -> Void = { _ in }) {
+         stepChanged: @escaping (Step) -> Void = { _ in },
+         tryAsking: @escaping (String) -> Void = { _ in },
+         askKeyRegistered: Bool = true, searchKeyRegistered: Bool = true) {
         self.setup = setup
         _step = State(initialValue: initialStep)
         self.openDetailedSetup = openDetailedSetup
         self.finish = finish
         self.permissionsChanged = permissionsChanged
         self.stepChanged = stepChanged
+        self.tryAsking = tryAsking
+        self.askKeyRegistered = askKeyRegistered
+        self.searchKeyRegistered = searchKeyRegistered
     }
 
     private var brain: FirstRunBrain { FirstRunBrain.from(status: setup.status, downloads: setup.downloads) }
@@ -1025,11 +1035,48 @@ struct FirstRunSetupView: View {
                     .font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.bottom, 10)
             }
             card(icon: "keyboard", title: "Open from anywhere",
-                 detail: "⌥ Space to ask  ·  ⌘ ⇧ F to search everything") { EmptyView() }
-            card(icon: "sparkles", title: "Try asking",
-                 detail: "“What's on my calendar today?”  ·  “Any emails I need to reply to?”  ·  "
-                    + "“Remind me to call the dentist tomorrow at 10”") { EmptyView() }
+                 detail: Self.shortcutsLine(ask: askKeyRegistered, search: searchKeyRegistered)) { EmptyView() }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Try asking").font(.system(size: 13, weight: .medium))
+                ForEach(Self.examples(permissions.states), id: \.self) { example in
+                    Button { tryAsking(example) } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.up.circle").accessibilityHidden(true)
+                            Text("“\(example)”")
+                            Spacer(minLength: 0)
+                        }
+                        .font(.system(size: 12.5)).foregroundStyle(Theme.textPrimary)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.hairline))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(brain.isReady ? "Start using Wisp and ask this" : "Start using Wisp; this waits in Ask until the model is ready")
+                }
+            }
         }
+    }
+
+    /// The shortcuts this Mac really has. A combination another app owns does
+    /// nothing in Wisp, so it is not taught; the top of the screen always works.
+    static func shortcutsLine(ask: Bool, search: Bool) -> String {
+        switch (ask, search) {
+        case (true, true): return "⌥ Space to ask  ·  ⌘ ⇧ F to search everything"
+        case (true, false): return "⌥ Space to ask"
+        case (false, true): return "Another app uses ⌥ Space, so open Wisp from the top of the screen  ·  ⌘ ⇧ F to search everything"
+        case (false, false): return "Another app uses Wisp's shortcuts, so open it from the top of the screen or the menu bar"
+        }
+    }
+
+    /// Examples that work with what was allowed: no calendar question without
+    /// Calendar, no email one without a way to read Mail.
+    static func examples(_ states: [FirstRunPermissions.Item: FirstRunPermissions.State]) -> [String] {
+        var out: [String] = []
+        if states[.calendar] == .allowed { out.append("What's on my calendar today?") }
+        if states[.mail] == .allowed || states[.fullDiskAccess] == .allowed { out.append("Any emails I need to reply to?") }
+        out.append("Remind me to call the dentist tomorrow at 10")
+        return out
     }
 
     /// How to open Wisp on this display, in words that match what's drawn there.
