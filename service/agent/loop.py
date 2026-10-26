@@ -1889,9 +1889,8 @@ async def run_agent(
                         and (private_at_start or private_read_in_turn))
         try:
             _exec_state["ran"] = True
-            from service.safety.policy import UNTRUSTED_CONTENT_CATEGORIES, shell_prints_file_content
-            if (tool.category in UNTRUSTED_CONTENT_CATEGORIES
-                    or (tool.category == "shell" and shell_prints_file_content(args))):
+            from service.safety.policy import turn_reads_untrusted
+            if turn_reads_untrusted(tool.name, tool.category, args):
                 untrusted_read_in_turn[0] = True
             from service.research.web import strict_host_fetch
             with strict_host_fetch(strict_fetch):

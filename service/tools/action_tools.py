@@ -45,6 +45,9 @@ _OUTBOUND_PREVIEW_TOOLS = {
 # Not outbound text, but the card must still show what will run or change:
 # the command or script itself, and the file a write or move touches.
 _ACTION_PREVIEW_TOOLS = {"run_shell", "run_applescript", "write_file", "move_path"}
+# The same limit policy.CARD_TEXT_LIMIT holds commands to: a command or script
+# that needs a card and is longer than this is refused before any card, so
+# these never show a clipped command. File contents and notes are clipped.
 _PREVIEW_CHARS = 4000
 
 

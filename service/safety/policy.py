@@ -84,6 +84,16 @@ def _read_only_shell_path(arg: str) -> str | None:
     return str(anchored)
 
 
+# Shell or AppleScript text longer than this is not parsed or pattern-matched
+# at all (shlex and the patterns below are slow on huge input): it is treated
+# as needing a card, and a card cannot show it (CARD_TEXT_LIMIT), so it is
+# refused. No real command is this long.
+SHELL_TEXT_LIMIT = 16_000
+# The most a confirmation card shows of a command or script. A longer one is
+# refused rather than approved with a tail the user never saw.
+CARD_TEXT_LIMIT = 4_000
+
+
 def read_only_shell_argv(cmd: str) -> tuple[str, ...] | None:
     """Return a fully validated command, or require explicit shell authority.
 
@@ -93,7 +103,8 @@ def read_only_shell_argv(cmd: str) -> tuple[str, ...] | None:
     canonically remain in its non-private paths; in particular a dash-prefixed
     filename after -- cannot become an option.
     """
-    if not isinstance(cmd, str) or re.search(r"[\x00-\x1f\x7f$`|&;<>(){}\[\]*?~#]", cmd):
+    if (not isinstance(cmd, str) or len(cmd) > SHELL_TEXT_LIMIT
+            or re.search(r"[\x00-\x1f\x7f$`|&;<>(){}\[\]*?~#]", cmd)):
         return None
     try:
         words = shlex.split(cmd)
@@ -244,6 +255,26 @@ def shell_text(args: dict) -> str:
     return " ".join(str(args.get(k) or "") for k in ("cmd", "script")).strip()
 
 
+def _quote_forms(text: str) -> tuple[str, ...]:
+    """The text, and the text with shell quoting removed (`~/.s"sh"` is ~/.ssh)."""
+    bare = re.sub(r"[\"'\\]", "", text)
+    return (text, bare) if bare != text else (text,)
+
+
+_DO_SHELL_SCRIPT = re.compile(r'do\s+shell\s+script\s+"((?:[^"\\]|\\.)*)"', re.IGNORECASE)
+
+
+def shell_forms(args: dict) -> tuple[str, ...]:
+    """Every spelling of a shell-category call the floor and the checks judge:
+    the text, its quote-stripped form, and for AppleScript each
+    `do shell script "…"` body as the shell will see it."""
+    text = shell_text(args)
+    forms = list(_quote_forms(text))
+    for body in _DO_SHELL_SCRIPT.findall(str(args.get("script") or "")):
+        forms.extend(_quote_forms(re.sub(r"\\(.)", r"\1", body)))
+    return tuple(dict.fromkeys(forms))
+
+
 # A plain grep over files. With no shell operators or expansions it can only
 # read and print, so searching docs that mention localhost:8765 (or a send
 # route) is not a way to reach the service. Fixed program names only; ripgrep
@@ -255,7 +286,8 @@ def _cannot_reach_network(args: dict) -> bool:
     """True only for a run_shell command that provably opens no connection:
     a validated read-only argv, or a plain grep with no shell syntax."""
     cmd = args.get("cmd")
-    if args.get("script") or not isinstance(cmd, str) or not cmd.strip():
+    if (args.get("script") or not isinstance(cmd, str) or not cmd.strip()
+            or len(cmd) > SHELL_TEXT_LIMIT):
         return False
     if read_only_shell_argv(cmd) is not None:
         return True
@@ -299,9 +331,20 @@ _SHELL_EGRESS = [
     *_LOOPBACK_ANYWHERE,
     # Script interpreters that open sockets, send Apple Events or start other programs.
     r"(?<![\w.-])(?:python[\d.]*|node|ruby|perl|php|swift|deno|bun|lua|tclsh)(?![\w-])[\s\S]*"
-    r"(?:socket|urllib|requests|httpx|aiohttp|http\.client|smtplib|ftplib|telnetlib|xmlrpc"
+    r"(?:socket|urllib|requests|httpx|aiohttp|http\.client|http\.server|smtplib|ftplib|telnetlib|xmlrpc"
     r"|fetch\s*\(|xmlhttprequest|net::|net/http|lwp|nsapplescript|scriptingbridge|sbapplication"
-    r"|appscript|osascript|urlsession|subprocess|os\.system|child_process|`|(?<!\d)0*8765(?!\d))",
+    r"|appscript|osascript|urlsession|subprocess|os\.system|child_process|`|(?<!\d)0*8765(?!\d)"
+    r"|require\s*\(\s*[\"'`]?(?:node:)?(?:https?2?|net|tls|dgram)\b|\bnode:(?:https?2?|net|tls|dgram)\b"
+    r"|open-uri|open_uri|uri\.open|\bopenuri\b)",
+    # Uploads and pushes with tools that are otherwise ordinary.
+    _CMD_POS + r"rsync\b[^;&|\n]*(?:\s[\w.@-]+:|rsync://)",
+    r"\bgit\b[^;&|\n]*\spush\b",
+    r"\bgh\s+(?:gist\s+create|(?:issue|pr)\s+(?:create|comment|edit)|release\s+(?:create|upload)"
+    r"|api\b[^;&|\n]*\s(?:-f|-F|--field|--raw-field|--input|-X|--method)\b)",
+    r"\baws\s+s3\s+(?:cp|mv|sync)\b", r"\baws\s+s3api\s+put-", r"\bgsutil\b[^;&|\n]*\s(?:cp|mv|rsync)\b",
+    r"\brclone\s+(?:copy|copyto|move|moveto|sync)\b",
+    # Anything piped into a shell or interpreter runs text the command fetched or built.
+    r"\|\s*(?:sudo\s+)?(?:[\w./~-]*/)?(?:sh|bash|zsh|dash|ksh|fish|python[\d.]*|node|ruby|perl|osascript)(?![\w.-])",
 ]
 # curl/wget are ordinary for reading a page. They need a card when they upload
 # (data, form, file or a method other than GET/HEAD), read their flags from a
@@ -316,17 +359,39 @@ _CURL_UPLOAD = re.compile(
     r"|\$\(|`|(?<!\d)0*8765(?!\d)")
 
 
+# `open` hands a URL to whatever app owns its scheme. Web pages and files are
+# ordinary; every other scheme (shortcuts://, imessage:, sms:, tel:,
+# facetime:, mailto:...) can start a call, a message or a Shortcut, so it asks.
+_OPEN_COMMAND = re.compile(_CMD_POS + r"open(?![\w.-])([^;&|\n]*)", re.IGNORECASE)
+_URL_SCHEME = re.compile(r"(?:^|[\s\"'=])([a-z][a-z0-9+.-]*):", re.IGNORECASE)
+_PLAIN_SCHEMES = frozenset({"http", "https", "file"})
+
+
+def _open_hit(text: str) -> str | None:
+    for match in _OPEN_COMMAND.finditer(text):
+        rest = match.group(1)
+        if re.search(r"(?:^|\s)-(?:a\s*[\"']?[^\s\"']*shortcuts|b\s*[\"']?com\.apple\.shortcuts)",
+                     rest, re.IGNORECASE):
+            return "open Shortcuts"
+        for scheme in _URL_SCHEME.findall(rest):
+            if scheme.lower() not in _PLAIN_SCHEMES:
+                return f"open {scheme}:"
+    return None
+
+
 def shell_egress_hit(args: dict) -> str | None:
     """Why a shell-category call could send something off this Mac, or None.
 
     Read-only commands and plain greps are never hits: they cannot open a
     connection whatever their text mentions."""
     text = shell_text(args)
+    if len(text) > SHELL_TEXT_LIMIT:
+        return "a command too long to check"
     if not text or _cannot_reach_network(args):
         return None
     forms = dict.fromkeys((text, re.sub(r"[\"'\\]", "", text)))
     for form in forms:
-        if (hit := _first_match(_SHELL_EGRESS, form)):
+        if (hit := _first_match(_SHELL_EGRESS, form) or _open_hit(form)):
             return hit
         if _HTTP_CLIENT.search(form) and (m := _CURL_UPLOAD.search(form)):
             return f"curl/wget {m.group(0).strip()}"
@@ -783,11 +848,40 @@ def credential_path_hit(args: dict, tool: str | None = None) -> str | None:
     return None
 
 
+def _grep_file_operands(cmd: str) -> str:
+    """A plain grep's file operands, without its search pattern: searching a
+    README for the words "mcp.json" reads the README, not mcp.json."""
+    words, files, pattern_given, skip = shlex.split(cmd)[1:], [], False, False
+    for word in words:
+        if skip:
+            skip = False
+        elif word in ("-e", "-f", "--regexp", "--file"):
+            pattern_given = skip = True
+            if word in ("-f", "--file"):
+                skip = False          # -f names a file grep reads: judge it
+        elif word.startswith(("-e", "--regexp=")):
+            pattern_given = True
+        elif word.startswith("-") and word != "-":
+            continue
+        elif not pattern_given:
+            pattern_given = True      # the first operand is the pattern
+        else:
+            files.append(word)
+    return " ".join(files)
+
+
 def shell_secret_hit(args: dict) -> str | None:
     """The credential location a shell-category call names, or None."""
-    if read_only_shell_argv(str(args.get("cmd") or "")) is not None and not args.get("script"):
-        return None                   # validated reads never reach hidden paths or ~/Library
-    return _first_match(_SHELL_SECRET, shell_text(args))
+    cmd = str(args.get("cmd") or "")
+    if not args.get("script") and len(cmd) <= SHELL_TEXT_LIMIT:
+        if read_only_shell_argv(cmd) is not None:
+            return None               # validated reads never reach hidden paths or ~/Library
+        if _cannot_reach_network(args):
+            cmd = _grep_file_operands(cmd)
+            return next((hit for form in _quote_forms(cmd)
+                         if (hit := _first_match(_SHELL_SECRET, form))), None)
+    return next((hit for form in shell_forms(args)
+                 if (hit := _first_match(_SHELL_SECRET, form))), None)
 
 
 # First words that make a scoped "always allow" a blanket one: an interpreter
@@ -832,17 +926,25 @@ def shell_grant_problem(args: dict) -> str | None:
 # MCP tools named for an action that leaves a mark outside Wisp. Under full
 # access every other MCP action runs without a card; these still ask. The
 # name is the server's own claim, so this only ever adds a card. Registered
-# names are lowercased (`mcp_<server>_sendmessage`), so a word anywhere in
-# the name counts; a read that happens to contain one just gets a card.
-_MCP_EFFECT_WORDS = ("send", "delete", "remove", "trash", "create", "update", "modify",
-                     "share", "publish", "upload", "forward", "reply", "invite", "move",
-                     "write", "transfer", "purchase", "cancel", "archive")
+# names are lowercased and squashed (`mcp_<server>_sendmessage`), so the
+# longer verbs count anywhere in the name. Short or noun-like words (add,
+# set, run, post, message...) count only as a whole word, so `get_address`,
+# `settings` or `get_messages` do not ask; a read that does contain one of
+# these words just gets a card.
+_MCP_EFFECT_STEMS = ("send", "delete", "remove", "trash", "create", "update", "modify",
+                     "share", "publish", "upload", "forward", "reply", "invite", "write",
+                     "transfer", "purchase", "cancel", "archive", "comment", "merge",
+                     "submit", "execute", "insert", "notify")
+_MCP_EFFECT_WORDS = frozenset({"post", "push", "run", "edit", "save", "add", "set", "put",
+                               "book", "pay", "order", "message", "email", "move"})
 
 
 def mcp_effect_word(tool: str | None) -> str | None:
     """The action word in an MCP tool's name that warrants a card, or None."""
     name = str(tool or "").lower()
-    return next((w for w in _MCP_EFFECT_WORDS if w in name), None)
+    if (stem := next((w for w in _MCP_EFFECT_STEMS if w in name), None)):
+        return stem
+    return next((w for w in re.split(r"[^a-z0-9]+", name) if w in _MCP_EFFECT_WORDS), None)
 
 
 def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision | None:
@@ -854,9 +956,10 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
     be a bypass.
     """
     if category == "shell":
-        cmd = shell_text(args)        # run_applescript's `do shell script` too
-        if (hit := _any(_rules("shell_deny", _SHELL_DENY), cmd)):
-            return Decision(Tier.DENY, f"matches blocked pattern: {hit}")
+        # run_applescript's `do shell script` bodies and quote-stripped text too.
+        for cmd in shell_forms(args):
+            if (hit := _any(_rules("shell_deny", _SHELL_DENY), cmd)):
+                return Decision(Tier.DENY, f"matches blocked pattern: {hit}")
     if category in ("fs_write", "fs_delete"):
         rules = _rules("path_deny", _PATH_DENY)
         operands = _path_operands(args, tool)
@@ -925,12 +1028,24 @@ def review_scope():
 def decide(category: str, args: dict, tool: str | None = None) -> Decision:
     """Return the policy decision for a tool action (see _decide). In a review
     run, only reads run without asking."""
+    if category == "shell" and len(shell_text(args)) > SHELL_TEXT_LIMIT:
+        return _too_long_for_card(args)
     decision = _decide(category, args, tool)
+    if category == "shell" and decision.tier is Tier.CONFIRM and len(shell_text(args)) > CARD_TEXT_LIMIT:
+        return _too_long_for_card(args)
     if (_REVIEW.get() and decision.tier is Tier.ALLOW
             and not ((str(category).endswith("_read") and category not in _REVIEW_UNTRUSTED_READS)
                      or category in _REVIEW_ALLOWED_CATEGORIES)):
         return Decision(Tier.CONFIRM, f"review run: Wisp would ask before {tool or category}")
     return decision
+
+
+def _too_long_for_card(args: dict) -> Decision:
+    """A command that needs a card but is too long for the card to show whole.
+    Approving it would approve a tail nobody read, so it is refused."""
+    return Decision(Tier.DENY, f"this command is {len(shell_text(args)):,} characters long, too long "
+                    f"to show in full on a confirmation card (the limit is {CARD_TEXT_LIMIT:,}), "
+                    "so it was not run. Split it into shorter commands.")
 
 
 def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
@@ -1010,8 +1125,8 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     # BEFORE grants so a standing "always allow run_shell" cannot lift it — a
     # grant is an answer to a question the user already considered, and nobody
     # approving `run_shell` once was agreeing to every future `rm -rf`.
-    destructive = (is_destructive_shell(shell_text(args))
-                   if category == "shell" else None)
+    destructive = (next((hit for form in shell_forms(args) if (hit := is_destructive_shell(form))),
+                        None) if category == "shell" else None)
     # Shell text that can send something off this Mac or read a secret, and a
     # file tool aimed at a credential. Computed before grants for the same
     # reason: a grant on `curl` was never agreement to every upload.
@@ -1224,27 +1339,34 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
 
 
 # Categories whose results carry text Wisp did not write and the user did not
-# type in this turn: files and PDFs, web pages, mail, messages, notes, the
-# screen, MCP servers and skills (and a shell cat/head/tail/grep, see
-# shell_prints_file_content). Once a turn has read any of it, an opaque
-# outbound action could be following instructions planted there.
+# type in this turn: files and PDFs, web pages, mail, messages, notes, calendar
+# events and Wisp's own digests of them (assistant_read: get_recent_activity,
+# daily_brief, get_upcoming...), the screen, MCP servers and skills. The
+# clipboard and most shell output count too (see turn_reads_untrusted). Once a
+# turn has read any of it, an opaque outbound action could be following
+# instructions planted there.
 UNTRUSTED_CONTENT_CATEGORIES = frozenset({
-    "fs_read", "web_read", "email_read", "messages_read", "notes_read",
+    "fs_read", "web_read", "email_read", "messages_read", "notes_read", "assistant_read",
     "browser_history_read", "screen", "mcp_read", "mcp_action", "skill_tool",
 })
+UNTRUSTED_CONTENT_TOOLS = frozenset({"clipboard_read"})
+# Validated read-only programs whose output is not file text: names and counts.
+_NON_CONTENT_READS = frozenset({"pwd", "echo", "whoami", "uname", "ls", "wc"})
 
 
-def shell_prints_file_content(args: dict) -> bool:
-    """Whether a shell-category call reads a file's text into the turn: a
-    validated cat/head/tail or a plain grep. Other commands are not judged
-    (a full-access shell can print anything; this catches the common reads)."""
+def turn_reads_untrusted(tool: str, category: str, args: dict) -> bool:
+    """Whether running this call puts outside text into the turn. Every shell
+    or AppleScript call does, except a validated pwd/echo/whoami/uname/ls/wc:
+    a full-access shell can print any file, page or message."""
+    if category in UNTRUSTED_CONTENT_CATEGORIES or tool in UNTRUSTED_CONTENT_TOOLS:
+        return True
+    if category != "shell":
+        return False
     cmd = args.get("cmd")
     if args.get("script") or not isinstance(cmd, str):
-        return False
+        return True
     argv = read_only_shell_argv(cmd)
-    if argv is not None:
-        return argv[0].rsplit("/", 1)[-1] in {"cat", "head", "tail"}
-    return _cannot_reach_network(args)        # the plain-grep case
+    return argv is None or argv[0].rsplit("/", 1)[-1] not in _NON_CONTENT_READS
 
 
 # Categories whose actions are opaque to the host in the same way as
@@ -1270,4 +1392,6 @@ def opaque_outbound_decision(tool: str, category: str, args: dict, decision: Dec
     if (tool == "run_shell" and set(args) == {"cmd"}
             and read_only_shell_argv(args.get("cmd")) is not None):
         return decision
+    if category == "shell" and len(shell_text(args)) > CARD_TEXT_LIMIT:
+        return _too_long_for_card(args)
     return Decision(Tier.CONFIRM, reason)
