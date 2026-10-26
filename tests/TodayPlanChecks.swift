@@ -584,6 +584,42 @@ struct TodayPlanChecks {
         // An older service: no state, no blocked; a missing preference flag is false.
         let older = try JSONDecoder().decode(TodayPlan.self, from: try planData(day: "2026-10-22", zone: "UTC"))
         check(older.access("calendar")?.readable == true && older.preferences.plan_all_day == nil, "an older service still decodes")
+        // Mail read through a connected, fresh Google account counts as read here
+        // too (workspace.proactive.mail_read_by), as in the proactive section.
+        var viaGoogle = payload
+        var googleWorkspace = payload["workspace"] as! [String: Any]
+        googleWorkspace["proactive"] = ["state": "ready", "accounts": ["me", "ada@gmail.com"],
+                                        "mail_read_by": ["ada@gmail.com"]]
+        viaGoogle["workspace"] = googleWorkspace
+        let google = try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: viaGoogle))
+        check(google.unreadSources == ["calendar", "messages"], "Google-read mail isn't unread: \(google.unreadSources)")
+        // What the proactive section is given (NotchBriefView.coverage), and the
+        // raw workspace coverage: both agree with the top line.
+        let wired = ["calendar", "reminders", "email", "messages"].compactMap { google.access($0) }
+        let proactiveUnread = google.workspace?.proactive?.unreadSources(wired).map(\.source) ?? []
+        let rawCoverage = google.workspace?.source_coverage.map(\.access) ?? []
+        check(google.workspace?.proactive?.unreadSources(rawCoverage).map(\.source) == ["messages"],
+              "the proactive rule alone also reads Google mail as read")
+        check(proactiveUnread == google.unreadSources, "the top line and the proactive section agree: \(proactiveUnread)")
+        var linkedOnly = googleWorkspace
+        linkedOnly["proactive"] = ["state": "ready", "accounts": ["me", "ada@gmail.com"]]
+        viaGoogle["workspace"] = linkedOnly
+        let notRead = try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: viaGoogle))
+        check(notRead.unreadSources == ["calendar", "email", "messages"], "a linked account alone isn't a read")
+        // No workspace (assess failed, or it didn't decode): mail and texts were
+        // never read, so they are unread, never an all-clear.
+        check(older.workspace == nil && older.unreadSources == ["email", "messages"],
+              "a missing workspace leaves mail and texts unread: \(older.unreadSources)")
+        check(older.access("email")?.state == .unavailable && older.access("notes") == nil,
+              "mail without a workspace is unavailable; notes stay unknown")
+        var broken = payload
+        broken["workspace"] = ["attention": "not a list"]
+        let undecodable = try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: broken))
+        check(undecodable.workspace == nil && undecodable.unreadSources == ["calendar", "email", "messages"],
+              "an undecodable workspace leaves mail and texts unread: \(undecodable.unreadSources)")
+        let lede = DayTimeline.lede(weekday: "Thursday", isToday: true, load: nil, dueToday: [], overdue: [], next: nil,
+                                   unread: older.unreadSources)
+        check(!lede.contains("Nothing needs you"), "no all-clear without a workspace: \(lede)")
     }
 
     static func main() async throws {

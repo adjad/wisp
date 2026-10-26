@@ -1191,16 +1191,61 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     return result
 
 
-def honest(view: dict, coverage) -> dict:
+def google_mail_read(now: float | None = None) -> list[str]:
+    """Linked Google accounts whose mail Wisp has read recently: the account's
+    unified Google state (gmail_source.account_state) is "connected" (not
+    expired, failing or awaiting a reconnect) and its mail sync is fresh.
+
+    Narrow on purpose, since every Today snapshot asks: it reads the Google
+    config file and in-memory sync receipts only. It never takes the history
+    guard or re-parses the header snapshot (gmail_source.status() does both).
+    Any doubt is an empty list, never a read."""
+    try:
+        from service import gmail_source
+        from service import google_calendar_source as calendar
+        from service import google_workspace as workspace
+        from service.tools import email_tools as mail
+        cfg = json.loads(gmail_source.CONFIG_PATH.read_text(encoding="utf-8"))
+        accounts = gmail_source.connected_accounts(cfg if isinstance(cfg, dict) else {})
+        now = time.time() if now is None else now
+        read = []
+        for email, item in accounts.items():
+            receipt = mail._external_accounts.get(email) or {}
+            stamp = mail._source_receipt(receipt.get("headers_at"))
+            error = str(receipt.get("headers_error") or "")
+            fresh = bool(receipt.get("headers_verified") and stamp and not error
+                         and 0 <= now - stamp <= mail._EXTERNAL_MAX_AGE)
+            expired = bool(item.get("auth_expired"))
+            row = {"expired": expired, "client_source": "builtin" if item.get("client_source") == "builtin" else "user",
+                   "last_error": gmail_source.SIGNIN_EXPIRED if expired else (gmail_source._errors.get(email) or error),
+                   "workspace": bool(item.get("workspace")),
+                   "workspace_full": workspace.has_full_scopes(email, item),
+                   "workspace_requested": bool(item.get("workspace_requested")),
+                   **calendar.account_status(email)}
+            if fresh and not expired and gmail_source.account_state(row).get("state") == "connected":
+                read.append(email)
+        return sorted(read)
+    except Exception:  # noqa: BLE001 — status unknown: nothing counts as read
+        return []
+
+
+def honest(view: dict, coverage, google_mail=()) -> dict:
     """The Brief's view without an all-clear about a source Wisp couldn't read.
 
     ``coverage`` is the workspace's source_coverage. Each source that isn't
     ready is listed in ``unread`` (the app suppresses its "nothing" lines and
     shows why), and "Nothing on your calendar" becomes "Wisp can't see your
-    calendar yet" when the calendar wasn't read."""
+    calendar yet" when the calendar wasn't read. ``google_mail`` lists linked
+    Google accounts whose mail was read recently (google_mail_read); mail
+    counts as read through them even when Mail.app couldn't be, and only then
+    (an expired or failing account is not a read). It is echoed as
+    ``mail_read_by`` so the app applies the same rule."""
+    google_mail = sorted(str(a) for a in google_mail or () if a)
     unread = [row.get("source") for row in coverage or []
-              if isinstance(row, dict) and row.get("ready") is not True and row.get("source")]
+              if isinstance(row, dict) and row.get("ready") is not True and row.get("source")
+              and not (row.get("source") == "email" and google_mail)]
     view["unread"] = unread
+    view["mail_read_by"] = google_mail
     if "calendar" in unread:
         for key in ("summary", "lede"):
             if isinstance(view.get(key), str):
@@ -1211,6 +1256,6 @@ def honest(view: dict, coverage) -> dict:
 def attach(workspace: dict, now: float | None = None) -> None:
     """Add workspace["proactive"] to the Today workspace. Never fatal."""
     try:
-        workspace["proactive"] = honest(snapshot(now=now), workspace.get("source_coverage"))
+        workspace["proactive"] = honest(snapshot(now=now), workspace.get("source_coverage"), google_mail_read())
     except Exception:  # noqa: BLE001
         traceback.print_exc()

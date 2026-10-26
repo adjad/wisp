@@ -133,14 +133,30 @@ struct TodayPlan: Decodable {
 
     /// Whether Wisp could read a source and what fixes it when it couldn't:
     /// Calendar and Reminders from the plan's own source health, the rest from
-    /// the workspace's coverage. Nil when the service said nothing about it.
+    /// the workspace's coverage. Mail and texts are known only through the
+    /// workspace, so without one (it failed to build or to decode) they count
+    /// as unread: the Brief never gives an all-clear for them. Nil when the
+    /// service said nothing about any other source.
     func access(_ source: String) -> SourceAccess? {
         if let health = sources[source] {
             return SourceAccess(source: source, ready: health.ready, state: health.state, blocked: health.blocked,
                                 reason: health.reason)
         }
-        return workspace?.source_coverage.first { $0.source == source }?.access
+        if let row = workspace?.source_coverage.first(where: { $0.source == source }) {
+            // Mail Mail.app couldn't give counts as read when a connected Google
+            // account read it recently (ProactiveState.mailReadBy), the same rule
+            // the proactive section applies, so the top line and it agree.
+            if source == "email", !row.access.readable, !(workspace?.proactive?.mailReadBy ?? []).isEmpty {
+                return SourceAccess(source: source, ready: true)
+            }
+            return row.access
+        }
+        if Self.workspaceOnly.contains(source) { return SourceAccess(source: source, ready: false, state: "unavailable") }
+        return nil
     }
+
+    /// Sources the plan's own health never reports.
+    static let workspaceOnly: Set<String> = ["email", "messages"]
 
     /// The sources behind the Brief Wisp couldn't read, in reading order.
     var unreadSources: [String] {

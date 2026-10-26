@@ -95,6 +95,10 @@ _history_at: float = 0.0
 # "from yesterday" worked seconds later once the sync landed.
 _email_available: bool | None = None
 _email_reason: str = ""
+# The MailReader's reason_kind ("mail_automation", "mail_not_configured", …), or
+# "". mail_not_configured arrives with available=True: the script ran, but this
+# Mac has no Mail accounts, so a "ready" inbox is not one Wisp could read.
+_email_reason_kind: str = ""
 # Reserved for a reader explicitly reporting work in flight. A successful
 # local-index read is NOT still syncing, regardless of its modification time.
 _email_sync_pending: bool = False
@@ -490,11 +494,17 @@ _swift_identity = _restored_native("identity", "\n".join(
     e for e in _identity_emails if e.casefold() not in _external_accounts)).splitlines()
 
 
+def email_reason_kind() -> str:
+    """The MailReader's last reason_kind, or ""."""
+    return _email_reason_kind
+
+
 @mutating
 def set_email_availability(available: bool, reason: str = "",
-                           syncing: bool = False, read_source: str = "") -> None:
-    """Record whether the Swift MailReader's last sync could read the inbox."""
-    global _email_available, _email_reason, _email_sync_pending, _email_read_source
+                           syncing: bool = False, read_source: str = "", reason_kind: str = "") -> None:
+    """Record whether the Swift MailReader's last sync could read the inbox,
+    and the reader's reason_kind when it named one."""
+    global _email_available, _email_reason, _email_sync_pending, _email_read_source, _email_reason_kind
     global _native_headers_at, _native_source
     with _raw_snapshot_lock:
         changed = _email_available is not available or _raw_availability.token() is None
@@ -502,6 +512,8 @@ def set_email_availability(available: bool, reason: str = "",
             _raw_availability.withdraw()
         _email_available = available
         _email_reason = reason
+        kind = str(reason_kind or "").strip()
+        _email_reason_kind = kind if re.fullmatch(r"[a-z_]{1,40}", kind) else ""
         _email_sync_pending = syncing and available
         _email_read_source = read_source if read_source in {"local_index", "mail_app"} else ""
         if available and not syncing:
@@ -523,11 +535,17 @@ def _no_inbox_message() -> str:
     if _email_available is False and _external_fresh():
         return "No emails found."
     if _email_available is False:
-        reason = _email_reason or "Mail Automation access isn't granted"
+        # The readers' reasons are whole sentences: no doubled period inside ours.
+        reason = (_email_reason or "Mail Automation access isn't granted").strip().rstrip(".")
         guidance = ("Grant Wisp access in System Settings ▸ Privacy & Security ▸ Automation ▸ Wisp ▸ Mail, then try again."
-                    if "automation" in reason.casefold() else "Open Mail and let it refresh, then try again.")
+                    if "automation" in reason.casefold() or _email_reason_kind == "mail_automation"
+                    else "Open Mail and let it refresh, then try again.")
         return (f"I couldn’t refresh Mail: {reason}. No usable cached emails are available, "
                 f"so I couldn’t verify your inbox. {guidance}")
+    if _email_available is True and _email_reason_kind == "mail_not_configured" and not _external_accounts:
+        return ((_email_reason.strip() or "There are no Mail accounts on this Mac.")
+                + ("" if _email_reason.strip().endswith((".", "!", "?")) or not _email_reason.strip() else ".")
+                + " Add one in System Settings ▸ Internet Accounts, or connect Google in Wisp's Settings.")
     if _email_available is True:
         # Local read completion cannot prove that the server inbox is empty.
         if email_freshness_warning():
