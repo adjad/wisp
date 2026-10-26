@@ -1525,9 +1525,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The permissions first launch defers (Screen Recording, Accessibility,
-    /// Full Disk Access), asked for when the person chooses to.
+    /// Full Disk Access), asked for when the person chooses to: only what is
+    /// still off, each with its reason, and one system surface per click.
     @objc private func grantMoreAccess() {
-        Permissions.requestExtras(force: true)
+        let missing = Permissions.missingExtras()
+        let alert = NSAlert()
+        if let next = missing.first {
+            alert.messageText = "Give Wisp more access"
+            alert.informativeText = missing.map { "• \($0.title), \($0.reason)." }.joined(separator: "\n")
+                + (missing.count > 1 ? "\n\nOne at a time: choose Grant More Access again for the next." : "")
+            alert.addButton(withTitle: next == .fullDiskAccess ? "Open Full Disk Access…" : "Allow \(next.title)…")
+            alert.addButton(withTitle: "Not Now")
+        } else {
+            alert.messageText = "Wisp has all the access it can use"
+            alert.informativeText = "Screen Recording, Accessibility and Full Disk Access are on."
+            alert.addButton(withTitle: "OK")
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn, let next = missing.first { Permissions.request(next) }
     }
 
     /// Getting to know you, from the menu bar or the first-run window. Choosing it

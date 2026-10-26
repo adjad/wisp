@@ -228,6 +228,14 @@ struct FirstRunSetupChecks {
         check(!ContactsReader.shouldRequest(.denied, mayAsk: true) && !ContactsReader.shouldRequest(.authorized, mayAsk: true),
               "Decided: never again")
 
+        // Grant More Access: only what is off, in order, one surface per click.
+        check(Permissions.missing(screenRecording: true, accessibility: true, fullDiskAccess: true).isEmpty, "All on: nothing")
+        check(Permissions.missing(screenRecording: false, accessibility: true, fullDiskAccess: false) == [.screenRecording, .fullDiskAccess],
+              "Only what is still off")
+        check(Permissions.surface(granted: true, promptedBefore: false) == .none, "On: no surface at all")
+        check(Permissions.surface(granted: false, promptedBefore: false) == .prompt, "First time: the system prompt only")
+        check(Permissions.surface(granted: false, promptedBefore: true) == .settings, "After that: the Settings page only")
+
         // A cold start says how long it has taken, once that is worth saying.
         check(FirstRunBrain.waited(5) == nil && FirstRunBrain.waited(19) == nil, "A few seconds: nothing")
         check(FirstRunBrain.waited(45) == "45 s so far" && FirstRunBrain.waited(150) == "2 min so far", "Then the time")
