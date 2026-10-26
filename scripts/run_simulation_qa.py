@@ -349,6 +349,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_bundled_attribution.py",
     "tests/test_bundled_engine_api.py",
     "tests/test_engine_downloads.py",
+    # Per-model engine settings seeded into a temp model_settings.json; no engine runs.
+    "tests/test_engine_profiles.py",
     "tests/test_bundled_engine.py",
     "tests/test_bundled_engine_mode.py",
     # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.
@@ -938,6 +940,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/display-geometry-contract",
             [TRUSTED_BASH, "scripts/test_display_geometry.sh"],
+        ),
+        (
+            "native/first-run-setup-contract",
+            [TRUSTED_BASH, "scripts/test_first_run_setup.sh"],
         ),
         (
             "native/mail-db-compile",
