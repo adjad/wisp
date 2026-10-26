@@ -198,8 +198,31 @@ struct OverlayTransitionChecks {
         print("PASS: isolated native reveal, resize, reversal, reduced motion, and hide cancellation")
     }
 
+    /// Audit 32649065: a start failure on a cold launch, before any reachability
+    /// probe has answered, must show the down card instead of "Starting Wisp…".
+    @MainActor
+    static func coldStartFailureChecks() {
+        let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
+        check(model.serviceReachable && model.serviceStarting && !model.serviceDown,
+              "A cold launch starts in the neutral starting state")
+        NotificationCenter.default.post(name: .wispBackendStartFailed, object: nil,
+                                        userInfo: ["reason": "Wisp's service exited (status 1)."])
+        check(!model.serviceReachable && model.serviceDown,
+              "A recorded start failure on a cold launch shows the down card")
+        check(model.serviceStartFailure == "Wisp's service exited (status 1).", "The card names the cause")
+        model.serviceStarting = false
+        model.serviceReachable = true
+        check(!model.serviceDown && model.serviceStartFailure == nil,
+              "The first probe that answers clears the failure")
+        NotificationCenter.default.post(name: .wispBackendStartFailed, object: nil, userInfo: ["reason": "late"])
+        check(model.serviceReachable && model.serviceStartFailure == nil,
+              "A stale failure after the service answered is ignored")
+        print("PASS: a cold-launch start failure shows the down card; a running service ignores stale failures")
+    }
+
     static func main() async {
         lifecycleChecks()
+        await MainActor.run { coldStartFailureChecks() }
         #if WISP_MOTION_APP_DELEGATE_CHECKS
         precondition(URLProtocol.registerClass(MotionFixtureProtocol.self))
         await AppDelegate.checkDismissReopenInput()

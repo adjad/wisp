@@ -251,6 +251,11 @@ final class OverlayModel: ObservableObject {
             let reason = note.userInfo?["reason"] as? String ?? ""
             MainActor.assumeIsolated {
                 guard let self, !self.serviceReachable || self.serviceStarting else { return }
+                // On a cold launch reachability is still its optimistic `true`
+                // (no probe has answered yet), which would hide the down card.
+                // A start that provably died means the service is not reachable;
+                // the next probe that answers sets it back and clears the failure.
+                self.serviceReachable = false
                 self.serviceStartFailure = reason.isEmpty ? "Wisp's service stopped while starting." : reason
             }
         }
@@ -1331,6 +1336,7 @@ final class OverlayModel: ObservableObject {
                 input = back.text
                 attachedImage = back.image
                 attachedImageName = back.imageName
+                researchMode = back.researchMode
                 if turns.last?.role == "user" { turns.removeLast() }
                 phase = .idle
                 syncQueue()
