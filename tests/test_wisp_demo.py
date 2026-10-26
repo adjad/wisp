@@ -1,6 +1,8 @@
 """service/demo_mode.py (scripts/wisp_demo.py, the notch's /demo): a fresh demo home, then the real one restored exactly.
 
-Runs against a scratch home and a scratch UserDefaults domain; never touches ~/.moe.
+Runs against a scratch home and a UserDefaults domain stored as a plist file in that
+scratch home (defaults(1) accepts a path), so it never touches ~/.moe or
+~/Library/Preferences.
 """
 from __future__ import annotations
 
@@ -10,7 +12,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,7 @@ def world(tmp_path):
     (moe / "engine" / "engine.pid").write_text("12345")
     if sys.platform != "darwin":
         pytest.skip("macOS defaults(1) only")
-    domain = f"wisp.demo-test.{uuid.uuid4()}"
+    domain = str(tmp_path / "prefs")
     for key in ("wisp.setupGuide.shown", "wisp.notchTip.shown"):
         try:
             written = subprocess.run(["defaults", "write", domain, key, "-bool", "true"],
@@ -54,9 +55,7 @@ def world(tmp_path):
         if not written:
             pytest.skip("cannot write UserDefaults here (sandboxed shell)")
     demo = wisp_demo.Demo(tmp_path, domain, "WispDemoTestNoSuchApp", ())
-    yield demo
-    subprocess.run(["defaults", "delete", domain], capture_output=True)
-    (Path.home() / "Library" / "Preferences" / f"{domain}.plist").unlink(missing_ok=True)
+    return demo
 
 
 def test_start_gives_a_fresh_home_and_stop_restores_exactly(world):
