@@ -177,9 +177,15 @@ def status() -> dict:
         accounts = enabled_accounts()
     except Exception:  # noqa: BLE001
         accounts = []
+    from service import gmail_source
+    client_id = env.get("GOOGLE_OAUTH_CLIENT_ID", "")
+    builtin = bool(client_id) and client_id == gmail_source.builtin_client()[0]
     return {"configured": bool(entry), "email": accounts[0] if accounts else "",
             "accounts": accounts,
-            "client_id": env.get("GOOGLE_OAUTH_CLIENT_ID", ""),
+            # Only the user's own client id is shown; the built-in one is named
+            # by its source. No secret is ever returned.
+            "client_id": "" if builtin else client_id,
+            "client_source": "builtin" if builtin else "user" if client_id else "none",
             "has_secret": bool(env.get("GOOGLE_OAUTH_CLIENT_SECRET")),
             "uvx": bool(find_uvx()),
             "prepare": dict(_prepare),
