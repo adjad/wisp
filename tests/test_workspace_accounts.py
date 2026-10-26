@@ -85,12 +85,15 @@ class WorkspaceAccounts(unittest.TestCase):
         self.assertNotIn("USER_GOOGLE_EMAIL", entry["env"])
         self.assertEqual(entry["env"]["WORKSPACE_MCP_CREDENTIALS_DIR"], str(self.creds))
         self.assertIn("search_drive_files", entry["trusted_read_only"])
-        self.assertEqual(entry["args"], ["--from", W.PACKAGE, "workspace-mcp", "--tool-tier", "core"])
+        self.assertEqual(entry["args"], [*W._SERVER_ARGS, "--tool-tier", "core"])
         self.assertFalse(W.ensure_env())
 
     def test_ensure_env_pins_an_unpinned_server_and_keeps_its_flags(self):
         for args in (["workspace-mcp", "--tool-tier", "extended"], ["workspace-mcp@latest", "--tool-tier", "extended"],
-                     ["--from", "workspace-mcp==1.0.0", "workspace-mcp", "--tool-tier", "extended"]):
+                     ["--from", "workspace-mcp==1.0.0", "workspace-mcp", "--tool-tier", "extended"],
+                     # an entry pinned by an older Wisp, with an earlier cutoff
+                     ["--exclude-newer", "2026-01-01T00:00:00Z", "--from", "workspace-mcp==2.1.0",
+                      "workspace-mcp", "--tool-tier", "extended"]):
             with self.subTest(args=args):
                 self.mcp.write_text(json.dumps({"servers": {"google_workspace": {
                     "command": "/opt/homebrew/bin/uvx", "args": args,
@@ -98,7 +101,7 @@ class WorkspaceAccounts(unittest.TestCase):
                     "trusted_read_only": sorted(W.TRUSTED_READ_ONLY)}}}))
                 self.assertTrue(W.ensure_env())
                 entry = json.loads(self.mcp.read_text())["servers"]["google_workspace"]
-                self.assertEqual(entry["args"], ["--from", W.PACKAGE, "workspace-mcp", "--tool-tier", "extended"])
+                self.assertEqual(entry["args"], [*W._SERVER_ARGS, "--tool-tier", "extended"])
                 self.assertFalse(W.ensure_env())
         # A hand-written entry that does not run uvx is not rewritten.
         self.mcp.write_text(json.dumps({"servers": {"google_workspace": {

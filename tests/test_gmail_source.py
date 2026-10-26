@@ -2573,6 +2573,15 @@ class GoogleConnectAndErase(unittest.TestCase):
         self.assertEqual(G._authorization["phase"], "reading")
         self.assertEqual(G._authorization["phase_email"], email)
 
+    def test_declining_drive_at_consent_is_a_one_line_note_not_a_reconnect_state(self):
+        email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE])          # every Workspace scope unticked
+        row = next(r for r in G.status()["accounts"] if r["email"] == email)
+        self.assertNotEqual(row["state"], "needs_reconnect")
+        self.assertTrue(row["workspace_requested"])
+        self.assertIn("weren't shared", row["note"])
+        email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES])
+        self.assertEqual(next(r for r in G.status()["accounts"] if r["email"] == email)["note"], "")
+
     def test_new_sign_in_switches_workspace_on_and_erase_removes_it(self):
         email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES])
         # On for every new account: its refresh token is copied for the server.
@@ -2598,12 +2607,17 @@ class GoogleConnectAndErase(unittest.TestCase):
 
     def test_first_connect_sets_the_workspace_server_up_with_that_client(self):
         email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES])
-        self.ensure_workspace.assert_called_once_with("synthetic", "s", email)
+        self.ensure_workspace.assert_called_once_with("synthetic", "s", email, "user")
         enable = AsyncMock(return_value={"ok": True, "state": "preparing"})
         with patch.object(self.W, "enable", enable), \
              patch.object(self.W, "status", return_value={"configured": False}):
             self.assertEqual(asyncio.run(ENSURE_WORKSPACE("cid", "sec", email)), "enabled")
-        enable.assert_awaited_once_with("cid", "sec", email)
+        enable.assert_awaited_once_with("cid", "sec", email, client_source="user")
+        enable.reset_mock()
+        with patch.object(self.W, "enable", enable), \
+             patch.object(self.W, "status", return_value={"configured": False}):
+            asyncio.run(ENSURE_WORKSPACE("cid", "sec", email, "builtin"))
+        enable.assert_awaited_once_with("cid", "sec", email, client_source="builtin")
         # An existing setup (perhaps the user's own client and tier) is left alone.
         enable.reset_mock()
         with patch.object(self.W, "enable", enable), \
@@ -3043,20 +3057,29 @@ class BuiltInGoogleClient(unittest.TestCase):
 
     # --- Testing-mode errors -------------------------------------------------
 
-    def test_access_denied_callback_says_the_account_is_not_a_tester(self):
+    def denied(self, source):
         start, callback = GmailSource.fake_oauth_server()
         async def run():
             with patch("asyncio.start_server", start):
-                receipt = await G.begin_authorization("synthetic", include_receipt=True, timeout=5)
+                receipt = await G.begin_authorization("synthetic", include_receipt=True, timeout=5,
+                                                      client_source=source)
                 from urllib.parse import parse_qs, urlparse
                 state = parse_qs(urlparse(receipt["auth_url"]).query)["state"][0]
-                writer = await callback("error=access_denied&state=" + state)
-                return writer
+                return await callback("error=access_denied&state=" + state)
         writer = asyncio.run(run())
-        expected = "This Google account isn't on Wisp's tester list yet. Ask whoever invited you to add it."
         self.assertEqual(G._authorization["state"], "failed")
-        self.assertEqual(G._authorization["error"], expected)
-        self.assertIn(b"tester list", writer.write.call_args[0][0])
+        return G._authorization["error"], writer.write.call_args[0][0]
+
+    def test_access_denied_on_the_built_in_client_mentions_the_tester_list(self):
+        # A cancel and a non-tester both come back as access_denied.
+        error, page = self.denied("builtin")
+        self.assertEqual(error, "Sign-in was cancelled, or this Google account isn't on Wisp's tester list yet.")
+        self.assertIn(b"tester list", page)
+
+    def test_access_denied_on_the_users_own_client_is_a_plain_cancel(self):
+        error, page = self.denied("user")
+        self.assertEqual(error, "Sign-in was cancelled.")
+        self.assertNotIn(b"tester", page)
 
     def test_other_callback_errors_keep_the_declined_message(self):
         start, callback = GmailSource.fake_oauth_server()
@@ -3185,10 +3208,23 @@ class MergedAccountState(unittest.TestCase):
         self.assertEqual(result["state"], "expired")
         self.assertIn("Reconnect", result["message"])
 
-    def test_missing_workspace_scopes_need_reconnect_to_finish_setup(self):
+    def test_sign_ins_that_never_asked_for_workspace_need_reconnect_after_real_problems(self):
         for changes in ({"workspace_full": False}, {"workspace": False}):
-            result = self.state(**changes, calendar_error="x")
+            result = self.state(**changes)
             self.assertEqual((result["state"], result["message"]), ("needs_reconnect", "Reconnect to finish setup."))
+            # A mail or calendar problem is never hidden behind it.
+            self.assertEqual(self.state(**changes, calendar_error="x")["state"], "attention")
+            self.assertEqual(self.state(**changes, last_error="Google could not be reached")["state"], "attention")
+
+    def test_declined_optional_workspace_scopes_are_a_note_not_a_state(self):
+        drive = "https://www.googleapis.com/auth/drive.readonly"
+        declined = dict(workspace_full=False, workspace_requested=True, workspace_declined=[drive])
+        self.assertEqual(self.state(**declined)["state"], "connected")
+        self.assertEqual(self.state(**declined, last_error="Google could not be reached")["state"], "attention")
+        self.assertIn("Reconnect to add them", G.account_note(self.row(**declined)))
+        self.assertEqual(G.account_note(self.row()), "")
+        # A sign-in that never asked has no note: it has the state instead.
+        self.assertEqual(G.account_note(self.row(workspace_full=False, workspace_declined=[drive])), "")
 
     def test_developer_instructions_are_reworded_for_testers(self):
         raw = ("Turn on the Google Calendar API in your Google Cloud project "

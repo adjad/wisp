@@ -17,6 +17,10 @@ os.environ["WISP_HOME"] = _scratch.name
 from service import google_workspace as G
 
 _REAL_WARM = G._warm
+# The exact launch pin: the server version, its dependency tree as of a fixed
+# date (the server itself one later cutoff), and the Python it was resolved for.
+PINNED = ["--exclude-newer", "2026-10-12T00:00:00Z", "--exclude-newer-package", "workspace-mcp=2026-10-24T00:00:00Z",
+          "--python", "3.12", "--from", "workspace-mcp==2.2.0", "workspace-mcp"]
 
 
 class _FakeServer:
@@ -49,7 +53,9 @@ class GoogleWorkspace(unittest.TestCase):
         self.assertEqual(set(servers), {"notion", "google_workspace"})
         entry = servers["google_workspace"]
         self.assertEqual(entry["command"], "/x/uvx")
-        self.assertEqual(entry["args"], ["--from", "workspace-mcp==2.2.0", "workspace-mcp", "--tool-tier", "core"])
+        self.assertEqual(entry["args"], [*PINNED, "--tool-tier", "core"])
+        self.assertEqual(entry["env_clear_prefixes"], ["UV_"])
+        self.assertEqual(entry["wisp_client_source"], "user")
         self.assertEqual(entry["env"]["GOOGLE_OAUTH_CLIENT_SECRET"], "sec")
         self.assertEqual(os.stat(self.cfg).st_mode & 0o777, 0o600)
 
@@ -119,7 +125,7 @@ class GoogleWorkspace(unittest.TestCase):
         with patch.object(G.asyncio, "create_subprocess_exec", fake_exec), \
                 patch.object(G.manager, "reload", new=AsyncMock()):
             asyncio.run(_REAL_WARM("/x/uvx"))
-        self.assertEqual(calls, [("/x/uvx", "--from", "workspace-mcp==2.2.0", "workspace-mcp", "--help")])
+        self.assertEqual(calls, [("/x/uvx", *PINNED, "--help")])
         self.assertEqual(G._prepare["state"], "ready")
 
     def test_enable_needs_uv_and_a_client_id(self):
@@ -276,7 +282,8 @@ class BundledUV(unittest.TestCase):
 
     def test_uv_state_lives_under_wisp_home(self):
         env = G.uv_env()
-        self.assertEqual(set(env), {"UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR"})
+        self.assertEqual(set(env), {"UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR", "UV_NO_CONFIG"})
+        self.assertEqual(env.pop("UV_NO_CONFIG"), "1")      # no uv.toml of the user's
         home = Path(G.MOE_DIR).resolve()          # WISP_HOME, never the user's own uv dirs
         for value in env.values():
             self.assertTrue(Path(value).resolve().is_relative_to(home), value)
@@ -326,6 +333,88 @@ class BundledUV(unittest.TestCase):
         entry = json.loads(cfg.read_text())["servers"]["google_workspace"]
         self.assertEqual(entry["command"], "/usr/local/bin/workspace-mcp")
         self.assertNotIn("UV_TOOL_DIR", entry.get("env", {}))
+
+
+    def test_inherited_uv_settings_never_reach_uvx(self):
+        inherited = {"PATH": "/usr/bin", "HOME": "/Users/someone", "UV_INDEX_URL": "https://mirror.invalid/simple",
+                     "UV_CACHE_DIR": "/Users/someone/.cache/uv", "UV_PYTHON": "3.9", "UVICORN_X": "kept"}
+        env = G.uv_process_env(inherited)
+        self.assertEqual(env, {"PATH": "/usr/bin", "HOME": "/Users/someone", "UVICORN_X": "kept", **G.uv_env()})
+        # The warm-up download gets the same environment.
+        seen = {}
+        class Proc:
+            returncode = 0
+            async def communicate(self):
+                return b"", b""
+        async def spawn(*args, **kwargs):
+            seen.update(kwargs["env"])
+            return Proc()
+        with patch.dict(os.environ, {"UV_INDEX_URL": "https://mirror.invalid/simple"}), \
+             patch.object(G.asyncio, "create_subprocess_exec", spawn), patch.object(G.manager, "reload", AsyncMock()):
+            asyncio.run(_REAL_WARM(str(self.bundled)))
+        self.assertNotIn("UV_INDEX_URL", seen)
+        self.assertEqual(seen["UV_NO_CONFIG"], "1")
+
+    def test_the_mcp_client_drops_inherited_prefixes_for_the_server(self):
+        from service import mcp
+        with patch.dict(os.environ, {"UV_INDEX_URL": "https://mirror.invalid/simple", "KEEP_ME": "1"}):
+            cleared = mcp._inherited_env({"env_clear_prefixes": ["UV_"]})
+            self.assertNotIn("UV_INDEX_URL", cleared)
+            self.assertEqual(cleared["KEEP_ME"], "1")
+            # Any other server, or a malformed list, inherits everything.
+            for config in ({}, {"env_clear_prefixes": "UV_"}, {"env_clear_prefixes": [""]},
+                           {"env_clear_prefixes": [1]}):
+                self.assertIn("UV_INDEX_URL", mcp._inherited_env(config))
+
+    def test_launch_args_carry_the_dependency_pin(self):
+        self.assertEqual(list(G._SERVER_ARGS), PINNED)
+        self.assertEqual(G._pinned_args(["--tool-tier", "extended"]), [*PINNED, "--tool-tier", "extended"])
+        # The cutoffs are fixed dates: the dependency one at least two weeks
+        # before the server release it was set with (2026-10-23).
+        from datetime import datetime
+        cutoff = datetime.fromisoformat(G.DEPENDENCY_CUTOFF.replace("Z", "+00:00"))
+        released = datetime.fromisoformat("2026-10-23T22:17:31+00:00")
+        self.assertGreaterEqual((released - cutoff).days, 11)
+        self.assertLessEqual(cutoff, datetime.fromisoformat("2026-10-12T00:00:00+00:00"))
+        self.assertTrue(G.PACKAGE_CUTOFF.startswith("workspace-mcp="))
+
+
+class WorkspaceClientSource(unittest.TestCase):
+    """The Workspace entry remembers which client it was set up with."""
+
+    def setUp(self):
+        self.cfg = Path(tempfile.mkdtemp(dir=_scratch.name)) / "mcp.json"
+        self.enterContext(patch.object(G, "CONFIG_PATH", self.cfg))
+        self.enterContext(patch.object(G, "find_uvx", return_value="/x/uvx"))
+        self.enterContext(patch.object(G, "_warm", new=AsyncMock()))
+
+    def test_a_built_in_setup_is_never_the_users_own_client_even_after_rotation(self):
+        from service import gmail_source
+        with patch.object(gmail_source, "builtin_client", return_value=("old-builtin.apps", "FAKE-old")):
+            asyncio.run(G.enable("old-builtin.apps", "FAKE-old", "a@b.c", client_source="builtin"))
+        self.assertEqual(json.loads(self.cfg.read_text())["servers"]["google_workspace"]["wisp_client_source"],
+                         "builtin")
+        # A later build ships a different built-in client: the old id is still not the user's.
+        with patch.object(gmail_source, "builtin_client", return_value=("new-builtin.apps", "FAKE-new")):
+            self.assertEqual(G.saved_credentials(), ("", ""))
+            status = G.status()
+            self.assertEqual((status["client_id"], status["client_source"]), ("", "builtin"))
+            with patch.object(gmail_source, "load_config", return_value={}):
+                self.assertEqual(gmail_source.resolve_client(), ("new-builtin.apps", "FAKE-new", "builtin"))
+
+    def test_a_user_setup_is_the_users_client(self):
+        asyncio.run(G.enable("mine.apps", "FAKE-mine", "a@b.c"))
+        self.assertEqual(G.saved_credentials(), ("mine.apps", "FAKE-mine"))
+        self.assertEqual(G.status()["client_source"], "user")
+
+    def test_an_untagged_older_entry_is_judged_by_the_shipped_id(self):
+        from service import gmail_source
+        self.cfg.write_text(json.dumps({"servers": {"google_workspace": {"command": "/x/uvx", "env": {
+            "GOOGLE_OAUTH_CLIENT_ID": "shipped.apps", "GOOGLE_OAUTH_CLIENT_SECRET": "FAKE"}}}}))
+        with patch.object(gmail_source, "builtin_client", return_value=("shipped.apps", "FAKE")):
+            self.assertEqual(G.saved_credentials(), ("", ""))
+        with patch.object(gmail_source, "builtin_client", return_value=("", "")):
+            self.assertEqual(G.saved_credentials(), ("shipped.apps", "FAKE"))
 
 
 if __name__ == "__main__":

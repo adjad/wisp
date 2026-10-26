@@ -79,6 +79,15 @@ struct GoogleConnectChecks {
               "Workspace trouble is parsed once for the section")
         check(builtinNoAccounts.workspaceNote.isEmpty, "no note without one")
 
+        // A declined optional Workspace scope is a dismissible note, never a state.
+        let declined = status(#"{"accounts":[{"email":"a@gmail.com","state":"connected","message":"Connected","note":"Some Google tools (Drive, Docs, Chat…) weren't shared. Reconnect to add them."}]}"#).accounts[0]
+        check(declined.statusLine == "Connected" && declined.reconnectTitle == nil, "a declined scope keeps Connected")
+        check(GoogleAccountNote.shows(declined, dismissed: nil) && GoogleAccountNote.shows(declined, dismissed: ""),
+              "the note shows until dismissed")
+        check(!GoogleAccountNote.shows(declined, dismissed: declined.note), "Not now hides that note")
+        check(GoogleAccountNote.shows(declined, dismissed: "an older note"), "a different note shows again")
+        check(!GoogleAccountNote.shows(connected, dismissed: nil), "no note, nothing to show")
+
         // Disconnect & erase note (Settings).
         let note = GoogleErase.note(account: "a@gmail.com", response: ["ok": true, "removed": ["a@gmail.com"],
             "erased": ["a@gmail.com": ["mail": "erased", "calendar": "erased 3", "mail_overviews": "erased", "proactive": "erased"]]])

@@ -19,6 +19,9 @@ struct GoogleStatus: Equatable {
         /// The raw reason (developer wording) for Advanced; empty when fine.
         let detail: String
         let lastSync: Date?
+        /// A secondary line that never changes the state, e.g. optional
+        /// Workspace scopes the user declined at consent. Shown until dismissed.
+        var note: String = ""
 
         /// The one status line under the address.
         var statusLine: String {
@@ -51,7 +54,8 @@ struct GoogleStatus: Equatable {
                 ?? (lastError.isEmpty ? calendarError : lastError)
             return Account(id: email, state: state, message: message,
                            detail: row["detail"] as? String ?? "",
-                           lastSync: (row["last_headers_sync"] as? Double).map(Date.init(timeIntervalSince1970:)))
+                           lastSync: (row["last_headers_sync"] as? Double).map(Date.init(timeIntervalSince1970:)),
+                           note: row["note"] as? String ?? "")
         }
     }
 
@@ -82,6 +86,18 @@ struct GoogleStatus: Equatable {
             consentNotice: s["consent_notice"] as? String ?? "",
             workspaceNote: note["message"] as? String ?? "",
             workspaceNoteDetail: note["detail"] as? String ?? "")
+    }
+}
+
+/// An account note is shown once: "Not now" hides that exact note for that
+/// account until the backend says something different.
+enum GoogleAccountNote {
+    static func key(_ account: GoogleStatus.Account) -> String {
+        "WispGoogleNoteDismissed." + account.id
+    }
+
+    static func shows(_ account: GoogleStatus.Account, dismissed: String?) -> Bool {
+        !account.note.isEmpty && dismissed != account.note
     }
 }
 

@@ -408,8 +408,25 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(stat.S_ISLNK(info.external_attr >> 16))
             self.assertEqual(z.read(info), b"python3")
 
+    RELEASE_FEATURES = {"google_oauth_client": True,
+                        "uv": {"version": p.uv_tool.UV_VERSION, "asset": p.uv_tool.UV_ASSET,
+                               "sha256": p.uv_tool.UV_SHA256, "path": p.uv_tool.BUNDLE_DIR}}
+
+    def ship_release_features(self, bundle):
+        """Fake the built-in client and uv files a release build ships, as self.meta declares."""
+        if self.meta.get("google_oauth_client"):
+            (bundle / p.GOOGLE_OAUTH_CLIENT_BUNDLE).write_bytes(p._google_oauth_client_json(
+                json.dumps(self.FAKE_GOOGLE_CLIENT)))
+        if self.meta.get("uv"):
+            for name in p.uv_tool.BINARIES:
+                path = bundle / p.uv_tool.BUNDLE_DIR / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fake")
+                path.chmod(0o755)
+
     def artifact(self):
         bundle = self.fixture()
+        self.ship_release_features(bundle)
         p.json_write(self.root / "simulation-qa.json", self.qa_report())
         p.json_write(self.root / "provenance.json", {"source": self.meta, "signature": "ad-hoc", "notarized": False,
             "simulation_sha256": p.digest(self.root / "simulation-qa.json")})
@@ -2248,10 +2265,11 @@ print('external venv readable; private home and writes denied')
         self.assertEqual(workflow.count("environment: release"), 1)
         self.assertNotIn("environment:", adhoc)
 
-    def adhoc_fixture(self):
+    def adhoc_fixture(self, features=None):
         checkout = self.root
         self.root = checkout / "dist/candidate"
         self.root.mkdir(parents=True)
+        self.meta = dict(self.meta, **(self.RELEASE_FEATURES if features is None else features))
         self.artifact()
         (self.root / "release-notes.md").write_text("Ad-hoc fixture notes")
         provenance = json.loads((self.root / "provenance.json").read_text())
@@ -2317,6 +2335,44 @@ print('external venv readable; private home and writes denied')
             finally:
                 self.adhoc_events, self.adhoc_uploaded, self.adhoc_api_calls = events, uploaded, api.call_count
         return events, uploaded
+
+    def test_ad_hoc_release_refuses_a_candidate_without_the_built_in_client_or_uv(self):
+        for features, message in (({"google_oauth_client": False, "uv": self.RELEASE_FEATURES["uv"]},
+                                   "no built-in Google OAuth client"),
+                                  ({"google_oauth_client": True, "uv": None}, "no bundled uv")):
+            with self.subTest(message=message):
+                saved_root, saved_meta = self.root, self.meta
+                scratch = Path(tempfile.mkdtemp(dir=self.temp.name))
+                self.root = scratch
+                try:
+                    checkout = self.adhoc_fixture(features)
+                    with self.assertRaisesRegex(p.BuildError, message):
+                        self.run_adhoc_fixture(checkout)
+                    self.assertNotIn("create-draft-release", self.adhoc_events)
+                    self.assertEqual(self.adhoc_uploaded, {})
+                finally:
+                    self.root, self.meta = saved_root, saved_meta
+
+    def test_release_features_gate_is_shared_by_both_publication_paths(self):
+        for meta, ok in (({"google_oauth_client": True, "uv": {"version": "x"}}, True),
+                         ({"google_oauth_client": False, "uv": {"version": "x"}}, False),
+                         ({"uv": {"version": "x"}}, False),                     # older build-info
+                         ({"google_oauth_client": "yes", "uv": {"version": "x"}}, False),
+                         ({"google_oauth_client": True, "uv": None}, False)):
+            with self.subTest(meta=meta):
+                if ok:
+                    release.require_release_features(meta)
+                else:
+                    with self.assertRaises(p.BuildError):
+                        release.require_release_features(meta)
+        source = (ROOT / "build-support/release.py").read_text()
+        for function in ("def release_ad_hoc(", "def release("):
+            body = source[source.index(function):]
+            end = body.find("\ndef ", 1)
+            body = body[:end if end > 0 else len(body)]
+            self.assertIn("require_release_features(meta)", body, function)
+        # PR previews and the full candidate build stay possible without the secret.
+        self.assertIsNone(p.google_oauth_client(environ={}))
 
     def test_ad_hoc_app_only_publishes_after_upload_with_app_first_notes(self):
         checkout = self.adhoc_fixture()

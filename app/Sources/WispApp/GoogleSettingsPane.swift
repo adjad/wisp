@@ -228,6 +228,8 @@ struct GoogleSettingsPane: View {
     @StateObject private var model = GoogleAccountModel()
     @State private var advanced = false
     @State private var ownClient = false
+    /// Account notes the user chose "Not now" for (UserDefaults, per account).
+    @State private var dismissedNotes: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -262,6 +264,11 @@ struct GoogleSettingsPane: View {
             DisclosureGroup("Advanced", isExpanded: $advanced) { advancedSection.padding(.top, 8) }
                 .font(.system(size: 13))
         }
+        .onChange(of: model.status.accounts.map(\.id)) { _, ids in
+            for id in ids where dismissedNotes[id] == nil {
+                dismissedNotes[id] = UserDefaults.standard.string(forKey: "WispGoogleNoteDismissed." + id) ?? ""
+            }
+        }
         .task {
             await model.refresh()
             await model.refreshWorkspace()
@@ -285,6 +292,19 @@ struct GoogleSettingsPane: View {
                 Text(account.id).font(.callout.weight(.medium))
                 Text(account.statusLine).font(.caption).foregroundStyle(color(account.state))
                     .fixedSize(horizontal: false, vertical: true)
+                if GoogleAccountNote.shows(account, dismissed: dismissedNotes[account.id]) {
+                    HStack(spacing: 8) {
+                        Text(account.note).font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Reconnect") { model.connect(reconnect: account.id) }
+                            .controlSize(.small).disabled(model.authorizing)
+                        Button("Not now") {
+                            UserDefaults.standard.set(account.note, forKey: GoogleAccountNote.key(account))
+                            dismissedNotes[account.id] = account.note
+                        }
+                        .controlSize(.small)
+                    }
+                }
             }
             Spacer()
             if let title = account.reconnectTitle {

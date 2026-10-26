@@ -93,8 +93,11 @@ BUILTIN_CLIENT_PATH = Path(__file__).with_name("google_oauth_client.json")
 
 # User-facing copy for the Testing-mode realities of the built-in client.
 UNVERIFIED_NOTICE = "Google will warn that Wisp isn't verified yet. Choose Continue."
-NOT_A_TESTER = ("This Google account isn't on Wisp's tester list yet. "
-                "Ask whoever invited you to add it.")
+# access_denied comes back both for a cancel and for an account that isn't on
+# a Testing-mode app's tester list; only Wisp's built-in app has such a list
+# the user can't see, so only its sign-ins mention it.
+CANCELLED_OR_NOT_TESTER = "Sign-in was cancelled, or this Google account isn't on Wisp's tester list yet."
+CANCELLED = "Sign-in was cancelled."
 SIGNIN_EXPIRED = "Google sign-in expired. Reconnect in Settings ▸ Google."
 
 HEADERS_LIMIT = 200          # per account, same depth as MailReader
@@ -316,8 +319,11 @@ def status() -> dict:
         expired = bool(item.get("auth_expired"))
         error = (SIGNIN_EXPIRED if expired else
                  _errors.get(email) or sources.get(email, {}).get("error", ""))
+        granted = granted_scopes(email, item)
         row = {"email": email, "workspace": bool(item.get("workspace")),
                "workspace_full": W.has_full_scopes(email, item),
+               "workspace_requested": bool(item.get("workspace_requested")),
+               "workspace_declined": [scope for scope in W.WORKSPACE_SCOPES if scope not in granted],
                "last_headers_sync": sources.get(email, {}).get("last_success"),
                "fresh": sources.get(email, {}).get("fresh", False) and not expired,
                "last_error": error,
@@ -325,7 +331,7 @@ def status() -> dict:
                "client_source": "builtin" if item.get("client_source") == "builtin" else "user",
                "mail_account_id": item.get("mail_account_id", ""),
                "calendar": has_calendar(email, item), **C.account_status(email)}
-        rows.append({**row, **account_state(row, workspace)})
+        rows.append({**row, **account_state(row, workspace), "note": account_note(row)})
     first = rows[0] if rows else {}
     _, _, source = resolve_client(cfg)
     return {"connected": bool(rows), "email": first.get("email", ""), "accounts": rows,
@@ -399,28 +405,40 @@ def workspace_note(workspace: dict) -> dict:
     return {"message": plain, "detail": detail}
 
 
+def account_note(row: dict) -> str:
+    """A secondary line for an account that declined some optional Workspace
+    scopes at a consent that asked for them, else "". Settings shows it once
+    (the user can dismiss it); it never changes the account's state."""
+    if row.get("workspace") and row.get("workspace_requested") and row.get("workspace_declined"):
+        return "Some Google tools (Drive, Docs, Chat…) weren't shared. Reconnect to add them."
+    return ""
+
+
 def account_state(row: dict, workspace: dict | None = None) -> dict:
     """{state, message, detail} for one account row of status().
 
     state: connected | expired | needs_reconnect | attention. Precedence:
-    expired, then needs_reconnect (a sign-in to redo fixes more than any
-    single problem), then the first problem of mail, then calendar.
-    `workspace` is accepted for callers but never changes the state."""
+    expired, then the first problem of mail (required), then calendar, then
+    needs_reconnect for a sign-in that never asked for the Workspace scopes
+    (one from before every consent did, or an account switched off). Workspace
+    scopes the user declined at a consent that asked for them are optional:
+    they are a note (account_note), never a state. `workspace` is accepted for
+    callers but never changes the state."""
     developer = row.get("client_source") == "user"
     def attention(plain: str, detail: str) -> dict:
         return {"state": "attention", "message": detail if developer and detail else plain, "detail": detail}
     if row.get("expired"):
         return {"state": "expired", "message": "Sign-in expired. Reconnect to keep this account up to date.",
                 "detail": SIGNIN_EXPIRED}
-    if not row.get("workspace") or not row.get("workspace_full"):
-        return {"state": "needs_reconnect", "message": "Reconnect to finish setup.",
-                "detail": "This sign-in predates the Google Workspace scopes"}
     mail = str(row.get("last_error") or "")
     if mail and mail != _SETTING_UP:
         return attention(_plain_mail_error(mail), mail)
     calendar = str(row.get("calendar_error") or "")
     if calendar:
         return attention(_plain_calendar_error(calendar), calendar)
+    if not row.get("workspace") or (not row.get("workspace_full") and not row.get("workspace_requested")):
+        return {"state": "needs_reconnect", "message": "Reconnect to finish setup.",
+                "detail": "This sign-in predates the Google Workspace scopes"}
     # Workspace server trouble is one section-level note (status()
     # "workspace_note"), never a per-account state: an account whose mail and
     # calendar work is connected.
@@ -869,10 +887,10 @@ async def begin_authorization(client_id: str, client_secret: str = "",
                 _flow_generation += 1
                 message = "Google connected. You can close this tab and return to Wisp."
             elif query:
-                # A Testing-mode app answers access_denied for an account that
-                # is not on its tester list.
-                message = (NOT_A_TESTER if query.get("error", [""])[0] == "access_denied" else
-                           "Google sign-in was declined or cancelled. Your existing accounts were kept.")
+                if query.get("error", [""])[0] == "access_denied":
+                    message = CANCELLED_OR_NOT_TESTER if client_source == "builtin" else CANCELLED
+                else:
+                    message = "Google sign-in was declined or cancelled. Your existing accounts were kept."
                 _authorization.update(state="failed", error=message)
                 _flow_generation += 1
             else:
@@ -911,8 +929,9 @@ async def begin_authorization(client_id: str, client_secret: str = "",
             if generation == _flow_generation:
                 # Google may block a non-tester before redirecting back at all.
                 _authorization.update(state="failed", error=(
-                    "Google sign-in timed out. If Google blocked access: " + NOT_A_TESTER
-                    if client_source == "builtin" else "Google sign-in timed out. Try again."))
+                    "Google sign-in timed out. If Google blocked access, this Google account "
+                    "may not be on Wisp's tester list yet." if client_source == "builtin"
+                    else "Google sign-in timed out. Try again."))
                 _flow_generation += 1
         server.close()
         if _pending_flow and _pending_flow["server"] is server:
@@ -983,6 +1002,9 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         accounts[email] = {"client_id": client_id, "client_secret": client_secret,
                            "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id,
                            "scopes": granted, "workspace": workspace,
+                           # This consent asked for the Workspace scopes; any
+                           # missing from `granted` were declined, not unasked.
+                           "workspace_requested": True,
                            **({"client_source": "builtin"} if builtin else {})}
         # The built-in client is never saved as the user's own: the top-level
         # client stays whatever the user configured (possibly none).
@@ -1005,12 +1027,13 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         except Exception as exc:  # noqa: BLE001
             print(f"[google_calendar] scope-drop erase failed: {type(exc).__name__}", flush=True)
     _authorization.update(phase="reading", phase_email=email, analyze="")
-    _spawn(_ensure_workspace(client_id, client_secret, email))
+    _spawn(_ensure_workspace(client_id, client_secret, email, client_source))
     _spawn(_after_connect(email))
     return email
 
 
-async def _ensure_workspace(client_id: str, client_secret: str, email: str) -> str:
+async def _ensure_workspace(client_id: str, client_secret: str, email: str,
+                            client_source: str = "user") -> str:
     """Set the Workspace server up with this sign-in's client the first time
     an account connects: there is no separate enable step. An existing setup
     is left alone (it may be the user's own, with a chosen tool tier).
@@ -1019,7 +1042,8 @@ async def _ensure_workspace(client_id: str, client_secret: str, email: str) -> s
         from service import google_workspace
         if google_workspace.status().get("configured"):
             return "existing"
-        result = await google_workspace.enable(client_id, client_secret, email)
+        result = await google_workspace.enable(client_id, client_secret, email,
+                                               client_source="builtin" if client_source == "builtin" else "user")
     except Exception as exc:  # noqa: BLE001 — Brief still works; status shows the problem
         print(f"[google_workspace] automatic setup failed: {type(exc).__name__}", flush=True)
         return "failed"
