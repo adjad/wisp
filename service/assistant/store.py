@@ -826,7 +826,10 @@ class AssistantStore:
                 if receipt is not None:
                     if receipt["receipt_state"]=="consumed":
                         continue
-                    if any(receipt[key]!=action[key] for key in ("type","kind","title","context","when_ts","end_ts")):
+                    # Receipts written before the id left the visible context carry
+                    # it as a " [<cid>]" suffix; that is the same immutable action.
+                    if (any(receipt[key]!=action[key] for key in ("type","kind","title","when_ts","end_ts"))
+                            or receipt["context"] not in {action["context"],action["context"]+" ["+action["id"]+"]"}):
                         raise PublicationUnavailable("Immutable behavior-action receipt changed")
                     if not self._behavior_item_matches(existing,receipt,actual_end):
                         continue
@@ -844,7 +847,7 @@ class AssistantStore:
                     if (existing is not None and existing["source"]==MANUAL_SOURCE and existing["source_id"]==cid
                             and existing["status"]=="active" and existing["updated_at"]==existing["created_at"]
                             and existing["created_at"]==previous["created_at"] and actual_end==action["end_ts"]
-                            and existing["context"] in {action["context"],action["context"].rsplit(" [",1)[0]}
+                            and existing["context"] in {action["context"],action["context"]+" ["+action["id"]+"]"}
                             and all(existing[key]==action[key] for key in ("kind","title","when_ts"))):
                         performed.append(dict(nudge_id=nudge["id"],idx=idx,type=previous["type"],
                             commitment_id=previous["commitment_id"],title=previous["title"],
