@@ -28,6 +28,10 @@ _RAIN = re.compile(r"(\d+(?:\.\d+)?)% chance of rain")
 # A day after today only mentions rain when it is worth planning around.
 _RAIN_WORTH_SAYING = 20
 
+# One-line optional sections, labelled as get_weather's _WEATHER_EXTRAS does.
+_EXTRA = re.compile(
+    r"^  (?P<label>severe-weather alerts|air quality|rain, next hours): (?P<text>\S.*)$")
+
 
 def _place(resolved: str) -> str:
     """"San Francisco, California, United States of America" -> "San Francisco".
@@ -47,12 +51,22 @@ def _num(value: str) -> str:
     return str(int(number)) if number == int(number) else str(number)
 
 
-def _day_label(day: date, today: date) -> str:
-    if day == today:
-        return "Today"
-    if day == today + timedelta(days=1):
-        return "Tomorrow"
-    return day.strftime("%A")
+def _day_labels(days: list[date], *, current: bool) -> list[str]:
+    """Words for each forecast date, from the report alone.
+
+    Forecast dates belong to the place, not to this Mac, so the Mac's clock
+    says nothing about which one is "today". With current conditions the
+    report is unfiltered and its first day is the place's today. Anything else
+    (a day-only request is resolved against this Mac's date) gets a weekday,
+    never a relative word that could be wrong.
+    """
+    labels = [d.strftime("%A") for d in days]
+    if current and days:
+        labels[0] = "Today"
+        for i in range(1, len(days)):
+            if days[i] == days[0] + timedelta(days=i):
+                labels[i] = "Tomorrow" if i == 1 else labels[i]
+    return labels
 
 
 def _now_parts(body: str) -> dict | None:
@@ -87,7 +101,7 @@ def _rain_text(rain: float | None) -> str:
     return f"{_num(str(rain))}% chance of rain" if rain is not None else ""
 
 
-def format_weather_reply(raw, *, today: date | None = None) -> str | None:
+def format_weather_reply(raw) -> str | None:
     """Plain sentences for a successful get_weather report, else None."""
     text = str(raw or "").strip()
     if not text or text.startswith("(error"):
@@ -98,7 +112,6 @@ def format_weather_reply(raw, *, today: date | None = None) -> str | None:
         return None
     place = _place(header["resolved"])
     forecast_only = bool(header["period"])
-    today = today or datetime.now().date()
 
     now = None
     days: list[tuple[date, dict]] = []
@@ -113,10 +126,15 @@ def format_weather_reply(raw, *, today: date | None = None) -> str | None:
                 continue
             if parts := _day_parts(m["body"]):
                 days.append((day, parts))
-        elif line.startswith("  ") and ":" in line:
-            # Optional sections the tool appends (alerts, air quality, rain
-            # next hours) are already plain text.
+        elif (m := _EXTRA.match(line)) and not m["text"].rstrip().endswith(":"):
+            # An optional section the tool appends (alerts, air quality, rain
+            # next hours) that fits on one line is already plain text.
             extras.append(line.strip())
+        else:
+            # A section with a list under it ("Active alerts:" then titles,
+            # "(+3 more)", hourly rain lines) or anything unrecognised: do
+            # not summarise around it, or an alert could be hidden.
+            return None
 
     if now is None and not days:
         return None
@@ -131,10 +149,11 @@ def format_weather_reply(raw, *, today: date | None = None) -> str | None:
 
     # Without a requested range the report carries three days; two is plenty.
     shown = days if forecast_only else days[:2]
+    labels = _day_labels([d for d, _ in shown], current=bool(now))
     for index, (day, info) in enumerate(shown):
-        label = _day_label(day, today)
+        label = labels[index]
         rain = _rain_text(info["rain"])
-        if now and index == 0 and day == today:
+        if now and index == 0:
             bits = [f"high {info['high']}°F", f"low {info['low']}°F"]
             if rain:
                 bits.append(rain)

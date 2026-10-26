@@ -22,7 +22,6 @@ os.environ.setdefault("WISP_HOME", tempfile.mkdtemp(prefix="wisp-answer-polish-"
 from service.answer_text import AnswerEdgeTrimmer  # noqa: E402
 from service.workflows.weather_reply import format_weather_reply  # noqa: E402
 
-TODAY = date(2026, 10, 26)
 SF_REPORT = (
     "Weather for San Francisco, California, United States of America "
     "(asked for: San Francisco; assumed San Francisco, California — say so if you "
@@ -83,7 +82,7 @@ def test_a_whole_answer_is_trimmed_at_both_edges_only():
 # --- weather formatter -----------------------------------------------------------------
 
 def test_weather_reads_like_an_answer():
-    reply = format_weather_reply(SF_REPORT, today=TODAY)
+    reply = format_weather_reply(SF_REPORT)
     assert reply.startswith(
         "It's 61°F (16°C) and sunny in San Francisco right now — feels like 56°F. "
         "Today: high 62°F, low 57°F, 5% chance of rain. "
@@ -97,7 +96,7 @@ def test_no_assumption_note_when_nothing_was_assumed():
     report = SF_REPORT.replace(
         "asked for: San Francisco; assumed San Francisco, California — say so if "
         "you meant a different one", "asked for: San Francisco, CA")
-    reply = format_weather_reply(report, today=TODAY)
+    reply = format_weather_reply(report)
     assert "assumed" not in reply and reply.endswith("61°F / 55°F.")
 
 
@@ -105,37 +104,67 @@ def test_forecast_only_day_and_foreign_place():
     report = ("Weather for Dublin, Leinster, Ireland (asked for: Dublin) — tomorrow; "
               "forecast only\n  forecast (2026-10-27): high 50°F / low 40°F, "
               "Light rain, 60% chance of rain")
-    assert format_weather_reply(report, today=TODAY) == (
-        "Tomorrow in Dublin, Ireland: light rain, 50°F / 40°F, 60% chance of rain.")
+    assert format_weather_reply(report) == (
+        "Tuesday in Dublin, Ireland: light rain, 50°F / 40°F, 60% chance of rain.")
+
+
+def test_day_words_come_from_the_report_not_this_macs_clock():
+    # The dates are far from any real "today" here: the first forecast day of a
+    # report with current conditions is still that place's Today.
+    tokyo = SF_REPORT.replace("2026-10-26", "2031-03-04").replace(
+        "2026-10-27", "2031-03-05").replace("2026-10-28", "2031-03-06")
+    reply = format_weather_reply(tokyo)
+    assert "Today: high 62°F, low 57°F, 5% chance of rain. Tomorrow: partly cloudy" in reply
+    # Non-consecutive rows are not "Tomorrow": the weekday is used instead.
+    gap = SF_REPORT.replace("2026-10-27", "2026-10-29")
+    assert "Thursday: partly cloudy" in format_weather_reply(gap)
+    # A forecast-only report never uses a relative word.
+    only = ("Weather for Tokyo, Tokyo, Japan (asked for: Tokyo) — today; forecast only\n"
+            "  forecast (2026-10-27): high 70°F / low 60°F, Sunny, 0% chance of rain")
+    assert format_weather_reply(only).startswith("Tuesday in Tokyo, Japan: sunny")
 
 
 def test_a_later_day_mentions_rain_only_when_likely():
     report = SF_REPORT.replace("Partly Cloudy, 8%", "Rain, 70%")
     assert "Tomorrow: rain, 61°F / 55°F, 70% chance of rain." in format_weather_reply(
-        report, today=TODAY)
+        report)
 
 
 def test_missing_fields_degrade_gracefully():
     only_now = ("Weather for Paris, Ile-de-France, France (asked for: Paris)\n"
                 "  now: 12°F")
-    assert format_weather_reply(only_now, today=TODAY) == "It's 12°F in Paris, France right now."
+    assert format_weather_reply(only_now) == "It's 12°F in Paris, France right now."
     unknown_rain = SF_REPORT.replace("5% chance of rain", "chance of rain unknown")
-    assert "Today: high 62°F, low 57°F." in format_weather_reply(unknown_rain, today=TODAY)
+    assert "Today: high 62°F, low 57°F." in format_weather_reply(unknown_rain)
     no_feels = SF_REPORT.replace(", feels like 56°F", "")
-    assert "feels like" not in format_weather_reply(no_feels, today=TODAY)
+    assert "feels like" not in format_weather_reply(no_feels)
 
 
 @pytest.mark.parametrize("raw", [
     "", None, "(error: no location given — ask the user)", "Sunny and warm.",
     "Weather for X (asked for: X)\n  nothing useful here"])
 def test_unreadable_reports_fall_back_to_none(raw):
-    assert format_weather_reply(raw, today=TODAY) is None
+    assert format_weather_reply(raw) is None
 
 
-def test_optional_sections_are_kept_as_plain_lines():
-    report = SF_REPORT + "\n  severe-weather alerts: none active"
-    reply = format_weather_reply(report, today=TODAY)
-    assert reply.endswith("\n\nsevere-weather alerts: none active")
+def test_one_line_optional_sections_are_kept_as_plain_lines():
+    report = SF_REPORT + "\n  severe-weather alerts: No active severe-weather alerts."
+    reply = format_weather_reply(report)
+    assert reply.endswith("\n\nsevere-weather alerts: No active severe-weather alerts.")
+
+
+@pytest.mark.parametrize("extra", [
+    # A heading with a list under it: alert titles must never be hidden.
+    "  severe-weather alerts: Active alerts:\n  Heat Advisory [Moderate] — until 8 PM",
+    "  severe-weather alerts: Active alerts:\n  Flood Watch\n  (+3 more)",
+    "  rain, next hours: Rain likely in the next 6h:\n  14:00   60% chance, 0.4mm",
+    "  rain, next hours: Mostly dry for the next 6h:\n  14:00    5% chance",
+    "  air quality: AQI 42 (Good).\n  something unexpected",
+    "  unknown section: text",
+    "(+3 more)",
+])
+def test_extras_the_formatter_cannot_fully_read_fall_back_to_the_raw_report(extra):
+    assert format_weather_reply(SF_REPORT + "\n" + extra) is None
 
 
 # --- the read path: sentence for the person, raw report for the model -------------------
