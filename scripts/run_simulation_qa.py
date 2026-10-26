@@ -587,6 +587,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_snapshot.py",
     "tests/test_workflow20_travel.py",
     "tests/test_workflow20_weather.py",
+    # Answer edge trimming and the plain-language weather reply; pure text.
+    "tests/test_answer_polish.py",
     "tests/workflow20/test_contract.py",
 }
 # Integrated runtime contracts are mandatory; missing files fail selection.
