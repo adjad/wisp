@@ -142,7 +142,15 @@ struct TodayPlan: Decodable {
             return SourceAccess(source: source, ready: health.ready, state: health.state, blocked: health.blocked,
                                 reason: health.reason)
         }
-        if let row = workspace?.source_coverage.first(where: { $0.source == source }) { return row.access }
+        if let row = workspace?.source_coverage.first(where: { $0.source == source }) {
+            // Mail Mail.app couldn't give counts as read when a connected Google
+            // account read it recently (ProactiveState.mailReadBy), the same rule
+            // the proactive section applies, so the top line and it agree.
+            if source == "email", !row.access.readable, !(workspace?.proactive?.mailReadBy ?? []).isEmpty {
+                return SourceAccess(source: source, ready: true)
+            }
+            return row.access
+        }
         if Self.workspaceOnly.contains(source) { return SourceAccess(source: source, ready: false, state: "unavailable") }
         return nil
     }
