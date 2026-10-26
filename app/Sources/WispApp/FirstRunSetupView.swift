@@ -153,7 +153,8 @@ enum FirstRunBrain: Equatable {
     case startingEngine
     case needsDownload(model: String, label: String, sizeGb: Double?)
     case downloading(model: String, label: String, fraction: Double, doneGb: Double, totalGb: Double, secondsLeft: Int?)
-    case failed(model: String, label: String, message: String)
+    /// `paused`: cancelled by the person, not failed.
+    case failed(model: String, label: String, message: String, paused: Bool)
     /// The download finished but the engine doesn't list the model yet: wait,
     /// never apply. Lasting long means its files are missing (Download again).
     case waitingForEngine(model: String, label: String)
@@ -174,7 +175,7 @@ enum FirstRunBrain: Equatable {
     /// The model a Download or Retry click fetches.
     var modelToFetch: String? {
         switch self {
-        case .needsDownload(let model, _, _), .failed(let model, _, _), .waitingForEngine(let model, _): return model
+        case .needsDownload(let model, _, _), .failed(let model, _, _, _), .waitingForEngine(let model, _): return model
         default: return nil
         }
     }
@@ -265,10 +266,25 @@ enum FirstRunBrain: Equatable {
                 return .waitingForEngine(model: model, label: label)
             default:
                 return .failed(model: model, label: label,
-                               message: task.message ?? "The download stopped. Choose Retry to pick up where it left off.")
+                               message: task.message ?? "Choose Retry to pick up where it left off.",
+                               paused: task.state == "cancelled")
             }
         }
         return .needsDownload(model: model, label: label, sizeGb: status.models.download?.sizeGb)
+    }
+
+    /// Space a download needs while it runs: the model, plus room for the engine
+    /// to unpack it. About 8 GB for Gemma 4 E4B.
+    static func spaceNeeded(sizeGb: Double?) -> Double { max(8, (sizeGb ?? 5.5) * 1.45) }
+
+    /// Said before Download when the Mac is short of space, instead of failing
+    /// part-way through with a generic message.
+    static func diskWarning(freeBytes: Int64?, sizeGb: Double?) -> String? {
+        guard let freeBytes else { return nil }
+        let free = Double(freeBytes) / 1e9, needed = spaceNeeded(sizeGb: sizeGb)
+        guard free < needed else { return nil }
+        return String(format: "This Mac has %.1f GB free; the download needs about %.0f GB. Free up some space first.",
+                      free, needed)
     }
 
     /// How long a cold start has taken, once it is long enough to be worth saying.
@@ -276,6 +292,9 @@ enum FirstRunBrain: Equatable {
         guard seconds >= 20 else { return nil }
         return seconds < 120 ? "\(seconds) s so far" : "\(seconds / 60) min so far"
     }
+
+    /// A transfer that hasn't moved in this long gets "No progress".
+    static let noProgressAfter: TimeInterval = 30
 
     /// "about 6 minutes left", rounded the way a person would say it.
     static func timeLeft(_ seconds: Int?) -> String? {
@@ -285,6 +304,23 @@ enum FirstRunBrain: Equatable {
         if minutes < 60 { return minutes == 1 ? "about a minute left" : "about \(minutes) minutes left" }
         let hours = Double(minutes) / 60
         return String(format: "about %.1f hours left", hours)
+    }
+}
+
+/// Whether a download's bytes are still moving. Pure, so it can be checked.
+struct DownloadProgressWatch: Equatable {
+    private(set) var bytes: Double = -1
+    private(set) var movedAt: Date?
+
+    mutating func observe(doneGb: Double, at date: Date) {
+        if doneGb != bytes { bytes = doneGb; movedAt = date }
+    }
+
+    mutating func reset() { self = DownloadProgressWatch() }
+
+    func stalled(at date: Date) -> Bool {
+        guard let movedAt else { return false }
+        return date.timeIntervalSince(movedAt) >= FirstRunBrain.noProgressAfter
     }
 }
 
@@ -478,6 +514,7 @@ struct FirstRunSetupView: View {
     @State private var step: Step
     @State private var appliedModel: String?
     @State private var openedAt = Date()
+    @State private var progressWatch = DownloadProgressWatch()
     /// A finished download the engine still hadn't listed after 30 s.
     @State private var stuckDownload: String?
     var openDetailedSetup: () -> Void
@@ -524,7 +561,14 @@ struct FirstRunSetupView: View {
         .background(Color(white: 0.08))
         .foregroundStyle(Theme.textPrimary)
         .preferredColorScheme(.dark)
-        .onChange(of: brain) { _, next in drive(next) }
+        .onChange(of: brain) { _, next in
+            drive(next)
+            if case .downloading(_, _, _, let done, _, _) = next {
+                progressWatch.observe(doneGb: done, at: Date())
+            } else {
+                progressWatch.reset()
+            }
+        }
         // An error belongs to the stage it happened in: a red line from a failed
         // start or download must not sit under the next one.
         .onChange(of: brain.stage) { _, _ in
@@ -714,6 +758,30 @@ struct FirstRunSetupView: View {
         }
     }
 
+    /// Step 1's Download or Retry. While the request to start it is in flight
+    /// (up to a few minutes when the engine is starting too) it shows that,
+    /// instead of a button that has merely gone grey.
+    @ViewBuilder private func downloadButton(_ title: String, model: String) -> some View {
+        if setup.busy == "Starting download…" {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Starting download…").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+            }
+        } else {
+            Button(title) { Task { await setup.download(model) } }
+                .buttonStyle(FirstRunButtonStyle(primary: true))
+                .keyboardShortcut(.defaultAction)
+                .disabled(setup.busy != nil)
+        }
+    }
+
+    /// Free space on the volume the engine keeps its models on (the home folder's).
+    static func freeBytes() -> Int64? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage
+    }
+
     @ViewBuilder private func fetchButton(_ title: String) -> some View {
         if let model = brain.modelToFetch {
             Button(title) { Task { await setup.download(model) } }
@@ -777,10 +845,10 @@ struct FirstRunSetupView: View {
         case .needsDownload(let model, let label, let size):
             card(icon: "arrow.down.circle", title: label + (size.map { String(format: " · %.1f GB", $0) } ?? ""),
                  detail: "Fast and private. The engine is built into Wisp, so there's nothing else to install.") {
-                Button("Download") { Task { await setup.download(model) } }
-                    .buttonStyle(FirstRunButtonStyle(primary: true))
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(setup.busy != nil)
+                downloadButton("Download", model: model)
+            }
+            if let warning = FirstRunBrain.diskWarning(freeBytes: Self.freeBytes(), sizeGb: size) {
+                Text(warning).font(.system(size: 12)).foregroundStyle(Color.orange).padding(.bottom, 4)
             }
         case .downloading(let model, let label, let fraction, let done, let total, let left):
             VStack(alignment: .leading, spacing: 0) {
@@ -790,20 +858,25 @@ struct FirstRunSetupView: View {
                 }
                 ProgressView(value: fraction).tint(Color(red: 0.56, green: 0.56, blue: 0.96)).padding(.top, 2)
                 HStack {
-                    Text(String(format: "%.1f of %.1f GB", done, total)
-                         + (FirstRunBrain.timeLeft(left).map { " · \($0)" } ?? ""))
+                    TimelineView(.periodic(from: .now, by: 5)) { context in
+                        if progressWatch.stalled(at: context.date) {
+                            Text(String(format: "%.1f of %.1f GB", done, total) + " · No progress — check your connection")
+                                .foregroundStyle(Color.orange)
+                        } else {
+                            Text(String(format: "%.1f of %.1f GB", done, total)
+                                 + (FirstRunBrain.timeLeft(left).map { " · \($0)" } ?? ""))
+                        }
+                    }
                     Spacer()
                     Button("Cancel") { Task { await setup.download(model, cancel: true) } }
                         .buttonStyle(.plain).foregroundStyle(Theme.textMuted)
                 }
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 6)
             }
-        case .failed(let model, let label, let message):
-            card(icon: "arrow.clockwise.circle", title: label, detail: message) {
-                Button("Retry") { Task { await setup.download(model) } }
-                    .buttonStyle(FirstRunButtonStyle(primary: true))
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(setup.busy != nil)
+        case .failed(let model, let label, let message, let paused):
+            card(icon: "arrow.clockwise.circle", title: (paused ? "Download paused" : "Download failed") + " · " + label,
+                 detail: message) {
+                downloadButton("Retry", model: model)
             }
         case .waitingForEngine(let model, let label):
             if stuckDownload == model {

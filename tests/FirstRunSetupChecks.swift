@@ -181,6 +181,30 @@ struct FirstRunSetupChecks {
               && FirstRunBrain.from(status: status(), downloads: [task("downloading")]).modelToFetch == nil,
               "Download and Retry fetch the recommended model")
 
+        // Paused and failed downloads are told apart.
+        if case .failed(_, _, _, let paused) = FirstRunBrain.from(status: status(), downloads: [task("cancelled")]) {
+            check(paused, "Cancelled: Download paused")
+        }
+        if case .failed(_, _, _, let paused) = FirstRunBrain.from(status: status(), downloads: [task("failed")]) {
+            check(!paused, "Failed: Download failed")
+        }
+        // Disk space is checked before Download, not discovered part-way.
+        check(FirstRunBrain.spaceNeeded(sizeGb: 5.5) == 8, "Gemma needs about 8 GB")
+        check(FirstRunBrain.diskWarning(freeBytes: 50_000_000_000, sizeGb: 5.5) == nil, "Plenty of room: nothing")
+        check(FirstRunBrain.diskWarning(freeBytes: 6_200_000_000, sizeGb: 5.5)?.hasPrefix("This Mac has 6.2 GB free") == true,
+              "Short of room: say so before Download")
+        check(FirstRunBrain.diskWarning(freeBytes: nil, sizeGb: 5.5) == nil, "Unknown: nothing")
+        // A transfer whose bytes stop moving says so after 30 s.
+        var watch = DownloadProgressWatch()
+        let t0 = Date(timeIntervalSince1970: 1000)
+        check(!watch.stalled(at: t0), "Nothing seen yet")
+        watch.observe(doneGb: 1.0, at: t0)
+        watch.observe(doneGb: 1.0, at: t0.addingTimeInterval(20))
+        check(!watch.stalled(at: t0.addingTimeInterval(25)), "Under 30 s")
+        check(watch.stalled(at: t0.addingTimeInterval(31)), "30 s without a byte: No progress")
+        watch.observe(doneGb: 1.2, at: t0.addingTimeInterval(32))
+        check(!watch.stalled(at: t0.addingTimeInterval(40)), "Moving again")
+
         // A cold start says how long it has taken, once that is worth saying.
         check(FirstRunBrain.waited(5) == nil && FirstRunBrain.waited(19) == nil, "A few seconds: nothing")
         check(FirstRunBrain.waited(45) == "45 s so far" && FirstRunBrain.waited(150) == "2 min so far", "Then the time")
