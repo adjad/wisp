@@ -1017,6 +1017,16 @@ struct SetupGuideChecks {
             // First-run setup's step: one plain start, once a session.
             let owner = SetupGuideModel(session: session)
             await owner.refresh()
+            // A skipped start is not spent: it runs once the request or stale status clears.
+            owner.busy = "Synthetic request in flight"
+            owner.startExistingOmlxOnce()
+            owner.busy = nil
+            owner.statusIsCurrent = false
+            owner.startExistingOmlxOnce()
+            await Task.yield()
+            check(SetupHTTP.count("/setup/start-engine") == 0 && !owner.autoStartedEngine,
+                  "A start skipped while busy or stale does not count as the one start")
+            owner.statusIsCurrent = true
             owner.startExistingOmlxOnce()
             let startedByItself = try await waitForSetupRequest { owner.status?.ready == true }
             check(startedByItself && owner.autoStartedEngine, "First-run setup starts the person's oMLX by itself")

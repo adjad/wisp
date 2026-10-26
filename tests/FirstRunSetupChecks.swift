@@ -214,6 +214,17 @@ struct FirstRunSetupChecks {
         check(offered.modelToUse == gemma && offered.footer(stalled: false) == .tryAgain
               && !offered.isArriving && !offered.waitsForDownloadClick && offered.modelToFetch == nil,
               "An offered model waits for its Use click and is never fetched")
+        // Connecting to the person's oMLX always reaches a Try again, even with no automatic start.
+        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: true, waited: 9),
+              "Connecting is not stalled inside the grace period")
+        check(FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: true,
+                                         waited: FirstRunBrain.connectGrace),
+              "Connecting past the grace period offers Try again without an automatic start")
+        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: false, waited: 600),
+              "The built-in engine keeps its own rule: stalled only after Wisp's start or a failure")
+        check(FirstRunBrain.startStalled(autoStarted: true, failed: false, connecting: false, waited: 0)
+              && FirstRunBrain.startStalled(autoStarted: false, failed: true, connecting: false, waited: 0),
+              "An automatic start that left nothing running, or a failure, offers Try again")
         check(FirstRunBrain.from(status: status(), downloads: []) == .needsDownload(model: gemma, label: "Gemma 4 E4B", sizeGb: 5.5),
               "Nothing installed: offer the download")
         guard case .downloading(_, _, let fraction, let done, let total, let left) =

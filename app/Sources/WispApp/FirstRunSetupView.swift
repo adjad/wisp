@@ -318,6 +318,16 @@ enum FirstRunBrain: Equatable {
                       free, needed)
     }
 
+    /// Connecting to the person's own oMLX offers Try again after this long even when
+    /// Wisp never got to start it by itself, so the step never spins with no button.
+    static let connectGrace: TimeInterval = 10
+
+    /// `.startingEngine` needs a click: Wisp's own start finished without an engine,
+    /// a start failed, or the person's oMLX has been connecting past the grace period.
+    static func startStalled(autoStarted: Bool, failed: Bool, connecting: Bool, waited: TimeInterval) -> Bool {
+        autoStarted || failed || (connecting && waited >= connectGrace)
+    }
+
     /// How long a cold start has taken, once it is long enough to be worth saying.
     static func waited(_ seconds: Int) -> String? {
         guard seconds >= 20 else { return nil }
@@ -587,6 +597,9 @@ struct FirstRunSetupView: View {
     @State private var progressWatch = DownloadProgressWatch()
     /// A finished download the engine still hadn't listed after 30 s.
     @State private var stuckDownload: String?
+    /// When step 1 began connecting to the person's own oMLX (FirstRunBrain.connectGrace).
+    @State private var connectingSince: Date?
+    @State private var connectGraceTick = 0
     /// The one automatic test once Wisp is ready (it also loads the model).
     @State private var testedOnce = false
     @State private var showAdvanced = false
@@ -671,6 +684,7 @@ struct FirstRunSetupView: View {
         // start or download must not sit under the next one.
         .onChange(of: brain.stage) { _, _ in
             announce(brain)
+            if case .startingEngine = brain {} else { connectingSince = nil }
             if setup.busy == nil, setup.messageIsError {
                 setup.message = nil
                 setup.messageIsError = false
@@ -694,6 +708,14 @@ struct FirstRunSetupView: View {
             stepChanged(next)
         }
         .onDisappear { permissions.stop() }
+        // The automatic start of the person's oMLX may have been skipped (a request in
+        // flight, a stale status) while the brain stayed the same: try again as either clears.
+        .onChange(of: setup.statusIsCurrent) { _, _ in retryStart() }
+        .onChange(of: setup.busy) { _, _ in retryStart() }
+    }
+
+    private func retryStart() {
+        if case .startingEngine = brain { drive(brain) }
     }
 
     /// The parts of step 1 that need no click: switch the model on as soon as it
@@ -709,6 +731,12 @@ struct FirstRunSetupView: View {
         case .startingEngine:
             // The person's own oMLX hasn't answered: start it once (first run only).
             setup.startExistingOmlxOnce()
+            if setup.status?.existingOmlx == .connecting, connectingSince == nil {
+                connectingSince = Date()
+                DispatchQueue.main.asyncAfter(deadline: .now() + FirstRunBrain.connectGrace + 0.1) {
+                    connectGraceTick += 1    // redraw, so `stalled` sees the time pass
+                }
+            }
         case .ready where !testedOnce && setup.busy == nil && setup.statusIsCurrent:
             // "Ready" only means the engine lists the model. One short question
             // proves it answers, and loads it while the person reads the rest, so
@@ -867,7 +895,12 @@ struct FirstRunSetupView: View {
     private var stalled: Bool {
         guard setup.busy == nil else { return false }
         switch brain {
-        case .startingEngine: return setup.autoStartedEngine || setup.messageIsError
+        case .startingEngine:
+            _ = connectGraceTick
+            return FirstRunBrain.startStalled(
+                autoStarted: setup.autoStartedEngine, failed: setup.messageIsError,
+                connecting: setup.status?.existingOmlx == .connecting,
+                waited: connectingSince.map { Date().timeIntervalSince($0) } ?? 0)
         case .switching(let model, _): return appliedModel == model && setup.messageIsError
         case .waitingForEngine(let model, _): return stuckDownload == model
         default: return false

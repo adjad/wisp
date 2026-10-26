@@ -312,3 +312,14 @@ def test_automatic_start_in_bundled_mode_uses_the_built_in_path(monkeypatch):
     with pytest.raises(HTTPException):
         asyncio.run(main.setup_start_engine({"automatic": True}))
     assert used == [True]
+
+
+def test_first_run_retries_a_skipped_start_and_always_reaches_try_again():
+    # FirstRunSetupView: drive() runs only on appear and brain changes, so a start skipped
+    # while busy or stale must be retried as those clear, and connecting must stall in time.
+    view = (Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp"
+            / "FirstRunSetupView.swift").read_text()
+    assert ".onChange(of: setup.statusIsCurrent) { _, _ in retryStart() }" in view
+    assert ".onChange(of: setup.busy) { _, _ in retryStart() }" in view
+    assert "if case .startingEngine = brain { drive(brain) }" in view
+    assert "FirstRunBrain.startStalled(" in view and "connecting: setup.status?.existingOmlx == .connecting" in view
