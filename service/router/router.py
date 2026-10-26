@@ -1225,6 +1225,56 @@ _SEARCH_COVERAGE_DOMAINS = [
     ("browser", re.compile(r"\bbrows(?:er|ing)|history\b", re.I)),
 ]
 
+# A new user's questions about Wisp itself: who it is, what it can do, whether
+# their data is private, how to use it. Each is the WHOLE prompt (optional
+# greeting and trailing punctuation), never a clause inside a request, and goes
+# router-direct to wisp_capabilities(topic=...), whose answer is written and
+# live-state checked in service/wisp_about.py. Before this, "who are you" and
+# "is my data private" fell to the ambiguous route and a model improvised an
+# answer (or tried tools) while it was often still loading on a first launch.
+_SELF_LEAD = r"^\s*(?:(?:hey|hi|hello|ok|okay|so|wisp)[,!\s]+)*"
+_SELF_END = r"\s*(?:,?\s*wisp)?\s*[?.!]*\s*$"
+_SELF_IDENTITY_RE = re.compile(
+    _SELF_LEAD + r"(?:who\s+(?:are\s+you|is\s+wisp)|what\s+are\s+you|what(?:'?s|\s+is)\s+wisp|"
+    r"what(?:'?s|\s+is)\s+your\s+name|tell\s+me\s+(?:a\s+(?:little\s+)?bit\s+)?about\s+yourself|"
+    r"introduce\s+yourself|are\s+you\s+(?:an?\s+)?(?:ai|bot|robot|chatbot|chatgpt|siri|human|person))"
+    + _SELF_END, re.I)
+_SELF_OVERVIEW_RE = re.compile(
+    _SELF_LEAD + r"(?:what\s+(?:else\s+)?(?:can|could)\s+(?:you|wisp)\s+(?:do|help\s+(?:me\s+)?with)"
+    r"(?:\s+for\s+me)?|what\s+(?:do|does)\s+(?:you|wisp)\s+do|"
+    r"what\s+are\s+you\s+(?:able\s+to\s+do|good\s+(?:at|for)|for))" + _SELF_END, re.I)
+_SELF_PRIVACY_RE = re.compile(
+    _SELF_LEAD + r"(?:(?:is|are)\s+(?:my\s+)?(?:data|info|information|stuff|files|emails?|messages?|chats?)"
+    r"\s+(?:private|safe|secure|kept\s+local|local|on\s+my\s+mac)|"
+    r"(?:is|are)\s+(?:this|wisp|you|it)\s+(?:private|safe|secure|local)|"
+    r"how\s+(?:private|safe|secure)\s+(?:is\s+(?:my\s+data|wisp|this)|are\s+you)|"
+    r"where\s+(?:does|do|is|are)\s+my\s+(?:data|info|information|emails?|messages?)"
+    r"\s+(?:go|goes|stored|kept|sent|saved)|"
+    r"(?:do|does|will)\s+(?:you|wisp)\s+(?:send|share|upload|sell|store|keep|see|read)\s+my\s+"
+    r"(?:data|info|information|emails?|messages?|texts?|files)(?:\s+(?:to|in)\s+the\s+cloud|\s+online"
+    r"|\s+anywhere)?|"
+    r"(?:does|do)\s+(?:my\s+data|anything|wisp|you)\s+(?:leave|go\s+off)\s+(?:my|this)\s+mac|"
+    r"what\s+(?:data|information|info)\s+do\s+you\s+(?:collect|store|keep|see|have|send)|"
+    r"(?:what\s+about\s+)?privacy)" + _SELF_END, re.I)
+_SELF_HOWTO_RE = re.compile(
+    _SELF_LEAD + r"(?:help|help\s+me\s+get\s+started|getting\s+started|"
+    r"how\s+(?:do|can|should)\s+i\s+(?:use|get\s+started\s+with|start\s+using|set\s+up|work\s+with|"
+    r"talk\s+to|open|launch|find|summon)\s+(?:you|wisp|this\s+app)|"
+    r"how\s+(?:do|can)\s+i\s+get\s+started|how\s+(?:does|do)\s+(?:wisp|you)\s+work|"
+    r"how\s+(?:do|can)\s+i\s+(?:connect|link|add|set\s+up)\s+(?:my\s+)?(?:google|gmail|google\s+calendar)"
+    r"(?:\s+account)?(?:\s+(?:to|with)\s+(?:you|wisp))?|"
+    r"how\s+(?:do|can)\s+i\s+[^?.!]{1,60}\b(?:(?:in|with|on|to|from|using)\s+)?wisp)" + _SELF_END, re.I)
+
+
+def _self_question_topic(t: str) -> str:
+    """'identity', 'overview', 'privacy' or 'howto' for a question about Wisp
+    itself, else ''. Never matches a request with work in it."""
+    for topic, pattern in (("identity", _SELF_IDENTITY_RE), ("overview", _SELF_OVERVIEW_RE),
+                           ("privacy", _SELF_PRIVACY_RE), ("howto", _SELF_HOWTO_RE)):
+        if pattern.match(t):
+            return topic
+    return ""
+
 _LOW_POWER_CONDITIONAL_RE = re.compile(
     r"\bif\b[^.?!]{0,80}\bbattery\b[^.?!]{0,40}\bbelow\s+(\d{1,3})\s*%"
     r"[^.?!]{0,100}\b(?:low\s+power\s+mode|battery\s+saver)\b", re.I)
@@ -5335,6 +5385,10 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         source = next((key for key, pat in _SEARCH_COVERAGE_DOMAINS if pat.search(t)), "")
         return _mk_direct([("search_coverage", {"source": source} if source else {})],
                           "capability question -> search_coverage (router-direct)")
+    if topic := _self_question_topic(t):
+        return _mk_direct([("wisp_capabilities", {"query": t, "topic": topic})],
+                          f"question about Wisp ({topic}) -> wisp_capabilities (router-direct)",
+                          light=False)
     if _CAPABILITY_INVENTORY_RE.search(t):
         return _mk_direct([("wisp_capabilities", {"query": t})],
                           "capability inventory -> wisp_capabilities (router-direct)",

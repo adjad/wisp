@@ -153,18 +153,29 @@ async def wisp_status(topic: str = "models") -> str:
 @register(
     "wisp_capabilities",
     "Report Wisp's actual capabilities from the live tool registry. Use for "
-    "'what tools can you use', 'can you send texts/create reminders/read "
-    "browser history', and capability comparisons. This reports the complete "
-    "registry, not merely the tools offered on the current turn.",
+    "'what can you do', 'what tools can you use', 'can you send texts/create "
+    "reminders/read browser history', and capability comparisons. This reports "
+    "the complete registry, not merely the tools offered on the current turn. "
+    "topic='identity' answers 'who are you', 'privacy' answers 'is my data "
+    "private', 'howto' answers 'how do I use Wisp'.",
     {"type": "object", "properties": {
         "query": {"type": "string", "description": "optional capability question"},
+        "topic": {"type": "string", "enum": ["overview", "identity", "privacy", "howto"],
+                  "description": "what about Wisp to explain; defaults to capabilities"},
     }},
     category="wisp_admin",
     aliases=["what tools are available to you", "what can you do",
              "can you send texts and create reminders",
              "which assistant capabilities do you have"],
 )
-def wisp_capabilities(query: str = "") -> str:
+def wisp_capabilities(query: str = "", topic: str = "") -> str:
+    # A new user's self-questions get the written, live-state answers in
+    # service/wisp_about.py. A specific "can you X?" keeps the Yes/No report.
+    from service import wisp_about
+    if topic in wisp_about.TOPICS:
+        return wisp_about.answer(topic, query)
+    if wisp_about.is_general_inventory(query):
+        return wisp_about.overview()
     from service.tools.registry import REGISTRY, routable_tool_names
 
     names = routable_tool_names()
