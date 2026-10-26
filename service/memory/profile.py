@@ -480,9 +480,10 @@ def _everything_host() -> str | None:
 
 def sent_to() -> str:
     """Where the profile goes with each question: "" while it stays on this
-    Mac, else the host. Unknown never reads as local."""
-    host = _everything_host()
-    return "your cloud provider" if host is None else host
+    Mac, else the host. It reports what may_send_to does: when the cloud
+    state can't be read, the profile goes only to Wisp's own model, so the
+    lock line says it stays here (privacy() says the same)."""
+    return _everything_host() or ""
 
 
 def may_send_to(*, managed: bool) -> bool:

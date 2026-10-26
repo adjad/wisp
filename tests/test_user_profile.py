@@ -433,10 +433,11 @@ def test_api_keeps_the_profile_local_under_an_optional_cloud_model(client, monke
     _patch_cloud(monkeypatch, "everything", "gpu.example.net")
     status = client.get("/profile").json()["status"]
     assert status["local_only"] is False and status["sent_to"] == "gpu.example.net"
-    # Unknown never reads as local.
+    # Unknown: the profile goes only to Wisp's own model, and the lock line
+    # says exactly that (privacy() agrees).
     _patch_cloud(monkeypatch, "super", "your cloud provider", known=False)
     status = client.get("/profile").json()["status"]
-    assert status["local_only"] is False and status["sent_to"] == "your cloud provider"
+    assert status["local_only"] is True and status["sent_to"] == ""
 
 
 @pytest.mark.parametrize("mode,managed,rides", [
@@ -464,7 +465,9 @@ def test_pending_everything_is_not_on_yet(client, monkeypatch):
 def test_unknown_cloud_state_sends_the_profile_nowhere_but_this_mac(monkeypatch):
     _patch_cloud(monkeypatch, "everything", "your cloud provider", known=False)
     assert P.may_send_to(managed=False) is False and P.may_send_to(managed=True) is True
-    assert P.sent_to() == "your cloud provider", "and the app doesn't say it stays here"
+    assert P.sent_to() == "", "the lock line says what happens: it stays with Wisp's own model"
+    from service import wisp_about
+    assert "goes only to Wisp's own model on this Mac" in wisp_about.privacy()
 
 
 def test_main_chat_branch_carries_the_profile_only_where_allowed(monkeypatch):
