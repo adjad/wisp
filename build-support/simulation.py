@@ -86,6 +86,7 @@ def main():
             ("calendar-reader", ["WispClient.swift", "AgentSend.swift", "AssistantDelivery.swift", "CalendarReader.swift",
                                  "CalendarMove.swift", "RemindersWriter.swift"], "CalendarReaderChecks.swift"),
             ("notes-db", ["NotesDBReader.swift"], "NotesDBReaderChecks.swift"),
+            ("onboarding", ["Onboarding.swift"], "OnboardingChecks.swift"),
         ):
             binary = str(build / (os.environ["WISP_BUILD_FIXTURE_PREFIX"] + "-" + name))
             result.extend([

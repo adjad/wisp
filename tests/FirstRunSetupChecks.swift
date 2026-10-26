@@ -55,9 +55,28 @@ struct FirstRunSetupChecks {
         }
         var set: [String] = []
         FirstRunSetup.takeOverLaunchPrompts { set.append($0) }
-        check(Set(set) == [FirstRunSetup.startedKey, FirstRunSetup.permissionsRequestedKey,
-                           FirstRunSetup.setupGuideShownKey, FirstRunSetup.notchTipShownKey],
-              "The old launch prompts, tip and card are all taken over, and the window is marked started")
+        check(Set(set) == [FirstRunSetup.startedKey, FirstRunSetup.setupGuideShownKey, FirstRunSetup.notchTipShownKey],
+              "The old launch tip and card are taken over, and the window is marked started")
+        // The notch's offer of Getting to know you stops only once the window's
+        // About you was finished or skipped; starting the window doesn't count.
+        check(!FirstRunSetup.aboutYouDecidedInWindow { set.contains($0) },
+              "Started the window, never reached About you: the notch may still offer it")
+        check(FirstRunSetup.aboutYouDecidedInWindow { $0 == FirstRunSetup.aboutYouDecidedKey },
+              "Finished or skipped About you: never in the notch")
+        // Opened again after setup (Permissions…, a Brief link): hands off the model.
+        check(FirstRunSetup.drivesModel(setupDone: false) && !FirstRunSetup.drivesModel(setupDone: true),
+              "Only first-run setup switches the model or tests it by itself")
+        // The window's setupDone is "not unfinished" (AppDelegate.onboardingContent).
+        func drives(_ keys: Set<String>) -> Bool {
+            FirstRunSetup.drivesModel(setupDone: !FirstRunSetup.isUnfinished { keys.contains($0) })
+        }
+        check(!drives([]), "Upgraded from a build without the window (neither key): Permissions… leaves the model alone")
+        check(drives([FirstRunSetup.startedKey]), "Fresh install or mid-setup (started, not done): drives the model")
+        check(!drives([FirstRunSetup.startedKey, FirstRunSetup.doneKey]), "Finished setup: leaves the model alone")
+        // A fresh install marks the window started before it opens, so it drives from the first frame.
+        var fresh: Set<String> = []
+        FirstRunSetup.takeOverLaunchPrompts { fresh.insert($0) }
+        check(drives(fresh), "Fresh install: the launch marks it started, so the window drives the model")
         // Quitting part-way: started and the taken-over keys are set, done is not.
         check(FirstRunSetup.shouldShow { set.contains($0) }, "Quit before finishing: the window opens again")
         check(!FirstRunSetup.shouldShow { set.contains($0) || $0 == FirstRunSetup.doneKey },
@@ -79,12 +98,15 @@ struct FirstRunSetupChecks {
         check(FirstRunSetup.canAnswer(ready: false, remoteOnly: true), "Remote-only (Cloud Everything) counts as able to answer")
         check(FirstRunSetup.canAnswer(ready: true, remoteOnly: false) && !FirstRunSetup.canAnswer(ready: false, remoteOnly: false),
               "Otherwise only a ready local model can answer")
-        // The readers that make macOS ask: held while the window is up and after an early close.
-        check(!FirstRunSetup.readerGateLifts(windowUp: true, finished: true, canAnswer: true), "Never while the window is up")
-        check(!FirstRunSetup.readerGateLifts(windowUp: false, finished: false, canAnswer: false),
-              "An early close keeps the prompting readers held")
-        check(FirstRunSetup.readerGateLifts(windowUp: false, finished: true, canAnswer: false), "Start using Wisp lifts it")
-        check(FirstRunSetup.readerGateLifts(windowUp: false, finished: false, canAnswer: true), "Wisp able to answer lifts it")
+        // No Wisp notification while the setup window is on screen.
+        check(!FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false),
+              "Window up, even behind System Settings or the browser: no notification")
+        check(FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: true),
+              "Window minimized: notify")
+        check(FirstRunSetup.notifiesReady(promised: true, windowUp: false, windowMinimized: false),
+              "Window closed or finished: notify")
+        check(!FirstRunSetup.notifiesReady(promised: false, windowUp: false, windowMinimized: false),
+              "Never promised: never")
 
         // Every launch: Wisp can't answer and no window is up → the quiet cue, never the full card.
         check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false) == .later, "Not set up: the ! cue")
@@ -94,21 +116,54 @@ struct FirstRunSetupChecks {
         check(FirstRunSetup.setupCue(.open, canAnswer: true, firstRunWindowUp: false) == .open, "Ready: an open card waits for Done")
         check(FirstRunSetup.setupCue(.hidden, canAnswer: true, firstRunWindowUp: false) == .hidden, "Ready: nothing to show")
 
-        // While the window is up it is the only thing that asks macOS for access.
-        let readers = FirstRunReaderGate.Reader.allCases
-        let waiting = FirstRunReaderGate(windowUp: true) { _ in false }
-        check(readers.allSatisfy { !waiting.allows($0) }, "Window up, nothing answered: no reader starts and asks")
-        let noWindow = FirstRunReaderGate(windowUp: false) { _ in false }
-        check(readers.allSatisfy { noWindow.allows($0) }, "No window (an existing user, or after it closes): every reader starts")
-        let calendarAnswered = FirstRunReaderGate(windowUp: true) { $0 == .calendar }
-        check(calendarAnswered.allows(.calendar) && !calendarAnswered.allows(.reminders) && !calendarAnswered.allows(.mail),
-              "An answered row releases only its own readers")
-        check(FirstRunReaderGate.readers(for: .calendar) == [.calendar]
-              && FirstRunReaderGate.readers(for: .reminders) == [.reminders]
-              && FirstRunReaderGate.readers(for: .mail) == [.mail, .notes]
-              && FirstRunReaderGate.readers(for: .contacts) == [.contacts], "Rows map to the readers they answer for")
-        check([.allowed, .notAllowed, .notOnThisMac].allSatisfy(FirstRunReaderGate.isDecided)
-              && ![.notAsked, .checking].contains(where: FirstRunReaderGate.isDecided), "Decided means macOS has an answer")
+        // Permission rows: their state in a word, and Contacts only once it helps.
+        check(FirstRunPermissions.label(.calendar, .notAsked) == "Not set"
+              && FirstRunPermissions.label(.calendar, .allowed) == "Allowed"
+              && FirstRunPermissions.label(.calendar, .notAllowed) == "Denied"
+              && FirstRunPermissions.label(.fullDiskAccess, .notAllowed) == "Needs System Settings",
+              "Not set, Allowed, Denied, Needs System Settings")
+        check([.allowed, .notAllowed, .notOnThisMac].allSatisfy(FirstRunPermissions.isDecided)
+              && ![.notAsked, .checking].contains(where: FirstRunPermissions.isDecided), "Decided means macOS has an answer")
+        check(!FirstRunPermissions.contactsUseful(messagesReadable: false) && FirstRunPermissions.contactsUseful(messagesReadable: true),
+              "Contacts waits for Messages to be readable")
+
+        // Readers never ask: an undecided Calendar or Reminders is a reason, never a request.
+        for source in [RemindersWriter.Access.Source.calendar, .reminders] {
+            let unasked = RemindersWriter.Access.passive(status: .notDetermined, source: source)
+            check(!unasked.needsRequest && !unasked.syncing && !unasked.authorized
+                  && unasked.reasonKind == source.reasonKind && unasked.reason?.contains("Permissions…") == true,
+                  "\(source.name) undecided: says where to allow it, asks nothing")
+            check(RemindersWriter.Access.passive(status: .authorized, source: source).authorized, "\(source.name) allowed reads")
+            let denied = RemindersWriter.Access.passive(status: .deniedOrRestricted, source: source)
+            check(!denied.needsRequest && denied.reason?.contains("turned off") == true, "\(source.name) denied: Settings")
+        }
+        // A Brief or Day link for a permission macOS never asked about opens Wisp's own row.
+        check(Permissions.needsAskingInWisp(BriefDetail.calendarsAccess.url, calendarUndecided: true, remindersUndecided: false)
+              && !Permissions.needsAskingInWisp(BriefDetail.calendarsAccess.url, calendarUndecided: false, remindersUndecided: true)
+              && Permissions.needsAskingInWisp(BriefDetail.remindersAccess.url, calendarUndecided: false, remindersUndecided: true)
+              && !Permissions.needsAskingInWisp(BriefDetail.fullDiskAccess.url, calendarUndecided: true, remindersUndecided: true),
+              "Undecided Calendar or Reminders: Wisp's Permissions step; anything else: System Settings")
+        check(Permissions.needsAskingInWisp(BriefDetail.automationAccess.url, calendarUndecided: false,
+                                            remindersUndecided: false, automationUndecided: true)
+              && !Permissions.needsAskingInWisp(BriefDetail.automationAccess.url, calendarUndecided: true,
+                                                remindersUndecided: true, automationUndecided: false),
+              "Undecided Automation: Wisp's Mail & Notes row; decided: System Settings")
+        // Mail or Notes open with Automation never decided: point at Wisp's row, not "Open Mail".
+        let closed = (kind: "full_disk_access", reason: "Wisp reads Mail while Mail is open. Open Mail, or …")
+        let unasked = Permissions.unaskedAutomation(app: "Mail", appRunning: true, automationDecided: false, failure: closed)
+        check(unasked.kind == "mail_automation" && unasked.reason.contains("Permissions…")
+              && unasked.reason.contains("Mail & Notes") && !unasked.reason.contains("Open Mail"),
+              "Open but never asked: the Permissions row")
+        check(Permissions.unaskedAutomation(app: "Mail", appRunning: false, automationDecided: false, failure: closed) == closed
+              && Permissions.unaskedAutomation(app: "Notes", appRunning: true, automationDecided: true, failure: closed) == closed,
+              "Closed, or Automation decided: the on-disk reason as before")
+        // The Google step: an outage is not a sign-in problem; Gmail unticked is said plainly.
+        check(OnboardingGoogleCopy.signInProblem(GoogleAccountModel.serviceDown) == nil
+              && OnboardingGoogleCopy.signInProblem("Account connected.") == nil
+              && OnboardingGoogleCopy.signInProblem("") == nil, "Outage, success, nothing: no sign-in problem")
+        check(OnboardingGoogleCopy.signInProblem("Wisp could not connect Gmail: Gmail read access wasn't granted — on "
+                  + "Google's consent screen, tick the box to view your email messages, then try again")
+              == GoogleGrantNames.gmailNotGrantedMessage, "Gmail unticked: the tick-box message")
 
         // Getting to know you, offered by Wisp itself: due by the service's word,
         // shown only in a quiet moment, and never waiting on the model.
@@ -122,6 +177,7 @@ struct FirstRunSetupChecks {
             ("the notch dismissed to the menu bar", \.dismissedToMenuBar),
             ("Tell Wisp about you chosen this session", \.chosenThisSession),
             ("a completed About you (no more GET /profile)", \.profileComplete),
+            ("About you finished or skipped in the onboarding window", \.aboutYouDecidedInWindow),
         ]
         for (name, key) in busy {
             var moment = calm
@@ -279,14 +335,16 @@ struct FirstRunSetupChecks {
               && FirstRunSetupView.shortcutsLine(ask: false, search: true).contains("top of the screen"),
               "Another app owns ⌥Space: point at the top of the screen instead")
         check(!FirstRunSetupView.shortcutsLine(ask: true, search: false).contains("⌘ ⇧ F"), "No ⌘⇧F when it isn't Wisp's")
-        check(FirstRunSetupView.examples([:]) == ["Remind me to call the dentist tomorrow at 10"], "Nothing allowed: the reminder only")
-        check(FirstRunSetupView.examples([.calendar: .allowed, .fullDiskAccess: .allowed]).count == 3, "Calendar and mail readable: all three")
-        check(!FirstRunSetupView.examples([.calendar: .notAllowed, .mail: .allowed]).contains("What's on my calendar today?"),
-              "No calendar question without Calendar")
+        check(FirstRunSetupView.tabLines.map(\.tab) == ["Ask", "Brief", "Day"], "The tabs in the notch's order")
+        for style in [SurfaceLayout.Style.notch, .menuBar, .floating] {
+            check(FirstRunSetupView.findLine(style).contains("menu bar"), "Every display names the menu bar icon")
+        }
+        check(FirstRunSetupView.findLine(.notch).contains("notch") && !FirstRunSetupView.findLine(.menuBar).contains("notch"),
+              "Only a notch Mac is told about a notch")
 
-        // Contacts is asked for only while undecided and once Messages can be read.
-        check(ContactsReader.shouldRequest(.notDetermined, mayAsk: true), "Undecided and useful: ask")
-        check(!ContactsReader.shouldRequest(.notDetermined, mayAsk: false), "Messages unreadable: not at launch")
+        // Contacts' reader asks only when told it may; the app never tells it so.
+        check(ContactsReader.shouldRequest(.notDetermined, mayAsk: true), "Undecided and allowed to ask: ask")
+        check(!ContactsReader.shouldRequest(.notDetermined, mayAsk: false), "Not allowed to ask: never")
         check(!ContactsReader.shouldRequest(.denied, mayAsk: true) && !ContactsReader.shouldRequest(.authorized, mayAsk: true),
               "Decided: never again")
 
@@ -314,10 +372,10 @@ struct FirstRunSetupChecks {
         check(FirstRunBrain.timeLeft(360) == "about 6 minutes left", "Minutes")
         check(FirstRunBrain.timeLeft(5400) == "about 1.5 hours left", "Hours")
 
-        // The tour names the gesture this display actually has.
-        check(FirstRunSetupView.openHint(.notch).contains("notch"), "Notch")
-        check(!FirstRunSetupView.openHint(.menuBar).contains("notch") && FirstRunSetupView.openHint(.menuBar).contains("menu bar"),
-              "No notch: menu bar and top edge")
+        // The picture's label says the gesture this display actually has.
+        check(FirstRunSetupView.openHint(.notch) == "Wisp lives here — hover or click", "Notch")
+        check(!FirstRunSetupView.openHint(.menuBar).contains("notch") && FirstRunSetupView.openHint(.menuBar).contains("top"),
+              "No notch: the top edge")
         // Calendar and Reminders are separate rows that open their own Settings pages.
         check(FirstRunSetupView.settingsPane(.calendar).hasSuffix("Privacy_Calendars")
               && FirstRunSetupView.settingsPane(.reminders).hasSuffix("Privacy_Reminders"), "Each opens its own page")
@@ -329,7 +387,6 @@ struct FirstRunSetupChecks {
               "Nothing left")
         check(FirstRunSetupView.settingsPane(.fullDiskAccess) == Permissions.fullDiskAccessPane
               && Permissions.fullDiskAccessPane.hasSuffix("Privacy_AllFiles"), "Full Disk Access opens its own page")
-        check(FirstRunReaderGate.readers(for: .fullDiskAccess).isEmpty, "Full Disk Access never prompts, so it gates no reader")
 
         // Full Disk Access: a row of its own, on whether Messages, Mail or Notes data
         // really reads (Automation alone only helps while those apps are open).
@@ -347,6 +404,6 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .allowed, "Readable Mail folder")
         try? FileManager.default.removeItem(at: scratch)
 
-        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, reader gate, early-close hold, remote-only, reopen cap, Full Disk Access")
+        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access")
     }
 }

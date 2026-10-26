@@ -22,6 +22,12 @@ struct GoogleStatus: Equatable {
         /// A secondary line that never changes the state, e.g. optional
         /// Workspace scopes the user declined at consent. Shown until dismissed.
         var note: String = ""
+        /// Whether this sign-in shared Google Calendar; nil from a service that doesn't say.
+        var calendar: Bool? = nil
+        /// The sign-in asked for the Workspace scopes, so any in
+        /// `workspaceDeclined` were left unticked rather than never asked.
+        var workspaceRequested = false
+        var workspaceDeclined: [String] = []
 
         /// The one status line under the address.
         var statusLine: String {
@@ -55,7 +61,10 @@ struct GoogleStatus: Equatable {
             return Account(id: email, state: state, message: message,
                            detail: row["detail"] as? String ?? "",
                            lastSync: (row["last_headers_sync"] as? Double).map(Date.init(timeIntervalSince1970:)),
-                           note: row["note"] as? String ?? "")
+                           note: row["note"] as? String ?? "",
+                           calendar: row["calendar"] as? Bool,
+                           workspaceRequested: row["workspace_requested"] as? Bool ?? false,
+                           workspaceDeclined: (row["workspace_declined"] as? [Any] ?? []).compactMap { $0 as? String })
         }
     }
 

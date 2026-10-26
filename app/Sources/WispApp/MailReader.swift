@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 import CoreFoundation
 
@@ -580,8 +581,29 @@ final class MailReader {
     // picks it up. Bundle ID, not app name, since Mail's display name can be
     // localized.
     private func isMailRunning() -> Bool {
+        mailAppOpen() && Self.automationDecided("com.apple.mail")
+    }
+
+    private func mailAppOpen() -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.mail" }
     }
+
+    /// Whether macOS has an answer about Wisp scripting this app. A scripted
+    /// read while it has none makes macOS ask, and Wisp never asks on its own
+    /// (Permissions.swift): until the person clicks Allow in setup, the read
+    /// goes to the on-disk copy as if the app were closed. Never asks (`false`).
+    static func automationDecided(_ bundleID: String) -> Bool {
+        var target = AEAddressDesc()
+        let created = bundleID.withCString { pointer in
+            AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
+        }
+        guard created == noErr else { return false }
+        defer { AEDisposeDesc(&target) }
+        let status = AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
+                                                           AEEventID(typeWildCard), false)
+        return status != OSStatus(errAEEventWouldRequireUserConsent)
+    }
+
 
     /// Run a script, returning its string result, or nil (with the error code)
     /// when it failed. Every scan below goes through this so a failure is
@@ -807,7 +829,10 @@ final class MailReader {
                                   readSource: "local_index", history: history,
                                   historyGeneration: generation)
                     } else {
-                        let failure = self.dbReader.closedReadFailure()
+                        let failure = Permissions.unaskedAutomation(
+                            app: "Mail", appRunning: self.mailAppOpen(),
+                            automationDecided: Self.automationDecided("com.apple.mail"),
+                            failure: self.dbReader.closedReadFailure())
                         self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
                     }
                     return

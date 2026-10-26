@@ -316,10 +316,10 @@ struct NotchBriefView: View {
                 .accessibilityAddTraits(.isHeader)
             ForEach(detail.lines) { row($0, width: width) }
             Button {
-                if let action = detail.action, let url = URL(string: action.url) { NSWorkspace.shared.open(url) }
+                if let action = detail.action, let url = URL(string: action.url) { Permissions.openFix(url) }
                 else { NotchChrome.open(detail.source) }
             } label: {
-                Text(detail.action?.label ?? "Open \(NotchChrome.appName(detail.source)) ↗").font(.system(size: 12.5, weight: .medium))
+                Text(detail.action.map(Permissions.fixLabel) ?? "Open \(NotchChrome.appName(detail.source)) ↗").font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(Theme.textPrimary).contentShape(Rectangle())
             }
             .buttonStyle(.plain)

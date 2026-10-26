@@ -19,15 +19,12 @@ final class CalendarReader {
     private var timer: Timer?
     private var historyTask: Task<Void, Never>?
 
-    // Main-thread state for the permission request. The same rules as
-    // Reminders (RemindersWriter.Access): an unanswered prompt is a short wait,
-    // then a reason with a next step, never "syncing" forever.
+    // The same rules as Reminders (RemindersWriter.Access.passive): it never
+    // asks macOS for access, and an unanswered permission is a reason with a
+    // next step, never "syncing" forever.
     private typealias Access = RemindersWriter.Access
-    private var accessRequestOutstanding = false
-    private var lastAccessRequestAt: TimeInterval?
-    private var accessRequestsMade = 0
 
-    // Sync now (which asks for access only while macOS has no answer), then
+    // Sync now (which never asks for access: Access.passive), then
     // keep a repeating timer regardless of the result, so a permission granted
     // AFTER launch is picked up within a minute instead of needing a restart.
     // sync() itself no-ops (but reports diagnostics) when unauthorized.
@@ -43,35 +40,6 @@ final class CalendarReader {
         }
         DispatchQueue.main.async { [weak self] in
             self?.timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
-                self?.sync()
-            }
-        }
-    }
-
-    func requestAccess(_ done: @escaping (Bool) -> Void) {
-        if #available(macOS 14.0, *) {
-            store.requestFullAccessToEvents { granted, _ in done(granted) }
-        } else {
-            store.requestAccess(to: .event) { granted, _ in done(granted) }
-        }
-    }
-
-    /// Ask for access and remember that we did, so a request that finishes
-    /// without a decision is reported as such instead of as an endless sync. A
-    /// menu-bar app is not frontmost, and macOS can leave its prompt hidden
-    /// behind other windows, so Wisp is brought forward for the first request
-    /// only (Access.shouldActivate). Main thread only.
-    private func requestAccessTracked() {
-        guard !accessRequestOutstanding else { return }
-        accessRequestOutstanding = true
-        lastAccessRequestAt = Date().timeIntervalSince1970
-        if Access.shouldActivate(requestsMade: accessRequestsMade) {
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        }
-        accessRequestsMade += 1
-        requestAccess { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.accessRequestOutstanding = false
                 self?.sync()
             }
         }
@@ -93,11 +61,7 @@ final class CalendarReader {
         let snapshotStartedAt = Date().timeIntervalSince1970
         guard isAuthorized else {
             let raw = EKEventStore.authorizationStatus(for: .event)
-            let report = Access.report(status: Access.status(of: raw),
-                                       requestOutstanding: accessRequestOutstanding,
-                                       lastRequestAt: lastAccessRequestAt, now: snapshotStartedAt,
-                                       source: .calendar, requestsMade: accessRequestsMade)
-            if report.needsRequest { requestAccessTracked() }
+            let report = Access.passive(status: Access.status(of: raw), source: .calendar)
             var diagnostics = Access.diagnostics(for: report, snapshotStartedAt: snapshotStartedAt)
             diagnostics["status"] = raw.rawValue
             post(events: [], diagnostics: diagnostics)

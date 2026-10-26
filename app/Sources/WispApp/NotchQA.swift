@@ -16,6 +16,11 @@ enum NotchQADriver {
                          ?? FileManager.default.currentDirectoryPath, isDirectory: true)
         try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
         let offscreen = ProcessInfo.processInfo.environment["WISP_QA_OFFSCREEN"] == "1"
+        // WISP_NOTCH_QA_ONBOARDING=1: only the onboarding window's steps (NotchQAOnboarding).
+        if ProcessInfo.processInfo.environment["WISP_NOTCH_QA_ONBOARDING"] == "1" {
+            NotchQAOnboarding.run(outDir: outDir, offscreen: offscreen)
+            return
+        }
         let app = NSApplication.shared
         app.setActivationPolicy(offscreen ? .accessory : .regular)
         var calendar = Calendar(identifier: .gregorian)

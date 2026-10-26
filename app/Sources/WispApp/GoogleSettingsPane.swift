@@ -48,11 +48,15 @@ final class GoogleAccountModel: ObservableObject {
     private var typedClientID: String { clientID.trimmingCharacters(in: .whitespacesAndNewlines) }
     var canConnect: Bool { status.canConnect || !typedClientID.isEmpty }
 
+    /// Said while the service doesn't answer; a later answer clears it.
+    nonisolated static let serviceDown = "Wisp's service isn't responding."
+
     func refresh() async {
         guard let s = await request("GET", "assistant/gmail/status") else {
-            message = "Wisp's service isn't responding."
+            message = Self.serviceDown
             return
         }
+        if message == Self.serviceDown { message = "" }
         status = GoogleStatus.parse(s)
         loaded = true
         authorizing = s["authorizing"] as? Bool ?? false
