@@ -1990,9 +1990,13 @@ final class OverlayModel: ObservableObject {
             guard !briefText.isEmpty else { return false }
             let today = ev.str("today_summary")
             let messages = ev.str("messages_summary")
-            if !today.isEmpty { await post(title: "📅 Today", body: today) }
-            if !messages.isEmpty { await post(title: "💬 Messages", body: messages) }
-            if today.isEmpty && messages.isEmpty {
+            // A day-one rebuild of a summary already announced (sources that
+            // finished reading, or Getting to know you answered) updates the
+            // Brief tab quietly: no second "ready" banner.
+            let recomposed = ev.bool("recomposed")
+            if !recomposed, !today.isEmpty { await post(title: "📅 Today", body: today) }
+            if !recomposed, !messages.isEmpty { await post(title: "💬 Messages", body: messages) }
+            if !recomposed && today.isEmpty && messages.isEmpty {
                 // No split available: notify with the brief's own opening lines
                 // rather than announcing that something is ready elsewhere.
                 let part = ev.str("part_of_day") == "evening" ? "Evening" : "Morning"
@@ -2005,8 +2009,7 @@ final class OverlayModel: ObservableObject {
             // drop) changes nothing: not the text, not its time, not the chat a
             // refreshed brief was recorded in.
             let eventID = ev.str("event_id")
-            let created = (ev.payload["created_at"] as? NSNumber)?.doubleValue
-                .map { Date(timeIntervalSince1970: $0) }
+            let created = (ev.payload["created_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
             if Self.appliesBrief(eventID: eventID, created: created, applied: appliedBriefEvents, current: brief) {
                 if !eventID.isEmpty { appliedBriefEvents.insert(eventID) }
                 brief = DailyBrief(text: briefText, receivedAt: created ?? Date(),

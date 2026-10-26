@@ -148,7 +148,7 @@ struct AboutYouView: View {
                     }
                     section("What you're working toward", detail: "Up to five. One is kept in view each morning, taking turns.") {
                         stringList($model.profile.goals, draft: $model.goalDraft,
-                                   placeholder: KnowYouStep.goals.placeholder, add: model.addGoal)
+                                   placeholder: "Add a goal in your own words", add: model.addGoal)
                     }
                     section("What tends to get in your way", detail: "In your own words. When a day shows the pattern, your brief mentions it once, gently, with a small next step.") {
                         stringList($model.profile.struggles, draft: $model.struggleDraft,
