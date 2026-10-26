@@ -232,12 +232,25 @@ enum FirstRunBrain: Equatable {
             let label = status.models.installed.first(where: { $0.id == model })?.label ?? model
             return .ready(label: plainLabel(label))
         }
+        // The oMLX app this Mac already has (a fresh install picks it when oMLX.app is
+        // installed). Until its server answers it is connecting, never a failure: it may
+        // be starting or loading the model. Only a running oMLX without the model is stuck.
+        switch status.existingOmlx {
+        case .connecting: return .startingEngine
+        case .serving(let model, let label): return .switching(model: model, label: plainLabel(label))
+        case nil: break
+        }
         // The engine's own reason first: a Mac whose macOS is too old for it also
         // falls back to external mode, and "set to use another app" would be untrue.
         if let engine = status.bundledEngine, !engine.available {
             return .unavailable(engine.unavailableReason ?? "Wisp's built-in engine can't run on this Mac.")
         }
         guard status.omlx.bundled == true else {
+            if status.omlx.installed, status.omlx.running {
+                let wanted = plainLabel(status.models.recommendedLabel ?? status.models.recommended)
+                return .unavailable("Your oMLX app is running but doesn't have \(wanted) or another of Wisp's models. "
+                                    + "Use the detailed setup to pick one of its models.")
+            }
             return .unavailable("Wisp is set to use another app for its model. Use the detailed setup to finish.")
         }
         // No model Wisp can download fits this Mac's memory (or it couldn't be
@@ -956,9 +969,17 @@ struct FirstRunSetupView: View {
                 }
             }
         case .startingEngine:
-            OnboardingCard(icon: "bolt", title: "Starting Wisp's engine…", detail: "It's built into Wisp, so there's nothing else to install.") {
+            let ownOmlx = setup.status?.existingOmlx == .connecting
+            OnboardingCard(icon: "bolt", title: ownOmlx ? "Connecting to your oMLX…" : "Starting Wisp's engine…",
+                           detail: ownOmlx ? "Wisp uses the oMLX app you already have, so there's nothing to download."
+                                           : "It's built into Wisp, so there's nothing else to install.") {
                 if stalled {
-                    Button("Try again") { Task { await setup.startEngine() } }.buttonStyle(FirstRunButtonStyle())
+                    HStack(spacing: 8) {
+                        Button("Try again") { Task { await setup.startEngine() } }.buttonStyle(FirstRunButtonStyle())
+                        if ownOmlx {
+                            Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+                        }
+                    }
                 } else {
                     ProgressView().controlSize(.small)
                 }
@@ -1026,14 +1047,16 @@ struct FirstRunSetupView: View {
         case .switching(let model, let label):
             if stalled {
                 OnboardingCard(icon: "exclamationmark.triangle", title: label,
-                               detail: "Downloaded, but Wisp couldn't switch over to it.") {
+                               detail: (setup.status?.omlx.bundled == true ? "Downloaded" : "Found in your oMLX")
+                                   + ", but Wisp couldn't switch over to it.") {
                     Button("Try again") { Task { await setup.apply(model) } }
                         .buttonStyle(FirstRunButtonStyle(primary: true))
                         .keyboardShortcut(.defaultAction)
                         .disabled(setup.busy != nil)
                 }
             } else {
-                OnboardingCard(icon: "checkmark.circle", title: label, detail: "Downloaded. Switching Wisp over to it…") {
+                OnboardingCard(icon: "checkmark.circle", title: label, detail: (setup.status?.omlx.bundled == true ? "Downloaded" : "Found in your oMLX")
+                                   + ". Switching Wisp over to it…") {
                     ProgressView().controlSize(.small)
                 }
             }

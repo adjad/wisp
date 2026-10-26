@@ -772,6 +772,7 @@ def test_status_route_falls_back_to_saved_models_when_engine_is_down(monkeypatch
     monkeypatch.setattr(main, "current_hardware", lambda: Hardware("Apple M4", 16))
     monkeypatch.setattr(main, "models_config", lambda: {"installed_models": [Q4]})
     monkeypatch.setattr(main, "_setup_roles", lambda: _roles(Q4))
+    monkeypatch.setattr(main, "_models_on_disk", lambda: [])    # no model folders on disk
     s = asyncio.run(main.setup_status())
     assert s["omlx"]["running"] is False and s["models"]["source"] == "saved"
     assert s["hardware"]["tier"] == "standard" and s["models"]["recommended"] == GEMMA

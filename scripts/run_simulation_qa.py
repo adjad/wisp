@@ -159,6 +159,8 @@ PROFILE_TESTS = {
     "tests/test_cloud_provider_settings.py",
     "tests/test_local_provider_settings.py",
     "tests/test_setup_guide.py",
+    # Fresh-install model detection over fake model folders and fake /v1/models answers.
+    "tests/test_setup_existing_omlx.py",
     "tests/test_onboarding_window.py",
     "tests/test_super_model_routing.py",
         "tests/test_inference_endpoints.py",

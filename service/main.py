@@ -1115,6 +1115,38 @@ def _omlx_model_dir() -> str | None:
     return str(Path.home() / ".omlx" / "models")     # oMLX's documented default
 
 
+def _omlx_model_dirs() -> list[str]:
+    """Every folder the engine loads models from. Read only: the settings are never written.
+
+    External mode: the model folders in oMLX.app's own settings. Bundled mode: Wisp's
+    engine folder first (where it downloads), then folders added in its admin page.
+    """
+    from pathlib import Path
+    from service.config import omlx_settings
+    dirs: list[str] = []
+    if is_bundled():
+        from service.engine.mode import engine_data_dir
+        dirs.append(str(engine_data_dir() / "models"))
+    try:
+        model = omlx_settings().get("model", {})
+        saved = model.get("model_dirs") if isinstance(model, dict) else None
+        if not isinstance(saved, list) or not saved:
+            saved = [model.get("model_dir")] if isinstance(model, dict) else []
+        dirs += [d for d in saved if isinstance(d, str) and d and d not in dirs]
+    except Exception:  # noqa: BLE001 — unreadable settings: the default folder below
+        pass
+    return dirs or [str(Path.home() / ".omlx" / "models")]
+
+
+def _models_on_disk() -> list[str]:
+    """Wisp's catalogue models already in the engine's folders (no engine needed)."""
+    from service.setup.local_models import catalogue_models_on_disk
+    try:
+        return catalogue_models_on_disk(_omlx_model_dirs())
+    except Exception:  # noqa: BLE001 — a folder Wisp can't read just isn't evidence
+        return []
+
+
 def _omlx_admin_url() -> str:
     """oMLX's admin page (its Model Downloader lives there), on its configured port."""
     from service.config import omlx_base_url
@@ -1147,6 +1179,13 @@ async def setup_status() -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — not running/unreachable is an answer, not an error
         saved = models_config().get("installed_models") or []
         installed = [m for m in saved if isinstance(m, str)]
+        # The engine can't be asked, but a model folder already on disk is installed all
+        # the same: a fresh install must not offer to download what the person's oMLX
+        # (or Wisp's engine folder) already holds, and the first-run step needs to know
+        # the oMLX it is about to use has the recommended model.
+        on_disk = [m for m in await asyncio.to_thread(_models_on_disk) if m not in installed]
+        if on_disk:
+            installed, source = installed + on_disk, "disk"
     from service.config import tool_capable_models
     status = setup_guide.build_status(
         hardware=current_hardware(),
@@ -1158,10 +1197,35 @@ async def setup_status() -> dict[str, Any]:
     return status
 
 
+async def _start_existing_omlx() -> None:
+    """Setup's automatic start of the person's own oMLX.app server: `start` only.
+
+    The person clicked nothing, so this never restarts, stops or reconfigures their
+    app (ensure_omlx's `restart` fallback is for a click or a model call)."""
+    require_local_models_disabled("Local oMLX lifecycle")
+    if not getattr(client, "managed", True):
+        raise ModelLoadError("Remote inference cannot invoke local lifecycle commands")
+    if await _await_omlx(2):
+        return
+    if _quitting:
+        raise ModelLoadError("Wisp is quitting; the local AI engine stays stopped")
+    client.invalidate_connections()
+    if not await _omlx_cli("start", "--no-wait"):
+        raise ModelLoadError("The local oMLX CLI is unavailable")
+    if not await _await_omlx(45):
+        raise ModelLoadError("oMLX did not start")
+
+
 @app.post("/setup/start-engine")
-async def setup_start_engine() -> dict[str, Any]:
+async def setup_start_engine(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    automatic = (body or {}).get("automatic", False)
+    if not isinstance(automatic, bool):
+        raise HTTPException(status_code=400, detail="automatic must be a boolean")
     try:
-        await ensure_omlx()
+        if automatic and not is_bundled():
+            await _start_existing_omlx()
+        else:
+            await ensure_omlx()
     except ModelLoadError:
         raise HTTPException(status_code=503,
                             detail="oMLX could not be started. Open the oMLX app, then try again.") from None

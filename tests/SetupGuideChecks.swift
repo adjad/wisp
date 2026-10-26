@@ -892,6 +892,92 @@ struct SetupGuideChecks {
                   && task("downloading").speedText == "5 bytes/s", "Shared progress text: percent, size and speed")
         }
 
+        // The person's own oMLX already has Wisp's model (a fresh install with oMLX.app).
+        do {
+            func existing(running: Bool, ready: Bool = false, bundled: Bool = false,
+                          use: String? = "G") -> SetupStatus {
+                var snapshot = setupSnapshot("G", ready: ready, bundled: bundled)
+                snapshot["omlx"] = ["installed": true, "running": running, "bundled": bundled, "min_macos": 26,
+                                    "url": "https://example.invalid", "admin_url": "http://127.0.0.1:8000/admin"]
+                var models = snapshot["models"] as! [String: Any]
+                models["use"] = use
+                models["source"] = running ? "live" : "disk"
+                snapshot["models"] = models
+                snapshot["checks"] = running ? [] : [["id": "engine", "state": "warn", "title": "oMLX isn't running",
+                                                      "detail": "Synthetic", "action": "start_engine"]]
+                let decoder = JSONDecoder()
+                decoder.keyDecodingStrategy = .convertFromSnakeCase
+                return try! decoder.decode(SetupStatus.self, from: JSONSerialization.data(withJSONObject: snapshot))
+            }
+            check(existing(running: false).existingOmlx == .connecting,
+                  "An oMLX whose server hasn't answered yet is connecting, not a failure")
+            check(existing(running: false, use: nil).existingOmlx == .connecting,
+                  "Connecting does not wait on knowing its models")
+            check(existing(running: true).existingOmlx == .serving(model: "G", label: "G"),
+                  "A running oMLX serving Wisp's model: use it")
+            check(existing(running: true, ready: true).existingOmlx == nil, "Already set up: nothing to do")
+            check(existing(running: false, bundled: true).existingOmlx == nil, "The built-in engine is not the person's oMLX")
+            check(existing(running: true, use: nil).existingOmlx == nil,
+                  "An oMLX without any of Wisp's models goes to the detailed setup")
+
+            final class Bodies: @unchecked Sendable {
+                private let lock = NSLock()
+                private var seen: [[String: Any]] = []
+                func add(_ request: URLRequest) {
+                    var data = request.httpBody ?? Data()
+                    if data.isEmpty, let stream = request.httpBodyStream {
+                        stream.open()
+                        defer { stream.close() }
+                        var buffer = [UInt8](repeating: 0, count: 1024)
+                        while stream.hasBytesAvailable {
+                            let count = stream.read(&buffer, maxLength: buffer.count)
+                            if count <= 0 { break }
+                            data.append(buffer, count: count)
+                        }
+                    }
+                    lock.lock(); defer { lock.unlock() }
+                    seen.append((try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:])
+                }
+                var all: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return seen }
+            }
+            let bodies = Bodies()
+            final class Flag: @unchecked Sendable {
+                private let lock = NSLock()
+                private var value = false
+                var on: Bool { get { lock.lock(); defer { lock.unlock() }; return value }
+                               set { lock.lock(); value = newValue; lock.unlock() } }
+            }
+            let started = Flag()
+            func snapshot(running: Bool) -> [String: Any] {
+                var s = setupSnapshot("G", ready: running, bundled: false)
+                s["omlx"] = ["installed": true, "running": running, "bundled": false, "min_macos": 26,
+                             "url": "https://example.invalid", "admin_url": "http://127.0.0.1:8000/admin"]
+                s["checks"] = running ? [] : [["id": "engine", "state": "warn", "title": "oMLX isn't running",
+                                               "detail": "Synthetic", "action": "start_engine"]]
+                return s
+            }
+            SetupHTTP.configure { request in
+                if request.url!.path == "/setup/start-engine" {
+                    bodies.add(request)
+                    started.on = true
+                    return (200, snapshot(running: true), 0)
+                }
+                return (200, snapshot(running: started.on), 0)
+            }
+            let owner = SetupGuideModel(session: session)
+            owner.show(in: "window")
+            let startedByItself = try await waitForSetupRequest { owner.status?.ready == true }
+            check(startedByItself && owner.autoStartedEngine, "Wisp starts the person's oMLX by itself, once")
+            check(SetupHTTP.count("/setup/start-engine") == 1 && !SetupHTTP.saw("/engine/start"),
+                  "The person's oMLX starts through setup, never the built-in engine's endpoint")
+            check(bodies.all.first?["automatic"] as? Bool == true,
+                  "An automatic start asks for a plain start (the service never restarts their app for it)")
+            started.on = false
+            await owner.refresh()
+            check(SetupHTTP.count("/setup/start-engine") == 1, "An automatic start happens at most once a session")
+            owner.hide(from: "window")
+        }
+
         if failures > 0 {
             FileHandle.standardError.write(Data("\(failures) of \(checks) setup checks failed\n".utf8))
             exit(1)

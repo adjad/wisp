@@ -72,6 +72,26 @@ struct SetupStatus: Decodable {
     /// Wisp can answer: a ready local model, or nothing to download. The one rule
     /// for finishing setup, the menu, the setup cue and the readers.
     static func canAnswer(ready: Bool, remoteOnly: Bool) -> Bool { ready || remoteOnly }
+
+    /// Wisp is set to use the oMLX app this Mac already has (a fresh install picks it
+    /// when oMLX.app is installed) and isn't ready yet. `nil`: not that case (the
+    /// built-in engine, no oMLX app, or a running oMLX without the configured model or
+    /// any of Wisp's models — that one needs the detailed setup).
+    enum ExistingOmlx: Equatable {
+        /// Its server hasn't answered yet: it is starting (Wisp's last quit stops it),
+        /// or busy loading a model. A connection in progress, never a failure.
+        case connecting
+        /// Running and serving `model` (one of Wisp's), which no role uses yet: switch to it.
+        case serving(model: String, label: String)
+    }
+
+    var existingOmlx: ExistingOmlx? {
+        guard omlx.bundled != true, omlx.installed, !ready else { return nil }
+        guard omlx.running else { return .connecting }
+        guard let model = models.use,
+              let entry = models.installed.first(where: { $0.id == model }) else { return nil }
+        return .serving(model: model, label: entry.label)
+    }
 }
 
 // MARK: - Download hold
@@ -416,6 +436,15 @@ final class SetupGuideModel: ObservableObject {
             Task { await startEngine() }
             return
         }
+        // The person's own oMLX app hasn't answered (Wisp's last quit stops its server):
+        // start it once, the same way. Start only — the service never restarts or
+        // reconfigures their app for a start nobody clicked.
+        if next.existingOmlx == .connecting, !autoStartedEngine,
+           next.checks.contains(where: { $0.id == "engine" && $0.action == "start_engine" }) {
+            autoStartedEngine = true
+            Task { await startEngine(automatic: true) }
+            return
+        }
         // A model was just installed and nothing points at one: use it. Only when
         // no local role already names an installed model, so a deliberate choice
         // is never overwritten.
@@ -512,7 +541,9 @@ final class SetupGuideModel: ObservableObject {
         }
     }
 
-    func startEngine() async {
+    /// `automatic`: Wisp started it by itself, so the person's own oMLX gets a plain
+    /// start and never the restart a click may fall back to.
+    func startEngine(automatic: Bool = false) async {
         guard busy == nil else { return }
         beginMutation()
         busy = "Starting engine…"
@@ -522,7 +553,8 @@ final class SetupGuideModel: ObservableObject {
                 _ = try await call("POST", "engine/start", body: [:], timeout: 160)
                 await refresh()
             } else {
-                accept(try decode(try await call("POST", "setup/start-engine", body: [:], timeout: 100)))
+                accept(try decode(try await call("POST", "setup/start-engine",
+                                                 body: automatic ? ["automatic": true] : [:], timeout: 100)))
                 message = nil
             }
         } catch { fail(error) }
