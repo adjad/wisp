@@ -253,14 +253,134 @@ def _auto_add_on() -> bool:
         return True
 
 
-def _confirm_line() -> str:
-    """What Wisp asks before it acts. Sending always waits for an OK; calendar
-    and reminder changes do too, unless auto-add is on."""
+def _write_mode() -> str:
+    """How Wisp's own reminder and hold writes stand right now, by the same
+    check behavior_runtime.policy_block makes (safety.decide on
+    assistant_write): "view_only" (confirmed View Only), "allow" (they run
+    without asking, as under Full access), "suggest" (the policy refuses them,
+    so routine actions are only offered), or "unknown"."""
+    try:
+        from service.safety import Tier, decide, full_access, read_only
+        if read_only() and not full_access():
+            return "view_only"
+        decision = decide("assistant_write", {"title": "", "kind": "reminder"}, tool="add_reminder")
+    except Exception:  # noqa: BLE001 - say the cautious version
+        return "unknown"
+    return "allow" if decision.tier is Tier.ALLOW else "suggest"
+
+
+def _routine_state() -> str:
+    """Routine actions (service/assistant/behavior_runtime.py): "off" when
+    behavior learning is off, "held" during the first-days hold (only offered),
+    "acting" after it, "unknown" when the runtime can't be asked. Never
+    starts the runtime just to answer."""
+    try:
+        import time
+        # The switch first: importing behavior_runtime opens its stores.
+        from service.behavior_switch import enabled
+        if not enabled():
+            return "off"
+        from service.assistant import behavior_runtime
+        runtime = getattr(behavior_runtime, "_runtime", None)
+        if runtime is None:
+            return "unknown"
+        from service.assistant.store import assistant_store
+        return "held" if runtime.auto_actions_held(assistant_store, time.time()) else "acting"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _attention_state() -> tuple[str, bool] | None:
+    """Caught for you (service/assistant/attention_runner.py): (mode, capture_events)
+    from attention/settings.json, read purely. A missing file is the default
+    (shadow, no events); a file that can't be read or parsed is None, so the
+    answer can say the cautious version. (The runner itself reads such a file
+    as "off".)"""
+    try:
+        import json
+        from service.attention.live import Settings, settings_path
+        from service.paths import MOE_DIR
+        try:
+            raw = settings_path(MOE_DIR).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return Settings().mode, Settings().capture_events
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        settings = Settings(**{k: v for k, v in data.items() if k in Settings.__dataclass_fields__}).validate()
+    except Exception:  # noqa: BLE001
+        return None
+    return settings.mode, settings.capture_events
+
+
+_SEND_OK = "Before anything is sent, I show it to you and wait for your OK."
+_CALENDAR_OK = "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
+_AUTO_ADD = ("Because auto-add is on, I may add a time-sensitive event or deadline to your Calendar "
+             "or Reminders on my own, then tell you, with Undo.")
+_ROUTINE = {
+    "held": ("For your first few days I only suggest reminders from your routine. After that I may "
+             "add a reminder or a Tentative hold on my own and tell you, with Undo."),
+    "acting": ("I may add a reminder or a Tentative hold from your routine on my own, and tell you, "
+               "with Undo."),
+    "unknown": ("Depending on your settings, I may add a reminder or a Tentative hold from your "
+                "routine on my own, and tell you, with Undo."),
+}
+_CAUGHT = "what Caught for you finds in your mail and messages"
+
+
+def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
+    """(write mode, the automatic Calendar/Reminders writers that may act now)
+    as (full sentence, fragment for a combined sentence, cautious). Every
+    automatic writer Wisp has is here: proactive auto-add, routine actions
+    (behavior_runtime) and Caught for you (attention_runner live reminders and
+    capture_events). The last two pass the same assistant_write gate as
+    _write_mode, so a refusal there means they don't write."""
+    mode = _write_mode()
+    adds: list[tuple[str, str, bool]] = []
     if _auto_add_on():
-        return ("Before anything is sent, I show it to you and wait for your OK. Because auto-add "
-                "is on, I may add a time-sensitive event or deadline to your Calendar or Reminders "
-                "on my own, then tell you, with Undo.")
-    return "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
+        adds.append((_AUTO_ADD, "a time-sensitive event or deadline to your Calendar or Reminders "
+                                "(auto-add is on)", False))
+    routine = _routine_state()
+    if mode == "unknown" and routine != "off":
+        routine = "unknown"
+    if mode != "suggest" and routine in _ROUTINE:
+        fragment = ("after your first few days, a reminder or a Tentative hold from your routine"
+                    if routine == "held" else "a reminder or a Tentative hold from your routine")
+        adds.append((_ROUTINE[routine], fragment, routine == "unknown"))
+    attention = _attention_state()
+    if attention is None or (mode == "unknown" and attention[0] == "live"):
+        adds.append(("Depending on your Caught for you settings, I may also add reminders or Calendar "
+                     "events from your mail and messages on my own, and tell you.",
+                     f"reminders or Calendar events from {_CAUGHT}", True))
+    elif mode == "allow" and attention[0] == "live":
+        what = "reminders and Calendar events" if attention[1] else "reminders"
+        adds.append((f"From {_CAUGHT}, I may add {what} on my own and tell you.",
+                     f"{what} from {_CAUGHT}", False))
+    return mode, adds
+
+
+def _confirm_line() -> str:
+    """What Wisp asks before it acts, true in each state. Sending always waits
+    for an OK. "Your calendar changes only with your OK" is said only when every
+    automatic writer is confirmed off or blocked: View Only, or none of them
+    can add on its own. Anything that can't be read gets the cautious wording."""
+    mode, adds = _automatic_adds()
+    if mode == "view_only":
+        # View Only blocks every automatic add: assistant_write is refused, and
+        # autoadd.py checks view-only and the calendar policy itself.
+        return _SEND_OK + " In View Only, nothing is added to your calendar or reminders without your OK."
+    suggest_only = mode == "suggest" and _routine_state() in ("held", "acting")
+    tail = (" Right now I only suggest reminders from your routine; you add them with a tap."
+            if suggest_only else "")
+    if not adds:
+        return (_SEND_OK if mode == "unknown" else _CALENDAR_OK) + tail
+    if len(adds) == 1:
+        return _SEND_OK + " " + adds[0][0] + tail
+    fragments = [fragment for _, fragment, _ in adds]
+    joined = "; ".join(fragments[:-1]) + "; and " + fragments[-1]
+    cautious = any(c for _, _, c in adds)
+    lead = "Depending on your settings, on my own" if cautious else "On my own"
+    return f"{_SEND_OK} {lead} I may add {joined}, and tell you each time." + tail
 
 
 def _user_name() -> str:
@@ -520,11 +640,7 @@ def privacy() -> str:
                    "over your tailnet and nowhere else.")
     out += ["- Some things have to go online: web searches, weather, stocks and research. "
             "If you connect Google, I fetch that account's mail and calendar from Google.",
-            ("- I never send a message or email without showing it to you first. Because "
-             "auto-add is on, I may add a time-sensitive event or deadline to your Calendar or "
-             "Reminders on my own, then tell you, with Undo." if _auto_add_on() else
-             "- I never send a message or email, or change your calendar, without showing it "
-             "to you first."),
+            "- " + _confirm_line(),
             "- You decide what I can read, in System Settings → Privacy & Security.",
             "- To see or erase what I know about you: **/about** for Getting to know you, and "
             "**/memory** for things I've remembered."]

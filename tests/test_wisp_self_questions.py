@@ -158,7 +158,7 @@ def test_privacy_is_local_by_default(monkeypatch):
     assert text.startswith("**Your data stays on this Mac.**")
     assert "No cloud AI is used unless you turn one on" in text
     assert "web searches" in text  # what does go online is said, not hidden
-    assert "without showing it to you first" in text
+    assert "Before anything is sent, I show it to you and wait for your OK" in text
 
 
 def test_privacy_never_claims_local_when_a_cloud_model_runs_everything(monkeypatch):
@@ -273,10 +273,121 @@ def test_remote_only_build_reads_as_everything(monkeypatch):
     assert "runs right here on this Mac" not in wisp_about.overview()
 
 
-def test_calendar_promise_follows_auto_add(monkeypatch):
+def _access(monkeypatch, *, view_only=False, full=False, learning=True, held=None, attention=None):
+    """Set View Only / Full access, behavior learning, the routine hold
+    (held=None: no runtime to ask) and Caught for you's settings file
+    (attention=None: no file, the shadow default; a str: the raw file)."""
+    import tempfile
+    from pathlib import Path
+    from types import SimpleNamespace
+    import service.behavior_switch as behavior_switch
+    import service.paths as paths
+    from service.assistant import behavior_runtime
+    from service.attention.live import settings_path
+    from service.safety import policy
+    monkeypatch.setattr(policy, "_READ_ONLY", view_only)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", full)
+    monkeypatch.setattr(behavior_switch, "enabled", lambda: learning)
+    # A fresh Wisp home of its own for the settings file: never the real one.
+    home = Path(tempfile.mkdtemp(prefix="wisp-attention-"))
+    monkeypatch.setattr(paths, "MOE_DIR", home)
+    if attention is not None:
+        path = settings_path(home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(attention, encoding="utf-8")
+    runtime = None if held is None else SimpleNamespace(auto_actions_held=lambda store, now: held)
+    monkeypatch.setattr(behavior_runtime, "_runtime", runtime)
+
+
+ROUTINE_ON_MY_OWN = "Tentative hold"
+CALENDAR_PROMISE = "or your calendar changes, I show it to you"
+
+
+def test_view_only_promises_nothing_is_added(monkeypatch):
+    _access(monkeypatch, view_only=True, held=False)
+    for auto_add in (False, True):
+        monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: auto_add)
+        for text in (wisp_about.privacy(), wisp_about.overview()):
+            assert "In View Only, nothing is added to your calendar or reminders without your OK" in text
+            assert ROUTINE_ON_MY_OWN not in text and "auto-add is on" not in text
+
+
+def test_full_access_during_the_routine_hold(monkeypatch):
+    _access(monkeypatch, full=True, held=True)
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
-    assert "or change your calendar, without showing it" in wisp_about.privacy()
-    assert "or your calendar changes, I show it to you" in wisp_about.overview()
+    for text in (wisp_about.privacy(), wisp_about.overview()):
+        assert ("For your first few days I only suggest reminders from your routine. After that I may "
+                "add a reminder or a Tentative hold on my own and tell you, with Undo.") in text
+        assert CALENDAR_PROMISE not in text and "change your calendar" not in text
+
+
+def test_full_access_after_the_routine_hold(monkeypatch):
+    _access(monkeypatch, full=True, held=False)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    for text in (wisp_about.privacy(), wisp_about.overview()):
+        assert ("I may add a reminder or a Tentative hold from your routine on my own, and tell you, "
+                "with Undo.") in text
+        assert CALENDAR_PROMISE not in text
+
+
+def test_auto_add_combines_with_routine_actions(monkeypatch):
+    _access(monkeypatch, full=True, held=False)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
+    text = wisp_about.privacy()
+    assert ("On my own I may add a time-sensitive event or deadline to your Calendar or Reminders "
+            "(auto-add is on); and a reminder or a Tentative hold from your routine, and tell you "
+            "each time.") in text
+    assert CALENDAR_PROMISE not in text
+
+
+def test_cant_tell_says_the_cautious_version(monkeypatch):
+    # No runtime to ask about the hold.
+    _access(monkeypatch, full=True, held=None)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    text = wisp_about.privacy()
+    assert "Depending on your settings, I may add a reminder or a Tentative hold" in text
+    assert CALENDAR_PROMISE not in text and "without your OK" not in text
+    # The policy itself can't be read.
+    import service.safety as safety
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("policy unavailable")
+    monkeypatch.setattr(safety, "decide", broken)
+    _access(monkeypatch, full=True, held=False)
+    text = wisp_about.privacy()
+    assert "Depending on your settings" in text and CALENDAR_PROMISE not in text
+    _access(monkeypatch, full=True, learning=False)
+    text = wisp_about.privacy()
+    assert CALENDAR_PROMISE not in text and "In View Only" not in text
+
+
+def test_default_access_acts_like_full_access_for_routine_adds(monkeypatch):
+    # Neither View Only nor Full access: assistant_write ("Wisp's commitment
+    # store") is still ALLOW, so routine actions add on their own after the hold.
+    from service.safety import Tier, decide
+    _access(monkeypatch, held=False)
+    assert decide("assistant_write", {"title": "", "kind": "reminder"}, tool="add_reminder").tier is Tier.ALLOW
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    assert "from your routine on my own" in wisp_about.privacy()
+
+
+def test_routine_actions_the_policy_refuses_are_only_suggested(monkeypatch):
+    # When decide() refuses assistant_write (anything short of ALLOW),
+    # behavior_runtime.policy_block refuses every automatic add.
+    import service.safety as safety
+    from service.safety import Decision, Tier
+    _access(monkeypatch, held=False)
+    monkeypatch.setattr(safety, "decide", lambda *a, **k: Decision(Tier.DENY, "remote profile"))
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    text = wisp_about.privacy()
+    assert "Right now I only suggest reminders from your routine" in text
+    assert ROUTINE_ON_MY_OWN not in text
+
+
+def test_with_learning_off_and_no_auto_add_calendar_changes_wait(monkeypatch):
+    _access(monkeypatch, full=True, learning=False)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    assert CALENDAR_PROMISE in wisp_about.overview()
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
     for text in (wisp_about.privacy(), wisp_about.overview()):
         assert "change your calendar" not in text and "calendar changes" not in text
@@ -400,3 +511,67 @@ def test_updating_has_its_own_step(prompt):
 def test_updating_a_feature_is_not_updating_wisp():
     # No specific step matches, so it gets the whole guide, not the update step alone.
     assert not wisp_about.howto("how do I update the model in wisp").startswith("- **Updating Wisp**")
+
+
+# Caught for you (attention_runner): live adds reminders, capture_events adds
+# Calendar events too, both through the same assistant_write gate.
+LIVE = '{"mode": "live"}'
+LIVE_EVENTS = '{"mode": "live", "capture_events": true}'
+
+
+def test_caught_for_you_live_adds_reminders(monkeypatch):
+    _access(monkeypatch, full=True, learning=False, attention=LIVE)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    for text in (wisp_about.privacy(), wisp_about.overview()):
+        assert ("From what Caught for you finds in your mail and messages, I may add reminders on my "
+                "own and tell you.") in text
+        assert CALENDAR_PROMISE not in text and "Calendar events" not in text
+
+
+def test_caught_for_you_live_with_events_adds_calendar_events(monkeypatch):
+    _access(monkeypatch, full=True, learning=False, attention=LIVE_EVENTS)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    assert "I may add reminders and Calendar events on my own" in wisp_about.privacy()
+    # Combined with the routine into one sentence.
+    _access(monkeypatch, full=True, held=False, attention=LIVE_EVENTS)
+    text = wisp_about.privacy()
+    assert ("On my own I may add a reminder or a Tentative hold from your routine; and reminders and "
+            "Calendar events from what Caught for you finds in your mail and messages, and tell you "
+            "each time.") in text
+
+
+def test_caught_for_you_settings_unreadable_says_the_cautious_version(monkeypatch):
+    _access(monkeypatch, full=True, learning=False, attention="{not json")
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    text = wisp_about.privacy()
+    assert "Depending on your Caught for you settings, I may also add reminders or Calendar events" in text
+    assert CALENDAR_PROMISE not in text
+    _access(monkeypatch, full=True, learning=False, attention='{"mode": "sometimes"}')
+    assert "Depending on your Caught for you settings" in wisp_about.privacy()
+
+
+def test_caught_for_you_live_under_view_only_adds_nothing(monkeypatch):
+    _access(monkeypatch, view_only=True, held=False, attention=LIVE_EVENTS)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    text = wisp_about.privacy()
+    assert "In View Only, nothing is added to your calendar or reminders without your OK" in text
+    assert "Caught for you" not in text
+
+
+def test_caught_for_you_live_but_the_gate_refuses_adds_nothing(monkeypatch):
+    import service.safety as safety
+    from service.safety import Decision, Tier
+    _access(monkeypatch, learning=False, attention=LIVE_EVENTS)
+    monkeypatch.setattr(safety, "decide", lambda *a, **k: Decision(Tier.DENY, "remote profile"))
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    text = wisp_about.privacy()
+    assert "Caught for you" not in text and CALENDAR_PROMISE in text
+
+
+def test_everything_off_keeps_the_calendar_promise(monkeypatch):
+    # Preview (shadow) Caught for you, learning off, auto-add off, Full access.
+    _access(monkeypatch, full=True, learning=False, attention='{"mode": "shadow", "capture_events": true}')
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    for text in (wisp_about.privacy(), wisp_about.overview()):
+        assert CALENDAR_PROMISE in text
+        assert "on my own" not in text
