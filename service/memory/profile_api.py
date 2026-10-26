@@ -20,7 +20,8 @@ def _payload(profile: dict) -> dict[str, Any]:
     # The same predicate the prompts use (P.may_send_to): the label can't
     # say "Stays on this Mac" while the profile rides to a cloud model.
     host = P.sent_to()
-    status = {**P.status(profile), "local_only": not host, "sent_to": host}
+    status = {**P.status(profile), "local_only": not host, "sent_to": host,
+              "tailnet_nodes": P.tailnet_nodes()}
     return {"profile": profile, "status": status, "preview": P.preview(profile)}
 
 

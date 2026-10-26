@@ -461,15 +461,18 @@ _DETAIL_RULES = {
 
 
 def _everything_host() -> str | None:
-    """The host while Cloud "Everything" is on (a remote-only build, or the
-    setting turned on), "" while it is off, None when that can't be read."""
+    """The host while Cloud "Everything" is answering (a remote-only build, or
+    the setting turned on and Wisp restarted since), "" while it isn't, None
+    when that can't be read. Turned on but waiting for a restart counts as
+    off: until then this Mac answers, and a role still bound to an optional
+    cloud model must not get the profile in the meantime."""
     try:
         from service.wisp_about import cloud_detail
         detail = cloud_detail()
     except Exception:  # noqa: BLE001
         return None
     if detail["mode"] == "everything" and detail["known"]:
-        return detail["host"] or "your cloud provider"
+        return "" if detail["pending"] else (detail["host"] or "your cloud provider")
     if not detail["known"]:
         return None
     return ""
@@ -477,19 +480,42 @@ def _everything_host() -> str | None:
 
 def sent_to() -> str:
     """Where the profile goes with each question: "" while it stays on this
-    Mac, else the host. Unknown never reads as local."""
-    host = _everything_host()
-    return "your cloud provider" if host is None else host
+    Mac, else the host. It reports what may_send_to does: when the cloud
+    state can't be read, the profile goes only to Wisp's own model, so the
+    lock line says it stays here (privacy() says the same)."""
+    return _everything_host() or ""
 
 
-def may_send_to(*, managed: bool) -> bool:
-    """Whether a prompt for this endpoint may carry the profile: only the
-    endpoint Wisp manages on this Mac, or any endpoint while Cloud "Everything"
-    is on (the user chose to send everything; the app then says so, naming the
-    host). Never an optional cloud model (the Super Model, or a role bound to
-    the cloud endpoint), an external local provider, or another machine.
-    Unknown sends nothing."""
-    return bool(managed) or bool(_everything_host())
+def may_send_to(endpoint=None, *, managed: bool = False) -> bool:
+    """Whether a prompt for `endpoint` may carry the profile: the endpoint Wisp
+    manages on this Mac (`managed`, or the endpoint's own flag); the user's
+    own Mac on their tailnet, proven by its provisioning record
+    (wisp_about.own_node, never by hostname); or any endpoint while Cloud
+    "Everything" is answering (the user chose to send everything; the app
+    then says so, naming the host). Never an optional cloud model (the Super
+    Model, or a role bound to the cloud endpoint), an external local
+    provider, or an unverified machine. Unknown sends nothing off the Mac."""
+    if managed or getattr(endpoint, "managed", False):
+        return True
+    try:
+        from service.wisp_about import own_node
+        if own_node(endpoint):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return bool(_everything_host())
+
+
+def tailnet_nodes() -> list[str]:
+    """The user's verified nodes the profile also goes to now, for the lock
+    line ("Stays on this Mac and your mini on your tailnet")."""
+    if _everything_host():
+        return []
+    try:
+        from service.wisp_about import own_nodes
+        return own_nodes()
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def profile_block(profile: dict | None = None) -> str:

@@ -1996,7 +1996,8 @@ async def run_agent(
     identity_hint = ""
     try:
         from service.memory.profile import may_send_to
-        _profile_rides = may_send_to(managed=getattr(client, "managed", False))
+        _profile_rides = may_send_to(getattr(getattr(client, "target", None), "endpoint", None),
+                                     managed=bool(getattr(client, "managed", False)))
     except Exception:  # noqa: BLE001
         _profile_rides = False
     if not public_web_synthesis and include_identity_context:
@@ -2014,9 +2015,10 @@ async def run_agent(
         # like to be spoken to (service/memory/profile.py). Rides with the
         # identity block, so it is also absent from cloud synthesis above.
         # profile.may_send_to decides where (the same predicate behind the
-        # app's "Stays on this Mac"): Wisp's own on-Mac model, or any model
-        # while Cloud "Everything" is on; never an optional cloud model or
-        # the external loopback provider. The chosen name ("call me …")
+        # app's "Stays on this Mac"): Wisp's own on-Mac model, the user's own
+        # verified Mac on their tailnet, or any model while Cloud "Everything"
+        # is answering; never an optional cloud model or the external loopback
+        # provider. The chosen name ("call me …")
         # comes from the same profile, so it follows the same rule.
         if _profile_rides:
             try:
