@@ -237,6 +237,11 @@ def test_specific_howto_answers_only_that_step():
     assert full.startswith("**Getting started with Wisp**") and "⌥Space" in full
 
 
+def test_howto_permissions_points_at_the_permissions_menu_item():
+    text = wisp_about.howto("How do I give Wisp calendar access?")
+    assert "Permissions…" in text and "Allow" in text and "Grant More Access…" in text
+
+
 # Audit 32649065: "runs on this Mac" and "never changes your calendar" are said
 # only when they are true.
 LOCAL_CLAIMS = ("runs right here on this Mac", "without sending them to a server")

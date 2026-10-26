@@ -674,8 +674,9 @@ _HOWTO = (
      "**Connect Google**: open **Settings → Google**, then sign in. I'll read that account's "
      "Gmail and Calendar too."),
     (r"permission|access|allow|grant|privacy|calendar access|full disk",
-     "**Let Wisp read more**: choose **Grant More Access…** from the menu bar icon, or open "
-     "System Settings → Privacy & Security."),
+     "**Let Wisp read more**: right-click the menu bar icon, choose **Permissions…**, and "
+     "click **Allow** next to what you want. Screen Recording and Accessibility are under "
+     "**Grant More Access…**."),
     (r"research|report",
      "**Research**: type **/research**, then your topic. I draft a plan you can edit, read "
      "the web and write a cited report."),

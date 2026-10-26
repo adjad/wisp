@@ -12,11 +12,11 @@ All notable changes to Wisp are documented here.
 First release candidate for testers; see [docs/releases/0.5.0-rc1.md](docs/releases/0.5.0-rc1.md) for the release notes. It is ad-hoc signed, not notarized: on macOS 15 and later the first open is blocked and must be allowed under System Settings ▸ Privacy & Security ▸ **Open Anyway**. Apple silicon only; the built-in engine needs macOS 26.2 or newer; 16 GB of memory is the minimum and 24 GB is recommended.
 
 ### Added
-- **First-run setup window.** The first launch opens a window with three steps: download the model, choose permissions, and a short tour of the notch and shortcuts. Every step is optional and can be finished later from the menu bar (**Finish Setup...**).
+- **First-run setup window.** The first launch opens one window with five steps: Model, Permissions, Google, About you and How to use. Every step is optional and can be finished later from the menu bar (**Finish Setup...**).
   - It picks Gemma 4 E4B (about 5.5 GB) and says so plainly, warns before downloading if the Mac is short of disk space, shows progress and "No progress, check your connection", and titles a stopped download "Download paused" or "Download failed".
   - Return on the first step downloads. Quitting or closing early brings the window back, at the same step, on the next launches; after three the notch's setup cue carries it.
-  - When the model is ready, Wisp checks that it answers, and posts a "Wisp is ready" notification if you left before then.
-  - Calendar and Reminders are separate rows; Mail and Notes (Automation) and Full Disk Access are separate rows, and Full Disk Access is checked by a real read of Messages, Mail or Notes. The window is the only thing that asks for access while it is up.
+  - When the model is ready, Wisp checks that it answers, and posts a "Wisp is ready" notification only if the window is closed or minimized.
+  - Calendar and Reminders are separate rows; Mail and Notes (Automation) and Full Disk Access are separate rows, and Full Disk Access is checked by a real read of Messages, Mail or Notes. Wisp never asks for a permission by itself, at launch or in the background: each prompt follows a click on that row's **Allow** button. If Brief or Day says a source isn't allowed, its **Allow in Wisp…** link opens the Permissions step, and **Permissions…** in the menu-bar icon's menu reopens it at any time.
   - VoiceOver labels and announcements; the window fits small displays; the tour teaches only the shortcuts that really work on this Mac.
 - **Gemma 4 E4B is the default model**, with its engine settings (sampling, thinking, multi-token prediction, a 16k context window) written by Wisp for the bundled engine. A model's engine settings are applied once per version, so later tuning in the engine's admin UI is kept.
 - **Proactive Brief ("Before you ask").** Brief opens with up to five cards for things Wisp already looked into across your mail, texts, notes, calendar and reminders, with security and account alerts first and one-tap actions that draft, remind, add or hold time. A card clears itself within about a minute when you handle it yourself. × clears a Brief row at once and ✓ marks a reminder done. Day places timed to-dos on its timeline.
@@ -33,8 +33,9 @@ First release candidate for testers; see [docs/releases/0.5.0-rc1.md](docs/relea
 - The bundled engine's memory guard starts on "aggressive", so Gemma loads on a 24 GB Mac with other apps open. An install that had "balanced" is moved once; other tiers you chose are kept.
 - The menu item "Set Up Inference..." is now **Finish Setup...** until Wisp can answer and **Model & Engine...** after that.
 - **Grant More Access...** asks only for what is off, one system surface at a time, and no longer requests Input Monitoring.
-- Contacts is asked for once Wisp can read Messages, not at launch.
-- Setup appears in one place at a time: while the first-run window is up, the Dock icon, the menu and the notch's Continue setup bring it forward instead of opening a second surface.
+- New **Permissions...** item in the menu-bar icon's right-click menu. It opens the setup window at the Permissions step.
+- Calendar, Reminders, Notifications and Contacts are no longer requested at launch or by their readers. Contacts is offered once Messages is readable.
+- Setup appears in one place at a time: while the first-run window is up, the Dock icon, the menu and the notch's Continue setup bring it forward instead of opening a second surface. A Dock click brings forward exactly one window, and every window can be minimized.
 - Accessibility requests from the search panel show one system surface instead of a prompt and a Settings page together.
 
 ### Security and privacy
@@ -51,7 +52,7 @@ First release candidate for testers; see [docs/releases/0.5.0-rc1.md](docs/relea
 Wisp 0.5.0 adds a first-run setup window with the built-in engine and Gemma 4 E4B, optional onboarding, proactive Brief cards, common-prompt routing, and notch refinements. The first release candidate, 0.5.0-rc1, is described above. A final fresh-install run, live model qualification and installed-app qualification remain pending; catalog recommendations are not model qualification. Public ad-hoc builds are not notarized. The entries below describe the prepared source behavior and some were refined for rc1, subject to validation of the final candidate.
 
 ### Added
-- **Getting to know you.** Once Wisp can answer, the notch asks three optional questions: what to call you, your goals and how you like replies. Each answer says what Wisp does with it, and everything stays on this Mac (`~/.moe/profile.json`). Your name and goals shape the brief's greeting and a "Keeping in mind" section, people you name rank higher in Day, and your tone shapes local replies. It is never sent to an optional cloud model. Reopen it with `/about`, **Tell Wisp About You…** in the menu bar, or Memory ▸ About you.
+- **Getting to know you.** Once Wisp can answer, the notch asks three optional questions: what to call you, your goals and how you like replies. Each answer says what Wisp does with it, and everything stays on this Mac (`~/.moe/profile.json`). Your name and goals shape the brief's greeting and a "Keeping in mind" section, people you name rank higher in Day, and your tone shapes local replies. It is never sent to an optional cloud model. Reopen it with `/about`, **Tell Wisp About You…** in the menu bar, or Memory ▸ About you. (In 0.5.0-rc1 a new install answers it as the setup window's About you step.)
 - **Evening check-in and weekly goal pulse** on the Day tab. Mark each task Done, Tomorrow or Drop, and each event for tomorrow Keep, Move or Cancel. Move and Cancel only prefill Ask; nothing changes in Calendar on its own. Once a week, mark each goal On track, Behind or Done. A goal that is behind leads the brief.
 - **First launch** steps in the README and on the release page for opening an app that isn't notarized.
 - When Wisp's service isn't running, Ask says so in red with **Retry** and **Report**, instead of a green "Running locally".
