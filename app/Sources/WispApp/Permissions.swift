@@ -4,53 +4,54 @@ import UserNotifications
 import CoreGraphics
 import ApplicationServices
 
-// Triggers the macOS privacy/security prompts Wisp uses, so the person is never
-// buried in system dialogs.
+// Every macOS privacy prompt Wisp can cause, and when. The rule: Wisp never
+// asks on its own. A prompt only ever follows the person's click on a button
+// that says what it is for.
 //
-// What asks for what, and when:
-//   - A new user's first-run window asks for Calendar, Reminders, Mail and Notes
-//     Automation, Contacts and Notifications row by row, and opens Full Disk
-//     Access's page; while it is up nothing else asks (FirstRunReaderGate).
-//   - At launch, `bootstrap` asks once for Notifications, Calendar and Reminders
-//     on a Mac that never had the first-run window (the window takes it over).
-//   - The readers ask for their own access when they start: Calendar
-//     (CalendarReader), Reminders (RemindersWriter), Contacts once Messages can be
-//     read (ContactsReader), Mail and Notes Automation when they script a running
-//     app (MailReader, NotesReader).
-//   - Screen Recording and Accessibility: macOS asks on first real use
-//     (screen_capture, page reading); Grant More Access asks earlier, one at a time.
+//   - Calendar, Reminders, Mail and Notes (Automation), Contacts and
+//     Notifications: their rows in the setup window's Permissions step
+//     (FirstRunPermissions.request), one click per row. The same step opens
+//     again from the menu bar icon's Permissions…, and from a Brief or Day row
+//     that says a source isn't allowed yet (`openFix`).
+//   - The readers never ask: Calendar and Reminders report "not allowed yet"
+//     (RemindersWriter.Access.passive), Contacts is started with mayAsk false,
+//     and Mail and Notes skip their scripted reads until Automation has an
+//     answer (they read the on-disk copy instead, with Full Disk Access).
+//   - Screen Recording and Accessibility: Grant More Access… or Smart Search's
+//     own button, one surface per click.
 //   - Full Disk Access has no prompt: its Settings page opens instead.
 //
 // Wisp never asks for what it doesn't use: Camera, Photos, Location, Input
 // Monitoring (the hotkeys use Carbon, which needs none).
+extension Notification.Name {
+    /// Opens the setup window on its Permissions step.
+    static let wispOpenPermissions = Notification.Name("WispOpenPermissions")
+}
+
 enum Permissions {
-    /// Once, on a Mac that never had the first-run window.
-    static func bootstrap() {
-        let key = FirstRunSetup.permissionsRequestedKey
-        if UserDefaults.standard.bool(forKey: key) { return }
-        UserDefaults.standard.set(true, forKey: key)
-        requestFirstRun()
+    /// A Brief or Day "Open … settings" link. For Calendar or Reminders that
+    /// macOS has never been asked about, System Settings doesn't list Wisp yet,
+    /// so the link opens Wisp's own Permissions step instead, where one click on
+    /// Allow asks macOS. Every other link opens as before.
+    static func openFix(_ url: URL) {
+        if needsAskingInWisp(url.absoluteString,
+                             calendarUndecided: EKEventStore.authorizationStatus(for: .event) == .notDetermined,
+                             remindersUndecided: EKEventStore.authorizationStatus(for: .reminder) == .notDetermined) {
+            NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
+        } else {
+            NSWorkspace.shared.open(url)
+        }
     }
 
-    static func requestFirstRun() {
-        // 1. Notifications: reminder alerts.
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-
-        // 2. Calendar + Reminders: upcoming events / countdown chip, and
-        //    mirroring Wisp reminders into the macOS Reminders app.
-        let store = EKEventStore()
-        if #available(macOS 14.0, *) {
-            store.requestFullAccessToEvents { _, _ in }
-            store.requestFullAccessToReminders { _, _ in }
-        } else {
-            store.requestAccess(to: .event) { _, _ in }
-            store.requestAccess(to: .reminder) { _, _ in }
-        }
+    /// Pure: whether a settings link is for a permission macOS hasn't asked about yet.
+    static func needsAskingInWisp(_ url: String, calendarUndecided: Bool, remindersUndecided: Bool) -> Bool {
+        (url.hasSuffix("Privacy_Calendars") && calendarUndecided)
+            || (url.hasSuffix("Privacy_Reminders") && remindersUndecided)
     }
 
     // MARK: Grant More Access
 
-    /// The access Wisp can use beyond its first launch, each asked for on its own.
+    /// The access Wisp can use beyond the setup window's rows, each asked for on its own.
     enum Extra: CaseIterable, Equatable {
         case screenRecording, accessibility, fullDiskAccess
 

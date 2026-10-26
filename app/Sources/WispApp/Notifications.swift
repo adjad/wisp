@@ -1,13 +1,10 @@
 import Foundation
 import UserNotifications
 
-// Thin wrapper over UNUserNotificationCenter for reminder alerts. Requests
-// permission once at launch; posting is a no-op until (and unless) granted.
+// Thin wrapper over UNUserNotificationCenter for reminder alerts. It never asks
+// for permission: the setup window's Notifications row does, when clicked.
+// Posting is a no-op until (and unless) that is granted.
 enum Notifications {
-    static func requestAuthorization() {
-        UNUserNotificationCenter.current().requestAuthorization(
-            options: [.alert, .sound]) { _, _ in }
-    }
 
     // `subtitle`, `category` and `userInfo` are only used by behavior nudges
     // (actionable notifications); every other caller keeps the defaults.

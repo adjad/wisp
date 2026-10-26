@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 import CoreFoundation
 
@@ -581,7 +582,25 @@ final class MailReader {
     // localized.
     private func isMailRunning() -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.mail" }
+            && Self.automationDecided("com.apple.mail")
     }
+
+    /// Whether macOS has an answer about Wisp scripting this app. A scripted
+    /// read while it has none makes macOS ask, and Wisp never asks on its own
+    /// (Permissions.swift): until the person clicks Allow in setup, the read
+    /// goes to the on-disk copy as if the app were closed. Never asks (`false`).
+    static func automationDecided(_ bundleID: String) -> Bool {
+        var target = AEAddressDesc()
+        let created = bundleID.withCString { pointer in
+            AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
+        }
+        guard created == noErr else { return false }
+        defer { AEDisposeDesc(&target) }
+        let status = AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
+                                                           AEEventID(typeWildCard), false)
+        return status != OSStatus(errAEEventWouldRequireUserConsent)
+    }
+
 
     /// Run a script, returning its string result, or nil (with the error code)
     /// when it failed. Every scan below goes through this so a failure is

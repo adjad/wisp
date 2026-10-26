@@ -183,6 +183,9 @@ final class KnowYouModel: ObservableObject {
 
 struct KnowYouView: View {
     @ObservedObject var model: KnowYouModel
+    /// In the onboarding window, whose footer has Skip for now and moves between
+    /// steps: no Not now here, and no Show my brief (the notch isn't open).
+    var inWindow = false
     @FocusState private var focused: Bool
     @State private var breathe = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -193,8 +196,10 @@ struct KnowYouView: View {
             if model.loadFailed {
                 Text(model.error).font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
                 HStack(spacing: 10) {
-                    Button("Not now") { Task { await model.notNow() } }
-                        .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    if !inWindow {
+                        Button("Not now") { Task { await model.notNow() } }
+                            .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    }
                     Spacer()
                     primaryButton("Retry") { Task { await model.load(); focused = true } }
                 }
@@ -210,9 +215,9 @@ struct KnowYouView: View {
         }
         .padding(.top, 12)
         .task { await model.load(); await refocus() }
-        .onAppear { breathe = true }
+        .onAppear { if !reduceMotion { breathe = true } }
         .onChange(of: model.flow) { _, _ in Task { await refocus() } }
-        .animation(.easeInOut(duration: 0.18), value: model.flow)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: model.flow)
     }
 
     /// The new field is not in the hierarchy until the step's animation lands, so
@@ -427,16 +432,20 @@ struct KnowYouView: View {
             case .done:
                 chipButton("Change something", icon: "chevron.left") { model.back() }
                 Spacer()
-                chipButton("Show my brief", icon: "sun.max") { Task { await model.showBrief() } }
-                    .help("Compose a brief now, with this in it")
+                if !inWindow {
+                    chipButton("Show my brief", icon: "sun.max") { Task { await model.showBrief() } }
+                        .help("Compose a brief now, with this in it")
+                }
                 primaryButton("Done") { Task { await model.finish() } }
             default:
                 if model.flow.canGoBack {
                     chipButton("Back", icon: "chevron.left") { model.back() }
                 }
-                Button("Not now") { Task { await model.notNow() } }
-                    .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                    .help("Close the questions; what you answered is kept. Type /about, or use the menu bar's Tell Wisp About You…, any time.")
+                if !inWindow {
+                    Button("Not now") { Task { await model.notNow() } }
+                        .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                        .help("Close the questions; what you answered is kept. Type /about, or use the menu bar's Tell Wisp About You…, any time.")
+                }
                 Spacer()
                 Button("Skip") { model.skip() }
                     .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
@@ -512,6 +521,6 @@ struct KnowYouView: View {
             .scaleEffect(breathe ? 1.1 : 0.94)
             .opacity(breathe ? 1.0 : 0.85)
             .shadow(color: .white.opacity(0.12), radius: 5)
-            .animation(.easeInOut(duration: 4).repeatForever(autoreverses: true), value: breathe)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 4).repeatForever(autoreverses: true), value: breathe)
     }
 }

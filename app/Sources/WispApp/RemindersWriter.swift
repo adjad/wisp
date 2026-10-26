@@ -120,6 +120,24 @@ final class RemindersWriter {
             }
         }
 
+        /// What a reader reports. Readers never ask macOS for access: the person
+        /// allows each permission by clicking its row in Wisp's setup window
+        /// (also reached from the menu bar icon's Permissions…), so a prompt only
+        /// ever follows that click. Until then the source is unavailable, with a
+        /// reason that says where to allow it; never "syncing", never a request.
+        static func passive(status: Status, source: Source = .reminders) -> Report {
+            guard status == .notDetermined else {
+                return report(status: status, requestOutstanding: false, lastRequestAt: nil, now: 0, source: source)
+            }
+            return Report(authorized: false, syncing: false, needsRequest: false,
+                          reason: notAskedReason(source), reasonKind: source.reasonKind)
+        }
+
+        static func notAskedReason(_ source: Source) -> String {
+            "Wisp hasn't been allowed to see your \(source.name) yet. Right-click Wisp's menu bar icon, "
+                + "choose Permissions…, and click Allow next to \(source.name)."
+        }
+
         /// The diagnostics object the backend reads (`record_sync`, sync_status).
         static func diagnostics(for report: Report, snapshotStartedAt: TimeInterval) -> [String: Any] {
             var out: [String: Any] = ["authorized": report.authorized, "syncing": report.syncing,
@@ -144,11 +162,6 @@ final class RemindersWriter {
             }
         }
     }
-
-    // Main-thread state for the permission request (see Access).
-    private var accessRequestOutstanding = false
-    private var lastAccessRequestAt: TimeInterval?
-    private var accessRequestsMade = 0
 
     private var snapshotState = SnapshotState()
     private var consecutiveTransientReports = 0
@@ -512,42 +525,13 @@ final class RemindersWriter {
                 "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
     }
 
-    func requestAccess(_ done: @escaping (Bool) -> Void) {
-        if #available(macOS 14.0, *) {
-            store.requestFullAccessToReminders { granted, _ in done(granted) }
-        } else {
-            store.requestAccess(to: .reminder) { granted, _ in done(granted) }
-        }
-    }
-
-    /// Ask for access and remember that we did, so a request that finishes without
-    /// a decision is reported as such instead of as an endless sync. A menu-bar app
-    /// is not frontmost, and macOS can leave its prompt hidden behind other
-    /// windows, so it is brought forward for the first request only
-    /// (Access.shouldActivate); re-asks never take focus. Main thread only.
-    private func requestAccessTracked() {
-        guard !accessRequestOutstanding else { return }
-        accessRequestOutstanding = true
-        lastAccessRequestAt = Date().timeIntervalSince1970
-        if Access.shouldActivate(requestsMade: accessRequestsMade) {
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        }
-        accessRequestsMade += 1
-        requestAccess { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.accessRequestOutstanding = false
-                self?.sync()
-            }
-        }
-    }
-
     var isAuthorized: Bool {
         let s = EKEventStore.authorizationStatus(for: .reminder)
         if #available(macOS 14.0, *) { return s == .fullAccess }
         return s == .authorized
     }
 
-    // Request access, then start reading incomplete reminders back into the
+    // Start reading incomplete reminders back into the
     // commitment store (source="reminders" — kept separate from Calendar's
     // "calendar" source since sync_source REPLACES a source's whole active
     // set on each post; mixing the two would let one wipe the other).
@@ -555,9 +539,7 @@ final class RemindersWriter {
         changeObserver = NotificationCenter.default.addObserver(
             forName: .EKEventStoreChanged, object: store, queue: .main
         ) { [weak self] _ in self?.scheduleChangeSync() }
-        // The first sync asks for access only while macOS has no answer
-        // (Access.report's needsRequest). Asking when access is already granted
-        // or turned off shows nothing, but still brought Wisp to the front.
+        // Reads only what macOS already allows: it never asks (Access.passive).
         DispatchQueue.main.async { [weak self] in self?.sync() }
         for delay in [1.0, 3.0, 6.0, 12.0, 25.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -581,12 +563,8 @@ final class RemindersWriter {
         // Capture before the asynchronous fetch: receipt order is not snapshot order.
         let snapshotStartedAt = Date().timeIntervalSince1970
         guard isAuthorized else {
-            let report = Access.report(
-                status: Access.status(of: EKEventStore.authorizationStatus(for: .reminder)),
-                requestOutstanding: accessRequestOutstanding,
-                lastRequestAt: lastAccessRequestAt, now: snapshotStartedAt,
-                requestsMade: accessRequestsMade)
-            if report.needsRequest { requestAccessTracked() }
+            // Never asks: see Access.passive.
+            let report = Access.passive(status: Access.status(of: EKEventStore.authorizationStatus(for: .reminder)))
             post(reminders: [], diagnostics: Access.diagnostics(for: report, snapshotStartedAt: snapshotStartedAt),
                  startedAt: snapshotStartedAt, authoritative: false)
             return

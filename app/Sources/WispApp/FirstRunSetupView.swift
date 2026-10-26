@@ -5,12 +5,13 @@ import EventKit
 import SwiftUI
 import UserNotifications
 
-// The window a new user sees on Wisp's first launch: get the model, grant
-// permissions, learn where Wisp lives. The model download starts first and keeps
-// going in the background, because it is the longest wait; the other two steps
-// happen while it runs. Engine, download and "use this model" all go through the
-// shared SetupGuideModel, so the notch's setup card and the detailed setup window
-// see the same state.
+// The one window a new user sees on Wisp's first launch, with every setup step
+// in it, in order (OnboardingStep): get the model, allow permissions one click
+// at a time, connect Google, Getting to know you, and how to use Wisp. The
+// model download starts first and keeps going in the background, because it is
+// the longest wait; the other steps happen while it runs. Engine, download and
+// "use this model" all go through the shared SetupGuideModel, so the notch's
+// setup card and the detailed setup window see the same state.
 
 extension Notification.Name {
     /// Opens the first-run window again (at the step the person left) while
@@ -26,7 +27,6 @@ enum FirstRunSetup {
     static let startedKey = "wisp.firstRun.started"
     static let setupGuideShownKey = "wisp.setupGuide.shown"
     static let notchTipShownKey = "wisp.notchTip.shown"
-    static let permissionsRequestedKey = "wisp.didRequestPermissions"
     /// The step on screen, so a quit (or macOS reopening Wisp after Full Disk
     /// Access) comes back to it.
     static let stepKey = "wisp.firstRun.step"
@@ -46,14 +46,19 @@ enum FirstRunSetup {
         return !flag(setupGuideShownKey) && !flag(notchTipShownKey)
     }
 
-    /// The window's height: 600 pt where it fits, else what the screen has under
-    /// the menu bar and above the Dock (less a margin), never under the minimum.
-    /// The steps scroll; the footer stays pinned.
+    /// The window's size: 600 pt tall where it fits, else what the screen has
+    /// under the menu bar and above the Dock (less a margin), never under the
+    /// minimum. The steps scroll; the footer stays pinned.
+    static let width: CGFloat = 640
     static let minimumHeight: CGFloat = 420
     static func windowHeight(room: CGFloat) -> CGFloat { max(minimumHeight, min(600, room - 60)) }
 
     /// Started and not finished: Continue setup opens this window again.
     static func isUnfinished(_ flag: (String) -> Bool) -> Bool { flag(startedKey) && !flag(doneKey) }
+
+    /// This person was set up by the window (it asks Getting to know you as a
+    /// step), so the notch never offers it on its own.
+    static func setUpInWindow(_ flag: (String) -> Bool) -> Bool { flag(startedKey) }
 
     /// Closing the window ends setup only when the person finished it or Wisp can
     /// already answer. An early close (the red button, ⌘W) before that keeps it
@@ -66,15 +71,6 @@ enum FirstRunSetup {
         SetupStatus.canAnswer(ready: ready, remoteOnly: remoteOnly)
     }
 
-    /// Whether the readers that make macOS ask may start on their own. While the
-    /// window is up it asks row by row; after an early close they stay held, so
-    /// nothing fires Calendar, Reminders, Mail and Notes prompts back to back,
-    /// and the window comes back next launch to ask in context. They start once
-    /// setup finished or Wisp can answer.
-    static func readerGateLifts(windowUp: Bool, finished: Bool, canAnswer: Bool) -> Bool {
-        !windowUp && (finished || canAnswer)
-    }
-
     /// The notch's setup cue after one /setup/status answer, on every launch: while
     /// Wisp can't answer and no first-run window is up, the quiet cue (the `!` and
     /// a one-line row on Ask), never the full card; it goes once Wisp can answer.
@@ -84,20 +80,24 @@ enum FirstRunSetup {
         return !firstRunWindowUp && current == .hidden ? .later : current
     }
 
-    /// The old first launch asked for Calendar, Reminders and Notifications as soon
-    /// as the notch appeared, showed a tip before Wisp could answer, and opened the
-    /// setup card. This window does all three, in order, so mark them as handled.
+    /// "Wisp is ready" is said only to someone who isn't looking at setup: the
+    /// window was closed or finished, minimized, or Wisp isn't the active app.
+    static func notifiesReady(promised: Bool, windowUp: Bool, windowMinimized: Bool, appActive: Bool) -> Bool {
+        promised && (!windowUp || windowMinimized || !appActive)
+    }
+
+    /// The old first launch showed a tip before Wisp could answer and opened the
+    /// setup card. This window does both, in order, so mark them as handled.
     static func takeOverLaunchPrompts(_ set: (String) -> Void) {
-        for key in [startedKey, permissionsRequestedKey, setupGuideShownKey, notchTipShownKey] { set(key) }
+        for key in [startedKey, setupGuideShownKey, notchTipShownKey] { set(key) }
     }
 }
 
 /// When Wisp offers Getting to know you on its own. The service decides whether
 /// it is due (GET /profile status.offer: never finished, no recent Later, at most
-/// twice); this decides whether now is a moment to show it. The flow needs only
-/// the service, not the model, so it no longer waits for setup to be ready; it
-/// is checked for the life of the app (service up, panel closed, wake, every
-/// half hour), not by a poll that gives up.
+/// twice); this decides whether now is a moment to show it. Someone set up by
+/// the onboarding window answered (or skipped) it there, so the notch never
+/// offers it to them; the menu bar's Tell Wisp About You… and /about remain.
 enum KnowYouOffer {
     struct Moment: Equatable {
         var firstRunWindowUp = false
@@ -112,60 +112,19 @@ enum KnowYouOffer {
         var chosenThisSession = false
         /// The service said About you is complete: no more checks this session.
         var profileComplete = false
+        /// Set up by the onboarding window, which asks it as a step.
+        var setUpInWindow = false
     }
 
     /// Nothing else on screen and nothing the person is doing. Checked before
     /// asking the service, and again with its answer.
     static func quiet(_ m: Moment) -> Bool {
         !(m.firstRunWindowUp || m.setupWindowUp || m.setupCardOpen || m.replying || m.flowOpen
-          || m.panelInUse || m.dismissedToMenuBar || m.chosenThisSession || m.profileComplete)
+          || m.panelInUse || m.dismissedToMenuBar || m.chosenThisSession || m.profileComplete
+          || m.setUpInWindow)
     }
 
     static func shouldOffer(_ m: Moment, serviceOffers: Bool) -> Bool { serviceOffers && quiet(m) }
-}
-
-/// Which source readers may start while the first-run window is up. Each of these
-/// can make macOS ask for access as soon as it starts (Calendar, Reminders and
-/// Contacts request it; Mail and Notes ask about Automation when they script a
-/// running app), so while the window is up it is the only thing that asks: a
-/// reader starts once its access has been decided there, and every one starts
-/// when the window closes. Existing users never see the window, so their readers
-/// start at launch as before.
-struct FirstRunReaderGate {
-    enum Reader: CaseIterable { case calendar, mail, reminders, notes, contacts }
-
-    var windowUp: Bool
-    var decided: (Reader) -> Bool
-
-    func allows(_ reader: Reader) -> Bool { !windowUp || decided(reader) }
-
-    /// The readers a permission row answers for: they start when it is decided,
-    /// and read again at once when it is allowed.
-    static func readers(for item: FirstRunPermissions.Item) -> [Reader] {
-        switch item {
-        case .calendar: return [.calendar]
-        case .reminders: return [.reminders]
-        case .mail: return [.mail, .notes]
-        case .contacts: return [.contacts]
-        case .fullDiskAccess, .notifications: return []
-        }
-    }
-
-    /// An answer the row can't change by asking again.
-    static func isDecided(_ state: FirstRunPermissions.State) -> Bool {
-        state == .allowed || state == .notAllowed || state == .notOnThisMac
-    }
-
-    /// What macOS has recorded, for the readers whose access it tracks itself.
-    /// Mail and Notes (Automation) are known only from the window's own probe.
-    static func systemDecided(_ reader: Reader) -> Bool? {
-        switch reader {
-        case .calendar: return EKEventStore.authorizationStatus(for: .event) != .notDetermined
-        case .reminders: return EKEventStore.authorizationStatus(for: .reminder) != .notDetermined
-        case .contacts: return CNContactStore.authorizationStatus(for: .contacts) != .notDetermined
-        case .mail, .notes: return nil
-        }
-    }
 }
 
 /// Step 1's state, from the setup status and the engine's downloads. Pure, so it
@@ -384,7 +343,27 @@ final class FirstRunPermissions: ObservableObject {
         return off == 0 ? "All optional · nothing left off" : "All optional · \(off) still off"
     }
     /// Every one has an answer from macOS, whichever it was.
-    var allAnswered: Bool { Item.allCases.allSatisfy { FirstRunReaderGate.isDecided(state($0)) } }
+    var allAnswered: Bool { Item.allCases.allSatisfy { Self.isDecided(state($0)) } }
+
+    /// An answer the row can't change by asking again.
+    static func isDecided(_ state: State) -> Bool {
+        state == .allowed || state == .notAllowed || state == .notOnThisMac
+    }
+
+    /// What a row says about itself, next to its button.
+    static func label(_ item: Item, _ state: State) -> String {
+        switch state {
+        case .checking: return ""
+        case .notAsked: return "Not set"
+        case .allowed: return "Allowed"
+        case .notAllowed: return item == .fullDiskAccess ? "Needs System Settings" : "Denied"
+        case .notOnThisMac: return "Not needed"
+        }
+    }
+
+    /// Contacts puts names on Messages, so it is asked for only once Messages can
+    /// be read (the rule ContactsReader kept at launch, now the row's).
+    static func contactsUseful(messagesReadable: Bool) -> Bool { messagesReadable }
 
     /// Re-read while the step is visible: grants made in System Settings arrive
     /// when the person comes back to Wisp.
@@ -509,6 +488,8 @@ final class FirstRunPermissions: ObservableObject {
     }
 
     private static func notificationsState() async -> State {
+        // UNUserNotificationCenter throws outside an app bundle (NotchQA's renders).
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return .notAsked }
         switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
         case .authorized, .provisional: return .allowed
         case .notDetermined: return .notAsked
@@ -551,11 +532,14 @@ final class FirstRunPermissions: ObservableObject {
 // MARK: - View
 
 struct FirstRunSetupView: View {
-    enum Step: Int, CaseIterable { case brain, permissions, tour }
+    typealias Step = OnboardingStep
 
     @ObservedObject var setup: SetupGuideModel
+    @ObservedObject var knowYou: KnowYouModel
+    @ObservedObject var google: GoogleAccountModel
     @StateObject private var permissions = FirstRunPermissions()
     @ObservedObject private var display = DisplayGeometry.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step: Step
     @State private var appliedModel: String?
     @State private var openedAt = Date()
@@ -564,32 +548,39 @@ struct FirstRunSetupView: View {
     @State private var stuckDownload: String?
     /// The one automatic test once Wisp is ready (it also loads the model).
     @State private var testedOnce = false
+    /// Getting to know you ended with Done (its answers are saved and complete).
+    @State private var knowYouFinished = false
+    @State private var showAdvanced = false
     var openDetailedSetup: () -> Void
-    var finish: (_ tellAboutYou: Bool) -> Void
-    /// Every permission read, so the readers waiting on a row can start.
+    /// Closes the window and opens the notch on Ask; with a prompt, Ask's box
+    /// holds it, unsent.
+    var finish: (_ prompt: String?) -> Void
+    /// Every permission read, so a new grant is read at once.
     var permissionsChanged: ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void
     /// Where the person is, saved so setup picks up there after a quit.
     var stepChanged: (Step) -> Void
-    /// Finishes setup and asks Wisp this, from the tour's examples.
-    var tryAsking: (String) -> Void
     /// Whether ⌥Space and ⌘⇧F really belong to Wisp on this Mac.
     var askKeyRegistered: Bool
     var searchKeyRegistered: Bool
+    /// NotchQA's renders: the Google step shows its fixture and never asks the service.
+    var qaFixture = false
 
-    init(setup: SetupGuideModel, initialStep: Step = .brain,
+    init(setup: SetupGuideModel, knowYou: KnowYouModel, google: GoogleAccountModel,
+         initialStep: Step = .brain,
          openDetailedSetup: @escaping () -> Void,
-         finish: @escaping (_ tellAboutYou: Bool) -> Void,
+         finish: @escaping (_ prompt: String?) -> Void,
          permissionsChanged: @escaping ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void = { _ in },
          stepChanged: @escaping (Step) -> Void = { _ in },
-         tryAsking: @escaping (String) -> Void = { _ in },
-         askKeyRegistered: Bool = true, searchKeyRegistered: Bool = true) {
+         askKeyRegistered: Bool = true, searchKeyRegistered: Bool = true, qaFixture: Bool = false) {
         self.setup = setup
+        self.qaFixture = qaFixture
+        self.knowYou = knowYou
+        self.google = google
         _step = State(initialValue: initialStep)
         self.openDetailedSetup = openDetailedSetup
         self.finish = finish
         self.permissionsChanged = permissionsChanged
         self.stepChanged = stepChanged
-        self.tryAsking = tryAsking
         self.askKeyRegistered = askKeyRegistered
         self.searchKeyRegistered = searchKeyRegistered
     }
@@ -605,6 +596,8 @@ struct FirstRunSetupView: View {
                     switch step {
                     case .brain: brainStep
                     case .permissions: permissionsStep
+                    case .google: OnboardingGoogleStep(model: google, refreshes: !qaFixture)
+                    case .knowYou: knowYouStep
                     case .tour: tourStep
                     }
                 }
@@ -614,9 +607,9 @@ struct FirstRunSetupView: View {
             Divider().overlay(Theme.hairline)
             footer
         }
-        .frame(width: 600)
+        .frame(width: FirstRunSetup.width)
         .frame(minHeight: FirstRunSetup.minimumHeight, maxHeight: .infinity)
-        .background(Color(white: 0.08))
+        .background(OnboardingBackdrop())
         .foregroundStyle(Theme.textPrimary)
         .preferredColorScheme(.dark)
         .onChange(of: brain) { _, next in
@@ -638,13 +631,18 @@ struct FirstRunSetupView: View {
         }
         .onAppear {
             drive(brain)
-            // One read up front, so access answered before a quit lets its readers start.
+            // One read up front: the last step's prompts follow what is allowed.
             Task { await permissions.refresh() }
             if step == .permissions { permissions.start() }
+            knowYou.onClose = { _ in
+                knowYouFinished = true
+                step = .tour
+            }
         }
         .onReceive(permissions.$states) { states in if !states.isEmpty { permissionsChanged(states) } }
         .onChange(of: step) { _, next in
             if next == .permissions { permissions.start() } else { permissions.stop() }
+            if next == .tour { Task { await permissions.refresh() } }
             stepChanged(next)
         }
         .onDisappear { permissions.stop() }
@@ -676,74 +674,72 @@ struct FirstRunSetupView: View {
     // MARK: Chrome
 
     /// A step is ticked for what is true, not for having been passed: the model
-    /// once Wisp can answer with it, permissions once every one has an answer.
+    /// once Wisp can answer with it, permissions once every one has an answer,
+    /// Google once an account is connected, About you once it was finished.
     private func isDone(_ s: Step) -> Bool {
         switch s {
         case .brain: return brain.isReady
         case .permissions: return permissions.allAnswered
+        case .google: return !google.status.accounts.isEmpty
+        case .knowYou: return knowYouFinished || knowYou.status.completed
         case .tour: return false
         }
     }
 
     private var stepBar: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             ForEach(Step.allCases, id: \.self) { s in
                 let done = isDone(s)
                 Button { step = s } label: {
-                    Text(done ? "✓ \(title(s))" : "\(s.rawValue + 1)  \(title(s))")
+                    Text(done ? "✓ \(s.title)" : "\(s.rawValue + 1)  \(s.title)")
                         .font(.system(size: 11.5, weight: s == step ? .semibold : .regular))
                         .foregroundStyle(s == step ? Theme.textPrimary : (done ? Color.green.opacity(0.8) : Theme.textMuted))
-                        .padding(.horizontal, 9).padding(.vertical, 3)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
                         .background(Capsule().fill(s == step ? Theme.chipFill : .clear))
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Step \(s.rawValue + 1) of \(Step.allCases.count), \(title(s))")
+                .accessibilityLabel("Step \(s.rawValue + 1) of \(Step.allCases.count), \(s.title)")
                 .accessibilityValue(done ? "Done" : "")
                 .accessibilityAddTraits(s == step ? [.isSelected, .isHeader] : [])
             }
-            Spacer()
+            Spacer(minLength: 4)
             if step != .brain, let progress = compactProgress {
-                Text(progress).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text(progress).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
-    }
-
-    private func title(_ s: Step) -> String {
-        switch s {
-        case .brain: return "Model"
-        case .permissions: return "Permissions"
-        case .tour: return "How to use"
-        }
+        .padding(.leading, 14).padding(.trailing, 16).padding(.top, 30).padding(.bottom, 10)
     }
 
     /// The download, in a word or two, on the steps after the first.
     private var compactProgress: String? {
         switch brain {
-        case .downloading(_, _, let fraction, _, _, _): return "Downloading · \(Int(fraction * 100))%"
-        case .waitingForEngine, .switching: return "Finishing setup…"
+        case .downloading(_, _, let fraction, _, _, _): return "Model · \(Int(fraction * 100))%"
+        case .waitingForEngine, .switching: return "Finishing…"
         case .ready: return "Model ready"
         case .failed: return "Download stopped"
         default: return nil
         }
     }
 
+    private func go(_ s: Step?) { if let s { step = s } }
+
     private var footer: some View {
         HStack(spacing: 10) {
             switch step {
             case .brain:
-                Image(systemName: "lock").foregroundStyle(Theme.textMuted)
+                Image(systemName: "lock").foregroundStyle(Theme.textMuted).accessibilityHidden(true)
                 Text(brain.isArriving ? "You can keep going while this downloads." : "The AI model runs on this Mac.")
                     .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                 Spacer()
                 if brain.waitsForDownloadClick {
                     // Return belongs to the card's Download (or Retry) here, so it can't
                     // skip past the one step Wisp can't answer without.
-                    Button("Skip for now") { step = .permissions }
+                    Button("Skip for now") { go(step.next) }
                         .buttonStyle(FirstRunButtonStyle())
                 } else {
-                    Button("Continue") { step = .permissions }
+                    Button("Continue") { go(step.next) }
                         .buttonStyle(FirstRunButtonStyle(primary: true))
                         .keyboardShortcut(.defaultAction)
                 }
@@ -751,21 +747,42 @@ struct FirstRunSetupView: View {
                 Text(FirstRunPermissions.summary(permissions.states))
                     .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                 Spacer()
-                Button("Back") { step = .brain }.buttonStyle(FirstRunButtonStyle())
-                Button("Continue") { step = .tour }
+                Button("Back") { go(step.previous) }.buttonStyle(FirstRunButtonStyle())
+                Button("Continue") { go(step.next) }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
                     .keyboardShortcut(.defaultAction)
+            case .google:
+                Text("Optional").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                Spacer()
+                Button("Back") { go(step.previous) }.buttonStyle(FirstRunButtonStyle())
+                if google.status.accounts.isEmpty {
+                    Button("Skip for now") { go(step.next) }.buttonStyle(FirstRunButtonStyle())
+                } else {
+                    Button("Continue") { go(step.next) }
+                        .buttonStyle(FirstRunButtonStyle(primary: true))
+                        .keyboardShortcut(.defaultAction)
+                }
+            case .knowYou:
+                // The questions carry their own Continue (and Return); the window
+                // only moves between steps, so it never takes Return from them.
+                Button("Back") { go(step.previous) }.buttonStyle(FirstRunButtonStyle())
+                Spacer()
+                if knowYouFinished {
+                    Button("Continue") { go(step.next) }
+                        .buttonStyle(FirstRunButtonStyle(primary: true))
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Skip for now") { go(step.next) }
+                        .buttonStyle(FirstRunButtonStyle())
+                        .help("Nothing more is saved. Tell Wisp About You… in the menu bar icon asks these any time.")
+                }
             case .tour:
-                Button("Back") { step = .permissions }.buttonStyle(FirstRunButtonStyle())
+                Button("Back") { go(step.previous) }.buttonStyle(FirstRunButtonStyle())
                 tourModelStatus
                 Spacer(minLength: 6)
-                // Neither waits for the model: Getting to know you only saves to
-                // Wisp's service, and the notch's setup card carries the download
-                // from here, with a notification once Wisp can answer.
-                Button("Tell Wisp about you") { finish(true) }
-                    .buttonStyle(FirstRunButtonStyle())
-                    .disabled(setup.status == nil)
-                Button("Start using Wisp") { finish(false) }
+                // Doesn't wait for the model: the notch's quiet setup cue carries
+                // the download from here, with a notification once Wisp can answer.
+                Button("Done — open Wisp") { finish(nil) }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
                     .keyboardShortcut(.defaultAction)
             }
@@ -802,7 +819,7 @@ struct FirstRunSetupView: View {
     @ViewBuilder private var tourModelStatus: some View {
         switch brain.footer(stalled: stalled) {
         case .ready:
-            Circle().fill(Theme.orb).frame(width: 9, height: 9)
+            Circle().fill(Theme.orb).frame(width: 9, height: 9).accessibilityHidden(true)
             Text("Model ready").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
         case .working(let text):
             ProgressView().controlSize(.small)
@@ -858,17 +875,17 @@ struct FirstRunSetupView: View {
         }
     }
 
-    // MARK: Step 1
+    // MARK: Step 1: Model
 
     private var brainStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            heading("Welcome to Wisp",
-                    "The AI model runs on this Mac. Your mail, calendar and messages stay here; when you ask "
-                        + "for something from the web, only the search terms are sent. First Wisp needs to "
-                        + "download that model once.")
+            OnboardingHeading(title: "Welcome to Wisp",
+                              subtitle: "The AI model runs on this Mac. Your mail, calendar and messages stay here; when you ask "
+                                  + "for something from the web, only the search terms are sent. First Wisp needs to "
+                                  + "download that model once.")
             if let hw = setup.status?.hardware {
-                card(icon: "cpu", title: "Picked for your Mac",
-                     detail: "\(hw.chip) · \(hw.ramGb > 0 ? "\(hw.ramGb) GB memory" : "memory unknown")") {
+                OnboardingCard(icon: "cpu", title: "Picked for your Mac",
+                               detail: "\(hw.chip) · \(hw.ramGb > 0 ? "\(hw.ramGb) GB memory" : "memory unknown")") {
                     EmptyView()
                 }
             }
@@ -877,12 +894,22 @@ struct FirstRunSetupView: View {
                 Text(warning).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.top, 4)
             }
             if case .unavailable = brain {} else {
-                Button { openDetailedSetup() } label: {
-                    Text("Using a different app like Ollama or LM Studio? ")
-                        .foregroundStyle(Theme.textMuted)
-                    + Text("Connect it instead").foregroundStyle(Color(red: 0.73, green: 0.74, blue: 0.96))
+                // Everything a first run needs is above. Other apps and the full
+                // model list stay one disclosure away, so the detailed setup is
+                // never a second setup surface by default.
+                DisclosureGroup(isExpanded: $showAdvanced) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Already use Ollama or LM Studio, or want a different model? The detailed setup "
+                             + "connects another app or lists every model. This window steps aside while it is open.")
+                            .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Open detailed setup…") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    Text("Advanced").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
                 }
-                .buttonStyle(.plain).font(.system(size: 12)).padding(.top, 12)
+                .padding(.top, 12)
             }
         }
     }
@@ -894,13 +921,13 @@ struct FirstRunSetupView: View {
             // first imports) can take minutes, so say so and show the time.
             TimelineView(.periodic(from: openedAt, by: 5)) { context in
                 let waited = FirstRunBrain.waited(Int(context.date.timeIntervalSince(openedAt)))
-                card(icon: "hourglass", title: "Starting Wisp…",
-                     detail: "The first launch can take a few minutes." + (waited.map { " (\($0))" } ?? "")) {
+                OnboardingCard(icon: "hourglass", title: "Starting Wisp…",
+                               detail: "The first launch can take a few minutes." + (waited.map { " (\($0))" } ?? "")) {
                     ProgressView().controlSize(.small)
                 }
             }
         case .startingEngine:
-            card(icon: "bolt", title: "Starting Wisp's engine…", detail: "It's built into Wisp, so there's nothing else to install.") {
+            OnboardingCard(icon: "bolt", title: "Starting Wisp's engine…", detail: "It's built into Wisp, so there's nothing else to install.") {
                 if stalled {
                     Button("Try again") { Task { await setup.startEngine() } }.buttonStyle(FirstRunButtonStyle())
                 } else {
@@ -908,14 +935,14 @@ struct FirstRunSetupView: View {
                 }
             }
         case .unavailable(let reason):
-            card(icon: "exclamationmark.triangle", title: "Wisp can't set this up on its own", detail: reason) {
+            OnboardingCard(icon: "exclamationmark.triangle", title: "Wisp can't set this up on its own", detail: reason) {
                 Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle(primary: true))
             }
         case .needsDownload(let model, let label, let size):
-            card(icon: "arrow.down.circle", title: label + (size.map { String(format: " · %.1f GB", $0) } ?? ""),
-                 detail: "Fast and private. The engine is built into Wisp, so there's nothing else to install.") {
+            OnboardingCard(icon: "arrow.down.circle", title: label + (size.map { String(format: " · %.1f GB", $0) } ?? ""),
+                           detail: "Fast and private. The engine is built into Wisp, so there's nothing else to install.") {
                 HStack(spacing: 8) {
-                    pill("Recommended")
+                    OnboardingPill(text: "Recommended")
                     downloadButton("Download", model: model)
                 }
             }
@@ -924,11 +951,11 @@ struct FirstRunSetupView: View {
             }
         case .downloading(let model, let label, let fraction, let done, let total, let left):
             VStack(alignment: .leading, spacing: 0) {
-                card(icon: "arrow.down.circle", title: label + String(format: " · %.1f GB", total),
-                     detail: "Fast and private. The engine is built into Wisp, so there's nothing else to install.") {
+                OnboardingCard(icon: "arrow.down.circle", title: label + String(format: " · %.1f GB", total),
+                               detail: "Fast and private. The engine is built into Wisp, so there's nothing else to install.") {
                     EmptyView()
                 }
-                ProgressView(value: fraction).tint(Color(red: 0.56, green: 0.56, blue: 0.96)).padding(.top, 2)
+                ProgressView(value: fraction).tint(OnboardingPalette.lilac).padding(.top, 2)
                     .accessibilityLabel("Model download")
                     .accessibilityValue("\(Int(fraction * 100)) percent")
                 HStack {
@@ -942,53 +969,54 @@ struct FirstRunSetupView: View {
                         }
                     }
                     Spacer()
-                    Button("Cancel") { Task { await setup.download(model, cancel: true) } }
+                    Button("Pause") { Task { await setup.download(model, cancel: true) } }
                         .buttonStyle(.plain).foregroundStyle(Theme.textMuted)
+                        .help("Stops the download. Retry picks up where it left off.")
                 }
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 6)
             }
         case .failed(let model, let label, let message, let paused):
-            card(icon: "arrow.clockwise.circle", title: (paused ? "Download paused" : "Download failed") + " · " + label,
-                 detail: message) {
-                downloadButton("Retry", model: model)
+            OnboardingCard(icon: "arrow.clockwise.circle", title: (paused ? "Download paused" : "Download failed") + " · " + label,
+                           detail: message) {
+                downloadButton(paused ? "Resume" : "Retry", model: model)
             }
         case .waitingForEngine(let model, let label):
             if stuckDownload == model {
-                card(icon: "exclamationmark.triangle", title: label,
-                     detail: "Downloaded, but Wisp's engine can't find its files. Download it again to fix that.") {
+                OnboardingCard(icon: "exclamationmark.triangle", title: label,
+                               detail: "Downloaded, but Wisp's engine can't find its files. Download it again to fix that.") {
                     Button("Download again") { Task { await setup.download(model) } }
                         .buttonStyle(FirstRunButtonStyle(primary: true))
                         .keyboardShortcut(.defaultAction)
                         .disabled(setup.busy != nil)
                 }
             } else {
-                card(icon: "checkmark.circle", title: label, detail: "Downloaded. Waiting for Wisp's engine to load it…") {
+                OnboardingCard(icon: "checkmark.circle", title: label, detail: "Downloaded. Waiting for Wisp's engine to load it…") {
                     ProgressView().controlSize(.small)
                 }
             }
         case .switching(let model, let label):
             if stalled {
-                card(icon: "exclamationmark.triangle", title: label,
-                     detail: "Downloaded, but Wisp couldn't switch over to it.") {
+                OnboardingCard(icon: "exclamationmark.triangle", title: label,
+                               detail: "Downloaded, but Wisp couldn't switch over to it.") {
                     Button("Try again") { Task { await setup.apply(model) } }
                         .buttonStyle(FirstRunButtonStyle(primary: true))
                         .keyboardShortcut(.defaultAction)
                         .disabled(setup.busy != nil)
                 }
             } else {
-                card(icon: "checkmark.circle", title: label, detail: "Downloaded. Switching Wisp over to it…") {
+                OnboardingCard(icon: "checkmark.circle", title: label, detail: "Downloaded. Switching Wisp over to it…") {
                     ProgressView().controlSize(.small)
                 }
             }
         case .ready(let label):
-            card(icon: "checkmark.circle.fill", title: "\(label) is ready",
-                 detail: setup.testing ? "Checking it answers…" : (setup.testResult ?? "Wisp can answer now.")) {
+            OnboardingCard(icon: "checkmark.circle.fill", title: "\(label) is ready",
+                           detail: setup.testing ? "Checking it answers…" : (setup.testResult ?? "Wisp can answer now.")) {
                 if setup.testing {
                     ProgressView().controlSize(.small)
                 } else if setup.testResult != nil && !setup.testPassed {
                     Button("Try again") { Task { await setup.test() } }.buttonStyle(FirstRunButtonStyle())
                 } else {
-                    pill("Ready")
+                    OnboardingPill(text: "Ready")
                 }
             }
         }
@@ -999,26 +1027,29 @@ struct FirstRunSetupView: View {
         }
     }
 
-    // MARK: Step 2
+    // MARK: Step 2: Permissions
 
     private var permissionsStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            heading("Let Wisp see your day",
-                    "Each one is optional. Wisp reads these to help; it asks before sending or changing anything.")
+            OnboardingHeading(title: "Let Wisp see your day",
+                              subtitle: "Each one is optional, and nothing is asked until you click its button. "
+                                  + "Wisp reads these to help; it asks before sending or changing anything.")
             permissionRow(.calendar, icon: "calendar", title: "Calendar",
-                          detail: "Your day plan: meetings and events")
+                          detail: "Your meetings and events, for your day plan.")
             permissionRow(.reminders, icon: "checklist", title: "Reminders",
-                          detail: "What's due, and reminders it sets for you")
-            permissionRow(.mail, icon: "envelope", title: "Mail and Notes",
-                          detail: "While they're open: emails that need a reply, and your notes. "
+                          detail: "What's due, and the reminders Wisp sets for you.")
+            permissionRow(.mail, icon: "envelope", title: "Mail & Notes",
+                          detail: "Emails that need a reply, and your notes, while those apps are open. "
                               + "Opens Mail and Notes in the background to ask.")
             permissionRow(.fullDiskAccess, icon: "internaldrive", title: "Full Disk Access",
                           detail: fullDiskAccessDetail)
-            permissionRow(.contacts, icon: "person.crop.circle", title: "Contacts",
-                          detail: "Names instead of phone numbers")
-            permissionRow(.notifications, icon: "bell", title: "Notifications", detail: "Reminder alerts")
-            Text("Screen reading and Accessibility are asked later, the first time a feature needs them.")
+            contactsRow
+            permissionRow(.notifications, icon: "bell", title: "Notifications",
+                          detail: "Alerts for reminders you set, and when Wisp is ready.")
+            Text("Skipped one? Right-click Wisp's menu bar icon and choose Permissions… any time. Screen reading and "
+                 + "Accessibility are asked for later, from the feature that needs them.")
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 8)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -1034,29 +1065,55 @@ struct FirstRunSetupView: View {
         }
     }
 
+    /// Contacts puts names on Messages: it waits for Full Disk Access, which is
+    /// what reads Messages, unless macOS already has an answer.
+    @ViewBuilder private var contactsRow: some View {
+        let state = permissions.state(.contacts)
+        if state == .notAsked && !FirstRunPermissions.contactsUseful(messagesReadable: FirstRunPermissions.messagesReadable()) {
+            OnboardingCard(icon: "person.crop.circle", title: "Contacts",
+                           detail: "Names instead of phone numbers in Messages. It's useful once Full Disk Access lets Wisp read Messages.") {
+                Text("After Full Disk Access").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+            }
+        } else {
+            permissionRow(.contacts, icon: "person.crop.circle", title: "Contacts",
+                          detail: "Names instead of phone numbers in Messages.")
+        }
+    }
+
     private func permissionRow(_ item: FirstRunPermissions.Item, icon: String, title: String, detail: String) -> some View {
-        card(icon: icon, title: title, detail: detail) {
-            switch permissions.state(item) {
-            case .allowed:
-                Label("Allowed", systemImage: "checkmark").font(.system(size: 12)).foregroundStyle(Color.green.opacity(0.85))
-            case .checking:
-                ProgressView().controlSize(.small)
-            case .notOnThisMac:
-                Text(item == .fullDiskAccess ? "Not needed" : "Not used").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-            case .notAllowed:
-                Button(item == .fullDiskAccess ? "Show me how" : "Open Settings") {
-                    if item == .fullDiskAccess { Task { await permissions.request(.fullDiskAccess) } }
-                    else { Permissions.openSettingsPane(Self.settingsPane(item)) }
-                }
-                .buttonStyle(FirstRunButtonStyle())
-                .accessibilityLabel(item == .fullDiskAccess ? "Show how to turn on \(title)" : "Open Settings for \(title)")
-            case .notAsked:
-                Button(permissions.asking == item ? "Asking…" : "Allow") { Task { await permissions.request(item) } }
+        let state = permissions.state(item)
+        let label = FirstRunPermissions.label(item, state)
+        return OnboardingCard(icon: icon, title: title, detail: detail) {
+            HStack(spacing: 8) {
+                switch state {
+                case .allowed:
+                    Label(label, systemImage: "checkmark").font(.system(size: 12)).foregroundStyle(Color.green.opacity(0.85))
+                case .checking:
+                    ProgressView().controlSize(.small)
+                case .notOnThisMac:
+                    Text(label).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                case .notAllowed:
+                    Text(label).font(.system(size: 11.5)).foregroundStyle(Color.orange.opacity(0.9))
+                    Button("Open System Settings") {
+                        if item == .fullDiskAccess { Task { await permissions.request(.fullDiskAccess) } }
+                        else { Permissions.openSettingsPane(Self.settingsPane(item)) }
+                    }
+                    .buttonStyle(FirstRunButtonStyle())
+                    .accessibilityLabel("Open System Settings for \(title)")
+                case .notAsked:
+                    Text(label).font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                    Button(permissions.asking == item ? "Asking…"
+                           : item == .fullDiskAccess ? "Open System Settings" : "Allow") {
+                        Task { await permissions.request(item) }
+                    }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
                     .disabled(permissions.asking != nil)
-                    .accessibilityLabel("Allow \(title)")
+                    .accessibilityLabel(item == .fullDiskAccess ? "Open System Settings for \(title)" : "Allow \(title)")
+                }
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityValue(label)
     }
 
     /// VoiceOver hears the moments that matter without hunting for them: the
@@ -1086,25 +1143,66 @@ struct FirstRunSetupView: View {
         }
     }
 
-    // MARK: Step 3
+    // MARK: Step 4: Getting to know you
+
+    @ViewBuilder private var knowYouStep: some View {
+        if knowYouFinished {
+            VStack(alignment: .leading, spacing: 0) {
+                OnboardingHeading(title: knowYou.profile.name.isEmpty ? "Thank you" : "Thank you, \(knowYou.profile.name)",
+                                  subtitle: "Wisp will put your answers to work. To change or erase any of them, "
+                                      + "open About you in the Wisp window's Memory, or type /about in Ask.")
+                Label(knowYou.status.whereItLives, systemImage: knowYou.status.localOnly ? "lock.fill" : "cloud")
+                    .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                OnboardingHeading(title: "Getting to know you",
+                                  subtitle: "Three quick questions, all optional. Each answer is saved when you continue.")
+                KnowYouView(model: knowYou, inWindow: true)
+            }
+        }
+    }
+
+    // MARK: Step 5: How to use
+
+    /// What can be read right now, for the prompts.
+    private var live: OnboardingLiveSources {
+        let mailFolder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mail").path
+        let connected = google.status.accounts.filter { $0.state == .connected }
+        return OnboardingLiveSources(
+            calendar: permissions.state(.calendar) == .allowed,
+            mail: permissions.state(.mail) == .allowed
+                || (permissions.state(.fullDiskAccess) == .allowed && FileManager.default.fileExists(atPath: mailFolder)),
+            google: !connected.isEmpty,
+            googleCalendar: connected.contains { $0.calendar == true })
+    }
 
     private var tourStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            heading("Wisp lives at the top of your screen", "No window to find. It's always one gesture away.")
-            tourPicture.padding(.bottom, 14)
+            OnboardingHeading(title: "Wisp lives at the top of your screen",
+                              subtitle: "No window to find. It's always one gesture away.")
+            NotchLocationIllustration(style: display.layout.style)
+                .padding(.bottom, 10)
+            OnboardingCard(icon: "hand.point.up.left", title: "Where to find it",
+                           detail: Self.findLine(display.layout.style)) { EmptyView() }
+            OnboardingCard(icon: "keyboard", title: "Keyboard",
+                           detail: Self.shortcutsLine(ask: askKeyRegistered, search: searchKeyRegistered)) { EmptyView() }
+            Text("Open, it has three tabs").font(.system(size: 13, weight: .medium)).padding(.top, 6).padding(.bottom, 8)
+            OpenNotchIllustration(tabs: Self.tabLines)
+                .padding(.bottom, 14)
             if case .working = brain.footer(stalled: stalled) {
                 Text("You can start now. Wisp lets you know when its model is ready.")
                     .font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.bottom, 10)
             }
-            card(icon: "keyboard", title: "Open from anywhere",
-                 detail: Self.shortcutsLine(ask: askKeyRegistered, search: searchKeyRegistered)) { EmptyView() }
             VStack(alignment: .leading, spacing: 6) {
                 Text("Try asking").font(.system(size: 13, weight: .medium))
-                ForEach(Self.examples(permissions.states), id: \.self) { example in
-                    Button { tryAsking(example) } label: {
+                Text("Click one to open Ask with it typed in. Press Return to send it.")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                ForEach(OnboardingPrompts.prompts(live), id: \.self) { prompt in
+                    Button { finish(prompt) } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: "arrow.up.circle").accessibilityHidden(true)
-                            Text("“\(example)”")
+                            Image(systemName: "text.cursor").accessibilityHidden(true)
+                            Text("“\(prompt)”")
                             Spacer(minLength: 0)
                         }
                         .font(.system(size: 12.5)).foregroundStyle(Theme.textPrimary)
@@ -1114,9 +1212,33 @@ struct FirstRunSetupView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help(brain.isReady ? "Start using Wisp and ask this" : "Start using Wisp; this waits in Ask until the model is ready")
+                    .help("Opens Ask with this typed in, ready to send")
+                    .accessibilityLabel("Try asking: \(prompt)")
+                    .accessibilityHint("Opens Ask with this typed in. It isn't sent until you press Return.")
                 }
             }
+        }
+    }
+
+    /// One line per notch tab, in the notch's order.
+    static let tabLines: [(tab: String, line: String)] = [
+        ("Ask", "Ask anything. With your permission it reads your mail, calendar, reminders and notes."),
+        ("Brief", "What needs you today, prepared before you ask."),
+        ("Day", "Your day hour by hour, with to-dos placed on the timeline."),
+    ]
+
+    /// Where Wisp is on this display, in words that match the picture.
+    static func findLine(_ style: SurfaceLayout.Style) -> String {
+        switch style {
+        case .notch:
+            return "Hover or click the notch at the top centre of your screen. Wisp's icon is in the menu bar too: "
+                + "click it to open Wisp, right-click it for Settings and Permissions."
+        case .menuBar:
+            return "Push the pointer against the top centre of your screen, or click Wisp's icon in the menu bar. "
+                + "Right-click the icon for Settings and Permissions."
+        case .floating:
+            return "Hover the small bar at the top centre of your screen, or click Wisp's icon in the menu bar. "
+                + "Right-click the icon for Settings and Permissions."
         }
     }
 
@@ -1131,82 +1253,13 @@ struct FirstRunSetupView: View {
         }
     }
 
-    /// Examples that work with what was allowed: no calendar question without
-    /// Calendar, no email one without a way to read Mail.
-    static func examples(_ states: [FirstRunPermissions.Item: FirstRunPermissions.State]) -> [String] {
-        var out: [String] = []
-        if states[.calendar] == .allowed { out.append("What's on my calendar today?") }
-        if states[.mail] == .allowed || states[.fullDiskAccess] == .allowed { out.append("Any emails I need to reply to?") }
-        out.append("Remind me to call the dentist tomorrow at 10")
-        return out
-    }
-
     /// How to open Wisp on this display, in words that match what's drawn there.
     static func openHint(_ style: SurfaceLayout.Style) -> String {
         switch style {
-        case .notch: return "Hover the notch to open"
-        case .menuBar: return "Push the pointer to the top centre, or click the Wisp icon in the menu bar"
-        case .floating: return "Hover the bar at the top of the screen to open"
+        case .notch: return "Wisp lives here — hover or click"
+        case .menuBar: return "Wisp lives here — push the pointer to the top"
+        case .floating: return "Wisp lives here — hover or click"
         }
-    }
-
-    private var tourPicture: some View {
-        let style = display.layout.style
-        return ZStack(alignment: .top) {
-            RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.05))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.hairline))
-            if style == .notch {
-                UnevenRoundedRectangle(bottomLeadingRadius: 9, bottomTrailingRadius: 9)
-                    .fill(Color.black).frame(width: 120, height: 20)
-            }
-            VStack(spacing: 10) {
-                Label(Self.openHint(style), systemImage: "arrow.up")
-                    .font(.system(size: 11.5)).foregroundStyle(Color(red: 0.73, green: 0.74, blue: 0.96))
-                HStack(spacing: 6) { pill("Ask"); pill("Brief"); pill("Day") }
-            }
-            .padding(.top, style == .notch ? 30 : 18)
-        }
-        .frame(height: 100)
-    }
-
-    // MARK: Pieces
-
-    private func heading(_ title: String, _ subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.system(size: 20, weight: .semibold))
-            Text(subtitle).font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.bottom, 18)
-    }
-
-    private func card<Trailing: View>(icon: String, title: String, detail: String,
-                                      @ViewBuilder trailing: () -> Trailing) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon).font(.system(size: 15))
-                .foregroundStyle(Color(red: 0.73, green: 0.74, blue: 0.96))
-                .frame(width: 30, height: 30)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .medium))
-                Text(detail).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            trailing()
-        }
-        .padding(.horizontal, 14).padding(.vertical, 11)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.hairline))
-        .padding(.bottom, 9)
-    }
-
-    private func pill(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
-            .padding(.horizontal, 9).padding(.vertical, 3)
-            .background(Capsule().fill(Theme.chipFill))
-            .overlay(Capsule().stroke(Theme.chipStroke))
     }
 }
 
@@ -1220,7 +1273,7 @@ struct FirstRunButtonStyle: ButtonStyle {
             .foregroundStyle(primary ? Color.white : Theme.textPrimary)
             .padding(.horizontal, 13).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 7)
-                .fill(primary ? Color(red: 0.43, green: 0.42, blue: 0.94) : Color.white.opacity(0.06)))
+                .fill(primary ? OnboardingPalette.violet : Color.white.opacity(0.06)))
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(primary ? .clear : Theme.chipStroke))
             .opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.4)
     }

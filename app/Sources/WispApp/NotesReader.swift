@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 
 // Reads Notes.app content via AppleScript and pushes it to the backend for
@@ -72,7 +73,25 @@ final class NotesReader {
     // localized.
     private func isNotesRunning() -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.Notes" }
+            && Self.automationDecided("com.apple.Notes")
     }
+
+    /// Whether macOS has an answer about Wisp scripting this app. A scripted
+    /// read while it has none makes macOS ask, and Wisp never asks on its own
+    /// (Permissions.swift): until the person clicks Allow in setup, the read
+    /// goes to the on-disk copy as if the app were closed. Never asks (`false`).
+    static func automationDecided(_ bundleID: String) -> Bool {
+        var target = AEAddressDesc()
+        let created = bundleID.withCString { pointer in
+            AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
+        }
+        guard created == noErr else { return false }
+        defer { AEDisposeDesc(&target) }
+        let status = AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
+                                                           AEEventID(typeWildCard), false)
+        return status != OSStatus(errAEEventWouldRequireUserConsent)
+    }
+
 
     /// Warm-up and daily reads: duplicates are dropped while a read is running.
     func syncIfIdle() {
