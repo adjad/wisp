@@ -45,8 +45,13 @@ def test_prompts_only_follow_a_click():
     request = _body(setup, "func request(_ item: Item) async")
     assert len(PROMPTING.findall(request)) == len(PROMPTING.findall(setup)), \
         "every prompt in the setup window is inside the row's request()"
-    # Automation is asked (ask: true) only from that same click.
+    # Automation is asked (ask: true) only from that same click: once for Mail
+    # and Notes, once for Messages, and nowhere else in the app.
     assert setup.count("automationState(ask: true)") == 1 and "automationState(ask: true)" in request
+    assert setup.count("messagesAutomationState(ask: true)") == 1 and "messagesAutomationState(ask: true)" in request
+    for name, text in _sources().items():
+        if name != "FirstRunSetupView.swift":
+            assert "ask: true)" not in text or "AEDeterminePermissionToAutomateTarget" not in text, name
 
 
 def test_nothing_asks_at_launch():
@@ -121,3 +126,123 @@ def test_fix_links_say_where_they_go():
         text = _sources()[name]
         assert "Permissions.openFix(url)" in text and "Permissions.fixLabel" in text, name
         assert "fix.label)" not in text, name
+
+
+def test_only_the_explicit_finish_marks_setup_done():
+    """A quit (macOS's Quit & Reopen after Full Disk Access included) or an
+    early close must never end setup, even when the model can already answer:
+    the window has steps after the model."""
+    app = _sources()["AppDelegate.swift"]
+    setup = _sources()["FirstRunSetupView.swift"]
+    assert "closeFinishes" not in app and "closeFinishes" not in setup
+    assert app.count("forKey: FirstRunSetup.doneKey)") == 1
+    closed = _body(app, "private func firstRunClosed()")
+    assert "FirstRunSetup.ending(finishing: firstRunFinishing, terminating: appTerminating)" in closed
+    done_branch = _body(closed, "if FirstRunSetup.marksDone(ending)")
+    assert "defaults.set(true, forKey: FirstRunSetup.doneKey)" in done_branch
+    assert "canAnswer" not in done_branch, "a ready model no longer ends setup"
+    assert "guard ending == .closedEarly else { return }" in closed
+    marks = _body(setup, "static func marksDone(_ ending: Ending)")
+    assert marks.strip("{} \n") == "ending == .finished"
+    # Done — open Wisp and the last step's prompts are the only callers of finish.
+    assert setup.count("finish(nil)") == 1 and setup.count("finish(prompt)") == 1
+
+
+def test_termination_is_noted_before_any_window_closes():
+    app = _sources()["AppDelegate.swift"]
+    should = _body(app, "func applicationShouldTerminate(")
+    assert should.lstrip("{ \n").startswith("noteTerminating()")
+    for signature in ("private func beginShutdown()", "private func terminateWithoutShutdown()"):
+        assert _body(app, signature).lstrip("{ \n").startswith("noteTerminating()"), signature
+    note = _body(app, "private func noteTerminating()")
+    assert "appTerminating = true" in note
+    assert "firstRunWindow != nil" in note and "forKey: FirstRunSetup.resumeKey" in note
+
+
+def test_setup_resumes_at_its_step_after_a_quit():
+    app = _sources()["AppDelegate.swift"]
+    setup = _sources()["FirstRunSetupView.swift"]
+    # Every step change is saved, and the window opens at the saved step.
+    assert "stepChanged: { step in UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey) }" in app
+    assert "initialStep: OnboardingStep.restored(defaults.object(forKey: FirstRunSetup.stepKey) as? Int)" in app
+    on_step = setup[setup.index(".onChange(of: step)"):]
+    assert "stepChanged(next)" in _body(on_step, ".onChange(of: step)")
+    # The step is cleared only when setup is finished.
+    assert app.count("removeObject(forKey: FirstRunSetup.stepKey)") == 1
+    # Launch: the resume mark is consumed, and only a reopen after an early close counts.
+    launch = _body(app, "private func launch()")
+    assert "FirstRunSetup.launchCountsTowardCap(flag)" in launch
+    assert "defaults.removeObject(forKey: FirstRunSetup.resumeKey)" in launch
+    assert "if countsTowardCap {" in launch
+    show = _body(setup, "static func shouldShow(")
+    assert show.lstrip("{ \n").startswith("guard !flag(doneKey) else { return false }")
+
+
+def test_full_disk_access_says_it_may_quit_and_marks_resume_first():
+    setup = _sources()["FirstRunSetupView.swift"]
+    request = _body(setup, "func request(_ item: Item) async")
+    fda = request[request.index("case .fullDiskAccess:"):]
+    assert fda.index("FirstRunSetup.expectRelaunch(") < fda.index("Permissions.openFullDiskAccessPane()")
+    detail = _body(setup, "private var fullDiskAccessDetail: String")
+    assert "FirstRunPermissions.fullDiskAccessRelaunchNote" in detail
+    assert "NSAlert" not in detail
+
+
+def test_messages_has_its_own_permission_row():
+    """Sending a text scripts Messages (OutboundSender.sendMessage), so its
+    Automation prompt is a row of its own, after Mail & Notes, asked only by a
+    click, on a target list apart from Mail's."""
+    setup = _sources()["FirstRunSetupView.swift"]
+    step = _body(setup, "private var permissionsStep: some View")
+    rows = re.findall(r'permissionRow\(\.(\w+), icon: "[^"]+", title: "([^"]+)"', step)
+    assert rows == [("calendar", "Calendar"), ("reminders", "Reminders"), ("mail", "Mail & Notes"),
+                    ("messages", "Messages"), ("fullDiskAccess", "Full Disk Access"),
+                    ("notifications", "Notifications")], rows
+    assert ('detail: "Sends the texts you approve in Ask. Opens Messages in the background to ask.")' in step)
+    assert 'nonisolated static let automationTargets = ["com.apple.mail", "com.apple.Notes"]' in setup
+    assert 'nonisolated static let messagesAutomationTargets = ["com.apple.MobileSMS"]' in setup
+    request = _body(setup, "func request(_ item: Item) async")
+    messages = request[request.index("case .messages:"):request.index("case .fullDiskAccess:")]
+    assert "Self.messagesAutomationTargets" in messages and "Self.automationTargets" not in messages
+    assert "launchHidden(id)" in messages and "messagesAutomationState(ask: true)" in messages
+    refresh = _body(setup, "func refresh() async")
+    assert "next[.messages] = await Self.messagesAutomationState(ask: false)" in refresh
+    assert "next[.mail] = await Self.automationState(ask: false)" in refresh
+    # No System Events or Accessibility in setup: those stay asked at use.
+    assert "com.apple.systemevents" not in setup.lower()
+    assert "AXIsProcessTrustedWithOptions" not in setup
+
+
+def test_relaunch_waits_for_a_quitting_copy_instead_of_yielding_to_it():
+    """macOS's Quit & Reopen can start a new Wisp while the old one is still
+    stopping its engine. Handing over to that dying copy left nothing running."""
+    app = _sources()["AppDelegate.swift"]
+    launch = _body(app, "func applicationDidFinishLaunching(")
+    assert "SingleInstance.shouldYield(" in launch
+    assert "FirstRunSetup.waitsForPeerToQuit(" in launch
+    assert "defaults.bool(forKey: FirstRunSetup.resumeKey)" in launch
+    assert "Self.shuttingDownPIDKey" in launch
+    # Bounded, polled with an async sleep (never a blocking wait on the main thread).
+    assert "FirstRunSetup.peerQuitWait" in launch and "Task.sleep" in launch
+    for blocking in ("Thread.sleep", "usleep(", "waitUntilExit", "semaphore", "DispatchGroup"):
+        assert blocking not in launch, blocking
+    # Gone: launch. Still alive at the deadline: the old hand-over.
+    assert "if peerApps.allSatisfy(\\.isTerminated) { self.launch() } else { self.yield(to: peerApps) }" in launch
+    assert launch.rstrip("} \n").endswith("launch()")
+    yield_body = _body(app, "private func yield(to peers: [NSRunningApplication])")
+    assert ".activate(options: [])" in yield_body and "terminateWithoutShutdown()" in yield_body
+    # The quitting copy says so before anything else, and only a launched copy does.
+    note = _body(app, "private func noteTerminating()")
+    assert note.index("guard launched else { return }") < note.index("forKey: Self.shuttingDownPIDKey")
+    # While waiting, a Dock click or a quit touches nothing of Wisp's own.
+    assert _body(app, "func applicationShouldHandleReopen(").lstrip("{ \n").startswith("guard launched else { return false }")
+    assert "if !launched { shutdownFinished = true; return .terminateNow }" in _body(app, "func applicationShouldTerminate(")
+    assert _body(app, "private func launch()").lstrip("{ \n").startswith("launched = true")
+
+
+def test_an_early_close_clears_a_stale_resume_mark():
+    app = _sources()["AppDelegate.swift"]
+    closed = _body(app, "private func firstRunClosed()")
+    tail = closed[closed.index("else if FirstRunSetup.resumesAtNextLaunch(ending)"):]
+    early = _body(tail, "} else")
+    assert "defaults.removeObject(forKey: FirstRunSetup.resumeKey)" in early
