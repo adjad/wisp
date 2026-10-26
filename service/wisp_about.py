@@ -276,9 +276,11 @@ def _routine_state() -> str:
     starts the runtime just to answer."""
     try:
         import time
-        from service.assistant import behavior_runtime
-        if not behavior_runtime.enabled():
+        # The switch first: importing behavior_runtime opens its stores.
+        from service.behavior_switch import enabled
+        if not enabled():
             return "off"
+        from service.assistant import behavior_runtime
         runtime = getattr(behavior_runtime, "_runtime", None)
         if runtime is None:
             return "unknown"
@@ -288,7 +290,31 @@ def _routine_state() -> str:
         return "unknown"
 
 
+def _attention_state() -> tuple[str, bool] | None:
+    """Caught for you (service/assistant/attention_runner.py): (mode, capture_events)
+    from attention/settings.json, read purely. A missing file is the default
+    (shadow, no events); a file that can't be read or parsed is None, so the
+    answer can say the cautious version. (The runner itself reads such a file
+    as "off".)"""
+    try:
+        import json
+        from service.attention.live import Settings, settings_path
+        from service.paths import MOE_DIR
+        try:
+            raw = settings_path(MOE_DIR).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return Settings().mode, Settings().capture_events
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        settings = Settings(**{k: v for k, v in data.items() if k in Settings.__dataclass_fields__}).validate()
+    except Exception:  # noqa: BLE001
+        return None
+    return settings.mode, settings.capture_events
+
+
 _SEND_OK = "Before anything is sent, I show it to you and wait for your OK."
+_CALENDAR_OK = "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
 _AUTO_ADD = ("Because auto-add is on, I may add a time-sensitive event or deadline to your Calendar "
              "or Reminders on my own, then tell you, with Undo.")
 _ROUTINE = {
@@ -299,32 +325,62 @@ _ROUTINE = {
     "unknown": ("Depending on your settings, I may add a reminder or a Tentative hold from your "
                 "routine on my own, and tell you, with Undo."),
 }
+_CAUGHT = "what Caught for you finds in your mail and messages"
+
+
+def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
+    """(write mode, the automatic Calendar/Reminders writers that may act now)
+    as (full sentence, fragment for a combined sentence, cautious). Every
+    automatic writer Wisp has is here: proactive auto-add, routine actions
+    (behavior_runtime) and Caught for you (attention_runner live reminders and
+    capture_events). The last two pass the same assistant_write gate as
+    _write_mode, so a refusal there means they don't write."""
+    mode = _write_mode()
+    adds: list[tuple[str, str, bool]] = []
+    if _auto_add_on():
+        adds.append((_AUTO_ADD, "a time-sensitive event or deadline to your Calendar or Reminders "
+                                "(auto-add is on)", False))
+    routine = _routine_state()
+    if mode == "unknown" and routine != "off":
+        routine = "unknown"
+    if mode != "suggest" and routine in _ROUTINE:
+        fragment = ("after your first few days, a reminder or a Tentative hold from your routine"
+                    if routine == "held" else "a reminder or a Tentative hold from your routine")
+        adds.append((_ROUTINE[routine], fragment, routine == "unknown"))
+    attention = _attention_state()
+    if attention is None or (mode == "unknown" and attention[0] == "live"):
+        adds.append(("Depending on your Caught for you settings, I may also add reminders or Calendar "
+                     "events from your mail and messages on my own, and tell you.",
+                     f"reminders or Calendar events from {_CAUGHT}", True))
+    elif mode == "allow" and attention[0] == "live":
+        what = "reminders and Calendar events" if attention[1] else "reminders"
+        adds.append((f"From {_CAUGHT}, I may add {what} on my own and tell you.",
+                     f"{what} from {_CAUGHT}", False))
+    return mode, adds
 
 
 def _confirm_line() -> str:
     """What Wisp asks before it acts, true in each state. Sending always waits
-    for an OK. Calendar and reminder adds wait too only when that's confirmed:
-    View Only, or neither auto-add nor routine actions can add on their own."""
-    mode = _write_mode()
+    for an OK. "Your calendar changes only with your OK" is said only when every
+    automatic writer is confirmed off or blocked: View Only, or none of them
+    can add on its own. Anything that can't be read gets the cautious wording."""
+    mode, adds = _automatic_adds()
     if mode == "view_only":
-        # View Only blocks Wisp's own adds, auto-add's included (autoadd.py).
+        # View Only blocks every automatic add: assistant_write is refused, and
+        # autoadd.py checks view-only and the calendar policy itself.
         return _SEND_OK + " In View Only, nothing is added to your calendar or reminders without your OK."
-    routine = _routine_state()
-    if mode == "unknown" and routine != "off":
-        routine = "unknown"
-    elif mode == "suggest" and routine in ("held", "acting"):
-        routine = "suggest"
-    parts = [_SEND_OK]
-    if _auto_add_on():
-        parts.append(_AUTO_ADD)
-    if routine in _ROUTINE:
-        parts.append(_ROUTINE[routine])
-    elif routine == "suggest":
-        parts.append("Right now I only suggest reminders from your routine; you add them with a tap.")
-    if len(parts) == 1 and mode != "unknown":
-        # Nothing adds on its own: a calendar change waits for the OK too.
-        return "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
-    return " ".join(parts)
+    suggest_only = mode == "suggest" and _routine_state() in ("held", "acting")
+    tail = (" Right now I only suggest reminders from your routine; you add them with a tap."
+            if suggest_only else "")
+    if not adds:
+        return (_SEND_OK if mode == "unknown" else _CALENDAR_OK) + tail
+    if len(adds) == 1:
+        return _SEND_OK + " " + adds[0][0] + tail
+    fragments = [fragment for _, fragment, _ in adds]
+    joined = "; ".join(fragments[:-1]) + "; and " + fragments[-1]
+    cautious = any(c for _, _, c in adds)
+    lead = "Depending on your settings, on my own" if cautious else "On my own"
+    return f"{_SEND_OK} {lead} I may add {joined}, and tell you each time." + tail
 
 
 def _user_name() -> str:

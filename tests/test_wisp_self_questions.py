@@ -273,15 +273,28 @@ def test_remote_only_build_reads_as_everything(monkeypatch):
     assert "runs right here on this Mac" not in wisp_about.overview()
 
 
-def _access(monkeypatch, *, view_only=False, full=False, learning=True, held=None):
-    """Set View Only / Full access, behavior learning, and the routine hold
-    (held=None: no runtime to ask)."""
+def _access(monkeypatch, *, view_only=False, full=False, learning=True, held=None, attention=None):
+    """Set View Only / Full access, behavior learning, the routine hold
+    (held=None: no runtime to ask) and Caught for you's settings file
+    (attention=None: no file, the shadow default; a str: the raw file)."""
+    import tempfile
+    from pathlib import Path
     from types import SimpleNamespace
+    import service.behavior_switch as behavior_switch
+    import service.paths as paths
     from service.assistant import behavior_runtime
+    from service.attention.live import settings_path
     from service.safety import policy
     monkeypatch.setattr(policy, "_READ_ONLY", view_only)
     monkeypatch.setattr(policy, "_FULL_ACCESS", full)
-    monkeypatch.setattr(behavior_runtime, "enabled", lambda: learning)
+    monkeypatch.setattr(behavior_switch, "enabled", lambda: learning)
+    # A fresh Wisp home of its own for the settings file: never the real one.
+    home = Path(tempfile.mkdtemp(prefix="wisp-attention-"))
+    monkeypatch.setattr(paths, "MOE_DIR", home)
+    if attention is not None:
+        path = settings_path(home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(attention, encoding="utf-8")
     runtime = None if held is None else SimpleNamespace(auto_actions_held=lambda store, now: held)
     monkeypatch.setattr(behavior_runtime, "_runtime", runtime)
 
@@ -321,8 +334,10 @@ def test_auto_add_combines_with_routine_actions(monkeypatch):
     _access(monkeypatch, full=True, held=False)
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
     text = wisp_about.privacy()
-    assert "Because auto-add is on, I may add a time-sensitive event or deadline" in text
-    assert "from your routine on my own" in text and CALENDAR_PROMISE not in text
+    assert ("On my own I may add a time-sensitive event or deadline to your Calendar or Reminders "
+            "(auto-add is on); and a reminder or a Tentative hold from your routine, and tell you "
+            "each time.") in text
+    assert CALENDAR_PROMISE not in text
 
 
 def test_cant_tell_says_the_cautious_version(monkeypatch):
@@ -496,3 +511,67 @@ def test_updating_has_its_own_step(prompt):
 def test_updating_a_feature_is_not_updating_wisp():
     # No specific step matches, so it gets the whole guide, not the update step alone.
     assert not wisp_about.howto("how do I update the model in wisp").startswith("- **Updating Wisp**")
+
+
+# Caught for you (attention_runner): live adds reminders, capture_events adds
+# Calendar events too, both through the same assistant_write gate.
+LIVE = '{"mode": "live"}'
+LIVE_EVENTS = '{"mode": "live", "capture_events": true}'
+
+
+def test_caught_for_you_live_adds_reminders(monkeypatch):
+    _access(monkeypatch, full=True, learning=False, attention=LIVE)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    for text in (wisp_about.privacy(), wisp_about.overview()):
+        assert ("From what Caught for you finds in your mail and messages, I may add reminders on my "
+                "own and tell you.") in text
+        assert CALENDAR_PROMISE not in text and "Calendar events" not in text
+
+
+def test_caught_for_you_live_with_events_adds_calendar_events(monkeypatch):
+    _access(monkeypatch, full=True, learning=False, attention=LIVE_EVENTS)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    assert "I may add reminders and Calendar events on my own" in wisp_about.privacy()
+    # Combined with the routine into one sentence.
+    _access(monkeypatch, full=True, held=False, attention=LIVE_EVENTS)
+    text = wisp_about.privacy()
+    assert ("On my own I may add a reminder or a Tentative hold from your routine; and reminders and "
+            "Calendar events from what Caught for you finds in your mail and messages, and tell you "
+            "each time.") in text
+
+
+def test_caught_for_you_settings_unreadable_says_the_cautious_version(monkeypatch):
+    _access(monkeypatch, full=True, learning=False, attention="{not json")
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    text = wisp_about.privacy()
+    assert "Depending on your Caught for you settings, I may also add reminders or Calendar events" in text
+    assert CALENDAR_PROMISE not in text
+    _access(monkeypatch, full=True, learning=False, attention='{"mode": "sometimes"}')
+    assert "Depending on your Caught for you settings" in wisp_about.privacy()
+
+
+def test_caught_for_you_live_under_view_only_adds_nothing(monkeypatch):
+    _access(monkeypatch, view_only=True, held=False, attention=LIVE_EVENTS)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    text = wisp_about.privacy()
+    assert "In View Only, nothing is added to your calendar or reminders without your OK" in text
+    assert "Caught for you" not in text
+
+
+def test_caught_for_you_live_but_the_gate_refuses_adds_nothing(monkeypatch):
+    import service.safety as safety
+    from service.safety import Decision, Tier
+    _access(monkeypatch, learning=False, attention=LIVE_EVENTS)
+    monkeypatch.setattr(safety, "decide", lambda *a, **k: Decision(Tier.DENY, "remote profile"))
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    text = wisp_about.privacy()
+    assert "Caught for you" not in text and CALENDAR_PROMISE in text
+
+
+def test_everything_off_keeps_the_calendar_promise(monkeypatch):
+    # Preview (shadow) Caught for you, learning off, auto-add off, Full access.
+    _access(monkeypatch, full=True, learning=False, attention='{"mode": "shadow", "capture_events": true}')
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    for text in (wisp_about.privacy(), wisp_about.overview()):
+        assert CALENDAR_PROMISE in text
+        assert "on my own" not in text
