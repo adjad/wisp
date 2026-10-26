@@ -175,6 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if up {
                 self.model.serviceReachable = true
                 self.model.serviceStarting = false
+                self.considerKnowYouOffer(after: 5)
                 // Whatever failed to load while the service was away loads now.
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -303,12 +304,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             firstRunGatesPrompts = true
         } else {
             offerSetupGuideOnFirstRun()
-            offerKnowYouWhenReady()
         }
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
         watchSetupReadiness()
+        armKnowYouOffers()
         // Wisp starts in the notch. The Wisp window opens only when asked for:
         // the Dock icon, the menu bar, or a hand-off from the notch.
         if firstRun { openFirstRunSetup() } else { showNotchTipOnce() }
@@ -362,12 +363,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showSetupCard()
             notifyWhenReady()
         }
-        if tellAboutYou {
-            tellWispAboutYou()
-        } else {
-            openAssistant()
-            offerKnowYouWhenReady()
-        }
+        // Start using Wisp opens Ask; Getting to know you is offered once the
+        // panel closes again (KnowYouOffer), not on top of it.
+        if tellAboutYou { tellWispAboutYou() } else { openAssistant() }
     }
 
     private func firstRunClosed() {
@@ -395,7 +393,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openSetupInNotch()
             notifyWhenReady()
         }
-        offerKnowYouWhenReady()
+        considerKnowYouOffer(after: 10)
     }
 
     private var setupWatch: Task<Void, Never>?
@@ -505,6 +503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .setup:
             openSetupInNotch()
         case .knowYou:
+            knowYouChosen = true
             openAssistant()
             model.startKnowYou()
         }
@@ -748,6 +747,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if step.to == .bar || step.to == .hidden {
             hoverIntent.didCollapse(pointerInZone: pointerInHoverZone())
         }
+        // A panel that just closed is the moment Getting to know you may be offered.
+        if step.to == .bar { considerKnowYouOffer(after: 10) }
         drivePresentation()
     }
 
@@ -1515,57 +1516,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Permissions.requestExtras(force: true)
     }
 
-    /// Getting to know you, from the menu bar.
+    /// Getting to know you, from the menu bar or the first-run window. Choosing it
+    /// ends Wisp's own offers for this session.
     @objc private func tellWispAboutYou() {
+        knowYouChosen = true
         openAssistant()
         model.startKnowYou()
     }
 
-    /// Once inference is set up, open Getting to know you in the notch if the
-    /// service says it is due: never finished, and no Later in the last few
-    /// days (it offers at most twice on its own; the menu bar, /about and
-    /// Memory → About you remain the way in). Waits for the service and for a
-    /// quiet panel, so the first launch is not two things at once.
-    private func offerKnowYouWhenReady() {
-        Task { @MainActor [weak self] in
-            // A brand-new Mac is not ready at launch (setup guide first), so keep
-            // checking until inference works: every 3 s for 10 minutes, then every
-            // 30 s for about three hours, which covers a slow model download.
-            var setupReady = false
-            for attempt in 0..<560 {
-                try? await Task.sleep(nanoseconds: attempt < 200 ? 3_000_000_000 : 30_000_000_000)
-                guard let self else { return }
-                if !setupReady {
-                    var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
-                    request.timeoutInterval = 10
-                    guard let (data, _) = try? await URLSession.shared.data(for: request),
-                          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let ready = object["ready"] as? Bool else { continue }
-                    // The setup guide owns a first launch until inference works.
-                    guard ready else { continue }
-                    setupReady = true
-                }
-                guard let envelope = await WispClient().profile() else { continue }
-                guard envelope.status.offer else { return }
-                // Not over the setup card, a reply in progress, or a flow already
-                // up; and never over a panel the person is using (open, holding
-                // typed text) or dismissed to the menu bar.
-                if self.setupWindow?.isVisible == true || self.firstRunWindow?.isVisible == true
-                    || self.model.setupCard == .open
-                    || self.model.isProcessing || self.model.knowYou != nil
-                    || !self.model.collapsed || self.model.holdsOpen || !self.notchDocked {
-                    continue
-                }
-                // An offer nobody asked for must not take the keyboard from the
-                // app the person is typing in: it opens without becoming key.
-                self.createPanelIfNeeded()
-                self.panel?.revealsWithoutKey = true
-                self.openAssistant()
-                self.model.startKnowYou()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                self.panel?.revealsWithoutKey = false
-                return
-            }
+    private var knowYouChosen = false
+    private var knowYouOffersArmed = false
+    private var knowYouCheck: Task<Void, Never>?
+    private var knowYouTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
+
+    /// Wisp's own offer of Getting to know you, for the life of the app: checked
+    /// when the service comes up, when the panel closes, on wake and every half
+    /// hour. The service says whether it is due (never finished, no recent Later,
+    /// at most twice on its own; the menu bar, /about and Memory → About you remain
+    /// the way in); KnowYouOffer says whether now is a quiet moment.
+    private func armKnowYouOffers() {
+        guard !knowYouOffersArmed else { return }
+        knowYouOffersArmed = true
+        knowYouTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.considerKnowYouOffer() }
+        }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.considerKnowYouOffer(after: 30) }
+        }
+        considerKnowYouOffer(after: 20)
+    }
+
+    private var knowYouMoment: KnowYouOffer.Moment {
+        KnowYouOffer.Moment(
+            firstRunWindowUp: firstRunWindow != nil, setupWindowUp: setupWindow?.isVisible == true,
+            setupCardOpen: model.setupCard == .open, replying: model.isProcessing,
+            flowOpen: model.knowYou != nil,
+            panelInUse: presentation.desired == .chat || presentation.desired == .search
+                || !model.collapsed || model.holdsOpen,
+            dismissedToMenuBar: !notchDocked, chosenThisSession: knowYouChosen)
+    }
+
+    /// One check, after `seconds` (a panel that just closed gets a moment before
+    /// anything opens it again). A newer trigger replaces a pending one.
+    private func considerKnowYouOffer(after seconds: Double = 0) {
+        guard knowYouOffersArmed else { return }
+        knowYouCheck?.cancel()
+        knowYouCheck = Task { @MainActor [weak self] in
+            if seconds > 0 { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+            guard !Task.isCancelled, let self, KnowYouOffer.quiet(self.knowYouMoment) else { return }
+            guard let envelope = await WispClient().profile(), !Task.isCancelled,
+                  KnowYouOffer.shouldOffer(self.knowYouMoment, serviceOffers: envelope.status.offer) else { return }
+            // An offer nobody asked for must not take the keyboard from the
+            // app the person is typing in: it opens without becoming key.
+            self.createPanelIfNeeded()
+            self.panel?.revealsWithoutKey = true
+            self.openAssistant()
+            self.model.startKnowYou()
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            self.panel?.revealsWithoutKey = false
         }
     }
 

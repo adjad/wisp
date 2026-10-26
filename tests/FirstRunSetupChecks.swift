@@ -92,6 +92,24 @@ struct FirstRunSetupChecks {
         check([.allowed, .notAllowed, .notOnThisMac].allSatisfy(FirstRunReaderGate.isDecided)
               && ![.notAsked, .checking].contains(where: FirstRunReaderGate.isDecided), "Decided means macOS has an answer")
 
+        // Getting to know you, offered by Wisp itself: due by the service's word,
+        // shown only in a quiet moment, and never waiting on the model.
+        let calm = KnowYouOffer.Moment()
+        check(KnowYouOffer.shouldOffer(calm, serviceOffers: true), "Quiet and due: offer it, even mid-download")
+        check(!KnowYouOffer.shouldOffer(calm, serviceOffers: false), "Not due (finished, Later recently, twice already): never")
+        let busy: [(String, WritableKeyPath<KnowYouOffer.Moment, Bool>)] = [
+            ("the first-run window", \.firstRunWindowUp), ("the setup window", \.setupWindowUp),
+            ("the setup card", \.setupCardOpen), ("a reply in progress", \.replying),
+            ("the flow already open", \.flowOpen), ("an open panel", \.panelInUse),
+            ("the notch dismissed to the menu bar", \.dismissedToMenuBar),
+            ("Tell Wisp about you chosen this session", \.chosenThisSession),
+        ]
+        for (name, key) in busy {
+            var moment = calm
+            moment[keyPath: key] = true
+            check(!KnowYouOffer.quiet(moment) && !KnowYouOffer.shouldOffer(moment, serviceOffers: true), "Not over \(name)")
+        }
+
         // Step 1 states.
         check(FirstRunBrain.from(status: nil, downloads: []) == .checking, "No status yet")
         if case .unavailable = FirstRunBrain.from(status: status(available: false), downloads: []) {} else {

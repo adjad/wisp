@@ -71,6 +71,36 @@ enum FirstRunSetup {
     }
 }
 
+/// When Wisp offers Getting to know you on its own. The service decides whether
+/// it is due (GET /profile status.offer: never finished, no recent Later, at most
+/// twice); this decides whether now is a moment to show it. The flow needs only
+/// the service, not the model, so it no longer waits for setup to be ready; it
+/// is checked for the life of the app (service up, panel closed, wake, every
+/// half hour), not by a poll that gives up.
+enum KnowYouOffer {
+    struct Moment: Equatable {
+        var firstRunWindowUp = false
+        var setupWindowUp = false
+        var setupCardOpen = false
+        var replying = false
+        var flowOpen = false
+        /// Open, or held open by typed text or a pin, or showing Search.
+        var panelInUse = false
+        var dismissedToMenuBar = false
+        /// The person chose Tell Wisp about you this session: never offer it again.
+        var chosenThisSession = false
+    }
+
+    /// Nothing else on screen and nothing the person is doing. Checked before
+    /// asking the service, and again with its answer.
+    static func quiet(_ m: Moment) -> Bool {
+        !(m.firstRunWindowUp || m.setupWindowUp || m.setupCardOpen || m.replying || m.flowOpen
+          || m.panelInUse || m.dismissedToMenuBar || m.chosenThisSession)
+    }
+
+    static func shouldOffer(_ m: Moment, serviceOffers: Bool) -> Bool { serviceOffers && quiet(m) }
+}
+
 /// Which source readers may start while the first-run window is up. Each of these
 /// can make macOS ask for access as soon as it starts (Calendar, Reminders and
 /// Contacts request it; Mail and Notes ask about Automation when they script a
