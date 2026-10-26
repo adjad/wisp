@@ -40,7 +40,7 @@ First release candidate for testers; see [docs/releases/0.5.0-rc1.md](docs/relea
 ### Security and privacy
 - Shell and AppleScript commands that name Wisp's local service on a loopback address are denied, including percent-encoded and variable-built paths, so a command can't trigger Wisp's own send and approval routes, even under full access.
 - The cloud "Everything" option is removed from Settings. A config set by hand still works and says so.
-- Under full access, Wisp still asks first before running AppleScript, or a shell command that could send something off the Mac, drive another app or read a key or saved sign-in, and the card shows the command or script. After a turn has read a file, page, mail or message, a Shortcut, call, web request or MCP or skill action asks too. A web page can no longer make Wisp's local service act. TODO (outbound-send confirmation): under final review; the release notes explain what is deliberately not claimed.
+- Under full access, Wisp still asks first before running AppleScript, or a shell command that could send something off the Mac, drive another app or read a key or saved sign-in, and before opening Shortcuts, Terminal, non-web links or files that run something; the card shows the command, script or the script file a command runs. After a turn has read a file, page, mail or message, opening a web link, fetching a page, a Shortcut, call, web request or MCP or skill action asks too. A web page can no longer make Wisp's local service act.
 
 ### Known issues
 - Not notarized (see above). Google sign-in is limited to the tester list and expires every 7 days. The first Google connection downloads the Google tools, so it needs internet.
