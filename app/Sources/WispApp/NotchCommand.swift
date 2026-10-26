@@ -25,19 +25,26 @@ enum NotchCommand: String, CaseIterable, Equatable {
         }
     }
 
+    /// The commands a person can use. /corpus is a developer test runner: it is
+    /// listed, matched and run only in Debug Mode, so a new user never meets it.
+    static func available(includeCorpus: Bool) -> [NotchCommand] {
+        includeCorpus ? allCases : allCases.filter { $0 != .corpus }
+    }
+
     /// The commands this input could still become. Empty unless the input looks
     /// like a command, so the list only appears while typing one.
-    static func suggestions(for input: String) -> [NotchCommand] {
+    static func suggestions(for input: String, includeCorpus: Bool = true) -> [NotchCommand] {
         guard let word = commandWord(input) else { return [] }
-        return allCases.filter { $0.rawValue.hasPrefix(word) }
+        return available(includeCorpus: includeCorpus).filter { $0.rawValue.hasPrefix(word) }
     }
 
     /// The command to run for this input: an exact command, or a prefix only one
     /// command starts with. Nil means it is not a whole command.
-    static func match(_ input: String) -> NotchCommand? {
+    static func match(_ input: String, includeCorpus: Bool = true) -> NotchCommand? {
         guard let word = commandWord(input), !word.isEmpty else { return nil }
-        if let exact = NotchCommand(rawValue: word) { return exact }
-        let candidates = allCases.filter { $0.rawValue.hasPrefix(word) }
+        let commands = available(includeCorpus: includeCorpus)
+        if let exact = NotchCommand(rawValue: word), commands.contains(exact) { return exact }
+        let candidates = commands.filter { $0.rawValue.hasPrefix(word) }
         return candidates.count == 1 ? candidates[0] : nil
     }
 

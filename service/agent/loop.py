@@ -473,8 +473,8 @@ SYSTEM = (
     "`python3 -c \"import secrets; print(secrets.token_urlsafe(24))\"`) and "
     "report what it actually printed. If it's something they'll want AGAIN, "
     "call `create_tool` to build a real tool for it instead.\n"
-    "- `create_tool` writes and installs a new tool using the on-device model "
-    "— fully local, nothing leaves the machine. Use it when a request needs a "
+    "- `create_tool` writes and installs a new tool using Wisp's coding model; "
+    "the tool then runs on this Mac. Use it when a request needs a "
     "capability no existing tool covers and the user would plausibly want it "
     "again. It is ONE call: the user reviews the actual generated code on a "
     "confirmation card and approves or rejects it there, so do not ask "
@@ -1994,6 +1994,11 @@ async def run_agent(
     # unscoped route (the whole registry, messages included).
     offers_messages = model_led_discovery or tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
     identity_hint = ""
+    try:
+        from service.memory.profile import may_send_to
+        _profile_rides = may_send_to(managed=getattr(client, "managed", False))
+    except Exception:  # noqa: BLE001
+        _profile_rides = False
     if not public_web_synthesis and include_identity_context:
         try:
             from service.memory.identity import identity_prompt_block
@@ -2002,15 +2007,18 @@ async def run_agent(
             # why the verbatim path is deliberately left un-annotated).
             identity_hint = identity_prompt_block(
                 with_date=False, shape="verbatim", messages=offers_messages,
-                preferred_name=getattr(client, "endpoint_name", "") != "local_provider")
+                preferred_name=_profile_rides)
         except Exception:  # noqa: BLE001
             identity_hint = ""
         # Who the user is in THEIR words — goals, struggles, people, how they
         # like to be spoken to (service/memory/profile.py). Rides with the
-        # identity block, so it is also absent from cloud synthesis above, and
-        # it stays off the external loopback provider for the same reason the
-        # memory block does: that process has no peer identity to disclose to.
-        if getattr(client, "endpoint_name", "") != "local_provider":
+        # identity block, so it is also absent from cloud synthesis above.
+        # profile.may_send_to decides where (the same predicate behind the
+        # app's "Stays on this Mac"): Wisp's own on-Mac model, or any model
+        # while Cloud "Everything" is on; never an optional cloud model or
+        # the external loopback provider. The chosen name ("call me …")
+        # comes from the same profile, so it follows the same rule.
+        if _profile_rides:
             try:
                 from service.memory.profile import profile_block
                 identity_hint += profile_block()

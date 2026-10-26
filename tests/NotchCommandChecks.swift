@@ -44,6 +44,14 @@ struct NotchCommandChecks {
         check(NotchCommand.isCorpusRequest("/corpus export"), "export uses the corpus dispatch, not inference")
         check(NotchCommand.corpus.summary.contains("export"), "the /corpus summary mentions export")
 
+        // Outside Debug Mode the developer corpus runner is invisible: not listed,
+        // not matched, so "/corpus" is just a prompt like any other text.
+        check(!NotchCommand.suggestions(for: "/", includeCorpus: false).contains(.corpus), "/corpus is not listed")
+        check(NotchCommand.match("/corpus", includeCorpus: false) == nil, "/corpus does not run")
+        check(NotchCommand.match("/c", includeCorpus: false) == nil, "no other command starts with c")
+        check(NotchCommand.match("/about", includeCorpus: false) == .about, "other commands still run")
+        check(NotchCommand.suggestions(for: "/", includeCorpus: true).contains(.corpus), "Debug Mode lists /corpus")
+
         // Suggestions appear only while typing a command.
         check(NotchCommand.suggestions(for: "/") == NotchCommand.allCases, "a bare slash lists every command")
         check(NotchCommand.suggestions(for: "/re") == [.research, .report], "a prefix narrows the list in order")

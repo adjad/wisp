@@ -17,7 +17,11 @@ router = APIRouter(prefix="/profile", tags=["profile"])
 
 
 def _payload(profile: dict) -> dict[str, Any]:
-    return {"profile": profile, "status": P.status(profile), "preview": P.preview(profile)}
+    # The same predicate the prompts use (P.may_send_to): the label can't
+    # say "Stays on this Mac" while the profile rides to a cloud model.
+    host = P.sent_to()
+    status = {**P.status(profile), "local_only": not host, "sent_to": host}
+    return {"profile": profile, "status": status, "preview": P.preview(profile)}
 
 
 @router.get("")

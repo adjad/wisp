@@ -37,6 +37,16 @@ SAMPLE = {
 }
 
 
+def _patch_cloud(monkeypatch, mode="", host="", *, pending=False, super_model=None, roles=(), known=True):
+    """Stand in for wisp_about.cloud_detail(): one mode for every answer."""
+    from service import wisp_about as about
+    if super_model is None:
+        super_model = mode == "super" and not roles
+    monkeypatch.setattr(about, "cloud_detail", lambda: {
+        "mode": mode, "host": host, "pending": pending, "super_model": super_model,
+        "roles": list(roles), "known": known})
+
+
 # --- store -----------------------------------------------------------------
 
 def test_round_trip_and_defaults():
@@ -126,12 +136,83 @@ def test_a_name_alone_still_offers_the_rest():
     assert status["has_content"] is True and status["offer"] is True
 
 
-def test_clear_removes_the_file():
+def test_clear_erases_every_answer_and_keeps_the_decision():
     P.update(SAMPLE)
-    assert P.PROFILE_PATH.exists()
-    assert P.clear() == P.empty()
-    assert not P.PROFILE_PATH.exists()
-    assert P.load() == P.empty()
+    erased = P.clear(now=5.0)
+    for field in P.EDITABLE:
+        assert erased[field] == P.empty()[field], field
+    assert P.load() == erased and not P.has_content(P.load())
+    on_disk = P.PROFILE_PATH.read_text()
+    for value in ("Adi", "Mom", "weight", "Ship Wisp"):
+        assert value not in on_disk, "no answer survives an erase"
+    # Erasing on purpose is a decision: the questions are not offered again on
+    # their own (the menu bar and /about still open them).
+    assert P.status(P.load(), now=5.0 + 10 * P.REOFFER_AFTER_S)["offer"] is False
+
+
+def test_profile_file_is_owner_only():
+    P.update(SAMPLE)
+    assert P.PROFILE_PATH.stat().st_mode & 0o777 == 0o600
+    P.clear()
+    assert P.PROFILE_PATH.stat().st_mode & 0o777 == 0o600
+
+
+def test_version_one_short_reads_as_the_default_length():
+    # The old flow saved its preselected "short" with every answer.
+    P.PROFILE_PATH.write_text(json.dumps({"version": 1, "name": "Adi", "tone": "warm", "detail": "short"}))
+    loaded = P.load()
+    assert loaded["detail"] == "thorough"
+    assert P.filled_fields(loaded) == ["name"]
+    assert "Keep replies short" not in P.profile_block(loaded)
+    # A current file keeps an explicit Short.
+    P.update({"detail": "short"})
+    assert P.load()["detail"] == "short"
+    assert json.loads(P.PROFILE_PATH.read_text())["version"] == P.VERSION
+
+
+
+@pytest.mark.parametrize("version", ["2", None, 2.5, True, [2], {"v": 2}])
+def test_odd_version_reads_as_version_one_instead_of_failing(version):
+    # Audit 32649065: a hand-edited "version" used to raise TypeError (a 500).
+    P.PROFILE_PATH.write_text(json.dumps({"version": version, "name": "Adi", "detail": "short"}))
+    loaded = P.load()
+    assert loaded["name"] == "Adi" and loaded["detail"] == "thorough"
+
+
+def test_a_world_readable_version_one_file_is_tightened_on_first_read():
+    P.PROFILE_PATH.write_text(json.dumps({"version": 1, "name": "Adi"}))
+    P.PROFILE_PATH.chmod(0o644)
+    assert P.load()["name"] == "Adi"
+    assert P.PROFILE_PATH.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_set_aside_unreadable_copy_is_owner_only():
+    P.PROFILE_PATH.write_text('{"name": "Adi", broken')
+    P.PROFILE_PATH.chmod(0o644)
+    P.load()
+    kept = list(P.PROFILE_PATH.parent.glob("profile.json.bad-*"))
+    assert len(kept) == 1 and kept[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_erase_also_removes_set_aside_copies():
+    # Erase means every copy: a .bad-* file holds the same personal text.
+    P.PROFILE_PATH.write_text('{"name": "Adi", "people": [{"name": "Mom"}] broken')
+    P.load()
+    assert list(P.PROFILE_PATH.parent.glob("profile.json.bad-*"))
+    P.update(SAMPLE)
+    P.clear()
+    assert not list(P.PROFILE_PATH.parent.glob("profile.json.bad-*"))
+    leftovers = [f for f in P.PROFILE_PATH.parent.iterdir() if f.name.startswith("profile.json")]
+    assert [f.name for f in leftovers] == ["profile.json"]
+    assert "Adi" not in P.PROFILE_PATH.read_text()
+
+
+def test_preview_does_not_promise_on_this_mac_only():
+    # The app's lock line says where the profile lives (local or cloud); the
+    # preview must not claim "on this Mac only" in a cloud mode.
+    lines = P.preview({**P.empty(), "about": "A student."})
+    assert any("shapes every answer" in line for line in lines)
+    assert not any("this Mac" in line for line in lines)
 
 
 # --- status / offer ----------------------------------------------------------
@@ -154,13 +235,13 @@ def test_offer_logic():
 
 def test_status_filled_ignores_defaults():
     assert P.status(P.empty())["has_content"] is False
-    assert P.filled_fields(P.empty() | P.validate({"tone": "warm", "detail": "short"})) == []
+    assert P.filled_fields(P.empty() | P.validate({"tone": "warm", "detail": "thorough"})) == []
 
 
 @pytest.mark.parametrize("patch,field,rule", [
     ({"tone": "direct"}, "tone", "straight to the point"),
     ({"tone": "gentle"}, "tone", "Speak gently"),
-    ({"detail": "thorough"}, "detail", "thorough answers"),
+    ({"detail": "short"}, "detail", "Keep replies short"),
 ])
 def test_nondefault_style_alone_is_applied_and_can_be_erased(patch, field, rule, client):
     response = client.patch("/profile", json=patch)
@@ -172,8 +253,9 @@ def test_nondefault_style_alone_is_applied_and_can_be_erased(patch, field, rule,
     assert not any("haven't told me anything" in line for line in saved["preview"])
     assert client.get("/profile").json()["status"]["has_content"] is True
     erased = client.delete("/profile").json()
-    assert erased["profile"] == P.empty() and erased["status"]["has_content"] is False
-    assert P.profile_block() == "" and not P.PROFILE_PATH.exists()
+    assert all(erased["profile"][f] == P.empty()[f] for f in P.EDITABLE)
+    assert erased["status"]["has_content"] is False and erased["status"]["offer"] is False
+    assert P.profile_block() == ""
 
 
 # --- use 1: prompt block ---------------------------------------------------------
@@ -193,9 +275,18 @@ def test_prompt_block_is_empty_without_content_and_complete_with_it():
 
 
 def test_prompt_block_tone_and_detail_variants():
-    direct = P.profile_block(P.empty() | {"name": "A", "tone": "direct", "detail": "thorough"})
-    assert "straight to the point" in direct and "thorough answers" in direct
+    direct = P.profile_block(P.empty() | {"name": "A", "tone": "direct", "detail": "short"})
+    assert "straight to the point" in direct and "Keep replies short" in direct
     assert "Call them A" in direct
+
+
+def test_a_name_alone_adds_no_voice_rule():
+    # Wisp's own voice is the default. A person who only gave a name must not
+    # silently get "keep replies short" or a second tone rule.
+    block = P.profile_block(P.empty() | {"name": "Sam"})
+    assert "Call them Sam" in block
+    assert "How to talk to them" not in block
+    assert not any("talk to you" in line or "replies" in line for line in P.preview(P.empty() | {"name": "Sam"}))
 
 
 # --- use 2: keeping in mind ---------------------------------------------------------
@@ -285,7 +376,8 @@ def test_preview_names_real_behaviour():
     lines = P.preview(P.empty() | SAMPLE)
     joined = "\n".join(lines)
     assert "I'll call you Adi" in joined
-    assert "Mom and Sam Lee rise to the top of Needs you" in joined
+    assert "When Mom and Sam Lee show up on your calendar or in your mail and texts, your morning brief points it out" in joined
+    assert "Needs you" not in joined, "the notch's Needs you does not rank by the profile"
     assert "never changes what I alert you about" in joined
     assert "talk to you gently" in joined
     assert P.preview(P.empty())[-1].startswith("You haven't told me anything yet")
@@ -311,10 +403,142 @@ def test_api_round_trip(client):
     done = client.post("/profile/complete").json()
     assert done["status"]["completed"] is True and done["status"]["offer"] is False
     gone = client.delete("/profile").json()
-    assert gone["profile"] == P.empty() and gone["status"]["has_content"] is False
+    assert all(gone["profile"][f] == P.empty()[f] for f in P.EDITABLE)
+    assert gone["status"]["has_content"] is False and gone["status"]["offer"] is False
 
 
 def test_api_dismiss_counts(client):
     client.post("/profile/dismiss")
     out = client.get("/profile").json()
     assert out["profile"]["dismiss_count"] == 1 and out["status"]["offer"] is False
+
+
+def test_api_says_whether_the_answers_stay_on_this_mac(client, monkeypatch):
+    from service import wisp_about
+    _patch_cloud(monkeypatch, "", "")
+    assert client.get("/profile").json()["status"]["local_only"] is True
+    _patch_cloud(monkeypatch, "everything", "api.example.com")
+    assert client.get("/profile").json()["status"]["local_only"] is False
+
+
+# --- where the profile may go (re-review b7623e76) ---------------------------
+# One predicate, profile.may_send_to / sent_to, decides both what the prompts
+# carry and what the app's lock line says.
+
+def test_api_keeps_the_profile_local_under_an_optional_cloud_model(client, monkeypatch):
+    _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("reasoning",))
+    status = client.get("/profile").json()["status"]
+    assert status["local_only"] is True and status["sent_to"] == ""
+    _patch_cloud(monkeypatch, "everything", "gpu.example.net")
+    status = client.get("/profile").json()["status"]
+    assert status["local_only"] is False and status["sent_to"] == "gpu.example.net"
+    # Unknown never reads as local.
+    _patch_cloud(monkeypatch, "super", "your cloud provider", known=False)
+    status = client.get("/profile").json()["status"]
+    assert status["local_only"] is False and status["sent_to"] == "your cloud provider"
+
+
+@pytest.mark.parametrize("mode,managed,rides", [
+    ("", True, True),                  # Wisp's own model on this Mac
+    ("", False, False),                # another machine, or the external local provider
+    ("super", True, True),
+    ("super", False, False),           # a role bound to the cloud endpoint
+    ("everything", False, True),       # the user chose to send everything
+])
+def test_may_send_to(monkeypatch, mode, managed, rides):
+    _patch_cloud(monkeypatch, mode, "openrouter.ai" if mode else "")
+    assert P.may_send_to(managed=managed) is rides
+
+
+def test_unknown_cloud_state_sends_the_profile_nowhere_but_this_mac(monkeypatch):
+    _patch_cloud(monkeypatch, "everything", "your cloud provider", known=False)
+    assert P.may_send_to(managed=False) is False and P.may_send_to(managed=True) is True
+    assert P.sent_to() == "your cloud provider", "and the app doesn't say it stays here"
+
+
+def test_main_chat_branch_carries_the_profile_only_where_allowed(monkeypatch):
+    import inspect
+    from service import main
+    from service.config.endpoints import endpoint_from_config
+    P.update(SAMPLE)
+    local = endpoint_from_config("local", {"base_url": "http://127.0.0.1:8000"})
+    cloud = endpoint_from_config("cloud", {"base_url": "https://openrouter.ai", "provider": "openai-compatible",
+                                           "api_prefix": "/api/v1", "credential_ref": "keychain:cloud"})
+    _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("reasoning",))
+    assert "ABOUT THE USER" in main._profile_block(local)
+    assert main._profile_block(cloud) == "", "a cloud-bound role gets no About you"
+    _patch_cloud(monkeypatch, "everything", "openrouter.ai")
+    assert "ABOUT THE USER" in main._profile_block(cloud)
+    # The plain chat branch passes its own target's endpoint.
+    assert "_profile_block(target.endpoint)" in inspect.getsource(main)
+
+
+class _PromptClient:
+    def __init__(self, managed):
+        self.managed = managed
+        self.endpoint_name = "local" if managed else "cloud"
+        self.systems = []
+
+    async def ensure_only(self, *args, **kwargs):
+        pass
+
+    async def stream_events(self, model, messages, **kwargs):
+        self.systems.append("\n".join(str(m.get("content")) for m in messages if m["role"] == "system"))
+        yield {"kind": "final", "message": {"role": "assistant", "content": "Done."}}
+
+
+@pytest.mark.parametrize("mode,managed,carried", [
+    ("super", True, True),       # a local turn
+    ("super", False, False),     # a turn on a cloud-bound role
+    ("", False, False),
+    ("everything", False, True), # Cloud Everything
+])
+def test_agent_loop_carries_the_profile_only_where_allowed(monkeypatch, mode, managed, carried):
+    import asyncio
+    from service.agent import loop
+    from service.memory import identity
+    P.update(SAMPLE)
+    _patch_cloud(monkeypatch, mode, "openrouter.ai" if mode else "")
+    called = []
+    monkeypatch.setattr(identity, "identity_prompt_block",
+                        lambda **kw: called.append(kw.get("preferred_name")) or "\nIDENTITY")
+    monkeypatch.setattr(loop.prompt_blocks, "memory_block", lambda **kw: "")
+    monkeypatch.setattr(loop, "audit", lambda *a, **k: None)
+    client = _PromptClient(managed)
+
+    async def emit(event):
+        pass
+
+    class _Approver:
+        async def confirm(self, action):
+            return False
+
+    asyncio.run(loop.run_agent(client, "Ling-3.0-tiny-oQ4e", [{"role": "user", "content": "Plan my week."}],
+                               emit, _Approver(), debug=False, max_steps=1, tools=["get_upcoming"]))
+    system = client.systems[0]
+    assert ("ABOUT THE USER" in system) is carried
+    assert ("Run a half marathon" in system) is carried
+    # The chosen name ("call me …") is part of the profile and follows the same rule.
+    assert called == [carried]
+
+
+def test_set_aside_copies_are_tightened_on_read_without_following_links(tmp_path):
+    P._aside_checked = False
+    aside = P.PROFILE_PATH.with_name("profile.json.bad-20260101-000000")
+    aside.write_text('{"name": "Adi"')
+    aside.chmod(0o644)
+    target = tmp_path / "not-the-profile.txt"
+    target.write_text("someone else's file")
+    target.chmod(0o644)
+    P.PROFILE_PATH.symlink_to(target)
+    P.load()
+    assert aside.stat().st_mode & 0o777 == 0o600
+    assert target.stat().st_mode & 0o777 == 0o644, "a symlinked profile.json is never chmodded through"
+
+
+def test_erase_also_removes_a_torn_temporary_write():
+    P.update(SAMPLE)
+    tmp = P.PROFILE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(SAMPLE))
+    P.clear()
+    assert not tmp.exists()

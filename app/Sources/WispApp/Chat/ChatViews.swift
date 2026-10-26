@@ -347,15 +347,16 @@ struct ChatWelcome: View {
 
 struct ChatEmptyState: View {
     let ask: (String) -> Void
-    private let suggestions = ["Catch me up on today", "What's on my calendar this week?", "Summarize my unread mail",
-                               "Draft a reply to my last email", "Find a file on my Mac", "/corpus smoke"]
+    private let suggestions = ["What can you do?", "What's on my calendar this week?", "Any emails I need to reply to?",
+                               "Draft a reply to my last email", "Is my data private?"]
     var body: some View {
         VStack(spacing: 18) {
             Spacer(minLength: 24)
             ChatOrb(size: 76)
             Text("What are we working on?")
                 .font(.system(size: 34, weight: .regular, design: .serif)).foregroundStyle(ChatTheme.text)
-            Text("Everything stays on this Mac.").font(.system(size: 14)).foregroundStyle(ChatTheme.text2)
+            Text("Wisp's AI runs on this Mac. Web lookups, and any cloud model you turn on, go online.")
+                .font(.system(size: 14)).foregroundStyle(ChatTheme.text2).multilineTextAlignment(.center)
             ChatFlowLayout(spacing: 8) {
                 ForEach(suggestions, id: \.self) { s in
                     Button { ask(s) } label: {
@@ -949,7 +950,7 @@ struct ChatComposer: View {
                     .background(RoundedRectangle(cornerRadius: 9).fill(ChatTheme.glass))
                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(ChatTheme.line, lineWidth: 1))
                 }
-                TextField("Message Wisp · /corpus smoke to run the test set", text: $text, axis: .vertical)
+                TextField("Message Wisp", text: $text, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .foregroundStyle(ChatTheme.text)

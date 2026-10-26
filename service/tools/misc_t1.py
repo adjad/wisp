@@ -83,6 +83,29 @@ async def weather_alerts_at(lat: float, lon: float, name: str, country: str) -> 
 # --------------------------------------------------------------------------
 # Wisp's own state
 # --------------------------------------------------------------------------
+def _where_inference_runs() -> str:
+    """The models report's line on where answers come from. It reads the same
+    cloud_detail() as Wisp's privacy and "who are you" answers, so the two can't
+    disagree. A remote-only build never reaches here (wisp_status reports it
+    first)."""
+    from service.wisp_about import cloud_detail
+    detail = cloud_detail()
+    cloud, host = detail["mode"], detail["host"]
+    if cloud == "everything" and detail["pending"]:
+        # Turned on but not yet active: remote_only_profile() is None until
+        # Wisp restarts, so the local model above is still the one answering.
+        return ("Cloud \"Everything\" is turned on and takes over when Wisp restarts. From then "
+                f"on, what you ask, and the data a reply needs, is sent to {host}. Until then, "
+                "the model above answers on this Mac.")
+    if not detail["known"]:
+        return ("I couldn't read the cloud settings, so I can't confirm that every answer comes "
+                "from this Mac. Check the cloud model in **Settings**.")
+    if cloud == "super":
+        return ("The model above runs on this Mac. You've also turned on a cloud model: questions "
+                f"it answers, and the data they need, are sent to {host}.")
+    return "Inference runs on this Mac: no question or data is sent to a cloud model."
+
+
 @register(
     "wisp_status",
     "Report Wisp's own state. topic='models' (default): which model is answering, "
@@ -134,7 +157,7 @@ async def wisp_status(topic: str = "models") -> str:
 
     lines = [f"Answering with: {agent}",
              f"Embedder (search + tool routing): {embed}",
-             "Everything runs on this Mac — no request leaves the machine."]
+             _where_inference_runs()]
 
     try:
         from service.inference.omlx_client import OMLXClient
@@ -155,88 +178,36 @@ async def wisp_status(topic: str = "models") -> str:
 @register(
     "wisp_capabilities",
     "Report Wisp's actual capabilities from the live tool registry. Use for "
-    "'what tools can you use', 'can you send texts/create reminders/read "
-    "browser history', and capability comparisons. This reports the complete "
-    "registry, not merely the tools offered on the current turn.",
+    "'what can you do', 'what tools can you use', 'can you send texts/create "
+    "reminders/read browser history', and capability comparisons. This reports "
+    "the complete registry, not merely the tools offered on the current turn. "
+    "topic='identity' answers 'who are you', 'privacy' answers 'is my data "
+    "private', 'howto' answers 'how do I use Wisp'.",
     {"type": "object", "properties": {
         "query": {"type": "string", "description": "optional capability question"},
+        "topic": {"type": "string", "enum": ["overview", "identity", "privacy", "howto"],
+                  "description": "what about Wisp to explain; defaults to capabilities"},
     }},
     category="wisp_admin",
     aliases=["what tools are available to you", "what can you do",
              "can you send texts and create reminders",
              "which assistant capabilities do you have"],
 )
-def wisp_capabilities(query: str = "") -> str:
-    """A general "what can you do?" gets a short welcome built from live state;
-    a question about specific abilities ("can you send texts?") gets the
-    yes/no report, including the honest "No" rows."""
-    if not query.strip() or _GENERAL_CAPABILITY_QUESTION.fullmatch(query):
-        return _capability_welcome()
+def wisp_capabilities(query: str = "", topic: str = "") -> str:
+    """One answer set for questions about Wisp itself (service/wisp_about.py):
+    a general "what can you do?" gets the short live-state welcome; who /
+    privacy / how-to get their topics; a question about specific abilities
+    ("can you send texts?") gets the Yes/No report, honest "No" rows included."""
+    from service import wisp_about
+    if topic in wisp_about.TOPICS:
+        return wisp_about.answer(topic, query)
+    if wisp_about.is_general_inventory(query):
+        return wisp_about.overview()
     return _capability_report(query)
 
 
-# "What can you do?" and its close variants, with nothing more specific asked.
-_GENERAL_CAPABILITY_QUESTION = re.compile(
-    r"\W*(?:(?:please|hey|hi|ok|okay|so|wisp)[,\s]+)*(?:"
-    r"what\s+(?:else\s+)?(?:can|could)\s+you\s+(?:do|help\s+(?:me\s+)?with)|"
-    r"what\s+(?:tools|capabilities)\s+(?:are\s+available|do\s+you\s+have)(?:\s+to\s+you)?|"
-    r"which\s+(?:assistant\s+)?capabilities\s+do\s+you\s+have|"
-    r"what\s+are\s+you\s+able\s+to\s+do)"
-    r"(?:\s+(?:for\s+me|here|now|right\s+now|exactly))?[?.!\s]*", re.I)
-
-# One try-it prompt per connected source, in this order, then prompts that need
-# no source. Each one routes to a real tool today.
-_TRY_IT = (
-    ("calendar", "What's on my calendar tomorrow?"),
-    ("email", "Any emails I need to reply to?"),
-    ("reminders", "Remind me at 5pm to call Mom."),
-    ("messages", "Any texts I need to respond to?"),
-    (None, "Set a timer for 10 minutes."),
-    (None, "What time is it in Tokyo?"),
-    (None, "What's the weather in Paris this weekend?"),
-)
-
-
-def _capability_welcome() -> str:
-    sources: list[dict] = []
-    try:
-        from service.assistant.sync_status import SOURCE_IDS, source_status
-        for source_id in SOURCE_IDS:
-            try:
-                sources.append(source_status(source_id))
-            except Exception:  # noqa: BLE001 - one unreadable source must not hide the rest
-                continue
-    except Exception:  # noqa: BLE001 - the welcome still works without live state
-        sources = []
-    ready = [s["label"] for s in sources if s.get("state") == "ready"]
-    syncing = [s["label"] for s in sources if s.get("state") == "syncing"]
-    off = [s for s in sources if s.get("state") not in ("ready", "syncing")]
-
-    lines = ["I can read your calendar, reminders, email and messages, set reminders "
-             "and timers, and write texts and emails for you. I ask before I send anything.", ""]
-    if ready:
-        lines.append(f"Connected: {', '.join(ready)}.")
-    if syncing:
-        lines.append(f"Still reading for the first time: {', '.join(syncing)}.")
-    for source in off:
-        reason = str(source.get("reason") or "").strip()
-        lines.append(f"Not connected: {source['label']}" + (f". {reason}" if reason else "."))
-    if not sources:
-        lines.append("I couldn't check which of your apps are connected just now.")
-
-    connected = {s["id"] for s in sources if s.get("state") == "ready"}
-    tries = [prompt for source, prompt in _TRY_IT if source is None or source in connected][:3]
-    lines += ["", "Try asking:"] + [f"- \"{prompt}\"" for prompt in tries]
-    lines += [
-        "",
-        "Where things are:",
-        "- Press ⌥ Space to ask me from anywhere.",
-        "- Type / in Ask to see shortcuts, like /today and /report.",
-        "- Brief and Day are the tabs next to Ask: a summary of what's new, and your plan for today.",
-        "- Getting to know you (type /about) tells me your name and what matters to you, "
-        "so my answers fit you better.",
-    ]
-    return "\n".join(lines)
+# Re-exported for tests/test_capability_welcome.py: the welcome's try-its.
+from service.wisp_about import TRY_IT as _TRY_IT  # noqa: E402
 
 
 def _capability_report(query: str) -> str:

@@ -7,14 +7,16 @@ import AppKit
 /// (chips, hairlines, the orb) so it feels like Wisp asking, not a form.
 ///
 /// Comfort is a design input here, not a tone: the reason for each question is
-/// shown with it and is exactly what Wisp will do with the answer; the footer
-/// always says where the answers live; Back, Skip and Continue are on every
-/// screen; and the last screen shows the answers already at work.
+/// shown with it and is exactly what Wisp will do with the answer; the header
+/// always says where the answers live; Not now, Skip and Continue are on every
+/// question (Back from the second on); and the last screen shows the answers
+/// already at work.
 @MainActor
 final class KnowYouModel: ObservableObject {
     @Published var flow = KnowYouFlow()
     @Published var profile = UserProfile()
     @Published var preview: [String] = []
+    @Published var status = ProfileStatus()
     @Published var loaded = false
     @Published var busy = false
     @Published var error = ""
@@ -45,6 +47,7 @@ final class KnowYouModel: ObservableObject {
         error = ""
         profile = envelope.profile
         preview = envelope.preview
+        status = envelope.status
         flow = KnowYouFlow.resume(for: envelope.profile)
         if profile.name.isEmpty {
             profile.name = UserProfile.suggestedName(fullName: NSFullUserName())
@@ -54,19 +57,21 @@ final class KnowYouModel: ObservableObject {
 
     // MARK: Moving
 
-    func begin() { flow.begin() }
     func back() { error = ""; flow.back() }
-    /// Leave this answer unsaved and move on.
+    /// Leave this answer unsaved and move on. On the last question that is the
+    /// summary, which shows only what was saved.
     func skip() { error = ""; flow.advance() }
 
-    func later() async {
+    /// Not now: close the questions and say where they are. Answers already
+    /// saved stay saved; the service counts it as Later.
+    func notNow() async {
         guard !busy, !ended else { return }
         ended = true
         busy = true
         let saved = await client.dismissProfile() != nil
         busy = false
-        // Later is best effort: a down service just means Wisp asks again.
-        onClose(saved ? nil : "Wisp's service isn't answering, so I couldn't note that. I may ask again.")
+        // Best effort: a down service just means Wisp may ask again.
+        onClose(saved ? KnowYouNotice.notNow : KnowYouNotice.notNowUnsaved)
     }
 
     /// The panel moved on (a tab, the X) before Done. Nothing answered is lost;
@@ -76,11 +81,14 @@ final class KnowYouModel: ObservableObject {
     func leave() async {
         guard !ended else { return }
         ended = true
-        // Left before the profile loaded (or while its load failed): still a
-        // Later, so Wisp's own offer waits its few days instead of coming back
-        // at the next panel close. The service ignores it for a finished profile.
+        // Left while the profile was still loading: still a Later, so Wisp's own
+        // offer waits its few days instead of coming back at the next panel
+        // close. But not when the load failed: the service wasn't answering (a
+        // cold launch), the person never saw a question, and each dismissal
+        // spends one of the two automatic offers (profile.dismiss bumps
+        // dismiss_count every time, finished profile or not).
         guard loaded else {
-            _ = await client.dismissProfile()
+            if !loadFailed { _ = await client.dismissProfile() }
             return
         }
         if flow.isDone {
@@ -99,6 +107,7 @@ final class KnowYouModel: ObservableObject {
         if let envelope = result.envelope {
             apply(envelope, step: flow.step)
             error = ""
+            if flow.step == .goals { goalDraft = "" }
             flow.advance()
         } else {
             error = result.error ?? "Couldn't save that just now. Your answer is still here; try again."
@@ -116,8 +125,7 @@ final class KnowYouModel: ObservableObject {
         ended = true
         profile = envelope.profile
         preview = envelope.preview
-        onClose(profile.name.isEmpty ? "Thank you. I'll put this to work."
-                : "Thank you, \(profile.name). I'll put this to work.")
+        onClose(KnowYouNotice.thanks(name: profile.name))
     }
 
     func showBrief() async {
@@ -147,6 +155,7 @@ final class KnowYouModel: ObservableObject {
         profile.completedAt = saved.completedAt
         profile.updatedAt = saved.updatedAt
         preview = envelope.preview
+        status = envelope.status
     }
 
     // MARK: Goals
@@ -184,7 +193,7 @@ struct KnowYouView: View {
             if model.loadFailed {
                 Text(model.error).font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
                 HStack(spacing: 10) {
-                    Button("Later") { Task { await model.later() } }
+                    Button("Not now") { Task { await model.notNow() } }
                         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                     Spacer()
                     primaryButton("Retry") { Task { await model.load(); focused = true } }
@@ -240,7 +249,7 @@ struct KnowYouView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(progressLabel + ". Progress")
             .accessibilityValue("\(Int(model.flow.progress * 100)) percent")
-            Label("Stays on this Mac", systemImage: "lock.fill")
+            Label(model.status.whereItLives, systemImage: model.status.localOnly ? "lock.fill" : "cloud")
                 .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
                 .fixedSize()
         }
@@ -248,13 +257,12 @@ struct KnowYouView: View {
     }
 
     private var progressLabel: String {
-        model.flow.isWelcome ? "Getting to know you"
-            : model.flow.isDone ? "All set"
-            : "\(model.flow.questionNumber ?? 0) of \(KnowYouFlow.questionCount)"
+        model.flow.isDone ? "Done"
+            : "Getting to know you · \(model.flow.questionNumber ?? 0) of \(KnowYouFlow.questionCount)"
     }
 
     /// The longest label the row can show, so the row is sized for it from the start.
-    private var progressLabelWidest: String { "Getting to know you" }
+    private var progressLabelWidest: String { "Getting to know you · 3 of 3" }
 
     // MARK: Question
 
@@ -262,16 +270,15 @@ struct KnowYouView: View {
         let step = model.flow.step
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
-                if step == .welcome || step == .done { orb.padding(.top, 2) }
+                if model.flow.isFirst || step == .done { orb.padding(.top, 2) }
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(step.title).font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                    Text(title(for: step)).font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(step.why).font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             switch step {
-            case .welcome: EmptyView()
             case .name: nameField
             case .goals:
                 // Short displays: the footer must never be pushed off the panel.
@@ -281,6 +288,13 @@ struct KnowYouView: View {
             case .done: summary
             }
         }
+    }
+
+    /// The summary greets the person by the name they just gave.
+    private func title(for step: KnowYouStep) -> String {
+        guard step == .done else { return step.title }
+        let name = model.profile.name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? "All set. Thank you!" : "All set, \(name). Thank you!"
     }
 
     private var nameField: some View {
@@ -410,12 +424,6 @@ struct KnowYouView: View {
     private var footer: some View {
         HStack(spacing: 10) {
             switch model.flow.step {
-            case .welcome:
-                Button("Later") { Task { await model.later() } }
-                    .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                    .help("Ask me another time. The menu bar's Tell Wisp About You… is always here.")
-                Spacer()
-                primaryButton("Let's begin", action: model.begin)
             case .done:
                 chipButton("Change something", icon: "chevron.left") { model.back() }
                 Spacer()
@@ -426,13 +434,16 @@ struct KnowYouView: View {
                 if model.flow.canGoBack {
                     chipButton("Back", icon: "chevron.left") { model.back() }
                 }
+                Button("Not now") { Task { await model.notNow() } }
+                    .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    .help("Close the questions; what you answered is kept. Type /about, or use the menu bar's Tell Wisp About You…, any time.")
+                Spacer()
                 Button("Skip") { model.skip() }
                     .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                    .help("Leave this one unanswered")
-                Spacer()
-                Text("Saved as you go").font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                    .help(model.flow.isLastQuestion ? "Leave this one unanswered and finish" : "Leave this one unanswered")
                 primaryButton(model.flow.isLastQuestion ? "Finish" : "Continue") { Task { await model.saveAndContinue() } }
                     .disabled(!model.canContinue)
+                    .help("Each answer is saved when you continue")
             }
         }
         .disabled(model.busy)

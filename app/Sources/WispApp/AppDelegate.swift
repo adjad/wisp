@@ -1656,7 +1656,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if seconds > 0 { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
             guard !Task.isCancelled, let self, KnowYouOffer.quiet(self.knowYouMoment) else { return }
             guard let envelope = await WispClient().profile(), !Task.isCancelled else { return }
-            if envelope.status.completed { self.knowYouProfileComplete = true }
+            // Finished, or both automatic offers spent (two Laters, or an erase,
+            // which records the same): stop asking the service on every close.
+            if envelope.status.completed || envelope.profile.dismissCount >= 2 { self.knowYouProfileComplete = true }
             guard KnowYouOffer.shouldOffer(self.knowYouMoment, serviceOffers: envelope.status.offer) else { return }
             // An offer nobody asked for must not take the keyboard from the
             // app the person is typing in: it opens without becoming key.
