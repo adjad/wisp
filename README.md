@@ -41,7 +41,7 @@ remove Wisp from the list with the **−** button and add it again.
 
 ### First run
 
-The first time Wisp opens it shows a short setup window. It never blocks you: every step can be
+The first time Wisp opens it shows one setup window with five steps. It never blocks you: every step can be
 skipped and finished later from the menu-bar icon (**Finish Setup...**).
 
 1. **Welcome and download.** Wisp picks the AI model for your Mac, **Gemma 4 E4B**, and downloads
@@ -50,7 +50,7 @@ skipped and finished later from the menu-bar icon (**Finish Setup...**).
    install. The first start of the engine can take a few minutes. You can keep going through the
    other steps while it downloads, and Wisp sends a notification when it is ready. When the download
    finishes, Wisp checks that the model really answers.
-2. **Permissions.** Each one is optional, and you can change your mind later in System Settings:
+2. **Permissions.** Each one is optional. Wisp never asks for one by itself: macOS asks only after you click **Allow** on that row. To allow one later, right-click the menu-bar icon, choose **Permissions…**, and click **Allow**. To take one away, use System Settings:
 
    | Permission | Why Wisp asks |
    | --- | --- |
@@ -62,8 +62,10 @@ skipped and finished later from the menu-bar icon (**Finish Setup...**).
    | Notifications | For reminder alerts and "Wisp is ready". |
 
    Screen Recording (for "what is on my screen?") and Accessibility (to search text inside other
-   apps) are not asked for here. macOS asks the first time a feature needs them.
-3. **How to use it.** A short tour of the notch and the shortcuts, with a few questions to try.
+   apps) are not on this step. They are under **Grant More Access…** in the menu-bar icon's menu.
+3. **Google.** Connect a Google account, or skip it. See [Connect Google](#connect-google-optional).
+4. **About you.** Three optional questions: what to call you, your goals, how you like replies.
+5. **How to use it.** A short tour of the notch and the shortcuts, with a few questions to try.
 
 If you leave before the model is ready, Wisp keeps a small cue on the notch and tells you when it
 can answer.
@@ -80,9 +82,9 @@ can answer.
 - **Shortcuts.** **⌥Space** opens Ask from anywhere. **⌘⇧F** searches the document on
   screen (Smart Search). **⌘,** opens Settings. If another app already uses one of these, the
   setup tour says so, and the top of the screen always works.
-- **Getting to know you.** Once Wisp can answer, it offers three optional questions (what to call
-  you, your goals, how you like replies). Reopen it any time with **Tell Wisp About You...** in the
-  menu-bar icon's menu.
+- **Getting to know you.** This is the setup window's About you step: three optional questions (what
+  to call you, your goals, how you like replies). Reopen it any time with **Tell Wisp About You...**
+  in the menu-bar icon's menu, or type `/about`.
 
 ### Connect Google (optional)
 
