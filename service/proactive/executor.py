@@ -115,8 +115,8 @@ async def _email_reply(card: dict, draft: str, store=None) -> dict:
 
 def _text_policy_problem(to: str, draft: str) -> str | None:
     """The safety policy floor for a text. DENY (view-only mode, a grant that
-    forbids it) refuses; CONFIRM is satisfied by the user's tap on this exact
-    card, which showed the recipient and the words."""
+    forbids it) refuses; CONFIRM is satisfied by the user's tap on Send, which
+    sits inside this card's open draft, next to the recipient and the words."""
     try:
         from service.safety import Tier, decide
         decision = decide("messages_send", {"to": to, "text": draft}, tool="send_message")

@@ -21,8 +21,9 @@ Rules:
   the whole Brief regenerates: a forced cycle, then every mail/texts overview
   (idle_refresh). Never during a turn; a failed idle probe counts as "in use".
 - Auto-add (autoadd.py) runs last, in this background cycle only and never
-  once a turn has started: a missed, time-sensitive event or deadline goes on
-  Calendar/Reminders through the verified writes, and its "Wisp did this"
+  once a turn has started. Off by default, a missed, time-sensitive event or
+  deadline becomes a tap-to-add card; with `proactive_auto_add: true` it goes
+  on Calendar/Reminders through the verified writes, and its "Wisp did this"
   card leads the cards (it counts toward the 5).
 """
 from __future__ import annotations
@@ -1013,6 +1014,10 @@ def _short_title(title: str, limit: int = 36) -> str:
     return text
 
 
+NO_EVENTS_SENTENCE = "Nothing on your calendar for the rest of today."
+CALENDAR_UNREAD_SENTENCE = "Wisp can't see your calendar yet."
+
+
 def _day_summary(cards: list[dict], todos: list[dict], threads: list[dict], now: float, tz: str) -> str:
     """A natural one- or two-sentence overview, built by code: "Two events
     today — CruzHacks Hack Day at 11:45 and Hacktoberfest at noon. Three
@@ -1029,7 +1034,7 @@ def _day_summary(cards: list[dict], todos: list[dict], threads: list[dict], now:
         rest = f", plus {len(events) - 2} more" if len(events) > 2 else ""
         sentences.append(f"{lead} — {' and '.join(named)}{rest}.")
     else:
-        sentences.append("Nothing on your calendar for the rest of today.")
+        sentences.append(NO_EVENTS_SENTENCE)
     waiting = {t["who"] for t in threads if t.get("needs_reply") and t.get("who")}
     if waiting:
         n = len(waiting)
@@ -1186,9 +1191,26 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     return result
 
 
+def honest(view: dict, coverage) -> dict:
+    """The Brief's view without an all-clear about a source Wisp couldn't read.
+
+    ``coverage`` is the workspace's source_coverage. Each source that isn't
+    ready is listed in ``unread`` (the app suppresses its "nothing" lines and
+    shows why), and "Nothing on your calendar" becomes "Wisp can't see your
+    calendar yet" when the calendar wasn't read."""
+    unread = [row.get("source") for row in coverage or []
+              if isinstance(row, dict) and row.get("ready") is not True and row.get("source")]
+    view["unread"] = unread
+    if "calendar" in unread:
+        for key in ("summary", "lede"):
+            if isinstance(view.get(key), str):
+                view[key] = view[key].replace(NO_EVENTS_SENTENCE, CALENDAR_UNREAD_SENTENCE)
+    return view
+
+
 def attach(workspace: dict, now: float | None = None) -> None:
     """Add workspace["proactive"] to the Today workspace. Never fatal."""
     try:
-        workspace["proactive"] = snapshot(now=now)
+        workspace["proactive"] = honest(snapshot(now=now), workspace.get("source_coverage"))
     except Exception:  # noqa: BLE001
         traceback.print_exc()

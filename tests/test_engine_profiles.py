@@ -1,6 +1,7 @@
 """The bundled engine gets each catalog model's settings, once per profile version."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import stat
 
@@ -224,3 +225,47 @@ def test_a_never_turboquant_install_is_left_alone(tmp_path):
     settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
     profiles.seed(settings, record)
     assert profiles.seed(settings, record) == []
+
+
+def _turn_turboquant_on(settings):
+    doc = json.loads(settings.read_text())
+    doc["models"][GEMMA.id].update({"turboquant_kv_enabled": True, "turboquant_kv_bits": 6})
+    settings.write_text(json.dumps(doc))
+
+
+def test_the_turboquant_cleanup_never_fires_again_on_a_reseed(tmp_path):
+    settings, record = _seeded_with_turboquant(tmp_path)
+    profiles.seed(settings, record)                       # the one cleanup
+    assert json.loads(record.read_text())[profiles.RETIRED_KEY][GEMMA.id]
+    _turn_turboquant_on(settings)                         # the person turns it back on
+    assert profiles.seed(settings, record, [GEMMA], force=[GEMMA.id]) == [GEMMA.id]
+    entry = _entries(settings)[GEMMA.id]
+    assert entry["turboquant_kv_enabled"] is True and entry["turboquant_kv_bits"] == 6
+    assert entry["temperature"] == 0.8                    # the profile itself still applies
+
+
+def test_a_fresh_install_marks_the_cleanup_done_too(tmp_path):
+    settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
+    profiles.seed(settings, record)                       # nothing to remove, marked anyway
+    _turn_turboquant_on(settings)
+    profiles.seed(settings, record, [GEMMA], force=[GEMMA.id])
+    assert _entries(settings)[GEMMA.id]["turboquant_kv_bits"] == 6
+
+
+def test_a_profile_change_does_not_rerun_the_cleanup(tmp_path):
+    settings, record = _seeded_with_turboquant(tmp_path)
+    profiles.seed(settings, record)
+    _turn_turboquant_on(settings)
+    changed = dataclasses.replace(GEMMA, engine_profile={**GEMMA.engine_profile, "top_k": 40})
+    assert profiles.seed(settings, record, [changed]) == [GEMMA.id]
+    assert _entries(settings)[GEMMA.id]["turboquant_kv_enabled"] is True
+
+
+def test_the_watch_gives_up_at_its_deadline(engine, monkeypatch):
+    # A download that never finishes (stalled, or left paused) is not watched forever.
+    monkeypatch.setattr(downloads, "_WATCH_EVERY_S", 0.01)
+    monkeypatch.setattr(downloads, "_WATCH_FOR_S", 0.1)
+    engine.inventories = [[_task(GEMMA.id, "downloading")]]
+    asyncio.run(asyncio.wait_for(downloads._watch_loop(), 5))
+    assert 1 <= engine.inventory_calls <= 10 and engine.puts == []
+    assert downloads._WATCH_FOR_S == 0.1 and GEMMA.id not in downloads._profiles_pushed

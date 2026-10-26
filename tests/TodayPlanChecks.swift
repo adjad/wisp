@@ -7,8 +7,8 @@ enum WispClient { static let baseURL = URL(string: "http://127.0.0.1:1")! }
 @main
 struct TodayPlanChecks {
     @MainActor static var count = 0
-    @MainActor static func check(_ condition: Bool, _ message: String = "Today contract failed") {
-        precondition(condition, message)
+    @MainActor static func check(_ condition: Bool, _ message: String = "Today contract failed", line: Int = #line) {
+        precondition(condition, message + " (TodayPlanChecks.swift:\(line))")
         count += 1
     }
     static func instant(_ value: String) -> Date {
@@ -311,6 +311,10 @@ struct TodayPlanChecks {
         check(model.plan?.blocks.first?.title == "After edit" && model.error.isEmpty,
               "A timeout keeps the last good plan on screen and shows no error")
         check(model.transientFailures == 1 && model.outageNotice == nil)
+        check(model.staleNotice == nil && !model.planIsStale, "a short outage keeps the plan without a notice")
+        now = now.addingTimeInterval(TodayModel.staleAfter)
+        check(model.staleNotice?.hasPrefix("Wisp isn't answering right now. Showing your day as of ") == true && model.planIsStale,
+              "a long outage says how old the day on screen is: \(model.staleNotice ?? "nil")")
         await waitFor("A transient failure schedules a quiet retry") { retryWakes.count == 1 }
         check(retryNaps == [.seconds(1)], "The first retry comes after a second")
         model.transport = { req in
@@ -319,6 +323,7 @@ struct TodayPlanChecks {
         retryWakes.removeFirst().resume()
         await waitFor("The retry reloads the day by itself") { model.plan?.blocks.first?.title == "Recovered" }
         check(model.transientFailures == 0 && model.error.isEmpty && retryWakes.isEmpty)
+        check(model.staleNotice == nil && !model.planIsStale, "a good read clears the stale notice")
         model.transport = { _ in throw URLError(.cannotConnectToHost, userInfo: [NSLocalizedDescriptionKey: "Wisp's service isn't running yet."]) }
         await model.refresh()
         check(model.plan?.blocks.first?.title == "Recovered" && model.error.isEmpty,
@@ -356,7 +361,7 @@ struct TodayPlanChecks {
             await waitFor("The retry ran") { starting.transientFailures == attempt }
         }
         check(starting.plan == nil && starting.error.isEmpty
-              && starting.outageNotice == "Wisp's service isn't answering yet. Still trying…")
+              && starting.outageNotice == "Wisp is taking a while to start. Still trying…")
         await waitFor("It keeps trying") { startingWakes.count == 1 }
         starting.transport = good
         startingWakes.removeFirst().resume()
@@ -552,8 +557,38 @@ struct TodayPlanChecks {
     }
 
     @MainActor
+    /// What the Brief and Day know about sources Wisp couldn't read.
+    static func sourceAccessChecks() throws {
+        let payload: [String: Any] = [
+            "day": "2026-10-22", "timezone": "UTC",
+            "sources": ["calendar": ["ready": false, "last_sync": 1000, "reason": "Calendar access is off for Wisp.",
+                                     "state": "unavailable", "blocked": "calendar_access"],
+                        "reminders": ["ready": true, "last_sync": 1000, "reason": "Up to date"]],
+            "preferences": ["start_minute": 540, "end_minute": 1080, "not_before": NSNull(), "plan_all_day": true],
+            "workspace": ["attention": [], "attention_omitted": 0,
+                          "source_coverage": [["source": "email", "ready": false, "detail": "", "inspected": 0, "omitted": 0,
+                                               "state": "syncing"],
+                                              ["source": "messages", "ready": false, "detail": "", "inspected": 0, "omitted": 0,
+                                               "blocked": "full_disk_access"]],
+                          "proposed_plan": ["blocks": [], "unscheduled": [], "warnings": []]],
+        ]
+        let plan = try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: payload))
+        check(plan.access("calendar")?.blocked == "calendar_access" && plan.access("calendar")?.state == .unavailable
+              && plan.access("calendar")?.detail == "Calendar access is off for Wisp.", "a blocked calendar decodes with its reason")
+        check(plan.access("reminders")?.readable == true, "ready reminders")
+        check(plan.access("email")?.state == .syncing && plan.access("messages")?.fix == BriefDetail.fullDiskAccess,
+              "coverage carries the rest")
+        check(plan.access("notes") == nil, "a source the service didn't mention is unknown, not unread")
+        check(plan.unreadSources == ["calendar", "email", "messages"], "unread sources in reading order: \(plan.unreadSources)")
+        check(plan.preferences.plan_all_day == true, "the plan-anyway preference decodes")
+        // An older service: no state, no blocked; a missing preference flag is false.
+        let older = try JSONDecoder().decode(TodayPlan.self, from: try planData(day: "2026-10-22", zone: "UTC"))
+        check(older.access("calendar")?.readable == true && older.preferences.plan_all_day == nil, "an older service still decodes")
+    }
+
     static func main() async throws {
         try tolerantDecodeChecks()
+        try sourceAccessChecks()
         try evidenceLabelChecks()
         await storedBriefChecks()
         try await refreshLifecycleChecks()

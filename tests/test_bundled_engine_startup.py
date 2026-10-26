@@ -241,10 +241,32 @@ def test_reap_orphan_is_safe_without_a_pid_file() -> None:
     check("no engine.pid: nothing to reap, in any mode", runtime.reap_orphan() is False)
 
 
+def test_quit_seals_the_engine_in_a_backend_that_never_used_it() -> None:
+    # Quitting a backend that never launched the engine has nothing of its own to stop, but a
+    # model call still in flight must not launch one that then outlives Wisp.
+    from service.engine import EngineError
+    main, runtime, ModelLoadError = boot()
+    runtime._manager = None
+    try:
+        check("nothing launched: nothing reported stopped", runtime.stop_if_running(final=True, grace=0.1) is False)
+        try:
+            runtime.manager().start()
+            refused = False
+        except EngineError:
+            refused = True
+        check("a model call after quit cannot launch the engine", refused)
+        runtime._manager = None
+        check("without quitting, nothing is made or stopped",
+              runtime.stop_if_running() is False and runtime._manager is None)
+    finally:
+        runtime._manager = None
+
+
 def main() -> int:
     for fn in (test_leftover_engine_is_not_probed_first, test_live_engine_is_verified_not_restarted,
                test_readiness_then_identity, test_a_running_engine_survives_a_failed_probe,
-               test_verified_flag_gates_plain_http_users, test_reap_orphan_is_safe_without_a_pid_file):
+               test_verified_flag_gates_plain_http_users, test_reap_orphan_is_safe_without_a_pid_file,
+               test_quit_seals_the_engine_in_a_backend_that_never_used_it):
         print(fn.__name__)
         fn()
     print(f"\n{PASS} passed, {FAIL} failed")

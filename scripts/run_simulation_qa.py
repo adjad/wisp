@@ -148,6 +148,7 @@ PROFILE_TESTS = {
         "tests/test_execution_contract_loop.py",
         "tests/test_forced_step_withholding.py",
         "tests/test_shell_boundary.py",
+        "tests/test_shell_local_service_deny.py",
         "tests/test_tool_calling_invariants.py",
         "tests/test_tool_outcomes.py",
         "tests/test_tool_test_mode.py",
@@ -241,6 +242,16 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # rc1 Brief and Day honesty: no all-clear for an unread source, per-source blocked reasons.
+    "tests/test_first_day_honesty.py",
+    # rc1 reminders: expiry and supersede, the first-launch auto-action hold, the day-one Daily Summary.
+    "tests/test_reminder_expiry.py",
+    "tests/test_behavior_auto_trial.py",
+    "tests/test_brief_day_one.py",
+    # rc1 Ask backend: reply-needed reads stay read-only, the capability welcome, Gmail-only identity.
+    "tests/test_router_reply_needed_reads.py",
+    "tests/test_capability_welcome.py",
+    "tests/test_email_gmail_only_and_dedup.py",
     # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
     "tests/test_needs_you_clear.py",
     # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
@@ -351,6 +362,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_engine_downloads.py",
     # Per-model engine settings seeded into a temp model_settings.json; no engine runs.
     "tests/test_engine_profiles.py",
+    "tests/test_engine_memory_guard.py",
     "tests/test_bundled_engine.py",
     "tests/test_bundled_engine_mode.py",
     # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.

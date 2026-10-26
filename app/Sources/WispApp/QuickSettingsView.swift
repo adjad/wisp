@@ -5,6 +5,8 @@ import SwiftUI
 /// Everything that needs a form, a key, OAuth or widens what Wisp reads (models,
 /// Google, cloud keys, privacy sources such as browser history and contacts,
 /// the source controls under Memory › Routines) stays in the full Settings window.
+/// One deliberate exception: a new user with no Google account connected gets a
+/// single "Connect Google" row for the first connect (NotchGoogleVisibility).
 ///
 /// It binds to the app's one SettingsLoader, the same object the Settings window
 /// uses, so "waiting for confirmation" and "not confirmed" read the same in both
@@ -17,6 +19,8 @@ struct QuickSettingsView: View {
     var refreshes = true
     /// The brief time whose inline hour list is open.
     @State var picking: BriefSlot?
+    /// Decides whether the Google row shows at all (new users only).
+    @StateObject private var google = NotchGoogleModel()
 
     enum BriefSlot { case morning, evening }
 
@@ -40,7 +44,15 @@ struct QuickSettingsView: View {
                 learningRow
             }
             group("Daily brief") { briefRow }
-            group("Google") { NotchConnectGoogle() }
+            if google.showsRow {
+                // The user's deliberate exception for the very first connect
+                // only: a new user with no Google account (and an OAuth client
+                // to use) gets one Connect button. Once any account is
+                // connected there is no Google row here at all; accounts and
+                // Disconnect & erase live in Settings ▸ Google
+                // (NotchGoogleVisibility).
+                group("Google") { NotchConnectGoogle(model: google) }
+            }
             group("Advanced") {
                 row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
                     Text("Model, timing and tools under each reply")
@@ -70,6 +82,10 @@ struct QuickSettingsView: View {
             if !composing, refreshes { Task { await model.refreshModelMemory() } }
         }
         .onChange(of: settings.briefTimesPending) { _, pending in if pending { picking = nil } }
+        .task {
+            guard refreshes else { return }
+            await google.keepCurrent()
+        }
     }
 
     // MARK: Rows

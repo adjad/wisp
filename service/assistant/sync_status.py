@@ -47,8 +47,18 @@ def _scheduled_source(source: str) -> dict:
             state = "syncing"
     else:
         state = "ready" if raw.get("available") else "unavailable"
+    kind = ""
+    if state == "unavailable" and raw.get("last_sync"):
+        # What the person can do about it, in the same words as the Brief and
+        # Day (today.source_access): access turned off, or a prompt nobody
+        # answered, never "turn Wisp on" for a pane that doesn't list Wisp yet.
+        from service.assistant.today import source_access
+        access = source_access(source, raw, now=time.time(), started_at=scheduler.STARTED_AT,
+                               stall=SYNC_STALL_S)
+        if access["blocked"] and access["blocked"] != "app_not_reporting":
+            reason, kind = access["reason"], access["blocked"]
     return {"id": source, "label": _LABELS[source], "state": state,
-            "count": int(raw.get("count") or 0), "reason": reason}
+            "count": int(raw.get("count") or 0), "reason": reason, "reason_kind": kind}
 
 
 def source_status(source: str) -> dict:

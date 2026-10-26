@@ -1,83 +1,67 @@
 import AppKit
 import SwiftUI
 
-/// Settings ▸ Google: connect Wisp to Gmail and Google Calendar (read-only) so
-/// mail and events sync without Mail.app or Calendar open. All OAuth work happens in the local backend (gmail_source.py);
-/// this pane only sends the user's own OAuth client id/secret to loopback,
-/// opens the consent URL in the default browser, and shows connection status.
+/// Settings ▸ Google: one section, one sign-in per account.
+///
+/// A Google sign-in serves everything: the Google Workspace tools Ask uses
+/// (Gmail, Calendar, Drive, Docs, Chat) and, as hidden plumbing, Brief's
+/// read-only mail and calendar sync. Each account shows ONE status line that
+/// the backend merged from both (gmail_source.account_state). The first
+/// connect sets the Workspace server up by itself; its controls, the
+/// corresponding Mail account, the user's own OAuth client and the
+/// Testing-mode note sit under Advanced.
+///
+/// All OAuth work happens in the local backend; this pane only calls loopback
+/// routes, opens the consent URL in the default browser and shows status.
 @MainActor
 final class GoogleAccountModel: ObservableObject {
-    struct InboxAccount: Identifiable {
-        let id: String
-        let lastSync: Date?
-        let fresh: Bool
-        let error: String
-        let workspace: Bool
-        let workspaceFull: Bool
-    }
     struct MailAccount: Identifiable {
         let id: String
         let name: String
     }
-    @Published var inboxAccounts: [InboxAccount] = []
+    @Published var status = GoogleStatus()
+    @Published var loaded = false
     @Published var mailAccounts: [MailAccount] = []
     @Published var selectedMailAccountID = ""
     @Published var authorizationState = "idle"
     @Published var authorizationError = ""
     @Published var authorizationGeneration: Int?
-    @Published var connected = false
-    @Published var email = ""
     @Published var authorizing = false
-    @Published var lastError = ""
-    @Published var lastSync: Date?
     @Published var message = ""
+    /// The user's own OAuth client (Advanced ▸ Use your own OAuth client).
     @Published var clientID = ""
     @Published var clientSecret = ""
-    @Published var hasSavedSecret = false
 
-    // Google Workspace MCP server (Gmail, Calendar, Drive as tools)
+    // The Google Workspace server (Advanced).
     @Published var wsConfigured = false
     @Published var wsRunning = false
     @Published var wsTools = 0
     @Published var wsError = ""
     @Published var wsPreparing = false
-    @Published var wsNeedsUV = false
     @Published var wsMessage = ""
-    @Published var googleEmail = ""
-    @Published var workspaceAccountErrors: [String: String] = [:]
 
     private var polling: Task<Void, Never>?
     private var wsPolling: Task<Void, Never>?
+
+    var consentNotice: String { GoogleConsentCopy.notice(status) }
+    /// Typed into Advanced: this sign-in uses the user's own client.
+    private var typedClientID: String { clientID.trimmingCharacters(in: .whitespacesAndNewlines) }
+    var canConnect: Bool { status.canConnect || !typedClientID.isEmpty }
 
     func refresh() async {
         guard let s = await request("GET", "assistant/gmail/status") else {
             message = "Wisp's service isn't responding."
             return
         }
-        connected = s["connected"] as? Bool ?? false
-        email = s["email"] as? String ?? ""
+        status = GoogleStatus.parse(s)
+        loaded = true
         authorizing = s["authorizing"] as? Bool ?? false
         let authorization = s["authorization"] as? [String: Any] ?? [:]
         authorizationState = authorization["state"] as? String ?? "idle"
         authorizationError = authorization["error"] as? String ?? ""
         authorizationGeneration = authorization["generation"] as? Int
-        lastError = s["last_error"] as? String ?? ""
-        hasSavedSecret = s["has_secret"] as? Bool ?? false
-        if clientID.isEmpty { clientID = s["client_id"] as? String ?? "" }
-        lastSync = (s["last_headers_sync"] as? Double).map(Date.init(timeIntervalSince1970:))
-        inboxAccounts = (s["accounts"] as? [[String: Any]] ?? []).compactMap { row in
-            guard let address = row["email"] as? String else { return nil }
-            return InboxAccount(id: address,
-                lastSync: (row["last_headers_sync"] as? Double).map(Date.init(timeIntervalSince1970:)),
-                fresh: row["fresh"] as? Bool ?? false, error: row["last_error"] as? String ?? "",
-                workspace: row["workspace"] as? Bool ?? false,
-                workspaceFull: row["workspace_full"] as? Bool ?? false)
-        }
-        if let w = s["workspace"] as? [String: Any] {
-            wsConfigured = w["configured"] as? Bool ?? wsConfigured
-            wsRunning = w["running"] as? Bool ?? wsRunning
-            wsTools = w["tools"] as? Int ?? wsTools
-        }
+        if clientID.isEmpty { clientID = status.userClientID }
+        if let w = s["workspace"] as? [String: Any] { applyWorkspace(w) }
         mailAccounts = (s["mail_accounts"] as? [[String: Any]] ?? []).compactMap { row in
             guard let id = row["id"] as? String, let name = row["name"] as? String else { return nil }
             return MailAccount(id: id, name: name)
@@ -86,27 +70,29 @@ final class GoogleAccountModel: ObservableObject {
 
     func refreshWorkspace() async {
         guard let s = await request("GET", "assistant/google/workspace/status") else { return }
+        applyWorkspace(s)
+    }
+
+    private func applyWorkspace(_ s: [String: Any]) {
         wsConfigured = s["configured"] as? Bool ?? false
         wsRunning = s["running"] as? Bool ?? false
         wsTools = s["tools"] as? Int ?? 0
         wsError = s["error"] as? String ?? ""
-        wsNeedsUV = !(s["uvx"] as? Bool ?? true)
         let prep = s["prepare"] as? [String: Any]
         wsPreparing = (prep?["state"] as? String) == "preparing"
         if (prep?["state"] as? String) == "failed" { wsError = prep?["detail"] as? String ?? wsError }
-        if clientID.isEmpty { clientID = s["client_id"] as? String ?? "" }
-        if googleEmail.isEmpty { googleEmail = s["email"] as? String ?? "" }
-        if let has = s["has_secret"] as? Bool, has { hasSavedSecret = true }
     }
 
+    /// Advanced ▸ Update settings: (re)write the Workspace server entry with the
+    /// typed client, or the same client Connect uses when none is typed.
     func enableWorkspace() {
-        let id = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty else { wsMessage = "Enter your OAuth client ID first."; return }
         wsMessage = ""
         Task {
-            let body: [String: Any] = ["client_id": id,
-                                       "client_secret": clientSecret.trimmingCharacters(in: .whitespacesAndNewlines),
-                                       "email": googleEmail.trimmingCharacters(in: .whitespacesAndNewlines)]
+            var body: [String: Any] = ["email": status.accounts.first?.id ?? ""]
+            if !typedClientID.isEmpty {
+                body["client_id"] = typedClientID
+                body["client_secret"] = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             guard let r = await request("POST", "assistant/google/workspace/enable", body: body,
                                         timeout: 20) else {
                 wsMessage = "Wisp's service isn't responding."
@@ -131,24 +117,8 @@ final class GoogleAccountModel: ObservableObject {
                 await refreshWorkspace()
                 return
             }
-            wsMessage = "Google Workspace removed."
+            wsMessage = "Google Workspace removed. Reconnect an account to set it up again."
             await refreshWorkspace()
-        }
-    }
-
-    func setWorkspace(_ account: String, enabled: Bool) {
-        Task {
-            workspaceAccountErrors[account] = nil
-            let body: [String: Any] = ["account": account, "enabled": enabled]
-            guard let r = await request("POST", "assistant/gmail/workspace", body: body, timeout: 20) else {
-                workspaceAccountErrors[account] = "Wisp's service isn't responding."
-                await refresh()
-                return
-            }
-            if r["ok"] as? Bool != true {
-                workspaceAccountErrors[account] = r["error"] as? String ?? "Couldn't change Workspace tools for this account."
-            }
-            await refresh()
         }
     }
 
@@ -164,17 +134,24 @@ final class GoogleAccountModel: ObservableObject {
         }
     }
 
-    func connect() {
+    /// Connect a new account, or (`reconnect`) sign an existing one in again.
+    func connect(reconnect account: String? = nil) {
         guard !authorizing else { return }
-        let id = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty else { message = "Enter your OAuth client ID first."; return }
+        guard account != nil || canConnect else {
+            message = "Add your own OAuth client under Advanced first."
+            return
+        }
         message = ""
         authorizing = true
         polling?.cancel()
         Task {
-            let body: [String: Any] = ["client_id": id,
-                                       "client_secret": clientSecret.trimmingCharacters(in: .whitespacesAndNewlines),
-                                       "mail_account_id": selectedMailAccountID]
+            var body: [String: Any] = ["mail_account_id": selectedMailAccountID]
+            if let account {
+                body["reconnect"] = account
+            } else if !typedClientID.isEmpty {
+                body["client_id"] = typedClientID
+                body["client_secret"] = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             guard let r = await request("POST", "assistant/gmail/connect", body: body) else {
                 message = "Couldn't start Google sign-in."
                 authorizing = false
@@ -183,7 +160,9 @@ final class GoogleAccountModel: ObservableObject {
             guard r["ok"] as? Bool == true, let s = r["auth_url"] as? String,
                   let generation = r["generation"] as? Int,
                   let url = URL(string: s), url.scheme == "https", url.host == "accounts.google.com" else {
-                message = r["error"] as? String ?? "Couldn't confirm this Google sign-in attempt. Try again."
+                let error = r["error"] as? String ?? ""
+                message = error.contains("client_id") ? "Add your own OAuth client under Advanced first."
+                    : error.isEmpty ? "Couldn't confirm this Google sign-in attempt. Try again." : error
                 authorizing = false
                 return
             }
@@ -213,18 +192,19 @@ final class GoogleAccountModel: ObservableObject {
                 await self.refresh()
                 guard !Task.isCancelled else { return }
                 if let current = self.authorizationGeneration, current != generation {
-                    self.message = "This sign-in attempt was replaced by another attempt. Check the connected accounts below."
+                    self.message = "This sign-in attempt was replaced by another attempt. Check the accounts above."
                     return
                 }
                 if !self.authorizing {
                     self.message = self.authorizationGeneration == generation && self.authorizationState == "connected"
-                        ? "Account connected. Check its refresh status below."
+                        ? "Account connected."
                         : (self.authorizationError.isEmpty ? "Sign-in did not finish. Try again." : self.authorizationError)
+                    await self.refreshWorkspace()
                     return
                 }
             }
             guard let self, !Task.isCancelled else { return }
-            self.message = "Couldn’t confirm Google sign-in. Check connected accounts or try again."
+            self.message = "Couldn’t confirm Google sign-in. Check the accounts above or try again."
         }
     }
 
@@ -246,129 +226,47 @@ final class GoogleAccountModel: ObservableObject {
 
 struct GoogleSettingsPane: View {
     @StateObject private var model = GoogleAccountModel()
+    @State private var advanced = false
+    @State private var ownClient = false
+    /// Account notes the user chose "Not now" for (UserDefaults, per account).
+    @State private var dismissedNotes: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Google").font(.title2.weight(.medium))
-            VStack(alignment: .leading, spacing: 12) {
-                // Shared credentials: the user's own Google Cloud "Desktop app" OAuth client.
-                Text("Your Google OAuth client")
-                    .font(.system(size: 13, weight: .medium))
-                Text("In Google Cloud Console enable the APIs you want (Gmail, Calendar, Drive), add yourself as a "
-                     + "test user on the consent screen, and create an OAuth client of type \"Desktop app\".")
-                    .font(.caption).foregroundStyle(.secondary)
-                TextField("OAuth client ID", text: $model.clientID).textFieldStyle(.roundedBorder)
-                SecureField(model.hasSavedSecret ? "Client secret (saved — leave blank to keep)" : "Client secret",
-                            text: $model.clientSecret).textFieldStyle(.roundedBorder)
-                TextField("Your Google email", text: $model.googleEmail).textFieldStyle(.roundedBorder)
-                Button("Open Google Cloud Console") {
-                    if let u = URL(string: "https://console.cloud.google.com/apis/credentials") {
-                        NSWorkspace.shared.open(u)
-                    }
-                }
+            Text("Gmail, Calendar, Drive, Docs and Chat through Google Workspace. Brief reads your mail and calendar; Ask can use Google tools and asks before anything that changes.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-                Divider()
+            if !model.status.accounts.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(model.status.accounts) { account in accountRow(account) }
+                }
+            }
 
-                // Google Workspace: one connector, per-account tool access
-                HStack(spacing: 8) {
-                    Image(systemName: model.wsRunning ? "checkmark.circle.fill" : "circle.dashed")
-                        .foregroundStyle(model.wsRunning ? Color.green : Theme.textMuted)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Google Workspace")
-                            .font(.system(size: 14, weight: .medium))
-                        Text("Gmail, Calendar, Drive, Docs and Chat. Wisp reads connected accounts on this Mac; Brief uses their mail and calendar, and Ask can use Workspace tools for the accounts you switch on.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Text(model.wsRunning
-                             ? "Running — \(model.wsTools) Google tools available to Wisp. Each one asks before it runs, except plain read-only lookups."
-                             : model.wsPreparing ? "Setting up…"
-                             : model.wsConfigured ? "Configured but not running."
-                             : "Not set up. Runs Google's tools locally on this Mac through an MCP server.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if model.wsConfigured { Button("Remove") { model.disableWorkspace() } }
-                }
-                if model.wsNeedsUV {
-                    Text("This needs uv. Install it in Terminal with: brew install uv")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                if !model.wsError.isEmpty {
-                    Text(model.wsError).font(.caption).foregroundStyle(.orange)
-                }
-                HStack {
-                    Button(model.wsPreparing ? "Setting up…" : model.wsConfigured ? "Update settings" : "Set up Google Workspace") {
-                        model.enableWorkspace()
-                    }
-                    .disabled(model.wsPreparing || model.clientID.trimmingCharacters(in: .whitespaces).isEmpty)
+            VStack(alignment: .leading, spacing: 6) {
+                Button(model.authorizing ? "Waiting for Google…" : "Connect Google account") { model.connect() }
                     .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    .disabled(model.authorizing || !model.canConnect)
+                if !model.consentNotice.isEmpty {
+                    Text(model.consentNotice).font(.caption).foregroundStyle(.secondary)
                 }
-                if !model.wsMessage.isEmpty {
-                    Text(model.wsMessage).font(.caption).foregroundStyle(.secondary)
+                if model.loaded && !model.canConnect {
+                    Text("This copy of Wisp has no built-in Google sign-in. Add your own OAuth client under Advanced.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Sign-in expires after 7 days while your Google app is in \"Testing\" mode.")
-                    .font(.caption2).foregroundStyle(.secondary)
+                if !model.message.isEmpty {
+                    Text(model.message).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
-                Divider()
-
-                // Connected accounts (feeds summaries, the daily brief and Workspace tools)
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(model.inboxAccounts) { account in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(alignment: .top) {
-                                Image(systemName: account.fresh ? "checkmark.circle.fill" : "exclamationmark.circle")
-                                    .foregroundStyle(account.fresh ? Color.green : Color.orange)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(account.id).font(.caption.weight(.medium))
-                                    Text(account.fresh ? "Recently checked with Google" : "Cache stale or not yet verified")
-                                        .font(.caption).foregroundStyle(account.fresh ? Color.secondary : Color.orange)
-                                    if let last = account.lastSync {
-                                        Text("Last successful refresh: \(last.formatted(date: .abbreviated, time: .shortened))")
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                    } else {
-                                        Text("No successful refresh recorded").font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    if !account.error.isEmpty {
-                                        Text(account.error).font(.caption).foregroundStyle(.orange)
-                                    }
-                                }
-                                Spacer()
-                                Button("Disconnect & erase") { model.disconnect(account.id) }
-                                    .help("Revokes Wisp's Google access and deletes this account's mail, calendar events and to-dos from Wisp")
-                            }
-                            Toggle("Workspace tools", isOn: Binding(
-                                get: { account.workspace },
-                                set: { model.setWorkspace(account.id, enabled: $0) }))
-                                .font(.caption)
-                                .disabled(!model.wsConfigured)
-                                .help(model.wsConfigured ? "Let Ask use Google Workspace tools for this account"
-                                                         : "Set up Google Workspace above first")
-                            if account.workspace && !account.workspaceFull {
-                                Text("Reconnect this account to add Drive, Docs and Chat.")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }
-                            if let err = model.workspaceAccountErrors[account.id], !err.isEmpty {
-                                Text(err).font(.caption).foregroundStyle(.orange)
-                            }
-                        }
-                    }
-                    if !model.mailAccounts.isEmpty {
-                        Picker("Corresponding Mail account", selection: $model.selectedMailAccountID) {
-                            Text("Match by email address").tag("")
-                            ForEach(model.mailAccounts) { account in
-                                Text(account.name).tag(account.id)
-                            }
-                        }
-                        Text("Select the same account if Mail uses a name such as “Google”. This keeps its older Mail copy from appearing twice.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Button(model.authorizing ? "Waiting for Google…" : "Connect a Google account") { model.connect() }
-                        .disabled(model.authorizing || model.clientID.trimmingCharacters(in: .whitespaces).isEmpty)
-                    if !model.message.isEmpty {
-                        Text(model.message).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text("Read-only access to mail, calendar, Drive, Docs and Chat. Google asks for your consent; a school administrator may restrict access. If a refresh fails, Wisp labels cached results and their last successful refresh.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
+            DisclosureGroup("Advanced", isExpanded: $advanced) { advancedSection.padding(.top, 8) }
+                .font(.system(size: 13))
+        }
+        .onChange(of: model.status.accounts.map(\.id)) { _, ids in
+            for id in ids where dismissedNotes[id] == nil {
+                dismissedNotes[id] = UserDefaults.standard.string(forKey: "WispGoogleNoteDismissed." + id) ?? ""
             }
         }
         .task {
@@ -379,6 +277,114 @@ struct GoogleSettingsPane: View {
                 guard !Task.isCancelled else { return }
                 await model.refresh()
             }
+        }
+    }
+
+    private func color(_ state: GoogleStatus.Account.State) -> Color {
+        state == .connected ? .green : .orange
+    }
+
+    private func accountRow(_ account: GoogleStatus.Account) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: account.state == .connected ? "checkmark.circle.fill" : "exclamationmark.circle")
+                .foregroundStyle(color(account.state))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(account.id).font(.callout.weight(.medium))
+                Text(account.statusLine).font(.caption).foregroundStyle(color(account.state))
+                    .fixedSize(horizontal: false, vertical: true)
+                if GoogleAccountNote.shows(account, dismissed: dismissedNotes[account.id]) {
+                    HStack(spacing: 8) {
+                        Text(account.note).font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Reconnect") { model.connect(reconnect: account.id) }
+                            .controlSize(.small).disabled(model.authorizing)
+                        Button("Not now") {
+                            UserDefaults.standard.set(account.note, forKey: GoogleAccountNote.key(account))
+                            dismissedNotes[account.id] = account.note
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+            Spacer()
+            if let title = account.reconnectTitle {
+                Button(title) { model.connect(reconnect: account.id) }
+                    .disabled(model.authorizing)
+            }
+            Button("Disconnect & erase") { model.disconnect(account.id) }
+                .help("Revokes Wisp's Google access and deletes this account's mail, calendar events and to-dos from Wisp")
+        }
+    }
+
+    @ViewBuilder private var advancedSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // The Workspace server that serves Ask's Google tools.
+            HStack(spacing: 8) {
+                Image(systemName: model.wsRunning ? "checkmark.circle.fill" : "circle.dashed")
+                    .foregroundStyle(model.wsRunning ? Color.green : Theme.textMuted)
+                Text(model.wsRunning ? "Running — \(model.wsTools) Google tools"
+                     : model.wsPreparing ? "Setting up Google tools…"
+                     : model.wsConfigured ? "Google tools configured but not running"
+                     : "Google tools not set up. Connecting an account sets them up.")
+                    .font(.caption)
+                Spacer()
+                Button(model.wsPreparing ? "Setting up…" : "Update settings") { model.enableWorkspace() }
+                    .disabled(model.wsPreparing || (!model.canConnect))
+                if model.wsConfigured { Button("Remove") { model.disableWorkspace() } }
+            }
+            // Workspace trouble shows once, here, never on an account row.
+            if !model.status.workspaceNote.isEmpty {
+                Text(model.status.workspaceNote).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !model.status.workspaceNoteDetail.isEmpty {
+                    Text(model.status.workspaceNoteDetail).font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if !model.wsError.isEmpty {
+                Text(model.wsError).font(.caption).foregroundStyle(.orange)
+            }
+            if !model.wsMessage.isEmpty {
+                Text(model.wsMessage).font(.caption).foregroundStyle(.secondary)
+            }
+
+            // The raw reason behind each account's status line.
+            ForEach(model.status.accounts.filter { !$0.detail.isEmpty }) { account in
+                Text("\(account.id): \(account.detail)").font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !model.mailAccounts.isEmpty {
+                Picker("Corresponding Mail account", selection: $model.selectedMailAccountID) {
+                    Text("Match by email address").tag("")
+                    ForEach(model.mailAccounts) { account in
+                        Text(account.name).tag(account.id)
+                    }
+                }
+                Text("Select the same account if Mail uses a name such as “Google”. This keeps its older Mail copy from appearing twice. It applies to the next Connect.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
+            DisclosureGroup("Use your own OAuth client", isExpanded: $ownClient) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Optional. In Google Cloud Console enable the APIs you want, add yourself as a test user on the consent screen, and create an OAuth client of type \"Desktop app\". Your client is used instead of Wisp's.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    TextField("OAuth client ID", text: $model.clientID).textFieldStyle(.roundedBorder)
+                    SecureField(model.status.hasSavedSecret ? "Client secret (saved — leave blank to keep)" : "Client secret",
+                                text: $model.clientSecret).textFieldStyle(.roundedBorder)
+                    Button("Open Google Cloud Console") {
+                        if let u = URL(string: "https://console.cloud.google.com/apis/credentials") {
+                            NSWorkspace.shared.open(u)
+                        }
+                    }
+                }
+                .padding(.top, 6)
+            }
+            .font(.caption)
+
+            Text("While Wisp's Google app is in Testing mode, Google ends each sign-in after 7 days. Wisp says when, and Reconnect signs you back in.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

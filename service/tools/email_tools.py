@@ -626,9 +626,27 @@ def _range_history(start: float, end: float) -> list[dict]:
     # per account rather than once per history row.
     complete = {_account_group(address, address) for address in _external_accounts
                 if external_recent_complete(address)}
-    return [row for row in _parse_header_records(_history, snapshot="history")
+    return [row for row in _history_records()
             if start <= row["ts"] < end and
             _account_group(row["account"], row.get("account_id", "")) not in complete]
+
+
+# The parsed form of the last `_history` string seen. History is a large,
+# rarely-changing cache and every ranged summary re-parsed all of it. Keyed by
+# the string object itself, so any new history (always a new string) misses.
+_HISTORY_PARSE: tuple[str | None, list[dict]] = (None, [])
+
+
+def _history_records() -> list[dict]:
+    global _HISTORY_PARSE
+    text = _history
+    cached_text, cached = _HISTORY_PARSE
+    if cached_text is not text:
+        cached = _parse_header_records(text, snapshot="history")
+        _HISTORY_PARSE = (text, cached)
+    # Copies: _unique_records marks rows it pairs, and that must not leak
+    # into the next read.
+    return [dict(row) for row in cached]
 
 
 def _history_warning(account: str | None = None) -> str:
@@ -1455,26 +1473,47 @@ def _unique_records(rows: list[dict]) -> list[dict]:
     def producer(row: dict) -> str:
         return row.get("native_id", "").split(":", 1)[0]
 
+    def mid(row: dict) -> str:
+        return (row.get("message_id") or "").casefold()
+
+    def ids_conflict(a: dict, b: dict) -> bool:
+        return bool(mid(a) and mid(b) and mid(a) != mid(b))
+
     recent = [row for row in result if row.get("_snapshot") == "recent"]
+    # Indexed once, so pairing is linear in the rows, not recent x history
+    # (a long first sync made every summary quadratic). Each list keeps
+    # `recent` order, so "first match" is the same row the old scan found.
+    by_mid: dict[tuple, list[int]] = {}
+    by_fp: dict[tuple, list[int]] = {}
+    label_mid: dict[tuple, list[int]] = {}
+    label_fp: dict[tuple, list[int]] = {}
+    for index, other in enumerate(recent):
+        label, account_id = other["account"].casefold(), other.get("account_id", "")
+        if mid(other):
+            by_mid.setdefault((label, account_id, mid(other)), []).append(index)
+            label_mid.setdefault((label, mid(other)), []).append(index)
+        by_fp.setdefault((label, account_id, fingerprint(other)), []).append(index)
+        label_fp.setdefault((label, fingerprint(other)), []).append(index)
     matched: set[int] = set()
     paired = []
     for row in result:
         if row.get("_snapshot") == "history":
             row_account = row.get("account_id", "")
-            candidates = [(index, other) for index, other in enumerate(recent)
-                          if index not in matched
-                          and other["account"].casefold() == row["account"].casefold()
-                          and row_account and other.get("account_id") == row_account
-                          and (producer(other) != producer(row) or
-                               not producer(other) or not producer(row))]
-            partner = next((index for index, other in candidates
-                            if other.get("message_id") and row.get("message_id")
-                            and other["message_id"].casefold() == row["message_id"].casefold()), None)
-            if partner is None:
-                partner = next((index for index, other in candidates
-                                if fingerprint(other) == fingerprint(row)
-                                and not (other.get("message_id") and row.get("message_id")
-                                         and other["message_id"].casefold() != row["message_id"].casefold())), None)
+            label = row["account"].casefold()
+
+            def candidate(index: int) -> bool:
+                other = recent[index]
+                return (index not in matched
+                        and (producer(other) != producer(row)
+                             or not producer(other) or not producer(row)))
+            partner = None
+            if row_account:
+                if mid(row):
+                    partner = next((i for i in by_mid.get((label, row_account, mid(row)), ())
+                                    if candidate(i)), None)
+                if partner is None:
+                    partner = next((i for i in by_fp.get((label, row_account, fingerprint(row)), ())
+                                    if candidate(i) and not ids_conflict(recent[i], row)), None)
             if partner is not None:
                 matched.add(partner)
                 recent[partner]["_cross_source_matched"] = True
@@ -1482,14 +1521,12 @@ def _unique_records(rows: list[dict]) -> list[dict]:
             # The same display label can name multiple linked accounts, and
             # Mail.app/SQLite account IDs need not share a namespace. Keep both
             # possible copies when account identity cannot be proved.
-            for other in recent:
-                if (other["account"].casefold() == row["account"].casefold()
-                        and other.get("account_id") != row_account
-                        and ((other.get("message_id") and row.get("message_id")
-                              and other["message_id"].casefold() == row["message_id"].casefold())
-                             or (fingerprint(other) == fingerprint(row)
-                                 and not (other.get("message_id") and row.get("message_id")
-                                          and other["message_id"].casefold() != row["message_id"].casefold())))):
+            possible = set(label_mid.get((label, mid(row)), ())) if mid(row) else set()
+            possible.update(i for i in label_fp.get((label, fingerprint(row)), ())
+                            if not ids_conflict(recent[i], row))
+            for index in possible:
+                other = recent[index]
+                if other.get("account_id") != row_account:
                     other["_cross_source_uncertain"] = True
                     row["_cross_source_uncertain"] = True
         paired.append(row)
@@ -2927,6 +2964,18 @@ async def summarize_emails(day: str | None = None, count: int = 20,
     if account and (msg := _unknown_account_message(account)):
         return msg
     linked = _linked_account_groups()
+    if not account and linked and not native_email_accounts():
+        # Gmail only, no Mail.app inbox. There is no "your accounts" mail to
+        # set apart, and that section was always empty: the first linked
+        # account is the user's own inbox (identity already counts linked
+        # addresses as theirs). Only further linked accounts get headings.
+        own, *others = linked
+        if not others:
+            return await _summarize_one(day, count, None, period, unread)
+        sections = [f"## {address}\n{await _summarize_one(day, count, address, period, unread)}"
+                    for address in (own, *others)]
+        return ("Summarized per account; keep the account headings in your answer.\n\n"
+                + "\n\n".join(sections))
     if not account and linked:
         # A linked Google account (a guest's, or one not in Mail.app) is
         # someone else's inbox as far as "my email" goes: answer per account,

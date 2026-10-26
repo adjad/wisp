@@ -367,7 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// answer; before that it waits in Ask's box under the setup card.
     private func finishFirstRun(tellAboutYou: Bool, asking prompt: String? = nil) {
         firstRunFinishing = true
-        let ready = setupModel.status?.ready == true
+        let ready = setupModel.status?.canAnswer == true
         firstRunWindow?.close()
         // Not ready yet: the setup card carries the download in the notch, under
         // Getting to know you when that was chosen.
@@ -388,7 +388,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func firstRunClosed() {
         let defaults = UserDefaults.standard
-        if FirstRunSetup.closeFinishes(finished: firstRunFinishing, ready: setupModel.status?.ready == true) {
+        let canAnswer = setupModel.status?.canAnswer == true
+        if FirstRunSetup.closeFinishes(finished: firstRunFinishing, ready: canAnswer) {
             defaults.set(true, forKey: FirstRunSetup.doneKey)
             defaults.removeObject(forKey: FirstRunSetup.stepKey)
             defaults.removeObject(forKey: FirstRunSetup.reopensKey)
@@ -401,17 +402,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let closing = firstRunWindow
         firstRunWindow = nil
         DispatchQueue.main.async { closing?.contentView = nil }
-        // The window no longer speaks for access: whatever it left undecided is
-        // asked the way it always was, by the reader that needs it.
-        firstRunGatesPrompts = false
-        startPromptingReaders()
+        // Finished, or Wisp can answer: whatever the window left undecided is asked
+        // by the reader that needs it. An early close keeps them held until then.
+        liftReaderGateIfDue(finished: firstRunFinishing, canAnswer: canAnswer)
         defer { firstRunFinishing = false }
         guard !firstRunFinishing else { return }
-        if setupModel.status?.ready != true {
+        if !canAnswer {
             openSetupInNotch()
             notifyWhenReady()
         }
         considerKnowYouOffer(after: 10)
+    }
+
+    /// Readers held by the first-run gate start once it lifts (FirstRunSetup.readerGateLifts).
+    private func liftReaderGateIfDue(finished: Bool, canAnswer: Bool) {
+        guard firstRunGatesPrompts, FirstRunSetup.readerGateLifts(
+            windowUp: firstRunWindow != nil, finished: finished, canAnswer: canAnswer) else { return }
+        firstRunGatesPrompts = false
+        startPromptingReaders()
     }
 
     private var setupWatch: Task<Void, Never>?
@@ -449,12 +457,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let ready = object["ready"] as? Bool else { continue }
                 answered = true
-                let canAnswer = ready || object["remote_only"] as? Bool == true
+                let canAnswer = FirstRunSetup.canAnswer(ready: ready,
+                                                        remoteOnly: object["remote_only"] as? Bool == true)
                 self.setupMenuItem?.title = canAnswer ? "Model & Engine…" : "Finish Setup…"
                 let cue = FirstRunSetup.setupCue(self.model.setupCard, canAnswer: canAnswer,
                                                  firstRunWindowUp: self.firstRunWindow != nil)
                 if cue != self.model.setupCard { self.model.setupCard = cue }
                 guard canAnswer else { continue }
+                self.liftReaderGateIfDue(finished: false, canAnswer: true)
                 if self.notifyOnReady, self.firstRunWindow == nil {
                     Notifications.post(id: Notifications.readyId, title: "Wisp is ready",
                                        body: "Press ⌥ Space and ask about your day.")
@@ -1600,6 +1610,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var knowYouChosen = false
+    /// Set from GET /profile: once About you is complete, panel closes stop asking.
+    private var knowYouProfileComplete = false
     private var knowYouOffersArmed = false
     private var knowYouCheck: Task<Void, Never>?
     private var knowYouTimer: Timer?
@@ -1631,7 +1643,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             flowOpen: model.knowYou != nil,
             panelInUse: presentation.desired == .chat || presentation.desired == .search
                 || !model.collapsed || model.holdsOpen,
-            dismissedToMenuBar: !notchDocked, chosenThisSession: knowYouChosen)
+            dismissedToMenuBar: !notchDocked, chosenThisSession: knowYouChosen,
+            profileComplete: knowYouProfileComplete)
     }
 
     /// One check, after `seconds` (a panel that just closed gets a moment before
@@ -1642,8 +1655,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         knowYouCheck = Task { @MainActor [weak self] in
             if seconds > 0 { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
             guard !Task.isCancelled, let self, KnowYouOffer.quiet(self.knowYouMoment) else { return }
-            guard let envelope = await WispClient().profile(), !Task.isCancelled,
-                  KnowYouOffer.shouldOffer(self.knowYouMoment, serviceOffers: envelope.status.offer) else { return }
+            guard let envelope = await WispClient().profile(), !Task.isCancelled else { return }
+            if envelope.status.completed { self.knowYouProfileComplete = true }
+            guard KnowYouOffer.shouldOffer(self.knowYouMoment, serviceOffers: envelope.status.offer) else { return }
             // An offer nobody asked for must not take the keyboard from the
             // app the person is typing in: it opens without becoming key.
             self.createPanelIfNeeded()

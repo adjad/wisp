@@ -29,9 +29,17 @@ struct DailySourceCoverage: Decodable, Identifiable {
     let detail: String
     let inspected: Int
     let omitted: Int
-    /// What the user must grant before this source can be read: "full_disk_access".
+    /// What the user must grant before this source can be read: "full_disk_access",
+    /// "calendar_access", "reminders_access", "mail_automation", …
     var blocked: String? = nil
+    /// "syncing" or "unavailable" for a source that isn't ready.
+    var state: String? = nil
+    /// The service's one sentence about a source that isn't ready.
+    var reason: String? = nil
     var id: String { source }
+
+    /// Whether Wisp could read it, and what fixes it when it couldn't.
+    var access: SourceAccess { SourceAccess(source: source, ready: ready, state: state, blocked: blocked, reason: reason) }
 }
 
 struct DailyProposal: Decodable {

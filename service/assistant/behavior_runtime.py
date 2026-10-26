@@ -69,6 +69,10 @@ BEHAVIOR_CONTEXT = "Added by Wisp from your routine"
 HOLD_PREFIX = "Tentative: "
 
 TICK_S = 30.0
+# A new install offers routine actions (tap to add) instead of performing them,
+# until the user has tapped Useful or Undo once, or this long after first launch.
+AUTO_ACTION_TRIAL_S = 3 * 86400
+_ENGAGED_KEY = "auto_actions_engaged"
 INGEST_EVERY_S = 300.0
 MINE_EVERY_S = 1800.0
 NUDGE_EVERY_S = 60.0
@@ -1182,9 +1186,12 @@ class BehaviorRuntime:
         canonical = Nudge.from_dict(json.loads(payload))
         actions = []
         namespace = str(self.home.resolve())+":"+canonical.id
+        held = self.auto_actions_held(store, now)
         for idx,action in enumerate(canonical.actions):
             if not action.auto or action.type not in {"add_reminder","add_hold"}:
                 continue
+            if held and not any(row["idx"]==idx for row in prior):
+                continue   # offered with "auto": false; a tap adds it
             if self.policy_block(action) is not None:
                 continue
             params = action.params
@@ -1197,7 +1204,10 @@ class BehaviorRuntime:
                 title = HOLD_PREFIX+title
             cid = "behavior_"+hashlib.sha256((namespace+":"+str(idx)).encode()).hexdigest()[:32]
             notes = " ".join(str(params.get("notes") or "").split())[:300]
-            context = BEHAVIOR_CONTEXT+(" — "+notes if notes else "")+" ["+cid+"]"
+            # The commitment id is its identity; it never goes into text the user reads.
+            # Rows written before this keep their " [behavior_…]" suffix (see
+            # AssistantStore.prepare_nudge_write, which accepts both forms).
+            context = BEHAVIOR_CONTEXT+(" — "+notes if notes else "")
             end = params.get("end_ts")
             actions.append(dict(idx=idx,type=action.type,id=cid,title=title,when_ts=float(when),kind=kind,
                 context=context,end_ts=float(end) if kind=="event" and _finite(end) and end>when else None))
@@ -1210,6 +1220,25 @@ class BehaviorRuntime:
         prepared = _PreparedDelivery(self,store,nudge.id,payload,witness,plan,ledger,float(now),_delivery_issuer)
         self._prepared_deliveries.add(prepared)
         return prepared
+
+    def auto_actions_held(self, store, now: float) -> bool:
+        """Whether automatic routine actions are still only offered.
+
+        A new install learns from a few days of history at most, so its first
+        guesses go to the user as suggestions. Automatic adds start once the
+        user has marked any nudge Useful (tapping an offered action does that)
+        or used Undo, or AUTO_ACTION_TRIAL_S after first launch. An install that
+        predates the first-launch marker never waits."""
+        with self._db_lock:
+            engaged = self._db.execute("SELECT 1 FROM kv WHERE key=?", (_ENGAGED_KEY,)).fetchone() or self._db.execute(
+                "SELECT 1 FROM nudges WHERE verdict IN ('useful','undo') LIMIT 1").fetchone()
+        if engaged is not None:
+            return False
+        try:
+            first = store.first_launch_at()
+        except Exception:  # noqa: BLE001 — unknown history: offer, never act
+            return True
+        return first is not None and now - first < AUTO_ACTION_TRIAL_S
 
     def _commit_delivery(self, store, hub, prepared, loop):
         """One explicit synchronous logical publication; no await or live callbacks."""
@@ -1557,6 +1586,9 @@ class BehaviorRuntime:
             self.call("feedback", Feedback(nudge_id=nudge_id, verdict=verdict, ts=self.clock()))
             with self._db_lock, self._db:
                 self._db.execute("UPDATE nudges SET verdict=? WHERE id=?", (verdict, nudge_id))
+                if verdict in {"useful", "undo"}:
+                    # Kept apart from the per-nudge verdict, which a later answer overwrites.
+                    self._db.execute("INSERT OR IGNORE INTO kv VALUES (?,?)", (_ENGAGED_KEY, "1"))
             self.retire_event(store, nudge_id)
 
     def undo(self, store, nudge_id: str) -> list[dict]:

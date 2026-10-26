@@ -283,11 +283,14 @@ final class SettingsLoader: ObservableObject {
         CloudProviderPreset(id: "custom", label: "OpenAI-compatible", provider: "openai-compatible",
                             baseURL: "", apiPrefix: "/v1"),
     ]
+    // No "Everything" option: running all of Wisp (Ask, Brief, mail sync,
+    // memory, tool results) on the cloud model is too wide for one checkbox.
+    // The backend still honours `everything` set in config by hand; the
+    // caption below then says so, and Disconnect returns to local models.
     let cloudRoleOptions = [
         (id: "reasoning", label: "Reasoning"),
         (id: "coding", label: "Coding"),
         (id: "research", label: "Research"),
-        (id: "everything", label: "Everything"),
     ]
 
     // "research" is deliberately last and optional: service/research/
@@ -602,7 +605,8 @@ final class SettingsLoader: ObservableObject {
 
     func setCloudRole(_ role: String, enabled: Bool) {
         var next = cloudRoles
-        // "Everything" runs all of Wisp on the cloud model, so it stands alone.
+        // "Everything" (only ever from config now) runs all of Wisp on the
+        // cloud model, so it stands alone.
         if enabled && role == "everything" { next = [] }
         if enabled && role != "everything" { next.remove("everything") }
         if enabled { next.insert(role) } else { next.remove(role) }
@@ -1643,7 +1647,7 @@ struct SettingsView: View {
                                     Text(loader.superModelEnabled
                                          ? "Super Model overrides these workload choices while it is on. Public web tools run locally; the cloud model explains their results."
                                          : loader.cloudRoles.contains("everything")
-                                         ? "All of Wisp runs on this model, like a local model: Ask, Brief, summaries, drafts and tools. Your mail, texts and calendar go to the provider. Wisp restarts its engine to apply."
+                                         ? "All of Wisp runs on this model (set in config.yaml): Ask, Brief, summaries, drafts and tools. Your mail, texts and calendar go to the provider. Disconnect to return to local models."
                                          : "Fast routing, message/email summaries, embeddings, and tool execution stay local.")
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }

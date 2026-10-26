@@ -60,6 +60,21 @@ enum FirstRunSetup {
     /// unfinished, so it comes back instead of being silently given up.
     static func closeFinishes(finished: Bool, ready: Bool) -> Bool { finished || ready }
 
+    /// Wisp can answer: a local model is ready, or every role runs on a remote
+    /// provider (/setup/status `remote_only`). SetupStatus holds the rule.
+    static func canAnswer(ready: Bool, remoteOnly: Bool) -> Bool {
+        SetupStatus.canAnswer(ready: ready, remoteOnly: remoteOnly)
+    }
+
+    /// Whether the readers that make macOS ask may start on their own. While the
+    /// window is up it asks row by row; after an early close they stay held, so
+    /// nothing fires Calendar, Reminders, Mail and Notes prompts back to back,
+    /// and the window comes back next launch to ask in context. They start once
+    /// setup finished or Wisp can answer.
+    static func readerGateLifts(windowUp: Bool, finished: Bool, canAnswer: Bool) -> Bool {
+        !windowUp && (finished || canAnswer)
+    }
+
     /// The notch's setup cue after one /setup/status answer, on every launch: while
     /// Wisp can't answer and no first-run window is up, the quiet cue (the `!` and
     /// a one-line row on Ask), never the full card; it goes once Wisp can answer.
@@ -95,13 +110,15 @@ enum KnowYouOffer {
         var dismissedToMenuBar = false
         /// The person chose Tell Wisp about you this session: never offer it again.
         var chosenThisSession = false
+        /// The service said About you is complete: no more checks this session.
+        var profileComplete = false
     }
 
     /// Nothing else on screen and nothing the person is doing. Checked before
     /// asking the service, and again with its answer.
     static func quiet(_ m: Moment) -> Bool {
         !(m.firstRunWindowUp || m.setupWindowUp || m.setupCardOpen || m.replying || m.flowOpen
-          || m.panelInUse || m.dismissedToMenuBar || m.chosenThisSession)
+          || m.panelInUse || m.dismissedToMenuBar || m.chosenThisSession || m.profileComplete)
     }
 
     static func shouldOffer(_ m: Moment, serviceOffers: Bool) -> Bool { serviceOffers && quiet(m) }
@@ -376,11 +393,14 @@ final class FirstRunPermissions: ObservableObject {
         activeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { Task { await self?.refresh() } }
+            MainActor.assumeIsolated { _ = Task { await self?.refresh() } }
         }
+        // Ends with its owner too, not only on stop(): a view torn down without
+        // onDisappear must not leave a 2 s loop running for the life of the app.
         poll = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refresh()
+                guard let self else { return }
+                await self.refresh()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }

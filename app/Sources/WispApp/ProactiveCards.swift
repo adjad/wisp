@@ -97,7 +97,8 @@ final class ProactiveActions: ObservableObject {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String
-            return ProactiveOutcome(ok: false, message: detail ?? "Wisp couldn't do that (\(status)).")
+            // The service's own sentence when it sent one; never a bare status code.
+            return ProactiveOutcome(ok: false, message: detail ?? "Wisp couldn't do that. Try again.")
         }
         return ProactiveOutcome.parse(data)
     }
@@ -110,6 +111,12 @@ final class ProactiveActions: ObservableObject {
     /// service reports success; a failure keeps it, with the reason.
     func fire(_ card: ProactiveCard, today: TodayModel) async {
         guard fires[card.id] != .sending, let action = card.action else { return }
+        // A reply is sent only from its shown draft: a tap while the draft is
+        // closed opens it and sends nothing.
+        if action.primaryStep(draftOpen: openDrafts.contains(card.id)) == .openDraft {
+            openDrafts.insert(card.id)
+            return
+        }
         fires[card.id] = .sending
         var body: [String: Any] = ["draft": draft(card)]
         if !action.recipient.isEmpty { body["recipient"] = action.recipient }
@@ -254,6 +261,11 @@ struct ProactiveBriefSection: View {
     var scrollCap: CGFloat? = 300
     /// HOOK(W3): told when Reply is tapped on a thread.
     var onReply: ((ProactiveThread) -> Void)? = BriefReplyHook.onReply
+    /// Which sources Wisp could read (the workspace's source_coverage), so no
+    /// row gives an all-clear for one it couldn't.
+    var coverage: [SourceAccess] = []
+
+    private var unread: [SourceAccess] { proactive.unreadSources(coverage) }
 
     private static let todoLimit = 6
     @State private var hoveredThread: String? = nil
@@ -265,6 +277,7 @@ struct ProactiveBriefSection: View {
     var body: some View {
         let shown = proactive.only(chosen)
         VStack(alignment: .leading, spacing: 12) {
+            if !unread.isEmpty { accessRows(unread) }
             if let work = proactive.workLine {
                 HStack(spacing: 6) {
                     Image(systemName: "sparkles").font(.system(size: 10)).foregroundStyle(Theme.textSecondary)
@@ -279,7 +292,7 @@ struct ProactiveBriefSection: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1)
                 dayRow
                 Rectangle().fill(Theme.hairline).frame(height: 1)
-                expandingRow("todos", icon: "checklist", text: shown.todoLine,
+                expandingRow("todos", icon: "checklist", text: shown.todoLine(unread: unread),
                              empty: shown.todos.isEmpty) { todoList(shown) }
             }
         }
@@ -295,6 +308,32 @@ struct ProactiveBriefSection: View {
             }
             actions.settleAnalyze(latest())
         }
+    }
+
+    // MARK: Sources Wisp couldn't read
+
+    /// One quiet row per source Wisp couldn't read: what's wrong, and the
+    /// setting that fixes it (Full Disk Access for texts, Calendars, …).
+    private func accessRows(_ rows: [SourceAccess]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(rows, id: \.source) { access in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: DayTimeline.sourceSymbol(access.source)).font(.system(size: 10.5))
+                        .foregroundStyle(Theme.textMuted).frame(width: 15)
+                    Text(access.headline).font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .help(access.detail)
+                    Spacer(minLength: 6)
+                    if let fix = access.fix, let url = URL(string: fix.url) {
+                        NotchChrome.small(fix.label) { NSWorkspace.shared.open(url) }
+                            .help(access.detail)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sources Wisp can't read yet")
     }
 
     // MARK: Accounts
@@ -388,7 +427,11 @@ struct ProactiveBriefSection: View {
 
     private var emptyCardsLine: String {
         if proactive.isWorking { return "Cards land here as Wisp reads." }
-        if proactive.isUnavailable { return "Not caught up yet — tap ✦ to read your mail and texts." }
+        if proactive.isUnavailable || proactive.hasReadNothing {
+            let reason = proactive.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            return reason.isEmpty ? "Not caught up yet. Tap ✦ to read your mail and texts." : reason
+        }
+        if !unread.isEmpty { return "Nothing to get ahead of in what Wisp could read." }
         return "Nothing to get ahead of right now."
     }
 
@@ -461,13 +504,16 @@ struct ProactiveBriefSection: View {
                     .lineSpacing(1.5).lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if draftOpen, let action { draftEditor(card, action) }
+            // A reply's Send sits inside its shown draft; the card's own button
+            // only opens the draft (ProactiveCard.Action.primaryStep).
+            let sendInDraft = draftOpen && action?.sendsDraft == true
+            if draftOpen, let action { draftEditor(card, action, fire: fire, withSend: sendInDraft) }
             HStack(alignment: .center, spacing: 12) {
-                if let action { fireButton(card, action, fire) }
+                if let action, !sendInDraft { fireButton(card, action, fire) }
                 if action?.method == "block_time" {
                     secondary("Pick another time") { model.tab = .day }
                         .help("Open Day to choose a different time")
-                } else if hasDraft {
+                } else if hasDraft && (draftOpen || action?.sendsDraft != true) {
                     secondary(draftOpen ? "Hide the draft" : "Read the draft",
                               chevron: draftOpen ? "chevron.up" : "chevron.down") {
                         if draftOpen { actions.openDrafts.remove(card.id) } else { actions.openDrafts.insert(card.id) }
@@ -555,8 +601,10 @@ struct ProactiveBriefSection: View {
             .padding(.horizontal, 12).padding(.vertical, 5)
             .background(Capsule().fill(Theme.chipOn))
         default:
+            let draftOpen = actions.openDrafts.contains(card.id)
             Button { Task { await actions.fire(card, today: today); model.onResize() } } label: {
-                Text(isFailed(fire) ? "Try again" : buttonLabel(action))
+                Text(isFailed(fire) && (draftOpen || !action.sendsDraft) ? "Try again"
+                     : action.sendsDraft ? action.primaryLabel(draftOpen: draftOpen) : buttonLabel(action))
                     .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Color.black)
                     .lineLimit(1)
                     .padding(.horizontal, 13).padding(.vertical, 5)
@@ -565,7 +613,9 @@ struct ProactiveBriefSection: View {
             }
             .buttonStyle(.plain)
             .fixedSize()
-            .help(action.sendsDraft ? "Sends exactly the draft below, after you've read it" : card.why)
+            .help(action.sendsDraft ? (draftOpen ? "Sends exactly the draft above, as it reads now"
+                                                 : "Shows the draft first; nothing is sent until you tap Send")
+                  : card.why)
         }
     }
 
@@ -574,7 +624,8 @@ struct ProactiveBriefSection: View {
         return false
     }
 
-    private func draftEditor(_ card: ProactiveCard, _ action: ProactiveCard.Action) -> some View {
+    private func draftEditor(_ card: ProactiveCard, _ action: ProactiveCard.Action, fire: ProactiveActions.Fire? = nil,
+                             withSend: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             if let source = card.sources.first(where: { !$0.quote.isEmpty }) {
                 Text((source.who.isEmpty ? "" : source.who + ": ") + "“" + source.quote + "”")
@@ -598,6 +649,10 @@ struct ProactiveBriefSection: View {
             if actions.drafts[card.id].map({ $0 != action.draft }) == true {
                 Text("Edited — Wisp sends your version.").font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
             }
+            if withSend {
+                // Send, under the words it sends and the person it sends them to.
+                fireButton(card, action, fire).padding(.top, 2)
+            }
         }
         .padding(.top, 2)
     }
@@ -613,7 +668,7 @@ struct ProactiveBriefSection: View {
 
     /// "11:45 AM Hack Day · 12 PM Hacktoberfest", then Day ›.
     private var dayRow: some View {
-        let line = events.isEmpty ? "Nothing else on your calendar today"
+        let line = events.isEmpty ? ProactiveState.emptyDayLine(calendarUnread: unread.contains { $0.source == "calendar" })
             : events.prefix(3).map { today.clock($0.start) + " " + $0.title }.joined(separator: " · ")
         return Button { model.tab = .day } label: {
             HStack(alignment: .firstTextBaseline, spacing: 9) {
@@ -768,8 +823,13 @@ struct ProactiveBriefSection: View {
                    trailing: waiting == 0 ? "" : "· \(waiting) need\(waiting == 1 ? "s" : "") a reply")
                 .padding(.bottom, 4)
             if threads.isEmpty {
-                Text("Nothing in your inbox or texts needs you.")
-                    .font(.system(size: 12.5)).foregroundStyle(Theme.textMuted)
+                // An all-clear only when both were read; the rows above say why not.
+                if let line = ProactiveState.attentionEmptyLine(unread: unread) {
+                    Text(line).font(.system(size: 12.5)).foregroundStyle(Theme.textMuted)
+                } else {
+                    Text("No mail or texts to show from what Wisp could read.")
+                        .font(.system(size: 12.5)).foregroundStyle(Theme.textMuted)
+                }
             } else {
                 ForEach(visible) { thread in threadRow(thread) }
                 if threads.count > Self.attentionLimit {
