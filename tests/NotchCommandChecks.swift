@@ -16,6 +16,8 @@ struct NotchCommandChecks {
         check(NotchCommand.match("  /Today \n") == .today, "case and surrounding space are ignored")
         check(NotchCommand.match("/new") == .new, "/new runs")
         check(NotchCommand.match("/window") == .window, "/window runs")
+        check(NotchCommand.match("/demo") == .demo, "/demo runs")
+        check(NotchCommand.match("/d") == .demo, "/d is only /demo")
         for command in NotchCommand.allCases {
             check(NotchCommand.match(command.title) == command, "\(command.title) matches itself")
         }

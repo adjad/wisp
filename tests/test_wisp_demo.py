@@ -1,4 +1,4 @@
-"""scripts/wisp_demo.py: a fresh demo home, then the real one restored exactly.
+"""service/demo_mode.py (scripts/wisp_demo.py, the notch's /demo): a fresh demo home, then the real one restored exactly.
 
 Runs against a scratch home and a scratch UserDefaults domain; never touches ~/.moe.
 """
@@ -8,13 +8,14 @@ import plistlib
 import socket
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import wisp_demo  # noqa: E402
+from service import demo_mode as wisp_demo
 
 
 def _tree(root: Path) -> dict[str, bytes]:
@@ -125,3 +126,41 @@ def test_refuses_when_the_settings_backup_is_not_written(world, monkeypatch):
     assert not world.active() and (world.live / "assistant.db").is_file()
     assert not (world.live / wisp_demo.DEFAULTS_BACKUP).exists()
     assert _defaults(world.domain)                  # nothing was cleared
+
+
+def test_waits_for_wisp_to_quit_when_asked(world):
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    world.ports = (server.getsockname()[1],)
+    threading.Timer(1.5, server.close).start()
+    world.start(wait=20)
+    assert world.active()
+
+
+def _cli(world, *args):
+    return [sys.executable, "-m", "service.demo_mode", "--home", str(world.home),
+            "--domain", world.domain, "--app-name", world.app_name, "--ports", "", *args]
+
+
+def test_cli_preflight_refuses_before_anything_moves(world):
+    result = subprocess.run(_cli(world, "stop", "--detach"), capture_output=True, text=True,
+                            cwd=Path(__file__).resolve().parents[1])
+    assert result.returncode == 1 and "No demo is running" in result.stderr
+    assert not (world.home / "Library").exists()          # never detached
+
+
+def test_cli_detach_returns_at_once_and_finishes_in_the_background(world):
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(_cli(world, "start", "--detach", "--wait", "5"),
+                            capture_output=True, text=True, cwd=root, timeout=10)
+    assert result.returncode == 0, result.stderr
+    deadline = time.monotonic() + 15
+    while not (world.live / wisp_demo.DEMO_MARK).is_file() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    log = world.home / "Library" / "Logs" / "Wisp" / "demo.log"
+    while "Carried over" not in (log.read_text() if log.exists() else "") and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert world.active() and "Demo started" in log.read_text()
+    subprocess.run(_cli(world, "stop"), check=True, capture_output=True, cwd=root)
+    assert (world.live / "assistant.db").read_bytes() == b"real commitments"
