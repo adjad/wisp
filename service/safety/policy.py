@@ -950,56 +950,61 @@ def shell_grant_problem(args: dict) -> str | None:
     return None
 
 
-# MCP tools named for an action that leaves a mark outside Wisp. Under full
-# access every other MCP action runs without a card; these still ask. The
-# name is the server's own claim, so this only ever adds a card. Registered
-# names are lowercased and squashed (`mcp_<server>_sendmessage`), so the
-# longer verbs count anywhere in the name. Short or noun-like words (add,
-# set, run, post, message...) count only as a whole word, so `get_address`,
-# `settings` or `get_messages` do not ask; a read that does contain one of
-# these words just gets a card.
-_MCP_EFFECT_STEMS = ("send", "delete", "remove", "trash", "create", "update", "modify",
-                     "share", "publish", "upload", "forward", "reply", "invite", "write",
-                     "transfer", "purchase", "cancel", "archive", "comment", "merge",
-                     "submit", "execute", "insert", "notify", "manage", "append", "replace",
-                     "resize", "rename", "restore", "export", "draft")
-# Whole words only: as substrings these sit inside reads (copyright, important,
-# information, unclear, labels, restart).
-_MCP_EFFECT_WORDS = frozenset({"post", "push", "run", "edit", "save", "add", "set", "put",
-                               "book", "pay", "order", "message", "email", "move", "copy",
-                               "import", "clear", "format", "batch", "label", "start", "apply",
-                               "complete", "respond"})
-# Words that are nouns as often as verbs. In a name that also says get, read,
-# list or the like (getOrderStatus, readMessage, getEmailThread, getPostById,
-# get_gmail_messages_content_batch) they name the thing being read.
-_MCP_NOUN_VERBS = frozenset({"message", "email", "order", "post", "batch"})
-_MCP_READ_VERBS = frozenset({"get", "read", "list", "search", "find", "fetch", "query", "view",
-                             "show", "check", "lookup", "describe", "count", "inspect", "download"})
+# MCP actions under full access: an allowlist, not a list of write verbs.
+# Write verbs never run out (patch, fork, rerun, dismiss, close, exercise...),
+# so an mcp_action runs without a card only when its own tool name, without
+# the mcp_<server>_ prefix, STARTS with a read verb and holds no effect word
+# anywhere. Everything else asks. The name is the server's own claim, so this
+# only ever decides between asking and not; trusted_read_only and the
+# readOnlyHint/destructiveHint handling (service.mcp._category_for) decide
+# mcp_read separately and are unchanged. Names are judged in their
+# registered form: lowercased, with every non-alphanumeric made `_`.
+_MCP_READ_VERBS = frozenset({"get", "list", "search", "read", "fetch", "query", "find", "view",
+                             "check", "inspect", "describe", "lookup", "count", "show", "preview",
+                             "render", "retrieve"})
+# Backstop for names that start with a read verb: any of these, as a whole
+# word, means it asks (search_and_post, query_post, get_and_delete...).
+_MCP_EFFECT_WORDS = frozenset({
+    "send", "delete", "remove", "trash", "create", "update", "modify", "share", "publish",
+    "upload", "forward", "reply", "invite", "write", "transfer", "purchase", "cancel", "archive",
+    "comment", "merge", "submit", "execute", "insert", "notify", "manage", "append", "replace",
+    "resize", "rename", "restore", "export", "draft", "post", "push", "run", "edit", "save", "add",
+    "set", "put", "book", "pay", "order", "move", "copy", "import", "clear", "format", "batch",
+    "label", "start", "apply", "complete", "respond", "mark", "patch", "fork", "star", "rerun",
+    "assign", "dismiss", "close", "duplicate", "request", "exercise", "trade", "buy", "sell",
+    "approve", "subscribe", "unsubscribe", "enable", "disable", "toggle", "trigger",
+})
+# And as a substring of a squashed word (getandsend, readthensubmit).
+_MCP_EFFECT_STEMS = ("send", "delete", "remove", "create", "update", "modify", "upload",
+                     "forward", "transfer", "purchase", "submit", "execute", "insert", "publish")
 
 
-# Objects a short verb is squashed onto in a lowercased name: chat_postmessage,
-# pushfiles, putobject, runworkflow. Only these count, so settings, address,
-# runtime and postgres stay plain words.
-_MCP_OBJECTS = re.compile(
-    r"(?:message|file|object|workflow|comment|issue|event|item|record|row|doc|document|page|task"
-    r"|note|status|tweet|post|job|command|query|data|value|label|tag|channel|reaction|email|mail"
-    r"|chat|invite|payment|order|entry|branch|commit|card|ticket|repo|reply|link|request)s?$")
+def _mcp_tool_part(tool: str) -> str | None:
+    """The tool's own name, without its mcp_<server>_ prefix, as registered.
+    None for an mcp_ name whose server boundary is unknown: it then asks."""
+    name = str(tool or "").lower()
+    try:
+        from service.mcp import TOOL_PARTS
+        if (part := TOOL_PARTS.get(name)) is not None:
+            return part
+    except ImportError:
+        pass
+    return None if name.startswith("mcp_") else name
 
 
 def mcp_effect_word(tool: str | None) -> str | None:
-    """The action word in an MCP tool's name that warrants a card, or None."""
-    raw = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(tool or ""))   # sendMessage -> send_Message
-    name = raw.lower()
-    if (stem := next((w for w in _MCP_EFFECT_STEMS if w in name), None)):
+    """Why an mcp_action needs a card even under full access, or None when its
+    name plainly reads (see above)."""
+    part = _mcp_tool_part(str(tool or ""))
+    if part is None:
+        return "change things (its name does not say it only reads)"
+    words = [w for w in re.split(r"[_\-.]+", part) if w]
+    if not words or words[0] not in _MCP_READ_VERBS:
+        return "change things (its name does not start with get, list, search or read)"
+    if (word := next((w for w in words[1:] if w in _MCP_EFFECT_WORDS), None)):
+        return word
+    if (stem := next((s for s in _MCP_EFFECT_STEMS if any(s in w for w in words)), None)):
         return stem
-    words = re.split(r"[^a-z0-9]+", name)
-    reading = bool(_MCP_READ_VERBS.intersection(words))
-    for word in words:
-        if word in _MCP_EFFECT_WORDS and not (reading and word in _MCP_NOUN_VERBS):
-            return word
-        for verb in _MCP_EFFECT_WORDS:
-            if word.startswith(verb) and _MCP_OBJECTS.fullmatch(word[len(verb):]):
-                return verb
     return None
 
 
@@ -1389,13 +1394,14 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
                         "installs a new tool that can run on this machine going "
                         "forward — review the code shown above before approving")
 
-    # An MCP tool named for sending, deleting, creating, updating or sharing
-    # asks even under full access (a grant above can still answer it).
+    # An MCP action asks even under full access unless its name plainly only
+    # reads (mcp_effect_word). A grant above can still answer it.
     if category == "mcp_action" and (word := mcp_effect_word(tool)):
         if read_only():
             return Decision(Tier.DENY, "view-only mode: MCP actions are disabled")
-        return Decision(Tier.CONFIRM, f"an MCP tool that can {word} things outside Wisp — "
-                        "confirmed even with full access")
+        reason = (f"an MCP tool that can {word}" if " " in word
+                  else f"an MCP tool that can {word} things outside Wisp")
+        return Decision(Tier.CONFIRM, reason + " — confirmed even with full access")
 
     if _FULL_ACCESS:
         # Auto-allow everything else; the floor and every confirm above already ran.
@@ -1471,8 +1477,8 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     # pointed Wisp at is trusted enough to run, not trusted enough to decide
     # its own permissions — see _category_for for why only a read annotation
     # can lower the tier, and never the reverse. Outside full access every
-    # mcp_action asks. Under full access only the ones mcp_effect_word names
-    # ask (above); the rest run, like any other full-access action.
+    # mcp_action asks. Under full access only a plain lookup runs without a
+    # card (mcp_effect_word, above).
     if category == "mcp_read":
         return Decision(Tier.ALLOW, "read-only MCP tool")
     if category == "mcp_action":

@@ -148,15 +148,6 @@ def test_ordinary_files_are_unchanged(full_access, tmp_path):
                          tool="write_file").tier is policy.Tier.ALLOW
 
 
-@pytest.mark.parametrize("name,tier", [
-    ("mcp_gmail_send_message", policy.Tier.CONFIRM), ("mcp_drive_sharefile", policy.Tier.CONFIRM),
-    ("mcp_calendar_delete_event", policy.Tier.CONFIRM), ("mcp_docs_create_doc", policy.Tier.CONFIRM),
-    ("mcp_docs_get_doc", policy.Tier.ALLOW), ("mcp_gmail_search_messages", policy.Tier.ALLOW),
-])
-def test_mcp_tools_named_for_effects_ask_under_full_access(name, tier, full_access):
-    assert policy.decide("mcp_action", {}, tool=name).tier is tier
-
-
 @pytest.mark.parametrize("cmd", [
     "python3 tidy.py", "/usr/bin/python3 x.py", "bash run.sh", "zsh -c 'ls'", "node a.js",
     "osascript a.scpt", "curl https://example.com", "env FOO=1 ls", "xargs rm", "open -a Mail",
@@ -380,19 +371,6 @@ def test_huge_commands_are_refused_quickly_without_parsing(full_access):
     assert policy.read_only_shell_argv("ls " + "a" * 100_000) is None
 
 
-@pytest.mark.parametrize("name", ["slack_post_message", "github_add_issue_comment", "push_files",
-                                  "merge_pull_request", "post_tweet", "execute_sql", "run_command",
-                                  "mcp_gh_create_or_update_file", "mcp_mail_email_contact"])
-def test_more_mcp_effect_names_ask(name, full_access):
-    assert policy.decide("mcp_action", {}, tool=name).tier is policy.Tier.CONFIRM
-
-
-@pytest.mark.parametrize("name", ["mcp_gmail_search_messages", "mcp_x_get_address", "mcp_x_get_settings",
-                                  "mcp_pg_postgres_query", "mcp_docs_get_doc"])
-def test_mcp_reads_with_lookalike_names_do_not(name, full_access):
-    assert policy.decide("mcp_action", {}, tool=name).tier is policy.Tier.ALLOW
-
-
 @pytest.mark.parametrize("reader,category", [
     ("get_recent_activity", "assistant_read"), ("daily_brief", "assistant_read"),
     ("get_upcoming", "assistant_read"), ("clipboard_read", "system_read"),
@@ -545,12 +523,6 @@ def test_the_too_long_reason_does_not_coach_the_model(full_access):
     assert "run it themselves" in reason and "Split" not in reason and "shorter" not in reason
 
 
-@pytest.mark.parametrize("name", ["mcp_slack_chat_postmessage", "mcp_gh_pushfiles", "mcp_s3_putobject",
-                                  "mcp_ci_runworkflow", "mcp_x_sendMessage"])
-def test_squashed_and_camel_case_mcp_verbs_ask(name, full_access):
-    assert policy.decide("mcp_action", {}, tool=name).tier is policy.Tier.CONFIRM
-
-
 @pytest.mark.parametrize("tool,category,args,arms", [
     ("list_running_apps", "system_read", {}, True), ("wisp_skills", "wisp_admin", {}, True),
     ("wisp_mcp", "wisp_admin", {}, True), ("run_shell", "shell", {"cmd": "ls Downloads"}, True),
@@ -595,42 +567,115 @@ list_gmail_filters list_gmail_labels list_script_deployments list_sheet_tables l
 list_spreadsheets list_task_lists list_tasks query_freebusy read_sheet_values render_page_to_image
 search_contacts search_custom search_docs search_drive_files search_gmail_messages search_messages
 """.split()
-# A read whose name holds a write word ("shareable"): it asks, which is safe.
-WORKSPACE_READS_THAT_ASK = ["get_drive_shareable_link"]
 
 
-def _workspace_tier(name, annotations=None):
-    from service.mcp import _category_for
+@pytest.fixture
+def registered_mcp():
+    """Register synthetic MCP tools through the real MCPManager._register, so
+    each is judged by its real registered, lowercased name and tool part."""
+    from service import mcp
+    from service.tools.registry import REGISTRY
+    manager, added = mcp.MCPManager(), []
+
+    class Server:
+        def __init__(self, name, tools, config=None):
+            self.name, self.tools, self.config = name, tools, config or {}
+
+    def register(server, *tools, annotations=None, config=None):
+        specs = [{"name": t, **({"annotations": annotations} if annotations else {})} for t in tools]
+        before = set(manager._registered)
+        manager._register(Server(server, specs, config))
+        names = sorted(set(manager._registered) - before)
+        added.extend(names)
+        return names
+    yield register
+    for name in added:
+        REGISTRY.pop(name, None)
+        mcp.TOOL_PARTS.pop(name, None)
+
+
+def _tier(name):
+    from service.tools.registry import REGISTRY
+    return policy.decide(REGISTRY[name].category, {}, tool=name).tier
+
+
+# Reads that do not lead with a read verb (debug, download, generate) or hold
+# an effect word (batch): they ask, which is safe.
+WORKSPACE_READS_THAT_ASK = ["debug_table_structure", "download_chat_attachment", "generate_trigger_code",
+                            "get_gmail_messages_content_batch", "get_gmail_threads_content_batch"]
+
+
+def test_workspace_tool_lists_cover_all_of_2_2_0():
+    assert len(set(WORKSPACE_WRITES) - {"clear_completed_tasks"}) == 59
+    assert len(WORKSPACE_READS) + 1 == 54 and not set(WORKSPACE_READS) & set(WORKSPACE_WRITES)
+
+
+def test_every_workspace_write_asks_with_full_access_on(full_access, registered_mcp):
     from service.google_workspace import TRUSTED_READ_ONLY
-    spec = {"name": name, **({"annotations": annotations} if annotations else {})}
-    category = _category_for(spec, {"trusted_read_only": list(TRUSTED_READ_ONLY)})
-    return policy.decide(category, {}, tool=f"mcp_google_workspace_{name}").tier
+    config = {"trusted_read_only": list(TRUSTED_READ_ONLY)}
+    for annotations in (None, {"readOnlyHint": True}):     # a false read-only label gains nothing
+        for name in registered_mcp("google_workspace", *WORKSPACE_WRITES,
+                                   annotations=annotations, config=config):
+            assert _tier(name) is policy.Tier.CONFIRM, name
 
 
-@pytest.mark.parametrize("name", WORKSPACE_WRITES)
-def test_every_workspace_write_asks_with_full_access_on(name, full_access):
-    assert _workspace_tier(name) is policy.Tier.CONFIRM, name
-    # A server that falsely labels a write read-only gains nothing.
-    assert _workspace_tier(name, {"readOnlyHint": True}) is policy.Tier.CONFIRM, name
+def test_workspace_reads_with_full_access_on(full_access, registered_mcp):
+    reads = WORKSPACE_READS + ["get_drive_shareable_link"]
+    names = registered_mcp("google_workspace", *reads)
+    asked = sorted(n.removeprefix("mcp_google_workspace_") for n in names
+                   if _tier(n) is policy.Tier.CONFIRM)
+    assert asked == sorted(set(WORKSPACE_READS_THAT_ASK) & set(reads)), asked
 
 
-@pytest.mark.parametrize("name", WORKSPACE_READS)
-def test_workspace_reads_run_with_full_access_on(name, full_access):
-    assert _workspace_tier(name) is policy.Tier.ALLOW, name
+RE_REVIEW_WRITES = [
+    ("notion", "API-patch-page"), ("notion", "API-patch-block-children"),
+    ("notion", "notion-duplicate-page"), ("github", "fork_repository"), ("github", "star_repository"),
+    ("github", "rerun_failed_jobs"), ("github", "request_copilot_review"),
+    ("github", "assign_copilot_to_issue"), ("github", "dismiss_notification"),
+    ("github", "mark_all_notifications_read"), ("alpaca", "close_position"),
+    ("alpaca", "close_all_positions"), ("alpaca", "exercise_options_position"),
+    ("linear", "close_issue"), ("linear", "assign_issue"), ("slack", "postToChannel"),
+    ("gmail", "mark_email_as_read"), ("social", "search_and_post"), ("social", "query_post"),
+    ("brave-search", "post_message"), ("brave_search", "post_message"), ("brave-search", "pwn"),
+    ("slack", "chat_postMessage"), ("gh", "pushFiles"), ("s3", "putObject"), ("ci", "runWorkflow"),
+    ("gh", "create_or_update_file"), ("mail", "email_contact"), ("shop", "order"),
+    ("x", "readMessage"), ("x", "getEmailThread"),       # squashed when registered: no read verb leads
+]
 
 
-@pytest.mark.parametrize("name", WORKSPACE_READS_THAT_ASK)
-def test_workspace_reads_with_a_write_word_ask(name, full_access):
-    assert _workspace_tier(name) is policy.Tier.CONFIRM
+@pytest.mark.parametrize("server,tool", RE_REVIEW_WRITES)
+def test_names_from_the_re_review_ask(server, tool, full_access, registered_mcp):
+    (name,) = registered_mcp(server, tool)
+    assert name == "mcp_" + "".join(c if c.isalnum() else "_" for c in f"{server}_{tool}".lower())
+    assert _tier(name) is policy.Tier.CONFIRM, name
 
 
-@pytest.mark.parametrize("name", ["readMessage", "getEmailThread", "getOrderStatus", "getPostById",
-                                  "mcp_x_getpostbyid", "mcp_shop_get_order_status"])
-def test_noun_like_words_in_reads_do_not_ask(name, full_access):
-    assert policy.decide("mcp_action", {}, tool=name).tier is policy.Tier.ALLOW
+@pytest.mark.parametrize("server,tool", [
+    ("linear", "get_issue"), ("slack", "list_channels"), ("slack", "search_messages"),
+    ("fs", "read_file"), ("chat", "get_messages"), ("notion", "query_database"),
+    ("brave-search", "search"), ("google_workspace", "get_drive_shareable_link"),
+])
+def test_common_reads_stay_card_free(server, tool, full_access, registered_mcp):
+    (name,) = registered_mcp(server, tool)
+    assert _tier(name) is policy.Tier.ALLOW, name
 
 
-@pytest.mark.parametrize("name", ["slack_post_message", "post_tweet", "mcp_shop_order",
-                                  "mcp_x_email_contact", "mcp_x_message_channel"])
-def test_noun_like_words_still_ask_as_actions(name, full_access):
-    assert policy.decide("mcp_action", {}, tool=name).tier is policy.Tier.CONFIRM
+@pytest.mark.parametrize("server,tool", [("shop", "get_order_status"), ("blog", "get_post_by_id")])
+def test_reads_naming_an_effect_word_ask(server, tool, full_access, registered_mcp):
+    # The backstop is whole-word and does not guess at nouns: query_post must
+    # ask, so get_post_by_id does too. Over-asking only adds a card.
+    (name,) = registered_mcp(server, tool)
+    assert _tier(name) is policy.Tier.CONFIRM
+
+
+def test_an_unregistered_mcp_name_asks(full_access):
+    # Without its registration the server boundary is unknown, so even a
+    # read-looking name asks: "mcp_brave_search_pwn" must not read as a search.
+    assert policy.decide("mcp_action", {}, tool="mcp_brave_search_pwn").tier is policy.Tier.CONFIRM
+    assert policy.decide("mcp_action", {}, tool="mcp_docs_get_doc").tier is policy.Tier.CONFIRM
+
+
+def test_outside_full_access_every_mcp_action_still_asks(full_access, registered_mcp, monkeypatch):
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    (name,) = registered_mcp("linear", "get_issue")
+    assert _tier(name) is policy.Tier.CONFIRM
