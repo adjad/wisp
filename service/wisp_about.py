@@ -87,6 +87,26 @@ def _cloud_state() -> tuple[str, str]:
     return "", ""
 
 
+def _auto_add_on() -> bool:
+    """Whether the Brief may add a time-sensitive event or deadline to Calendar
+    or Reminders on its own (service/proactive/autoadd.py). Off by default."""
+    try:
+        from service.config import proactive_auto_add_enabled
+        return proactive_auto_add_enabled()
+    except Exception:  # noqa: BLE001 - say less rather than claim more
+        return True
+
+
+def _confirm_line() -> str:
+    """What Wisp asks before it acts. Sending always waits for an OK; calendar
+    and reminder changes do too, unless auto-add is on."""
+    if _auto_add_on():
+        return ("Before anything is sent, I show it to you and wait for your OK. Because auto-add "
+                "is on, I may add a time-sensitive event or deadline to your Calendar or Reminders "
+                "on my own, then tell you, with Undo.")
+    return "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
+
+
 def _user_name() -> str:
     try:
         from service.memory.profile import load
@@ -148,8 +168,7 @@ def _can_lines(tools: set[str]) -> list[str]:
         ("move events on your calendar", {"update_event"})) if needed <= tools]
     if acts:
         joined = "; ".join(acts) if len(acts) > 2 else " and ".join(acts)
-        lines.append(joined[0].upper() + joined[1:] + ". Before anything is sent, or your "
-                     "calendar changes, I show it to you and wait for your OK.")
+        lines.append(joined[0].upper() + joined[1:] + ". " + _confirm_line())
     looks = [label for label, needed in (
         ("search the web", {"web_search"}), ("check the weather", {"get_weather"}),
         ("do quick math", {"calculate"})) if needed <= tools]
@@ -163,12 +182,24 @@ def _can_lines(tools: set[str]) -> list[str]:
     return lines
 
 
+def _greeting() -> str:
+    """The overview's first line. "Runs on this Mac" is said only when it is true."""
+    cloud, host = _cloud_state()
+    if cloud == "everything":
+        return (f"**Hi, I'm Wisp.** Right now I'm answering with a cloud model at {host}, not on "
+                "this Mac. Turn it off in **Settings** to keep everything here.")
+    if cloud == "super":
+        return (f"**Hi, I'm Wisp.** My AI runs right here on this Mac. You've also turned on a "
+                f"cloud model, so questions it answers go to {host}.")
+    return "**Hi, I'm Wisp.** My AI runs right here on this Mac."
+
+
 def overview() -> str:
     """"What can you do?": what Wisp does (only usable features), which sources
     it can read right now, three try-its that fit them, and where things are."""
     tools = _usable_tools()
     sources = _sources()
-    out = ["**Hi, I'm Wisp.** My AI runs right here on this Mac.", "", "**What I can do**"]
+    out = [_greeting(), "", "**What I can do**"]
     out += ["- " + line for line in _can_lines(tools)]
     out.append("- Google: your account is connected, so I read its Gmail and Calendar too."
                if _google_connected() else
@@ -190,8 +221,20 @@ def overview() -> str:
 
 def identity() -> str:
     name = _user_name()
-    out = ["I'm **Wisp**, your assistant in the Mac's notch. My AI runs on this Mac, so I can help "
-           "with your calendar, reminders, mail, messages and notes without sending them to a server.",
+    cloud, host = _cloud_state()
+    if cloud == "everything":
+        intro = ("I'm **Wisp**, your assistant in the Mac's notch. I help with your calendar, "
+                 "reminders, mail, messages and notes. Right now a cloud model is on, so what you "
+                 f"ask, and the data a reply needs, is sent to {host} to be answered.")
+    elif cloud == "super":
+        intro = ("I'm **Wisp**, your assistant in the Mac's notch. My AI runs on this Mac and helps "
+                 "with your calendar, reminders, mail, messages and notes. You've also turned on a "
+                 f"cloud model, so questions it answers go to {host}.")
+    else:
+        intro = ("I'm **Wisp**, your assistant in the Mac's notch. My AI runs on this Mac, so I can "
+                 "help with your calendar, reminders, mail, messages and notes without sending them "
+                 "to a server.")
+    out = [intro,
            "",
            "Open me any time with **⌥Space** or by moving the pointer to the notch. Ask me anything, "
            "check **Brief** for your day at a glance, or **Day** for today's timeline."]
@@ -221,8 +264,11 @@ def privacy() -> str:
             out.append("- No cloud AI is used unless you turn one on in **Settings**.")
     out += ["- Some things have to go online: web searches, weather, stocks and research. "
             "If you connect Google, I fetch that account's mail and calendar from Google.",
-            "- I never send a message or email, or change your calendar, without showing it "
-            "to you first.",
+            ("- I never send a message or email without showing it to you first. Because "
+             "auto-add is on, I may add a time-sensitive event or deadline to your Calendar or "
+             "Reminders on my own, then tell you, with Undo." if _auto_add_on() else
+             "- I never send a message or email, or change your calendar, without showing it "
+             "to you first."),
             "- You decide what I can read, in System Settings → Privacy & Security.",
             "- To see or erase what I know about you: **/about** for Getting to know you, and "
             "**/memory** for things I've remembered."]

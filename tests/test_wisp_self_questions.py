@@ -166,3 +166,48 @@ def test_specific_howto_answers_only_that_step():
     full = wisp_about.howto("How do I use Wisp?")
     assert full.startswith("**Getting started with Wisp**") and "⌥Space" in full
 
+
+# Audit 32649065: "runs on this Mac" and "never changes your calendar" are said
+# only when they are true.
+LOCAL_CLAIMS = ("runs right here on this Mac", "without sending them to a server")
+
+
+@pytest.mark.parametrize("host", ["api.example.com", "your cloud provider"])
+def test_overview_and_identity_never_claim_local_when_everything_runs_in_the_cloud(monkeypatch, host):
+    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("everything", host))
+    for text in (wisp_about.overview(), wisp_about.identity()):
+        for claim in LOCAL_CLAIMS:
+            assert claim not in text, (claim, text[:200])
+        assert "cloud model" in text and host in text
+
+
+def test_overview_and_identity_say_local_when_it_is(monkeypatch):
+    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("", ""))
+    assert wisp_about.overview().startswith("**Hi, I'm Wisp.** My AI runs right here on this Mac.")
+    assert "without sending them to a server" in wisp_about.identity()
+
+
+def test_overview_and_identity_name_an_optional_cloud_model(monkeypatch):
+    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("super", "api.example.com"))
+    for text in (wisp_about.overview(), wisp_about.identity()):
+        assert "You've also turned on a cloud model" in text and "api.example.com" in text
+        assert "without sending them to a server" not in text
+
+
+def test_remote_only_build_reads_as_everything(monkeypatch):
+    from types import SimpleNamespace
+    import service.inference.remote_policy as remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile",
+                        lambda: SimpleNamespace(base_url="https://gpu.example.net/v1"))
+    assert wisp_about._cloud_state() == ("everything", "gpu.example.net")
+    assert "runs right here on this Mac" not in wisp_about.overview()
+
+
+def test_calendar_promise_follows_auto_add(monkeypatch):
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    assert "or change your calendar, without showing it" in wisp_about.privacy()
+    assert "or your calendar changes, I show it to you" in wisp_about.overview()
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
+    for text in (wisp_about.privacy(), wisp_about.overview()):
+        assert "change your calendar" not in text and "calendar changes" not in text
+        assert "auto-add is on" in text and "Undo" in text
