@@ -2272,6 +2272,20 @@ print('external venv readable; private home and writes denied')
         self.assertIn("    needs: full\n", signed)
         self.assertIn("    needs: full\n", adhoc)
 
+    def test_artifact_quota_cannot_fail_a_passing_gate(self):
+        """Copies kept for people are non-fatal; the evidence kept for main and tags stays strict."""
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        for job_name in ("preview", "simulation-qa", "full"):
+            job = self.workflow_job(workflow, job_name)
+            for line in job.splitlines():
+                if not line.strip().startswith("- name: Upload"):
+                    continue
+                name = line.strip()[len("- name: "):]
+                step = self.workflow_step(job, name)
+                strict = job_name == "full" and name in ("Upload verified candidate", "Upload verified mini artifact",
+                                                         "Upload isolated ACL qualification report")
+                self.assertEqual("continue-on-error: true" in step, not strict, f"{job_name}: {name}")
+
     def test_required_check_aggregates_the_event_gates_on_the_exact_head(self):
         workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
         verify = self.workflow_job(workflow, "verify")

@@ -45,15 +45,19 @@ enum Notifications {
         catch { return false }
     }
 
-    static func post(title: String, body: String) {
+    static func post(id: String = "", title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         if !body.isEmpty { content.body = body }
         content.sound = .default
-        let req = UNNotificationRequest(identifier: UUID().uuidString,
+        let req = UNNotificationRequest(identifier: id.isEmpty ? UUID().uuidString : id,
                                         content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req)
     }
+
+    /// "Wisp is ready" after first-run setup; clicking it opens Ask, not Day.
+    static let readyId = "wisp.setup.ready"
+    @MainActor static var onOpenAsk: (@MainActor () -> Void)?
 
     /// Removes an already-delivered notification (e.g. a nudge the user
     /// answered from the overlay card instead).
@@ -129,7 +133,11 @@ final class NudgeNotificationDelegate: NSObject, UNUserNotificationCenterDelegat
         let content = response.notification.request.content
         guard content.categoryIdentifier.hasPrefix(Notifications.nudgeCategory) else {
             if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
-                Task { @MainActor in Notifications.onOpenToday?() }
+                if response.notification.request.identifier == Notifications.readyId {
+                    Task { @MainActor in Notifications.onOpenAsk?() }
+                } else {
+                    Task { @MainActor in Notifications.onOpenToday?() }
+                }
             }
             completionHandler()
             return

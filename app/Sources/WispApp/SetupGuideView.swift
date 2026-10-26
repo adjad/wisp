@@ -62,6 +62,12 @@ struct SetupStatus: Decodable {
     let checks: [Check]
     let disclosure: String
     let configurationToken: String?
+    /// Every role on a remote provider: nothing to download (service/setup/guide.py).
+    var remoteOnly: Bool? = nil
+    var canAnswer: Bool { Self.canAnswer(ready: ready, remoteOnly: remoteOnly == true) }
+    /// Wisp can answer: a ready local model, or nothing to download. The one rule
+    /// for finishing setup, the menu, the setup cue and the readers.
+    static func canAnswer(ready: Bool, remoteOnly: Bool) -> Bool { ready || remoteOnly }
 }
 
 // MARK: - Model
@@ -94,7 +100,9 @@ final class SetupGuideModel: ObservableObject {
     private var testGeneration = 0
     // Automatic first-setup steps run at most once per app session each; the
     // visible buttons stay for retries.
-    private var autoStartedEngine = false
+    /// Read by the first-run window: a start Wisp made by itself that left nothing
+    /// running offers Try again there.
+    private(set) var autoStartedEngine = false
     private var autoAppliedModels = Set<String>()
     private var statusGeneration = 0
     private var downloadGeneration = 0

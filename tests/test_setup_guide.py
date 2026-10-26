@@ -89,6 +89,8 @@ def test_gemma_repo_name_is_the_model_id_and_its_profile_is_set():
     # Thinking off returns zero tokens after a tool result on this model.
     assert p["enable_thinking"] is True
     assert p["mtp_enabled"] is True and p["max_context_window"] == 16384
+    # TurboQuant KV was briefly the default and was withdrawn (user decision).
+    assert not any(key.startswith("turboquant_") for key in p)
 
 
 def test_mellum_repo_name_is_the_model_id():
@@ -918,3 +920,19 @@ def test_omlx_settings_written_after_launch_are_picked_up(tmp_path, monkeypatch)
     settings.write_text('{"auth": {"api_key": "second-key"}}')
     os.utime(settings, ns=(1, 10**18))
     assert config.omlx_settings()["auth"]["api_key"] == "second-key"
+
+
+def test_status_says_when_a_remote_provider_answers(monkeypatch):
+    # The app keeps a "not set up" cue up while ready is false; a remote-only Wisp
+    # answers without a local model, so it must be able to tell.
+    from service.inference import remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)
+    assert _status()["remote_only"] is False
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
+    assert _status()["remote_only"] is True
+
+    def invalid():
+        from service.config.endpoints import EndpointConfigurationError
+        raise EndpointConfigurationError("bad profile")
+    monkeypatch.setattr(remote_policy, "remote_only_profile", invalid)
+    assert _status()["remote_only"] is False
