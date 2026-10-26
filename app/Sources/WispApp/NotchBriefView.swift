@@ -183,7 +183,7 @@ struct NotchBriefView: View {
                 tileList(tile, shown.detail).id(tile.rawValue)
                     .transition(reduceMotion ? .identity : .opacity)
             } else {
-                topList(brief.top, glance: brief.glance, unread: brief.unread).id("top")
+                topList(brief.top, glance: brief.glance, unread: brief.unread, uncheckedMail: brief.uncheckedMail).id("top")
                     .transition(reduceMotion ? .identity : .opacity)
             }
         }
@@ -278,7 +278,8 @@ struct NotchBriefView: View {
     // MARK: - Rows
 
     /// The default view: the Top 3, then what mail and texts are about.
-    private func topList(_ all: [BriefDetail.Line], glance: [BriefDetail.Line], unread: [String] = []) -> some View {
+    private func topList(_ all: [BriefDetail.Line], glance: [BriefDetail.Line], unread: [String] = [],
+                         uncheckedMail: UncheckedMail = UncheckedMail()) -> some View {
         // A row the service just confirmed cleared or done leaves at once; the
         // refreshed plan then fills its place.
         let lines = all.filter { line in line.need.map { !needActions.isHidden($0) } ?? true }
@@ -288,7 +289,7 @@ struct NotchBriefView: View {
                 Text("TOP 3").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                     .accessibilityAddTraits(.isHeader)
                 if lines.isEmpty {
-                    row(BriefDetail.Line(id: "empty", leading: "", text: BriefTiles.emptyTop(unread: unread), muted: true), width: width)
+                    row(BriefDetail.Line(id: "empty", leading: "", text: BriefTiles.emptyTop(unread: unread, uncheckedMail: uncheckedMail), muted: true), width: width)
                 } else {
                     ForEach(lines) { row($0, width: width) }
                 }
@@ -479,6 +480,8 @@ struct BriefContent {
     /// Today's sources Wisp couldn't read ("calendar", "reminders", "email",
     /// "messages"): the lede and the Top 3 never give an all-clear for them.
     let unread: [String]
+    /// Google accounts Wisp couldn't check, named wherever mail is unread.
+    let uncheckedMail: UncheckedMail
 
     init(plan: TodayPlan, today: TodayModel, composed: ComposedBrief?) {
         let now = today.now.timeIntervalSince1970
@@ -512,6 +515,7 @@ struct BriefContent {
         let calendarAccess = calendarKnown ? nil : plan.access("calendar")
         let remindersAccess = plan.access("reminders")
         unread = isToday ? plan.unreadSources.filter { $0 != "calendar" || !calendarKnown } : []
+        uncheckedMail = isToday ? plan.uncheckedMail : UncheckedMail()
         // The service's pick from the same attention items as the Day tab's Needs you.
         let needsList = isToday ? plan.workspace?.needs_you.flatMap { picked in
             DayTimeline.needsYouList(picked.items.map { NeedsYouInput(id: $0.id, kind: $0.kind, text: $0.text,
@@ -525,7 +529,8 @@ struct BriefContent {
                                 dueToday: dueToday, overdue: overdue, next: next, othersNeedYou: needsList != nil,
                                 openingOverride: time.opening(weekday: weekday, isToday: isToday,
                                                               load: calendarKnown ? load.verdict : nil, events: loadEvents),
-                                dueReference: time.duePhrase(isToday: isToday), unread: unread)
+                                dueReference: time.duePhrase(isToday: isToday), unread: unread,
+                                uncheckedMail: uncheckedMail)
 
         func coverage(_ source: String) -> DailySourceCoverage? {
             plan.workspace?.source_coverage.first { $0.source == source }
@@ -606,7 +611,8 @@ struct BriefContent {
         } : nil
         top = BriefTiles.top(picked: needsList?.rows ?? [], todos: todayDetail.lines, next: nextEvent)
         let rows = DayTimeline.briefLines(calendar: nil,
-                                          mail: mailTile.map { (ready: $0.ready, needing: mailNeeds) },
+                                          // Partly read mail shows its headline here, not "Nothing needs a reply".
+                                          mail: mailTile.map { (ready: $0.ready && $0.access?.readable != false, needing: mailNeeds) },
                                           texts: coverage("messages").map { (ready: $0.ready, needing: textNeeds) },
                                           textsNeedAccess: textsBlocked,
                                           mailAccess: mailTile?.access, textsAccess: coverage("messages")?.access,

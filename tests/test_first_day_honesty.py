@@ -281,6 +281,128 @@ def test_mail_counts_as_read_only_through_a_connected_fresh_google_account():
     assert read["unread"] == ["messages"] and read["mail_read_by"] == ["ada@gmail.com"]
 
 
+def test_one_stale_google_account_leaves_mail_partly_read():
+    """Mail is fully read only when every connected Google account was read
+    (or Mail.app covered it). One stale account of two: no all-clear."""
+    from service.proactive import cycle
+    ready = [dict(source="email", ready=True)]
+    partly = cycle.honest({}, ready, ["home@gmail.com"], ["work@gmail.com"])
+    assert partly["unread"] == ["email"] and partly["mail_unread_by"] == ["work@gmail.com"]
+    assert partly["mail_read_by"] == ["home@gmail.com"]
+    # Mail.app unreadable too, one Google account fresh, one stale: still partly.
+    assert cycle.honest({}, [dict(source="email", ready=False)], ["home@gmail.com"], ["work@gmail.com"])["unread"] \
+        == ["email"]
+    both = cycle.honest({}, [dict(source="email", ready=False)], ["home@gmail.com", "work@gmail.com"], [])
+    assert both["unread"] == [] and both["mail_unread_by"] == []
+
+
+def _google_accounts(monkeypatch, tmp_path, now, *, fresh, stale):
+    import json
+    from service import gmail_source
+    from service.tools import email_tools as E
+    good = dict(refresh_token="r", client_id="c", workspace=True, workspace_requested=True)
+    config = tmp_path / "gmail.json"
+    config.write_text(json.dumps({"accounts": {a: dict(good) for a in fresh + stale}}))
+    monkeypatch.setattr(gmail_source, "CONFIG_PATH", config)
+    monkeypatch.setattr(gmail_source, "_errors", {})
+    receipts = {a: dict(headers_verified=True, headers_at=now - 30) for a in fresh}
+    receipts.update({a: dict(headers_verified=True, headers_at=now - 3600) for a in stale})
+    monkeypatch.setattr(E, "_external_accounts", receipts)
+    monkeypatch.setattr(E, "_source_receipt", lambda value: float(value or 0))
+    monkeypatch.setattr(E, "_email_available", False)
+    return E
+
+
+def test_google_mail_status_names_the_account_it_could_not_check(monkeypatch, tmp_path):
+    from service.proactive import cycle
+    now = 1_790_000_000.0
+    _google_accounts(monkeypatch, tmp_path, now, fresh=["home@gmail.com"], stale=["work@gmail.com"])
+    assert cycle.google_mail_status(now) == (["home@gmail.com"], ["work@gmail.com"], {"work@gmail.com": "syncing"})
+    _google_accounts(monkeypatch, tmp_path, now, fresh=["home@gmail.com", "work@gmail.com"], stale=[])
+    assert cycle.google_mail_status(now) == (["home@gmail.com", "work@gmail.com"], [], {})
+
+
+def test_reconnect_only_when_the_person_must_act(monkeypatch, tmp_path):
+    """A receipt restored at launch (unverified) or a slow sync is "syncing":
+    Wisp hasn't finished checking. Only an expired sign-in, missing mail
+    access, or a sign-in needing reconnect says "reconnect"."""
+    from service import gmail_source
+    from service.proactive import cycle
+    now = 1_790_000_000.0
+    E = _google_accounts(monkeypatch, tmp_path, now, fresh=[],
+                         stale=["restored@gmail.com", "slow@gmail.com", "expired@gmail.com", "denied@gmail.com"])
+    E._external_accounts["restored@gmail.com"] = dict(headers_verified=False, headers_at=now - 5)
+    import json
+    cfg = json.loads(gmail_source.CONFIG_PATH.read_text())
+    cfg["accounts"]["expired@gmail.com"]["auth_expired"] = 1.0
+    gmail_source.CONFIG_PATH.write_text(json.dumps(cfg))
+    monkeypatch.setattr(gmail_source, "_errors", {"denied@gmail.com": "Gmail read access is missing"})
+    _, unread, reasons = cycle.google_mail_status(now)
+    assert reasons == {"restored@gmail.com": "syncing", "slow@gmail.com": "syncing",
+                       "expired@gmail.com": "reconnect", "denied@gmail.com": "reconnect"}
+    view = cycle.honest({}, [dict(source="email", ready=True)], [], unread, reasons)
+    assert view["unread"] == ["email"] and view["mail_unread_reasons"] == reasons
+
+
+def _h2(account, account_id, n=1, ts=1_789_999_000.0):
+    return "\n".join(f"H2\x01{ts}\x01U\x01{account}\x01{account_id}\x01Ann\x01ann@example.com\x01<m{n}-{i}@x>\x01Hi {i}"
+                     for i in range(n))
+
+
+def _mail_app(monkeypatch, E, now, headers):
+    """Mail.app read just now, with this header snapshot; the real H2, C2 and
+    C3 parsing runs on it (native_email_accounts is never mocked)."""
+    monkeypatch.setattr(E, "_email_available", True)
+    monkeypatch.setattr(E, "_email_read_source", "mail_app")
+    monkeypatch.setattr(E, "_native_headers_at", now - 10)
+    monkeypatch.setattr(E, "_swift_headers", headers)
+    E._refresh_native_bindings()   # as cache_emails does on every Mail.app post
+
+
+def test_mail_app_covers_a_stale_google_account_only_with_header_rows_it_read(monkeypatch, tmp_path):
+    from service.proactive import cycle
+    now = 1_790_000_000.0
+    E = _google_accounts(monkeypatch, tmp_path, now, fresh=[], stale=["work@gmail.com"])
+    _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "UUID-W"))
+    assert cycle.google_mail_status(now) == ([], [], {})
+    view = cycle.honest({}, [dict(source="email", ready=True)], *cycle.google_mail_status(now))
+    assert view["unread"] == [] and view["mail_unread_by"] == []
+    # Mail.app holds other accounts only: the Google account is still unchecked.
+    _mail_app(monkeypatch, E, now, _h2("me@icloud.com", "UUID-I"))
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"]
+    # Mail.app's own read is old: it can't vouch for anything.
+    _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "UUID-W"))
+    monkeypatch.setattr(E, "_native_headers_at", now - 3600)
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"]
+
+
+def test_an_interrupted_or_skipped_scan_never_covers_the_account(monkeypatch, tmp_path):
+    from service.proactive import cycle
+    now = 1_790_000_000.0
+    E = _google_accounts(monkeypatch, tmp_path, now, fresh=[], stale=["work@gmail.com"])
+    # The scan of that very account was interrupted: no header rows were read.
+    _mail_app(monkeypatch, E, now, "C3\x01work@gmail.com\x01UUID-W\x01interrupted\n" + _h2("me@icloud.com", "UUID-I"))
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"]
+    assert any(r["name"] == "work@gmail.com" for r in E.native_email_accounts()), \
+        "the marker does list the account; listing it is not reading it"
+    # Rows from before an interruption in the same snapshot don't count either.
+    _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "UUID-W") + "\nC3\x01work@gmail.com\x01UUID-W\x01failed")
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"]
+    # Every header skipped (C2 attempted == skipped).
+    _mail_app(monkeypatch, E, now, "C2\x01work@gmail.com\x01UUID-W\x013\x013\x011")
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"]
+    view = cycle.honest({}, [dict(source="email", ready=True)], *cycle.google_mail_status(now))
+    assert view["unread"] == ["email"], "no all-clear for mail Wisp never read"
+
+
+def test_accounts_on_the_same_domain_do_not_cover_each_other(monkeypatch, tmp_path):
+    from service.proactive import cycle
+    now = 1_790_000_000.0
+    E = _google_accounts(monkeypatch, tmp_path, now, fresh=[], stale=["work@company.com"])
+    _mail_app(monkeypatch, E, now, _h2("home@company.com", "UUID-H") + "\n" + _h2("home@company.com", "", n=1))
+    assert cycle.google_mail_status(now)[1] == ["work@company.com"]
+
+
 def test_google_mail_read_is_narrow_and_strict(monkeypatch, tmp_path):
     """Only a fresh, verified, error-free mail sync on an unexpired sign-in
     counts; a calendar error or missing Workspace scopes don't matter. The

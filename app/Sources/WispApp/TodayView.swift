@@ -143,13 +143,10 @@ struct TodayPlan: Decodable {
                                 reason: health.reason)
         }
         if let row = workspace?.source_coverage.first(where: { $0.source == source }) {
-            // Mail Mail.app couldn't give counts as read when a connected Google
-            // account read it recently (ProactiveState.mailReadBy), the same rule
-            // the proactive section applies, so the top line and it agree.
-            if source == "email", !row.access.readable, !(workspace?.proactive?.mailReadBy ?? []).isEmpty {
-                return SourceAccess(source: source, ready: true)
-            }
-            return row.access
+            // Mail by the one rule the proactive section uses too
+            // (SourceAccess.mail), so the top line, the tile and it agree.
+            return source == "email" ? SourceAccess.mail(row.access, readBy: mailReadBy, unchecked: uncheckedMail)
+                : row.access
         }
         if Self.workspaceOnly.contains(source) { return SourceAccess(source: source, ready: false, state: "unavailable") }
         return nil
@@ -159,11 +156,17 @@ struct TodayPlan: Decodable {
     /// connected Google account read the mail, the tile reads as ready with no
     /// Mail.app access problem, as the top line says. Nil when the workspace
     /// says nothing about mail.
+    /// `ready` means there is read mail to show; with an account unchecked the
+    /// access is not readable, and the tile names it over what was read.
     var mailTile: (ready: Bool, access: SourceAccess?)? {
         guard let row = workspace?.source_coverage.first(where: { $0.source == "email" }) else { return nil }
-        let access = access("email")
-        return (ready: row.ready || access?.readable == true, access: access)
+        return (ready: row.ready || !mailReadBy.isEmpty, access: access("email"))
     }
+
+    /// Google accounts whose mail Wisp read, and ones it couldn't check.
+    var mailReadBy: [String] { workspace?.proactive?.mailReadBy ?? [] }
+    var mailUnreadBy: [String] { workspace?.proactive?.mailUnreadBy ?? [] }
+    var uncheckedMail: UncheckedMail { workspace?.proactive?.uncheckedMail ?? UncheckedMail() }
 
     /// Sources the plan's own health never reports.
     static let workspaceOnly: Set<String> = ["email", "messages"]

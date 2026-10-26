@@ -224,7 +224,13 @@ struct BriefDetail: Equatable {
         }
         let written = prose?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let section = written.isEmpty ? summary ?? [] : [written]
-        var lines = written.isEmpty
+        // Partly read (one Google account unchecked): what was read, under a
+        // line naming what wasn't, so the list never reads as all the mail.
+        var lines: [Line] = []
+        if let access, !access.readable {
+            lines.append(Line(id: "access", leading: "", text: access.headline, muted: true))
+        }
+        lines += written.isEmpty
             ? section.prefix(8).enumerated().map { Line(id: "summary-\($0.offset)", leading: "", text: $0.element) }
             : [Line(id: "prose", leading: "", text: written, paragraph: true)]
         let said = BriefMail.words(section.joined(separator: " "))
@@ -687,8 +693,8 @@ enum BriefTiles {
 
     /// The Top 3's line when it lists nothing: an all-clear only once every
     /// source behind it has been read, else which ones Wisp can't see.
-    static func emptyTop(unread: [String]) -> String {
-        unread.isEmpty ? "Nothing needs you right now" : SourceAccess.cantSee(unread)
+    static func emptyTop(unread: [String], uncheckedMail: UncheckedMail = UncheckedMail()) -> String {
+        unread.isEmpty ? "Nothing needs you right now" : SourceAccess.cantSee(unread, uncheckedMail: uncheckedMail)
     }
 
     static func top(picked: [NeedsYouRow], todos: [BriefDetail.Line], next: BriefDetail.Line?, limit: Int = 3) -> [BriefDetail.Line] {

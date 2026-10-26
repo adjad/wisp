@@ -610,6 +610,61 @@ struct TodayPlanChecks {
               "Google-read mail: the tile shows mail, not the Mail.app problem: \(tileLines)")
         check(plan.mailTile?.ready == false && plan.mailTile?.access?.state == .syncing,
               "without Google the tile keeps the coverage row's state")
+        // Two Google accounts, one stale: mail is only partly read. No all-clear
+        // anywhere, and the stale account is named.
+        func mailPlan(emailReady: Bool, readBy: [String], unreadBy: [String],
+                      reasons: [String: String] = [:]) throws -> TodayPlan {
+            var body = payload
+            var ws = payload["workspace"] as! [String: Any]
+            ws["source_coverage"] = [["source": "email", "ready": emailReady, "detail": "", "inspected": 0, "omitted": 0],
+                                     ["source": "messages", "ready": true, "detail": "", "inspected": 0, "omitted": 0]]
+            ws["proactive"] = ["state": "ready", "accounts": ["me"] + readBy + unreadBy,
+                               "mail_read_by": readBy, "mail_unread_by": unreadBy, "mail_unread_reasons": reasons]
+            body["workspace"] = ws
+            return try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: body))
+        }
+        let partly = try mailPlan(emailReady: false, readBy: ["home@gmail.com"], unreadBy: ["work@gmail.com"],
+                                  reasons: ["work@gmail.com": "reconnect"])
+        check(partly.unreadSources == ["calendar", "email"] && partly.access("email")?.headline == "Couldn't check work@gmail.com",
+              "one stale account of two: mail partly read and named: \(partly.unreadSources)")
+        check(partly.mailTile?.ready == true && partly.mailTile?.access?.readable == false, "the tile shows what was read")
+        let partlyLines = BriefDetail.mail(needing: [], ready: true, access: partly.mailTile?.access).lines.map(\.text)
+        check(partlyLines.first == "Couldn't check work@gmail.com" && !partlyLines.contains("Nothing needs a reply"),
+              "the tile names the unchecked account, never an all-clear: \(partlyLines)")
+        let partlyLede = DayTimeline.lede(weekday: "Thursday", isToday: true, load: nil, dueToday: [], overdue: [], next: nil,
+                                          unread: ["email"], uncheckedMail: partly.uncheckedMail)
+        check(partlyLede.contains("Wisp couldn't check work@gmail.com") && !partlyLede.contains("Nothing needs you"),
+              "the top line names it: \(partlyLede)")
+        check(BriefTiles.emptyTop(unread: partly.unreadSources, uncheckedMail: partly.uncheckedMail)
+                == "Wisp can't see your calendar yet. Wisp couldn't check work@gmail.com. Reconnect in Settings.",
+              "the empty Top 3 names it too")
+        let partlyProactive = partly.workspace?.proactive?.unreadSources(
+            partly.workspace?.source_coverage.map(\.access) ?? []).map(\.source)
+        check(partlyProactive == ["email"], "the proactive rule agrees: \(partlyProactive ?? [])")
+        // Only stale (a restored receipt, a slow sync): never "reconnect", still no all-clear.
+        let restored = try mailPlan(emailReady: true, readBy: ["home@gmail.com"], unreadBy: ["work@gmail.com"],
+                                    reasons: ["work@gmail.com": "syncing"])
+        let restoredAccess = restored.access("email")
+        check(restored.unreadSources == ["calendar", "email"]
+              && restoredAccess?.headline == "Wisp hasn't finished checking work@gmail.com yet"
+              && !(restoredAccess?.detail.contains("Reconnect") ?? true),
+              "a stale account says Wisp is still checking, not reconnect: \(restoredAccess?.headline ?? "")")
+        let restoredLede = DayTimeline.lede(weekday: "Thursday", isToday: true, load: nil, dueToday: [], overdue: [], next: nil,
+                                            unread: ["email"], uncheckedMail: restored.uncheckedMail)
+        check(restoredLede.hasSuffix("Wisp hasn't finished checking work@gmail.com yet."), "top line: \(restoredLede)")
+        // A missing or odd reason reads as still checking, never as reconnect or all-clear.
+        let noReason = try mailPlan(emailReady: true, readBy: [], unreadBy: ["work@gmail.com"])
+        check(noReason.uncheckedMail == UncheckedMail(syncing: ["work@gmail.com"]) && noReason.unreadSources.contains("email"),
+              "no reason: still checking")
+        // Mail.app read fine but a Google account it doesn't hold is stale: still partly read.
+        let appPlusStale = try mailPlan(emailReady: true, readBy: [], unreadBy: ["work@gmail.com"])
+        check(appPlusStale.unreadSources.contains("email"), "Mail.app ready doesn't cover an unchecked Google account")
+        // Both fresh: fully read, even with Mail.app unreadable.
+        let bothFresh = try mailPlan(emailReady: false, readBy: ["home@gmail.com", "work@gmail.com"], unreadBy: [])
+        check(!bothFresh.unreadSources.contains("email") && bothFresh.mailTile?.access?.readable == true, "both fresh: read")
+        // One account plus Mail.app readable (the service found Mail.app covers it): fully read.
+        let oneAndApp = try mailPlan(emailReady: true, readBy: [], unreadBy: [])
+        check(!oneAndApp.unreadSources.contains("email") && oneAndApp.mailTile?.ready == true, "Mail.app read it all: read")
         var linkedOnly = googleWorkspace
         linkedOnly["proactive"] = ["state": "ready", "accounts": ["me", "ada@gmail.com"]]
         viaGoogle["workspace"] = linkedOnly
