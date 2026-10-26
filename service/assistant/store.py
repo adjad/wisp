@@ -105,6 +105,9 @@ DB_PATH = MOE_DIR / "assistant.db"
 QA_SEED_SOURCE = "wisp_seed"
 # Rows the user created in Wisp itself; never an authoritative replace-set.
 MANUAL_SOURCE = "manual"
+# assistant_completion keys owned by this module (see AssistantStore.__init__).
+FIRST_LAUNCH_KEY = "install:first_launch_at"
+CALENDAR_BASELINE_KEY = "reminders:first_calendar_baseline"
 
 
 def _seed_clause() -> str:
@@ -422,6 +425,19 @@ class AssistantStore:
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_completion (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL, completed_at REAL NOT NULL
                 )""")
+                # When this install first started, written once. A database that
+                # already holds anything is an upgrade, recorded as "0" (long ago),
+                # so first-day behaviour (the first Calendar sync baseline, the
+                # first Daily Summary's permission grace) never applies to it.
+                if self._db.execute("SELECT 1 FROM assistant_completion WHERE key=?",
+                                    (FIRST_LAUNCH_KEY,)).fetchone() is None:
+                    used = any(self._db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                               for table in ("commitments", "notify_log", "assistant_events",
+                                             "assistant_completion")
+                               ) or self._has_interrupted_migration()
+                    stamp = time.time()
+                    self._db.execute("INSERT OR IGNORE INTO assistant_completion VALUES (?,?,?)",
+                                     (FIRST_LAUNCH_KEY, "0" if used else repr(stamp), stamp))
                 self._migrate_unique_constraint()
                 cols = {r["name"] for r in self._db.execute("PRAGMA table_info(commitments)")}
                 for column in ("organizer", "account", "due_date"):
@@ -1466,10 +1482,35 @@ class AssistantStore:
                 ids.append(cid)
         return ids
 
-    def _invalidate_reminders(self) -> None:
-        for row in self._db.execute("SELECT id,target,payload FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
+    @staticmethod
+    def _reminder_expired(row, target: dict, now: float) -> bool:
+        """A reminder event is stale once its expiry passes. Rows queued before
+        events carried expires_at expire the same interval after their event time."""
+        from service.assistant.reminders import REMINDER_EXPIRY_S
+        expires = row["expires_at"]
+        if expires is None:
+            when = target.get("when_ts")
+            if type(when) not in (int, float) or not math.isfinite(when):
+                return False
+            expires = when + REMINDER_EXPIRY_S
+        return expires <= now
+
+    def _invalidate_reminders(self, event_id: str | None = None) -> None:
+        """Supersede pending reminders whose schedule changed or whose time passed.
+
+        With `event_id`, check only that one row: delivery calls this once per
+        event, and rechecking every pending reminder each time made a replay of
+        N reminders cost N² schedule reads."""
+        now = time.time()
+        query = "SELECT id,target,payload,expires_at FROM assistant_events WHERE kind='reminder' AND state='pending'"
+        rows = (self._db.execute(query + " AND id=?", (event_id,)).fetchall() if event_id is not None
+                else self._db.execute(query).fetchall())
+        for row in rows:
             target = json.loads(row["target"])
-            if target.get("type") == "reminder" and not self._reminder_targets(target, json.loads(row["payload"])):
+            if target.get("type") != "reminder":
+                continue
+            if (self._reminder_expired(row, target, now)
+                    or not self._reminder_targets(target, json.loads(row["payload"]))):
                 self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (row["id"],))
 
     def pending_events(self) -> list[dict]:
@@ -1480,10 +1521,54 @@ class AssistantStore:
 
     def event_attempt(self, event_id: str) -> bool:
         with self._write_transaction():
-            self._invalidate_reminders()
+            self._invalidate_reminders(event_id)
             return bool(self._db.execute(
                 "UPDATE assistant_events SET attempts=attempts+1,last_attempt_at=? "
                 "WHERE id=? AND state='pending'", (time.time(), event_id)).rowcount)
+
+    def native_alarm_covers(self, source_id: str, when_ts: float) -> bool:
+        """Whether Wisp's own verified write gave this Apple reminder an absolute
+        alarm at `when_ts` (to the minute). Timed creates and updates always add
+        one; a later change made in Reminders.app no longer matches, so Wisp's
+        own alert comes back for it."""
+        if not isinstance(source_id, str) or not source_id:
+            return False
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT kind,payload,result FROM assistant_events "
+                "WHERE kind IN ('create_reminder','update_reminder') AND result IS NOT NULL "
+                "AND instr(result, ?) > 0 ORDER BY created_at DESC,id DESC",
+                (json.dumps(source_id)[1:-1],)).fetchall()
+        for row in rows:
+            try:
+                payload, result = json.loads(row["payload"]), json.loads(row["result"])
+            except (TypeError, ValueError):
+                continue
+            if (not isinstance(result, dict) or result.get("ok") is not True
+                    or result.get("status") != "succeeded" or result.get("source_id") != source_id
+                    or not isinstance(payload, dict) or payload.get("all_day") is True):
+                continue
+            due = result.get("due_ts")
+            if type(due) in (int, float) and math.isfinite(due):
+                # The newest verified write decides: a later move elsewhere replaced the alarm.
+                return int(due // 60) == int(when_ts // 60)
+        return False
+
+    def first_launch_at(self) -> float | None:
+        """When this install first started; None for an install that predates the marker."""
+        value = self.completion(FIRST_LAUNCH_KEY)
+        try:
+            stamp = float(value) if value is not None else 0.0
+        except ValueError:
+            return None
+        return stamp if math.isfinite(stamp) and stamp > 0 else None
+
+    def record_completion(self, key: str, value: str) -> None:
+        """Store one small completion record (a key Wisp owns, never user text)."""
+        with self._write_transaction():
+            self._db.execute(
+                "INSERT INTO assistant_completion VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET "
+                "value=excluded.value, completed_at=excluded.completed_at", (key, value, time.time()))
 
     def completion(self, key: str) -> str | None:
         with self._lock:
@@ -2168,7 +2253,44 @@ class AssistantStore:
                              "(SELECT 1 FROM commitments WHERE id=commitment_id)")
             self._db.execute("DELETE FROM calendar_event_writable WHERE NOT EXISTS "
                              "(SELECT 1 FROM commitments WHERE id=commitment_id)")
+            if source == "calendar":
+                self._baseline_first_calendar_sync(now)
         return len(items)
+
+    def _baseline_first_calendar_sync(self, now: float) -> None:
+        """On a new install's first Calendar read, treat stages already past as sent.
+
+        Without this, granting Calendar access fires one alert per upcoming item
+        at once ("in 3 days", "in 20 min", "in 6 hours"…): every exam, deadline
+        and meeting whose lead time had already started before Wisp could see it.
+        Later stages still fire on time. Runs once, inside the sync transaction;
+        an upgraded install (first launch recorded as "0") only records the marker.
+        """
+        if self._db.execute("SELECT 1 FROM assistant_completion WHERE key=?",
+                            (CALENDAR_BASELINE_KEY,)).fetchone() is not None:
+            return
+        self._db.execute("INSERT OR IGNORE INTO assistant_completion VALUES (?,?,?)",
+                         (CALENDAR_BASELINE_KEY, repr(now), now))
+        first = self._db.execute("SELECT value FROM assistant_completion WHERE key=?",
+                                 (FIRST_LAUNCH_KEY,)).fetchone()
+        try:
+            fresh = first is not None and float(first[0]) > 0
+        except ValueError:
+            fresh = False
+        if not fresh:
+            return
+        from service.assistant.reminders import lapsed_stages
+        rows = self._db.execute(
+            "SELECT id, kind, when_ts FROM scheduled_commitments WHERE source='calendar' "
+            "AND status='active' AND all_day=0 AND when_ts >= ? AND when_ts <= ?",
+            (now - 300, now + 30 * 86400)).fetchall()
+        marks = []
+        for row in rows:
+            stages = lapsed_stages(row["kind"], row["when_ts"], now)
+            if stages:
+                for cid in [row["id"]] + self.duplicate_ids(row["id"]):
+                    marks.extend((cid, stage, now) for stage in stages)
+        self._db.executemany("INSERT OR IGNORE INTO notify_log VALUES (?,?,?)", marks)
 
     def _write_undated(self, snapshot: UndatedSnapshot, snapshot_started_at, now: float) -> None:
         """Replace the undated rows and their state. Call only inside a write transaction."""

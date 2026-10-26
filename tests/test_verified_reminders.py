@@ -414,6 +414,12 @@ def test_reschedule_back_to_notified_time_gets_new_generation(tmp_path: Path):
                  "title": "Take medicine", "due_ts": new})
         assert store.reminder_generation(native_id) != original_generation
         assert not store.already_notified(native_id, "due")
+        # Wisp's verified move gave the native reminder an alarm at `a`, so macOS
+        # alerts and Wisp's own "due" banner would be a duplicate.
+        assert store.native_alarm_covers("ek-123", a)
+        assert due_reminders(store, now=now) == []
+        # Without that alarm, the new generation is a new notification identity.
+        store.native_alarm_covers = lambda source_id, when_ts: False
         repeated = due_reminders(store, now=now)
         assert len(repeated) == 1 and repeated[0]["event_id"] != first[0]["event_id"]
     finally:
