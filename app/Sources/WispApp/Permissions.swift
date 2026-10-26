@@ -34,14 +34,31 @@ enum Permissions {
     /// so the link opens Wisp's own Permissions step instead, where one click on
     /// Allow asks macOS. Every other link opens as before.
     static func openFix(_ url: URL) {
-        if needsAskingInWisp(url.absoluteString,
-                             calendarUndecided: EKEventStore.authorizationStatus(for: .event) == .notDetermined,
-                             remindersUndecided: EKEventStore.authorizationStatus(for: .reminder) == .notDetermined,
-                             automationUndecided: FirstRunPermissions.automationStateNow(ask: false) == .notAsked) {
+        if asksInWisp(url.absoluteString) {
             NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
         } else {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// The link's words: while it opens Wisp's own Permissions step, it says so
+    /// instead of naming a System Settings page it won't open.
+    static func fixLabel(_ action: BriefDetail.Action) -> String {
+        asksInWisp(action.url) ? allowInWispLabel : action.label
+    }
+
+    static let allowInWispLabel = "Allow in Wisp…"
+
+    /// Live state for needsAskingInWisp, reading only what this link is about:
+    /// Automation's check (an Apple Event query) runs only for an Automation link.
+    private static func asksInWisp(_ url: String) -> Bool {
+        needsAskingInWisp(url,
+                          calendarUndecided: url.hasSuffix("Privacy_Calendars")
+                              && EKEventStore.authorizationStatus(for: .event) == .notDetermined,
+                          remindersUndecided: url.hasSuffix("Privacy_Reminders")
+                              && EKEventStore.authorizationStatus(for: .reminder) == .notDetermined,
+                          automationUndecided: url.hasSuffix("Privacy_Automation")
+                              && FirstRunPermissions.automationStateNow(ask: false) == .notAsked)
     }
 
     /// Pure: whether a settings link is for a permission macOS hasn't asked about yet.

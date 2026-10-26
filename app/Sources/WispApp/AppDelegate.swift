@@ -394,7 +394,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stepChanged: { step in UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey) },
             askKeyRegistered: hotKey?.registered ?? false,
             searchKeyRegistered: searchHotKey?.registered ?? false,
-            setupDone: defaults.bool(forKey: FirstRunSetup.doneKey),
+            // "Setup still unfinished" (started, not done), not "doneKey unset": someone
+            // who upgraded from a build without this window never had doneKey written,
+            // and opening Permissions… must not switch or test their model.
+            setupDone: !FirstRunSetup.isUnfinished { defaults.bool(forKey: $0) },
             aboutYouDecided: { UserDefaults.standard.set(true, forKey: FirstRunSetup.aboutYouDecidedKey) }))
     }
 

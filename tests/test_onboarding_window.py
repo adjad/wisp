@@ -112,4 +112,12 @@ def test_reopened_window_leaves_the_model_alone():
     drive = _body(setup, "private func drive(_ state: FirstRunBrain)")
     assert drive.lstrip("{ \n").startswith("guard FirstRunSetup.drivesModel(setupDone: setupDone) else { return }")
     app = _sources()["AppDelegate.swift"]
-    assert "setupDone: defaults.bool(forKey: FirstRunSetup.doneKey)" in app
+    assert "setupDone: !FirstRunSetup.isUnfinished { defaults.bool(forKey: $0) }" in app
+
+
+def test_fix_links_say_where_they_go():
+    """Every Brief/Day fix link opens through openFix and is labelled by fixLabel."""
+    for name in ("NotchBriefView.swift", "NotchDayView.swift", "ProactiveCards.swift"):
+        text = _sources()[name]
+        assert "Permissions.openFix(url)" in text and "Permissions.fixLabel" in text, name
+        assert "fix.label)" not in text, name

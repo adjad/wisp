@@ -225,7 +225,7 @@ struct NotchDayView: View {
             }
             Spacer(minLength: 6)
             if let fix = access.fix, let url = URL(string: fix.url) {
-                NotchChrome.small(fix.label) { Permissions.openFix(url) }
+                NotchChrome.small(Permissions.fixLabel(fix)) { Permissions.openFix(url) }
             }
         }
         .accessibilityElement(children: .combine)

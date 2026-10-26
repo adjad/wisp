@@ -66,6 +66,17 @@ struct FirstRunSetupChecks {
         // Opened again after setup (Permissions…, a Brief link): hands off the model.
         check(FirstRunSetup.drivesModel(setupDone: false) && !FirstRunSetup.drivesModel(setupDone: true),
               "Only first-run setup switches the model or tests it by itself")
+        // The window's setupDone is "not unfinished" (AppDelegate.onboardingContent).
+        func drives(_ keys: Set<String>) -> Bool {
+            FirstRunSetup.drivesModel(setupDone: !FirstRunSetup.isUnfinished { keys.contains($0) })
+        }
+        check(!drives([]), "Upgraded from a build without the window (neither key): Permissions… leaves the model alone")
+        check(drives([FirstRunSetup.startedKey]), "Fresh install or mid-setup (started, not done): drives the model")
+        check(!drives([FirstRunSetup.startedKey, FirstRunSetup.doneKey]), "Finished setup: leaves the model alone")
+        // A fresh install marks the window started before it opens, so it drives from the first frame.
+        var fresh: Set<String> = []
+        FirstRunSetup.takeOverLaunchPrompts { fresh.insert($0) }
+        check(drives(fresh), "Fresh install: the launch marks it started, so the window drives the model")
         // Quitting part-way: started and the taken-over keys are set, done is not.
         check(FirstRunSetup.shouldShow { set.contains($0) }, "Quit before finishing: the window opens again")
         check(!FirstRunSetup.shouldShow { set.contains($0) || $0 == FirstRunSetup.doneKey },
