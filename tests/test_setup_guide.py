@@ -22,6 +22,7 @@ from service.setup.engines import EngineProfile, EngineState, detect_external_en
 from service.setup.hardware import Hardware, current_hardware, detect_hardware
 
 Q6, Q5, Q4 = "Ling-3.0-tiny-oQ6e", "Ling-3.0-tiny-oQ5e", "Ling-3.0-tiny-oQ4e"
+GEMMA = "gemma-4-E4B-it-oQ4e-mtp"
 MELLUM = "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
 EMBED = "Qwen3-Embedding-0.6B-4bit-DWQ"
 
@@ -67,16 +68,26 @@ def test_hardware_rounds_real_memory_and_survives_failure():
 
 # --- recommendations --------------------------------------------------------
 
-def test_fresh_mac_downloads_ling_q6_at_24gb_and_q4_below():
+def test_fresh_mac_downloads_gemma_on_every_memory_size():
     missing = _status(ram=32, installed=[], roles=_roles(Q4))
-    assert missing["models"]["recommended"] == Q6
-    assert missing["models"]["download"]["model"] == Q6
-    assert missing["models"]["download"]["repo"] == catalog.by_id(Q6).repo
+    assert missing["models"]["recommended"] == GEMMA
+    assert missing["models"]["download"]["model"] == GEMMA
+    assert missing["models"]["download"]["repo"] == "Jundot/gemma-4-E4B-it-oQ4e-mtp"
     assert _check(missing, "model")["action"] == "download_model"
     assert not missing["ready"]
     small = _status(ram=16, installed=[], roles=_roles(MELLUM))
-    assert small["models"]["recommended"] == Q4
-    assert small["models"]["download"]["model"] == Q4
+    assert small["models"]["recommended"] == GEMMA
+    assert small["models"]["download"]["model"] == GEMMA
+
+
+def test_gemma_repo_name_is_the_model_id_and_its_profile_is_set():
+    model = catalog.by_id(GEMMA)
+    assert model.repo.split("/")[1] == GEMMA
+    p = model.engine_profile
+    assert (p["temperature"], p["top_p"], p["top_k"]) == (0.8, 0.95, 64)
+    # Thinking off returns zero tokens after a tool result on this model.
+    assert p["enable_thinking"] is True
+    assert p["mtp_enabled"] is True and p["max_context_window"] == 16384
 
 
 def test_mellum_repo_name_is_the_model_id():
@@ -88,22 +99,22 @@ def test_mellum_repo_name_is_the_model_id():
 def test_configured_mellum_is_kept_when_ling_is_recommended():
     roles = _roles(MELLUM)
     found = _status(ram=32, installed=[Q6, MELLUM, EMBED], roles=roles)
-    assert found["models"]["use"] == Q6  # Suggested selection, not a role rewrite.
+    assert found["models"]["use"] == Q6  # Best installed; Gemma is offered, not assumed.
     assert all(role["model"] == MELLUM for role in found["roles"])
     assert roles == _roles(MELLUM)
     entry = next(m for m in found["models"]["installed"] if m["id"] == MELLUM)
     assert entry["tested"] is False
     assert entry["fit"] == "good"
-    assert found["models"]["recommended"] == Q6
+    assert found["models"]["recommended"] == GEMMA
     assert found["ready"]  # Discovery/readiness is separate from inference qualification.
     assert guide.download_info(MELLUM, "/models")["repo"] == catalog.by_id(MELLUM).repo
 
 
-def test_an_installed_ling_keeps_working_and_q6_is_offered():
+def test_an_installed_ling_keeps_working_and_gemma_is_offered():
     result = catalog.recommend(32, [Q4])
-    assert result["first_choice"] == Q6
+    assert result["first_choice"] == GEMMA
     assert result["use"] == Q4
-    assert result["get"] == Q6
+    assert result["get"] == GEMMA
     assert catalog.fit(catalog.by_id(MELLUM), 16) == "heavy"
     assert catalog.recommend(16, [Q4, MELLUM])["use"] == Q4
 
@@ -125,7 +136,7 @@ def test_ling_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkeypa
     try:
         result = config.models_config()
         for role in ("router", "fast", "agent", "general", "coding", "reasoning"):
-            assert result["roles"][role] == (value["roles"].get(role, Q4) if custom else Q4)
+            assert result["roles"][role] == (value["roles"].get(role, GEMMA) if custom else GEMMA)
         assert result["roles"]["embedding"] == ("chosen-embedding" if custom else EMBED)
         assert result["roles"]["reranker"] == ("chosen-reranker" if custom else "Qwen3-Reranker-0.6B-mlx-6bit")
         if custom:
@@ -136,38 +147,39 @@ def test_ling_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkeypa
     finally:
         config.models_config.cache_clear()
 
-@pytest.mark.parametrize("ram,first", [(64, Q6), (24, Q6), (16, Q4), (12, Q4), (8, Q4), (0, Q4)])
-def test_first_choice_follows_memory(ram, first):
-    # Fresh Macs: the first choice is the best build they can actually download.
-    assert catalog.recommend(ram, [])["first_choice"] == first
+@pytest.mark.parametrize("ram", [64, 24, 16, 12, 8, 0])
+def test_first_choice_is_gemma_on_every_mac(ram):
+    assert catalog.recommend(ram, [])["first_choice"] == GEMMA
+    assert catalog.recommend(ram, [Q4])["first_choice"] == GEMMA
 
 
-@pytest.mark.parametrize("ram,first", [(64, Q6), (24, Q6), (16, Q5), (12, Q4)])
-def test_first_choice_keeps_the_full_order_once_a_catalog_model_is_installed(ram, first):
-    assert catalog.recommend(ram, [Q4])["first_choice"] == first
+@pytest.mark.parametrize("ram,second", [(64, Q6), (24, Q6), (16, Q5), (12, Q4)])
+def test_ling_keeps_its_memory_order_behind_gemma(ram, second):
+    assert catalog.ranked_for(ram, [Q4])[1].id == second
 
 
-def test_16gb_is_offered_a_download_it_can_actually_get():
-    # oQ5e is the ideal 16 GB build but is not published, so offer oQ4e.
-    assert catalog.recommend(16, [])["get"] == Q4
+def test_unpublished_ling_build_is_never_offered_on_a_fresh_mac():
     assert catalog.by_id(Q5).repo is None
-    assert catalog.recommend(16, [Q5])["get"] is None
+    assert Q5 not in [m.id for m in catalog.ranked_for(16, [])]
+    assert catalog.recommend(16, [Q5])["get"] == GEMMA
 
 
-def test_24gb_with_only_oq4e_keeps_it_and_offers_q6():
+def test_24gb_with_only_oq4e_keeps_it_and_offers_gemma():
     rec = catalog.recommend(24, [Q4])
-    assert rec["use"] == Q4 and rec["get"] == Q6
+    assert rec["use"] == Q4 and rec["get"] == GEMMA
 
 
 def test_best_installed_model_wins_and_nothing_is_offered_when_optimal():
+    rec = catalog.recommend(24, [Q4, Q6, MELLUM, GEMMA])
+    assert rec["use"] == GEMMA and rec["get"] is None
     rec = catalog.recommend(24, [Q4, Q6, MELLUM])
-    assert rec["use"] == Q6 and rec["get"] is None
+    assert rec["use"] == Q6 and rec["get"] == GEMMA
 
 
 def test_heavy_model_on_16gb_is_flagged_but_kept():
     assert catalog.fit(catalog.by_id(Q6), 16) == "heavy"
-    assert catalog.fit(catalog.by_id(Q6), 24) == "recommended"
-    assert catalog.fit(catalog.by_id(Q4), 24) == "good"
+    assert catalog.fit(catalog.by_id(Q6), 24) == "good"
+    assert catalog.fit(catalog.by_id(GEMMA), 8) == "recommended"
     assert catalog.recommend(16, [Q6])["use"] == Q6
 
 
@@ -261,7 +273,7 @@ def test_installed_but_stopped_engine_offers_start():
 def test_running_with_no_chat_model_points_at_download():
     s = _status(ram=16, installed=[EMBED], running=True)
     assert _check(s, "model")["action"] == "download_model"
-    assert s["models"]["download"]["model"] == Q4
+    assert s["models"]["download"]["model"] == GEMMA
     assert s["ready"] is False
 
 
@@ -309,7 +321,7 @@ def test_model_list_is_ranked_and_excludes_embedding_and_reranker():
     ids = [m["id"] for m in s["models"]["installed"]]
     assert ids == [Q6, Q4, "zzz-custom"]
     by_id = {m["id"]: m for m in s["models"]["installed"]}
-    assert by_id[Q6]["fit"] == "recommended" and by_id[Q6]["tested"] is True
+    assert by_id[Q6]["fit"] == "good" and by_id[Q6]["tested"] is True
     assert by_id["zzz-custom"]["fit"] == "unknown" and by_id["zzz-custom"]["tested"] is False
 
 
@@ -346,7 +358,8 @@ def test_download_command_is_shell_safe_for_hostile_folder_names():
 
 
 def test_unknown_memory_does_not_mark_the_smallest_build_heavy():
-    assert catalog.fit(catalog.by_id(Q4), 0) == "recommended"
+    assert catalog.fit(catalog.by_id(GEMMA), 0) == "recommended"
+    assert catalog.fit(catalog.by_id(Q4), 0) == "good"
     assert catalog.fit(catalog.by_id(Q6), 0) == "heavy"
 
 
@@ -701,7 +714,7 @@ def test_status_route_falls_back_to_saved_models_when_engine_is_down(monkeypatch
     monkeypatch.setattr(main, "_setup_roles", lambda: _roles(Q4))
     s = asyncio.run(main.setup_status())
     assert s["omlx"]["running"] is False and s["models"]["source"] == "saved"
-    assert s["hardware"]["tier"] == "standard" and s["models"]["recommended"] == Q5
+    assert s["hardware"]["tier"] == "standard" and s["models"]["recommended"] == GEMMA
     assert _check(s, "engine")["action"] == "start_engine"
 
 

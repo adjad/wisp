@@ -25,15 +25,17 @@ roles:
   # Every text role is the same resident model — no swap, no cold load, and no
   # routing decision that hinges on which model a request lands on.
   #
-  # Conservative Ling 4-bit fallback for fresh installs. Guided setup recommends
-  # the hardware-appropriate Ling build; selecting it updates the text roles.
-  # Existing user overrides are still deep-merged over these code defaults.
-  fast:       "Ling-3.0-tiny-oQ4e"
-  router:     "Ling-3.0-tiny-oQ4e"
-  coding:     "Ling-3.0-tiny-oQ4e"
-  reasoning:  "Ling-3.0-tiny-oQ4e"
-  agent:      "Ling-3.0-tiny-oQ4e"
-  general:    "Ling-3.0-tiny-oQ4e"
+  # Gemma 4 E4B (with its MTP head) for fresh installs: the setup guide's
+  # default download on every Mac, so a new user's roles already name the model
+  # they just fetched. Its sampling lives in the engine's per-model settings,
+  # seeded by service/engine/profiles.py. Existing user overrides are still
+  # deep-merged over these code defaults.
+  fast:       "gemma-4-E4B-it-oQ4e-mtp"
+  router:     "gemma-4-E4B-it-oQ4e-mtp"
+  coding:     "gemma-4-E4B-it-oQ4e-mtp"
+  reasoning:  "gemma-4-E4B-it-oQ4e-mtp"
+  agent:      "gemma-4-E4B-it-oQ4e-mtp"
+  general:    "gemma-4-E4B-it-oQ4e-mtp"
   # Smart Search's T2 retrieval tier (320MB, 1024-dim). NOT a chat model — it's
   # served by oMLX's /v1/embeddings, which rejects LLMs on that endpoint. It is
   # lazy and no longer participates in tool routing.
@@ -76,6 +78,8 @@ tool_retrieval:
 # which is silent. A single-sample version of that test produced an alternating
 # pattern that was pure noise and briefly made oQ3e look best — use reps.
 tool_capable:
+  # Gemma 4 E4B MTP: clean tool calls with thinking on and off (2026-10-24).
+  - "gemma-4-E4B-it-oQ4e-mtp"
   - "LFM2.5-2.6B-MLX-6bit"
   - "Ling-3.0-tiny-oQ6e"
   - "Ling-3.0-tiny-oQ4e"
@@ -97,6 +101,9 @@ tool_capable:
 # summarize_emails/summarize_messages call while A1 skips it, which is a
 # straight unfairness in any head-to-head timing.
 no_thinking_capable:
+  # Gemma 4 E4B MTP, 2026-10-24: thinking-off summaries are fine (no tool
+  # messages on that path). NOT safe after a tool result: see its catalog entry.
+  - "gemma-4-E4B-it-oQ4e-mtp"
   - "Agents-A1-4B-oQe6"
   - "Ling-3.0-tiny-oQ6e"
   # oQ4e verified 2026-08-18 the way this comment requires: the enable_thinking

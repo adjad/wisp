@@ -197,6 +197,44 @@ async def start_engine(request: Request):
         raise HTTPException(503, str(exc)) from None
 
 
+# Models whose profile went to the running engine after their download finished.
+_profiles_pushed: set[str] = set()
+
+
+async def _push_profiles(tasks) -> None:
+    """Hand a just-downloaded model its catalog profile without an engine restart.
+
+    The engine read model_settings.json when it started, before this model
+    existed. Best-effort: on failure the file still holds the profile (seeded in
+    prepare()), which the engine picks up at its next start.
+    """
+    from . import profiles
+    layout = getattr(runtime._manager, "layout", None)
+    if layout is None:
+        return
+    path = layout.base_path / "model_settings.json"
+    record = layout.data_dir / "seeded_profiles.json"
+    for _, _, task in tasks:
+        model = catalog.by_id(task["model"])
+        if task["state"] != "completed" or model is None or not model.engine_profile \
+                or model.id in _profiles_pushed:
+            continue
+        _profiles_pushed.add(model.id)
+        try:
+            profiles.seed(path, record, [model], force=[model.id])
+            entry = profiles.entry_for(path, model.id) or dict(model.engine_profile)
+            try:
+                schema = await _call("GET", "/openapi.json")
+                allowed = set(schema["components"]["schemas"]["ModelSettingsRequest"]["properties"])
+            except (DownloadError, KeyError, TypeError):
+                allowed = None
+            await _call("PUT", f"/admin/api/models/{model.id}/settings", profiles.push_body(entry, allowed))
+            # The PUT rewrites the entry from its schema; put back keys it dropped.
+            profiles.seed(path, record, [model], force=[model.id])
+        except (DownloadError, OSError):
+            pass
+
+
 @router.get("/downloads")
 async def download_status(request: Request):
     _require_bundled()
@@ -205,7 +243,9 @@ async def download_status(request: Request):
     if engine is None or not engine.running() or not engine.verified:
         return {"tasks": []}
     try:
-        return _display(await _inventory())
+        tasks = await _inventory()
+        await _push_profiles(tasks)
+        return _display(tasks)
     except DownloadError as exc:
         raise HTTPException(503, str(exc)) from None
 

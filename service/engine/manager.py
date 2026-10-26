@@ -270,6 +270,10 @@ class EngineManager:
         merged = merge_owned(existing, engine_settings(
             self.port, self.api_key, self.model_dirs(), user_dirs=_saved_model_dirs(existing)))
         _write_private(self.layout.settings_path, json.dumps(merged, indent=2))
+        # Before the engine starts: it reads model_settings.json once, at startup.
+        from . import profiles
+        profiles.seed(self.layout.base_path / "model_settings.json",
+                      self.layout.data_dir / "seeded_profiles.json")
 
     def _reap_stale(self) -> None:
         reap_orphan(self.layout)
