@@ -160,6 +160,51 @@ def test_version_one_short_reads_as_the_default_length():
     assert json.loads(P.PROFILE_PATH.read_text())["version"] == P.VERSION
 
 
+
+@pytest.mark.parametrize("version", ["2", None, 2.5, True, [2], {"v": 2}])
+def test_odd_version_reads_as_version_one_instead_of_failing(version):
+    # Audit 32649065: a hand-edited "version" used to raise TypeError (a 500).
+    P.PROFILE_PATH.write_text(json.dumps({"version": version, "name": "Adi", "detail": "short"}))
+    loaded = P.load()
+    assert loaded["name"] == "Adi" and loaded["detail"] == "thorough"
+
+
+def test_a_world_readable_version_one_file_is_tightened_on_first_read():
+    P.PROFILE_PATH.write_text(json.dumps({"version": 1, "name": "Adi"}))
+    P.PROFILE_PATH.chmod(0o644)
+    assert P.load()["name"] == "Adi"
+    assert P.PROFILE_PATH.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_set_aside_unreadable_copy_is_owner_only():
+    P.PROFILE_PATH.write_text('{"name": "Adi", broken')
+    P.PROFILE_PATH.chmod(0o644)
+    P.load()
+    kept = list(P.PROFILE_PATH.parent.glob("profile.json.bad-*"))
+    assert len(kept) == 1 and kept[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_erase_also_removes_set_aside_copies():
+    # Erase means every copy: a .bad-* file holds the same personal text.
+    P.PROFILE_PATH.write_text('{"name": "Adi", "people": [{"name": "Mom"}] broken')
+    P.load()
+    assert list(P.PROFILE_PATH.parent.glob("profile.json.bad-*"))
+    P.update(SAMPLE)
+    P.clear()
+    assert not list(P.PROFILE_PATH.parent.glob("profile.json.bad-*"))
+    leftovers = [f for f in P.PROFILE_PATH.parent.iterdir() if f.name.startswith("profile.json")]
+    assert [f.name for f in leftovers] == ["profile.json"]
+    assert "Adi" not in P.PROFILE_PATH.read_text()
+
+
+def test_preview_does_not_promise_on_this_mac_only():
+    # The app's lock line says where the profile lives (local or cloud); the
+    # preview must not claim "on this Mac only" in a cloud mode.
+    lines = P.preview({**P.empty(), "about": "A student."})
+    assert any("shapes every answer" in line for line in lines)
+    assert not any("this Mac" in line for line in lines)
+
+
 # --- status / offer ----------------------------------------------------------
 
 def test_offer_logic():

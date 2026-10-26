@@ -198,6 +198,17 @@ def _quarantine() -> None:
             n += 1
             target = PROFILE_PATH.with_name(f"{PROFILE_PATH.name}.bad-{stamp}-{n}")
         os.replace(PROFILE_PATH, target)
+        _owner_only(target)
+    except OSError:
+        pass
+
+
+def _owner_only(path) -> None:
+    """A version-1 file, or one restored by hand, may be world-readable.
+    Tighten it to 0600 the first time Wisp reads it."""
+    try:
+        if os.stat(path).st_mode & 0o077:
+            os.chmod(path, 0o600)
     except OSError:
         pass
 
@@ -214,11 +225,15 @@ def _read() -> dict:
         # torn write) instead of letting the next save silently replace them.
         _quarantine()
         return empty()
+    _owner_only(PROFILE_PATH)
     if not isinstance(raw, dict):
         _quarantine()
         return empty()
     profile = empty()
-    if (raw.get("version") or 1) < 2 and raw.get("detail") == "short":
+    version = raw.get("version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        version = 1  # missing or hand-edited to something odd: read it as the oldest format
+    if version < 2 and raw.get("detail") == "short":
         # Version 1 saved the preselected "short" with every answer, so it is
         # not evidence of a choice. Read it as Wisp's default.
         raw = {**raw, "detail": _DEFAULT_CHOICE["detail"]}
@@ -330,8 +345,16 @@ def dismiss(*, now: float | None = None) -> dict:
 def clear(*, now: float | None = None) -> dict:
     """Erase every answer. What remains is only the fact that the person chose
     to erase, so the questions are not offered again on their own (the menu
-    bar and /about still open them)."""
+    bar and /about still open them).
+
+    Erase means every copy: the answers in profile.json and any unreadable
+    copies set aside as profile.json.bad-*, which hold the same personal text."""
     with _lock:
+        for leftover in PROFILE_PATH.parent.glob(f"{PROFILE_PATH.name}.bad-*"):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
         profile = empty()
         profile["dismissed_at"] = time.time() if now is None else now
         profile["dismiss_count"] = MAX_AUTO_OFFERS
@@ -646,7 +669,7 @@ def preview(profile: dict | None = None) -> list[str]:
     if profile.get("boundaries"):
         lines.append("I'll respect what you asked me to be careful about.")
     if profile.get("about") or profile.get("notes"):
-        lines.append("What you told me about yourself shapes every answer, on this Mac only.")
+        lines.append("What you told me about yourself shapes every answer.")
     if not has_content(profile):
         lines.append("You haven't told me anything yet. Whenever you like, I'm here.")
     return lines
