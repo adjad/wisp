@@ -41,6 +41,7 @@ from datetime import datetime
 import json
 import os
 import re
+import stat
 import threading
 import time
 
@@ -209,15 +210,42 @@ def _quarantine() -> None:
 
 def _owner_only(path) -> None:
     """A version-1 file, or one restored by hand, may be world-readable.
-    Tighten it to 0600 the first time Wisp reads it."""
+    Tighten it to 0600 the first time Wisp reads it. Never through a symlink:
+    O_NOFOLLOW refuses one (so a link can't redirect the chmod to another
+    file), and only a regular file is changed, on the descriptor just opened."""
     try:
-        if os.stat(path).st_mode & 0o077:
-            os.chmod(path, 0o600)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return  # missing, or a symlink
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode) and info.st_mode & 0o077:
+            os.fchmod(fd, 0o600)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+_aside_checked = False
+
+
+def _tighten_set_aside() -> None:
+    """Older set-aside copies (profile.json.bad-*) hold the same personal text
+    and may predate owner-only files. Once per process, on the first read."""
+    global _aside_checked
+    if _aside_checked:
+        return
+    _aside_checked = True
+    try:
+        for copy in PROFILE_PATH.parent.glob(f"{PROFILE_PATH.name}.bad-*"):
+            _owner_only(copy)
     except OSError:
         pass
 
 
 def _read() -> dict:
+    _tighten_set_aside()
     try:
         raw = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -354,7 +382,9 @@ def clear(*, now: float | None = None) -> dict:
     Erase means every copy: the answers in profile.json and any unreadable
     copies set aside as profile.json.bad-*, which hold the same personal text."""
     with _lock:
-        for leftover in PROFILE_PATH.parent.glob(f"{PROFILE_PATH.name}.bad-*"):
+        leftovers = list(PROFILE_PATH.parent.glob(f"{PROFILE_PATH.name}.bad-*"))
+        leftovers.append(PROFILE_PATH.with_suffix(".json.tmp"))  # a write torn before its rename
+        for leftover in leftovers:
             try:
                 leftover.unlink()
             except OSError:

@@ -521,3 +521,24 @@ def test_agent_loop_carries_the_profile_only_where_allowed(monkeypatch, mode, ma
     # The chosen name ("call me …") is part of the profile and follows the same rule.
     assert called == [carried]
 
+
+def test_set_aside_copies_are_tightened_on_read_without_following_links(tmp_path):
+    P._aside_checked = False
+    aside = P.PROFILE_PATH.with_name("profile.json.bad-20260101-000000")
+    aside.write_text('{"name": "Adi"')
+    aside.chmod(0o644)
+    target = tmp_path / "not-the-profile.txt"
+    target.write_text("someone else's file")
+    target.chmod(0o644)
+    P.PROFILE_PATH.symlink_to(target)
+    P.load()
+    assert aside.stat().st_mode & 0o777 == 0o600
+    assert target.stat().st_mode & 0o777 == 0o644, "a symlinked profile.json is never chmodded through"
+
+
+def test_erase_also_removes_a_torn_temporary_write():
+    P.update(SAMPLE)
+    tmp = P.PROFILE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(SAMPLE))
+    P.clear()
+    assert not tmp.exists()
