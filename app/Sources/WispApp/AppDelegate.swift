@@ -283,9 +283,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.openSetupGuide() }
         }
+        NotificationCenter.default.addObserver(
+            forName: .wispContinueFirstRun, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.openFirstRunSetup() }
+        }
         let defaults = UserDefaults.standard
-        let firstRun = FirstRunSetup.shouldShow { defaults.bool(forKey: $0) }
+        let reopens = defaults.integer(forKey: FirstRunSetup.reopensKey)
+        let firstRun = FirstRunSetup.shouldShow({ defaults.bool(forKey: $0) }, reopens: reopens)
         if firstRun {
+            // Opening by itself again after a quit or an early close counts toward
+            // the cap; past it, the notch's setup cue carries setup instead.
+            if defaults.bool(forKey: FirstRunSetup.startedKey) {
+                defaults.set(reopens + 1, forKey: FirstRunSetup.reopensKey)
+            }
             // The window asks for permissions, gets the model and shows where Wisp
             // lives, in that order; the old launch did each of these on its own.
             FirstRunSetup.takeOverLaunchPrompts { defaults.set(true, forKey: $0) }
@@ -302,7 +313,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if firstRun { openFirstRunSetup() } else { showNotchTipOnce() }
     }
 
+    /// Opens the first-run window at the step the person was on, or brings it
+    /// forward if it is already up.
     private func openFirstRunSetup() {
+        if let open = firstRunWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            open.makeKeyAndOrderFront(nil)
+            return
+        }
+        let defaults = UserDefaults.standard
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 600),
                            styleMask: [.titled, .closable, .fullSizeContentView],
                            backing: .buffered, defer: false)
@@ -312,13 +331,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.isReleasedWhenClosed = false
         win.contentView = NSHostingView(rootView: FirstRunSetupView(
             setup: setupModel,
+            initialStep: FirstRunSetupView.Step(rawValue: defaults.integer(forKey: FirstRunSetup.stepKey)) ?? .brain,
             openDetailedSetup: { [weak self] in self?.openSetupGuide() },
             finish: { [weak self] tellAboutYou in self?.finishFirstRun(tellAboutYou: tellAboutYou) },
-            permissionsChanged: { [weak self] states in self?.firstRunPermissionsChanged(states) }))
+            permissionsChanged: { [weak self] states in self?.firstRunPermissionsChanged(states) },
+            stepChanged: { step in UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey) }))
         win.center()
         firstRunWindow = win
-        // Closing it early counts as finishing: the download keeps going in the
-        // engine, and the notch's setup card takes over until Wisp can answer.
+        // Closing it early does not give setup up: the download keeps going in the
+        // engine, the notch's setup card takes over until Wisp can answer, and the
+        // window comes back at this step on the next launch (FirstRunSetup).
         firstRunCloseObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: win, queue: .main
         ) { [weak self] _ in
@@ -348,10 +370,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func firstRunClosed() {
-        UserDefaults.standard.set(true, forKey: FirstRunSetup.doneKey)
+        let defaults = UserDefaults.standard
+        if FirstRunSetup.closeFinishes(finished: firstRunFinishing, ready: setupModel.status?.ready == true) {
+            defaults.set(true, forKey: FirstRunSetup.doneKey)
+            defaults.removeObject(forKey: FirstRunSetup.stepKey)
+            defaults.removeObject(forKey: FirstRunSetup.reopensKey)
+        }
         setupModel.hide(from: "first-run")
         if let observer = firstRunCloseObserver { NotificationCenter.default.removeObserver(observer) }
         firstRunCloseObserver = nil
+        // Let the window and its view go (the view's permission poll stops with it);
+        // Continue setup builds a new one.
+        let closing = firstRunWindow
+        firstRunWindow = nil
+        DispatchQueue.main.async { closing?.contentView = nil }
         // The window no longer speaks for access: whatever it left undecided is
         // asked the way it always was, by the reader that needs it.
         firstRunGatesPrompts = false

@@ -12,6 +12,12 @@ import UserNotifications
 // shared SetupGuideModel, so the notch's setup card and the detailed setup window
 // see the same state.
 
+extension Notification.Name {
+    /// Opens the first-run window again (at the step the person left) while
+    /// setup is unfinished: the notch's Continue setup posts it.
+    static let wispContinueFirstRun = Notification.Name("WispContinueFirstRun")
+}
+
 /// Whether to show it, and what it takes over from the old first launch.
 enum FirstRunSetup {
     static let doneKey = "wisp.firstRun.done"
@@ -21,14 +27,32 @@ enum FirstRunSetup {
     static let setupGuideShownKey = "wisp.setupGuide.shown"
     static let notchTipShownKey = "wisp.notchTip.shown"
     static let permissionsRequestedKey = "wisp.didRequestPermissions"
+    /// The step on screen, so a quit (or macOS reopening Wisp after Full Disk
+    /// Access) comes back to it.
+    static let stepKey = "wisp.firstRun.step"
+    /// Launches that opened the window again by themselves.
+    static let reopensKey = "wisp.firstRun.reopens"
+    /// After this many, an unfinished setup stops opening at launch and is carried
+    /// by the notch's quiet setup cue instead; Continue setup there still opens it.
+    static let maxAutomaticReopens = 3
 
-    /// On a Mac that has never run Wisp, and again after quitting part-way through
-    /// it. Anyone who saw the old setup card or the notch tip without ever starting
-    /// this window is an existing user and never gets it.
-    static func shouldShow(_ flag: (String) -> Bool) -> Bool {
+    /// On a Mac that has never run Wisp, and again after leaving part-way through
+    /// it (a quit, a restart, or closing it before Wisp could answer), up to
+    /// `maxAutomaticReopens` times. Anyone who saw the old setup card or the notch
+    /// tip without ever starting this window is an existing user and never gets it.
+    static func shouldShow(_ flag: (String) -> Bool, reopens: Int = 0) -> Bool {
         guard !flag(doneKey) else { return false }
-        return flag(startedKey) || (!flag(setupGuideShownKey) && !flag(notchTipShownKey))
+        if flag(startedKey) { return reopens < maxAutomaticReopens }
+        return !flag(setupGuideShownKey) && !flag(notchTipShownKey)
     }
+
+    /// Started and not finished: Continue setup opens this window again.
+    static func isUnfinished(_ flag: (String) -> Bool) -> Bool { flag(startedKey) && !flag(doneKey) }
+
+    /// Closing the window ends setup only when the person finished it or Wisp can
+    /// already answer. An early close (the red button, ⌘W) before that keeps it
+    /// unfinished, so it comes back instead of being silently given up.
+    static func closeFinishes(finished: Bool, ready: Bool) -> Bool { finished || ready }
 
     /// The old first launch asked for Calendar, Reminders and Notifications as soon
     /// as the notch appeared, showed a tip before Wisp could answer, and opened the
@@ -350,13 +374,28 @@ struct FirstRunSetupView: View {
     @ObservedObject var setup: SetupGuideModel
     @StateObject private var permissions = FirstRunPermissions()
     @ObservedObject private var display = DisplayGeometry.shared
-    @State private var step: Step = .brain
+    @State private var step: Step
     @State private var engineStartTried = false
     @State private var appliedModel: String?
     var openDetailedSetup: () -> Void
     var finish: (_ tellAboutYou: Bool) -> Void
     /// Every permission read, so the readers waiting on a row can start.
-    var permissionsChanged: ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void = { _ in }
+    var permissionsChanged: ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void
+    /// Where the person is, saved so setup picks up there after a quit.
+    var stepChanged: (Step) -> Void
+
+    init(setup: SetupGuideModel, initialStep: Step = .brain,
+         openDetailedSetup: @escaping () -> Void,
+         finish: @escaping (_ tellAboutYou: Bool) -> Void,
+         permissionsChanged: @escaping ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void = { _ in },
+         stepChanged: @escaping (Step) -> Void = { _ in }) {
+        self.setup = setup
+        _step = State(initialValue: initialStep)
+        self.openDetailedSetup = openDetailedSetup
+        self.finish = finish
+        self.permissionsChanged = permissionsChanged
+        self.stepChanged = stepChanged
+    }
 
     private var brain: FirstRunBrain { FirstRunBrain.from(status: setup.status, downloads: setup.downloads) }
 
@@ -387,10 +426,12 @@ struct FirstRunSetupView: View {
             drive(brain)
             // One read up front, so access answered before a quit lets its readers start.
             Task { await permissions.refresh() }
+            if step == .permissions { permissions.start() }
         }
         .onReceive(permissions.$states) { states in if !states.isEmpty { permissionsChanged(states) } }
         .onChange(of: step) { _, next in
             if next == .permissions { permissions.start() } else { permissions.stop() }
+            stepChanged(next)
         }
         .onDisappear { permissions.stop() }
     }

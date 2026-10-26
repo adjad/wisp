@@ -35,7 +35,14 @@ struct NotchSetupView: View {
                     .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
             }
             Spacer(minLength: 8)
-            chip("Continue setup") { model.setupCard = .open }
+            chip("Continue setup") {
+                // A first-run setup left part-way goes on where it was, in its window.
+                if FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {
+                    NotificationCenter.default.post(name: .wispContinueFirstRun, object: nil)
+                } else {
+                    model.setupCard = .open
+                }
+            }
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))

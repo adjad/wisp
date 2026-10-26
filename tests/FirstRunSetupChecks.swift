@@ -54,6 +54,20 @@ struct FirstRunSetupChecks {
         check(FirstRunSetup.shouldShow { set.contains($0) }, "Quit before finishing: the window opens again")
         check(!FirstRunSetup.shouldShow { set.contains($0) || $0 == FirstRunSetup.doneKey },
               "Closed or finished: never again")
+        // Left part-way (a quit, macOS reopening Wisp after Full Disk Access, an early
+        // close): it opens by itself a few times, then the notch's cue carries it.
+        for reopens in 0..<FirstRunSetup.maxAutomaticReopens {
+            check(FirstRunSetup.shouldShow({ set.contains($0) }, reopens: reopens), "Reopen \(reopens + 1) opens it")
+        }
+        check(!FirstRunSetup.shouldShow({ set.contains($0) }, reopens: FirstRunSetup.maxAutomaticReopens),
+              "Past the cap it stops opening at launch")
+        check(FirstRunSetup.shouldShow({ _ in false }, reopens: 99), "The cap only counts reopens of a started setup")
+        check(FirstRunSetup.isUnfinished { set.contains($0) }, "Started, not done: Continue setup opens the window")
+        check(!FirstRunSetup.isUnfinished { set.contains($0) || $0 == FirstRunSetup.doneKey }
+              && !FirstRunSetup.isUnfinished { _ in false }, "Done, or never started: the notch card instead")
+        check(!FirstRunSetup.closeFinishes(finished: false, ready: false), "An early close before Wisp can answer keeps it unfinished")
+        check(FirstRunSetup.closeFinishes(finished: true, ready: false), "Start using Wisp finishes it")
+        check(FirstRunSetup.closeFinishes(finished: false, ready: true), "Closing once Wisp can answer finishes it")
 
         // While the window is up it is the only thing that asks macOS for access.
         let readers = FirstRunReaderGate.Reader.allCases
