@@ -457,6 +457,8 @@ _YIELD_POLL_S = 0.5
 FIRST_LAUNCH_GRACE_S = 15 * 60
 # The first launch day's latest summary, and what it could not read (JSON).
 _DAY_ONE_KEY = "daily_brief:day_one"
+# The revision name (and key suffix) of a day-one rebuild.
+_REBUILD = "rebuilt"
 
 
 def _calendar_or_reminders_never_answered(source: str) -> bool:
@@ -532,52 +534,46 @@ def _know_you_completed_at() -> float | None:
 
 def _record_day_one_brief(day: date, part: str, revision: str | None) -> None:
     """Remember the first launch day's summary, so it can be rebuilt once when a
-    missing source arrives and once after Getting to know you finishes."""
+    missing source arrives or Getting to know you finishes."""
     first = assistant_store.first_launch_at()
     if first is None or datetime.fromtimestamp(first).date() != day:
         return
+    if revision:
+        record = _day_one_record()
+        if record is not None and record.get("day") == day.isoformat() and record.get("part") == part:
+            record["rebuilt"] = True
+            assistant_store.record_completion(_DAY_ONE_KEY, json.dumps(record, sort_keys=True))
+        return
     from service.assistant.sync_status import summary_snapshot
     gaps = [source["id"] for source in summary_snapshot()["sources"] if source["state"] != "ready"]
-    now = time.time()
-    record = _day_one_record() if revision else None
-    if record is None or record.get("day") != day.isoformat() or record.get("part") != part:
-        record = {"day": day.isoformat(), "part": part, "sources_done": False, "know_you_done": False}
-    if revision == "sources":
-        record["sources_done"] = True
-    else:
-        record["gaps"] = gaps
-    if revision == "know_you":
-        record["know_you_done"] = True
-    completed = _know_you_completed_at()
-    # A summary built after Getting to know you already greets the user by name.
-    if completed is not None and completed <= now:
-        record["know_you_done"] = True
-    record["at"] = now
+    record = {"day": day.isoformat(), "part": part, "gaps": gaps, "at": time.time(), "rebuilt": False}
     assistant_store.record_completion(_DAY_ONE_KEY, json.dumps(record, sort_keys=True))
 
 
 def _pending_recompose(now: datetime) -> tuple[date, str, str] | None:
-    """The first launch day's one-time rebuild that is due now, if any."""
+    """The first launch day's one rebuild of a run, if it is due now.
+
+    Each run is rebuilt at most once, for whichever comes first: a source it
+    could not read is now ready, or Getting to know you was completed after it.
+    Every rebuild is another "summary ready" moment, so there is never a second."""
     record = _day_one_record()
-    if record is None or record.get("day") != now.date().isoformat():
-        return None   # day one only; later days get their own summaries
+    if record is None or record.get("day") != now.date().isoformat() or record.get("rebuilt"):
+        return None   # day one only, once; later days get their own summaries
     day, part = now.date(), record.get("part")
     if part not in {"morning", "evening"} or _pending_slot(now) is not None:
         return None   # a newer run is due and will read everything fresh
-    reasons = []
+    if _brief_attempts.get((day, f"{part}:{_REBUILD}"), 0) >= _MAX_BRIEF_ATTEMPTS:
+        return None
+    completed = _know_you_completed_at()
+    if completed is not None and completed > float(record.get("at") or 0):
+        return day, part, _REBUILD
     gaps = record.get("gaps") or []
-    if not record.get("sources_done") and gaps:
+    if gaps:
         from service.assistant.sync_status import summary_snapshot
         snapshot = summary_snapshot()
         states = {source["id"]: source["state"] for source in snapshot["sources"]}
         if not snapshot["syncing"] and any(states.get(source) == "ready" for source in gaps):
-            reasons.append("sources")
-    completed = _know_you_completed_at()
-    if not record.get("know_you_done") and completed is not None and completed > float(record.get("at") or 0):
-        reasons.append("know_you")
-    for reason in reasons:
-        if _brief_attempts.get((day, f"{part}:{reason}"), 0) < _MAX_BRIEF_ATTEMPTS:
-            return day, part, reason
+            return day, part, _REBUILD
     return None
 
 
@@ -601,7 +597,7 @@ async def _run_daily_brief(day: date, part: str, revision: str | None = None) ->
     Standing down is not a failed attempt: the run is still due, and the next
     idle tick starts it again. Only a run that finished without a brief (the
     sources were still syncing) uses up one of the slot's retries. `revision`
-    names a day-one rebuild ("sources" or "know_you"), which has its own key."""
+    names a day-one rebuild, which has its own key and retries."""
     from service import diagnostics
     from service.assistant.brief import run_scheduled_brief
     with diagnostics.span("daily_brief"):

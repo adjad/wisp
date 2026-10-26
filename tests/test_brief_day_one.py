@@ -4,8 +4,9 @@ is still granting, and is rebuilt once when they arrive or Getting to know you e
   * GRACE — for 15 minutes after first launch, a due run waits (without using a
     retry) while Calendar, Reminders or Messages is unavailable only because its
     permission was never answered. A denial is an answer: that does not wait.
-  * REBUILD — the first launch day's summary is rebuilt once when a source it
-    could not read becomes ready, and once after Getting to know you completes.
+  * REBUILD — on the first launch day, each delivered run is rebuilt at most
+    once: when a source it could not read becomes ready, or Getting to know you
+    completes after it, whichever comes first.
 """
 from __future__ import annotations
 
@@ -179,8 +180,8 @@ class TestDayOneRebuild:
                 assert await _run(scheduler._start_day_one_recompose()) is not None
                 assert scheduler._start_day_one_recompose() is None    # once
         assert _brief_keys(_isolated) == ["daily_brief:2026-10-16:morning",
-                                          "daily_brief:2026-10-16:morning:sources"]
-        rebuilt = _isolated.event_by_key("daily_brief:2026-10-16:morning:sources")
+                                          "daily_brief:2026-10-16:morning:rebuilt"]
+        rebuilt = _isolated.event_by_key("daily_brief:2026-10-16:morning:rebuilt")
         assert rebuilt["payload"]["recomposed"] is True
         assert "recomposed" not in _isolated.event_by_key("daily_brief:2026-10-16:morning")["payload"]
         # The rebuilt summary replaces the unacknowledged original.
@@ -196,7 +197,40 @@ class TestDayOneRebuild:
             monkeypatch.setattr(scheduler, "_know_you_completed_at", lambda: time.time())
             assert await _run(scheduler._start_day_one_recompose()) is not None
             assert scheduler._start_day_one_recompose() is None
-        assert _brief_keys(_isolated)[-1] == "daily_brief:2026-10-16:morning:know_you"
+        assert _brief_keys(_isolated)[-1] == "daily_brief:2026-10-16:morning:rebuilt"
+
+    @pytest.mark.asyncio
+    async def test_day_one_publishes_at_most_one_rebuild_per_run(self, _isolated, monkeypatch):
+        """Every brief is a "summary ready" moment. Day one: each run, plus one rebuild each."""
+        await _deliver_day_one(_isolated, {"calendar": "unavailable", "messages": "unavailable"})
+        with patch.object(B, "_sections", AsyncMock(return_value=READY)):
+            # The morning: a source arrives, then Getting to know you ends, then
+            # another source arrives. Ticks every 30 s across the first 15 minutes.
+            states = {"calendar": "unavailable", "messages": "unavailable"}
+            with patch.object(scheduler, "datetime", _clock_at(9, 5)), \
+                 patch.object(sync_status, "summary_snapshot", lambda: _snapshot(**states)):
+                for minute in range(30):
+                    if minute == 4:
+                        states.pop("calendar")
+                    if minute == 8:
+                        monkeypatch.setattr(scheduler, "_know_you_completed_at", lambda: time.time())
+                    if minute == 12:
+                        states.pop("messages")
+                    await _run(scheduler._start_daily_brief() or scheduler._start_day_one_recompose())
+            assert len(_brief_keys(_isolated)) == 2
+            # The evening run gets its own one rebuild, and nothing more.
+            monkeypatch.setattr(scheduler, "_know_you_completed_at", lambda: None)
+            states = {"email": "unavailable"}
+            with patch.object(scheduler, "datetime", _clock_at(20)), \
+                 patch.object(sync_status, "summary_snapshot", lambda: _snapshot(**states)):
+                for tick in range(30):
+                    if tick == 3:
+                        states.pop("email")
+                    await _run(scheduler._start_daily_brief() or scheduler._start_day_one_recompose())
+        assert _brief_keys(_isolated) == ["daily_brief:2026-10-16:morning",
+                                          "daily_brief:2026-10-16:morning:rebuilt",
+                                          "daily_brief:2026-10-16:evening",
+                                          "daily_brief:2026-10-16:evening:rebuilt"]
 
     @pytest.mark.asyncio
     async def test_profile_finished_before_the_summary_needs_no_rebuild(self, _isolated, monkeypatch):
@@ -213,7 +247,7 @@ class TestDayOneRebuild:
              patch.object(scheduler, "datetime", _clock_at(10)), \
              patch.object(sync_status, "summary_snapshot", lambda: _snapshot()):
             await _run(scheduler._start_day_one_recompose())
-        assert scheduler._brief_attempts == {(DAY, "morning:sources"): 1}
+        assert scheduler._brief_attempts == {(DAY, "morning:rebuilt"): 1}
         assert _brief_keys(_isolated) == ["daily_brief:2026-10-16:morning"]
 
     @pytest.mark.asyncio
