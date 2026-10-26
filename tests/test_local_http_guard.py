@@ -101,3 +101,27 @@ def test_native_and_same_origin_requests_reach_the_route(wisp, guarded, headers)
 ])
 def test_guard_rules(method, headers, refused):
     assert bool(browser_request_problem(method, Headers(headers))) is refused
+
+
+def test_browser_websockets_from_elsewhere_are_refused():
+    from starlette.websockets import WebSocketDisconnect
+    reached = []
+
+    async def app(scope, receive, send):
+        reached.append(scope["type"])
+        await receive()
+        await send({"type": "websocket.accept"})
+        await receive()                      # the client's disconnect
+
+    client = TestClient(LocalOriginGuard(app), base_url="http://127.0.0.1:8765")
+    for url, headers in (("ws://127.0.0.1:8765/ws", {"Origin": "https://evil.example"}),   # cross-site
+                         ("ws://evil.example:8765/ws", {"Origin": "http://evil.example:8765"})):  # rebinding
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(url, headers=headers):
+                pass
+    assert not reached
+    with client.websocket_connect("ws://127.0.0.1:8765/ws", headers={"Origin": "http://127.0.0.1:8765"}):
+        pass
+    with client.websocket_connect("/ws"):
+        pass
+    assert reached == ["websocket", "websocket"]
