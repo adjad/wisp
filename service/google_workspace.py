@@ -6,7 +6,9 @@ Gmail, Calendar and Drive reach Wisp through the existing MCP client
 fetches the Google sign-in link from the server's own auth tool. The server is
 `workspace-mcp`, pinned to one version (PACKAGE), run by uvx as a local stdio
 subprocess, so mail and files go Google -> this Mac and nothing is relayed
-through a third party.
+through a third party. The app bundles its own uvx (find_uvx prefers it) and
+runs it with Wisp-owned uv dirs (uv_env), never the user's own uv state; the
+first enable downloads workspace-mcp from PyPI.
 
 The OAuth client is the one Google sign-in used (gmail_source.resolve_client:
 the user's own Desktop client, else the build's built-in one); the first
@@ -68,13 +70,35 @@ WORKSPACE_SCOPES = (
 )
 FULL_SCOPE = WORKSPACE_SCOPES[0]
 _UVX_FALLBACKS = ("~/.local/bin/uvx", "/opt/homebrew/bin/uvx", "/usr/local/bin/uvx")
+# The uvx the app bundle ships (build-support/uv_tool.py writes
+# Contents/Resources/bin/uv and uvx, signed with the app). The backend runs
+# from Contents/Resources/backend, so it is two levels above this package.
+_BACKEND = Path(__file__).resolve().parents[1]
+BUNDLED_UVX = (_BACKEND.parent / "bin" / "uvx"
+               if _BACKEND.name == "backend" and _BACKEND.parent.name == "Resources" else None)
+# Wisp's own uv state, so running workspace-mcp never touches the user's uv
+# cache, tools or managed Pythons (uvx may fetch a Python for the server).
+UV_HOME = MOE_DIR / "uv"
+
+
+def uv_env() -> dict[str, str]:
+    return {"UV_CACHE_DIR": str(UV_HOME / "cache"), "UV_TOOL_DIR": str(UV_HOME / "tools"),
+            "UV_PYTHON_INSTALL_DIR": str(UV_HOME / "python")}
 _AUTH_URL = re.compile(r"https://accounts\.google\.com/[^\s)>\]\"']+")
 
 _prepare = {"state": "idle", "detail": ""}      # idle | preparing | ready | failed
 
 
+def _executable(path: Path | None) -> bool:
+    return bool(path) and path.is_file() and os.access(path, os.X_OK)
+
+
 def find_uvx() -> str:
-    """Absolute path to uvx — a GUI-launched backend's PATH usually lacks ~/.local/bin."""
+    """Absolute path to uvx: the one bundled with Wisp first, then PATH, then
+    the usual install places (a GUI-launched backend's PATH usually lacks
+    ~/.local/bin)."""
+    if _executable(BUNDLED_UVX):
+        return str(BUNDLED_UVX)
     found = shutil.which("uvx")
     if found:
         return found
@@ -119,7 +143,7 @@ async def _warm(uvx: str) -> None:
     _prepare.update(state="preparing", detail="Downloading the Google Workspace server…")
     try:
         proc = await asyncio.create_subprocess_exec(
-            uvx, *_SERVER_ARGS, "--help",
+            uvx, *_SERVER_ARGS, "--help", env={**os.environ, **uv_env()},
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _, err = await asyncio.wait_for(proc.communicate(), 300)
         if proc.returncode:
@@ -150,7 +174,7 @@ async def enable(client_id: str, client_secret: str, email: str, tier: str = "co
     if not secret:
         return {"ok": False, "error": "Enter the client secret that belongs to this OAuth client ID. Saved settings were kept."}
     env = {"GOOGLE_OAUTH_CLIENT_ID": client_id, "GOOGLE_OAUTH_CLIENT_SECRET": secret,
-           "WORKSPACE_MCP_CREDENTIALS_DIR": str(CREDENTIALS_DIR)}
+           "WORKSPACE_MCP_CREDENTIALS_DIR": str(CREDENTIALS_DIR), **uv_env()}
     servers[SERVER] = {"command": uvx, "args": [*_SERVER_ARGS, "--tool-tier", tier],
                        "env": env, "enabled": True,
                        "trusted_read_only": TRUSTED_READ_ONLY}
@@ -252,27 +276,32 @@ def _pinned_args(args) -> list[str]:
 def ensure_env() -> bool:
     """Point an existing server entry at Wisp's credentials folder, drop a
     fixed USER_GOOGLE_EMAIL (the account now comes from the user's choice), and
-    pin an entry written before PACKAGE was. True when mcp.json changed and the
-    server needs a reload."""
+    pin an entry written before PACKAGE was. Wisp's own uvx entry also gets
+    Wisp's uv dirs and, when the app bundles uvx, that uvx (an entry written
+    from PATH or a moved app keeps working). True when mcp.json changed and
+    the server needs a reload."""
     data = _read_file()
     entry = (data.get("servers") or {}).get(SERVER) if isinstance(data.get("servers"), dict) else None
     if not isinstance(entry, dict):
         return False
+    own = Path(str(entry.get("command") or "uvx")).name == "uvx"
     env = dict(entry.get("env") or {})
-    wanted = {**env, "WORKSPACE_MCP_CREDENTIALS_DIR": str(CREDENTIALS_DIR)}
+    wanted = {**env, "WORKSPACE_MCP_CREDENTIALS_DIR": str(CREDENTIALS_DIR), **(uv_env() if own else {})}
     wanted.pop("USER_GOOGLE_EMAIL", None)
     listed = entry.get("trusted_read_only")
     trusted = (sorted(set(listed) | set(TRUSTED_READ_ONLY))
                if isinstance(listed, list) and all(isinstance(n, str) for n in listed)
                else list(TRUSTED_READ_ONLY))
     # Only Wisp's own uvx entry is re-pinned; a hand-written one is left alone.
-    pinned = (_pinned_args(entry.get("args")) if Path(str(entry.get("command") or "uvx")).name == "uvx"
-              else entry.get("args"))
-    if wanted == env and trusted == listed and pinned == entry.get("args"):
+    pinned = _pinned_args(entry.get("args")) if own else entry.get("args")
+    command = str(BUNDLED_UVX) if own and _executable(BUNDLED_UVX) else entry.get("command")
+    if wanted == env and trusted == listed and pinned == entry.get("args") and command == entry.get("command"):
         return False
     entry["env"] = wanted
     entry["trusted_read_only"] = trusted
     entry["args"] = pinned
+    if command is not None:
+        entry["command"] = command
     _write_file(data)
     return True
 

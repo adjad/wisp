@@ -62,6 +62,11 @@ struct GoogleStatus: Equatable {
     var userClientID = ""
     var hasSavedSecret = false
     var consentNotice = ""
+    /// Trouble with the Workspace server (Ask's Google tools), once for the
+    /// whole section and shown under Advanced; it never changes an account's
+    /// state, so an account whose mail and calendar work reads Connected.
+    var workspaceNote = ""
+    var workspaceNoteDetail = ""
 
     /// A Connect button can work: some OAuth client exists.
     var canConnect: Bool { clientSource == "user" || clientSource == "builtin" }
@@ -69,11 +74,14 @@ struct GoogleStatus: Equatable {
     static func parse(_ s: [String: Any]) -> GoogleStatus {
         let userID = s["client_id"] as? String ?? ""
         let source = s["client_source"] as? String ?? (userID.isEmpty ? "none" : "user")
+        let note = s["workspace_note"] as? [String: Any] ?? [:]
         return GoogleStatus(
             accounts: (s["accounts"] as? [[String: Any]] ?? []).compactMap(Account.parse),
             clientSource: ["user", "builtin", "none"].contains(source) ? source : "none",
             userClientID: userID, hasSavedSecret: s["has_secret"] as? Bool ?? false,
-            consentNotice: s["consent_notice"] as? String ?? "")
+            consentNotice: s["consent_notice"] as? String ?? "",
+            workspaceNote: note["message"] as? String ?? "",
+            workspaceNoteDetail: note["detail"] as? String ?? "")
     }
 }
 

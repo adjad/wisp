@@ -72,6 +72,13 @@ struct GoogleConnectChecks {
         let legacy = status(#"{"accounts":[{"email":"a@gmail.com","last_error":"","calendar_error":"Calendar refused"},{"email":"b@gmail.com","expired":true},{"email":"c@gmail.com"}]}"#)
         check(legacy.accounts.map(\.state) == [.attention, .expired, .connected], "legacy rows derive a state")
 
+        // Workspace trouble is one section note; the account stays Connected.
+        let workspaceDown = status(#"{"accounts":[\#(row("me@gmail.com", "connected", "Connected"))],"client_source":"builtin","workspace_note":{"message":"Google tools aren't running right now.","detail":"server exited"}}"#)
+        check(workspaceDown.accounts[0].statusLine == "Connected", "Workspace trouble never changes a row")
+        check(workspaceDown.workspaceNote == "Google tools aren't running right now." && workspaceDown.workspaceNoteDetail == "server exited",
+              "Workspace trouble is parsed once for the section")
+        check(builtinNoAccounts.workspaceNote.isEmpty, "no note without one")
+
         // Disconnect & erase note (Settings).
         let note = GoogleErase.note(account: "a@gmail.com", response: ["ok": true, "removed": ["a@gmail.com"],
             "erased": ["a@gmail.com": ["mail": "erased", "calendar": "erased 3", "mail_overviews": "erased", "proactive": "erased"]]])

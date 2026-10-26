@@ -38,7 +38,6 @@ final class GoogleAccountModel: ObservableObject {
     @Published var wsTools = 0
     @Published var wsError = ""
     @Published var wsPreparing = false
-    @Published var wsNeedsUV = false
     @Published var wsMessage = ""
 
     private var polling: Task<Void, Never>?
@@ -79,7 +78,6 @@ final class GoogleAccountModel: ObservableObject {
         wsRunning = s["running"] as? Bool ?? false
         wsTools = s["tools"] as? Int ?? 0
         wsError = s["error"] as? String ?? ""
-        wsNeedsUV = !(s["uvx"] as? Bool ?? true)
         let prep = s["prepare"] as? [String: Any]
         wsPreparing = (prep?["state"] as? String) == "preparing"
         if (prep?["state"] as? String) == "failed" { wsError = prep?["detail"] as? String ?? wsError }
@@ -314,11 +312,15 @@ struct GoogleSettingsPane: View {
                     .disabled(model.wsPreparing || (!model.canConnect))
                 if model.wsConfigured { Button("Remove") { model.disableWorkspace() } }
             }
-            if model.wsNeedsUV {
-                Text("Google tools need uv. Install it in Terminal with: brew install uv")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-            if !model.wsError.isEmpty {
+            // Workspace trouble shows once, here, never on an account row.
+            if !model.status.workspaceNote.isEmpty {
+                Text(model.status.workspaceNote).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !model.status.workspaceNoteDetail.isEmpty {
+                    Text(model.status.workspaceNoteDetail).font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if !model.wsError.isEmpty {
                 Text(model.wsError).font(.caption).foregroundStyle(.orange)
             }
             if !model.wsMessage.isEmpty {

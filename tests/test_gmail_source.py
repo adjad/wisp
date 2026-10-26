@@ -3203,26 +3203,38 @@ class MergedAccountState(unittest.TestCase):
         # Someone on their own OAuth client is a developer: they see the detail.
         self.assertEqual(self.state(calendar_error=raw, client_source="user")["message"], raw)
 
-    def test_mail_comes_before_calendar_before_workspace(self):
-        broken = {**self.WORKSPACE_OK, "error": "server exited"}
-        result = self.state(broken, last_error="Google could not be reached; try again when online",
+    def test_mail_comes_before_calendar(self):
+        result = self.state(last_error="Google could not be reached; try again when online",
                             calendar_error="Google Calendar refused the request (HTTP 500)")
         self.assertEqual(result["message"], "Google couldn't be reached. Wisp will try again.")
-        result = self.state(broken, calendar_error="Calendar access wasn't granted; reconnect and allow Calendar")
+        result = self.state(calendar_error="Calendar access wasn't granted; reconnect and allow Calendar")
         self.assertEqual(result["message"], "Calendar wasn't shared. Reconnect and allow Calendar.")
-        result = self.state(broken)
-        self.assertEqual((result["state"], result["message"]), ("attention", "Google tools aren't running right now."))
-        self.assertEqual(result["detail"], "server exited")
 
-    def test_workspace_problems_are_plain(self):
-        cases = [({"configured": False, "uvx": True}, "Google tools aren't set up yet. Try Reconnect."),
+    def test_workspace_trouble_alone_leaves_the_account_connected(self):
+        broken = [{**self.WORKSPACE_OK, "error": "server exited"},
+                  {"configured": False, "uvx": True},
+                  {**self.WORKSPACE_OK, "uvx": False},
+                  {**self.WORKSPACE_OK, "prepare": {"state": "failed", "detail": "offline at first enable"}}]
+        for server in broken:
+            with self.subTest(server=server):
+                self.assertEqual(self.state(server)["state"], "connected")
+                self.assertTrue(G.workspace_note(server)["message"])
+        # Workspace never outranks a real account problem either way.
+        self.assertEqual(self.state(broken[0], expired=True)["state"], "expired")
+        self.assertEqual(self.state(broken[0], workspace_full=False)["state"], "needs_reconnect")
+
+    def test_workspace_trouble_is_one_plain_section_note(self):
+        cases = [({"configured": False, "uvx": True}, "Google tools aren't set up yet. Choose Update settings."),
                  ({**self.WORKSPACE_OK, "uvx": False}, "Google tools need the uv helper. Install it with: brew install uv"),
                  ({**self.WORKSPACE_OK, "prepare": {"state": "failed", "detail": "Couldn't fetch workspace-mcp: x"}},
-                  "Google tools couldn't be set up. Try Reconnect.")]
-        for workspace, message in cases:
+                  "Google tools couldn't be set up. Check that this Mac is online, then choose Update settings."),
+                 ({**self.WORKSPACE_OK, "error": "server exited"}, "Google tools aren't running right now.")]
+        for server, message in cases:
             with self.subTest(message=message):
-                result = self.state(workspace)
-                self.assertEqual((result["state"], result["message"]), ("attention", message))
+                self.assertEqual(G.workspace_note(server)["message"], message)
+        self.assertEqual(G.workspace_note(self.WORKSPACE_OK), {"message": "", "detail": ""})
+        preparing = {**self.WORKSPACE_OK, "running": False, "prepare": {"state": "preparing"}}
+        self.assertEqual(G.workspace_note(preparing)["message"], "")
 
 
 if __name__ == "__main__":

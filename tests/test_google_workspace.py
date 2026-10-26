@@ -231,5 +231,102 @@ class WorkspaceToolsAskBeforeWriting(unittest.TestCase):
         self.assertEqual(entry["trusted_read_only"], G.TRUSTED_READ_ONLY)
 
 
+
+class BundledUV(unittest.TestCase):
+    """The uvx Wisp ships comes first, and runs with Wisp's own uv dirs."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(dir=_scratch.name))
+        self.bundled = self.root / "Wisp.app/Contents/Resources/bin/uvx"
+        self.bundled.parent.mkdir(parents=True)
+        self.path_uvx = self.root / "path-bin/uvx"
+        self.path_uvx.parent.mkdir()
+        self.brew = self.root / "brew/uvx"
+        self.brew.parent.mkdir()
+        for tool in (self.bundled, self.path_uvx, self.brew):
+            tool.write_text("#!/bin/sh\n")
+            tool.chmod(0o755)
+
+    def test_bundle_location_is_derived_only_inside_an_app_bundle(self):
+        # In a source checkout the backend is not under Contents/Resources/backend.
+        self.assertIsNone(G.BUNDLED_UVX)
+        import importlib.util
+        backend = self.root / "Wisp.app/Contents/Resources/backend/service"
+        backend.mkdir(parents=True)
+        source = Path(G.__file__).read_text()
+        (backend / "google_workspace.py").write_text(source)
+        spec = importlib.util.spec_from_file_location("bundled_google_workspace", backend / "google_workspace.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.BUNDLED_UVX, self.bundled.resolve())
+
+    def test_find_uvx_prefers_bundled_then_path_then_install_places(self):
+        with patch.object(G, "BUNDLED_UVX", self.bundled), \
+             patch.object(G.shutil, "which", return_value=str(self.path_uvx)), \
+             patch.object(G, "_UVX_FALLBACKS", (str(self.brew),)):
+            self.assertEqual(G.find_uvx(), str(self.bundled))
+            self.bundled.chmod(0o644)              # not executable: skipped
+            self.assertEqual(G.find_uvx(), str(self.path_uvx))
+        with patch.object(G, "BUNDLED_UVX", None), patch.object(G.shutil, "which", return_value=None), \
+             patch.object(G, "_UVX_FALLBACKS", (str(self.root / "absent/uvx"), str(self.brew))):
+            self.assertEqual(G.find_uvx(), str(self.brew))
+        with patch.object(G, "BUNDLED_UVX", None), patch.object(G.shutil, "which", return_value=None), \
+             patch.object(G, "_UVX_FALLBACKS", ()):
+            self.assertEqual(G.find_uvx(), "")
+
+    def test_uv_state_lives_under_wisp_home(self):
+        env = G.uv_env()
+        self.assertEqual(set(env), {"UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR"})
+        home = Path(G.MOE_DIR).resolve()          # WISP_HOME, never the user's own uv dirs
+        for value in env.values():
+            self.assertTrue(Path(value).resolve().is_relative_to(home), value)
+            self.assertNotIn(str(Path.home() / ".cache"), value)
+            self.assertNotIn(str(Path.home() / ".local"), value)
+
+    def test_enable_and_warm_pass_wisps_uv_dirs(self):
+        cfg = self.root / "mcp.json"
+        with patch.object(G, "CONFIG_PATH", cfg), patch.object(G, "find_uvx", return_value=str(self.bundled)), \
+             patch.object(G, "_warm", new=AsyncMock()):
+            self.assertTrue(asyncio.run(G.enable("id", "sec", "a@b.c"))["ok"])
+        entry = json.loads(cfg.read_text())["servers"]["google_workspace"]
+        self.assertEqual(entry["command"], str(self.bundled))
+        for key, value in G.uv_env().items():
+            self.assertEqual(entry["env"][key], value)
+        seen = {}
+        class Proc:
+            returncode = 0
+            async def communicate(self):
+                return b"", b""
+        async def spawn(*args, **kwargs):
+            seen.update(kwargs.get("env") or {})
+            return Proc()
+        with patch.object(G.asyncio, "create_subprocess_exec", spawn), \
+             patch.object(G.manager, "reload", AsyncMock()):
+            asyncio.run(_REAL_WARM(str(self.bundled)))
+        for key, value in G.uv_env().items():
+            self.assertEqual(seen[key], value)
+
+    def test_existing_entry_moves_to_the_bundled_uvx_and_wisps_dirs(self):
+        cfg = self.root / "mcp.json"
+        cfg.write_text(json.dumps({"servers": {"google_workspace": {
+            "command": "/opt/homebrew/bin/uvx", "args": ["--from", G.PACKAGE, "workspace-mcp"],
+            "env": {"GOOGLE_OAUTH_CLIENT_ID": "id"}}, "other": {"command": "npx", "env": {}}}}))
+        with patch.object(G, "CONFIG_PATH", cfg), patch.object(G, "BUNDLED_UVX", self.bundled):
+            self.assertTrue(G.ensure_env())
+            G.ensure_env()                        # the trust list settles into sorted order once
+            self.assertFalse(G.ensure_env())
+        servers = json.loads(cfg.read_text())["servers"]
+        self.assertEqual(servers["google_workspace"]["command"], str(self.bundled))
+        self.assertEqual(servers["google_workspace"]["env"]["UV_TOOL_DIR"], G.uv_env()["UV_TOOL_DIR"])
+        self.assertEqual(servers["other"], {"command": "npx", "env": {}})
+        # A hand-written, non-uvx entry is never repointed.
+        cfg.write_text(json.dumps({"servers": {"google_workspace": {"command": "/usr/local/bin/workspace-mcp"}}}))
+        with patch.object(G, "CONFIG_PATH", cfg), patch.object(G, "BUNDLED_UVX", self.bundled):
+            G.ensure_env()
+        entry = json.loads(cfg.read_text())["servers"]["google_workspace"]
+        self.assertEqual(entry["command"], "/usr/local/bin/workspace-mcp")
+        self.assertNotIn("UV_TOOL_DIR", entry.get("env", {}))
+
+
 if __name__ == "__main__":
     unittest.main()

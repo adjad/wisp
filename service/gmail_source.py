@@ -333,6 +333,8 @@ def status() -> dict:
             # reported by its source alone, and no secret is ever returned.
             "client_id": cfg.get("client_id", ""), "has_secret": bool(cfg.get("client_secret")),
             "client_source": source, "builtin_client": bool(builtin_client()[0]),
+            # Workspace server trouble, once for the section (only with accounts).
+            "workspace_note": workspace_note(workspace) if rows else {"message": "", "detail": ""},
             "consent_notice": UNVERIFIED_NOTICE if source == "builtin" else "",
             "last_headers_sync": first.get("last_headers_sync"), "last_error": first.get("last_error", ""),
             "authorizing": _pending_flow is not None, "authorization": dict(_authorization),
@@ -380,20 +382,30 @@ def _workspace_problem(workspace: dict) -> tuple[str, str]:
         return ("Google tools need the uv helper. Install it with: brew install uv",
                 "uvx was not found on this Mac")
     if prepare.get("state") == "failed":
-        return "Google tools couldn't be set up. Try Reconnect.", str(prepare.get("detail") or "")
+        return ("Google tools couldn't be set up. Check that this Mac is online, then choose Update settings.",
+                str(prepare.get("detail") or ""))
     if not workspace.get("configured"):
-        return "Google tools aren't set up yet. Try Reconnect.", "The Workspace server has no entry in mcp.json"
+        return ("Google tools aren't set up yet. Choose Update settings.",
+                "The Workspace server has no entry in mcp.json")
     if workspace.get("error"):
         return "Google tools aren't running right now.", str(workspace["error"])
     return "", ""
 
 
-def account_state(row: dict, workspace: dict) -> dict:
+def workspace_note(workspace: dict) -> dict:
+    """The one section-level note about the Workspace server, or empty
+    strings: {"message": plain sentence, "detail": raw reason}."""
+    plain, detail = _workspace_problem(workspace)
+    return {"message": plain, "detail": detail}
+
+
+def account_state(row: dict, workspace: dict | None = None) -> dict:
     """{state, message, detail} for one account row of status().
 
     state: connected | expired | needs_reconnect | attention. Precedence:
     expired, then needs_reconnect (a sign-in to redo fixes more than any
-    single problem), then the first problem of mail, calendar, Workspace."""
+    single problem), then the first problem of mail, then calendar.
+    `workspace` is accepted for callers but never changes the state."""
     developer = row.get("client_source") == "user"
     def attention(plain: str, detail: str) -> dict:
         return {"state": "attention", "message": detail if developer and detail else plain, "detail": detail}
@@ -409,9 +421,9 @@ def account_state(row: dict, workspace: dict) -> dict:
     calendar = str(row.get("calendar_error") or "")
     if calendar:
         return attention(_plain_calendar_error(calendar), calendar)
-    plain, detail = _workspace_problem(workspace)
-    if plain:
-        return attention(plain, detail)
+    # Workspace server trouble is one section-level note (status()
+    # "workspace_note"), never a per-account state: an account whose mail and
+    # calendar work is connected.
     return {"state": "connected", "message": "Connected", "detail": ""}
 
 
