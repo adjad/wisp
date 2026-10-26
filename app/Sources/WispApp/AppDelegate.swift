@@ -324,7 +324,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func finishFirstRun(tellAboutYou: Bool) {
         firstRunFinishing = true
+        let ready = setupModel.status?.ready == true
         firstRunWindow?.close()
+        // Not ready yet: the setup card carries the download in the notch, under
+        // Getting to know you when that was chosen.
+        if !ready {
+            showSetupCard()
+            notifyWhenReady()
+        }
         if tellAboutYou {
             tellWispAboutYou()
         } else {
@@ -340,8 +347,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         firstRunCloseObserver = nil
         defer { firstRunFinishing = false }
         guard !firstRunFinishing else { return }
-        if setupModel.status?.ready != true { openSetupInNotch() }
+        if setupModel.status?.ready != true {
+            openSetupInNotch()
+            notifyWhenReady()
+        }
         offerKnowYouWhenReady()
+    }
+
+    private var readyWatch: Task<Void, Never>?
+
+    /// After the first-run window closes before Wisp can answer, say so once it
+    /// can: the model download is the long wait, and nobody should have to keep
+    /// checking. Gives up after about three hours; the setup card stays the way in.
+    private func notifyWhenReady() {
+        guard readyWatch == nil else { return }
+        readyWatch = Task { @MainActor [weak self] in
+            var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
+            request.timeoutInterval = 10
+            for _ in 0..<2160 {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard let self else { return }
+                guard let (data, _) = try? await URLSession.shared.data(for: request),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      object["ready"] as? Bool == true else { continue }
+                if self.firstRunWindow?.isVisible != true {
+                    Notifications.post(id: Notifications.readyId, title: "Wisp is ready",
+                                       body: "Press ⌥ Space and ask about your day.")
+                }
+                self.readyWatch = nil
+                return
+            }
+            self?.readyWatch = nil
+        }
     }
 
     // Clicking the Dock icon, or opening Wisp again from Finder or Spotlight while it
@@ -946,6 +983,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.startAssistant()
         Notifications.onOpenToday = { [weak self] in self?.openTodayInNotch() }
+        Notifications.onOpenAsk = { [weak self] in self?.openAssistant() }
         startNativeSourceReaders()
 
         // Pointer enter/exit come from a real AppKit tracking area on the
@@ -1369,10 +1407,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func offerKnowYouWhenReady() {
         Task { @MainActor [weak self] in
             // A brand-new Mac is not ready at launch (setup guide first), so keep
-            // checking, slowly, until inference works: ~10 minutes at most.
+            // checking until inference works: every 3 s for 10 minutes, then every
+            // 30 s for about three hours, which covers a slow model download.
             var setupReady = false
-            for _ in 0..<200 {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            for attempt in 0..<560 {
+                try? await Task.sleep(nanoseconds: attempt < 200 ? 3_000_000_000 : 30_000_000_000)
                 guard let self else { return }
                 if !setupReady {
                     var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))

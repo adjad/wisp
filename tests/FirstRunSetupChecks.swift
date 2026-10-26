@@ -47,8 +47,13 @@ struct FirstRunSetupChecks {
         }
         var set: [String] = []
         FirstRunSetup.takeOverLaunchPrompts { set.append($0) }
-        check(Set(set) == [FirstRunSetup.permissionsRequestedKey, FirstRunSetup.setupGuideShownKey, FirstRunSetup.notchTipShownKey],
-              "The old launch prompts, tip and card are all taken over")
+        check(Set(set) == [FirstRunSetup.startedKey, FirstRunSetup.permissionsRequestedKey,
+                           FirstRunSetup.setupGuideShownKey, FirstRunSetup.notchTipShownKey],
+              "The old launch prompts, tip and card are all taken over, and the window is marked started")
+        // Quitting part-way: started and the taken-over keys are set, done is not.
+        check(FirstRunSetup.shouldShow { set.contains($0) }, "Quit before finishing: the window opens again")
+        check(!FirstRunSetup.shouldShow { set.contains($0) || $0 == FirstRunSetup.doneKey },
+              "Closed or finished: never again")
 
         // Step 1 states.
         check(FirstRunBrain.from(status: nil, downloads: []) == .checking, "No status yet")
@@ -77,6 +82,14 @@ struct FirstRunSetupChecks {
               "Ready names the model in use")
         check(FirstRunBrain.from(status: status(ready: true), downloads: []).isReady, "Ready wins over everything")
 
+        // Return on step 1 belongs to Download/Retry only while one is waiting.
+        check(FirstRunBrain.from(status: status(), downloads: []).waitsForDownloadClick, "Download waits for its click")
+        check(FirstRunBrain.from(status: status(), downloads: [task("failed")]).waitsForDownloadClick, "Retry waits for its click")
+        for state in ["downloading", "completed"] {
+            check(!FirstRunBrain.from(status: status(), downloads: [task(state)]).waitsForDownloadClick, "\(state): Continue")
+        }
+        check(!FirstRunBrain.from(status: status(ready: true), downloads: []).waitsForDownloadClick, "Ready: Continue")
+
         // Time left, said the way a person would.
         check(FirstRunBrain.timeLeft(nil) == nil && FirstRunBrain.timeLeft(0) == nil, "Unknown speed says nothing")
         check(FirstRunBrain.timeLeft(30) == "less than a minute left", "Seconds")
@@ -98,6 +111,6 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.messagesState(home: scratch) == .allowed, "Readable chat.db")
         try? FileManager.default.removeItem(at: scratch)
 
-        print("PASS: first-run setup — show rules, 11 step-1 states, time left, tour hints, Messages access")
+        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, Messages access")
     }
 }

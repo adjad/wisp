@@ -15,21 +15,26 @@ import UserNotifications
 /// Whether to show it, and what it takes over from the old first launch.
 enum FirstRunSetup {
     static let doneKey = "wisp.firstRun.done"
+    /// Set when the window first opens. Quitting before it is closed leaves this
+    /// without doneKey, and the next launch opens the window again.
+    static let startedKey = "wisp.firstRun.started"
     static let setupGuideShownKey = "wisp.setupGuide.shown"
     static let notchTipShownKey = "wisp.notchTip.shown"
     static let permissionsRequestedKey = "wisp.didRequestPermissions"
 
-    /// Only on a Mac that has never run Wisp. Anyone who saw the old setup card or
-    /// the notch tip is an existing user and never gets this window.
+    /// On a Mac that has never run Wisp, and again after quitting part-way through
+    /// it. Anyone who saw the old setup card or the notch tip without ever starting
+    /// this window is an existing user and never gets it.
     static func shouldShow(_ flag: (String) -> Bool) -> Bool {
-        !flag(doneKey) && !flag(setupGuideShownKey) && !flag(notchTipShownKey)
+        guard !flag(doneKey) else { return false }
+        return flag(startedKey) || (!flag(setupGuideShownKey) && !flag(notchTipShownKey))
     }
 
     /// The old first launch asked for Calendar, Reminders and Notifications as soon
     /// as the notch appeared, showed a tip before Wisp could answer, and opened the
     /// setup card. This window does all three, in order, so mark them as handled.
     static func takeOverLaunchPrompts(_ set: (String) -> Void) {
-        for key in [permissionsRequestedKey, setupGuideShownKey, notchTipShownKey] { set(key) }
+        for key in [startedKey, permissionsRequestedKey, setupGuideShownKey, notchTipShownKey] { set(key) }
     }
 }
 
@@ -46,6 +51,14 @@ enum FirstRunBrain: Equatable {
     case ready(label: String)
 
     var isReady: Bool { if case .ready = self { return true } else { return false } }
+
+    /// Step 1 is waiting on the person's one click: Download, or Retry after a stop.
+    var waitsForDownloadClick: Bool {
+        switch self {
+        case .needsDownload, .failed: return true
+        default: return false
+        }
+    }
 
     static func from(status: SetupStatus?, downloads: [SetupGuideModel.DownloadTask]) -> FirstRunBrain {
         guard let status else { return .checking }
@@ -348,9 +361,16 @@ struct FirstRunSetupView: View {
                 Text(brain.isReady ? "Everything runs on this Mac." : "You can keep going while this downloads.")
                     .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                 Spacer()
-                Button("Continue") { step = .permissions }
-                    .buttonStyle(FirstRunButtonStyle(primary: true))
-                    .keyboardShortcut(.defaultAction)
+                if brain.waitsForDownloadClick {
+                    // Return belongs to the card's Download (or Retry) here, so it can't
+                    // skip past the one step Wisp can't answer without.
+                    Button("Skip for now") { step = .permissions }
+                        .buttonStyle(FirstRunButtonStyle())
+                } else {
+                    Button("Continue") { step = .permissions }
+                        .buttonStyle(FirstRunButtonStyle(primary: true))
+                        .keyboardShortcut(.defaultAction)
+                }
             case .permissions:
                 Text("\(permissions.allowedCount) of \(FirstRunPermissions.Item.allCases.count) allowed")
                     .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
@@ -363,19 +383,25 @@ struct FirstRunSetupView: View {
                 if brain.isReady {
                     Circle().fill(Theme.orb).frame(width: 9, height: 9)
                     Text("Model ready").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                } else if brain.waitsForDownloadClick {
+                    Image(systemName: "arrow.down.circle").foregroundStyle(Theme.textMuted)
+                    Text("Wisp needs its model before it can answer")
+                        .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                 } else {
                     ProgressView().controlSize(.small)
-                    Text(compactProgress ?? "Getting the model ready…")
+                    Text((compactProgress ?? "Getting the model ready…") + " · we'll let you know")
                         .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                 }
                 Spacer()
+                // Neither waits for the model: Getting to know you only saves to
+                // Wisp's service, and the notch's setup card carries the download
+                // from here, with a notification once Wisp can answer.
                 Button("Tell Wisp about you") { finish(true) }
                     .buttonStyle(FirstRunButtonStyle())
-                    .disabled(!brain.isReady)
+                    .disabled(setup.status == nil)
                 Button("Start using Wisp") { finish(false) }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!brain.isReady)
             }
         }
         .padding(.horizontal, 22).padding(.vertical, 12)
@@ -432,6 +458,7 @@ struct FirstRunSetupView: View {
                  detail: "Fast and private. The engine is built into Wisp, so there's nothing else to install.") {
                 Button("Download") { Task { await setup.download(model) } }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
+                    .keyboardShortcut(.defaultAction)
                     .disabled(setup.busy != nil)
             }
         case .downloading(let model, let label, let fraction, let done, let total, let left):
@@ -454,6 +481,7 @@ struct FirstRunSetupView: View {
             card(icon: "arrow.clockwise.circle", title: label, detail: message) {
                 Button("Retry") { Task { await setup.download(model) } }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
+                    .keyboardShortcut(.defaultAction)
                     .disabled(setup.busy != nil)
             }
         case .finishing(_, let label):
