@@ -109,6 +109,22 @@ def _coverage(source: str, evidence: dict) -> dict:
             'absence_supported': False}
 
 
+# A single newsletter body (footer, legal lines, \u00a0 escapes) ran 1,532 of
+# the 1,700 default budget, so "any emails I need to reply to?" saw one NVIDIA
+# promo and 49 omitted across two accounts with unread mail (debug export
+# 2026-10-26). Mail bodies are cut per record and get their own larger budget
+# so a page of recent messages fits; the 11,000 result cap still applies.
+_EMAIL_BODY_CHARS = 400
+_EMAIL_BUDGET = 7_000
+
+
+def _email_body(body: str) -> dict:
+    if len(body) <= _EMAIL_BODY_CHARS:
+        return {"body": body}
+    return {"body": body[:_EMAIL_BODY_CHARS].rstrip() + "\u2026", "body_truncated": True,
+            "body_chars": len(body)}
+
+
 def _records(rows: list[dict], *, budget: int = 1_700) -> tuple[list[dict], int]:
     kept, used = [], 0
     for row in rows:
@@ -244,10 +260,11 @@ async def collect_task_evidence(period: str = "today", email_account: str = "", 
             records = [{"account_id": row["account_id"], "account_label": row["account"],
                 "message_id": row["message_id"], "received_at": row["ts"], "sender": row["sender"],
                 "received_at_local_iso": _local_iso(row["ts"]),
-                "recipients": row["to"], "subject": row["subject"], "body": row["body"],
+                "recipients": row["to"], "subject": row["subject"], **_email_body(row["body"]),
+                "unread": row.get("unread"),
                 "direction": "unknown: carrier has no authenticated incoming/outgoing flag"}
                 for row in sorted(selected, key=lambda value: value["ts"], reverse=True)]
-            kept, omitted = _records(records)
+            kept, omitted = _records(records, budget=_EMAIL_BUDGET)
             evidence["email"] = {"state": "eligible bounded recent-body cache, not mailbox history",
                 "generation": snapshot.generation, "synced_at": snapshot.synced_at, "raw_digest": snapshot.raw_digest,
                 "matching": len(records), "shown": len(kept), "omitted": omitted,
