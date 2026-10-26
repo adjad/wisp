@@ -118,9 +118,13 @@ def public_release_archive(assets, meta):
 
 
 # Shown directly under the download link: the public ZIP is ad-hoc signed, not notarized.
+# On macOS 15 and later Control-click > Open no longer unblocks it; Open Anyway does.
 FIRST_LAUNCH_NOTE = (
-    "First launch: Control-click Wisp.app and choose Open (or System Settings > Privacy & Security > Open Anyway).\n"
-    "If macOS still blocks it, run `xattr -dr com.apple.quarantine /Applications/Wisp.app` in Terminal.\n\n")
+    "First launch: open Wisp once (macOS will block it), then go to System Settings > Privacy & Security, "
+    "scroll down, click Open Anyway next to the Wisp message, and confirm. "
+    "On macOS 14 and earlier, Control-click Wisp.app and choose Open instead.\n"
+    "If macOS still blocks it, run `xattr -dr com.apple.quarantine <path to Wisp.app>` in Terminal "
+    "(for example /Applications/Wisp.app).\n\n")
 
 
 def create_public_draft(runner, assets, env, tag, meta):
