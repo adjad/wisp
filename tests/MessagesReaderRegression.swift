@@ -343,7 +343,149 @@ enum MessagesReaderRegression {
                      && bounded.structured.count == 2000
                      && bounded.truncated >= 27 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
+        try checkTypedStream(root: root)
+        checkBackendRetry()
         print("MessagesReader: synthetic read-only regression passed")
+    }
+
+    // Real typedstream bodies, as NSArchiver writes them (captured from
+    // NSArchiver.archivedData(withRootObject:) on macOS with synthetic text).
+    // Messages stores most attributedBody blobs in this format; neither keyed
+    // unarchiver path reads it, so rows with NULL text used to be skipped.
+    static let typedHello: [UInt8] = [
+        0x04, 0x0b, 0x73, 0x74, 0x72, 0x65, 0x61, 0x6d, 0x74, 0x79, 0x70, 0x65, 0x64, 0x81,
+        0xe8, 0x03, 0x84, 0x01, 0x40, 0x84, 0x84, 0x84, 0x12, 0x4e, 0x53, 0x41, 0x74, 0x74,
+        0x72, 0x69, 0x62, 0x75, 0x74, 0x65, 0x64, 0x53, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x00,
+        0x84, 0x84, 0x08, 0x4e, 0x53, 0x4f, 0x62, 0x6a, 0x65, 0x63, 0x74, 0x00, 0x85, 0x92,
+        0x84, 0x84, 0x84, 0x08, 0x4e, 0x53, 0x53, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x01, 0x94,
+        0x84, 0x01, 0x2b, 0x0b, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x74, 0x68, 0x65, 0x72,
+        0x65, 0x86, 0x84, 0x02, 0x69, 0x49, 0x01, 0x0b, 0x92, 0x84, 0x84, 0x84, 0x0c, 0x4e,
+        0x53, 0x44, 0x69, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x61, 0x72, 0x79, 0x00, 0x94, 0x84,
+        0x01, 0x69, 0x00, 0x86, 0x86
+    ]
+    // NSMutableAttributedString "Link https://example.test ok" with an NSLink run.
+    static let typedMutableLink: [UInt8] = [
+        0x04, 0x0b, 0x73, 0x74, 0x72, 0x65, 0x61, 0x6d, 0x74, 0x79, 0x70, 0x65, 0x64, 0x81,
+        0xe8, 0x03, 0x84, 0x01, 0x40, 0x84, 0x84, 0x84, 0x19, 0x4e, 0x53, 0x4d, 0x75, 0x74,
+        0x61, 0x62, 0x6c, 0x65, 0x41, 0x74, 0x74, 0x72, 0x69, 0x62, 0x75, 0x74, 0x65, 0x64,
+        0x53, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x00, 0x84, 0x84, 0x12, 0x4e, 0x53, 0x41, 0x74,
+        0x74, 0x72, 0x69, 0x62, 0x75, 0x74, 0x65, 0x64, 0x53, 0x74, 0x72, 0x69, 0x6e, 0x67,
+        0x00, 0x84, 0x84, 0x08, 0x4e, 0x53, 0x4f, 0x62, 0x6a, 0x65, 0x63, 0x74, 0x00, 0x85,
+        0x92, 0x84, 0x84, 0x84, 0x0f, 0x4e, 0x53, 0x4d, 0x75, 0x74, 0x61, 0x62, 0x6c, 0x65,
+        0x53, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x01, 0x84, 0x84, 0x08, 0x4e, 0x53, 0x53, 0x74,
+        0x72, 0x69, 0x6e, 0x67, 0x01, 0x95, 0x84, 0x01, 0x2b, 0x1c, 0x4c, 0x69, 0x6e, 0x6b,
+        0x20, 0x68, 0x74, 0x74, 0x70, 0x73, 0x3a, 0x2f, 0x2f, 0x65, 0x78, 0x61, 0x6d, 0x70,
+        0x6c, 0x65, 0x2e, 0x74, 0x65, 0x73, 0x74, 0x20, 0x6f, 0x6b, 0x86, 0x84, 0x02, 0x69,
+        0x49, 0x01, 0x05, 0x92, 0x84, 0x84, 0x84, 0x0c, 0x4e, 0x53, 0x44, 0x69, 0x63, 0x74,
+        0x69, 0x6f, 0x6e, 0x61, 0x72, 0x79, 0x00, 0x95, 0x84, 0x01, 0x69, 0x00, 0x86, 0x99,
+        0x02, 0x14, 0x92, 0x84, 0x9a, 0x9b, 0x01, 0x92, 0x84, 0x98, 0x98, 0x06, 0x4e, 0x53,
+        0x4c, 0x69, 0x6e, 0x6b, 0x86, 0x92, 0x84, 0x84, 0x84, 0x05, 0x4e, 0x53, 0x55, 0x52,
+        0x4c, 0x00, 0x95, 0x84, 0x01, 0x63, 0x00, 0x92, 0x84, 0x98, 0x98, 0x14, 0x68, 0x74,
+        0x74, 0x70, 0x73, 0x3a, 0x2f, 0x2f, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e,
+        0x74, 0x65, 0x73, 0x74, 0x86, 0x86, 0x86, 0x99, 0x01, 0x03, 0x86
+    ]
+    /// The same NSAttributedString layout with 100 "é" (200 UTF-8 bytes), which
+    /// takes the 0x81 two-byte length. Spliced from typedHello exactly as
+    /// NSArchiver writes the longer string.
+    static var typedLong: [UInt8] {
+        let tag = typedHello.firstIndex(of: 0x2b)!
+        var suffix = Array(typedHello[(tag + 2 + 11)...])
+        suffix[6] = 100   // the attribute run length, in characters
+        return Array(typedHello[...tag]) + [0x81, 0xc8, 0x00]
+            + Array(String(repeating: "\u{e9}", count: 100).utf8) + suffix
+    }
+
+    static func checkTypedStream(root: URL) throws {
+        typealias T = TypedStreamText
+        precondition(T.decode(Data(typedHello)) == "Hello there")
+        precondition(T.decode(Data(typedMutableLink)) == "Link https://example.test ok")
+        precondition(T.decode(Data(typedLong)) == String(repeating: "\u{e9}", count: 100))
+        // Anything off the layout is nil, never a guess.
+        let tag = typedHello.firstIndex(of: 0x2b)!
+        var overlong = typedHello
+        overlong[tag + 1] = 0x7f
+        precondition(T.decode(Data(overlong)) == nil, "a length past the end is refused")
+        var badUTF8 = Array(typedHello[...tag]) + [0x02, 0xff, 0xfe] + Array(typedHello[(tag + 2 + 11)...])
+        precondition(T.decode(Data(badUTF8)) == nil, "invalid UTF-8 is refused")
+        badUTF8[0] = 0x05
+        precondition(T.decode(Data(badUTF8)) == nil, "no typedstream header, no scan")
+        precondition(T.decode(Data(Array(typedHello[..<tag]))) == nil, "a cut-off stream is refused")
+        precondition(T.decode(Data("NSString+\u{05}Hello".utf8)) == nil, "the header is required")
+
+        // Through the reader: NULL text plus a typedstream body is now a message.
+        let path = root.appendingPathComponent("typedstream.db").path
+        var db: OpaquePointer?
+        precondition(sqlite3_open(path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        for statement in [
+            "CREATE TABLE message (date INTEGER, text TEXT, attributedBody BLOB, is_from_me INTEGER, " +
+                "handle_id INTEGER, is_read INTEGER, associated_message_type INTEGER, guid TEXT, date_edited INTEGER)",
+            "CREATE TABLE handle (id TEXT)",
+            "CREATE TABLE chat (display_name TEXT, chat_identifier TEXT, guid TEXT)",
+            "CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER)",
+            "CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER)",
+        ] { precondition(sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK) }
+        let now = Int64((Date().timeIntervalSince1970 - 978307200 - 60) * 1_000_000_000)
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        let rows: [(String, [UInt8])] = [
+            ("typed-hello", typedHello), ("typed-link", typedMutableLink), ("typed-long", typedLong),
+            ("typed-overlong", overlong), ("typed-garbage", Array("not an archive".utf8)),
+        ]
+        for (offset, row) in rows.enumerated() {
+            var stmt: OpaquePointer?
+            precondition(sqlite3_prepare_v2(db, "INSERT INTO message VALUES (?, NULL, ?, 0, 0, 1, 0, ?, 0)",
+                                            -1, &stmt, nil) == SQLITE_OK)
+            sqlite3_bind_int64(stmt, 1, now - Int64(offset) * 1_000_000_000)
+            _ = row.1.withUnsafeBytes { sqlite3_bind_blob(stmt, 2, $0.baseAddress, Int32(row.1.count), transient) }
+            sqlite3_bind_text(stmt, 3, row.0, -1, transient)
+            precondition(sqlite3_step(stmt) == SQLITE_DONE)
+            sqlite3_finalize(stmt)
+        }
+        let scan = MessagesReader(dbPath: path).readRecentMessages()!
+        precondition(scan.attempted == 5 && scan.skipped == 2 && scan.lines.count == 3,
+                     "typedstream rows are read; only the undecodable ones are skipped")
+        precondition(scan.lines[0].hasSuffix("Unknown: Hello there"))
+        precondition(scan.lines[1].hasSuffix("Unknown: Link https://example.test ok"))
+        precondition(scan.lines[2].hasSuffix(String(repeating: "\u{e9}", count: 100)))
+        let records = try scan.structured.map {
+            try JSONSerialization.jsonObject(with: Data($0.dropFirst(5).utf8)) as! [String: Any]
+        }
+        let link = records[1]
+        let record = link["record"] as! [String: Any]
+        let links = record["links"] as! [[String: String]]
+        precondition(links.count == 1 && links[0]["url"] == "https://example.test"
+                     && links[0]["provenance"] == "literal_text", "the text's own link is still found")
+        let coverage = link["coverage"] as! [String: String]
+        precondition(coverage["text"] == "complete" && coverage["links"] == "partial",
+                     "typedstream recovers text, not NSLink attributes, so links stay partial")
+    }
+
+    /// Only "nothing is listening" is retried, on a bounded, growing schedule.
+    static func checkBackendRetry() {
+        typealias R = NativeBackendRetry
+        precondition(R.isBackendUnreachable(URLError(.cannotConnectToHost)))
+        precondition(R.isBackendUnreachable(NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost)))
+        precondition(R.isBackendUnreachable(URLError(.timedOut)))
+        precondition(!R.isBackendUnreachable(nil))
+        precondition(!R.isBackendUnreachable(URLError(.cancelled)), "a cancelled request is not an outage")
+        precondition(!R.isBackendUnreachable(URLError(.badServerResponse)))
+        precondition(!R.isBackendUnreachable(NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNREFUSED))))
+        let retry = R()
+        var delays: [TimeInterval] = []
+        while let delay = retry.nextDelay() {
+            precondition(retry.nextDelay() == nil, "one retry pending at a time")
+            delays.append(delay)
+            retry.fired()
+        }
+        precondition(delays == [3, 8, 20, 60, 60, 60, 60] && delays.reduce(0, +) < 330,
+                     "about five minutes, then the reader's own timer")
+        retry.reached()
+        precondition(retry.nextDelay() == 3, "a completed request starts the schedule over")
+        // A completed request or a cancelled one schedules nothing.
+        var ran = false
+        R().handle(error: nil) { ran = true }
+        R().handle(error: URLError(.cancelled)) { ran = true }
+        precondition(!ran)
     }
 
     /// Full Disk Access only when the error says so: macOS refused the file

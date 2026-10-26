@@ -155,6 +155,7 @@ enum MailDBReaderRegression {
             .readHeadersAndHistory() == nil, "An unreadable index must fail")
         precondition(MailDBReader(indexPath: root.appendingPathComponent("missing").path)
             .readHistory() == nil, "An unreadable index must fail the history-only read too")
+        try closedReadFailureChecks(root: root)
 
         // History-only entry point (used while Mail is running) and the
         // account-label trust rule that gates it.
@@ -349,5 +350,45 @@ enum MailDBReaderRegression {
                          "Without a labels table the Inbox-only scope is unchanged")
         }
         print("MailDBReader: regression checks passed")
+    }
+
+    /// Why closed Mail can't be read, from fixture folders only. reason_kind is
+    /// what the Brief keys its button on.
+    static func closedReadFailureChecks(root: URL) throws {
+        func failure(_ folder: URL) -> (kind: String, reason: String) {
+            MailDBReader(indexPath: root.appendingPathComponent("missing").path,
+                         mailDirectory: folder.path).closedReadFailure()
+        }
+        let absent = failure(root.appendingPathComponent("no-mail-folder"))
+        precondition(absent.kind == "mail_not_configured" && absent.reason.contains("isn't set up"))
+        let empty = root.appendingPathComponent("mail-empty")
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: empty.appendingPathComponent("V10/MailData"),
+                                                withIntermediateDirectories: true)
+        precondition(failure(empty).kind == "mail_not_configured", "a Mail folder with no index has no accounts")
+        let withIndex = root.appendingPathComponent("mail-index")
+        try FileManager.default.createDirectory(at: withIndex.appendingPathComponent("V10/MailData"),
+                                                withIntermediateDirectories: true)
+        // Plain writes: FileManager.createFile stages through the system temp folder.
+        try Data().write(to: withIndex.appendingPathComponent("V10/MailData/Envelope Index"))
+        let present = failure(withIndex)
+        precondition(present.kind == "" && present.reason.contains("couldn't be read"),
+                     "an index that exists but won't open has nothing to grant")
+        let file = root.appendingPathComponent("mail-file")
+        try Data().write(to: file)
+        precondition(failure(file).kind == "mail_not_configured")
+
+        // The rule itself: Full Disk Access only for macOS's privacy denial.
+        typealias R = MailDBReader
+        let denied = R.closedReadFailure(mailDirectoryExists: true, listErrno: EPERM, hasIndex: false)
+        precondition(denied.kind == "full_disk_access"
+                     && denied.reason == "Wisp reads Mail while Mail is open. Open Mail, or give Wisp "
+                        + "Full Disk Access to read it when Mail is closed.")
+        let unixDenied = R.closedReadFailure(mailDirectoryExists: true, listErrno: EACCES, hasIndex: false)
+        precondition(unixDenied.kind == "" && !unixDenied.reason.contains("Full Disk Access"),
+                     "a plain permission error is not a Full Disk Access problem")
+        precondition(R.closedReadFailure(mailDirectoryExists: false, listErrno: 0, hasIndex: false).kind
+                     == "mail_not_configured")
+        precondition(R.closedReadFailure(mailDirectoryExists: true, listErrno: 0, hasIndex: true).kind == "")
     }
 }

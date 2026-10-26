@@ -105,6 +105,7 @@ final class URLSession {
 final class FakeDB {
     weak var reader: Reader?
     func readHeadersAndHistory() -> (String, String)? { ("old headers", "old history") }
+    func closedReadFailure() -> (kind: String, reason: String) { ("full_disk_access", "synthetic closed-read reason") }
     func readTrustedHistory(forAccounts accounts: [String: String]) -> String? {
         let reader = reader!
         reader.touch("index"); reader.indexSeen.signal()
