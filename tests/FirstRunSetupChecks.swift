@@ -78,6 +78,10 @@ struct FirstRunSetupChecks {
         if case .unavailable = FirstRunBrain.from(status: status(bundled: false), downloads: []) {} else {
             check(false, "External engine sends people to the detailed setup")
         }
+        // A macOS too old for the engine also falls back to external mode: the
+        // engine's own reason, not "set to use another app".
+        check(FirstRunBrain.from(status: status(bundled: false, available: false), downloads: [])
+                == .unavailable("Wisp's engine needs macOS 26."), "Unsupported macOS says why")
         check(FirstRunBrain.from(status: status(running: false), downloads: []) == .startingEngine, "Engine not running yet")
         check(FirstRunBrain.from(status: status(), downloads: []) == .needsDownload(model: gemma, label: "Gemma 4 E4B", sizeGb: 5.5),
               "Nothing installed: offer the download")
@@ -104,6 +108,30 @@ struct FirstRunSetupChecks {
             check(!FirstRunBrain.from(status: status(), downloads: [task(state)]).waitsForDownloadClick, "\(state): Continue")
         }
         check(!FirstRunBrain.from(status: status(ready: true), downloads: []).waitsForDownloadClick, "Ready: Continue")
+
+        // The last step's footer never spins on nothing: each state either shows
+        // something under way or offers the click that gets it going.
+        func footer(_ s: SetupStatus?, _ tasks: [SetupGuideModel.DownloadTask] = [], failed: Bool = false) -> FirstRunBrain.Footer {
+            FirstRunBrain.from(status: s, downloads: tasks).footer(engineStartFailed: failed)
+        }
+        check(footer(nil) == .working("Starting Wisp…"), "Service still starting")
+        check(footer(status(running: false)) == .working("Starting the engine…"), "Engine starting")
+        check(footer(status(running: false), failed: true) == .tryAgain, "Engine start failed: Try again")
+        check(footer(status()) == .download, "Never downloaded: Download")
+        check(footer(status(), [task("failed")]) == .retry && footer(status(), [task("cancelled")]) == .retry, "Stopped: Retry")
+        check(footer(status(available: false)) == .detailedSetup, "Can't run here: the detailed setup")
+        check(footer(status(), [task("downloading")]) == .working("Downloading · 45%"), "Downloading shows progress")
+        check(footer(status(), [task("completed")]) == .working("Finishing setup…"), "Finishing")
+        check(footer(status(ready: true)) == .ready, "Ready")
+        check(FirstRunBrain.from(status: status(), downloads: [task("downloading")]).isArriving
+              && FirstRunBrain.from(status: status(), downloads: [task("completed")]).isArriving
+              && !FirstRunBrain.from(status: status(), downloads: []).isArriving
+              && !FirstRunBrain.from(status: status(), downloads: [task("failed")]).isArriving,
+              "\"Keep going while this downloads\" only while it does")
+        check(FirstRunBrain.from(status: status(), downloads: [task("failed")]).modelToFetch == gemma
+              && FirstRunBrain.from(status: status(), downloads: []).modelToFetch == gemma
+              && FirstRunBrain.from(status: status(), downloads: [task("downloading")]).modelToFetch == nil,
+              "Download and Retry fetch the recommended model")
 
         // Time left, said the way a person would.
         check(FirstRunBrain.timeLeft(nil) == nil && FirstRunBrain.timeLeft(0) == nil, "Unknown speed says nothing")

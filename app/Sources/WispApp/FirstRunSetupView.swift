@@ -103,6 +103,48 @@ enum FirstRunBrain: Equatable {
         }
     }
 
+    /// The model a Download or Retry click fetches.
+    var modelToFetch: String? {
+        switch self {
+        case .needsDownload(let model, _, _), .failed(let model, _, _): return model
+        default: return nil
+        }
+    }
+
+    /// The model is on its way with nothing more to click, so the person can move on.
+    var isArriving: Bool {
+        switch self {
+        case .downloading, .finishing: return true
+        default: return false
+        }
+    }
+
+    /// What the last step's footer says about the model, and the one thing it
+    /// offers when the model isn't on its way. A spinner only while something is
+    /// really happening, so the step never waits on nothing.
+    enum Footer: Equatable {
+        case ready
+        case working(String)
+        case download
+        case retry
+        case tryAgain
+        case detailedSetup
+    }
+
+    /// `engineStartFailed`: a start was tried and nothing is running now.
+    func footer(engineStartFailed: Bool) -> Footer {
+        switch self {
+        case .ready: return .ready
+        case .checking: return .working("Starting Wisp…")
+        case .startingEngine: return engineStartFailed ? .tryAgain : .working("Starting the engine…")
+        case .downloading(_, _, let fraction, _, _, _): return .working("Downloading · \(Int(fraction * 100))%")
+        case .finishing: return .working("Finishing setup…")
+        case .needsDownload: return .download
+        case .failed: return .retry
+        case .unavailable: return .detailedSetup
+        }
+    }
+
     static func from(status: SetupStatus?, downloads: [SetupGuideModel.DownloadTask]) -> FirstRunBrain {
         guard let status else { return .checking }
         if status.ready {
@@ -110,11 +152,13 @@ enum FirstRunBrain: Equatable {
             let label = status.models.installed.first(where: { $0.id == model })?.label ?? model
             return .ready(label: label)
         }
-        guard status.omlx.bundled == true else {
-            return .unavailable("Wisp is set to use another app for its model. Use the detailed setup to finish.")
-        }
+        // The engine's own reason first: a Mac whose macOS is too old for it also
+        // falls back to external mode, and "set to use another app" would be untrue.
         if let engine = status.bundledEngine, !engine.available {
             return .unavailable(engine.unavailableReason ?? "Wisp's built-in engine can't run on this Mac.")
+        }
+        guard status.omlx.bundled == true else {
+            return .unavailable("Wisp is set to use another app for its model. Use the detailed setup to finish.")
         }
         if !status.omlx.running { return .startingEngine }
         let model = status.models.download?.model ?? status.models.recommended
@@ -169,6 +213,8 @@ final class FirstRunPermissions: ObservableObject {
 
     func state(_ item: Item) -> State { states[item] ?? .checking }
     var allowedCount: Int { Item.allCases.filter { state($0) == .allowed }.count }
+    /// Every one has an answer from macOS, whichever it was.
+    var allAnswered: Bool { Item.allCases.allSatisfy { FirstRunReaderGate.isDecided(state($0)) } }
 
     /// Re-read while the step is visible: grants made in System Settings arrive
     /// when the person comes back to Wisp.
@@ -366,15 +412,29 @@ struct FirstRunSetupView: View {
 
     // MARK: Chrome
 
+    /// A step is ticked for what is true, not for having been passed: the model
+    /// once Wisp can answer with it, permissions once every one has an answer.
+    private func isDone(_ s: Step) -> Bool {
+        switch s {
+        case .brain: return brain.isReady
+        case .permissions: return permissions.allAnswered
+        case .tour: return false
+        }
+    }
+
     private var stepBar: some View {
         HStack(spacing: 6) {
             ForEach(Step.allCases, id: \.self) { s in
-                let done = s.rawValue < step.rawValue || (s == .brain && brain.isReady && step != .brain)
-                Text(done ? "✓ \(title(s))" : "\(s.rawValue + 1)  \(title(s))")
-                    .font(.system(size: 11.5, weight: s == step ? .semibold : .regular))
-                    .foregroundStyle(s == step ? Theme.textPrimary : (done ? Color.green.opacity(0.8) : Theme.textMuted))
-                    .padding(.horizontal, 9).padding(.vertical, 3)
-                    .background(Capsule().fill(s == step ? Theme.chipFill : .clear))
+                let done = isDone(s)
+                Button { step = s } label: {
+                    Text(done ? "✓ \(title(s))" : "\(s.rawValue + 1)  \(title(s))")
+                        .font(.system(size: 11.5, weight: s == step ? .semibold : .regular))
+                        .foregroundStyle(s == step ? Theme.textPrimary : (done ? Color.green.opacity(0.8) : Theme.textMuted))
+                        .padding(.horizontal, 9).padding(.vertical, 3)
+                        .background(Capsule().fill(s == step ? Theme.chipFill : .clear))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
             }
             Spacer()
             if step != .brain, let progress = compactProgress {
@@ -408,7 +468,7 @@ struct FirstRunSetupView: View {
             switch step {
             case .brain:
                 Image(systemName: "lock").foregroundStyle(Theme.textMuted)
-                Text(brain.isReady ? "Everything runs on this Mac." : "You can keep going while this downloads.")
+                Text(brain.isArriving ? "You can keep going while this downloads." : "The AI model runs on this Mac.")
                     .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                 Spacer()
                 if brain.waitsForDownloadClick {
@@ -430,19 +490,9 @@ struct FirstRunSetupView: View {
                     .buttonStyle(FirstRunButtonStyle(primary: true))
                     .keyboardShortcut(.defaultAction)
             case .tour:
-                if brain.isReady {
-                    Circle().fill(Theme.orb).frame(width: 9, height: 9)
-                    Text("Model ready").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                } else if brain.waitsForDownloadClick {
-                    Image(systemName: "arrow.down.circle").foregroundStyle(Theme.textMuted)
-                    Text("Wisp needs its model before it can answer")
-                        .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                } else {
-                    ProgressView().controlSize(.small)
-                    Text((compactProgress ?? "Getting the model ready…") + " · we'll let you know")
-                        .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                }
-                Spacer()
+                Button("Back") { step = .permissions }.buttonStyle(FirstRunButtonStyle())
+                tourModelStatus
+                Spacer(minLength: 6)
                 // Neither waits for the model: Getting to know you only saves to
                 // Wisp's service, and the notch's setup card carries the download
                 // from here, with a notification once Wisp can answer.
@@ -455,6 +505,42 @@ struct FirstRunSetupView: View {
             }
         }
         .padding(.horizontal, 22).padding(.vertical, 12)
+    }
+
+    /// A start was tried and nothing is under way now, Wisp's own automatic start included.
+    private var engineStartFailed: Bool {
+        setup.busy == nil && (engineStartTried || setup.messageIsError)
+    }
+
+    /// The model, on the last step: a spinner only while it is really on its way,
+    /// otherwise the one click that gets it going, so the step never waits on nothing.
+    @ViewBuilder private var tourModelStatus: some View {
+        switch brain.footer(engineStartFailed: engineStartFailed) {
+        case .ready:
+            Circle().fill(Theme.orb).frame(width: 9, height: 9)
+            Text("Model ready").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+        case .working(let text):
+            ProgressView().controlSize(.small)
+            Text(text).font(.system(size: 12)).foregroundStyle(Theme.textMuted).lineLimit(1)
+        case .download:
+            fetchButton("Download the model")
+        case .retry:
+            fetchButton("Retry download")
+        case .tryAgain:
+            Button("Start the engine") { Task { await setup.startEngine() } }
+                .buttonStyle(FirstRunButtonStyle())
+                .disabled(setup.busy != nil)
+        case .detailedSetup:
+            Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+        }
+    }
+
+    @ViewBuilder private func fetchButton(_ title: String) -> some View {
+        if let model = brain.modelToFetch {
+            Button(title) { Task { await setup.download(model) } }
+                .buttonStyle(FirstRunButtonStyle())
+                .disabled(setup.busy != nil)
+        }
     }
 
     // MARK: Step 1
@@ -493,7 +579,7 @@ struct FirstRunSetupView: View {
             }
         case .startingEngine:
             card(icon: "bolt", title: "Starting Wisp's engine…", detail: "It's built into Wisp, so there's nothing else to install.") {
-                if setup.busy == nil && engineStartTried {
+                if engineStartFailed {
                     Button("Try again") { Task { await setup.startEngine() } }.buttonStyle(FirstRunButtonStyle())
                 } else {
                     ProgressView().controlSize(.small)
@@ -620,6 +706,10 @@ struct FirstRunSetupView: View {
         VStack(alignment: .leading, spacing: 0) {
             heading("Wisp lives at the top of your screen", "No window to find. It's always one gesture away.")
             tourPicture.padding(.bottom, 14)
+            if case .working = brain.footer(engineStartFailed: engineStartFailed) {
+                Text("You can start now. Wisp lets you know when its model is ready.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.bottom, 10)
+            }
             card(icon: "keyboard", title: "Open from anywhere",
                  detail: "⌥ Space to ask  ·  ⌘ ⇧ F to search everything") { EmptyView() }
             card(icon: "sparkles", title: "Try asking",
