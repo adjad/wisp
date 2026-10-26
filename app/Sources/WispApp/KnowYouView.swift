@@ -81,11 +81,14 @@ final class KnowYouModel: ObservableObject {
     func leave() async {
         guard !ended else { return }
         ended = true
-        // Left before the profile loaded (or while its load failed): still a
-        // Later, so Wisp's own offer waits its few days instead of coming back
-        // at the next panel close. The service ignores it for a finished profile.
+        // Left while the profile was still loading: still a Later, so Wisp's own
+        // offer waits its few days instead of coming back at the next panel
+        // close. But not when the load failed: the service wasn't answering (a
+        // cold launch), the person never saw a question, and each dismissal
+        // spends one of the two automatic offers (profile.dismiss bumps
+        // dismiss_count every time, finished profile or not).
         guard loaded else {
-            _ = await client.dismissProfile()
+            if !loadFailed { _ = await client.dismissProfile() }
             return
         }
         if flow.isDone {
