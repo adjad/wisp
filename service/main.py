@@ -3227,7 +3227,8 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
         set_email_availability(bool(diag.get("available")),
                                str(diag.get("reason") or ""),
                                bool(diag.get("syncing", False)),
-                               str(diag.get("read_source") or ""))
+                               str(diag.get("read_source") or ""),
+                               reason_kind=str(diag.get("reason_kind") or ""))
     return {"ok": True}
 
 
@@ -3318,7 +3319,8 @@ async def assistant_sync_notes(body: dict[str, Any]) -> dict[str, Any]:
     diag = body.get("diagnostics") or {}
     cache_notes(str(body.get("raw") or ""), available=bool(diag.get("available", True)),
                 reason=str(diag.get("reason") or ""),
-                snapshot_started_at=diag.get("snapshot_started_at"))
+                snapshot_started_at=diag.get("snapshot_started_at"),
+                reason_kind=str(diag.get("reason_kind") or ""))
     return {"ok": True}
 
 

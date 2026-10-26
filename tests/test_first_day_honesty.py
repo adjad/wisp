@@ -415,3 +415,150 @@ def test_an_unreachable_engine_stands_down_without_an_attempt(monkeypatch, step)
     monkeypatch.setattr(config, "thinks_explicitly", lambda name: False)
     monkeypatch.setattr(brief, "_c", lambda: _Unreachable(step))
     assert asyncio.run(G._resident_reply("s", "m", lambda: False)) is None
+
+
+# --- The readers' reason and reason_kind reach every row -----------------------------
+#
+# Agreed values: reason_kind in {calendar_access, reminders_access,
+# full_disk_access, mail_automation, mail_not_configured}, with the reader's own
+# sentence as `reason`.
+
+READER_KINDS = ("calendar_access", "reminders_access", "full_disk_access", "mail_automation", "mail_not_configured")
+
+
+def _handler(name):
+    """One sync handler from service/main.py, compiled alone: importing
+    service.main would start unrelated app machinery."""
+    import ast
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "service/main.py"
+    node = next(n for n in ast.parse(path.read_text()).body
+                if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
+    node.decorator_list = []
+    namespace = {"Any": object}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+    return namespace[name]
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = {"t": 1_000_000.0}
+    monkeypatch.setattr(scheduler, "_sync_status", {})
+    monkeypatch.setattr(scheduler.time, "time", lambda: now["t"])
+    monkeypatch.setattr(S.time, "time", lambda: now["t"])
+    monkeypatch.setattr(scheduler, "STARTED_AT", now["t"])
+    return now
+
+
+@pytest.mark.parametrize("source,kind", [("calendar", "calendar_access"), ("reminders", "reminders_access")])
+def test_a_reader_posted_kind_and_reason_reach_sync_status(clock, source, kind):
+    reason = f"{source.title()} access is turned off for Wisp. Turn it on in System Settings."
+    scheduler.record_sync(source, 0, diagnostics={"authorized": False, "syncing": False, "reason": reason,
+                                                  "reason_kind": kind, "snapshot_started_at": clock["t"]})
+    status = S.source_status(source)
+    assert status == dict(status, state="unavailable", reason=reason, reason_kind=kind)
+
+
+def test_the_backend_waits_out_the_readers_prompt_window(clock):
+    """The readers report "syncing" for up to 120 s while a prompt is open; the
+    backend's own stall guess must not win in between."""
+    from service.assistant.today import ACCESS_STALL_S
+    assert S.SYNC_STALL_S > 120 and ACCESS_STALL_S == S.SYNC_STALL_S
+    waiting = {"authorized": False, "syncing": True, "snapshot_started_at": clock["t"]}
+    scheduler.record_sync("calendar", 0, diagnostics=waiting)
+    clock["t"] += 110
+    scheduler.record_sync("calendar", 0, diagnostics=waiting)
+    assert S.source_status("calendar")["state"] == "syncing"
+    live = scheduler.connectors_status()["calendar"]
+    assert source_access("calendar", live, now=clock["t"], started_at=scheduler.STARTED_AT)["state"] == "syncing"
+    # At 120 s the reader posts its own reason; that is what shows.
+    clock["t"] += 12
+    reason = "The Calendar permission prompt is still waiting for an answer. Look for it, or allow Wisp in Settings."
+    scheduler.record_sync("calendar", 0, diagnostics={"authorized": False, "syncing": False, "reason": reason,
+                                                      "reason_kind": "calendar_access"})
+    assert S.source_status("calendar")["reason"] == reason
+
+
+@pytest.fixture
+def mail_state(monkeypatch, tmp_path):
+    from service.tools import cache_store
+    from service.tools import email_tools as E
+    monkeypatch.setattr(cache_store, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(E, "_save_email_sources", lambda: None)
+    for name in ("_email_available", "_email_reason", "_email_reason_kind", "_email_sync_pending",
+                 "_email_read_source", "_native_headers_at", "_native_source", "_external_accounts"):
+        monkeypatch.setattr(E, name, getattr(E, name))
+    monkeypatch.setattr(E, "_external_accounts", {})
+    # set_email_availability publishes or withdraws the raw-mail authority: put
+    # its exact head back, so no later test sees this one's availability.
+    monkeypatch.setattr(E._raw_availability, "_head", E._raw_availability._head)
+    return E
+
+
+@pytest.mark.parametrize("kind", READER_KINDS)
+def test_the_email_handler_keeps_the_kind_on_the_email_row(mail_state, kind):
+    E = mail_state
+    handler = _handler("assistant_sync_emails")
+    reason = "Wisp needs your permission to read Mail."
+    available = kind == "mail_not_configured"   # zero accounts: the script ran fine
+    assert asyncio.run(handler({"diagnostics": {"available": available, "reason": reason,
+                                                "reason_kind": kind}})) == {"ok": True}
+    row = S.source_status("email")
+    assert row["reason_kind"] == kind and E.email_reason_kind() == kind and row["reason"] == reason
+    # A kind that isn't a plain identifier is no kind.
+    asyncio.run(handler({"diagnostics": {"available": False, "reason": reason, "reason_kind": "<b>x</b>"}}))
+    assert S.source_status("email")["reason_kind"] == ""
+
+
+def test_no_inbox_message_has_no_doubled_period_and_names_missing_accounts(mail_state):
+    E = mail_state
+    E.set_email_availability(False, "Wisp needs your permission to control Mail.", reason_kind="mail_automation")
+    message = E._no_inbox_message()
+    assert ".." not in message and ". ." not in message and "control Mail. No usable" in message
+    assert "Automation" in message
+    E.set_email_availability(True, "There are no Mail accounts on this Mac.", reason_kind="mail_not_configured")
+    message = E._no_inbox_message()
+    assert message.startswith("There are no Mail accounts on this Mac.") and "Internet Accounts" in message
+
+
+def test_a_ready_row_with_no_mail_account_is_not_an_all_clear(mail_state, monkeypatch):
+    E = mail_state
+    monkeypatch.setattr(scheduler, "_sync_status", {})
+    E.set_email_availability(True, "There are no Mail accounts on this Mac.", reason_kind="mail_not_configured")
+    monkeypatch.setattr(E, "email_sync_state", lambda: "ready")
+    monkeypatch.setattr(E, "email_source_details", lambda *a, **k: [])
+    evidence = {"email": dict(ready=True, records=[])}
+    W._annotate_access(evidence, NOW)
+    assert evidence["email"]["ready"] is False and evidence["email"]["blocked"] == "mail_not_configured"
+    assert evidence["email"]["reason"] == "There are no Mail accounts on this Mac."
+    # With a Google account supplying mail, the same row is a real read.
+    monkeypatch.setattr(E, "_external_accounts", {"a@gmail.com": {}})
+    evidence = {"email": dict(ready=True, records=[])}
+    W._annotate_access(evidence, NOW)
+    assert evidence["email"]["ready"] is True and "blocked" not in evidence["email"]
+
+
+@pytest.fixture
+def notes_state(monkeypatch):
+    from service.tools import cache_store
+    from service.tools import notes_tools as N
+    monkeypatch.setattr(cache_store, "save", lambda name, text: None)
+    monkeypatch.setattr(N._publication_authority, "_head", N._publication_authority._head)
+    for name in ("_notes", "_notes_at", "_available", "_reason", "_reason_kind", "_snapshot_at",
+                 "_snapshot_started_at", "_received_at", "_receipt_started", "_receipt_available",
+                 "_receipt_reason", "_notes_generation", "_issued_snapshot"):
+        monkeypatch.setattr(N, name, getattr(N, name))
+    return N
+
+
+def test_the_notes_handler_keeps_the_reason_and_kind(notes_state):
+    handler = _handler("assistant_sync_notes")
+    reason = "Wisp reads Notes while Notes is open. Open Notes, or give Wisp Full Disk Access."
+    assert asyncio.run(handler({"raw": "", "diagnostics": {"available": False, "reason": reason,
+                                                           "reason_kind": "full_disk_access"}})) == {"ok": True}
+    row = S.source_status("notes")
+    assert row["state"] == "unavailable" and row["reason"] == reason and row["reason_kind"] == "full_disk_access"
+    # Readable again: no stale reason or kind.
+    asyncio.run(handler({"raw": "", "diagnostics": {"available": True}}))
+    row = S.source_status("notes")
+    assert row["state"] == "ready" and row["reason"] == "" and row["reason_kind"] == ""

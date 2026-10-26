@@ -1082,12 +1082,24 @@ def collect_evidence(store, state, day, timezone, *, now):
     return result
 
 
+def _no_mail_account() -> bool:
+    """The MailReader says this Mac has no Mail account (reason_kind
+    mail_not_configured, which arrives with a ready state) and no Google
+    account supplies mail either. Reads two flags: no second header pass."""
+    try:
+        from service.tools import email_tools
+        return email_tools.email_reason_kind() == "mail_not_configured" and not email_tools._external_accounts
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _annotate_access(result, now):
     """For each source Wisp couldn't read: ``state`` ("syncing" or
     "unavailable"), ``blocked`` (what the person must grant, when known) and a
     plain ``reason``, so the Brief says "Calendar access is off" with the setting
     that fixes it instead of "nothing" or "hasn't synced yet". From this launch's
-    reader reports; never fatal, and a ready source is left as it is."""
+    reader reports; never fatal. A ready source is left as it is, except mail
+    from a Mac with no Mail account and no Google account (_no_mail_account)."""
     try:
         from service.assistant import scheduler
         from service.assistant.today import ACCESS_KINDS, source_access
@@ -1107,8 +1119,14 @@ def _annotate_access(result, now):
             info["blocked"] = access["blocked"]
     for source in ("email", "notes", "messages"):
         info = result.get(source)
-        if not isinstance(info, dict) or info.get("ready") is True:
+        if not isinstance(info, dict):
             continue
+        if info.get("ready") is True:
+            if source != "email" or not _no_mail_account():
+                continue
+            # The MailReader ran and found no account to read: an empty inbox
+            # here is not an all-clear. (A linked Google account is a mailbox.)
+            info["ready"] = False
         try:
             from service.assistant.sync_status import source_status
             status = source_status(source)

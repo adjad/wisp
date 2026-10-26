@@ -29,6 +29,8 @@ _notes: str = ""
 _notes_at: float = 0.0
 _available: bool | None = None
 _reason = ""
+# The reader's reason_kind for an unreadable Notes ("full_disk_access", …), or "".
+_reason_kind = ""
 _publication_lock = threading.RLock()
 _notes_generation = 0
 _notes_origin = "none"
@@ -90,9 +92,21 @@ def _clean_stamp(value, now: float) -> float:
 
 
 @mutating
+def _clean_kind(value) -> str:
+    """A reader's reason_kind ("full_disk_access", …) kept only when it is a
+    plain identifier; anything else is no kind."""
+    value = str(value or "").strip()
+    return value if re.fullmatch(r"[a-z_]{1,40}", value) else ""
+
+
+def notes_unavailable() -> tuple[str, str]:
+    """(reason, reason_kind) the reader gave for unreadable Notes, else ("", "")."""
+    return ("", "") if _available is not False else (_reason, _reason_kind)
+
+
 def cache_notes(raw: str, available: bool = True, reason: str = "",
-                snapshot_started_at: float | None = None) -> None:
-    global _notes, _notes_at, _available, _reason, _snapshot_at
+                snapshot_started_at: float | None = None, reason_kind: str = "") -> None:
+    global _notes, _notes_at, _available, _reason, _reason_kind, _snapshot_at
     global _snapshot_started_at, _received_at, _receipt_started
     global _receipt_available, _receipt_reason
     global _notes_generation, _notes_origin, _publication_expires_monotonic, _issued_snapshot
@@ -107,6 +121,7 @@ def cache_notes(raw: str, available: bool = True, reason: str = "",
         _received_at, _receipt_started = now, started or _receipt_started
         _receipt_available, _receipt_reason = available, reason
         _available, _reason = available, reason
+        _reason_kind = "" if available else _clean_kind(reason_kind)
         if not available:
             return
         _notes = raw or ""

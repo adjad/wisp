@@ -186,9 +186,10 @@ def marker_calendar(commitment: dict) -> bool:
 # with the one setting that fixes it, instead of "hasn't synced yet" forever.
 
 # How long a source may stay "syncing" (or unreported) after launch before the
-# wait is reported as a problem: a real first read takes seconds
-# (sync_status.SYNC_STALL_S).
-ACCESS_STALL_S = 90.0
+# wait is reported as a problem: a real first read takes seconds. Matches
+# sync_status.SYNC_STALL_S, and outlasts the readers' 120 s prompt wait so the
+# reader's own reason (with its reason_kind) wins over this guess.
+ACCESS_STALL_S = 125.0
 
 # What the readers can name as the reason a source can't be read
 # (WS2 reason_kind). Anything else reads as a generic "unavailable".
