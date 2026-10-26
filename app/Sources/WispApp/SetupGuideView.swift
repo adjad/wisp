@@ -94,7 +94,9 @@ final class SetupGuideModel: ObservableObject {
     private var testGeneration = 0
     // Automatic first-setup steps run at most once per app session each; the
     // visible buttons stay for retries.
-    private var autoStartedEngine = false
+    /// Read by the first-run window: a start Wisp made by itself that left nothing
+    /// running offers Try again there.
+    private(set) var autoStartedEngine = false
     private var autoAppliedModels = Set<String>()
     private var statusGeneration = 0
     private var downloadGeneration = 0

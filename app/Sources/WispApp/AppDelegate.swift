@@ -63,9 +63,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var firstRunWindow: NSWindow?
     private var firstRunCloseObserver: NSObjectProtocol?
     private var firstRunFinishing = false
+    // While the first-run window is up it is the only thing that asks macOS for
+    // access (FirstRunReaderGate): readers that would ask wait for their row's
+    // answer there, or for the window to close.
+    private var firstRunGatesPrompts = false
+    private var firstRunPermissionStates: [FirstRunPermissions.Item: FirstRunPermissions.State] = [:]
     private var setupObserver: NSObjectProtocol?
-    private static let setupGuideShownKey = "wisp.setupGuide.shown"
-    private static let notchTipShownKey = "wisp.notchTip.shown"
+    // One spelling for the keys the first-run window takes over (FirstRunSetup):
+    // a drifted copy would show existing users the window, or new users the old tip.
+    private static let setupGuideShownKey = FirstRunSetup.setupGuideShownKey
+    private static let notchTipShownKey = FirstRunSetup.notchTipShownKey
     private var pendingCollapse: DispatchWorkItem?
     // A menu opened from the panel (the chat switcher) is open. See
     // installMenuTrackingObservers.
@@ -170,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if up {
                 self.model.serviceReachable = true
                 self.model.serviceStarting = false
+                self.considerKnowYouOffer(after: 5)
                 // Whatever failed to load while the service was away loads now.
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -278,40 +286,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.openSetupGuide() }
         }
+        NotificationCenter.default.addObserver(
+            forName: .wispContinueFirstRun, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.bringSetupForward() }
+        }
         let defaults = UserDefaults.standard
-        let firstRun = FirstRunSetup.shouldShow { defaults.bool(forKey: $0) }
+        let reopens = defaults.integer(forKey: FirstRunSetup.reopensKey)
+        let firstRun = FirstRunSetup.shouldShow({ defaults.bool(forKey: $0) }, reopens: reopens)
         if firstRun {
+            // Opening by itself again after a quit or an early close counts toward
+            // the cap; past it, the notch's setup cue carries setup instead.
+            if defaults.bool(forKey: FirstRunSetup.startedKey) {
+                defaults.set(reopens + 1, forKey: FirstRunSetup.reopensKey)
+            }
             // The window asks for permissions, gets the model and shows where Wisp
             // lives, in that order; the old launch did each of these on its own.
             FirstRunSetup.takeOverLaunchPrompts { defaults.set(true, forKey: $0) }
+            firstRunGatesPrompts = true
         } else {
             offerSetupGuideOnFirstRun()
-            offerKnowYouWhenReady()
         }
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
+        watchSetupReadiness()
+        armKnowYouOffers()
         // Wisp starts in the notch. The Wisp window opens only when asked for:
         // the Dock icon, the menu bar, or a hand-off from the notch.
         if firstRun { openFirstRunSetup() } else { showNotchTipOnce() }
     }
 
+    /// Opens the first-run window at the step the person was on, or brings it
+    /// forward if it is already up.
     private func openFirstRunSetup() {
-        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 600),
-                           styleMask: [.titled, .closable, .fullSizeContentView],
+        if let open = firstRunWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            open.makeKeyAndOrderFront(nil)
+            return
+        }
+        let defaults = UserDefaults.standard
+        // 600 pt tall where it fits; on a small or scaled display, the room under
+        // the menu bar and above the Dock, so the footer's buttons stay reachable.
+        let room = NSScreen.main?.visibleFrame.height ?? 800
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: FirstRunSetup.windowHeight(room: room)),
+                           styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                            backing: .buffered, defer: false)
+        win.contentMinSize = NSSize(width: 600, height: FirstRunSetup.minimumHeight)
+        win.contentMaxSize = NSSize(width: 600, height: 900)
         win.title = "Welcome to Wisp"
         win.titlebarAppearsTransparent = true
         win.appearance = NSAppearance(named: .darkAqua)
         win.isReleasedWhenClosed = false
         win.contentView = NSHostingView(rootView: FirstRunSetupView(
             setup: setupModel,
+            initialStep: FirstRunSetupView.Step(rawValue: defaults.integer(forKey: FirstRunSetup.stepKey)) ?? .brain,
             openDetailedSetup: { [weak self] in self?.openSetupGuide() },
-            finish: { [weak self] tellAboutYou in self?.finishFirstRun(tellAboutYou: tellAboutYou) }))
+            finish: { [weak self] tellAboutYou in self?.finishFirstRun(tellAboutYou: tellAboutYou) },
+            permissionsChanged: { [weak self] states in self?.firstRunPermissionsChanged(states) },
+            stepChanged: { step in UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey) },
+            tryAsking: { [weak self] prompt in self?.finishFirstRun(tellAboutYou: false, asking: prompt) },
+            askKeyRegistered: hotKey?.registered ?? false,
+            searchKeyRegistered: searchHotKey?.registered ?? false))
         win.center()
         firstRunWindow = win
-        // Closing it early counts as finishing: the download keeps going in the
-        // engine, and the notch's setup card takes over until Wisp can answer.
+        // Closing it early does not give setup up: the download keeps going in the
+        // engine, the notch's setup card takes over until Wisp can answer, and the
+        // window comes back at this step on the next launch (FirstRunSetup).
         firstRunCloseObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: win, queue: .main
         ) { [weak self] _ in
@@ -322,34 +363,137 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.makeKeyAndOrderFront(nil)
     }
 
-    private func finishFirstRun(tellAboutYou: Bool) {
+    /// `asking`: one of the tour's examples. It is sent from Ask once Wisp can
+    /// answer; before that it waits in Ask's box under the setup card.
+    private func finishFirstRun(tellAboutYou: Bool, asking prompt: String? = nil) {
         firstRunFinishing = true
+        let ready = setupModel.status?.ready == true
         firstRunWindow?.close()
-        if tellAboutYou {
-            tellWispAboutYou()
-        } else {
-            openAssistant()
-            offerKnowYouWhenReady()
+        // Not ready yet: the setup card carries the download in the notch, under
+        // Getting to know you when that was chosen.
+        if !ready {
+            showSetupCard()
+            notifyWhenReady()
+        }
+        // Start using Wisp opens Ask; Getting to know you is offered once the
+        // panel closes again (KnowYouOffer), not on top of it.
+        if tellAboutYou { tellWispAboutYou() } else { openAssistant() }
+        if let prompt {
+            model.showingQuickSettings = false
+            model.tab = .ask
+            model.input = prompt
+            if ready { model.submit() }
         }
     }
 
     private func firstRunClosed() {
-        UserDefaults.standard.set(true, forKey: FirstRunSetup.doneKey)
+        let defaults = UserDefaults.standard
+        if FirstRunSetup.closeFinishes(finished: firstRunFinishing, ready: setupModel.status?.ready == true) {
+            defaults.set(true, forKey: FirstRunSetup.doneKey)
+            defaults.removeObject(forKey: FirstRunSetup.stepKey)
+            defaults.removeObject(forKey: FirstRunSetup.reopensKey)
+        }
         setupModel.hide(from: "first-run")
         if let observer = firstRunCloseObserver { NotificationCenter.default.removeObserver(observer) }
         firstRunCloseObserver = nil
+        // Let the window and its view go (the view's permission poll stops with it);
+        // Continue setup builds a new one.
+        let closing = firstRunWindow
+        firstRunWindow = nil
+        DispatchQueue.main.async { closing?.contentView = nil }
+        // The window no longer speaks for access: whatever it left undecided is
+        // asked the way it always was, by the reader that needs it.
+        firstRunGatesPrompts = false
+        startPromptingReaders()
         defer { firstRunFinishing = false }
         guard !firstRunFinishing else { return }
-        if setupModel.status?.ready != true { openSetupInNotch() }
-        offerKnowYouWhenReady()
+        if setupModel.status?.ready != true {
+            openSetupInNotch()
+            notifyWhenReady()
+        }
+        considerKnowYouOffer(after: 10)
+    }
+
+    private var setupWatch: Task<Void, Never>?
+    private var notifyOnReady = false
+
+    /// After the first-run window closes before Wisp can answer, say so once it
+    /// can: the model download is the long wait, and nobody should have to keep
+    /// checking. The setup cue stays the way in until then.
+    private func notifyWhenReady() {
+        notifyOnReady = true
+        watchSetupReadiness()
+    }
+
+    /// From launch until Wisp can answer, on every launch: while it can't and no
+    /// first-run window is up, the notch carries the quiet setup cue
+    /// (FirstRunSetup.setupCue), so leaving setup aside, an early close or a quit
+    /// never leaves Wisp silent on a later launch. Once it can, the cue goes, and
+    /// "Wisp is ready" follows if it was promised.
+    private func watchSetupReadiness() {
+        guard setupWatch == nil else { return }
+        let started = Date()
+        setupWatch = Task { @MainActor [weak self] in
+            var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
+            request.timeoutInterval = 10
+            var answered = false
+            while !Task.isCancelled {
+                // Quick until the service first answers (a cold first launch takes
+                // minutes); then every 5 s while a notification is promised, else
+                // every 30 s, easing to 5 minutes after an hour.
+                let seconds: UInt64 = !answered ? 2 : self?.notifyOnReady == true ? 5
+                    : Date().timeIntervalSince(started) < 3600 ? 30 : 300
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                guard let self else { return }
+                guard let (data, _) = try? await URLSession.shared.data(for: request),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let ready = object["ready"] as? Bool else { continue }
+                answered = true
+                let canAnswer = ready || object["remote_only"] as? Bool == true
+                self.setupMenuItem?.title = canAnswer ? "Model & Engine…" : "Finish Setup…"
+                let cue = FirstRunSetup.setupCue(self.model.setupCard, canAnswer: canAnswer,
+                                                 firstRunWindowUp: self.firstRunWindow != nil)
+                if cue != self.model.setupCard { self.model.setupCard = cue }
+                guard canAnswer else { continue }
+                if self.notifyOnReady, self.firstRunWindow == nil {
+                    Notifications.post(id: Notifications.readyId, title: "Wisp is ready",
+                                       body: "Press ⌥ Space and ask about your day.")
+                }
+                self.notifyOnReady = false
+                self.setupWatch = nil
+                return
+            }
+        }
     }
 
     // Clicking the Dock icon, or opening Wisp again from Finder or Spotlight while it
     // is running, opens the Wisp window. Closing the window does not quit Wisp.
+    // While first-run setup is up, the Dock brings that forward instead: setup
+    // never shows in two places at once.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        open(.chat(sessionId: nil))
+        if firstRunWindow != nil { bringSetupForward() } else { open(.chat(sessionId: nil)) }
         return true
     }
+
+    /// The one setup surface on screen, forward: the detailed guide while it
+    /// stands in for the first-run window, else the first-run window (reopened at
+    /// its step when setup is unfinished), else the notch's setup card.
+    private func bringSetupForward() {
+        if firstRunHiddenForGuide, let guide = setupWindow, guide.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            guide.makeKeyAndOrderFront(nil)
+        } else if firstRunWindow != nil || FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {
+            openFirstRunSetup()
+        } else {
+            openSetupInNotch()
+        }
+    }
+
+    // The menu's setup item says where setup is: "Finish Setup…" until Wisp can
+    // answer, then "Model & Engine…" (the same place, for changing them later).
+    private var setupMenuItem: NSMenuItem?
+
+    @objc private func openSetupFromMenu() { bringSetupForward() }
 
     /// Opening the window at launch used to be how Wisp said "I'm running". Now
     /// that it starts in the notch, open the notch once and say where Wisp lives,
@@ -398,8 +542,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .settings:
             openSettings()
         case .setup:
-            openSetupInNotch()
+            bringSetupForward()
         case .knowYou:
+            knowYouChosen = true
             openAssistant()
             model.startKnowYou()
         }
@@ -527,7 +672,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // progress UI instead of duplicating five shortcuts here.
         menu.addItem(withTitle: "Open Wisp Window", action: #selector(openChat), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupInNotch), keyEquivalent: "")
+        setupMenuItem = menu.addItem(withTitle: "Model & Engine…", action: #selector(openSetupFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "Tell Wisp About You…", action: #selector(tellWispAboutYou), keyEquivalent: "")
         menu.addItem(withTitle: "Grant More Access…", action: #selector(grantMoreAccess), keyEquivalent: "")
         menu.addItem(.separator())
@@ -643,6 +788,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if step.to == .bar || step.to == .hidden {
             hoverIntent.didCollapse(pointerInZone: pointerInHoverZone())
         }
+        // A panel that just closed is the moment Getting to know you may be offered.
+        if step.to == .bar { considerKnowYouOffer(after: 10) }
         drivePresentation()
     }
 
@@ -946,6 +1093,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.startAssistant()
         Notifications.onOpenToday = { [weak self] in self?.openTodayInNotch() }
+        Notifications.onOpenAsk = { [weak self] in self?.openAssistant() }
         startNativeSourceReaders()
 
         // Pointer enter/exit come from a real AppKit tracking area on the
@@ -1099,24 +1247,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startNativeSourceReaders() {
+        startPromptingReaders()
         guard !nativeSourceReadersStarted else { return }
         nativeSourceReadersStarted = true
-        calendarReader = CalendarReader()
-        mailReader = MailReader()
+        // These never make macOS ask: a missing Full Disk Access is only a failed read.
         messagesReader = MessagesReader()
         browserHistoryReader = BrowserHistoryReader()
         activityReader = ActivityReader()
-        calendarReader?.start()
-        mailReader?.start()
         messagesReader?.start()
         browserHistoryReader?.start()
         activityReader?.start()
-        remindersWriter = RemindersWriter()
-        notesReader = NotesReader()
-        contactsReader = ContactsReader()
-        remindersWriter?.start()
-        notesReader?.start()
-        contactsReader?.start()
+    }
+
+    /// The readers that can make macOS ask for access, each started once. Outside
+    /// first-run setup that is at launch, as always; while its window is up, only
+    /// once the window has the answer (see FirstRunReaderGate).
+    private func startPromptingReaders() {
+        let gate = FirstRunReaderGate(windowUp: firstRunGatesPrompts) { [firstRunPermissionStates] reader in
+            if let known = FirstRunReaderGate.systemDecided(reader) { return known }
+            return firstRunPermissionStates[.mail].map(FirstRunReaderGate.isDecided) ?? false
+        }
+        if calendarReader == nil, gate.allows(.calendar) {
+            calendarReader = CalendarReader()
+            calendarReader?.start()
+        }
+        if mailReader == nil, gate.allows(.mail) {
+            mailReader = MailReader()
+            mailReader?.start()
+        }
+        if remindersWriter == nil, gate.allows(.reminders) {
+            remindersWriter = RemindersWriter()
+            remindersWriter?.start()
+        }
+        if notesReader == nil, gate.allows(.notes) {
+            notesReader = NotesReader()
+            notesReader?.start()
+        }
+        if contactsReader == nil, gate.allows(.contacts) {
+            // Names are for Messages: Contacts is asked for once Messages can be
+            // read (or from the first-run window's own row), not at every launch.
+            contactsReader = ContactsReader(mayAsk: { FirstRunPermissions.messagesReadable() })
+            contactsReader?.start()
+        }
+    }
+
+    /// The first-run window read its permissions. Readers waiting on an answer
+    /// start; a new grant is read at once instead of on the reader's next tick.
+    private func firstRunPermissionsChanged(_ states: [FirstRunPermissions.Item: FirstRunPermissions.State]) {
+        let before = firstRunPermissionStates
+        firstRunPermissionStates = states
+        startPromptingReaders()
+        for (item, state) in states where state == .allowed && before[item].map({ $0 != .allowed }) == true {
+            resyncReaders(after: item)
+        }
+    }
+
+    private func resyncReaders(after item: FirstRunPermissions.Item) {
+        switch item {
+        case .calendar:
+            calendarReader?.sync()
+        case .reminders:
+            remindersWriter?.sync()
+        case .mail:
+            mailReader?.sync()
+            mailReader?.syncRaw()
+            notesReader?.sync()
+        case .fullDiskAccess:
+            // Messages, and the on-disk Mail and Notes reads used while those apps are closed.
+            messagesReader?.sync()
+            mailReader?.sync()
+            notesReader?.sync()
+        case .contacts:
+            contactsReader?.sync()
+        case .notifications:
+            break
+        }
     }
 
     // Writes the full conversation (every turn's model, route decision,
@@ -1260,7 +1465,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The full setup guide in its own window: every step, including Smart
     /// Search, other local apps and model downloads. Settings opens it, and so
     /// does the notch card's ⤢.
+    // The first-run window steps aside while the detailed guide is up (both
+    // centred, the guide covering it, read as two Wisp windows at once) and
+    // comes back, at its step, when the guide closes.
+    private var firstRunHiddenForGuide = false
+
     @objc private func openSetupGuide() {
+        if let welcome = firstRunWindow, welcome.isVisible {
+            welcome.orderOut(nil)
+            firstRunHiddenForGuide = true
+        }
         // Already open: just bring it forward, so an in-flight action isn't discarded.
         if let open = setupWindow, open.isVisible {
             NSApp.activate(ignoringOtherApps: true)
@@ -1279,7 +1493,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setupCloseObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.willCloseNotification, object: win, queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.setupModel.hide(from: "window") }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.setupModel.hide(from: "window")
+                    if self.firstRunHiddenForGuide {
+                        self.firstRunHiddenForGuide = false
+                        DispatchQueue.main.async { self.openFirstRunSetup() }
+                    }
+                }
             }
             return win
         }()
@@ -1350,61 +1571,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The permissions first launch defers (Screen Recording, Accessibility,
-    /// Full Disk Access), asked for when the person chooses to.
+    /// Full Disk Access), asked for when the person chooses to: only what is
+    /// still off, each with its reason, and one system surface per click.
     @objc private func grantMoreAccess() {
-        Permissions.requestExtras(force: true)
+        let missing = Permissions.missingExtras()
+        let alert = NSAlert()
+        if let next = missing.first {
+            alert.messageText = "Give Wisp more access"
+            alert.informativeText = missing.map { "• \($0.title), \($0.reason)." }.joined(separator: "\n")
+                + (missing.count > 1 ? "\n\nOne at a time: choose Grant More Access again for the next." : "")
+            alert.addButton(withTitle: next == .fullDiskAccess ? "Open Full Disk Access…" : "Allow \(next.title)…")
+            alert.addButton(withTitle: "Not Now")
+        } else {
+            alert.messageText = "Wisp has all the access it can use"
+            alert.informativeText = "Screen Recording, Accessibility and Full Disk Access are on."
+            alert.addButton(withTitle: "OK")
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn, let next = missing.first { Permissions.request(next) }
     }
 
-    /// Getting to know you, from the menu bar.
+    /// Getting to know you, from the menu bar or the first-run window. Choosing it
+    /// ends Wisp's own offers for this session.
     @objc private func tellWispAboutYou() {
+        knowYouChosen = true
         openAssistant()
         model.startKnowYou()
     }
 
-    /// Once inference is set up, open Getting to know you in the notch if the
-    /// service says it is due: never finished, and no Later in the last few
-    /// days (it offers at most twice on its own; the menu bar, /about and
-    /// Memory → About you remain the way in). Waits for the service and for a
-    /// quiet panel, so the first launch is not two things at once.
-    private func offerKnowYouWhenReady() {
-        Task { @MainActor [weak self] in
-            // A brand-new Mac is not ready at launch (setup guide first), so keep
-            // checking, slowly, until inference works: ~10 minutes at most.
-            var setupReady = false
-            for _ in 0..<200 {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                guard let self else { return }
-                if !setupReady {
-                    var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
-                    request.timeoutInterval = 10
-                    guard let (data, _) = try? await URLSession.shared.data(for: request),
-                          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let ready = object["ready"] as? Bool else { continue }
-                    // The setup guide owns a first launch until inference works.
-                    guard ready else { continue }
-                    setupReady = true
-                }
-                guard let envelope = await WispClient().profile() else { continue }
-                guard envelope.status.offer else { return }
-                // Not over the setup card, a reply in progress, or a flow already
-                // up; and never over a panel the person is using (open, holding
-                // typed text) or dismissed to the menu bar.
-                if self.setupWindow?.isVisible == true || self.firstRunWindow?.isVisible == true
-                    || self.model.setupCard == .open
-                    || self.model.isProcessing || self.model.knowYou != nil
-                    || !self.model.collapsed || self.model.holdsOpen || !self.notchDocked {
-                    continue
-                }
-                // An offer nobody asked for must not take the keyboard from the
-                // app the person is typing in: it opens without becoming key.
-                self.createPanelIfNeeded()
-                self.panel?.revealsWithoutKey = true
-                self.openAssistant()
-                self.model.startKnowYou()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                self.panel?.revealsWithoutKey = false
-                return
-            }
+    private var knowYouChosen = false
+    private var knowYouOffersArmed = false
+    private var knowYouCheck: Task<Void, Never>?
+    private var knowYouTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
+
+    /// Wisp's own offer of Getting to know you, for the life of the app: checked
+    /// when the service comes up, when the panel closes, on wake and every half
+    /// hour. The service says whether it is due (never finished, no recent Later,
+    /// at most twice on its own; the menu bar, /about and Memory → About you remain
+    /// the way in); KnowYouOffer says whether now is a quiet moment.
+    private func armKnowYouOffers() {
+        guard !knowYouOffersArmed else { return }
+        knowYouOffersArmed = true
+        knowYouTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.considerKnowYouOffer() }
+        }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.considerKnowYouOffer(after: 30) }
+        }
+        considerKnowYouOffer(after: 20)
+    }
+
+    private var knowYouMoment: KnowYouOffer.Moment {
+        KnowYouOffer.Moment(
+            firstRunWindowUp: firstRunWindow != nil, setupWindowUp: setupWindow?.isVisible == true,
+            setupCardOpen: model.setupCard == .open, replying: model.isProcessing,
+            flowOpen: model.knowYou != nil,
+            panelInUse: presentation.desired == .chat || presentation.desired == .search
+                || !model.collapsed || model.holdsOpen,
+            dismissedToMenuBar: !notchDocked, chosenThisSession: knowYouChosen)
+    }
+
+    /// One check, after `seconds` (a panel that just closed gets a moment before
+    /// anything opens it again). A newer trigger replaces a pending one.
+    private func considerKnowYouOffer(after seconds: Double = 0) {
+        guard knowYouOffersArmed else { return }
+        knowYouCheck?.cancel()
+        knowYouCheck = Task { @MainActor [weak self] in
+            if seconds > 0 { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+            guard !Task.isCancelled, let self, KnowYouOffer.quiet(self.knowYouMoment) else { return }
+            guard let envelope = await WispClient().profile(), !Task.isCancelled,
+                  KnowYouOffer.shouldOffer(self.knowYouMoment, serviceOffers: envelope.status.offer) else { return }
+            // An offer nobody asked for must not take the keyboard from the
+            // app the person is typing in: it opens without becoming key.
+            self.createPanelIfNeeded()
+            self.panel?.revealsWithoutKey = true
+            self.openAssistant()
+            self.model.startKnowYou()
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            self.panel?.revealsWithoutKey = false
         }
     }
 

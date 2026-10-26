@@ -31,6 +31,15 @@ from service.setup import catalog
 
 FILE_VERSION = 1
 
+# Values an earlier catalog profile wrote that the current one no longer sets.
+# The merge in seed() keeps keys outside the profile, so without this they would
+# outlive the profile that set them. Removed only while they still hold exactly
+# what Wisp wrote, so a value the person chose later in the engine's admin UI
+# stays. TurboQuant 6-bit KV was briefly Gemma's default and was withdrawn.
+RETIRED = {
+    "gemma-4-E4B-it-oQ4e-mtp": {"turboquant_kv_enabled": True, "turboquant_kv_bits": 6},
+}
+
 
 def fingerprint(profile: dict) -> str:
     return hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()[:16]
@@ -83,6 +92,9 @@ def seed(settings_path: Path, record_path: Path,
         if record.get(model.id) == mark and model.id not in forced:
             continue
         entry = entries.get(model.id) if isinstance(entries.get(model.id), dict) else {}
+        retired = {k: v for k, v in RETIRED.get(model.id, {}).items() if k not in model.engine_profile}
+        if retired and all(entry.get(k) == v for k, v in retired.items()):
+            entry = {k: v for k, v in entry.items() if k not in retired}
         entries[model.id] = {**entry, **model.engine_profile}
         record[model.id] = mark
         written.append(model.id)

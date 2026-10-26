@@ -60,6 +60,16 @@ def visible_test_answer(payload: object) -> str:
     return content
 
 
+def remote_only() -> bool:
+    """Whether every answer comes from a remote provider. An invalid remote
+    configuration is not remote-only here; inference reports that itself."""
+    try:
+        from service.inference.remote_policy import remote_only_profile
+        return remote_only_profile() is not None
+    except Exception:  # noqa: BLE001 — setup status must answer regardless
+        return False
+
+
 def host_macos_major() -> int | None:
     """This Mac's major macOS version, or None when it can't be read."""
     match = re.match(r"\d+", platform.mac_ver()[0] or "")
@@ -182,6 +192,9 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
     from service.engine.mode import bundled_compatibility
     return {
         "ready": ready,
+        # Wisp answers through a remote provider (WISP_REMOTE_ONLY, or Cloud
+        # "Everything"), so a missing local model is not "not set up".
+        "remote_only": remote_only(),
         "bundled_engine": bundled_compatibility(),
         "hardware": {"chip": hardware.chip, "ram_gb": hardware.ram_gb, "tier": hardware.tier},
         "omlx": {"installed": built_in or omlx.installed, "running": omlx.running, "bundled": built_in,

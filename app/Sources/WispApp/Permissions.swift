@@ -3,52 +3,33 @@ import EventKit
 import UserNotifications
 import CoreGraphics
 import ApplicationServices
-import IOKit.hid
 
-// Triggers the macOS privacy/security prompts Wisp uses, in two stages so the
-// user is not buried in system dialogs over the setup card on first launch.
+// Triggers the macOS privacy/security prompts Wisp uses, so the person is never
+// buried in system dialogs.
 //
-// Two classes of permission exist:
-//   - API-promptable: calling the request shows the system dialog.
-//   - Not promptable (no API): Full Disk Access, Developer Tools, App
-//     Management. For these we open the exact System Settings pane so the user
-//     can flip the toggle.
+// What asks for what, and when:
+//   - A new user's first-run window asks for Calendar, Reminders, Mail and Notes
+//     Automation, Contacts and Notifications row by row, and opens Full Disk
+//     Access's page; while it is up nothing else asks (FirstRunReaderGate).
+//   - At launch, `bootstrap` asks once for Notifications, Calendar and Reminders
+//     on a Mac that never had the first-run window (the window takes it over).
+//   - The readers ask for their own access when they start: Calendar
+//     (CalendarReader), Reminders (RemindersWriter), Contacts once Messages can be
+//     read (ContactsReader), Mail and Notes Automation when they script a running
+//     app (MailReader, NotesReader).
+//   - Screen Recording and Accessibility: macOS asks on first real use
+//     (screen_capture, page reading); Grant More Access asks earlier, one at a time.
+//   - Full Disk Access has no prompt: its Settings page opens instead.
 //
-// We deliberately do NOT request permissions Wisp doesn't use (Camera, Photos,
-// Location, Contacts).
+// Wisp never asks for what it doesn't use: Camera, Photos, Location, Input
+// Monitoring (the hotkeys use Carbon, which needs none).
 enum Permissions {
-    // First launch asks only for what the first-run experience needs
-    // (notifications; calendar and reminders for Brief / Day). The rest are
-    // deferred:
-    //   - Screen Recording, Accessibility: macOS prompts on first real use
-    //     (screen_capture, page reading); `requestExtras` asks earlier.
-    //   - Input Monitoring: nothing in Wisp needs it today (the hotkey uses
-    //     Carbon), so it is asked only by `requestExtras`.
-    //   - Full Disk Access cannot be prompted; `requestExtras` opens its pane.
-    // The menu bar's Grant More Access… calls `requestExtras(force: true)`.
-    static func bootstrap(force: Bool = false) {
-        let key = "wisp.didRequestPermissions"
-        if !force && UserDefaults.standard.bool(forKey: key) { return }
+    /// Once, on a Mac that never had the first-run window.
+    static func bootstrap() {
+        let key = FirstRunSetup.permissionsRequestedKey
+        if UserDefaults.standard.bool(forKey: key) { return }
         UserDefaults.standard.set(true, forKey: key)
-        if force { requestAll() } else { requestFirstRun() }
-    }
-
-    /// The later, clearly explained step. Call from a user-initiated place (a
-    /// setup step or a feature's first use). Runs once unless force is true.
-    static func requestExtras(force: Bool = false) {
-        let key = "wisp.didRequestExtraPermissions"
-        if !force && UserDefaults.standard.bool(forKey: key) { return }
-        UserDefaults.standard.set(true, forKey: key)
-        requestScreenRecording()
-        requestAccessibility()
-        _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-        // Staggered so it doesn't fight the dialogs above for focus.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { openFullDiskAccessPane() }
-    }
-
-    static func requestAll() {
         requestFirstRun()
-        requestExtras(force: true)
     }
 
     static func requestFirstRun() {
@@ -67,21 +48,112 @@ enum Permissions {
         }
     }
 
+    // MARK: Grant More Access
+
+    /// The access Wisp can use beyond its first launch, each asked for on its own.
+    enum Extra: CaseIterable, Equatable {
+        case screenRecording, accessibility, fullDiskAccess
+
+        var title: String {
+            switch self {
+            case .screenRecording: return "Screen Recording"
+            case .accessibility: return "Accessibility"
+            case .fullDiskAccess: return "Full Disk Access"
+            }
+        }
+
+        var reason: String {
+            switch self {
+            case .screenRecording: return "so Wisp can look at your screen when you ask about it"
+            case .accessibility: return "so Wisp can read the text of other apps' windows, like Smart Search does"
+            case .fullDiskAccess: return "so Wisp can read Messages, Mail and Notes when those apps are closed, and your files"
+            }
+        }
+    }
+
+    /// What is still off, in the order Grant More Access offers it. Pure.
+    static func missing(screenRecording: Bool, accessibility: Bool, fullDiskAccess: Bool) -> [Extra] {
+        Extra.allCases.filter {
+            switch $0 {
+            case .screenRecording: return !screenRecording
+            case .accessibility: return !accessibility
+            case .fullDiskAccess: return !fullDiskAccess
+            }
+        }
+    }
+
+    static func missingExtras() -> [Extra] {
+        missing(screenRecording: CGPreflightScreenCaptureAccess(), accessibility: AXIsProcessTrusted(),
+                fullDiskAccess: hasFullDiskAccess())
+    }
+
+    /// One system surface for one extra: its prompt the first time, its Settings
+    /// page after that (macOS shows each prompt only once), and nothing when it is
+    /// already on.
+    static func request(_ extra: Extra) {
+        switch extra {
+        case .screenRecording: requestScreenRecording()
+        case .accessibility: requestAccessibility()
+        case .fullDiskAccess: if !hasFullDiskAccess() { openFullDiskAccessPane() }
+        }
+    }
+
+    enum Surface: Equatable { case none, prompt, settings }
+
+    /// What one click shows for a promptable permission. Pure.
+    static func surface(granted: Bool, promptedBefore: Bool) -> Surface {
+        granted ? .none : (promptedBefore ? .settings : .prompt)
+    }
+
+    static let screenRecordingPromptedKey = "wisp.screenRecordingPrompted"
+    static let accessibilityPromptedKey = "wisp.accessibilityPrompted"
+
     // Screen Recording: needed for screen_capture (the `screencapture` CLI wrapper).
     static func requestScreenRecording() {
-        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+        let defaults = UserDefaults.standard
+        switch surface(granted: CGPreflightScreenCaptureAccess(),
+                       promptedBefore: defaults.bool(forKey: screenRecordingPromptedKey)) {
+        case .none: break
+        case .prompt:
+            defaults.set(true, forKey: screenRecordingPromptedKey)
+            CGRequestScreenCaptureAccess()
+        case .settings:
+            openSettingsPane("com.apple.preference.security?Privacy_ScreenCapture")
+        }
     }
 
-    // Accessibility: UI automation and page reading. The prompt variant opens a
-    // dialog with an "Open System Settings" button.
+    // Accessibility: UI automation and page reading. The first time, the system
+    // prompt (it has its own Open System Settings button); after that, the page.
+    // Never both at once.
     static func requestAccessibility() {
-        let axOpts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(axOpts)
+        let defaults = UserDefaults.standard
+        switch surface(granted: AXIsProcessTrusted(),
+                       promptedBefore: defaults.bool(forKey: accessibilityPromptedKey)) {
+        case .none: break
+        case .prompt:
+            defaults.set(true, forKey: accessibilityPromptedKey)
+            let axOpts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(axOpts)
+        case .settings:
+            openSettingsPane("com.apple.preference.security?Privacy_Accessibility")
+        }
     }
 
-    // Not promptable: the user must toggle it by hand. Needed by the file/shell tools.
+    // Not promptable: the user must toggle it by hand. Needed by the file/shell
+    // tools, Messages, and Mail and Notes while those apps are closed.
+    static let fullDiskAccessPane = "com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles"
+
+    /// Whether Full Disk Access is on: the system's own privacy database opens
+    /// only with it, and it exists on every Mac. Messages, Mail or Notes data that
+    /// reads also proves it.
+    static func hasFullDiskAccess() -> Bool {
+        let fd = open("/Library/Application Support/com.apple.TCC/TCC.db", O_RDONLY)
+        if fd >= 0 { close(fd); return true }
+        return FirstRunPermissions.fullDiskAccessState() == .allowed
+    }
+
     static func openFullDiskAccessPane() {
-        openSettingsPane("com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles")
+        openSettingsPane(fullDiskAccessPane)
     }
 
     static func openSettingsPane(_ path: String) {
