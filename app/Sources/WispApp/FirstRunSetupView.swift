@@ -120,7 +120,8 @@ struct FirstRunReaderGate {
     /// and read again at once when it is allowed.
     static func readers(for item: FirstRunPermissions.Item) -> [Reader] {
         switch item {
-        case .calendar: return [.calendar, .reminders]
+        case .calendar: return [.calendar]
+        case .reminders: return [.reminders]
         case .mail: return [.mail, .notes]
         case .contacts: return [.contacts]
         case .fullDiskAccess, .notifications: return []
@@ -295,7 +296,7 @@ final class FirstRunPermissions: ObservableObject {
     /// are open; `fullDiskAccess` is what reads Messages, and Mail and Notes when
     /// they are closed.
     enum Item: String, CaseIterable, Identifiable {
-        case calendar, mail, fullDiskAccess, contacts, notifications
+        case calendar, reminders, mail, fullDiskAccess, contacts, notifications
         var id: String { rawValue }
     }
     enum State: Equatable { case checking, notAsked, allowed, notAllowed, notOnThisMac }
@@ -306,7 +307,12 @@ final class FirstRunPermissions: ObservableObject {
     private var poll: Task<Void, Never>?
 
     func state(_ item: Item) -> State { states[item] ?? .checking }
-    var allowedCount: Int { Item.allCases.filter { state($0) == .allowed }.count }
+    /// The step's footer: every row is optional, so no "N of M" score, only how
+    /// many could still be switched on (a Mac without Messages data is not one).
+    static func summary(_ states: [Item: State]) -> String {
+        let off = Item.allCases.filter { states[$0] == .notAsked || states[$0] == .notAllowed }.count
+        return off == 0 ? "All optional · nothing left off" : "All optional · \(off) still off"
+    }
     /// Every one has an answer from macOS, whichever it was.
     var allAnswered: Bool { Item.allCases.allSatisfy { FirstRunReaderGate.isDecided(state($0)) } }
 
@@ -336,7 +342,8 @@ final class FirstRunPermissions: ObservableObject {
 
     func refresh() async {
         var next: [Item: State] = [:]
-        next[.calendar] = Self.calendarState()
+        next[.calendar] = Self.eventKitState(.event)
+        next[.reminders] = Self.eventKitState(.reminder)
         next[.contacts] = Self.contactsState()
         next[.fullDiskAccess] = Self.fullDiskAccessState()
         next[.notifications] = await Self.notificationsState()
@@ -353,9 +360,9 @@ final class FirstRunPermissions: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         switch item {
         case .calendar:
-            let store = EKEventStore()
-            _ = try? await store.requestFullAccessToEvents()
-            _ = try? await store.requestFullAccessToReminders()
+            _ = try? await EKEventStore().requestFullAccessToEvents()
+        case .reminders:
+            _ = try? await EKEventStore().requestFullAccessToReminders()
         case .contacts:
             _ = try? await CNContactStore().requestAccess(for: .contacts)
         case .notifications:
@@ -375,12 +382,14 @@ final class FirstRunPermissions: ObservableObject {
         await refresh()
     }
 
-    private static func calendarState() -> State {
-        let events = EKEventStore.authorizationStatus(for: .event)
-        let reminders = EKEventStore.authorizationStatus(for: .reminder)
-        if events == .fullAccess && reminders == .fullAccess { return .allowed }
-        if events == .notDetermined || reminders == .notDetermined { return .notAsked }
-        return .notAllowed
+    /// Calendar and Reminders are two permissions with two Settings pages, so two
+    /// rows: one row for both sent a person who denied only Reminders to Calendars.
+    private static func eventKitState(_ entity: EKEntityType) -> State {
+        switch EKEventStore.authorizationStatus(for: entity) {
+        case .fullAccess: return .allowed
+        case .notDetermined: return .notAsked
+        default: return .notAllowed
+        }
     }
 
     private static func contactsState() -> State {
@@ -627,7 +636,7 @@ struct FirstRunSetupView: View {
                         .keyboardShortcut(.defaultAction)
                 }
             case .permissions:
-                Text("\(permissions.allowedCount) of \(FirstRunPermissions.Item.allCases.count) allowed")
+                Text(FirstRunPermissions.summary(permissions.states))
                     .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                 Spacer()
                 Button("Back") { step = .brain }.buttonStyle(FirstRunButtonStyle())
@@ -842,8 +851,10 @@ struct FirstRunSetupView: View {
         VStack(alignment: .leading, spacing: 0) {
             heading("Let Wisp see your day",
                     "Each one is optional. Wisp only reads; it never sends or changes anything without your tap.")
-            permissionRow(.calendar, icon: "calendar", title: "Calendar and Reminders",
-                          detail: "Your day plan, and reminders it sets for you")
+            permissionRow(.calendar, icon: "calendar", title: "Calendar",
+                          detail: "Your day plan: meetings and events")
+            permissionRow(.reminders, icon: "checklist", title: "Reminders",
+                          detail: "What's due, and reminders it sets for you")
             permissionRow(.mail, icon: "envelope", title: "Mail and Notes",
                           detail: "While they're open: emails that need a reply, and your notes. "
                               + "Opens Mail and Notes in the background to ask.")
@@ -897,6 +908,7 @@ struct FirstRunSetupView: View {
         let base = "com.apple.preference.security?"
         switch item {
         case .calendar: return base + "Privacy_Calendars"
+        case .reminders: return base + "Privacy_Reminders"
         case .mail: return base + "Privacy_Automation"
         case .fullDiskAccess: return Permissions.fullDiskAccessPane
         case .contacts: return base + "Privacy_Contacts"

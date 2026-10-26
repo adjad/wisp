@@ -86,7 +86,8 @@ struct FirstRunSetupChecks {
         let calendarAnswered = FirstRunReaderGate(windowUp: true) { $0 == .calendar }
         check(calendarAnswered.allows(.calendar) && !calendarAnswered.allows(.reminders) && !calendarAnswered.allows(.mail),
               "An answered row releases only its own readers")
-        check(FirstRunReaderGate.readers(for: .calendar) == [.calendar, .reminders]
+        check(FirstRunReaderGate.readers(for: .calendar) == [.calendar]
+              && FirstRunReaderGate.readers(for: .reminders) == [.reminders]
               && FirstRunReaderGate.readers(for: .mail) == [.mail, .notes]
               && FirstRunReaderGate.readers(for: .contacts) == [.contacts], "Rows map to the readers they answer for")
         check([.allowed, .notAllowed, .notOnThisMac].allSatisfy(FirstRunReaderGate.isDecided)
@@ -195,6 +196,15 @@ struct FirstRunSetupChecks {
         check(FirstRunSetupView.openHint(.notch).contains("notch"), "Notch")
         check(!FirstRunSetupView.openHint(.menuBar).contains("notch") && FirstRunSetupView.openHint(.menuBar).contains("menu bar"),
               "No notch: menu bar and top edge")
+        // Calendar and Reminders are separate rows that open their own Settings pages.
+        check(FirstRunSetupView.settingsPane(.calendar).hasSuffix("Privacy_Calendars")
+              && FirstRunSetupView.settingsPane(.reminders).hasSuffix("Privacy_Reminders"), "Each opens its own page")
+        // No score: every row is optional, and a Mac without that data is not "off".
+        check(FirstRunPermissions.summary([.calendar: .allowed, .reminders: .notAllowed, .mail: .notAsked,
+                                           .fullDiskAccess: .notOnThisMac, .contacts: .allowed, .notifications: .allowed])
+              == "All optional · 2 still off", "Counts only what could still be switched on")
+        check(FirstRunPermissions.summary([.calendar: .allowed, .fullDiskAccess: .notOnThisMac]) == "All optional · nothing left off",
+              "Nothing left")
         check(FirstRunSetupView.settingsPane(.fullDiskAccess) == Permissions.fullDiskAccessPane
               && Permissions.fullDiskAccessPane.hasSuffix("Privacy_AllFiles"), "Full Disk Access opens its own page")
         check(FirstRunReaderGate.readers(for: .fullDiskAccess).isEmpty, "Full Disk Access never prompts, so it gates no reader")

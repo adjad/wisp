@@ -1263,6 +1263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch item {
         case .calendar:
             calendarReader?.sync()
+        case .reminders:
             remindersWriter?.sync()
         case .mail:
             mailReader?.sync()
