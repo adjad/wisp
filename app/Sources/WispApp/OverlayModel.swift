@@ -190,13 +190,49 @@ final class OverlayModel: ObservableObject {
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
     // Whether Wisp's own service answers (BackendManager's reachability watch).
     // False shows "Wisp service isn't running" with Retry instead of a green dot.
-    @Published var serviceReachable = true { didSet { if serviceReachable != oldValue { onResize() } } }
+    @Published var serviceReachable = true {
+        didSet {
+            if serviceReachable { serviceStartFailure = nil }
+            if serviceReachable != oldValue { onResize(); sendHeldForStartup() }
+        }
+    }
     // The service is coming up (a cold first launch, or after Retry): a neutral
-    // "Starting Wisp…" line, never the red down card.
-    @Published var serviceStarting = false { didSet { if serviceStarting != oldValue { onResize() } } }
-    var serviceDown: Bool { !serviceReachable && !serviceStarting }
+    // "Starting Wisp…" line, never the red down card. True from launch until the
+    // first reachability probe answers, so a question typed in the first seconds
+    // is held, not sent into a service that isn't listening yet.
+    @Published var serviceStarting = true {
+        didSet { if serviceStarting != oldValue { onResize(); sendHeldForStartup() } }
+    }
+    /// Why the service's last start failed (BackendManager posts
+    /// .wispBackendStartFailed: exit status and the log's last line). A recorded
+    /// failure ends the "Starting Wisp…" hold at once: the down card shows the
+    /// cause with Retry and Report instead of minutes of "Starting".
+    @Published private(set) var serviceStartFailure: String? { didSet { if serviceStartFailure != oldValue { onResize() } } }
+    var serviceDown: Bool { !serviceReachable && (!serviceStarting || serviceStartFailure != nil) }
     // Set by the app delegate: ask the backend manager to start the service again.
     var onRetryService: () -> Void = {}
+    private var startFailureObserver: NSObjectProtocol?
+
+    /// Retry from the service-down card or status line: forget the recorded
+    /// failure (a new start may fix it) and start the service again.
+    func retryService() {
+        serviceStartFailure = nil
+        onRetryService()
+    }
+
+    /// Prompts typed while the service was still starting. Sent, in order, as
+    /// soon as it answers; the line beside the box says they are waiting.
+    private var heldForStartup: [QueuedPrompt] = []
+
+    private func sendHeldForStartup() {
+        guard serviceReachable, !serviceStarting, !heldForStartup.isEmpty else { return }
+        let held = heldForStartup
+        heldForStartup = []
+        for prompt in held {
+            if let dispatch = submissionState.submit(prompt) { start(dispatch) }
+        }
+        syncQueue()
+    }
     // The one problem report open in the notch, unfolded under the reply it is
     // about (or at the top of Ask when it isn't about a reply on screen).
     let report = ReportDraft()
@@ -210,6 +246,14 @@ final class OverlayModel: ObservableObject {
         _debugMode = Published(initialValue: loadDebugMode())
         // Rows that show the report read it through this model, so redraw with it.
         reportObserver = report.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        startFailureObserver = NotificationCenter.default.addObserver(
+            forName: .wispBackendStartFailed, object: nil, queue: .main) { [weak self] note in
+            let reason = note.userInfo?["reason"] as? String ?? ""
+            MainActor.assumeIsolated {
+                guard let self, !self.serviceReachable || self.serviceStarting else { return }
+                self.serviceStartFailure = reason.isEmpty ? "Wisp's service stopped while starting." : reason
+            }
+        }
     }
     /// True while the panel retracts into the bar: the content fades out at
     /// the start of the close so the shrinking shape never slices live text.
@@ -275,6 +319,7 @@ final class OverlayModel: ObservableObject {
     // first, see NudgeViews.swift). Each also arrives as a notification.
     @Published var nudges: [BehaviorNudge] = []
     @Published var transientNotice: String?
+    @Published private(set) var transientNoticeIsInfo = false
     // Getting to know you (KnowYouView.swift), replacing the tab content while
     // it runs. Nil when the flow is not on screen.
     @Published private(set) var knowYou: KnowYouModel?
@@ -291,8 +336,17 @@ final class OverlayModel: ObservableObject {
     @Published private(set) var reopenedChatTitle: String?
     private var assistantTask: Task<Void, Never>?
     private var transientNoticeTask: Task<Void, Never>?
-    // The last scheduled brief this session notified about. The SSE stream is
-    // re-subscribed after any drop, so the same brief can arrive twice.
+    // Scheduled briefs already shown on the Brief tab, by hub event id. The SSE
+    // stream is re-subscribed after any drop, so the same brief can arrive twice.
+    private var appliedBriefEvents: Set<String> = []
+
+    /// Whether a scheduled brief event replaces the Brief tab's brief: not when
+    /// it was already applied, and not when the brief shown is newer than it.
+    static func appliesBrief(eventID: String, created: Date?, applied: Set<String>, current: DailyBrief?) -> Bool {
+        if !eventID.isEmpty && applied.contains(eventID) { return false }
+        if let created, let current, current.receivedAt > created { return false }
+        return true
+    }
 
     var onResize: () -> Void = {}
     /// Fit the window now, in this run-loop turn (onResize waits one turn).
@@ -370,7 +424,7 @@ final class OverlayModel: ObservableObject {
     private func endKnowYou(notice: String?) {
         knowYou = nil
         onResize()
-        if let notice { showTransientNotice(notice, duration: 6) }
+        if let notice { showTransientNotice(notice, duration: 8, info: true) }
     }
 
     /// The person moved on (a tab) before Done. The flow saves after every
@@ -403,13 +457,24 @@ final class OverlayModel: ObservableObject {
         return "New chat"
     }
 
-    /// Slash commands the Ask field's text could still become.
-    var commandSuggestions: [NotchCommand] { NotchCommand.suggestions(for: input) }
+    /// Slash commands the Ask field's text could still become. /corpus only in Debug Mode.
+    var commandSuggestions: [NotchCommand] { NotchCommand.suggestions(for: input, includeCorpus: debugMode) }
 
-    // The compact welcome menu surfaces the main workflows directly below the
-    // prompt. Research belongs here alongside Daily Summary — not only in the
-    // header chip — so it is discoverable before the user has started a chat.
-    let suggestions = ["Daily summary", "Research a topic", "Organize files", "Summarize a PDF", "Describe an image"]
+    /// Sources Wisp can't read right now ("calendar", "email"), refreshed each
+    /// time the panel opens, so a starter never asks about a denied source.
+    @Published private(set) var unreadableSources: Set<String> = []
+
+    // The tappable questions under an empty Ask: ones a fresh install can
+    // answer, even before any source is allowed (AgentSend.swift's AskStarters).
+    var suggestions: [String] { AskStarters.prompts(unreadable: unreadableSources) }
+
+    func refreshStarters() {
+        Task { [weak self] in
+            guard let self, let status = await self.client.assistantSyncStatus(sources: ["calendar", "email"]) else { return }
+            self.unreadableSources = AskStarters.unreadable(
+                states: Dictionary(status.sources.map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first }))
+        }
+    }
 
     private let client = WispClient()
     private var sessionId = ""
@@ -477,7 +542,8 @@ final class OverlayModel: ObservableObject {
             let elapsed = Int(Double(heartbeats) * 1.5)
             return heartbeats > 0 ? "\(base) (\(elapsed)s)" : base
         default:
-            let base = modelAbbrev.isEmpty ? "Thinking…" : "Thinking with \(modelAbbrev)…"
+            // The model's name is a detail for Debug Mode, not a first-time user.
+            let base = modelAbbrev.isEmpty || !debugMode ? "Thinking…" : "Thinking with \(modelAbbrev)…"
             // Hard reasoning prompts can run silent for a while; heartbeats prove
             // it's still working rather than stuck.
             return heartbeats > 0 ? "\(base) (\(heartbeats * 12)s)" : base
@@ -510,18 +576,18 @@ final class OverlayModel: ObservableObject {
             return
         }
         cancelAttachmentRead()
-        if NotchCommand.isCorpusRequest(prompt) {
+        if debugMode, NotchCommand.isCorpusRequest(prompt) {
             startCorpusCommand(prompt)
             return
         }
-        if let command = NotchCommand.match(prompt) {
+        if let command = NotchCommand.match(prompt, includeCorpus: debugMode) {
             input = ""
             run(command)
             return
         }
         // Part of a command that could still be one of several ("/re"): keep the
         // list showing rather than sending a fragment to the model.
-        if !NotchCommand.suggestions(for: prompt).isEmpty { return }
+        if !NotchCommand.suggestions(for: prompt, includeCorpus: debugMode).isEmpty { return }
         guard !corpusBusy else {
             showTransientNotice("Stop the corpus run before asking another question.")
             return
@@ -530,6 +596,14 @@ final class OverlayModel: ObservableObject {
                                       imageName: attachedImageName, researchMode: researchMode)
         input = ""
         removeAttachment()
+        if serviceStarting && !submission.researchMode {
+            // Nothing is listening yet: hold it and send it the moment Wisp is up.
+            heldForStartup.append(submission)
+            syncQueue()
+            showTransientNotice("Wisp is still starting… I'll send this as soon as it's ready.", duration: 8, info: true)
+            onResize()
+            return
+        }
         let dispatch = submissionState.submit(submission)
         syncQueue()
         if let dispatch { start(dispatch) } else {
@@ -544,8 +618,12 @@ final class OverlayModel: ObservableObject {
     }
 
     private func syncQueue() {
-        queuedPromptCount = submissionState.queuedCount
+        queuedPromptCount = submissionState.queuedCount + heldForStartup.count
         let count = submissionState.queuedCount
+        if !heldForStartup.isEmpty {
+            queueLabel = "\(heldForStartup.count) waiting for Wisp to start"
+            return
+        }
         switch submissionState.waiting {
         case .summary: queueLabel = "\(count) waiting for the summary"
         case .research: queueLabel = "\(count) waiting for research"
@@ -680,7 +758,7 @@ final class OverlayModel: ObservableObject {
             await self.client.unloadAll()
             self.modelMemory = ModelMemory.parse(await self.client.modelMemoryReply())
             self.freeingMemory = false
-            self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.")
+            self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.", info: true)
         }
     }
 
@@ -785,25 +863,8 @@ final class OverlayModel: ObservableObject {
         }
     }
 
+    /// A starter question was tapped: ask it, exactly as if typed.
     func pick(_ s: String) {
-        // "Daily summary" reuses the SAME dedicated brief endpoint as the
-        // header button (see runDailySummary/build_daily_brief on the
-        // backend), which covers calendar + email + messages together in one
-        // pass. This used to instead fill the input with a hand-written
-        // calendar-only prompt and send it through the plain chat pipeline —
-        // the router correctly classified that literal text as a calendar-
-        // only read (it never mentioned email or messages), so the user got
-        // just their schedule and had to separately ask "and my email" /
-        // "what's on my messages" as follow-ups.
-        if s == "Daily summary" {
-            tab = .brief
-            if brief == nil { runDailySummary() }
-            return
-        }
-        if s == "Research a topic" {
-            researchMode = true
-            return
-        }
         input = s
         submit()
     }
@@ -922,6 +983,8 @@ final class OverlayModel: ObservableObject {
         briefComposing = false
         submissionState.reset()
         setAside.reset()
+        heldForStartup = []
+        notReadyRetry?.cancel(); notReadyRetry = nil
         researchDispatchID = nil
         syncQueue()
         stopSyncProgress()
@@ -1257,7 +1320,25 @@ final class OverlayModel: ObservableObject {
             // run when the stream had begun.
             flushPendingDelta()
             let gotNothing = answer.isEmpty && activity.isEmpty && role.isEmpty
-            if ev.bool("dropped") && gotNothing {
+            let notReady = AskNotReady.classify(code: ev.str("code"), message: ev.str("message"))
+            if let notReady, answer.isEmpty, activity.isEmpty,
+               input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let back = submissionState.dropForRetry(dispatchID) {
+                // The model isn't ready and nothing ran: not an error. The question
+                // goes back in the box, the user bubble goes, and Ask says plainly
+                // what happens next. A still-starting engine gets one automatic retry.
+                cancelAttachmentRead()
+                input = back.text
+                attachedImage = back.image
+                attachedImageName = back.imageName
+                if turns.last?.role == "user" { turns.removeLast() }
+                phase = .idle
+                syncQueue()
+                let willRetry = notReady == .starting && !notReadyRetried.contains(back.text)
+                if notReady == .setup { setupCard = .open }
+                if willRetry { scheduleNotReadyRetry(back.text) }
+                showTransientNotice(notReady.notice(willRetry: willRetry), duration: 10, info: true)
+            } else if ev.bool("dropped") && gotNothing {
                 lastDroppedReport = ["surface": "chat", "client_outcome": "connection_dropped", "journal_available": false]
                 if let id = turnTraceID { lastDroppedReport?["trace_id"] = id }
                 // One key per dropped turn, so reopening its report keeps the note.
@@ -1330,6 +1411,37 @@ final class OverlayModel: ObservableObject {
         }
         onResize()
         if completedDispatch { completeSubmission(dispatchID) }
+    }
+
+    /// Questions already retried once after "still starting", so a model that
+    /// never comes up can't loop.
+    private var notReadyRetried: Set<String> = []
+    private var notReadyRetry: Task<Void, Never>?
+
+    /// Send `text` again once, after a short wait, if it is still the only thing
+    /// in the box and nothing else is running. Typing or sending anything first
+    /// cancels it.
+    private func scheduleNotReadyRetry(_ text: String) {
+        notReadyRetried.insert(text)
+        notReadyRetry?.cancel()
+        notReadyRetry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: AskNotReady.retryDelay)
+            guard !Task.isCancelled, let self, self.input == text, self.conversationSettled,
+                  !self.submissionState.isActive, !self.serviceDown else { return }
+            self.submit()
+        }
+    }
+
+    /// Try again on an error reply that ran nothing: the question that led to it
+    /// goes back in the box and is sent again.
+    func tryAgain(_ turn: Turn) {
+        guard turn.isError, turn.activity.isEmpty, conversationSettled,
+              let index = turns.firstIndex(where: { $0.id == turn.id }), index > 0,
+              turns[index - 1].role == "user" else { return }
+        let question = turns[index - 1].text
+        turns.removeSubrange((index - 1)...index)
+        input = question
+        submit()
     }
 
     private func completeSubmission(_ dispatchID: UInt64) {
@@ -1438,8 +1550,11 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    func showTransientNotice(_ message: String, duration: TimeInterval = 4) {
+    /// `info`: a plain status ("Thank you, Sam.", "Wisp is still starting…"),
+    /// drawn quietly; otherwise a problem, drawn in the error color.
+    func showTransientNotice(_ message: String, duration: TimeInterval = 4, info: Bool = false) {
         transientNoticeTask?.cancel()
+        transientNoticeIsInfo = info
         transientNotice = message
         transientNoticeTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(0, duration) * 1_000_000_000))
@@ -1885,9 +2000,18 @@ final class OverlayModel: ObservableObject {
                                    body: Self.notificationBody(from: briefText))
             }
             // The full write-up replaces the brief on the Brief tab, which shows
-            // when it arrived, so an older one never reads as current.
-            brief = DailyBrief(text: briefText, receivedAt: Date(),
-                               traceID: ev.payload["trace_id"] as? String, sessionId: "")
+            // when it arrived, so an older one never reads as current. A replay
+            // of a brief already applied (the stream re-subscribes after any
+            // drop) changes nothing: not the text, not its time, not the chat a
+            // refreshed brief was recorded in.
+            let eventID = ev.str("event_id")
+            let created = (ev.payload["created_at"] as? NSNumber)?.doubleValue
+                .map { Date(timeIntervalSince1970: $0) }
+            if Self.appliesBrief(eventID: eventID, created: created, applied: appliedBriefEvents, current: brief) {
+                if !eventID.isEmpty { appliedBriefEvents.insert(eventID) }
+                brief = DailyBrief(text: briefText, receivedAt: created ?? Date(),
+                                   traceID: ev.payload["trace_id"] as? String, sessionId: "")
+            }
         default:
             return false
         }
