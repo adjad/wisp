@@ -252,6 +252,12 @@ async def fire(card_id: str, draft: str | None = None, recipient: str | None = N
         _audit("deny", tool="proactive_fire", card=card_id, method=method, reason="recipient_changed")
         return {"ok": False, "status": "blocked",
                 "error": "The recipient comes from the original message and can't be changed here."}
+    if method in ("email_reply", "text_reply") and draft is None:
+        # A reply sends only the words the app showed: the request must carry
+        # them. The stored draft alone is never sent, so a tap on a closed
+        # card (or any caller that skipped the draft) can't send unseen words.
+        _audit("deny", tool="proactive_fire", card=card_id, method=method, reason="draft_not_shown")
+        return {"ok": False, "status": "blocked", "error": "Open the draft and tap Send there."}
     words = action.get("draft", "") if draft is None else draft
     if method in ("email_reply", "text_reply"):
         if type(words) is not str or not words.strip():

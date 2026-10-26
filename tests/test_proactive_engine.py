@@ -311,6 +311,31 @@ def test_already_replied_threads_do_not_become_reply_items(store):
 # --- fire ------------------------------------------------------------------------------------------
 
 
+def test_a_reply_without_the_shown_draft_is_never_sent(store):
+    """The server enforces what the app shows: a reply is sent only with the
+    words the request carries (the draft the user saw); the stored draft alone
+    never goes out, and the card stays for the real Send."""
+    run(store, FakeModel())
+    cards = snap(store)["cards"]
+    calls = []
+
+    async def sent(card, words):
+        calls.append(words)
+        return {"ok": True, "status": "succeeded"}
+
+    for method in ("text_reply", "email_reply"):
+        card = next(c for c in cards if c["action"]["method"] == method)
+        result = asyncio.run(executor.fire(card["id"], store=store, methods={method: sent}))
+        assert result["ok"] is False and result["status"] == "blocked"
+        assert "Open the draft" in result["error"] and store.card(card["id"]) is not None
+    assert calls == []
+    # The same card sends once the shown words come with the request.
+    card = next(c for c in cards if c["action"]["method"] == "text_reply")
+    assert asyncio.run(executor.fire(card["id"], card["action"]["draft"], store=store,
+                                     methods={"text_reply": sent}))["ok"] is True
+    assert calls == [card["action"]["draft"]]
+
+
 def test_fire_removes_a_card_only_on_verified_success(store):
     run(store, FakeModel())
     card = next(c for c in snap(store)["cards"] if c["action"]["method"] == "text_reply")
