@@ -92,9 +92,12 @@ struct SetupStatus: Decodable {
 ///   own watch (_WATCH_FOR_S). The cap lasts until nothing is transferring, so the
 ///   same transfer never retakes it.
 ///
-/// A gap between reads longer than `staleAfter` (the Mac slept, say) is not a
-/// stall: the stall clock restarts at the next read, and no stall is judged
-/// until a read has happened since.
+/// Sleep is not a stall or an outage. It is told apart from slow reads by the
+/// two clocks: wall time keeps running while the Mac sleeps and uptime pauses,
+/// so a gap where wall time ran more than `sleepThreshold` ahead of uptime was
+/// sleep. After one, the stall clock and any run of failures start over at the
+/// next read, and nothing is judged until a read has happened since. Reads that
+/// are merely slow leave both clocks in step, so the stall rule still applies.
 struct SetupDownloadHold: Equatable {
     enum Level: Equatable { case none, watch, hold }
 
@@ -105,6 +108,7 @@ struct SetupDownloadHold: Equatable {
     static let cap: TimeInterval = 6 * 3600
     static let fastPoll: TimeInterval = 3
     static let slowPoll: TimeInterval = 60
+    static let sleepThreshold: TimeInterval = 30
 
     /// When the host was taken.
     var since: Date?
@@ -113,25 +117,35 @@ struct SetupDownloadHold: Equatable {
     private(set) var level = Level.none
     private(set) var movedAt: Date?
     private(set) var lastReadAt: Date?
+    private(set) var lastReadUptime: TimeInterval?
     private(set) var signature: [String] = []
     private(set) var failures = 0
     private(set) var firstFailureAt: Date?
     private(set) var capped = false
     private(set) var finishedAt: Date?
 
-    /// The longest gap between reads that is still the poll's own rhythm.
-    var staleAfter: TimeInterval { max(30, (level == .watch ? Self.slowPoll : Self.fastPoll) * 3) }
+    /// Whether the Mac slept since the last read: wall time ran ahead of uptime.
+    func slept(now: Date, uptime: TimeInterval) -> Bool {
+        guard let lastReadAt, let lastReadUptime else { return false }
+        return now.timeIntervalSince(lastReadAt) - (uptime - lastReadUptime) > Self.sleepThreshold
+    }
 
-    /// A read happened, good or not. After a gap (sleep) the stall clock restarts.
-    private mutating func noteRead(_ now: Date) {
-        if let lastReadAt, now.timeIntervalSince(lastReadAt) > staleAfter { movedAt = now }
+    /// A read happened, good or not. After sleep, the stall clock and the run of
+    /// failures start over.
+    private mutating func noteRead(_ now: Date, uptime: TimeInterval) {
+        if slept(now: now, uptime: uptime) {
+            movedAt = now
+            failures = 0
+            firstFailureAt = nil
+        }
         lastReadAt = now
+        lastReadUptime = uptime
     }
 
     /// A fresh read of the transfers.
     mutating func observe(_ downloads: [SetupGuideModel.DownloadTask],
-                          previous: [SetupGuideModel.DownloadTask], now: Date) {
-        noteRead(now)
+                          previous: [SetupGuideModel.DownloadTask], now: Date, uptime: TimeInterval) {
+        noteRead(now, uptime: uptime)
         failures = 0
         firstFailureAt = nil
         let active = downloads.filter(\.active)
@@ -148,29 +162,29 @@ struct SetupDownloadHold: Equatable {
     }
 
     /// A read that failed: what is on screen is the last snapshot.
-    mutating func failed(now: Date) {
-        noteRead(now)
+    mutating func failed(now: Date, uptime: TimeInterval) {
+        noteRead(now, uptime: uptime)
         if failures == 0 { firstFailureAt = now }
         failures += 1
     }
 
     /// The level now, from the last snapshot. Notes the cap when it is reached.
-    mutating func decide(_ downloads: [SetupGuideModel.DownloadTask], ready: Bool, now: Date) -> Level {
-        level = next(downloads, ready: ready, now: now)
+    mutating func decide(_ downloads: [SetupGuideModel.DownloadTask], ready: Bool,
+                         now: Date, uptime: TimeInterval) -> Level {
+        level = next(downloads, ready: ready, now: now, uptime: uptime)
         return level
     }
 
-    private mutating func next(_ downloads: [SetupGuideModel.DownloadTask], ready: Bool, now: Date) -> Level {
+    private mutating func next(_ downloads: [SetupGuideModel.DownloadTask], ready: Bool,
+                               now: Date, uptime: TimeInterval) -> Level {
         if let since, now.timeIntervalSince(since) >= Self.cap { capped = true }
         if capped { return .none }
         if starting { return .hold }
         if downloads.contains(where: \.active) {
+            // Slept since the last read: nothing to judge by until the next one.
+            if slept(now: now, uptime: uptime) { return level == .none ? .hold : level }
             if failures >= Self.failureLimit, let firstFailureAt,
                now.timeIntervalSince(firstFailureAt) >= Self.failureSpan { return .watch }
-            // No read since a long gap (a wake): nothing to judge a stall by yet.
-            if let lastReadAt, now.timeIntervalSince(lastReadAt) > staleAfter {
-                return level == .none ? .hold : level
-            }
             guard let movedAt else { return .hold }
             return now.timeIntervalSince(movedAt) < Self.stallLimit ? .hold : .watch
         }
@@ -261,12 +275,21 @@ final class SetupGuideModel: ObservableObject {
     }
     private var monitorTask: Task<Void, Never>?
     private var configurationObserver: AnyCancellable?
-    /// The time, injectable so the hold's rules can be checked without waiting.
+    /// Wall time and uptime (which pauses while the Mac sleeps), injectable so
+    /// the hold's rules can be checked without waiting.
     private let clock: () -> Date
+    private let uptime: () -> TimeInterval
+    /// False only in checks that drive every read themselves: showing setup then
+    /// starts no background poll.
+    private let pollsByItself: Bool
 
-    init(session: URLSession = .shared, clock: @escaping () -> Date = Date.init) {
+    init(session: URLSession = .shared, clock: @escaping () -> Date = Date.init,
+         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         pollsByItself: Bool = true) {
         self.session = session
         self.clock = clock
+        self.uptime = uptime
+        self.pollsByItself = pollsByItself
         configurationObserver = NotificationCenter.default
             .publisher(for: .wispInferenceConfigurationChanged)
             .receive(on: DispatchQueue.main)
@@ -281,6 +304,7 @@ final class SetupGuideModel: ObservableObject {
         hosts[host, default: 0] += 1
         guard !wasShown else { return }
         monitorTask?.cancel()
+        guard pollsByItself else { monitoringStopped = false; return }
         monitorTask = Task { [weak self] in await self?.monitor() }
     }
 
@@ -298,9 +322,10 @@ final class SetupGuideModel: ObservableObject {
     /// Take, slow down or let go of the download host after each look at the
     /// transfers, successful or not. `previous`: the transfers before a fresh read.
     private func updateDownloadHost(previous: [DownloadTask]? = nil) {
-        let now = clock()
-        if let previous { downloadHold.observe(downloads, previous: previous, now: now) }
-        let level = downloadHold.decide(downloads, ready: statusIsCurrent && status?.ready == true, now: now)
+        let now = clock(), up = uptime()
+        if let previous { downloadHold.observe(downloads, previous: previous, now: now, uptime: up) }
+        let level = downloadHold.decide(downloads, ready: statusIsCurrent && status?.ready == true,
+                                        now: now, uptime: up)
         if level != .none, hosts[Self.downloadHost] == nil {
             // Taken only while setup is on screen; otherwise there is nothing to hold.
             guard isShown else { downloadHold.released(); return }
@@ -555,7 +580,7 @@ final class SetupGuideModel: ObservableObject {
             downloadError = "Wisp couldn't check the download. Choose Check again to retry."
             // The last snapshot is stale now: a service that stays down must not
             // keep the poll and the sleep assertion forever.
-            downloadHold.failed(now: clock())
+            downloadHold.failed(now: clock(), uptime: uptime())
             updateDownloadHost()
         }
     }

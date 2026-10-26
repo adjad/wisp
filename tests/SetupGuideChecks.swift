@@ -104,6 +104,19 @@ func setupSnapshot(_ model: String = "A", ready: Bool = true, bundled: Bool = tr
      "engines": [], "checks": [], "disclosure": "Synthetic fixture"]
 }
 
+/// The pure hold checks below run on a Mac that never sleeps: uptime keeps
+/// pace with wall time. The sleep checks pass uptime themselves.
+extension SetupDownloadHold {
+    mutating func observe(_ downloads: [SetupGuideModel.DownloadTask],
+                          previous: [SetupGuideModel.DownloadTask], now: Date) {
+        observe(downloads, previous: previous, now: now, uptime: now.timeIntervalSince1970)
+    }
+    mutating func failed(now: Date) { failed(now: now, uptime: now.timeIntervalSince1970) }
+    mutating func decide(_ downloads: [SetupGuideModel.DownloadTask], ready: Bool, now: Date) -> Level {
+        decide(downloads, ready: ready, now: now, uptime: now.timeIntervalSince1970)
+    }
+}
+
 @main
 struct SetupGuideChecks {
     @MainActor static func main() async throws {
@@ -666,16 +679,34 @@ struct SetupGuideChecks {
             check(hold.decide([task("downloading", bytes: 60)], ready: false, now: at(second + 60)) == .hold,
                   "A good read with progress holds it again")
 
-            // A Mac that sleeps for 20 minutes: the gap is not a stall.
+            // A Mac that sleeps for 20 minutes: wall time runs on, uptime pauses.
             hold = SetupDownloadHold()
             read(&hold, [task("downloading")], from: 0, to: 60)
-            check(hold.decide([task("downloading")], ready: false, now: at(60 + 20 * 60)) == .hold,
+            let woke = 60.0 + 20 * 60, upAtWake = t0.timeIntervalSince1970 + 61
+            check(hold.slept(now: at(woke), uptime: upAtWake), "Wall time ran 20 minutes ahead of uptime: slept")
+            check(hold.decide([task("downloading")], ready: false, now: at(woke), uptime: upAtWake) == .hold,
                   "Waking, before any read: no stall is judged on the old snapshot")
-            hold.failed(now: at(60 + 20 * 60 + 1))
-            check(hold.decide([task("downloading")], ready: false, now: at(60 + 20 * 60 + 1)) == .hold,
+            hold.failed(now: at(woke + 1), uptime: upAtWake + 1)
+            check(hold.decide([task("downloading")], ready: false, now: at(woke + 1), uptime: upAtWake + 1) == .hold,
                   "A failed first read after waking: still no stall")
-            read(&hold, [task("downloading")], from: 60 + 20 * 60 + 3, to: 60 + 20 * 60 + 9 * 60)
+            var awake = woke + 3
+            while awake <= woke + 9 * 60 {
+                let up = upAtWake + (awake - woke)
+                hold.observe([task("downloading")], previous: [task("downloading")], now: at(awake), uptime: up)
+                _ = hold.decide([task("downloading")], ready: false, now: at(awake), uptime: up)
+                awake += 3
+            }
             check(hold.level == .hold, "The stall clock restarted at the wake")
+
+            // Slow reads are not sleep: 33 s between reads, both clocks in step.
+            hold = SetupDownloadHold()
+            var slow = 0.0
+            while slow <= 10 * 60 + 33 {
+                hold.observe([task("downloading")], previous: [task("downloading")], now: at(slow))
+                _ = hold.decide([task("downloading")], ready: false, now: at(slow))
+                slow += 33
+            }
+            check(hold.level == .watch, "Reads 33 s apart with no progress: the stall still fires at 10 minutes")
 
             // The six-hour cap, like the backend's own watch; never retaken by the same transfer.
             hold = SetupDownloadHold()
@@ -695,9 +726,16 @@ struct SetupGuideChecks {
             check(hold.decide([task("pending", bytes: 0)], ready: false, now: at(SetupDownloadHold.cap + 9)) == .hold,
                   "A new transfer after the cap is held")
 
-            // The same rules in the model, with its clock injected. Its own poll runs
-            // alongside on the frozen clock, so each check waits (bounded) to settle.
-            final class Clock { var now = Date(timeIntervalSince1970: 1000) }
+            // The same rules in the model, with both clocks injected and no background
+            // poll: every read below is one the check makes, at the time it sets.
+            final class Clock {
+                var now = Date(timeIntervalSince1970: 1000)
+                var uptime: TimeInterval = 500
+                /// Awake: both clocks move together.
+                func advance(_ seconds: TimeInterval) { now += seconds; uptime += seconds }
+                /// Asleep: only wall time moves.
+                func sleep(_ seconds: TimeInterval) { now += seconds }
+            }
             var bytes = 40.0
             var engineDown = false
             func moving(_ state: String) -> [String: Any] {
@@ -715,84 +753,110 @@ struct SetupGuideChecks {
                 if readyNow { snapshot = setupSnapshot("G", ready: true) }
                 return (200, snapshot, 0)
             }
-            func heldModel(_ clock: Clock) async throws -> SetupGuideModel {
-                let model = SetupGuideModel(session: session, clock: { clock.now })
+            func heldModel(_ clock: Clock) async -> SetupGuideModel {
+                let model = SetupGuideModel(session: session, clock: { clock.now }, uptime: { clock.uptime },
+                                            pollsByItself: false)
                 model.show(in: "notch")
                 await model.refresh()
                 await model.refreshDownloads()
-                _ = try await waitForSetupRequest { model.downloadHold.level == .hold }
                 model.hide(from: "notch")
                 return model
             }
 
             // 1. A backend restart (failures for under 90 s) keeps the hold.
             let restartClock = Clock()
-            let restart = try await heldModel(restartClock)
-            check(restart.keepsMacAwake && restart.hosts[SetupGuideModel.downloadHost] == 1, "Held while downloading")
+            let restart = await heldModel(restartClock)
+            check(restart.downloadHold.level == .hold && restart.keepsMacAwake
+                  && restart.hosts[SetupGuideModel.downloadHost] == 1, "Held while downloading")
             engineDown = true
-            for step in 1...3 {
-                restartClock.now = at(Double(step) * 3)
+            for _ in 1...3 {
+                restartClock.advance(3)
                 await restart.refreshDownloads()
             }
             check(restart.downloadHold.level == .hold && restart.keepsMacAwake,
                   "Three failed reads in 9 s, as a restart takes: still held and awake")
-            restartClock.now = at(95)
-            await restart.refreshDownloads()
-            let watchedDown = try await waitForSetupRequest { restart.downloadHold.level == .watch }
-            check(watchedDown && !restart.keepsMacAwake && restart.hosts[SetupGuideModel.downloadHost] == 1
-                  && restart.pollsSlowly && restart.downloads.first?.state == "downloading",
+            while restartClock.uptime < 500 + 3 + SetupDownloadHold.failureSpan {
+                restartClock.advance(3)
+                await restart.refreshDownloads()
+            }
+            check(restart.downloadHold.level == .watch && !restart.keepsMacAwake
+                  && restart.hosts[SetupGuideModel.downloadHost] == 1 && restart.pollsSlowly
+                  && restart.downloads.first?.state == "downloading",
                   "Down for 90 s: the sleep assertion goes, a slow poll keeps watching the stale transfer")
             engineDown = false
             bytes = 70
-            restartClock.now = at(160)
+            restartClock.advance(60)
             await restart.refreshDownloads()
-            let backUp = try await waitForSetupRequest { restart.downloadHold.level == .hold }
-            check(backUp && restart.keepsMacAwake && !restart.pollsSlowly, "Back and moving: held and awake again")
+            check(restart.downloadHold.level == .hold && restart.keepsMacAwake && !restart.pollsSlowly,
+                  "Back and moving: held and awake again")
 
-            // 2. The Mac sleeps 20 minutes mid-download: no stall on waking.
+            // 2. A failure run split by an hour of sleep: no watch on the first read after waking.
             bytes = 40
+            let splitClock = Clock()
+            let split = await heldModel(splitClock)
+            engineDown = true
+            for _ in 1...3 {
+                splitClock.advance(3)
+                await split.refreshDownloads()
+            }
+            splitClock.sleep(3600)
+            await split.refreshDownloads()
+            check(split.downloadHold.level == .hold && split.keepsMacAwake,
+                  "Failing before and after an hour asleep: the run starts over at the wake, still held")
+            engineDown = false
+
+            // 3. The Mac sleeps 20 minutes mid-download: no stall on waking.
             let sleepClock = Clock()
-            let sleeper = try await heldModel(sleepClock)
-            sleepClock.now = at(20 * 60)
+            let sleeper = await heldModel(sleepClock)
+            sleepClock.sleep(20 * 60)
             await sleeper.refresh()
             check(sleeper.downloadHold.level == .hold && sleeper.keepsMacAwake,
                   "Waking: a status read on the old snapshot doesn't call it a stall")
             await sleeper.refreshDownloads()
             check(sleeper.downloadHold.level == .hold, "The first read after waking restarts the stall clock")
             // Then a real stall: 10 minutes of reads with no bytes moving.
-            var tick = 20.0 * 60
-            while tick <= 30 * 60 + 3 {
-                tick += SetupDownloadHold.fastPoll
-                sleepClock.now = at(tick)
+            for _ in 0...Int(SetupDownloadHold.stallLimit / SetupDownloadHold.fastPoll) {
+                sleepClock.advance(SetupDownloadHold.fastPoll)
                 await sleeper.refreshDownloads()
             }
-            let stalled = try await waitForSetupRequest { sleeper.downloadHold.level == .watch }
-            check(stalled && !sleeper.keepsMacAwake && sleeper.hosts[SetupGuideModel.downloadHost] == 1 && sleeper.pollsSlowly,
+            check(sleeper.downloadHold.level == .watch && !sleeper.keepsMacAwake
+                  && sleeper.hosts[SetupGuideModel.downloadHost] == 1 && sleeper.pollsSlowly,
                   "Stalled 10 minutes: no sleep assertion, still watched slowly")
 
-            // 3. The slow poll still sees the download finish, and Wisp switches over.
-            transferState = "completed"
-            sleepClock.now = at(tick + 60)
-            await sleeper.refreshDownloads()
-            let finishing = try await waitForSetupRequest { sleeper.downloads.first?.state == "completed" }
-            check(finishing && sleeper.hosts[SetupGuideModel.downloadHost] == 1, "Finished while watched: kept until the model arrives")
-            readyNow = true
-            sleepClock.now = at(tick + 63)
-            await sleeper.refresh()
-            let switched = try await waitForSetupRequest { !sleeper.isShown }
-            check(switched && !sleeper.keepsMacAwake, "Wisp can answer: the host and the poll go")
+            // 4. Slow reads (a status and a downloads call of ~15 s each): the stall still fires.
+            let slowClock = Clock()
+            let slowReads = await heldModel(slowClock)
+            var waited = 0.0
+            while waited < SetupDownloadHold.stallLimit + 33 && slowReads.downloadHold.level == .hold {
+                slowClock.advance(15)
+                await slowReads.refresh()
+                slowClock.advance(18)
+                await slowReads.refreshDownloads()
+                waited += 33
+            }
+            check(slowReads.downloadHold.level == .watch && waited >= SetupDownloadHold.stallLimit
+                  && waited < SetupDownloadHold.stallLimit + 33,
+                  "33 s between reads with no progress: watched at 10 minutes, not held until the cap")
 
-            // ...and stops at the six-hour cap.
+            // 5. The slow poll still sees the download finish, and Wisp switches over.
+            transferState = "completed"
+            sleepClock.advance(60)
+            await sleeper.refreshDownloads()
+            check(sleeper.downloads.first?.state == "completed" && sleeper.hosts[SetupGuideModel.downloadHost] == 1,
+                  "Finished while watched: kept until the model arrives")
+            readyNow = true
+            sleepClock.advance(3)
+            await sleeper.refresh()
+            check(!sleeper.isShown && !sleeper.keepsMacAwake, "Wisp can answer: the host and the poll go")
+
+            // 6. ...and stops at the six-hour cap.
             transferState = "downloading"
             readyNow = false
-            bytes = 40
             let capClock = Clock()
-            let capped = try await heldModel(capClock)
-            capClock.now = at(SetupDownloadHold.cap + 1)
+            let capped = await heldModel(capClock)
+            capClock.advance(SetupDownloadHold.cap + 1)
             await capped.refresh()
-            let cappedOff = try await waitForSetupRequest { !capped.isShown }
-            check(cappedOff && !capped.keepsMacAwake, "Six hours: the host, the poll and the assertion all go")
-            engineDown = false
+            check(!capped.isShown && !capped.keepsMacAwake, "Six hours: the host, the poll and the assertion all go")
 
             // Pressing Download in the card holds the poll before the engine answers.
             // The start request answers after a second, as an engine that is busy would.
