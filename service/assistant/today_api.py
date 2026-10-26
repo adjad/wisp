@@ -49,6 +49,8 @@ class Replan(BaseModel):
     start_minute: StrictInt = 540
     end_minute: StrictInt = 1080
     not_before: float | None = Field(default=None, strict=True, allow_inf_nan=False)
+    # Plan this day although an all-day event reads like time away.
+    plan_all_day: bool = Field(default=False, strict=True)
 
 
 def fail(exc):
@@ -65,6 +67,18 @@ def cleared_needs():
         return None
 
 
+def live_access(sources: dict, now: float) -> dict:
+    """The plan's source health with what the person can do about a source Wisp
+    can't read (today.with_access), from this launch's reader reports. Never
+    fatal: without them the stored health is returned unchanged."""
+    try:
+        from service.assistant import scheduler
+        from service.assistant.today import with_access
+        return with_access(sources, scheduler.connectors_status(), now=now, started_at=scheduler.STARTED_AT)
+    except Exception:  # noqa: BLE001
+        return sources
+
+
 def snapshot(day, timezone, *, debug=False):
     from service import diagnostics
     with diagnostics.span("today") as trace:
@@ -78,14 +92,18 @@ def snapshot(day, timezone, *, debug=False):
                     unscheduled=len(plan["unscheduled"]), warnings=len(plan["warnings"]),
                     revision=state["revision"], calendar_ready=plan["sources"]["calendar"]["ready"],
                     reminders_ready=plan["sources"]["reminders"]["ready"])
-        result = {**plan, "revision": state["revision"], "trace_id": trace.id}
+        result = {**plan, "revision": state["revision"], "trace_id": trace.id,
+                  "sources": live_access(plan["sources"], now)}
         try:
             from service.assistant import daily_workspace as daily
-            from service.assistant.daily_workspace_api import email_store, availability
+            from service.assistant.daily_workspace_api import email_store, availability, user_profile
             result["workspace"] = daily.assess(day, timezone, state,
                 daily.collect_evidence(assistant_store, state, day, timezone, now=now), now=now,
                 behavior=availability(day, timezone, now),
                 ignored_windows=email_store().ignored(day, timezone),
+                # The people the user named in "Getting to know you" rise to the
+                # top of Needs you here too, as that screen promised.
+                profile=user_profile(),
                 dismissed=cleared_needs())
         except Exception:
             # The original revisioned planner remains usable when an optional
