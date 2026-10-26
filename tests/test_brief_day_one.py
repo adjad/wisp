@@ -184,6 +184,8 @@ class TestDayOneRebuild:
         rebuilt = _isolated.event_by_key("daily_brief:2026-10-16:morning:rebuilt")
         assert rebuilt["payload"]["recomposed"] is True
         assert "recomposed" not in _isolated.event_by_key("daily_brief:2026-10-16:morning")["payload"]
+        # created_at lets the app skip a replay older than the brief it shows.
+        assert rebuilt["payload"]["created_at"] >= _isolated.event_by_key("daily_brief:2026-10-16:morning")["payload"]["created_at"]
         # The rebuilt summary replaces the unacknowledged original.
         assert _isolated.event_by_key("daily_brief:2026-10-16:morning")["state"] == "superseded"
 

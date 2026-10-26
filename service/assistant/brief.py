@@ -2217,6 +2217,7 @@ async def run_scheduled_brief(part_of_day: str, day: str | None = None,
         "text": sections["FULL"],
         "today_summary": sections.get("TODAY", ""),
         "messages_summary": sections.get("MESSAGES", ""),
+        "created_at": time.time(),  # the app skips a replay older than the brief it shows
     }
     if revision:
         event["recomposed"] = True
