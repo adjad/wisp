@@ -380,8 +380,9 @@ def _optional_cloud_lines(detail: dict) -> list[str]:
     if roles:
         lines.append(f"- You've set a cloud model at {host} to answer {_join(roles)}. When it "
                      "answers, the question goes there with the recent conversation, things you "
-                     "asked me to remember that relate to it, and patterns I've noticed in your "
-                     "routines. Research also sends the web pages it read, and a document search "
+                     "asked me to remember that relate to it, patterns I've noticed in your "
+                     "routines, and the instructions of any skill in use (like a writing-style "
+                     "skill). Research also sends the web pages it read, and a document search "
                      "you upgrade sends the passages it answers from.")
     if not lines:
         lines.append(f"- A cloud model may answer some questions, at {host}. Check **Settings** "

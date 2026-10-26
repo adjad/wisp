@@ -179,6 +179,7 @@ def test_privacy_under_an_optional_cloud_model_says_exactly_what_goes(monkeypatc
     text = wisp_about.privacy()
     assert "hard reasoning questions and code questions" in text
     assert "recent conversation" in text and "remember" in text and "routines" in text
+    assert "instructions of any skill in use" in text  # main.py's selected and always-on skill blocks
     assert "only the question itself" not in text
     assert "Getting to know you is never sent" in text
 
