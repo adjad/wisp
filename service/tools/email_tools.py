@@ -494,12 +494,12 @@ _swift_identity = _restored_native("identity", "\n".join(
     e for e in _identity_emails if e.casefold() not in _external_accounts)).splitlines()
 
 
-@mutating
 def email_reason_kind() -> str:
     """The MailReader's last reason_kind, or ""."""
     return _email_reason_kind
 
 
+@mutating
 def set_email_availability(available: bool, reason: str = "",
                            syncing: bool = False, read_source: str = "", reason_kind: str = "") -> None:
     """Record whether the Swift MailReader's last sync could read the inbox,

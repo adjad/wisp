@@ -91,7 +91,6 @@ def _clean_stamp(value, now: float) -> float:
     return stamp
 
 
-@mutating
 def _clean_kind(value) -> str:
     """A reader's reason_kind ("full_disk_access", …) kept only when it is a
     plain identifier; anything else is no kind."""
@@ -104,6 +103,7 @@ def notes_unavailable() -> tuple[str, str]:
     return ("", "") if _available is not False else (_reason, _reason_kind)
 
 
+@mutating
 def cache_notes(raw: str, available: bool = True, reason: str = "",
                 snapshot_started_at: float | None = None, reason_kind: str = "") -> None:
     global _notes, _notes_at, _available, _reason, _reason_kind, _snapshot_at

@@ -1085,12 +1085,13 @@ def collect_evidence(store, state, day, timezone, *, now):
 def _no_mail_account() -> bool:
     """The MailReader says this Mac has no Mail account (reason_kind
     mail_not_configured, which arrives with a ready state) and no Google
-    account supplies mail either. Reads two flags: no second header pass."""
+    account supplies mail either. Reads two flags: no second header pass, no
+    publication barrier. If they can't be read, mail counts as unread."""
     try:
         from service.tools import email_tools
         return email_tools.email_reason_kind() == "mail_not_configured" and not email_tools._external_accounts
-    except Exception:  # noqa: BLE001
-        return False
+    except Exception:  # noqa: BLE001 — unknown is not an all-clear: mail counts as unread
+        return True
 
 
 def _annotate_access(result, now):
