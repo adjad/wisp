@@ -55,6 +55,7 @@ class FakeOmlx:
         self.hooks: dict[str, object] = {}         # purpose -> callable run on arrival
         self.down = False
         self.load_after_polls = 0       # a load only lands after N status polls
+        self.accepts_unknown_ids = False  # desktop oMLX: a load of an unknown id says 200
         self._pending: dict[str, int] = {}
 
     @staticmethod
@@ -119,11 +120,13 @@ class FakeOmlx:
             return httpx.Response(200, json={"data": [{"id": m} for m in self.installed]})
         if purpose == "load":
             model = path.split("/")[-2]
-            if model in self.installed:
-                if self.load_after_polls:
-                    self._pending[model] = self.load_after_polls
-                else:
-                    self.loaded.add(model)
+            if model not in self.installed:
+                # The bundled engine (oMLX 0.7.0+) refuses an unknown id at once.
+                return httpx.Response(200 if self.accepts_unknown_ids else 404, json={})
+            if self.load_after_polls:
+                self._pending[model] = self.load_after_polls
+            else:
+                self.loaded.add(model)
             return httpx.Response(200, json={})
         if purpose == "unload":
             self.loaded.discard(path.split("/")[-2])
@@ -412,8 +415,10 @@ def test_model_swap_runs_the_full_check_and_keeps_loading_status(engine, instant
     assert seq.index("unload") < seq.index("load") < seq.index("chat")
     assert seq.count("chat") == 1
     texts = [e["text"] for e in events if e["type"] == "status"]
-    assert any(t.startswith(f"Loading {MODEL}…") for t in texts), texts
-    assert any(t.startswith(f"Loading {MODEL}… (") for t in texts), texts
+    # The catalog's display name, never the raw model id.
+    assert any(t.startswith("Loading Gemma 4 E4B… The first answer") for t in texts), texts
+    assert any(t.startswith("Loading Gemma 4 E4B… (") for t in texts), texts
+    assert not any(MODEL in t for t in texts), texts
     assert engine.fake.loaded == {MODEL}
 
 
@@ -646,23 +651,61 @@ def test_engine_down_gives_the_same_user_visible_failure(engine):
     assert "health" in engine.fake.sequence()           # the full start path still ran
 
 
-def test_missing_model_fails_the_same_way(engine):
+def test_missing_model_fails_fast_with_setup_needed(engine):
+    """The bundled engine answers an unknown id with 404 at once: one plain
+    "finish setup" error with a machine code, no 60 s wait and no chat."""
+    import time
+    from service.inference.inference_errors import SETUP_NEEDED_MESSAGE
     engine.fake.installed = [OTHER]
     engine.fake.loaded = set()
+    started = time.monotonic()
+    events = endpoint_turn("hello")
+    assert time.monotonic() - started < 5
+    errors = [(e["message"], e.get("code")) for e in events if e["type"] == "error"]
+    assert errors == [(SETUP_NEEDED_MESSAGE, "setup_needed")]
+    assert "chat" not in engine.fake.sequence()
+
+
+def test_missing_model_reports_download_progress(engine, monkeypatch):
+    from service.inference import omlx_client
+
+    async def downloading(model):
+        return 42.7
+    monkeypatch.setattr(omlx_client, "_download_progress", downloading)
+    engine.fake.installed = [OTHER]
+    engine.fake.loaded = set()
+    events = endpoint_turn("hello")
+    errors = [(e["message"], e.get("code")) for e in events if e["type"] == "error"]
+    assert len(errors) == 1 and errors[0][1] == "setup_needed"
+    assert "still downloading (42% done)" in errors[0][0]
+
+
+def test_missing_model_on_an_engine_that_accepts_unknown_ids(engine):
+    """Desktop oMLX says 200 to a load of an id it lacks, so the wait runs
+    out. Whichever deadline reports first, the user gets the setup message."""
+    from service.inference.inference_errors import SETUP_NEEDED_MESSAGE
+    engine.fake.installed = [OTHER]
+    engine.fake.loaded = set()
+    engine.fake.accepts_unknown_ids = True
     real = engine.client.ensure_only
 
     async def quick(model, **kwargs):          # the real wait is 60 s of polling
         return await real(model, settle_timeout=0.2, **kwargs)
     engine.client.ensure_only = quick
     events = endpoint_turn("hello")
-    errors = [e["message"] for e in events if e["type"] == "error"]
-    # The outer readiness deadline and the inner settle loop share the same 0.2 s
-    # budget, so which one reports first depends on scheduling (loaded CI runners
-    # hit the inner one). Both are the same user-visible failure: one clear error
-    # and no chat call.
-    assert errors in (["Inference readiness timed out on local"],
-                      [f"could not load {MODEL!r}: it is not installed in oMLX."])
+    errors = [(e["message"], e.get("code")) for e in events if e["type"] == "error"]
+    assert errors == [(SETUP_NEEDED_MESSAGE, "setup_needed")]
     assert "chat" not in engine.fake.sequence()
+
+
+def test_a_404_load_for_an_installed_model_keeps_its_http_error(engine):
+    """404 means "not downloaded" only when the inventory agrees."""
+    engine.fake.loaded = set()
+    engine.fake.failures["load"] = [404]
+    events = endpoint_turn("hello")
+    errors = [e for e in events if e["type"] == "error"]
+    assert len(errors) == 1 and "code" not in errors[0]
+    assert "(404)" in errors[0]["message"]
 
 
 def test_engine_up_fast_path_makes_exactly_one_request(engine):
@@ -686,6 +729,8 @@ def test_a_hung_status_read_falls_back_to_the_full_path(engine, monkeypatch):
     show("hung status", engine)
     assert [e for e in events if e["type"] == "error"] == []
     assert engine.fake.sequence() == ["status", "health", "status", "chat"]
+    # The full start path tells the user what the wait is for.
+    assert "Starting the AI engine…" in [e.get("text") for e in events if e["type"] == "status"]
 
 
 def test_a_failed_residency_check_leaves_no_proof(engine):
@@ -1090,3 +1135,40 @@ def test_a_read_only_poller_does_not_invalidate_the_proof(engine, monkeypatch):
     loop_turn(engine, tools)
     show("poller", engine)
     assert engine.fake.sequence() == ["status", "chat", "status", "chat"]
+
+
+# ------------------------------------------------------- user-facing copy
+
+def test_generic_error_points_at_report_a_problem_not_the_debug_export():
+    from service.errors import translate
+    message, detail = translate(KeyError("choices"))
+    assert "debug export" not in message
+    assert "Report a Problem…" in message
+    assert "KeyError" in detail
+
+
+def test_memory_refusal_copy_is_actionable():
+    from service.inference.inference_errors import ModelMemoryLimitError
+    message = str(ModelMemoryLimitError())
+    assert "Quit some apps" in message and "smaller model" in message
+
+
+def test_bundled_refusal_says_momentary_only_for_transient_reasons():
+    from service.errors import translate
+    from service.inference import attributed_transport as at
+
+    def refusal(reason, port):
+        try:
+            raise at.AuthRefused(reason)
+        except at.AuthRefused:
+            return at.refused(port)
+
+    for reason in ("desktop_runtime_unqualified", "desktop_signature_unqualified"):
+        error = refusal(reason, at.BUNDLED_PORT)
+        message, detail = translate(error)
+        assert message == at.BUNDLED_UNQUALIFIED_MESSAGE
+        assert "momentary" not in message and reason not in message
+        assert f"reason={reason}" in detail
+        # The desktop oMLX keeps its own message: Wisp.app is not the fix there.
+        assert str(refusal(reason, 8000)) == at.REFUSED_MESSAGE
+    assert str(refusal("connected_peer_changed", at.BUNDLED_PORT)) == at.BUNDLED_REFUSED_MESSAGE

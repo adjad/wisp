@@ -173,11 +173,30 @@ BUNDLED_REFUSED_MESSAGE = ("Wisp couldn't verify its built-in AI engine just now
                            "restart Wisp.")
 
 
+# The built-in engine's files or signature can't be qualified for this account
+# (for example Wisp.app was installed by another user, so its engine files are
+# owned by someone else). Trying again cannot fix that, so the message must not
+# say "momentary". Only the headline differs; the refusal itself is unchanged.
+BUNDLED_PERMANENT_REASONS = frozenset({
+    'desktop_runtime_unqualified', 'desktop_signature_unqualified',
+})
+BUNDLED_UNQUALIFIED_MESSAGE = ("Wisp is installed where this account can't verify its "
+                               "built-in AI engine. Copy Wisp.app to the Applications "
+                               "folder in your home folder (~/Applications) and open it "
+                               "from there.")
+
+
 def refused(port=None):
     from .inference_errors import ModelLoadError
-    error = ModelLoadError(BUNDLED_REFUSED_MESSAGE if port == BUNDLED_PORT else REFUSED_MESSAGE)
     active = sys.exc_info()[1]
-    error.reason = str(active) if isinstance(active, AuthRefused) else type(active).__name__ if active else ''
+    reason = str(active) if isinstance(active, AuthRefused) else type(active).__name__ if active else ''
+    if port == BUNDLED_PORT:
+        message = (BUNDLED_UNQUALIFIED_MESSAGE if reason in BUNDLED_PERMANENT_REASONS
+                   else BUNDLED_REFUSED_MESSAGE)
+    else:
+        message = REFUSED_MESSAGE
+    error = ModelLoadError(message)
+    error.reason = reason
     return error
 
 

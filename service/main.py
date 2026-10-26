@@ -2641,7 +2641,11 @@ async def agent(body: dict[str, Any]):
             message, detail = translate_error(e, retry_omlx=ensure_omlx if remote_only_profile() is None and owned_inference_client is None else None,
                                               endpoint_name=(remote_only_profile().endpoint_name if remote_only_profile() is not None
                                                              else owned_inference_client.endpoint_name if owned_inference_client else "local"))
-            await emit({"type": "error", "message": message, "detail": detail})
+            error_event = {"type": "error", "message": message, "detail": detail}
+            if getattr(e, "reason", "") == "setup_needed":
+                # The model isn't downloaded: the app can point at setup.
+                error_event["code"] = "setup_needed"
+            await emit(error_event)
             await emit({"type": "done"})
             # Persist the user's prompt even though the turn failed — it was
             # NEVER saved, because the only add_turn call sat past everything
