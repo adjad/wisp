@@ -31,6 +31,8 @@ struct NotchDayView: View {
     @ObservedObject private var checkIn = CheckInModel.shared
     /// The Calendar block whose Move sub-panel is open from the timeline's ⋯ menu.
     @State private var movingEvent: CheckInEvent?
+    /// The old-reminder questions show three until the person asks for all.
+    @State private var showAllStale = false
     // Old undated reminders to keep or delete (StaleReminders.swift).
     @ObservedObject private var staleReminders = DayCards.staleReminders
     // To-dos the proactive engine found (ProactiveCards.swift): check-offs and
@@ -62,6 +64,12 @@ struct NotchDayView: View {
                     .disabled(today.busy)
                 }
             }
+            if let stale = today.staleNotice {
+                // Reads keep failing: say how old the day on screen is, and hold
+                // back the buttons that would change it.
+                Text(stale).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if !today.followsToday { otherDayRow }
             if today.isShowingCurrentDay {
                 CheckInSection(model: checkIn, day: today.day, timezone: today.timezone,
@@ -73,8 +81,9 @@ struct NotchDayView: View {
             }
             if let plan {
                 dayContent(plan)
+                    .disabled(today.planIsStale)
             } else if today.error.isEmpty {
-                ProcessingRow(label: today.outageNotice ?? "Loading your day…")
+                ProcessingRow(label: NotchBriefView.loadingLabel(today: today, starting: model.serviceStarting))
             }
             ReportDraftCard(draft: today.report, title: "Report a problem with this plan",
                             detailsLabel: "Include planner details", save: { model.saveReport(today.report) })
@@ -138,13 +147,28 @@ struct NotchDayView: View {
     /// Old undated reminders: keep or delete, one quiet row each. Delete runs only
     /// on its own click and goes through Reminders' verified delete.
     private var staleSection: some View {
-        let shown = Array(staleReminders.asks.prefix(3))
+        let asks = staleReminders.asks
+        let shown = showAllStale ? asks : Array(asks.prefix(3))
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Old reminders with no date").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
-                .accessibilityAddTraits(.isHeader)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Old reminders").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 8)
+                if asks.count > 1 {
+                    NotchChrome.small("Keep all") { Task { await staleReminders.keepAll(); model.onResize() } }
+                        .disabled(staleReminders.answering != nil)
+                        .help("Keep every reminder listed here; Wisp won't ask about them again. Nothing changes in Reminders.")
+                }
+            }
+            Text(StaleRemindersModel.explanation).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
             ForEach(shown) { ask in staleRow(ask) }
-            if staleReminders.asks.count > shown.count {
-                Text("+\(staleReminders.asks.count - shown.count) more").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+            if asks.count > 3 {
+                Button(showAllStale ? "Show fewer" : "Show \(asks.count - 3) more") {
+                    showAllStale.toggle()
+                    model.onResize()
+                }
+                .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
             }
         }
         .padding(.top, 2)
@@ -184,19 +208,70 @@ struct NotchDayView: View {
         .accessibilityLabel("\(ask.title), \(ask.detail)")
     }
 
+    /// Calendar and Reminders when Wisp can't read them: why, and the setting
+    /// that fixes it. Nothing for a source that is fine.
+    private func unreadAccess(_ plan: TodayPlan) -> [SourceAccess] {
+        ["calendar", "reminders"].compactMap { plan.access($0) }.filter { !$0.readable }
+    }
+
+    private func accessRow(_ access: SourceAccess) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: DayTimeline.sourceSymbol(access.source)).font(.system(size: 10.5))
+                .foregroundStyle(Theme.textMuted).frame(width: 15)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(access.headline).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                Text(access.detail).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 6)
+            if let fix = access.fix, let url = URL(string: fix.url) {
+                NotchChrome.small(fix.label) { NSWorkspace.shared.open(url) }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     @ViewBuilder private func dayContent(_ plan: TodayPlan) -> some View {
         let timeline = timeline(plan)
+        let unread = unreadAccess(plan)
+        ForEach(unread, id: \.source) { accessRow($0) }
         Text(DayTimeline.blurb(timeline, needs: plan.dayNeeds, isToday: today.isShowingCurrentDay,
-                               endOfDay: today.dayInterval.end.timeIntervalSince1970, clock: today.clock))
+                               endOfDay: today.dayInterval.end.timeIntervalSince1970, clock: today.clock,
+                               dayStart: today.dayInterval.start.timeIntervalSince1970,
+                               calendarRead: !unread.contains { $0.source == "calendar" }))
             .font(.system(size: 13.5)).foregroundStyle(Theme.textPrimary)
             .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             .padding(.leading, 10)
             .overlay(alignment: .leading) { Rectangle().fill(Theme.chipStroke).frame(width: 2) }
             .frame(maxWidth: .infinity, alignment: .leading)
         if !timeline.allDay.isEmpty { allDayStrip(timeline.allDay, booked: bookedTimes(plan)) }
-        if let warning = warningLine(plan) {
-            Text(warning).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        if let warning = warningLine(plan, unread: unread) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(warning).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 6)
+                if plan.displayWarnings.contains(where: { $0.hasPrefix("All-day calendar events may reserve this day") }) {
+                    // The way out: plan this day anyway (a per-day preference).
+                    NotchChrome.small("Plan my day anyway") {
+                        Task { await today.replan(start: plan.preferences.start_minute, end: plan.preferences.end_minute,
+                                                  planAllDay: true) }
+                    }
+                    .disabled(today.busy)
+                    .help("Place your tasks around today's timed events anyway")
+                }
+            }
+        }
+        if let hours = afterHours(plan) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(hours).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 6)
+                NotchChrome.small("Plan tonight") {
+                    Task { await today.replan(start: plan.preferences.start_minute, end: 24 * 60) }
+                }
+                .disabled(today.busy)
+                .help("Stretch today's working hours to midnight and place your tasks")
+            }
         }
         if let movingEvent {
             // The check-in card's Move sub-panel, for a block picked on the timeline.
@@ -321,9 +396,25 @@ struct NotchDayView: View {
         .accessibilityElement(children: .contain)
     }
 
-    /// The day's first planner warning, in plain words.
-    private func warningLine(_ plan: TodayPlan) -> String? {
-        plan.displayWarnings.lazy.compactMap(DayTimeline.plainWarning).first
+    /// The day's first planner warning, in plain words. A source Wisp can't
+    /// read already has its own row; its "not current" warning isn't repeated.
+    /// Placement warnings only matter while there are tasks to place.
+    private func warningLine(_ plan: TodayPlan, unread: [SourceAccess] = []) -> String? {
+        let hidden = unread.map { $0.source == "calendar" ? "Calendar is not current" : "Reminders are not current" }
+        let placing = !plan.displayUnscheduled.isEmpty
+        return plan.displayWarnings.lazy
+            .filter { w in !hidden.contains { w.hasPrefix($0) } }
+            .filter { w in placing || !(w.hasPrefix("All-day calendar events") || w.hasPrefix("Calendar is not current")) }
+            .compactMap(DayTimeline.plainWarning).first
+    }
+
+    /// "It's after your working hours (9 AM–6 PM)." when the planner held tasks
+    /// back because the working day is over.
+    private func afterHours(_ plan: TodayPlan) -> String? {
+        guard today.isShowingCurrentDay, plan.displayUnscheduled.contains(where: { $0.reason.hasPrefix("It's after your working hours") })
+        else { return nil }
+        return DayTimeline.afterHoursLine(start: plan.preferences.start_minute, end: plan.preferences.end_minute,
+                                          locale: today.clockLocale)
     }
 
     // MARK: Pieces of the day
@@ -867,7 +958,7 @@ struct NotchDayView: View {
             .disabled(today.busy)
             .help("More")
             .accessibilityLabel("More day actions")
-            NotchChrome.chip("Full week ↗", icon: nil,
+            NotchChrome.chip("Plan in window ↗", icon: nil,
                              help: "Tasks, pins, working hours and the daily email, in the Wisp window (⌘O)") {
                 WispRouter.shared.open(.today(focus: .plan))
             }

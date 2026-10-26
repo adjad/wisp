@@ -98,11 +98,17 @@ struct TodayPreferences: Decodable {
     let start_minute: Int
     let end_minute: Int
     let not_before: Double?
+    /// The person chose to plan this day although an all-day event reads like time away.
+    var plan_all_day: Bool? = nil
 }
 struct TodaySource: Decodable {
     let ready: Bool
     let last_sync: Double?
     let reason: String
+    /// "ready", "syncing" or "unavailable" (service/assistant/today.py with_access).
+    var state: String? = nil
+    /// What the person must grant, e.g. "calendar_access"; absent when unknown.
+    var blocked: String? = nil
 }
 struct TodayPlan: Decodable {
     let day: String
@@ -124,6 +130,22 @@ struct TodayPlan: Decodable {
     var displayBlocks: [TodayBlock] { workspace?.proposed_plan.blocks ?? blocks }
     var displayUnscheduled: [TodayUnscheduled] { workspace?.proposed_plan.unscheduled ?? unscheduled }
     var displayWarnings: [String] { workspace?.proposed_plan.warnings ?? warnings }
+
+    /// Whether Wisp could read a source and what fixes it when it couldn't:
+    /// Calendar and Reminders from the plan's own source health, the rest from
+    /// the workspace's coverage. Nil when the service said nothing about it.
+    func access(_ source: String) -> SourceAccess? {
+        if let health = sources[source] {
+            return SourceAccess(source: source, ready: health.ready, state: health.state, blocked: health.blocked,
+                                reason: health.reason)
+        }
+        return workspace?.source_coverage.first { $0.source == source }?.access
+    }
+
+    /// The sources behind the Brief Wisp couldn't read, in reading order.
+    var unreadSources: [String] {
+        ["calendar", "reminders", "email", "messages"].filter { access($0).map { !$0.readable } ?? false }
+    }
 }
 
 extension TodayPlan {
@@ -223,6 +245,8 @@ final class TodayModel: ObservableObject {
     /// restarting or busy (a timeout, no connection, a 5xx). These never show
     /// as an error and never clear what is on screen; the read retries itself.
     @Published private(set) var transientFailures = 0
+    /// When the current run of quiet failures began; nil while reads succeed.
+    @Published private(set) var failingSince: Date?
     /// How a retry waits; checks drive it by hand.
     var retrySleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     private var retryTask: Task<Void, Never>?
@@ -447,7 +471,7 @@ final class TodayModel: ObservableObject {
             let next = try JSONDecoder().decode(TodayPlan.self, from: data)
             guard ticket == generation, selected == currentKey, !Task.isCancelled else { return }
             plan = next
-            lastRefreshed = Date()
+            lastRefreshed = nowProvider()
             reportMetadata = ["surface": "today", "client_outcome": "completed", "revision": next.revision,
                               "task_count": next.tasks.count, "block_count": next.blocks.count,
                               "unscheduled_count": next.unscheduled.count, "provisional": next.provisional,
@@ -462,6 +486,7 @@ final class TodayModel: ObservableObject {
             reportDetails = capturing && capturePlannerDetails ? ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) : nil
             error = ""
             transientFailures = 0
+            failingSince = nil
             retryTask?.cancel()
             retryTask = nil
         } catch {
@@ -472,6 +497,7 @@ final class TodayModel: ObservableObject {
                 // The service is starting, restarting or busy. Keep the last good
                 // plan on screen (or the loading row), say nothing, and try again.
                 transientFailures += 1
+                if failingSince == nil { failingSince = nowProvider() }
                 reportMetadata["client_outcome"] = "refresh_retrying"
                 reportMetadata["client_error_code"] = (error as NSError).code
                 scheduleRetry()
@@ -483,6 +509,7 @@ final class TodayModel: ObservableObject {
                               "client_error_code": (error as NSError).code]
             reportDetails = nil
             transientFailures = 0
+            failingSince = nil
             // A refused or unreadable plan must not leave stale slots looking actionable.
             plan = nil
         }
@@ -513,8 +540,23 @@ final class TodayModel: ObservableObject {
     /// Wisp still can't reach its service after several quiet retries, with
     /// nothing to show yet: said once, in the loading row, while it keeps trying.
     var outageNotice: String? {
-        plan == nil && transientFailures >= 4 ? "Wisp's service isn't answering yet. Still trying…" : nil
+        plan == nil && transientFailures >= 4 ? "Wisp is taking a while to start. Still trying…" : nil
     }
+
+    /// How long a plan may stay on screen while reads keep failing before the
+    /// Day says it is out of date and holds back its changing buttons.
+    nonisolated static let staleAfter: TimeInterval = 90
+
+    /// The plan on screen is from before a run of failed reads that has lasted
+    /// `staleAfter`: "Wisp isn't answering right now. Showing your day as of 3:42 PM."
+    var staleNotice: String? {
+        guard plan != nil, let since = failingSince, nowProvider().timeIntervalSince(since) >= Self.staleAfter else { return nil }
+        let asOf = lastRefreshed.map { " Showing your day as of " + clock($0.timeIntervalSince1970) + "." } ?? ""
+        return "Wisp isn't answering right now." + asOf
+    }
+
+    /// Changes are held back while the plan on screen may be out of date.
+    var planIsStale: Bool { staleNotice != nil }
 
     private func scheduleRetry() {
         guard retryTask == nil else { return }
@@ -630,10 +672,12 @@ final class TodayModel: ObservableObject {
         return await mutate("/assistant/today/tasks/\(task.id)", method: "PATCH", body: body)
     }
 
-    func replan(start: Int, end: Int, delayMinutes: Int? = nil) async {
+    func replan(start: Int, end: Int, delayMinutes: Int? = nil, planAllDay: Bool? = nil) async {
         guard let plan, plan.day == day else { return }
         var body: [String: Any] = ["day": day, "timezone": timezone.identifier,
                                   "revision": plan.revision, "start_minute": start, "end_minute": end]
+        // A replan keeps the person's "Plan my day anyway" unless it changes it.
+        if planAllDay ?? (plan.preferences.plan_all_day == true) { body["plan_all_day"] = true }
         if let delayMinutes {
             body["not_before"] = Date().addingTimeInterval(Double(delayMinutes * 60)).timeIntervalSince1970
         } else {
