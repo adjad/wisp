@@ -380,3 +380,23 @@ def test_signing_in_and_feedback_have_their_own_steps():
     signin = wisp_about.howto("how do I log in to wisp")
     assert "no account of its own" in signin and "Settings → Google" in signin
     assert "/report" in wisp_about.howto("how do I give feedback on wisp")
+
+
+@pytest.mark.parametrize("prompt", ["how do I sign out of wisp", "how do I log out of Wisp?"])
+def test_signing_out_has_its_own_step(prompt):
+    assert routed(prompt).direct_calls[0][1].get("topic") == "howto"
+    text = wisp_about.howto(prompt)
+    assert "no account to sign out of" in text and "Disconnect & erase" in text
+    assert "Getting started" not in text
+
+
+@pytest.mark.parametrize("prompt", ["how do I update wisp", "how can I update Wisp?"])
+def test_updating_has_its_own_step(prompt):
+    assert routed(prompt).direct_calls[0][1].get("topic") == "howto"
+    text = wisp_about.howto(prompt)
+    assert "doesn't update itself" in text and "Applications" in text
+
+
+def test_updating_a_feature_is_not_updating_wisp():
+    # No specific step matches, so it gets the whole guide, not the update step alone.
+    assert not wisp_about.howto("how do I update the model in wisp").startswith("- **Updating Wisp**")

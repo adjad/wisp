@@ -143,6 +143,10 @@ def cloud_detail() -> dict:
     else:
         roles, cloud_host = [], _GENERIC_HOST
     known = isinstance(settings, dict) and super_model is not _UNKNOWN
+    if (super_model is True or roles) and _cloud_is_own_node():
+        # The "cloud" endpoint is the user's own verified node: named as
+        # theirs (own_nodes), not as a cloud model.
+        super_model, roles = False, []
     if super_model is True or roles:
         return result("super", cloud_host, super_model=super_model is True, roles=roles, known=known)
     if not known:
@@ -183,8 +187,10 @@ def own_nodes() -> list[str]:
         bindings = (models_config().get("inference") or {}).get("bindings") or {}
     except Exception:  # noqa: BLE001
         return []
+    # "cloud" is included: what makes an endpoint the user's node is its
+    # verified provisioning record, never its name.
     names = sorted({str(b.get("endpoint")) for b in bindings.values()
-                    if isinstance(b, dict) and b.get("endpoint")} - {"local", "local_provider", "cloud"})
+                    if isinstance(b, dict) and b.get("endpoint")} - {"local", "local_provider"})
     labels: list[str] = []
     for name in names:
         try:
@@ -201,6 +207,16 @@ def nodes_phrase(nodes: list[str]) -> str:
     return f"your {_join(nodes)} on your tailnet" if nodes else ""
 
 
+def _cloud_is_own_node() -> bool:
+    """Whether the endpoint named "cloud" is really the user's own verified
+    node: then nothing bound to it is an optional cloud model."""
+    try:
+        from service.config.endpoints import endpoint
+        return bool(own_node(endpoint("cloud")))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _optional_cloud_now(config) -> tuple[bool, list[str], str]:
     """(Super Model on, roles bound to the cloud endpoint, its host), read
     from the bindings themselves: cloud_provider_settings() reports only
@@ -214,6 +230,8 @@ def _optional_cloud_now(config) -> tuple[bool, list[str], str]:
     roles = [role for role in _ROLE_LABELS if enabled and isinstance(bindings.get(role), dict)
              and bindings[role].get("endpoint") == "cloud"]
     host = _host(endpoint.get("base_url")) if isinstance(endpoint, dict) else _GENERIC_HOST
+    if (super_model or roles) and _cloud_is_own_node():
+        return False, [], ""
     return super_model, roles, host
 
 
@@ -323,12 +341,14 @@ def _can_lines(tools: set[str]) -> list[str]:
 def until_restart(detail: dict) -> str:
     """Who answers before Cloud "Everything" takes over: this Mac, except any
     role still bound to the optional cloud model."""
+    nodes = own_nodes()
+    here = f"this Mac and {nodes_phrase(nodes)} answer" if nodes else "this Mac answers"
     still = [_ROLE_LABELS[r] for r in detail.get("roles") or ()]
     if detail.get("super_model"):
         still.append("questions the Super Model takes")
     if not still:
-        return "Until then, this Mac answers."
-    return (f"Until then, this Mac answers, except {_join(still)}, which still go to "
+        return f"Until then, {here}."
+    return (f"Until then, {here}, except {_join(still)}, which still go to "
             f"{detail.get('cloud_host') or detail['host']}.")
 
 
@@ -464,7 +484,10 @@ def privacy() -> str:
                + until_restart(detail), "",
                f"- After the restart, what you ask, and the data a reply needs (your mail, "
                f"messages, calendar and what you told me about yourself), is sent to {host}.",
-               "- Until the restart, what you told me in Getting to know you stays on this Mac.",
+               ("- Until the restart, what you told me in Getting to know you stays on your own "
+                f"Macs: this one and {nodes_phrase(own_nodes())}, over your tailnet."
+                if own_nodes() else
+                "- Until the restart, what you told me in Getting to know you stays on this Mac."),
                "- To keep everything on this Mac, turn it off in **Settings** before restarting."]
         if detail["roles"] or detail["super_model"]:
             out += _optional_cloud_lines({**detail, "host": detail["cloud_host"]})[:-1]
@@ -489,7 +512,8 @@ def privacy() -> str:
                "- My AI model runs here, on your Mac. Your mail, messages, calendar, notes, "
                "and what you tell me are read and kept on this Mac, not on a server.",
                "- No cloud AI is used unless you turn one on in **Settings**."]
-    nodes = own_nodes() if not (cloud == "everything" and not detail["pending"]) else []
+    # Everything (answering or pending) says where the profile goes itself.
+    nodes = own_nodes() if cloud != "everything" else []
     if nodes:
         out.append(f"- Some questions are answered by {nodes_phrase(nodes)}, your own Mac. What a "
                    "reply needs, including what you told me in Getting to know you, goes there "
@@ -540,6 +564,12 @@ _HOWTO = (
     (r"log ?in|sign ?in|login|signin|password",
      "**Signing in**: Wisp has no account of its own, so there's nothing to sign in to. "
      "To read a Google account's Gmail and Calendar, connect it in **Settings → Google**."),
+    (r"log ?out|sign ?out|logout|signout",
+     "**Signing out**: Wisp has no account to sign out of. To stop reading a Google account, "
+     "choose **Disconnect & erase** in **Settings → Google**."),
+    (r"update (?:wisp|the app|this app|you)|upgrade|new version|latest version",
+     "**Updating Wisp**: Wisp doesn't update itself. To move to a new version, quit Wisp from "
+     "the menu bar icon, then replace the Wisp app in your Applications folder with the new one."),
     (r"quit|close|stop|turn off",
      "**Close or quit**: × closes the panel and Wisp stays in the menu bar. To quit, choose "
      "**Quit Wisp** from the menu bar icon."),

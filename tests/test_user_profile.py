@@ -674,3 +674,56 @@ def test_an_unverified_node_binding_is_not_named(client, unprovisioned, monkeypa
     _patch_cloud(monkeypatch)
     assert wisp_about.own_nodes() == []
     assert client.get("/profile").json()["status"]["tailnet_nodes"] == []
+
+
+# --- final copy pass (re-review 98940d94) ------------------------------------
+
+def _bind_reasoning_to(monkeypatch, name, *, everything=False):
+    import service.config as config
+    import service.inference.remote_policy as remote_policy
+    real = config.models_config()
+    inference = {**(real.get("inference") or {}),
+                 "endpoints": {name: {"base_url": "https://mini.fixture.ts.net",
+                                      "credential_ref": "env:WISP_MINI_INFERENCE_KEY"}},
+                 "bindings": {"reasoning": {"endpoint": name, "model_id": "big"}}}
+    if everything:
+        inference["remote_only"] = {"base_url": "https://gpu.example.net"}
+    monkeypatch.setattr(config, "models_config", lambda: {**real, "inference": inference})
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)
+    monkeypatch.setattr(config, "cloud_everything_enabled", lambda: everything)
+    monkeypatch.setattr(config, "cloud_super_model_enabled", lambda: False)
+
+
+def test_a_verified_node_named_cloud_is_the_users_node_not_a_cloud_model(client, provisioned, monkeypatch):
+    from service import wisp_about
+    _bind_reasoning_to(monkeypatch, "cloud")
+    assert wisp_about.own_nodes() == ["mini"]
+    assert wisp_about.cloud_state() == ("", "")
+    assert client.get("/profile").json()["status"]["tailnet_nodes"] == ["mini"]
+    privacy = wisp_about.privacy()
+    assert "your mini on your tailnet" in privacy
+    assert "never sent to it" not in privacy and "cloud model at" not in privacy
+    assert "your mini on your tailnet" in wisp_about.overview()
+
+
+def test_an_unverified_endpoint_named_cloud_is_still_a_cloud_model(client, unprovisioned, monkeypatch):
+    import service.config as config
+    from service import wisp_about
+    _bind_reasoning_to(monkeypatch, "cloud")
+    monkeypatch.setattr(config, "cloud_provider_settings", lambda: {
+        "enabled": True, "base_url": "https://mini.fixture.ts.net", "roles": ["reasoning"]})
+    assert wisp_about.own_nodes() == []
+    assert wisp_about.cloud_state() == ("super", "mini.fixture.ts.net")
+    assert "never sent to it" in wisp_about.privacy()
+
+
+def test_pending_everything_with_a_node_is_one_honest_statement(provisioned, monkeypatch):
+    from service import wisp_about
+    _bind_reasoning_to(monkeypatch, "mini", everything=True)
+    detail = wisp_about.cloud_detail()
+    assert detail["mode"] == "everything" and detail["pending"]
+    privacy = wisp_about.privacy()
+    assert "stays on this Mac" not in privacy
+    assert "stays on your own Macs: this one and your mini on your tailnet" in privacy
+    assert privacy.count("your mini on your tailnet") == 2  # the headline's until-line and the profile line
+    assert "Until then, this Mac and your mini on your tailnet answer." in wisp_about.until_restart(detail)
