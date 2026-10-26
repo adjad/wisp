@@ -158,16 +158,26 @@ struct FirstRunSetupChecks {
         check(FirstRunSetupView.openHint(.notch).contains("notch"), "Notch")
         check(!FirstRunSetupView.openHint(.menuBar).contains("notch") && FirstRunSetupView.openHint(.menuBar).contains("menu bar"),
               "No notch: menu bar and top edge")
-        check(FirstRunSetupView.settingsPane(.messages).hasSuffix("Privacy_AllFiles"), "Messages opens Full Disk Access")
+        check(FirstRunSetupView.settingsPane(.fullDiskAccess) == Permissions.fullDiskAccessPane
+              && Permissions.fullDiskAccessPane.hasSuffix("Privacy_AllFiles"), "Full Disk Access opens its own page")
+        check(FirstRunReaderGate.readers(for: .fullDiskAccess).isEmpty, "Full Disk Access never prompts, so it gates no reader")
 
-        // Messages: Full Disk Access shows only in whether chat.db opens.
+        // Full Disk Access: a row of its own, on whether Messages, Mail or Notes data
+        // really reads (Automation alone only helps while those apps are open).
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        check(FirstRunPermissions.messagesState(home: scratch) == .notOnThisMac, "No chat.db: Messages isn't used here")
+        check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .notOnThisMac, "No data yet: nothing needs it")
+        let mail = scratch.appendingPathComponent("Library/Mail")
+        try! FileManager.default.createDirectory(at: mail.appendingPathComponent("V10"), withIntermediateDirectories: true)
+        try! FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: mail.path)
+        check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .notAllowed, "Mail data that won't read: not allowed")
         try! FileManager.default.createDirectory(at: scratch.appendingPathComponent("Library/Messages"), withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: scratch.appendingPathComponent("Library/Messages/chat.db").path, contents: Data())
-        check(FirstRunPermissions.messagesState(home: scratch) == .allowed, "Readable chat.db")
+        check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .allowed, "Readable chat.db")
+        try! FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: mail.path)
+        try! FileManager.default.removeItem(at: scratch.appendingPathComponent("Library/Messages"))
+        check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .allowed, "Readable Mail folder")
         try? FileManager.default.removeItem(at: scratch)
 
-        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, Messages access")
+        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, reader gate, reopen cap, Full Disk Access")
     }
 }

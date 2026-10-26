@@ -1242,8 +1242,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mailReader?.sync()
             mailReader?.syncRaw()
             notesReader?.sync()
-        case .messages:
+        case .fullDiskAccess:
+            // Messages, and the on-disk Mail and Notes reads used while those apps are closed.
             messagesReader?.sync()
+            mailReader?.sync()
+            notesReader?.sync()
         case .contacts:
             contactsReader?.sync()
         case .notifications:

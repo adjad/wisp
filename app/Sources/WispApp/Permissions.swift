@@ -79,9 +79,12 @@ enum Permissions {
         _ = AXIsProcessTrustedWithOptions(axOpts)
     }
 
-    // Not promptable: the user must toggle it by hand. Needed by the file/shell tools.
+    // Not promptable: the user must toggle it by hand. Needed by the file/shell
+    // tools, Messages, and Mail and Notes while those apps are closed.
+    static let fullDiskAccessPane = "com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles"
+
     static func openFullDiskAccessPane() {
-        openSettingsPane("com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles")
+        openSettingsPane(fullDiskAccessPane)
     }
 
     static func openSettingsPane(_ path: String) {

@@ -84,7 +84,7 @@ struct FirstRunReaderGate {
         case .calendar: return [.calendar, .reminders]
         case .mail: return [.mail, .notes]
         case .contacts: return [.contacts]
-        case .messages, .notifications: return []
+        case .fullDiskAccess, .notifications: return []
         }
     }
 
@@ -224,8 +224,11 @@ enum FirstRunBrain: Equatable {
 
 @MainActor
 final class FirstRunPermissions: ObservableObject {
+    /// `mail` is Automation for Mail and Notes, which only helps while those apps
+    /// are open; `fullDiskAccess` is what reads Messages, and Mail and Notes when
+    /// they are closed.
     enum Item: String, CaseIterable, Identifiable {
-        case calendar, mail, messages, contacts, notifications
+        case calendar, mail, fullDiskAccess, contacts, notifications
         var id: String { rawValue }
     }
     enum State: Equatable { case checking, notAsked, allowed, notAllowed, notOnThisMac }
@@ -268,7 +271,7 @@ final class FirstRunPermissions: ObservableObject {
         var next: [Item: State] = [:]
         next[.calendar] = Self.calendarState()
         next[.contacts] = Self.contactsState()
-        next[.messages] = Self.messagesState()
+        next[.fullDiskAccess] = Self.fullDiskAccessState()
         next[.notifications] = await Self.notificationsState()
         next[.mail] = await Self.automationState(ask: false)
         states = next
@@ -293,7 +296,7 @@ final class FirstRunPermissions: ObservableObject {
             for id in Self.automationTargets { await Self.launchHidden(id) }
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             _ = await Self.automationState(ask: true)
-        case .messages:
+        case .fullDiskAccess:
             // Full Disk Access can't be asked for: open its page and let the person
             // switch Wisp on. The poll notices when they come back.
             Permissions.openFullDiskAccessPane()
@@ -317,13 +320,31 @@ final class FirstRunPermissions: ObservableObject {
         }
     }
 
-    /// Full Disk Access shows only in whether chat.db can be opened. A missing file
-    /// means Messages isn't used on this Mac, which is not something to fix.
-    nonisolated static func messagesState(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> State {
-        let path = home.appendingPathComponent("Library/Messages/chat.db").path
-        let fd = open(path, O_RDONLY)
-        if fd >= 0 { close(fd); return .allowed }
-        return errno == ENOENT ? .notOnThisMac : .notAllowed
+    /// What Wisp reads with Full Disk Access: Messages always, Mail and Notes when
+    /// those apps are closed (MailDBReader, NotesDBReader).
+    nonisolated static let fullDiskAccessPaths = [
+        "Library/Messages/chat.db",
+        "Library/Mail",
+        "Library/Group Containers/group.com.apple.notes/NoteStore.sqlite",
+    ]
+
+    /// Full Disk Access shows only in whether those files really read: any one that
+    /// does means it is on. None of them existing means nothing here needs it yet.
+    nonisolated static func fullDiskAccessState(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> State {
+        var refused = false
+        for relative in fullDiskAccessPaths {
+            let url = home.appendingPathComponent(relative)
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                // A folder is read by listing it: that is what the privacy check guards.
+                do { _ = try FileManager.default.contentsOfDirectory(atPath: url.path); return .allowed }
+                catch { refused = true; continue }
+            }
+            let fd = open(url.path, O_RDONLY)
+            if fd >= 0 { close(fd); return .allowed }
+            if errno != ENOENT { refused = true }
+        }
+        return refused ? .notAllowed : .notOnThisMac
     }
 
     private static func notificationsState() async -> State {
@@ -334,7 +355,7 @@ final class FirstRunPermissions: ObservableObject {
         }
     }
 
-    static let automationTargets = ["com.apple.mail", "com.apple.Notes"]
+    nonisolated static let automationTargets = ["com.apple.mail", "com.apple.Notes"]
 
     /// Allowed only when both Mail and Notes are. A target that isn't running can't
     /// be asked about, which reads as not asked yet.
@@ -686,9 +707,10 @@ struct FirstRunSetupView: View {
             permissionRow(.calendar, icon: "calendar", title: "Calendar and Reminders",
                           detail: "Your day plan, and reminders it sets for you")
             permissionRow(.mail, icon: "envelope", title: "Mail and Notes",
-                          detail: "Catches emails that need a reply. Opens Mail and Notes in the background to ask.")
-            permissionRow(.messages, icon: "message", title: "Messages",
-                          detail: messagesDetail)
+                          detail: "While they're open: emails that need a reply, and your notes. "
+                              + "Opens Mail and Notes in the background to ask.")
+            permissionRow(.fullDiskAccess, icon: "internaldrive", title: "Full Disk Access",
+                          detail: fullDiskAccessDetail)
             permissionRow(.contacts, icon: "person.crop.circle", title: "Contacts",
                           detail: "Names instead of phone numbers")
             permissionRow(.notifications, icon: "bell", title: "Notifications", detail: "Reminder alerts")
@@ -697,12 +719,15 @@ struct FirstRunSetupView: View {
         }
     }
 
-    private var messagesDetail: String {
-        switch permissions.state(.messages) {
+    /// Said before the Settings page opens: switching it on can make macOS reopen
+    /// Wisp, and setup comes back at this step when it does.
+    private var fullDiskAccessDetail: String {
+        switch permissions.state(.fullDiskAccess) {
         case .notAllowed:
-            return "Needs Full Disk Access. In the page that opens, switch on Wisp, then come back here."
-        case .notOnThisMac: return "Messages isn't set up on this Mac."
-        default: return "Texts that need a reply"
+            return "So Wisp can read Messages, and Mail and Notes when those apps are closed. In the page "
+                + "that opens, switch on Wisp. macOS may ask to reopen Wisp; setup picks up where you left off."
+        case .notOnThisMac: return "Nothing here needs it yet: no Messages, Mail or Notes data on this Mac."
+        default: return "So Wisp can read Messages, and Mail and Notes when those apps are closed."
         }
     }
 
@@ -714,10 +739,10 @@ struct FirstRunSetupView: View {
             case .checking:
                 ProgressView().controlSize(.small)
             case .notOnThisMac:
-                Text("Not used").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                Text(item == .fullDiskAccess ? "Not needed" : "Not used").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
             case .notAllowed:
-                Button(item == .messages ? "Show me how" : "Open Settings") {
-                    if item == .messages { Task { await permissions.request(.messages) } }
+                Button(item == .fullDiskAccess ? "Show me how" : "Open Settings") {
+                    if item == .fullDiskAccess { Task { await permissions.request(.fullDiskAccess) } }
                     else { Permissions.openSettingsPane(Self.settingsPane(item)) }
                 }
                 .buttonStyle(FirstRunButtonStyle())
@@ -735,7 +760,7 @@ struct FirstRunSetupView: View {
         switch item {
         case .calendar: return base + "Privacy_Calendars"
         case .mail: return base + "Privacy_Automation"
-        case .messages: return base + "Privacy_AllFiles"
+        case .fullDiskAccess: return Permissions.fullDiskAccessPane
         case .contacts: return base + "Privacy_Contacts"
         case .notifications: return "com.apple.preference.notifications"
         }
