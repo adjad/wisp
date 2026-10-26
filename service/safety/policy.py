@@ -15,6 +15,7 @@ from itertools import chain
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from urllib.parse import unquote
 
 import yaml
 
@@ -180,11 +181,46 @@ _LOCAL_SEND_DENY = [
     r"assistant/+proactive/+(?:todos|threads)/+[^/\s'\"]+/+(?:done|clear)\b",
     r"(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^\s'\"]*?:8765\b[^\s'\"]*?(email_reply|send_message_draft)",
 ]
+# Wisp's own service port on a loopback host. A route built at run time
+# (`u=email_reply; curl …/assistant/$u/send`) never shows in the text, but the
+# command still has to name the port, so any shell/AppleScript text aimed at it
+# is refused, read routes included. Narrow on purpose: loopback spellings on
+# 8765 only. Other hosts, other ports and every other shell use are untouched.
+_LOOPBACK_NAME = (r"(?:[\w.-]*localhost|127(?:\.\d{1,3}){1,3}|0\.0\.0\.0|\[[0:]*:0*1\]"
+                  r"|\[::ffff:(?:127(?:\.\d{1,3}){3}|7f[0-9a-f]{2}:[0-9a-f]{1,4})\])")
+_LOOPBACK_NUMBER = r"(?:0|2130706433|0x7f[0-9a-f]{6})"
+_LOCAL_SERVICE_DENY = [
+    # host:8765, `nc host 8765`, ("host", 8765), "host:" & "8765"
+    r"(?<![\w.:-])" + _LOOPBACK_NAME + r"[:\s,&+]+8765(?!\d)",
+    # a bare-number host only with its colon (`seq 0 8765` is not a URL)
+    r"(?<![\w.:-])" + _LOOPBACK_NUMBER + r":8765(?!\d)",
+]
+
+
+def _command_forms(text: str) -> tuple[str, ...]:
+    """What the deny patterns read: the text percent-decoded until stable
+    (uvicorn decodes the path, so `/assistant/%65mail_reply/send` reaches
+    email_reply) and lowercased, and that again with shell quoting removed
+    (`local''host:87\\65` is localhost:8765 to the shell)."""
+    out = str(text)
+    for _ in range(10):
+        decoded = unquote(out)
+        if decoded == out:
+            break
+        out = decoded
+    out = out.lower()
+    bare = re.sub(r"[\"'\\`]", "", out)
+    return (out, bare) if bare != out else (out,)
 
 
 def local_send_endpoint_hit(text: str) -> str | None:
     """The pattern a shell/AppleScript text matches if it would call a human-only send route."""
-    return _any(_LOCAL_SEND_DENY, text)
+    return next((hit for form in _command_forms(text) if (hit := _any(_LOCAL_SEND_DENY, form))), None)
+
+
+def local_service_hit(text: str) -> str | None:
+    """The pattern a shell/AppleScript text matches if it names Wisp's own service port."""
+    return next((hit for form in _command_forms(text) if (hit := _any(_LOCAL_SERVICE_DENY, form))), None)
 
 
 # operators / verbs that mean a shell command could MODIFY the system, even if it
@@ -684,6 +720,9 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         if local_send_endpoint_hit(text):
             return Decision(Tier.DENY, "Wisp's Send buttons are for the user's own tap; "
                             "commands may not call them")
+        if local_service_hit(text):
+            return Decision(Tier.DENY, "commands may not call Wisp's own service (port 8765); "
+                            "use Wisp's tools instead")
     if (_KEEP_FLOOR or not _FULL_ACCESS) and (floor := _hard_deny(category, args, tool)) is not None:
         return floor
 

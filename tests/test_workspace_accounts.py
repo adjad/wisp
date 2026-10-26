@@ -85,13 +85,45 @@ class WorkspaceAccounts(unittest.TestCase):
         self.assertNotIn("USER_GOOGLE_EMAIL", entry["env"])
         self.assertEqual(entry["env"]["WORKSPACE_MCP_CREDENTIALS_DIR"], str(self.creds))
         self.assertIn("search_drive_files", entry["trusted_read_only"])
+        self.assertEqual(entry["args"], ["--from", W.PACKAGE, "workspace-mcp", "--tool-tier", "core"])
         self.assertFalse(W.ensure_env())
 
-    def test_consent_asks_for_read_only_workspace_scopes(self):
-        scopes = GS._consent_scopes()
+    def test_ensure_env_pins_an_unpinned_server_and_keeps_its_flags(self):
+        for args in (["workspace-mcp", "--tool-tier", "extended"], ["workspace-mcp@latest", "--tool-tier", "extended"],
+                     ["--from", "workspace-mcp==1.0.0", "workspace-mcp", "--tool-tier", "extended"]):
+            with self.subTest(args=args):
+                self.mcp.write_text(json.dumps({"servers": {"google_workspace": {
+                    "command": "/opt/homebrew/bin/uvx", "args": args,
+                    "env": {"WORKSPACE_MCP_CREDENTIALS_DIR": str(self.creds)},
+                    "trusted_read_only": sorted(W.TRUSTED_READ_ONLY)}}}))
+                self.assertTrue(W.ensure_env())
+                entry = json.loads(self.mcp.read_text())["servers"]["google_workspace"]
+                self.assertEqual(entry["args"], ["--from", W.PACKAGE, "workspace-mcp", "--tool-tier", "extended"])
+                self.assertFalse(W.ensure_env())
+        # A hand-written entry that does not run uvx is not rewritten.
+        self.mcp.write_text(json.dumps({"servers": {"google_workspace": {
+            "command": "npx", "args": ["-y", "some-other-server"],
+            "env": {"WORKSPACE_MCP_CREDENTIALS_DIR": str(self.creds)},
+            "trusted_read_only": sorted(W.TRUSTED_READ_ONLY)}}}))
+        self.assertFalse(W.ensure_env())
+
+    def test_the_server_is_pinned_to_an_exact_version(self):
+        import re
+        self.assertRegex(W.PACKAGE, re.compile(r"^workspace-mcp==\d+\.\d+\.\d+$"))
+
+    def test_consent_asks_for_workspace_scopes_only_when_asked_to(self):
+        self.assertEqual(GS._consent_scopes(), (GS.SCOPE, GS.CALENDAR_SCOPE))
+        scopes = GS._consent_scopes(workspace=True)
         self.assertEqual(scopes[:2], (GS.SCOPE, GS.CALENDAR_SCOPE))
         self.assertIn(W.FULL_SCOPE, scopes)
         self.assertTrue(all("readonly" in s for s in scopes))
+
+    def test_workspace_consent_lists_switched_on_accounts_still_lacking_the_scopes(self):
+        self.account(ME, True)
+        self.account(GUEST, False)
+        self.assertEqual(GS._workspace_consent(), [ME])
+        self.accounts[ME]["scopes"].append(W.FULL_SCOPE)
+        self.assertEqual(GS._workspace_consent(), [])
 
     def test_full_scopes_reported_from_file_or_sign_in(self):
         self.account(ME, True)

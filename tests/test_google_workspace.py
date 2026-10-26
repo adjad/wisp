@@ -16,6 +16,8 @@ os.environ["WISP_HOME"] = _scratch.name
 
 from service import google_workspace as G
 
+_REAL_WARM = G._warm
+
 
 class _FakeServer:
     running = True
@@ -47,7 +49,7 @@ class GoogleWorkspace(unittest.TestCase):
         self.assertEqual(set(servers), {"notion", "google_workspace"})
         entry = servers["google_workspace"]
         self.assertEqual(entry["command"], "/x/uvx")
-        self.assertEqual(entry["args"], ["workspace-mcp", "--tool-tier", "core"])
+        self.assertEqual(entry["args"], ["--from", "workspace-mcp==2.2.0", "workspace-mcp", "--tool-tier", "core"])
         self.assertEqual(entry["env"]["GOOGLE_OAUTH_CLIENT_SECRET"], "sec")
         self.assertEqual(os.stat(self.cfg).st_mode & 0o777, 0o600)
 
@@ -101,6 +103,24 @@ class GoogleWorkspace(unittest.TestCase):
                 G._write_file({"secret": "synthetic"})
         self.assertEqual(self.cfg.read_bytes(), before)
         self.assertFalse(self.cfg.with_suffix(".tmp").exists())
+
+    def test_warm_downloads_the_pinned_server_only(self):
+        calls = []
+
+        class _Proc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        async def fake_exec(*args, **kwargs):
+            calls.append(args)
+            return _Proc()
+        with patch.object(G.asyncio, "create_subprocess_exec", fake_exec), \
+                patch.object(G.manager, "reload", new=AsyncMock()):
+            asyncio.run(_REAL_WARM("/x/uvx"))
+        self.assertEqual(calls, [("/x/uvx", "--from", "workspace-mcp==2.2.0", "workspace-mcp", "--help")])
+        self.assertEqual(G._prepare["state"], "ready")
 
     def test_enable_needs_uv_and_a_client_id(self):
         with patch.object(G, "find_uvx", return_value=""):

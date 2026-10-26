@@ -319,12 +319,13 @@ def set_behavior_enabled(enabled: bool) -> bool:
 def proactive_auto_add_enabled() -> bool:
     """Whether the background Brief may add a missed, time-sensitive event or
     deadline to Calendar/Reminders on its own and report it after
-    (service/proactive/autoadd.py). Default True; ``proactive_auto_add: false``
-    in the user overlay turns it off (the same items become tap-to-add cards).
-    An overlay that exists but cannot be read fails closed: it may hold that false."""
+    (service/proactive/autoadd.py). Default False: the same items arrive as
+    tap-to-add cards. Only an explicit ``proactive_auto_add: true`` in the user
+    overlay is the standing approval to write to Calendar/Reminders unasked.
+    An overlay that exists but cannot be read fails closed."""
     if not user_overlay_valid():
         return False
-    return models_config().get("proactive_auto_add") is not False
+    return models_config().get("proactive_auto_add") is True
 
 
 def set_proactive_auto_add(enabled: bool) -> bool:

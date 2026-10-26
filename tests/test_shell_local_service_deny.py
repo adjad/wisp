@@ -1,0 +1,103 @@
+"""run_shell / run_applescript may not reach Wisp's own service.
+
+The human-only send routes (email_reply, send_message_draft, card fire,
+done/clear) used to be matched against the raw command text, so a
+percent-encoded path or one built from a shell variable got past the deny
+while uvicorn decoded the path and served it. The text is now percent-decoded
+until stable and lowercased first, and any command that names the service port
+on a loopback host is refused outright. Both hold under full access with the
+floor lifted. Pure policy checks: nothing is run, nothing is contacted.
+"""
+import pytest
+
+from service.safety import policy
+
+
+@pytest.fixture
+def full_access(monkeypatch):
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_KEEP_FLOOR", False)       # not liftable by full access
+
+
+def tier(tool, text):
+    args = {"script": text} if tool == "run_applescript" else {"cmd": text}
+    return policy.decide("shell", args, tool=tool).tier
+
+
+SEND = "curl -X POST -H 'Content-Type: application/json' -d '{}' "
+
+
+@pytest.mark.parametrize("cmd", [
+    SEND + "http://127.0.0.1:8765/assistant/email_reply/send",                  # plain
+    SEND + "http://127.0.0.1:8765/assistant/%65mail_reply/send",                # percent-encoded
+    SEND + "http://127.0.0.1:8765/assistant/%2565mail_reply/send",              # double-encoded
+    SEND + "http://127.0.0.1:8765/assistant/%252565mail_reply/send",            # triple-encoded
+    SEND + "http://127.0.0.1:8765/%61ssistant/send_message_draft",
+    SEND + "http://127.0.0.1:8765/assistant/proactive/cards/card:abc/%66ire",
+    "CURL -X POST HTTP://LocalHost:8765/Assistant/Email_Reply/Send -d '{}'",    # mixed case
+    "u=email_reply; curl -X POST http://127.0.0.1:8765/assistant/$u/send -d '{}'",   # variable-built
+    "u=send_message_draft; curl -X POST \"http://localhost:8765/assistant/${u}\" -d x",
+])
+def test_send_routes_are_denied_however_the_path_is_spelled(cmd, full_access):
+    assert tier("run_shell", cmd) is policy.Tier.DENY
+
+
+@pytest.mark.parametrize("cmd", [
+    "curl http://wisp.example/assistant/%65mail_reply/send",
+    "curl http://wisp.example/assistant/%2565mail_reply/send",
+    "curl http://wisp.example/ASSISTANT/EMAIL_REPLY/send",
+    "curl http://wisp.example/assistant/needs_you/r:1/%64one",
+])
+def test_the_send_deny_reads_the_decoded_lowercased_path(cmd):
+    assert policy.local_send_endpoint_hit(cmd)
+
+
+@pytest.mark.parametrize("host", [
+    "127.0.0.1:8765", "localhost:8765", "[::1]:8765", "0.0.0.0:8765",
+    "LOCALHOST:8765", "[0:0:0:0:0:0:0:1]:8765", "127.1:8765", "0:8765",
+    "127.0.0.1%3A8765", "localhost%253a8765", "wisp.localhost:8765", "[::ffff:127.0.0.1]:8765",
+])
+def test_any_command_aimed_at_the_service_port_is_denied(host, full_access):
+    cmd = f"curl -s http://{host}/assistant/today"
+    assert policy.local_send_endpoint_hit(cmd) is None
+    assert policy.local_service_hit(cmd)
+    assert tier("run_shell", cmd) is policy.Tier.DENY
+
+
+@pytest.mark.parametrize("cmd", [
+    "u=email_reply; p=send; curl -X POST http://127.0.0.1:8765/assistant/$u/$p -d '{}'",
+    "curl http://'local''host':87'65'/assistant/today",
+    "curl http://local\\host:87\\65/assistant/today",
+    "printf 'POST /assistant/x HTTP/1.0\\r\\n\\r\\n' | nc localhost 8765",
+    "python3 -c \"import socket; socket.create_connection(('127.0.0.1', 8765))\"",
+])
+def test_built_or_quoted_commands_still_name_the_port(cmd, full_access):
+    assert policy.local_service_hit(cmd)
+    assert tier("run_shell", cmd) is policy.Tier.DENY
+
+
+@pytest.mark.parametrize("script", [
+    'do shell script "u=email_reply; curl -X POST http://localhost:8765/assistant/$u/send"',
+    'do shell script "curl http://127.0.0.1:" & "8765/assistant/%65mail_reply/send"',
+    'do shell script "curl -s http://[::1]:8765/assistant/today"',
+])
+def test_applescript_is_held_to_the_same_rule(script, full_access):
+    assert tier("run_applescript", script) is policy.Tier.DENY
+
+
+@pytest.mark.parametrize("cmd", [
+    "curl -s https://api.github.com/repos/example/example",
+    "curl -s http://127.0.0.1:8000/v1/models",
+    "curl -s http://example.com:8765/status",
+    "curl -s http://192.168.1.20:8765/",
+    "curl -s http://localhost:87650/",
+    "lsof -nP -iTCP:8765 -sTCP:LISTEN",
+    "seq 0 8765 | tail -1",
+    "date +%Y-%m-%d",
+    "printf '%20s|' hi",
+    "ls ~/Desktop",
+])
+def test_unrelated_shell_use_is_untouched(cmd, full_access):
+    assert policy.local_send_endpoint_hit(cmd) is None
+    assert policy.local_service_hit(cmd) is None
+    assert tier("run_shell", cmd) is policy.Tier.ALLOW

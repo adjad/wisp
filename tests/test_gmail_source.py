@@ -2513,7 +2513,7 @@ class GoogleConnectAndErase(unittest.TestCase):
 
     # --- consent scopes -----------------------------------------------------
 
-    def test_consent_asks_for_gmail_and_calendar_read_only(self):
+    def consent_query(self):
         from urllib.parse import parse_qs, urlparse
         from unittest.mock import MagicMock
         server = MagicMock()
@@ -2523,12 +2523,34 @@ class GoogleConnectAndErase(unittest.TestCase):
                 return await G.begin_authorization("synthetic", timeout=0.05)
         url = asyncio.run(run())
         self.assertIn("redirect_uri=http%3A%2F%2F127.0.0.1%3A50123", url)
-        scopes = parse_qs(urlparse(url).query)["scope"][0].split()
-        from service import google_workspace
-        # Gmail and Calendar, plus the read-only Workspace scopes the Workspace
-        # tools use for this account: still nothing that can write.
-        self.assertEqual(set(scopes), {G.SCOPE, G.CALENDAR_SCOPE, *google_workspace.WORKSPACE_SCOPES})
+        return parse_qs(urlparse(url).query)
+
+    def test_consent_asks_for_gmail_and_calendar_read_only(self):
+        query = self.consent_query()
+        # A first sign-in (and any sign-in while no account has Workspace tools
+        # switched on) asks for mail and calendar, read-only, and nothing else.
+        self.assertEqual(query["scope"][0].split(), [G.SCOPE, G.CALENDAR_SCOPE])
+        self.assertNotIn("login_hint", query)
+
+    def test_workspace_scopes_are_asked_only_after_the_user_switches_them_on(self):
+        self.assertEqual(G.status()["workspace_consent"], [])
+        result = G.set_workspace(ME, True)
+        # Google grants the scopes only at a sign-in, so the switch says to reconnect.
+        self.assertTrue(result["ok"] and result["reconnect"])
+        self.assertEqual(G.status()["workspace_consent"], [ME])
+        query = self.consent_query()
+        scopes = query["scope"][0].split()
+        self.assertEqual(set(scopes), {G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES})
         self.assertTrue(all(scope.endswith(".readonly") for scope in scopes))
+        self.assertEqual(query["login_hint"], [ME])
+        # Once that sign-in granted them, the next one is narrow again.
+        cfg = G.load_config()
+        cfg["accounts"][ME]["scopes"] = [G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES]
+        G._save_config(cfg)
+        self.W.credentials_path(ME).unlink(missing_ok=True)
+        self.assertEqual(G.status()["workspace_consent"], [])
+        self.assertEqual(self.consent_query()["scope"][0].split(), [G.SCOPE, G.CALENDAR_SCOPE])
+        self.assertEqual(G.set_workspace(ME, True), {"ok": True})
 
     def finish(self, granted):
         token = {"refresh_token": "new-refresh", "access_token": "fake", "scope": " ".join(granted)}
@@ -2552,8 +2574,15 @@ class GoogleConnectAndErase(unittest.TestCase):
         self.assertEqual(G._authorization["phase"], "reading")
         self.assertEqual(G._authorization["phase_email"], email)
 
-    def test_new_sign_in_switches_on_workspace_tools_and_erase_removes_them(self):
-        email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE, self.W.FULL_SCOPE])
+    def test_new_sign_in_leaves_workspace_tools_off_and_erase_removes_them(self):
+        email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE])
+        # Off for a new account: its refresh token is not copied for the server.
+        self.assertFalse(G.connected_accounts()[email]["workspace"])
+        self.assertFalse(self.W.credentials_path(email).exists())
+        self.assertEqual(self.W.enabled_accounts(), [])
+        # The user switches them on, then reconnects to grant the scopes.
+        self.assertTrue(G.set_workspace(email, True)["reconnect"])
+        self.finish([G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES])
         self.assertTrue(G.connected_accounts()[email]["workspace"])
         creds = json.loads(self.W.credentials_path(email).read_text())
         self.assertEqual(creds["refresh_token"], "new-refresh")
