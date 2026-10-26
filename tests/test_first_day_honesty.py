@@ -180,6 +180,18 @@ def test_plan_all_day_is_stored_only_when_chosen():
         validate_preferences(DAY, ZONE, **PREF, plan_all_day="yes")
 
 
+def test_a_preference_key_from_a_newer_build_is_ignored_on_read():
+    """Rollback safety: a stored payload carrying a key this build doesn't know
+    still plans (the way builds before plan_all_day crashed on it)."""
+    p = plan(preferences=PREF | dict(focus_mode="deep", plan_all_day=False))
+    assert p["preferences"] == PREF and any(b.get("task_id") == "t1" for b in p["blocks"])
+    # A wrongly typed known key is still refused, and writes stay strict.
+    with pytest.raises(ValueError):
+        plan(preferences=PREF | dict(start_minute="9"))
+    with pytest.raises(TypeError):
+        validate_preferences(DAY, ZONE, **PREF, focus_mode="deep")
+
+
 def test_after_working_hours_says_so_instead_of_a_zero_minute_gap():
     p = plan(now=at(19))
     [held] = p["unscheduled"]
@@ -258,7 +270,27 @@ def test_the_proactive_brief_never_says_nothing_on_an_unread_calendar():
     assert out["lede"] == cycle.CALENDAR_UNREAD_SENTENCE
     assert out["summary"].startswith(cycle.CALENDAR_UNREAD_SENTENCE)
     same = cycle.honest({"summary": cycle.NO_EVENTS_SENTENCE}, [dict(source="calendar", ready=True)])
-    assert same["summary"] == cycle.NO_EVENTS_SENTENCE and same["unread"] == []
+    assert same["summary"] == cycle.NO_EVENTS_SENTENCE and same["unread"] == [] and same["mail_read_by"] == []
+
+
+def test_mail_counts_as_read_only_through_a_connected_fresh_google_account(monkeypatch):
+    from service import gmail_source
+    from service.proactive import cycle
+    coverage = [dict(source="email", ready=False), dict(source="messages", ready=False)]
+    assert cycle.honest({}, coverage)["unread"] == ["email", "messages"]
+    read = cycle.honest({}, coverage, ["ada@gmail.com"])
+    assert read["unread"] == ["messages"] and read["mail_read_by"] == ["ada@gmail.com"]
+    rows = [dict(email="ok@gmail.com", state="connected", fresh=True),
+            dict(email="stale@gmail.com", state="connected", fresh=False),
+            dict(email="expired@gmail.com", state="expired", fresh=True),
+            dict(email="failing@gmail.com", state="attention", fresh=True),
+            dict(email="old@gmail.com", state="needs_reconnect", fresh=True)]
+    monkeypatch.setattr(gmail_source, "status", lambda: {"accounts": rows})
+    assert cycle.google_mail_read() == ["ok@gmail.com"]
+    def broken():
+        raise RuntimeError("config unreadable")
+    monkeypatch.setattr(gmail_source, "status", broken)
+    assert cycle.google_mail_read() == [], "unknown Google status is never a read"
 
 
 # --- The evening check-in on day one --------------------------------------------------
@@ -269,19 +301,28 @@ def checkin_state(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "STATE_PATH", tmp_path / "checkins.json")
 
 
-def test_check_in_skips_all_day_and_read_only_events(store, checkin_state):
+def test_check_in_skips_read_only_events_and_marker_all_day_ones(store, checkin_state):
     tomorrow = "2026-09-25"
     lo, hi = day_bounds(tomorrow, ZONE)
     store.sync_source("calendar", [
         dict(id="bday", source_id="bday", source="calendar", title="Sam's birthday", kind="event",
-             when_ts=lo, end_ts=hi, all_day=True, calendar_writable=True),
+             when_ts=lo, end_ts=hi, all_day=True, calendar_writable=True, context="Birthdays"),
+        # The person's own all-day event can still be cancelled: it stays.
+        dict(id="off", source_id="off", source="calendar", title="Day off", kind="event",
+             when_ts=lo, end_ts=hi, all_day=True, calendar_writable=True, context="Home"),
+        dict(id="holiday", source_id="holiday", source="calendar", title="Columbus Day", kind="event",
+             when_ts=lo, end_ts=hi, all_day=True, context="US Holidays"),
+        dict(id="course", source_id="course", source="calendar", title="Week 4", kind="event",
+             when_ts=lo, end_ts=hi, all_day=True, calendar_writable=False, context="STAT 5"),
         dict(id="lecture", source_id="lecture", source="calendar", title="STAT 5 lecture", kind="event",
              when_ts=at(10, day=25), end_ts=at(11, day=25), all_day=False, calendar_writable=False),
         dict(id="gym", source_id="gym", source="calendar", title="Gym", kind="event",
              when_ts=at(17, day=25), end_ts=at(18, day=25), all_day=False, calendar_writable=True),
     ])
     card = C.build(store, DAY, ZONE, now=at(18))
-    assert [e["title"] for e in card["tomorrow"]["events"]] == ["Gym"]
+    assert [e["title"] for e in card["tomorrow"]["events"]] == ["Day off", "Gym"]
+    assert C.askable_event(dict(all_day=True, calendar="Birthdays")) is False
+    assert C.askable_event(dict(all_day=True, calendar="Personal", calendar_writable=None)) is True
 
 
 def test_the_first_check_in_says_what_it_is_for_once(store, checkin_state):
@@ -310,6 +351,58 @@ class _Unreachable:
     async def chat(self, model, messages, **kwargs):
         from service.inference.inference_errors import EngineGuardUnavailableError
         raise EngineGuardUnavailableError()
+
+
+def _hung(kind):
+    import httpx
+    return {"connect": httpx.ConnectError("refused"), "read": httpx.ReadTimeout("hung"),
+            "connect_timeout": httpx.ConnectTimeout("hung"), "pool": httpx.PoolTimeout("busy")}[kind]
+
+
+class _Raising:
+    def __init__(self, error):
+        self.error = error
+        self.calls = 0
+
+    async def loaded_models(self):
+        return ["fast"]
+
+    def keep_warm(self):
+        return set()
+
+    async def chat(self, model, messages, **kwargs):
+        self.calls += 1
+        raise self.error
+
+
+@pytest.mark.parametrize("kind", ["connect", "read", "connect_timeout", "pool"])
+def test_a_hung_or_gone_engine_leaves_the_attempts_alone_and_retries(monkeypatch, tmp_path, kind):
+    """refresh(): an engine that is gone or hung is a stand-down. No attempt is
+    spent (a job has only _MAX_ATTEMPTS) and the next tick is scheduled."""
+    import service.config as config
+    from service.assistant import brief
+    from service.assistant import mail_gists as G
+    from pathlib import Path
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast")
+    monkeypatch.setattr(config, "no_thinking_capable", lambda: ["fast"])
+    monkeypatch.setattr(config, "thinks_explicitly", lambda name: False)
+    monkeypatch.setattr(G, "_PATH", Path(tmp_path) / "cache" / "mail_gists.json")
+    monkeypatch.setattr(G, "_cache", None)
+    monkeypatch.setattr(G, "_next_call_at", 0.0)
+    monkeypatch.setattr(G, "_attempts", {})
+    monkeypatch.setattr(G, "_retry_at", {})
+    monkeypatch.setattr(G, "_last_standdown", "")
+    when = 1_790_000_000.0
+    monkeypatch.setattr(G, "recent_mail", lambda now: [dict(id="m1", subject="Tech Week starts today", sender="Ann",
+                                                            sender_address="ann@example.com", ts=when - 60)])
+    monkeypatch.setattr(G, "recent_texts", lambda now: [])
+    monkeypatch.setattr(G, "summary_lines", lambda rows: [])
+    client = _Raising(_hung(kind))
+    monkeypatch.setattr(brief, "_c", lambda: client)
+    assert asyncio.run(G.refresh(when, abort=lambda: False)) is False
+    assert client.calls == 1, "the call was made and failed, not skipped"
+    assert G._attempts == {} and G._retry_at == {}
+    assert G._next_call_at == when + G._IDLE_GAP_S
 
 
 @pytest.mark.parametrize("step", ["loaded", "chat"])

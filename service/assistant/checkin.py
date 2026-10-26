@@ -207,7 +207,8 @@ def _event_rows(store, day: str, timezone: str) -> list[dict]:
             continue
         row = {"id": event.get("id"), "title": event.get("title") or "Untitled event",
                "when_ts": event.get("when_ts"), "end_ts": event.get("end_ts"),
-               "all_day": bool(event.get("all_day")), "source_id": event.get("source_id")}
+               "all_day": bool(event.get("all_day")), "source_id": event.get("source_id"),
+               "calendar": str(event.get("context") or event.get("calendar") or event.get("calendar_name") or "")}
         row.update(occurrence_fields(store, row["source_id"], row["when_ts"]))
         rows.append(row)
     rows.sort(key=lambda r: (r["when_ts"] is None, r["when_ts"] or 0))
@@ -245,11 +246,16 @@ def build(store, day: str, timezone: str, *, now: float, profile: dict | None = 
 
 
 def askable_event(event: dict) -> bool:
-    """Whether the check-in asks about one of tomorrow's events. An all-day
-    event (a birthday, a holiday, a course marker) has no time to move, and a
-    read-only calendar's event can't be changed from this Mac, so neither is
-    something to answer tonight, nor counted in the evening notification."""
-    return not event.get("all_day") and event.get("calendar_writable") is not False
+    """Whether the check-in asks about one of tomorrow's events. A read-only
+    calendar's event can't be changed from this Mac, so it is never asked
+    about, nor counted in the evening notification. An all-day event is asked
+    about only on a calendar the person can write to and that isn't a holiday
+    or birthday calendar: their own "Day off" can still be cancelled, a
+    contact's birthday or a public holiday has nothing to answer."""
+    from service.assistant.today import marker_calendar
+    if event.get("calendar_writable") is False:
+        return False
+    return not (event.get("all_day") and marker_calendar(event))
 
 
 def first_checkin(day: str) -> bool:

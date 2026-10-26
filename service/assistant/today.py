@@ -46,6 +46,19 @@ def wall_time(day, timezone, minute):
     return candidates.pop()
 
 
+# Every key validate_preferences knows. A stored payload is read through this
+# set (stored_preferences): a key written by a newer build (as plan_all_day was
+# to builds before it) is ignored on read, so rolling back never breaks the
+# plan. Writes stay strict: the API model forbids unknown fields.
+PREFERENCE_KEYS = frozenset({"start_minute", "end_minute", "not_before", "plan_all_day"})
+
+
+def stored_preferences(day, timezone, stored) -> dict:
+    """Validate preferences read back from the store, ignoring unknown keys."""
+    stored = stored if isinstance(stored, dict) else {}
+    return validate_preferences(day, timezone, **{k: v for k, v in stored.items() if k in PREFERENCE_KEYS})
+
+
 def validate_preferences(day, timezone, start_minute=540, end_minute=1080, not_before=None,
                          plan_all_day=False):
     """``plan_all_day``: the person chose to plan this day although an all-day
@@ -257,7 +270,7 @@ def with_access(sources: dict, live: dict, *, now: float, started_at: float) -> 
 
 def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
     lo, hi = day_bounds(day, timezone)
-    preferences = validate_preferences(day, timezone, **preferences)
+    preferences = stored_preferences(day, timezone, preferences)
     start = wall_time(day, timezone, preferences["start_minute"])
     end = wall_time(day, timezone, preferences["end_minute"])
     earliest = max(start, math.ceil(now / 60) * 60, preferences.get("not_before") or start)

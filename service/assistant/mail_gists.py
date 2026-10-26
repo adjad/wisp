@@ -517,11 +517,15 @@ def _thinking_off(model: str) -> bool:
 
 def _unreachable_errors() -> tuple[type[BaseException], ...]:
     """Errors that mean the engine couldn't answer at all (not running,
-    restarting, refusing to load the model): a background call stands down."""
+    restarting, hung, refusing to load the model): a background call stands
+    down. Wisp's own reply deadline (_TIMEOUT_S) is not one: a reply that
+    started and ran too long is judged a failed attempt for that input."""
     errors: list[type[BaseException]] = []
     try:
         import httpx
-        errors += [httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError]
+        # TimeoutException covers connect, read, write and pool timeouts: a hung
+        # engine stands down rather than spending one of the job's attempts.
+        errors += [httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, httpx.TimeoutException]
     except ImportError:  # pragma: no cover
         pass
     try:
