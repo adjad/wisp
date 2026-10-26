@@ -693,7 +693,7 @@ enum BriefTiles {
 
     /// The Top 3's line when it lists nothing: an all-clear only once every
     /// source behind it has been read, else which ones Wisp can't see.
-    static func emptyTop(unread: [String], uncheckedMail: [String] = []) -> String {
+    static func emptyTop(unread: [String], uncheckedMail: UncheckedMail = UncheckedMail()) -> String {
         unread.isEmpty ? "Nothing needs you right now" : SourceAccess.cantSee(unread, uncheckedMail: uncheckedMail)
     }
 

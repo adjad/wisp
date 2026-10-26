@@ -1191,31 +1191,37 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     return result
 
 
-def google_mail_status(now: float | None = None) -> tuple[list[str], list[str]]:
-    """(read, unread): the connected Google accounts whose mail Wisp read
-    recently, and the ones it couldn't check.
+def google_mail_status(now: float | None = None) -> tuple[list[str], list[str], dict[str, str]]:
+    """(read, unread, reasons): the connected Google accounts whose mail Wisp
+    read recently, the ones it couldn't check, and why for each of those.
 
     Read: the sign-in has not expired, the last mail sync is verified and
     error-free (no Gmail error recorded either), and its receipt is at most
     _EXTERNAL_MAX_AGE (300 s) old. Only the mail matters: a calendar error or
     missing optional Workspace scopes never make a fresh Gmail sync unread.
 
-    Unread: every other connected account, unless a fresh Mail.app read covers
-    it (the account is also in Mail and Mail.app's headers were read within the
-    same 300 s); then Mail.app's read stands for it.
+    Unread: every other connected account, unless Mail.app's current, fresh
+    header snapshot holds parsed header rows for that same account
+    (_mail_app_read_accounts); then Mail.app's read stands for it.
 
-    Narrow on purpose, since every Today snapshot asks: it reads the Google
-    config file and in-memory sync receipts. It never takes the history guard
-    or calls gmail_source.status(); Mail.app's accounts are listed only when an
-    account is left unchecked. If the config can't be read, there is no
-    account to vouch for: ([], [])."""
+    Reasons: "reconnect" when the person has to act (an expired sign-in, a
+    sign-in without mail access, or one that needs reconnecting), else
+    "syncing" (a receipt restored at launch and not yet verified, or a sync
+    older than 300 s): Wisp hasn't finished checking it yet. Either way it is
+    never an all-clear.
+
+    Every Today snapshot asks, so it reads the Google config file and in-memory
+    sync receipts, and parses Mail.app's header snapshot at most once, only
+    when an account is left unchecked. It never takes the history guard or
+    calls gmail_source.status(). If the config can't be read, there is no
+    account to vouch for: ([], [], {})."""
     try:
         from service import gmail_source
         from service.tools import email_tools as mail
         cfg = json.loads(gmail_source.CONFIG_PATH.read_text(encoding="utf-8"))
         accounts = gmail_source.connected_accounts(cfg if isinstance(cfg, dict) else {})
     except Exception:  # noqa: BLE001 — status unknown: nothing counts as read
-        return [], []
+        return [], [], {}
     now = time.time() if now is None else now
     read, unchecked = [], []
     for email, item in accounts.items():
@@ -1225,25 +1231,77 @@ def google_mail_status(now: float | None = None) -> tuple[list[str], list[str]]:
                      and 0 <= now - stamp <= mail._EXTERNAL_MAX_AGE)
         ok = fresh and not item.get("auth_expired") and not gmail_source._errors.get(email)
         (read if ok else unchecked).append(email)
-    unread = [email for email in unchecked if not _mail_app_covers(email, now)]
-    return sorted(read), sorted(unread)
+    unread = []
+    if unchecked:
+        held = _mail_app_read_accounts(now)    # once per call, never per account
+        for email in unchecked:
+            item = mail._external_accounts.get(email) or {}
+            if not any(mail._covered_source(label, native_id, email, item) for label, native_id in held):
+                unread.append(email)
+    reasons = {email: _unread_reason(email, accounts[email], gmail_source._errors.get(email, ""),
+                                     (mail._external_accounts.get(email) or {}).get("headers_error", ""))
+               for email in unread}
+    return sorted(read), sorted(unread), reasons
 
 
-def _mail_app_covers(email: str, now: float) -> bool:
-    """Mail.app read its headers within the last 300 s and one of its accounts
-    is this Google address (email_tools._covered_source, the same matching the
-    mail tools use)."""
+def _unread_reason(email: str, item: dict, error: str, headers_error: str) -> str:
+    """"reconnect" only when the person must act on the sign-in; else "syncing"."""
+    if item.get("auth_expired"):
+        return "reconnect"
+    if not item.get("workspace") or not item.get("workspace_requested"):
+        # Settings' needs_reconnect (gmail_source.account_state), read only for
+        # an account already left unchecked.
+        try:
+            from service import google_workspace
+            full = google_workspace.has_full_scopes(email, item)
+        except Exception:  # noqa: BLE001
+            full = False
+        if not item.get("workspace") or not full:
+            return "reconnect"
+    low = f"{error} {headers_error}".lower()
+    if "read access is missing" in low or "wasn't granted" in low or "invalid_grant" in low:
+        return "reconnect"
+    return "syncing"
+
+
+def _mail_app_read_accounts(now: float) -> set[tuple[str, str]]:
+    """(label, native id) of every Mail account whose mail Mail.app actually
+    read: parsed H2 header rows in its current snapshot, read within 300 s.
+    An account named by a failed or interrupted scan (C3) or one whose every
+    header was skipped (C2) is left out, and configured-only inventory rows
+    never count: listing an account is not reading it."""
     try:
         from service.tools import email_tools as mail
         native_at = mail._source_receipt(mail._native_headers_at)
         if not (mail._email_available is True and mail._email_read_source == "mail_app" and native_at
                 and 0 <= now - native_at <= mail._EXTERNAL_MAX_AGE):
-            return False
-        item = mail._external_accounts.get(email) or {}
-        return any(mail._covered_source(str(row.get("name") or ""), str(row.get("id") or ""), email, item)
-                   for row in mail.native_email_accounts())
+            return set()
+        text = mail._swift_headers
+        lines = text.split("\n")
+        rows = mail._parse_header_records("\n".join(line for line in lines if line.startswith("H2\x01")))
+        excluded = set()
+        for line in lines:
+            parts = line.rstrip("\r").split("\x01")
+            if len(parts) == 4 and parts[0] == "C3":
+                excluded.add((parts[1], parts[2]))
+            elif len(parts) == 6 and parts[0] == "C2":
+                try:
+                    attempted, skipped = int(parts[3]), int(parts[4])
+                except ValueError:
+                    continue
+                if attempted > 0 and skipped >= attempted:
+                    excluded.add((parts[1], parts[2]))
+        bad_ids = {native_id for _, native_id in excluded if native_id}
+        bad_labels = {label.casefold() for label, native_id in excluded if not native_id}
+        held = set()
+        for row in rows:
+            label, native_id = str(row.get("account") or ""), str(row.get("account_id") or "")
+            if (native_id and native_id in bad_ids) or label.casefold() in bad_labels:
+                continue
+            held.add((label, native_id))
+        return held
     except Exception:  # noqa: BLE001 — unknown coverage is not a read
-        return False
+        return set()
 
 
 def google_mail_read(now: float | None = None) -> list[str]:
@@ -1251,7 +1309,7 @@ def google_mail_read(now: float | None = None) -> list[str]:
     return google_mail_status(now)[0]
 
 
-def honest(view: dict, coverage, google_mail=(), google_unread=()) -> dict:
+def honest(view: dict, coverage, google_mail=(), google_unread=(), unread_reasons=None) -> dict:
     """The Brief's view without an all-clear about a source Wisp couldn't read.
 
     ``coverage`` is the workspace's source_coverage. Each source that isn't
@@ -1264,7 +1322,9 @@ def honest(view: dict, coverage, google_mail=(), google_unread=()) -> dict:
     coverage row is ready or a Google account read it (``google_mail``). With
     one account unchecked, mail is partly read: it stays in ``unread`` and the
     app names the account. Both lists are echoed (``mail_read_by``,
-    ``mail_unread_by``) so the app applies the same rule."""
+    ``mail_unread_by``) so the app applies the same rule, with
+    ``mail_unread_reasons`` ({address: "reconnect" | "syncing"}) so it says
+    "reconnect" only when the person has to."""
     google_mail = sorted(str(a) for a in google_mail or () if a)
     google_unread = sorted(str(a) for a in google_unread or () if a)
     unread = []
@@ -1281,6 +1341,9 @@ def honest(view: dict, coverage, google_mail=(), google_unread=()) -> dict:
     view["unread"] = unread
     view["mail_read_by"] = google_mail
     view["mail_unread_by"] = google_unread
+    reasons = unread_reasons if isinstance(unread_reasons, dict) else {}
+    view["mail_unread_reasons"] = {a: ("reconnect" if reasons.get(a) == "reconnect" else "syncing")
+                                   for a in google_unread}
     if "calendar" in unread:
         for key in ("summary", "lede"):
             if isinstance(view.get(key), str):

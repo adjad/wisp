@@ -145,7 +145,7 @@ struct TodayPlan: Decodable {
         if let row = workspace?.source_coverage.first(where: { $0.source == source }) {
             // Mail by the one rule the proactive section uses too
             // (SourceAccess.mail), so the top line, the tile and it agree.
-            return source == "email" ? SourceAccess.mail(row.access, readBy: mailReadBy, unreadBy: mailUnreadBy)
+            return source == "email" ? SourceAccess.mail(row.access, readBy: mailReadBy, unchecked: uncheckedMail)
                 : row.access
         }
         if Self.workspaceOnly.contains(source) { return SourceAccess(source: source, ready: false, state: "unavailable") }
@@ -166,6 +166,7 @@ struct TodayPlan: Decodable {
     /// Google accounts whose mail Wisp read, and ones it couldn't check.
     var mailReadBy: [String] { workspace?.proactive?.mailReadBy ?? [] }
     var mailUnreadBy: [String] { workspace?.proactive?.mailUnreadBy ?? [] }
+    var uncheckedMail: UncheckedMail { workspace?.proactive?.uncheckedMail ?? UncheckedMail() }
 
     /// Sources the plan's own health never reports.
     static let workspaceOnly: Set<String> = ["email", "messages"]

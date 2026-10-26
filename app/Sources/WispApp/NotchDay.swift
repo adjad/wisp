@@ -679,7 +679,7 @@ struct DayTimeline: Equatable {
     static func lede(weekday: String, isToday: Bool, load: DayLoad.Verdict?, dueToday: [String], overdue: [String],
                      next: (title: String, time: String)?, othersNeedYou: Bool = false,
                      openingOverride: String? = nil, dueReference: String? = nil,
-                     unread: [String] = [], uncheckedMail: [String] = []) -> String {
+                     unread: [String] = [], uncheckedMail: UncheckedMail = UncheckedMail()) -> String {
         var parts: [String] = []
         let due = dueToday.filter { !isJunk($0) }
         let late = overdue.filter { !isJunk($0) }
@@ -1113,7 +1113,7 @@ struct SourceAccess: Equatable {
     var reason: String = ""
 
     /// Connected Google accounts Wisp couldn't check (blocked "google_mail").
-    var uncheckedAccounts: [String] = []
+    var unchecked = UncheckedMail()
 
     var readable: Bool { state == .ready }
 
@@ -1149,33 +1149,23 @@ struct SourceAccess: Equatable {
     /// and either Mail.app's row is ready or a Google account read it
     /// (`readBy`, mail_read_by). One account unchecked: partly read, so not
     /// readable, and its headline names the account.
-    static func mail(_ row: SourceAccess, readBy: [String], unreadBy: [String]) -> SourceAccess {
-        if !unreadBy.isEmpty {
+    static func mail(_ row: SourceAccess, readBy: [String], unchecked: UncheckedMail) -> SourceAccess {
+        if !unchecked.isEmpty {
             var partly = SourceAccess(source: "email", ready: false, state: "unavailable", blocked: "google_mail",
-                                      reason: "Reconnect \(unreadBy.count == 1 ? "it" : "them") in Wisp's Settings > Google so Wisp can read that mail.")
-            partly.uncheckedAccounts = unreadBy
+                                      reason: unchecked.detail)
+            partly.unchecked = unchecked
             return partly
         }
         if !row.readable && !readBy.isEmpty { return SourceAccess(source: "email", ready: true) }
         return row
     }
 
-    /// "work@gmail.com", "a@x.com and b@y.com", "a, b and c".
-    static func accountList(_ accounts: [String]) -> String {
-        switch accounts.count {
-        case 0: return "an account"
-        case 1: return accounts[0]
-        case 2: return accounts[0] + " and " + accounts[1]
-        default: return accounts.dropLast().joined(separator: ", ") + " and " + accounts[accounts.count - 1]
-        }
-    }
-
     /// The top line for unread sources, naming Google accounts Wisp couldn't
     /// check when mail is only partly read.
-    static func cantSee(_ sources: [String], uncheckedMail: [String]) -> String {
+    static func cantSee(_ sources: [String], uncheckedMail: UncheckedMail) -> String {
         guard !uncheckedMail.isEmpty, sources.contains("email") else { return cantSee(sources) }
         let others = cantSee(sources.filter { $0 != "email" })
-        return (others.isEmpty ? "" : others + " ") + "Wisp couldn't check \(accountList(uncheckedMail)). Reconnect in Settings."
+        return (others.isEmpty ? "" : others + " ") + uncheckedMail.sentence
     }
 
     /// The short line a row shows.
@@ -1188,7 +1178,7 @@ struct SourceAccess: Equatable {
             case "mail_not_configured", "no_accounts": return "No Mail accounts on this Mac"
             case "mail_closed": return "Wisp reads Mail while Mail is open"
             case "notes_closed": return "Wisp reads Notes while Notes is open"
-            case "google_mail": return "Couldn't check " + Self.accountList(uncheckedAccounts)
+            case "google_mail": return unchecked.headline
             case .some: return "Wisp can't see your \(noun) yet"
             case .none: return "Wisp couldn't read your \(noun) just now"
             }
@@ -1244,6 +1234,58 @@ struct SourceAccess: Equatable {
         default: joined = nouns.dropLast().joined(separator: ", ") + " and " + nouns[nouns.count - 1]
         }
         return "Wisp can't see your \(joined) yet."
+    }
+}
+
+/// Connected Google accounts whose mail Wisp couldn't check, by why
+/// (the service's mail_unread_by and mail_unread_reasons). "reconnect" only
+/// when the person has to act on the sign-in; anything else is a check Wisp
+/// hasn't finished (a sync restored at launch, or one running late). Either
+/// way mail is only partly read, never an all-clear.
+struct UncheckedMail: Equatable {
+    var reconnect: [String] = []
+    var syncing: [String] = []
+
+    init(reconnect: [String] = [], syncing: [String] = []) {
+        self.reconnect = reconnect
+        self.syncing = syncing
+    }
+
+    init(unreadBy: [String], reasons: [String: String]) {
+        reconnect = unreadBy.filter { reasons[$0] == "reconnect" }
+        syncing = unreadBy.filter { reasons[$0] != "reconnect" }
+    }
+
+    var isEmpty: Bool { reconnect.isEmpty && syncing.isEmpty }
+
+    /// The row's short line.
+    var headline: String {
+        reconnect.isEmpty ? "Wisp hasn't finished checking \(Self.list(syncing)) yet" : "Couldn't check " + Self.list(reconnect)
+    }
+
+    /// The sentence under it.
+    var detail: String {
+        guard !reconnect.isEmpty else { return "Wisp will show that mail once it has checked." }
+        let fix = "Reconnect \(reconnect.count == 1 ? "it" : "them") in Wisp's Settings > Google so Wisp can read that mail."
+        return syncing.isEmpty ? fix : fix + " Wisp hasn't finished checking \(Self.list(syncing)) yet."
+    }
+
+    /// The top line's words for it.
+    var sentence: String {
+        var parts: [String] = []
+        if !reconnect.isEmpty { parts.append("Wisp couldn't check \(Self.list(reconnect)). Reconnect in Settings.") }
+        if !syncing.isEmpty { parts.append("Wisp hasn't finished checking \(Self.list(syncing)) yet.") }
+        return parts.joined(separator: " ")
+    }
+
+    /// "work@gmail.com", "a@x.com and b@y.com", "a, b and c".
+    static func list(_ accounts: [String]) -> String {
+        switch accounts.count {
+        case 0: return "an account"
+        case 1: return accounts[0]
+        case 2: return accounts[0] + " and " + accounts[1]
+        default: return accounts.dropLast().joined(separator: ", ") + " and " + accounts[accounts.count - 1]
+        }
     }
 }
 

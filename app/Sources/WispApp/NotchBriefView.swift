@@ -279,7 +279,7 @@ struct NotchBriefView: View {
 
     /// The default view: the Top 3, then what mail and texts are about.
     private func topList(_ all: [BriefDetail.Line], glance: [BriefDetail.Line], unread: [String] = [],
-                         uncheckedMail: [String] = []) -> some View {
+                         uncheckedMail: UncheckedMail = UncheckedMail()) -> some View {
         // A row the service just confirmed cleared or done leaves at once; the
         // refreshed plan then fills its place.
         let lines = all.filter { line in line.need.map { !needActions.isHidden($0) } ?? true }
@@ -481,7 +481,7 @@ struct BriefContent {
     /// "messages"): the lede and the Top 3 never give an all-clear for them.
     let unread: [String]
     /// Google accounts Wisp couldn't check, named wherever mail is unread.
-    let uncheckedMail: [String]
+    let uncheckedMail: UncheckedMail
 
     init(plan: TodayPlan, today: TodayModel, composed: ComposedBrief?) {
         let now = today.now.timeIntervalSince1970
@@ -515,7 +515,7 @@ struct BriefContent {
         let calendarAccess = calendarKnown ? nil : plan.access("calendar")
         let remindersAccess = plan.access("reminders")
         unread = isToday ? plan.unreadSources.filter { $0 != "calendar" || !calendarKnown } : []
-        uncheckedMail = isToday ? plan.mailUnreadBy : []
+        uncheckedMail = isToday ? plan.uncheckedMail : UncheckedMail()
         // The service's pick from the same attention items as the Day tab's Needs you.
         let needsList = isToday ? plan.workspace?.needs_you.flatMap { picked in
             DayTimeline.needsYouList(picked.items.map { NeedsYouInput(id: $0.id, kind: $0.kind, text: $0.text,

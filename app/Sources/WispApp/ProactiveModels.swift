@@ -41,6 +41,9 @@ struct ProactiveState: Decodable, Equatable {
     /// Connected Google accounts Wisp couldn't check (mail_unread_by): while
     /// any is listed, mail is only partly read and never an all-clear.
     var mailUnreadBy: [String] = []
+    /// Why each of those wasn't checked: "reconnect" or "syncing".
+    var mailUnreadReasons: [String: String] = [:]
+    var uncheckedMail: UncheckedMail { UncheckedMail(unreadBy: mailUnreadBy, reasons: mailUnreadReasons) }
     /// The work behind the cards: what Wisp read, found and drafted.
     var stats: Stats? = nil
 
@@ -72,7 +75,7 @@ struct ProactiveState: Decodable, Equatable {
     func unreadSources(_ coverage: [SourceAccess]) -> [SourceAccess] {
         ["calendar", "reminders", "email", "messages"].compactMap { source in
             guard var access = coverage.first(where: { $0.source == source }) else { return nil }
-            if source == "email" { access = SourceAccess.mail(access, readBy: mailReadBy, unreadBy: mailUnreadBy) }
+            if source == "email" { access = SourceAccess.mail(access, readBy: mailReadBy, unchecked: uncheckedMail) }
             return access.readable ? nil : access
         }
     }
@@ -110,7 +113,7 @@ struct ProactiveState: Decodable, Equatable {
         self.threads = threads
     }
 
-    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats, owner, reason, unread, mail_read_by, mail_unread_by }
+    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats, owner, reason, unread, mail_read_by, mail_unread_by, mail_unread_reasons }
     private enum OwnerKeys: String, CodingKey { case id, label }
     private enum StatsKeys: String, CodingKey { case read, found, drafted, filtered, as_of }
 
@@ -127,6 +130,7 @@ struct ProactiveState: Decodable, Equatable {
         unread = c.lenient(.unread, LossyList<String>.self)?.items.filter { !$0.isEmpty } ?? []
         mailReadBy = c.lenient(.mail_read_by, LossyList<String>.self)?.items.filter { !$0.isEmpty } ?? []
         mailUnreadBy = c.lenient(.mail_unread_by, LossyList<String>.self)?.items.filter { !$0.isEmpty } ?? []
+        mailUnreadReasons = c.lenient(.mail_unread_reasons, [String: String].self) ?? [:]
         if let o = try? c.nestedContainer(keyedBy: OwnerKeys.self, forKey: .owner) {
             ownerID = o.lenientString(.id).flatMap { $0.isEmpty ? nil : $0 } ?? "me"
             ownerLabel = o.lenientString(.label) ?? ""

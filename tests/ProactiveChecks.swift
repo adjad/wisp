@@ -224,8 +224,13 @@ struct ProactiveChecks {
         linked.mailUnreadBy = ["work@gmail.com"]
         let partly = linked.unreadSources(coverage.map { $0.source == "email" ? SourceAccess(source: "email", ready: true) : $0 })
         check(partly.map { $0.source } == ["calendar", "email", "messages"]
-              && partly.first { $0.source == "email" }?.headline == "Couldn't check work@gmail.com",
+              && partly.first { $0.source == "email" }?.headline == "Wisp hasn't finished checking work@gmail.com yet",
               "an unchecked Google account keeps mail unread, by name")
+        linked.mailUnreadReasons = ["work@gmail.com": "reconnect"]
+        check(linked.unreadSources(coverage).first { $0.source == "email" }?.headline == "Couldn't check work@gmail.com",
+              "reconnect only when the service says so")
+        check(decode(#"{"state":"ready","mail_unread_by":["w@x.com"],"mail_unread_reasons":{"w@x.com":"reconnect"}}"#)?
+                .uncheckedMail == UncheckedMail(reconnect: ["w@x.com"]), "mail_unread_reasons decodes")
         check(ProactiveState.attentionEmptyLine(unread: partly) == nil, "no inbox all-clear while an account is unchecked")
         check(ProactiveState.attentionEmptyLine(unread: ownOnly.unreadSources(coverage)) == nil,
               "no \"Nothing in your inbox or texts\" while either is unread")
