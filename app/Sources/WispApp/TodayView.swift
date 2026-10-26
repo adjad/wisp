@@ -155,6 +155,16 @@ struct TodayPlan: Decodable {
         return nil
     }
 
+    /// The mail tile's state, from the same rule as access("email"): when a
+    /// connected Google account read the mail, the tile reads as ready with no
+    /// Mail.app access problem, as the top line says. Nil when the workspace
+    /// says nothing about mail.
+    var mailTile: (ready: Bool, access: SourceAccess?)? {
+        guard let row = workspace?.source_coverage.first(where: { $0.source == "email" }) else { return nil }
+        let access = access("email")
+        return (ready: row.ready || access?.readable == true, access: access)
+    }
+
     /// Sources the plan's own health never reports.
     static let workspaceOnly: Set<String> = ["email", "messages"]
 

@@ -572,12 +572,14 @@ struct BriefContent {
 
         // Mail and Messages: the counts their lists give, and the regular
         // summaries the rows' dropdowns always showed.
-        let mailReady = coverage("email")?.ready == true
+        // Mail as access("email") sees it: read through Google counts as read.
+        let mailTile = plan.mailTile
+        let mailReady = mailTile?.ready == true
         let textsBlocked = coverage("messages")?.blocked == "full_disk_access"
         let textsReady = coverage("messages")?.ready == true && !textsBlocked
         let mailDetail = BriefDetail.mail(needing: mailNeeds, ready: mailReady, summary: summarySection(.mail),
                                           prose: isToday ? plan.workspace?.mail_summary?.text : nil,
-                                          access: coverage("email")?.access)
+                                          access: mailTile?.access)
         let textsDetail = BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
                                             needsAccess: textsBlocked, summary: summarySection(.messages),
                                             access: coverage("messages")?.access,
@@ -604,10 +606,10 @@ struct BriefContent {
         } : nil
         top = BriefTiles.top(picked: needsList?.rows ?? [], todos: todayDetail.lines, next: nextEvent)
         let rows = DayTimeline.briefLines(calendar: nil,
-                                          mail: coverage("email").map { (ready: $0.ready, needing: mailNeeds) },
+                                          mail: mailTile.map { (ready: $0.ready, needing: mailNeeds) },
                                           texts: coverage("messages").map { (ready: $0.ready, needing: textNeeds) },
                                           textsNeedAccess: textsBlocked,
-                                          mailAccess: coverage("email")?.access, textsAccess: coverage("messages")?.access,
+                                          mailAccess: mailTile?.access, textsAccess: coverage("messages")?.access,
                                           mailOverview: plan.workspace?.mail_overview?.text,
                                           textsOverview: plan.workspace?.texts_overview?.text, soon: .unknown)
         glance = BriefTiles.glance(rows, mailProse: isToday ? plan.workspace?.mail_summary?.text : nil)
