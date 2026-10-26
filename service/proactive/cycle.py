@@ -1191,16 +1191,37 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     return result
 
 
-def honest(view: dict, coverage) -> dict:
+def google_mail_read() -> list[str]:
+    """Linked Google accounts whose mail Wisp has read recently: the unified
+    Google status says the account is connected (not expired, not failing)
+    and its mail sync is fresh. Any doubt is an empty list, never a read."""
+    try:
+        from service import gmail_source
+        rows = gmail_source.status().get("accounts") or []
+    except Exception:  # noqa: BLE001 — status unknown: nothing counts as read
+        return []
+    return sorted(str(row["email"]) for row in rows
+                  if isinstance(row, dict) and row.get("email")
+                  and row.get("state") == "connected" and row.get("fresh") is True)
+
+
+def honest(view: dict, coverage, google_mail=()) -> dict:
     """The Brief's view without an all-clear about a source Wisp couldn't read.
 
     ``coverage`` is the workspace's source_coverage. Each source that isn't
     ready is listed in ``unread`` (the app suppresses its "nothing" lines and
     shows why), and "Nothing on your calendar" becomes "Wisp can't see your
-    calendar yet" when the calendar wasn't read."""
+    calendar yet" when the calendar wasn't read. ``google_mail`` lists linked
+    Google accounts whose mail was read recently (google_mail_read); mail
+    counts as read through them even when Mail.app couldn't be, and only then
+    (an expired or failing account is not a read). It is echoed as
+    ``mail_read_by`` so the app applies the same rule."""
+    google_mail = sorted(str(a) for a in google_mail or () if a)
     unread = [row.get("source") for row in coverage or []
-              if isinstance(row, dict) and row.get("ready") is not True and row.get("source")]
+              if isinstance(row, dict) and row.get("ready") is not True and row.get("source")
+              and not (row.get("source") == "email" and google_mail)]
     view["unread"] = unread
+    view["mail_read_by"] = google_mail
     if "calendar" in unread:
         for key in ("summary", "lede"):
             if isinstance(view.get(key), str):
@@ -1211,6 +1232,6 @@ def honest(view: dict, coverage) -> dict:
 def attach(workspace: dict, now: float | None = None) -> None:
     """Add workspace["proactive"] to the Today workspace. Never fatal."""
     try:
-        workspace["proactive"] = honest(snapshot(now=now), workspace.get("source_coverage"))
+        workspace["proactive"] = honest(snapshot(now=now), workspace.get("source_coverage"), google_mail_read())
     except Exception:  # noqa: BLE001
         traceback.print_exc()

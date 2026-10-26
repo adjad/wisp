@@ -34,6 +34,10 @@ struct ProactiveState: Decodable, Equatable {
     var reason: String = ""
     /// The sources the service says Wisp couldn't read (cycle.honest).
     var unread: [String] = []
+    /// Linked Google accounts whose mail Wisp read recently: connected (not
+    /// expired or failing) with a fresh sync (cycle.google_mail_read). Mail
+    /// counts as read through them, and only through them.
+    var mailReadBy: [String] = []
     /// The work behind the cards: what Wisp read, found and drafted.
     var stats: Stats? = nil
 
@@ -59,13 +63,13 @@ struct ProactiveState: Decodable, Equatable {
     // MARK: Honesty about unread sources
 
     /// The day's sources Wisp couldn't read, from the workspace's coverage
-    /// (`source_coverage`), in reading order. Mail read from a linked Google
-    /// account counts as read even when Mail.app couldn't be.
+    /// (`source_coverage`), in reading order. Mail counts as read when Mail.app
+    /// couldn't be only if a linked Google account read it recently
+    /// (`mailReadBy`); a linked account that is expired or failing does not.
     func unreadSources(_ coverage: [SourceAccess]) -> [SourceAccess] {
-        let linkedGoogle = accounts.contains { $0.caseInsensitiveCompare(ownerID) != .orderedSame }
-        return ["calendar", "reminders", "email", "messages"].compactMap { source in
+        ["calendar", "reminders", "email", "messages"].compactMap { source in
             guard let access = coverage.first(where: { $0.source == source }), !access.readable else { return nil }
-            if source == "email" && linkedGoogle { return nil }
+            if source == "email" && !mailReadBy.isEmpty { return nil }
             return access
         }
     }
@@ -103,7 +107,7 @@ struct ProactiveState: Decodable, Equatable {
         self.threads = threads
     }
 
-    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats, owner, reason, unread }
+    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats, owner, reason, unread, mail_read_by }
     private enum OwnerKeys: String, CodingKey { case id, label }
     private enum StatsKeys: String, CodingKey { case read, found, drafted, filtered, as_of }
 
@@ -118,6 +122,7 @@ struct ProactiveState: Decodable, Equatable {
         lede = c.lenientString(.lede) ?? ""
         reason = c.lenientString(.reason) ?? ""
         unread = c.lenient(.unread, LossyList<String>.self)?.items.filter { !$0.isEmpty } ?? []
+        mailReadBy = c.lenient(.mail_read_by, LossyList<String>.self)?.items.filter { !$0.isEmpty } ?? []
         if let o = try? c.nestedContainer(keyedBy: OwnerKeys.self, forKey: .owner) {
             ownerID = o.lenientString(.id).flatMap { $0.isEmpty ? nil : $0 } ?? "me"
             ownerLabel = o.lenientString(.label) ?? ""

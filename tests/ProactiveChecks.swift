@@ -210,10 +210,16 @@ struct ProactiveChecks {
                         SourceAccess(source: "messages", ready: false, blocked: "full_disk_access")]
         let ownOnly = ProactiveState(state: "ready")
         check(ownOnly.unreadSources(coverage).map { $0.source } == ["calendar", "email", "messages"], "unread in reading order")
+        // A linked account alone isn't a read: it may be expired or failing.
         var linked = ProactiveState(state: "ready", accounts: ["me", "ada@gmail.com"])
         linked.ownerID = "me"
+        check(linked.unreadSources(coverage).map { $0.source } == ["calendar", "email", "messages"],
+              "a linked Google account that hasn't read recently doesn't count")
+        linked.mailReadBy = ["ada@gmail.com"]
         check(linked.unreadSources(coverage).map { $0.source } == ["calendar", "messages"],
-              "mail from a linked Google account counts as read")
+              "mail a connected Google account read recently counts as read")
+        let decoded = decode(#"{"state":"ready","accounts":["me","ada@gmail.com"],"mail_read_by":["ada@gmail.com"]}"#)
+        check(decoded?.mailReadBy == ["ada@gmail.com"], "mail_read_by decodes")
         check(ProactiveState.attentionEmptyLine(unread: ownOnly.unreadSources(coverage)) == nil,
               "no \"Nothing in your inbox or texts\" while either is unread")
         check(ProactiveState.attentionEmptyLine(unread: []) == "Nothing in your inbox or texts needs you.", "the all-clear when both were read")

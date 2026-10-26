@@ -584,6 +584,20 @@ struct TodayPlanChecks {
         // An older service: no state, no blocked; a missing preference flag is false.
         let older = try JSONDecoder().decode(TodayPlan.self, from: try planData(day: "2026-10-22", zone: "UTC"))
         check(older.access("calendar")?.readable == true && older.preferences.plan_all_day == nil, "an older service still decodes")
+        // No workspace (assess failed, or it didn't decode): mail and texts were
+        // never read, so they are unread, never an all-clear.
+        check(older.workspace == nil && older.unreadSources == ["email", "messages"],
+              "a missing workspace leaves mail and texts unread: \(older.unreadSources)")
+        check(older.access("email")?.state == .unavailable && older.access("notes") == nil,
+              "mail without a workspace is unavailable; notes stay unknown")
+        var broken = payload
+        broken["workspace"] = ["attention": "not a list"]
+        let undecodable = try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: broken))
+        check(undecodable.workspace == nil && undecodable.unreadSources == ["calendar", "email", "messages"],
+              "an undecodable workspace leaves mail and texts unread: \(undecodable.unreadSources)")
+        let lede = DayTimeline.lede(weekday: "Thursday", isToday: true, load: nil, dueToday: [], overdue: [], next: nil,
+                                   unread: older.unreadSources)
+        check(!lede.contains("Nothing needs you"), "no all-clear without a workspace: \(lede)")
     }
 
     static func main() async throws {
