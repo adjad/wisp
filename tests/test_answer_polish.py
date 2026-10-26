@@ -124,6 +124,20 @@ def test_day_words_come_from_the_report_not_this_macs_clock():
     assert format_weather_reply(only).startswith("Tuesday in Tokyo, Japan: sunny")
 
 
+def test_a_skipped_first_row_does_not_make_the_next_day_today():
+    # Row 1 has an unreadable high, so it is dropped; 10-27 is not "Today".
+    broken = SF_REPORT.replace("high 62°F / low 57°F, Sunny, 5%",
+                               "high unknown°F / low 57°F, Sunny, 5%")
+    reply = format_weather_reply(broken)
+    assert "Today" not in reply and "Tomorrow" not in reply
+    assert "Tuesday: partly cloudy, 61°F / 55°F, 8% chance of rain." in reply
+    assert "Wednesday: sunny, 62°F / 53°F." in reply
+    # An unreadable date on the first row behaves the same way.
+    undated = SF_REPORT.replace("forecast (2026-10-26)", "forecast (2026-13-45)")
+    reply = format_weather_reply(undated)
+    assert "Today" not in reply and "Tomorrow" not in reply
+
+
 def test_a_later_day_mentions_rain_only_when_likely():
     report = SF_REPORT.replace("Partly Cloudy, 8%", "Rain, 70%")
     assert "Tomorrow: rain, 61°F / 55°F, 70% chance of rain." in format_weather_reply(

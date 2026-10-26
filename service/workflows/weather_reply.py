@@ -51,21 +51,21 @@ def _num(value: str) -> str:
     return str(int(number)) if number == int(number) else str(number)
 
 
-def _day_labels(days: list[date], *, current: bool) -> list[str]:
+def _day_labels(days: list[date], *, current: bool, first_raw: date | None) -> list[str]:
     """Words for each forecast date, from the report alone.
 
     Forecast dates belong to the place, not to this Mac, so the Mac's clock
     says nothing about which one is "today". With current conditions the
-    report is unfiltered and its first day is the place's today. Anything else
-    (a day-only request is resolved against this Mac's date) gets a weekday,
+    report is unfiltered and its first row is the place's today, but only if
+    that row is the first one we are showing: when it was unreadable and
+    skipped, the next row is not "today". Everything else gets a weekday,
     never a relative word that could be wrong.
     """
     labels = [d.strftime("%A") for d in days]
-    if current and days:
+    if current and days and first_raw is not None and days[0] == first_raw:
         labels[0] = "Today"
-        for i in range(1, len(days)):
-            if days[i] == days[0] + timedelta(days=i):
-                labels[i] = "Tomorrow" if i == 1 else labels[i]
+        if len(days) > 1 and days[1] == days[0] + timedelta(days=1):
+            labels[1] = "Tomorrow"
     return labels
 
 
@@ -116,6 +116,8 @@ def format_weather_reply(raw) -> str | None:
     now = None
     days: list[tuple[date, dict]] = []
     extras: list[str] = []
+    first_raw: date | None = None
+    seen_raw = False
     for line in lines[1:]:
         if m := _NOW.match(line):
             now = _now_parts(m["body"])
@@ -123,7 +125,10 @@ def format_weather_reply(raw) -> str | None:
             try:
                 day = datetime.strptime(m["date"], "%Y-%m-%d").date()
             except ValueError:
+                seen_raw = True   # an unreadable first row is still the first row
                 continue
+            if not seen_raw:
+                first_raw, seen_raw = day, True
             if parts := _day_parts(m["body"]):
                 days.append((day, parts))
         elif (m := _EXTRA.match(line)) and not m["text"].rstrip().endswith(":"):
@@ -149,11 +154,11 @@ def format_weather_reply(raw) -> str | None:
 
     # Without a requested range the report carries three days; two is plenty.
     shown = days if forecast_only else days[:2]
-    labels = _day_labels([d for d, _ in shown], current=bool(now))
+    labels = _day_labels([d for d, _ in shown], current=bool(now), first_raw=first_raw)
     for index, (day, info) in enumerate(shown):
         label = labels[index]
         rain = _rain_text(info["rain"])
-        if now and index == 0:
+        if now and index == 0 and label == "Today":
             bits = [f"high {info['high']}°F", f"low {info['low']}°F"]
             if rain:
                 bits.append(rain)
