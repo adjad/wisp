@@ -605,6 +605,7 @@ struct FirstRunSetupView: View {
         // An error belongs to the stage it happened in: a red line from a failed
         // start or download must not sit under the next one.
         .onChange(of: brain.stage) { _, _ in
+            announce(brain)
             if setup.busy == nil, setup.messageIsError {
                 setup.message = nil
                 setup.messageIsError = false
@@ -672,6 +673,9 @@ struct FirstRunSetupView: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Step \(s.rawValue + 1) of \(Step.allCases.count), \(title(s))")
+                .accessibilityValue(done ? "Done" : "")
+                .accessibilityAddTraits(s == step ? [.isSelected, .isHeader] : [])
             }
             Spacer()
             if step != .brain, let progress = compactProgress {
@@ -900,6 +904,8 @@ struct FirstRunSetupView: View {
                     EmptyView()
                 }
                 ProgressView(value: fraction).tint(Color(red: 0.56, green: 0.56, blue: 0.96)).padding(.top, 2)
+                    .accessibilityLabel("Model download")
+                    .accessibilityValue("\(Int(fraction * 100)) percent")
                 HStack {
                     TimelineView(.periodic(from: .now, by: 5)) { context in
                         if progressWatch.stalled(at: context.date) {
@@ -1018,12 +1024,28 @@ struct FirstRunSetupView: View {
                     else { Permissions.openSettingsPane(Self.settingsPane(item)) }
                 }
                 .buttonStyle(FirstRunButtonStyle())
+                .accessibilityLabel(item == .fullDiskAccess ? "Show how to turn on \(title)" : "Open Settings for \(title)")
             case .notAsked:
                 Button(permissions.asking == item ? "Asking…" : "Allow") { Task { await permissions.request(item) } }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
                     .disabled(permissions.asking != nil)
+                    .accessibilityLabel("Allow \(title)")
             }
         }
+    }
+
+    /// VoiceOver hears the moments that matter without hunting for them: the
+    /// model ready, or its download stopping.
+    private func announce(_ state: FirstRunBrain) {
+        let text: String
+        switch state {
+        case .ready(let label): text = "\(label) is ready"
+        case .failed(_, _, _, let paused): text = paused ? "Download paused" : "Download failed"
+        case .unavailable: text = "Wisp can't set this up on its own"
+        default: return
+        }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
     }
 
     /// Where to change a permission that was turned down.
@@ -1140,6 +1162,7 @@ struct FirstRunSetupView: View {
                 .foregroundStyle(Color(red: 0.73, green: 0.74, blue: 0.96))
                 .frame(width: 30, height: 30)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.system(size: 13, weight: .medium))
                 Text(detail).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
