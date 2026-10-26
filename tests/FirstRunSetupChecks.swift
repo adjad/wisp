@@ -236,6 +236,11 @@ struct FirstRunSetupChecks {
         check(Permissions.surface(granted: false, promptedBefore: false) == .prompt, "First time: the system prompt only")
         check(Permissions.surface(granted: false, promptedBefore: true) == .settings, "After that: the Settings page only")
 
+        // The window fits a small display; its footer is never off screen.
+        check(FirstRunSetup.windowHeight(room: 1000) == 600, "Room to spare: 600 pt")
+        check(FirstRunSetup.windowHeight(room: 600) == 540, "A 13-inch at Larger Text: what fits")
+        check(FirstRunSetup.windowHeight(room: 300) == FirstRunSetup.minimumHeight, "Never below the minimum")
+
         // A cold start says how long it has taken, once that is worth saying.
         check(FirstRunBrain.waited(5) == nil && FirstRunBrain.waited(19) == nil, "A few seconds: nothing")
         check(FirstRunBrain.waited(45) == "45 s so far" && FirstRunBrain.waited(150) == "2 min so far", "Then the time")

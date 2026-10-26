@@ -46,6 +46,12 @@ enum FirstRunSetup {
         return !flag(setupGuideShownKey) && !flag(notchTipShownKey)
     }
 
+    /// The window's height: 600 pt where it fits, else what the screen has under
+    /// the menu bar and above the Dock (less a margin), never under the minimum.
+    /// The steps scroll; the footer stays pinned.
+    static let minimumHeight: CGFloat = 420
+    static func windowHeight(room: CGFloat) -> CGFloat { max(minimumHeight, min(600, room - 60)) }
+
     /// Started and not finished: Continue setup opens this window again.
     static func isUnfinished(_ flag: (String) -> Bool) -> Bool { flag(startedKey) && !flag(doneKey) }
 
@@ -583,7 +589,8 @@ struct FirstRunSetupView: View {
             Divider().overlay(Theme.hairline)
             footer
         }
-        .frame(width: 600, height: 600)
+        .frame(width: 600)
+        .frame(minHeight: FirstRunSetup.minimumHeight, maxHeight: .infinity)
         .background(Color(white: 0.08))
         .foregroundStyle(Theme.textPrimary)
         .preferredColorScheme(.dark)

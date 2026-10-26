@@ -69,8 +69,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var firstRunGatesPrompts = false
     private var firstRunPermissionStates: [FirstRunPermissions.Item: FirstRunPermissions.State] = [:]
     private var setupObserver: NSObjectProtocol?
-    private static let setupGuideShownKey = "wisp.setupGuide.shown"
-    private static let notchTipShownKey = "wisp.notchTip.shown"
+    // One spelling for the keys the first-run window takes over (FirstRunSetup):
+    // a drifted copy would show existing users the window, or new users the old tip.
+    private static let setupGuideShownKey = FirstRunSetup.setupGuideShownKey
+    private static let notchTipShownKey = FirstRunSetup.notchTipShownKey
     private var pendingCollapse: DispatchWorkItem?
     // A menu opened from the panel (the chat switcher) is open. See
     // installMenuTrackingObservers.
@@ -324,9 +326,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let defaults = UserDefaults.standard
-        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 600),
-                           styleMask: [.titled, .closable, .fullSizeContentView],
+        // 600 pt tall where it fits; on a small or scaled display, the room under
+        // the menu bar and above the Dock, so the footer's buttons stay reachable.
+        let room = NSScreen.main?.visibleFrame.height ?? 800
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: FirstRunSetup.windowHeight(room: room)),
+                           styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                            backing: .buffered, defer: false)
+        win.contentMinSize = NSSize(width: 600, height: FirstRunSetup.minimumHeight)
+        win.contentMaxSize = NSSize(width: 600, height: 900)
         win.title = "Welcome to Wisp"
         win.titlebarAppearsTransparent = true
         win.appearance = NSAppearance(named: .darkAqua)
