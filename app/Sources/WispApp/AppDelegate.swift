@@ -63,6 +63,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var firstRunWindow: NSWindow?
     private var firstRunCloseObserver: NSObjectProtocol?
     private var firstRunFinishing = false
+    // While the first-run window is up it is the only thing that asks macOS for
+    // access (FirstRunReaderGate): readers that would ask wait for their row's
+    // answer there, or for the window to close.
+    private var firstRunGatesPrompts = false
+    private var firstRunPermissionStates: [FirstRunPermissions.Item: FirstRunPermissions.State] = [:]
     private var setupObserver: NSObjectProtocol?
     private static let setupGuideShownKey = "wisp.setupGuide.shown"
     private static let notchTipShownKey = "wisp.notchTip.shown"
@@ -284,6 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The window asks for permissions, gets the model and shows where Wisp
             // lives, in that order; the old launch did each of these on its own.
             FirstRunSetup.takeOverLaunchPrompts { defaults.set(true, forKey: $0) }
+            firstRunGatesPrompts = true
         } else {
             offerSetupGuideOnFirstRun()
             offerKnowYouWhenReady()
@@ -307,7 +313,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.contentView = NSHostingView(rootView: FirstRunSetupView(
             setup: setupModel,
             openDetailedSetup: { [weak self] in self?.openSetupGuide() },
-            finish: { [weak self] tellAboutYou in self?.finishFirstRun(tellAboutYou: tellAboutYou) }))
+            finish: { [weak self] tellAboutYou in self?.finishFirstRun(tellAboutYou: tellAboutYou) },
+            permissionsChanged: { [weak self] states in self?.firstRunPermissionsChanged(states) }))
         win.center()
         firstRunWindow = win
         // Closing it early counts as finishing: the download keeps going in the
@@ -345,6 +352,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupModel.hide(from: "first-run")
         if let observer = firstRunCloseObserver { NotificationCenter.default.removeObserver(observer) }
         firstRunCloseObserver = nil
+        // The window no longer speaks for access: whatever it left undecided is
+        // asked the way it always was, by the reader that needs it.
+        firstRunGatesPrompts = false
+        startPromptingReaders()
         defer { firstRunFinishing = false }
         guard !firstRunFinishing else { return }
         if setupModel.status?.ready != true {
@@ -1137,24 +1148,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startNativeSourceReaders() {
+        startPromptingReaders()
         guard !nativeSourceReadersStarted else { return }
         nativeSourceReadersStarted = true
-        calendarReader = CalendarReader()
-        mailReader = MailReader()
+        // These never make macOS ask: a missing Full Disk Access is only a failed read.
         messagesReader = MessagesReader()
         browserHistoryReader = BrowserHistoryReader()
         activityReader = ActivityReader()
-        calendarReader?.start()
-        mailReader?.start()
         messagesReader?.start()
         browserHistoryReader?.start()
         activityReader?.start()
-        remindersWriter = RemindersWriter()
-        notesReader = NotesReader()
-        contactsReader = ContactsReader()
-        remindersWriter?.start()
-        notesReader?.start()
-        contactsReader?.start()
+    }
+
+    /// The readers that can make macOS ask for access, each started once. Outside
+    /// first-run setup that is at launch, as always; while its window is up, only
+    /// once the window has the answer (see FirstRunReaderGate).
+    private func startPromptingReaders() {
+        let gate = FirstRunReaderGate(windowUp: firstRunGatesPrompts) { [firstRunPermissionStates] reader in
+            if let known = FirstRunReaderGate.systemDecided(reader) { return known }
+            return firstRunPermissionStates[.mail].map(FirstRunReaderGate.isDecided) ?? false
+        }
+        if calendarReader == nil, gate.allows(.calendar) {
+            calendarReader = CalendarReader()
+            calendarReader?.start()
+        }
+        if mailReader == nil, gate.allows(.mail) {
+            mailReader = MailReader()
+            mailReader?.start()
+        }
+        if remindersWriter == nil, gate.allows(.reminders) {
+            remindersWriter = RemindersWriter()
+            remindersWriter?.start()
+        }
+        if notesReader == nil, gate.allows(.notes) {
+            notesReader = NotesReader()
+            notesReader?.start()
+        }
+        if contactsReader == nil, gate.allows(.contacts) {
+            contactsReader = ContactsReader()
+            contactsReader?.start()
+        }
+    }
+
+    /// The first-run window read its permissions. Readers waiting on an answer
+    /// start; a new grant is read at once instead of on the reader's next tick.
+    private func firstRunPermissionsChanged(_ states: [FirstRunPermissions.Item: FirstRunPermissions.State]) {
+        let before = firstRunPermissionStates
+        firstRunPermissionStates = states
+        startPromptingReaders()
+        for (item, state) in states where state == .allowed && before[item].map({ $0 != .allowed }) == true {
+            resyncReaders(after: item)
+        }
+    }
+
+    private func resyncReaders(after item: FirstRunPermissions.Item) {
+        switch item {
+        case .calendar:
+            calendarReader?.sync()
+            remindersWriter?.sync()
+        case .mail:
+            mailReader?.sync()
+            mailReader?.syncRaw()
+            notesReader?.sync()
+        case .messages:
+            messagesReader?.sync()
+        case .contacts:
+            contactsReader?.sync()
+        case .notifications:
+            break
+        }
     }
 
     // Writes the full conversation (every turn's model, route decision,

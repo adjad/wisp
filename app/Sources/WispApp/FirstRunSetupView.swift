@@ -38,6 +38,49 @@ enum FirstRunSetup {
     }
 }
 
+/// Which source readers may start while the first-run window is up. Each of these
+/// can make macOS ask for access as soon as it starts (Calendar, Reminders and
+/// Contacts request it; Mail and Notes ask about Automation when they script a
+/// running app), so while the window is up it is the only thing that asks: a
+/// reader starts once its access has been decided there, and every one starts
+/// when the window closes. Existing users never see the window, so their readers
+/// start at launch as before.
+struct FirstRunReaderGate {
+    enum Reader: CaseIterable { case calendar, mail, reminders, notes, contacts }
+
+    var windowUp: Bool
+    var decided: (Reader) -> Bool
+
+    func allows(_ reader: Reader) -> Bool { !windowUp || decided(reader) }
+
+    /// The readers a permission row answers for: they start when it is decided,
+    /// and read again at once when it is allowed.
+    static func readers(for item: FirstRunPermissions.Item) -> [Reader] {
+        switch item {
+        case .calendar: return [.calendar, .reminders]
+        case .mail: return [.mail, .notes]
+        case .contacts: return [.contacts]
+        case .messages, .notifications: return []
+        }
+    }
+
+    /// An answer the row can't change by asking again.
+    static func isDecided(_ state: FirstRunPermissions.State) -> Bool {
+        state == .allowed || state == .notAllowed || state == .notOnThisMac
+    }
+
+    /// What macOS has recorded, for the readers whose access it tracks itself.
+    /// Mail and Notes (Automation) are known only from the window's own probe.
+    static func systemDecided(_ reader: Reader) -> Bool? {
+        switch reader {
+        case .calendar: return EKEventStore.authorizationStatus(for: .event) != .notDetermined
+        case .reminders: return EKEventStore.authorizationStatus(for: .reminder) != .notDetermined
+        case .contacts: return CNContactStore.authorizationStatus(for: .contacts) != .notDetermined
+        case .mail, .notes: return nil
+        }
+    }
+}
+
 /// Step 1's state, from the setup status and the engine's downloads. Pure, so it
 /// can be checked without a service.
 enum FirstRunBrain: Equatable {
@@ -266,6 +309,8 @@ struct FirstRunSetupView: View {
     @State private var appliedModel: String?
     var openDetailedSetup: () -> Void
     var finish: (_ tellAboutYou: Bool) -> Void
+    /// Every permission read, so the readers waiting on a row can start.
+    var permissionsChanged: ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void = { _ in }
 
     private var brain: FirstRunBrain { FirstRunBrain.from(status: setup.status, downloads: setup.downloads) }
 
@@ -292,7 +337,12 @@ struct FirstRunSetupView: View {
         .foregroundStyle(Theme.textPrimary)
         .preferredColorScheme(.dark)
         .onChange(of: brain) { _, next in drive(next) }
-        .onAppear { drive(brain) }
+        .onAppear {
+            drive(brain)
+            // One read up front, so access answered before a quit lets its readers start.
+            Task { await permissions.refresh() }
+        }
+        .onReceive(permissions.$states) { states in if !states.isEmpty { permissionsChanged(states) } }
         .onChange(of: step) { _, next in
             if next == .permissions { permissions.start() } else { permissions.stop() }
         }

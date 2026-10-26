@@ -55,6 +55,21 @@ struct FirstRunSetupChecks {
         check(!FirstRunSetup.shouldShow { set.contains($0) || $0 == FirstRunSetup.doneKey },
               "Closed or finished: never again")
 
+        // While the window is up it is the only thing that asks macOS for access.
+        let readers = FirstRunReaderGate.Reader.allCases
+        let waiting = FirstRunReaderGate(windowUp: true) { _ in false }
+        check(readers.allSatisfy { !waiting.allows($0) }, "Window up, nothing answered: no reader starts and asks")
+        let noWindow = FirstRunReaderGate(windowUp: false) { _ in false }
+        check(readers.allSatisfy { noWindow.allows($0) }, "No window (an existing user, or after it closes): every reader starts")
+        let calendarAnswered = FirstRunReaderGate(windowUp: true) { $0 == .calendar }
+        check(calendarAnswered.allows(.calendar) && !calendarAnswered.allows(.reminders) && !calendarAnswered.allows(.mail),
+              "An answered row releases only its own readers")
+        check(FirstRunReaderGate.readers(for: .calendar) == [.calendar, .reminders]
+              && FirstRunReaderGate.readers(for: .mail) == [.mail, .notes]
+              && FirstRunReaderGate.readers(for: .contacts) == [.contacts], "Rows map to the readers they answer for")
+        check([.allowed, .notAllowed, .notOnThisMac].allSatisfy(FirstRunReaderGate.isDecided)
+              && ![.notAsked, .checking].contains(where: FirstRunReaderGate.isDecided), "Decided means macOS has an answer")
+
         // Step 1 states.
         check(FirstRunBrain.from(status: nil, downloads: []) == .checking, "No status yet")
         if case .unavailable = FirstRunBrain.from(status: status(available: false), downloads: []) {} else {
