@@ -376,5 +376,43 @@ enum BackendRecoveryChecks {
             print("BackendRecovery: skipped the real re-exec child (cannot spawn in this sandbox)")
         }
         print("BackendRecovery: \(checks) re-exec receipt checks passed")
+
+        // Retry after the backend died: the dead child is forgotten, so a new
+        // start is not blocked by a process that no longer runs, and the notch
+        // is told why the start failed.
+        var deadChecks = 0
+        func dead(_ ok: Bool, _ message: String) { deadChecks += 1; precondition(ok, message) }
+        let shortLived = Process()
+        shortLived.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shortLived.arguments = ["-c", "exit 3"]
+        shortLived.standardOutput = FileHandle.nullDevice
+        shortLived.standardError = FileHandle.nullDevice
+        if (try? shortLived.run()) != nil {
+            shortLived.waitUntilExit()
+            dead(BackendManager.liveChild(shortLived) == nil, "an exited child is not kept")
+            dead(shortLived.terminationStatus == 3, "the exit status is what the failure reports")
+        } else {
+            print("BackendRecovery: skipped the dead-child spawn (cannot spawn in this sandbox)")
+        }
+        dead(BackendManager.liveChild(nil) == nil, "no child, nothing kept")
+        let running = Process()
+        running.executableURL = URL(fileURLWithPath: "/bin/sh")
+        running.arguments = ["-c", "read line"]
+        let hold = Pipe()
+        running.standardInput = hold
+        running.standardOutput = FileHandle.nullDevice
+        if (try? running.run()) != nil {
+            dead(BackendManager.liveChild(running) === running, "a running child is kept")
+            running.terminate(); running.waitUntilExit()
+            withExtendedLifetime(hold) {}
+        }
+        dead(BackendManager.lastLogLine("INFO start\nTraceback\n  ModuleNotFoundError: No module named 'x'\n\n")
+             == "ModuleNotFoundError: No module named 'x'", "the last non-empty log line, trimmed")
+        dead(BackendManager.lastLogLine("\n \n") == nil, "an empty log has no line")
+        dead(BackendManager.lastLogLine(String(repeating: "a", count: 400))?.count == 160, "a long line is cut to one readable line")
+        let reason = BackendManager.startFailureReason(status: 1, logTail: "Address already in use")
+        dead(reason.contains("exit status 1") && reason.hasSuffix("Last log line: Address already in use"), "the reason names status and log")
+        dead(!BackendManager.startFailureReason(status: 9, logTail: nil).contains("Last log line"), "no log, no log clause")
+        print("BackendRecovery: \(deadChecks) dead-child checks passed")
     }
 }
