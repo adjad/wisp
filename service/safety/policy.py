@@ -179,21 +179,36 @@ _LOCAL_SEND_DENY = [
     r"assistant/+proactive/+cards/+[^/\s'\"]+/+fire\b",
     r"assistant/+needs_you/+[^/\s'\"]+/+(?:done|clear)\b",
     r"assistant/+proactive/+(?:todos|threads)/+[^/\s'\"]+/+(?:done|clear)\b",
-    r"(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^\s'\"]*?:8765\b[^\s'\"]*?(email_reply|send_message_draft)",
+    # Bounded: unbounded lazy runs here were quadratic on a long command.
+    # The route patterns above already match the path at any length.
+    r"(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^\s'\"]{0,256}?:8765\b[^\s'\"]{0,256}?(email_reply|send_message_draft)",
 ]
 # Wisp's own service port on a loopback host. A route built at run time
 # (`u=email_reply; curl …/assistant/$u/send`) never shows in the text, but the
-# command still has to name the port, so any shell/AppleScript text aimed at it
-# is refused, read routes included. Narrow on purpose: loopback spellings on
-# 8765 only. Other hosts, other ports and every other shell use are untouched.
-_LOOPBACK_NAME = (r"(?:[\w.-]*localhost|127(?:\.\d{1,3}){1,3}|0\.0\.0\.0|\[[0:]*:0*1\]"
-                  r"|\[::ffff:(?:127(?:\.\d{1,3}){3}|7f[0-9a-f]{2}:[0-9a-f]{1,4})\])")
-_LOOPBACK_NUMBER = r"(?:0|2130706433|0x7f[0-9a-f]{6})"
+# command usually still names the port, so shell/AppleScript text aimed at it
+# is refused, read routes included.
+#
+# This is a best-effort tripwire, not a boundary. It reads text, and a shell
+# can build any host or port at run time (`p=$((8000+765))`, a hostname that
+# resolves to 127.0.0.1, a script file written first and run second), so it
+# will never be complete and is not meant to be. The cheap spellings are
+# covered: leading zeros on the port, `/dev/tcp/<host>/<port>`, `/` or `:`
+# before the host, and dotted hex/octal forms of 127.0.0.1. A command that
+# names a loopback host or this port at all is also confirmed under full
+# access (see _SHELL_EGRESS), so a missed spelling still gets a card. The real
+# fix is a per-launch secret the send routes require; that is not built yet.
+_LOOPBACK_V4 = r"(?:127|0+177|0x0*7f)(?:\.(?:0x[0-9a-f]+|\d+)){1,3}"
+_LOOPBACK_NAME = (r"(?:[\w.-]*localhost\.?|" + _LOOPBACK_V4 + r"|0+(?:\.0+){1,3}"
+                  r"|\[[0-9a-z:.%]*\])")     # any bracketed IPv6 literal, zone ids included
+_LOOPBACK_NUMBER = r"(?:0+|0x0+|2130706433|0x0*7f[0-9a-f]{6}|0+17700000001)"
+_PORT = r"0*8765(?!\d)"
 _LOCAL_SERVICE_DENY = [
-    # host:8765, `nc host 8765`, ("host", 8765), "host:" & "8765"
-    r"(?<![\w.:-])" + _LOOPBACK_NAME + r"[:\s,&+]+8765(?!\d)",
-    # a bare-number host only with its colon (`seq 0 8765` is not a URL)
-    r"(?<![\w.:-])" + _LOOPBACK_NUMBER + r":8765(?!\d)",
+    # host:8765, `nc host 8765`, ("host", 8765), "host:" & "8765", /dev/tcp/host/8765
+    r"(?<![\w.-])" + _LOOPBACK_NAME + r"[:\s,&+/]+" + _PORT,
+    # a bare-number host only with its colon or slash (`seq 0 8765` is not a URL)
+    r"(?<![\w.-])" + _LOOPBACK_NUMBER + r"[:/]" + _PORT,
+    # curl --resolve name:8765:127.0.0.1 and --connect-to ::127.0.0.1:8765
+    r"(?<![\w.])0*8765:(?:" + _LOOPBACK_NAME + "|" + _LOOPBACK_NUMBER + r")(?![\w.])",
 ]
 
 
@@ -221,6 +236,112 @@ def local_send_endpoint_hit(text: str) -> str | None:
 def local_service_hit(text: str) -> str | None:
     """The pattern a shell/AppleScript text matches if it names Wisp's own service port."""
     return next((hit for form in _command_forms(text) if (hit := _any(_LOCAL_SERVICE_DENY, form))), None)
+
+
+def shell_text(args: dict) -> str:
+    """Everything a shell-category call will run: run_shell's `cmd` and
+    run_applescript's `script` (whose `do shell script` is a shell too)."""
+    return " ".join(str(args.get(k) or "") for k in ("cmd", "script")).strip()
+
+
+# A plain grep over files. With no shell operators or expansions it can only
+# read and print, so searching docs that mention localhost:8765 (or a send
+# route) is not a way to reach the service. Fixed program names only; ripgrep
+# is left out because `rg --pre` runs a command.
+_PLAIN_SEARCH_PROGRAMS = {"grep", "egrep", "fgrep"}
+
+
+def _cannot_reach_network(args: dict) -> bool:
+    """True only for a run_shell command that provably opens no connection:
+    a validated read-only argv, or a plain grep with no shell syntax."""
+    cmd = args.get("cmd")
+    if args.get("script") or not isinstance(cmd, str) or not cmd.strip():
+        return False
+    if read_only_shell_argv(cmd) is not None:
+        return True
+    if re.search(r"[\x00-\x1f\x7f$`|&;<>(){}\\]", cmd):
+        return False
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return False
+    name = words[0].rsplit("/", 1)[-1] if words else ""
+    return name in _PLAIN_SEARCH_PROGRAMS and words[0] in (name, f"/usr/bin/{name}")
+
+
+# Shell text that sends something off this Mac, or drives another app that can.
+# Under full access these still get a card (see _decide); a standing grant
+# cannot lift them. Like the deny above this reads text, so it is a net for the
+# common shapes, not a guarantee: a script file, an alias or a name built at
+# run time gets past it. run_applescript itself is always confirmed.
+#
+# Matched case-insensitively (macOS paths are case-insensitive, so CURL runs
+# curl) against the text and its quote-stripped form.
+_CMD_POS = (r"(?:^|[;&|({\n`]|\$\(|\b(?:then|do|else|exec|env|command|nohup|time|xargs|nice)\b)"
+            r"\s*(?:-\S+\s+)*(?:[\w./~-]*/)?")
+# A loopback host named anywhere: Wisp, oMLX and every other local service.
+_LOOPBACK_ANYWHERE = [
+    r"(?<![\w.-])(?:[\w.-]*localhost|" + _LOOPBACK_V4 + r"|0+(?:\.0+){3}|\[[0-9a-z:.%]*\])(?![\w-])",
+    r"(?<![\w.-])" + _LOOPBACK_NUMBER + r"[:/]\d",
+]
+_SHELL_EGRESS = [
+    # Apple Events: Mail, Messages and any other app, from the shell.
+    r"(?<![\w.-])(?:osascript|osacompile|automator)(?![\w.-])",
+    _CMD_POS + r"shortcuts\s+run\b",
+    # Raw sockets, remote shells, file transfer, mail. Only where a command
+    # starts, so ~/Library/Mail or ~/.ssh in a path is not a hit.
+    _CMD_POS + r"(?:nc|ncat|netcat|socat|telnet|ssh|scp|sftp|ftp|tftp|sendmail|mailx?)(?=\s|$|[;&|)`])",
+    r"/dev/(?:tcp|udp)/",
+    # Protocols that write: mail submission, raw TCP through curl.
+    r"\b(?:smtps?|gopher|dict|telnet|mqtts?)://",
+    # wget uploads.
+    r"(?<![\w.-])wget(?![\w.-])[\s\S]*(?:--(?:post-data|post-file|method|body-data|body-file|execute)\b|\s-e\s)",
+    *_LOOPBACK_ANYWHERE,
+    # Script interpreters that open sockets, send Apple Events or start other programs.
+    r"(?<![\w.-])(?:python[\d.]*|node|ruby|perl|php|swift|deno|bun|lua|tclsh)(?![\w-])[\s\S]*"
+    r"(?:socket|urllib|requests|httpx|aiohttp|http\.client|smtplib|ftplib|telnetlib|xmlrpc"
+    r"|fetch\s*\(|xmlhttprequest|net::|net/http|lwp|nsapplescript|scriptingbridge|sbapplication"
+    r"|appscript|osascript|urlsession|subprocess|os\.system|child_process|`|(?<!\d)0*8765(?!\d))",
+]
+# curl/wget are ordinary for reading a page. They need a card when they upload
+# (data, form, file or a method other than GET/HEAD), read their flags from a
+# file, mention Wisp's port, or splice command output into the request.
+# Flags are case-sensitive (-d uploads, -D dumps headers), so these run on the
+# text as written, quote-stripped.
+_HTTP_CLIENT = re.compile(r"(?<![\w.-])(?:curl|wget)(?![\w.-])", re.IGNORECASE)
+_CURL_UPLOAD = re.compile(
+    r"(?:^|\s)-[a-zA-Z]*[dFTK]"                                  # -d, -F, -T, -K, clustered too
+    r"|(?:^|\s)-[a-zA-Z]*X\s*(?!(?:GET|HEAD)\b)\S"                # -X POST, -XPUT
+    r"|(?:^|\s)--(?:data[\w-]*|form[\w-]*|json|upload-file|request|config|mail-rcpt|mail-from)\b"
+    r"|\$\(|`|(?<!\d)0*8765(?!\d)")
+
+
+def shell_egress_hit(args: dict) -> str | None:
+    """Why a shell-category call could send something off this Mac, or None.
+
+    Read-only commands and plain greps are never hits: they cannot open a
+    connection whatever their text mentions."""
+    text = shell_text(args)
+    if not text or _cannot_reach_network(args):
+        return None
+    forms = dict.fromkeys((text, re.sub(r"[\"'\\]", "", text)))
+    for form in forms:
+        if (hit := _first_match(_SHELL_EGRESS, form)):
+            return hit
+        if _HTTP_CLIENT.search(form) and (m := _CURL_UPLOAD.search(form)):
+            return f"curl/wget {m.group(0).strip()}"
+    for form in _command_forms(text):     # percent-encoded loopback hosts
+        if (hit := _first_match(_LOOPBACK_ANYWHERE, form)):
+            return hit
+    return None
+
+
+def _first_match(patterns: list[str], text: str) -> str | None:
+    """The text the first matching pattern found (short, for a card), or None."""
+    for p in patterns:
+        if (m := re.search(p, text, re.IGNORECASE)):
+            return " ".join(m.group(0).split())[:60] or p
+    return None
 
 
 # operators / verbs that mean a shell command could MODIFY the system, even if it
@@ -606,6 +727,123 @@ ALWAYS_CONFIRM_CATEGORIES = frozenset(
     _ALWAYS_CONFIRM | _ALWAYS_CONFIRM_OUTBOUND | _ALWAYS_CONFIRM_CALENDAR
     | _ALWAYS_CONFIRM_TOOL_AUTHORING)
 
+# Tools confirmed on every call, in every mode, whatever their category says.
+# run_applescript is category "shell", but its text drives other apps: one line
+# sends an iMessage or a Mail message as the user, and `do shell script` is a
+# full shell. Full access and standing grants do not cover it (grants.py
+# refuses to store an allow for it).
+ALWAYS_CONFIRM_TOOLS = frozenset({"run_applescript"})
+
+
+# Where keys, tokens and Wisp's own grants live. Reading one puts a secret in
+# the model's context; writing one can rewrite who Wisp trusts. Either asks
+# first in every mode (view-only refuses), and a grant cannot lift it.
+def _credential_roots() -> list[Path]:
+    from service.paths import MOE_DIR
+    home = Path.home()
+    roots = [home / ".ssh", home / ".aws", home / ".gnupg", home / ".netrc",
+             home / ".config" / "gh", home / ".config" / "gcloud", home / "Library" / "Keychains"]
+    for moe in dict.fromkeys((MOE_DIR, home / ".moe")):
+        roots += [moe / "gmail.json", moe / "mcp.json", moe / "google_workspace",
+                  moe / "grants.json"]
+    return roots
+
+
+_SHELL_SECRET = [
+    r"(?<![\w-])\.(?:ssh|aws|gnupg|netrc)(?![\w-])",
+    r"\.config/(?:gh|gcloud)\b", r"\bkeychains?\b", r"\bsecurity\s+(?:find|dump|export)-",
+    r"\b(?:gmail|mcp|grants)\.json\b", r"\bgoogle_workspace\b",
+]
+
+
+def _within(path: str, roots: list[str]) -> bool:
+    p = path.rstrip("/").casefold()       # APFS is case-insensitive by default
+    return any(p == r or p.startswith(r + "/") for r in roots)
+
+
+def credential_path_hit(args: dict, tool: str | None = None) -> str | None:
+    """The credential location a file tool's arguments name, or None."""
+    operands = _path_operands(args, tool)
+    if not operands:
+        return None
+    roots: list[str] = []
+    for root in _credential_roots():
+        roots.append(str(root).rstrip("/").casefold())
+        try:
+            roots.append(str(root.resolve()).rstrip("/").casefold())
+        except (OSError, RuntimeError):
+            pass
+    for _, operand in operands:
+        try:
+            forms = _path_forms(operand)
+        except (ValueError, OSError, RuntimeError):
+            return operand            # cannot tell where it points: ask
+        if any(_within(form, roots) for form in forms):
+            return operand
+    return None
+
+
+def shell_secret_hit(args: dict) -> str | None:
+    """The credential location a shell-category call names, or None."""
+    if read_only_shell_argv(str(args.get("cmd") or "")) is not None and not args.get("script"):
+        return None                   # validated reads never reach hidden paths or ~/Library
+    return _first_match(_SHELL_SECRET, shell_text(args))
+
+
+# First words that make a scoped "always allow" a blanket one: an interpreter
+# or launcher runs whatever follows it, so a grant on `python3` would cover
+# every future python3 program.
+_UNGRANTABLE_SHELL_PROGRAMS = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "osascript", "osacompile",
+    "node", "deno", "bun", "npx", "ruby", "perl", "php", "lua", "tclsh", "swift",
+    "uv", "uvx", "pipx", "curl", "wget", "open", "env", "xargs", "exec", "command",
+    "nohup", "time", "nice", "eval", "source", ".", "find", "awk", "make", "shortcuts",
+    "automator", "sudo", "doas", "su",
+})
+
+
+def shell_grant_problem(args: dict) -> str | None:
+    """Why a standing "always allow" may not cover this shell-category call.
+
+    A run_shell grant is scoped to the command's first word, so it is only
+    honest for a single plain program: not a pipeline or compound command
+    (`ls && anything`), not an interpreter or launcher, and never anything
+    that is confirmed on every call anyway."""
+    if args.get("script"):
+        return "AppleScript is confirmed every time"
+    cmd = str(args.get("cmd") or "")
+    words = cmd.split()
+    if not words:
+        return "empty command"
+    if re.search(r"[\x00-\x1f\x7f$`|&;<>(){}\\]", cmd):
+        return "compound commands are confirmed every time"
+    first = words[0].rsplit("/", 1)[-1].casefold()
+    if "=" in words[0]:
+        return "commands that set variables are confirmed every time"
+    if first in _UNGRANTABLE_SHELL_PROGRAMS or re.fullmatch(r"python[\d.]*|pip[\d.]*", first):
+        return f"{first} runs other programs, so it is confirmed every time"
+    if is_destructive_shell(cmd):
+        return "permanent deletes are confirmed every time"
+    if (hit := shell_egress_hit(args) or shell_secret_hit(args)):
+        return f"commands that can send data or read secrets are confirmed every time ({hit})"
+    return None
+
+
+# MCP tools named for an action that leaves a mark outside Wisp. Under full
+# access every other MCP action runs without a card; these still ask. The
+# name is the server's own claim, so this only ever adds a card. Registered
+# names are lowercased (`mcp_<server>_sendmessage`), so a word anywhere in
+# the name counts; a read that happens to contain one just gets a card.
+_MCP_EFFECT_WORDS = ("send", "delete", "remove", "trash", "create", "update", "modify",
+                     "share", "publish", "upload", "forward", "reply", "invite", "move",
+                     "write", "transfer", "purchase", "cancel", "archive")
+
+
+def mcp_effect_word(tool: str | None) -> str | None:
+    """The action word in an MCP tool's name that warrants a card, or None."""
+    name = str(tool or "").lower()
+    return next((w for w in _MCP_EFFECT_WORDS if w in name), None)
+
 
 def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision | None:
     """The unconditional safety floor: rules nothing can override — not
@@ -616,7 +854,7 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
     be a bypass.
     """
     if category == "shell":
-        cmd = str(args.get("cmd", ""))
+        cmd = shell_text(args)        # run_applescript's `do shell script` too
         if (hit := _any(_rules("shell_deny", _SHELL_DENY), cmd)):
             return Decision(Tier.DENY, f"matches blocked pattern: {hit}")
     if category in ("fs_write", "fs_delete"):
@@ -715,8 +953,10 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     # `disable_safety_floor` only ever meant "let full_access mean literally
     # everything" — outside full_access these checks have always been
     # unconditional, and stay that way.
-    if category == "shell":
-        text = " ".join(str(args.get(k, "")) for k in ("cmd", "script"))
+    # A plain grep or a validated read cannot open a connection, so a search
+    # through docs that mention the port is not refused.
+    if category == "shell" and not _cannot_reach_network(args):
+        text = shell_text(args)
         if local_send_endpoint_hit(text):
             return Decision(Tier.DENY, "Wisp's Send buttons are for the user's own tap; "
                             "commands may not call them")
@@ -770,8 +1010,15 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     # BEFORE grants so a standing "always allow run_shell" cannot lift it — a
     # grant is an answer to a question the user already considered, and nobody
     # approving `run_shell` once was agreeing to every future `rm -rf`.
-    destructive = (is_destructive_shell(str(args.get("cmd", "")))
+    destructive = (is_destructive_shell(shell_text(args))
                    if category == "shell" else None)
+    # Shell text that can send something off this Mac or read a secret, and a
+    # file tool aimed at a credential. Computed before grants for the same
+    # reason: a grant on `curl` was never agreement to every upload.
+    outbound = ((shell_egress_hit(args) or shell_secret_hit(args))
+                if category == "shell" and tool not in ALWAYS_CONFIRM_TOOLS else None)
+    secret = (credential_path_hit(args, tool)
+              if category in ("fs_read", "fs_write", "fs_delete") else None)
 
     # A standing grant the user gave for this exact tool (and scope). Checked
     # after the floor and before the mode logic, so it can answer a repeat of a
@@ -783,7 +1030,9 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         verdict = grants.check(tool, args)
         if verdict == "deny":
             return Decision(Tier.DENY, f"you blocked {tool} for this target")
-        if verdict == "allow" and category not in ALWAYS_CONFIRM_CATEGORIES and not destructive:
+        if (verdict == "allow" and category not in ALWAYS_CONFIRM_CATEGORIES
+                and tool not in ALWAYS_CONFIRM_TOOLS and not destructive
+                and not outbound and not secret and grants.is_grantable(tool, args)):
             return Decision(Tier.ALLOW, f"you allowed {tool} for this target")
 
     # Irreversible and unbounded: always show the exact command, in every access
@@ -801,6 +1050,24 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         if read_only():
             return Decision(Tier.DENY, f"view-only mode: {category} is disabled")
         return Decision(Tier.CONFIRM, f"{category} action (always confirmed, regardless of access mode)")
+
+    if tool in ALWAYS_CONFIRM_TOOLS:
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: AppleScript is disabled")
+        return Decision(Tier.CONFIRM, "AppleScript can send messages and mail as you, or run "
+                        "shell commands — always confirmed. Check the script before allowing it.")
+
+    if outbound:
+        if read_only():
+            return Decision(Tier.DENY, "view-only: only read-only commands are allowed")
+        return Decision(Tier.CONFIRM, "this command can send something off this Mac, control "
+                        f"another app, or read a secret (matched: {outbound}) — always confirmed. "
+                        "Check the command before allowing it.")
+
+    if secret:
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: keys and saved sign-ins are off limits")
+        return Decision(Tier.CONFIRM, f"{secret} holds keys or saved sign-ins — always confirmed")
 
     # Outbound messages sent as the user, to other people. Irreversible and
     # visible outside this machine, so they ask every single time — full_access
@@ -838,8 +1105,16 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
                         "installs a new tool that can run on this machine going "
                         "forward — review the code shown above before approving")
 
+    # An MCP tool named for sending, deleting, creating, updating or sharing
+    # asks even under full access (a grant above can still answer it).
+    if category == "mcp_action" and (word := mcp_effect_word(tool)):
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: MCP actions are disabled")
+        return Decision(Tier.CONFIRM, f"an MCP tool that can {word} things outside Wisp — "
+                        "confirmed even with full access")
+
     if _FULL_ACCESS:
-        # Auto-allow everything; the catastrophic floor already ran above.
+        # Auto-allow everything else; the floor and every confirm above already ran.
         return Decision(Tier.ALLOW, "full-access mode")
 
     ro = read_only()
@@ -911,7 +1186,9 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     # Tools from a configured MCP server (service/mcp). A server the user
     # pointed Wisp at is trusted enough to run, not trusted enough to decide
     # its own permissions — see _category_for for why only a read annotation
-    # can lower the tier, and never the reverse.
+    # can lower the tier, and never the reverse. Outside full access every
+    # mcp_action asks. Under full access only the ones mcp_effect_word names
+    # ask (above); the rest run, like any other full-access action.
     if category == "mcp_read":
         return Decision(Tier.ALLOW, "read-only MCP tool")
     if category == "mcp_action":
@@ -921,8 +1198,9 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
 
     # A tool contributed by an installed skill (service/skills/tools.py). It
     # runs a real command, and the skill file itself is just a folder someone
-    # dropped in, so it's confirm-tier no matter what the skill claims about
-    # itself. A user who trusts a specific skill tool can grant it standing
+    # dropped in, so outside full access it asks no matter what the skill
+    # claims about itself (under full access it runs, inside the skill
+    # sandbox). A user who trusts a specific skill tool can grant it standing
     # approval; the skill can't grant that to itself.
     if category == "skill_tool":
         if ro:
@@ -943,3 +1221,53 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
 
     # unknown category -> be conservative
     return Decision(Tier.DENY if ro else Tier.CONFIRM, f"unclassified action ({category})")
+
+
+# Categories whose results carry text Wisp did not write and the user did not
+# type in this turn: files and PDFs, web pages, mail, messages, notes, the
+# screen, MCP servers and skills (and a shell cat/head/tail/grep, see
+# shell_prints_file_content). Once a turn has read any of it, an opaque
+# outbound action could be following instructions planted there.
+UNTRUSTED_CONTENT_CATEGORIES = frozenset({
+    "fs_read", "web_read", "email_read", "messages_read", "notes_read",
+    "browser_history_read", "screen", "mcp_read", "mcp_action", "skill_tool",
+})
+
+
+def shell_prints_file_content(args: dict) -> bool:
+    """Whether a shell-category call reads a file's text into the turn: a
+    validated cat/head/tail or a plain grep. Other commands are not judged
+    (a full-access shell can print anything; this catches the common reads)."""
+    cmd = args.get("cmd")
+    if args.get("script") or not isinstance(cmd, str):
+        return False
+    argv = read_only_shell_argv(cmd)
+    if argv is not None:
+        return argv[0].rsplit("/", 1)[-1] in {"cat", "head", "tail"}
+    return _cannot_reach_network(args)        # the plain-grep case
+
+
+# Categories whose actions are opaque to the host in the same way as
+# OPAQUE_OUTBOUND_TOOLS: what they do is decided by text Wisp cannot inspect.
+OPAQUE_ACTION_CATEGORIES = frozenset({"mcp_action", "skill_tool"})
+
+
+def opaque_outbound_decision(tool: str, category: str, args: dict, decision: Decision, *,
+                             reason: str, categories: frozenset[str] = frozenset()) -> Decision:
+    """Turn an ALLOW for an opaque outbound action into a CONFIRM.
+
+    Shared by both routes in agent/loop.py. Model-led routing applies it to
+    every call; legacy routing applies it (with OPAQUE_ACTION_CATEGORIES) once
+    the turn has read untrusted content. Full access and standing grants do
+    not cover an action whose real-world effect the host cannot inspect. A
+    validated read-only shell command is not opaque and keeps its ALLOW.
+    """
+    if decision.tier is not Tier.ALLOW:
+        return decision
+    from service.router.model_led import OPAQUE_OUTBOUND_TOOLS
+    if tool not in OPAQUE_OUTBOUND_TOOLS and category not in categories:
+        return decision
+    if (tool == "run_shell" and set(args) == {"cmd"}
+            and read_only_shell_argv(args.get("cmd")) is not None):
+        return decision
+    return Decision(Tier.CONFIRM, reason)
