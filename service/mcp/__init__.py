@@ -234,6 +234,17 @@ def _render_content(result: dict) -> str:
     return text
 
 
+# Registered local name -> the tool's own part of it (after mcp_<server>_), in
+# the same lowercased, sanitized form. The policy judges MCP actions by this
+# part alone, never the server's name (a server called "brave-search" must not
+# make its tools look like searches).
+TOOL_PARTS: dict[str, str] = {}
+
+
+def _local_name(raw: str) -> str:
+    return "".join(c if c.isalnum() or c == "_" else "_" for c in raw.lower())
+
+
 class MCPManager:
     def __init__(self) -> None:
         self.servers: dict[str, MCPServer] = {}
@@ -268,8 +279,9 @@ class MCPManager:
 
     def _register(self, server: MCPServer) -> None:
         for spec in server.tools:
-            local = f"mcp_{server.name}_{spec['name']}".lower()
-            local = "".join(c if c.isalnum() or c == "_" else "_" for c in local)[:64]
+            prefix = _local_name(f"mcp_{server.name}_")
+            full = _local_name(f"mcp_{server.name}_{spec['name']}")
+            local = full[:64]
             if local in REGISTRY and local not in self._registered:
                 continue                # never shadow a built-in
             schema = spec.get("inputSchema") or {"type": "object", "properties": {}}
@@ -281,10 +293,13 @@ class MCPManager:
                 func=_make_caller(server, spec["name"], schema),
             )
             self._registered.add(local)
+            # From the untruncated name, so an effect word past the cut still counts.
+            TOOL_PARTS[local] = full[len(prefix):]
 
     async def stop(self) -> None:
         for name in self._registered:
             REGISTRY.pop(name, None)
+            TOOL_PARTS.pop(name, None)
         self._registered.clear()
         for server in self.servers.values():
             await server.stop()
