@@ -281,6 +281,9 @@ final class FirstRunPermissions: ObservableObject {
         guard asking == nil else { return }
         asking = item
         defer { asking = nil }
+        // A prompt for an app that isn't frontmost can open behind whatever the
+        // person clicked into during the download (the RemindersWriter pattern).
+        NSApp.activate(ignoringOtherApps: true)
         switch item {
         case .calendar:
             let store = EKEventStore()
@@ -295,6 +298,7 @@ final class FirstRunPermissions: ObservableObject {
             // Mail and Notes in the background first.
             for id in Self.automationTargets { await Self.launchHidden(id) }
             try? await Task.sleep(nanoseconds: 1_500_000_000)
+            NSApp.activate(ignoringOtherApps: true)
             _ = await Self.automationState(ask: true)
         case .fullDiskAccess:
             // Full Disk Access can't be asked for: open its page and let the person
