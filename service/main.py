@@ -447,8 +447,10 @@ async def lifespan(app: FastAPI):
             await mcp_manager.stop()
         await client.aclose()
         if is_bundled():
+            # Normally /shutdown_omlx already stopped it. Short here: the app kills this
+            # backend soon after SIGTERM, and an engine still running then outlives Wisp.
             from service.engine.runtime import stop_if_running
-            await asyncio.to_thread(stop_if_running, final=True)
+            await asyncio.to_thread(stop_if_running, final=True, grace=2.0)
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
@@ -490,6 +492,21 @@ async def _omlx_cli(*args: str) -> bool:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except FileNotFoundError:
+        return False
+
+
+async def _omlx_cli_wait(*args: str, seconds: float) -> bool:
+    """Run an omlx-cli subcommand and wait up to `seconds` for it. True when it exited 0 in time.
+
+    It runs in its own session: if Wisp exits before it finishes, it still finishes."""
+    try:
+        proc = subprocess.Popen([OMLX_CLI, *args], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+    except FileNotFoundError:
+        return False
+    try:
+        return await asyncio.to_thread(proc.wait, seconds) == 0
+    except subprocess.TimeoutExpired:
         return False
 
 
@@ -590,20 +607,44 @@ async def health() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
+# Quitting must finish inside the app's wait for /shutdown_omlx (WispClient.shutdownOMLX).
+# Past it the app stops this backend, and an engine still running then keeps its models
+# loaded after Wisp has gone.
+_QUIT_UNLOAD_SECONDS = 3.0
+_QUIT_STOP_SECONDS = 5.0
+
+
+async def _unload_resident(seconds: float) -> list[str]:
+    """Unload every model the local engine holds, within `seconds`. The models unloaded;
+    [] when the engine is down or does not answer in time."""
+    unloaded: list[str] = []
+    try:
+        async with asyncio.timeout(seconds):
+            for model in await client.loaded_models():
+                await client.unload(model)
+                unloaded.append(model)
+    except Exception:  # noqa: BLE001 — quitting goes on to stop the engine either way
+        pass
+    return unloaded
+
+
 @app.post("/shutdown_omlx")
 async def shutdown_omlx() -> dict[str, Any]:
-    """Stop the oMLX engine entirely (frees its ~2GB baseline). Called on app quit."""
+    """Stop the oMLX engine entirely: its models and its ~2GB baseline. Called on app quit.
+
+    Waits for the stop, within the app's wait, instead of firing it off: a stop still
+    starting up when Wisp exits never ran. A user's oMLX.app has its models unloaded
+    first, so its memory is freed even if the stop fails."""
     if not getattr(client, "managed", True):
         return {"stopped": False}
     if is_bundled():
         from service.engine.runtime import stop_if_running
-        return {"stopped": await asyncio.to_thread(stop_if_running, final=True)}
-    try:
-        subprocess.Popen([OMLX_CLI, "stop"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return {"stopped": True}
-    except FileNotFoundError:
-        return {"stopped": False}
+        return {"stopped": await asyncio.to_thread(
+            stop_if_running, final=True, grace=_QUIT_STOP_SECONDS)}
+    unloaded = await _unload_resident(_QUIT_UNLOAD_SECONDS)
+    stopped = await _omlx_cli_wait("stop", "--timeout", f"{_QUIT_STOP_SECONDS:g}",
+                                   seconds=_QUIT_STOP_SECONDS + 1)
+    return {"stopped": stopped, "unloaded": unloaded}
 
 
 # Remote inference: history the agent sees per turn. The remote fit
