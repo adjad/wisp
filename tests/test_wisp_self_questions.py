@@ -158,7 +158,7 @@ def test_privacy_is_local_by_default(monkeypatch):
     assert text.startswith("**Your data stays on this Mac.**")
     assert "No cloud AI is used unless you turn one on" in text
     assert "web searches" in text  # what does go online is said, not hidden
-    assert "without showing it to you first" in text
+    assert "Before anything is sent, I show it to you and wait for your OK" in text
 
 
 def test_privacy_never_claims_local_when_a_cloud_model_runs_everything(monkeypatch):
@@ -273,10 +273,106 @@ def test_remote_only_build_reads_as_everything(monkeypatch):
     assert "runs right here on this Mac" not in wisp_about.overview()
 
 
-def test_calendar_promise_follows_auto_add(monkeypatch):
+def _access(monkeypatch, *, view_only=False, full=False, learning=True, held=None):
+    """Set View Only / Full access, behavior learning, and the routine hold
+    (held=None: no runtime to ask)."""
+    from types import SimpleNamespace
+    from service.assistant import behavior_runtime
+    from service.safety import policy
+    monkeypatch.setattr(policy, "_READ_ONLY", view_only)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", full)
+    monkeypatch.setattr(behavior_runtime, "enabled", lambda: learning)
+    runtime = None if held is None else SimpleNamespace(auto_actions_held=lambda store, now: held)
+    monkeypatch.setattr(behavior_runtime, "_runtime", runtime)
+
+
+ROUTINE_ON_MY_OWN = "Tentative hold"
+CALENDAR_PROMISE = "or your calendar changes, I show it to you"
+
+
+def test_view_only_promises_nothing_is_added(monkeypatch):
+    _access(monkeypatch, view_only=True, held=False)
+    for auto_add in (False, True):
+        monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: auto_add)
+        for text in (wisp_about.privacy(), wisp_about.overview()):
+            assert "In View Only, nothing is added to your calendar or reminders without your OK" in text
+            assert ROUTINE_ON_MY_OWN not in text and "auto-add is on" not in text
+
+
+def test_full_access_during_the_routine_hold(monkeypatch):
+    _access(monkeypatch, full=True, held=True)
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
-    assert "or change your calendar, without showing it" in wisp_about.privacy()
-    assert "or your calendar changes, I show it to you" in wisp_about.overview()
+    for text in (wisp_about.privacy(), wisp_about.overview()):
+        assert ("For your first few days I only suggest reminders from your routine. After that I may "
+                "add a reminder or a Tentative hold on my own and tell you, with Undo.") in text
+        assert CALENDAR_PROMISE not in text and "change your calendar" not in text
+
+
+def test_full_access_after_the_routine_hold(monkeypatch):
+    _access(monkeypatch, full=True, held=False)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    for text in (wisp_about.privacy(), wisp_about.overview()):
+        assert ("I may add a reminder or a Tentative hold from your routine on my own, and tell you, "
+                "with Undo.") in text
+        assert CALENDAR_PROMISE not in text
+
+
+def test_auto_add_combines_with_routine_actions(monkeypatch):
+    _access(monkeypatch, full=True, held=False)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
+    text = wisp_about.privacy()
+    assert "Because auto-add is on, I may add a time-sensitive event or deadline" in text
+    assert "from your routine on my own" in text and CALENDAR_PROMISE not in text
+
+
+def test_cant_tell_says_the_cautious_version(monkeypatch):
+    # No runtime to ask about the hold.
+    _access(monkeypatch, full=True, held=None)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    text = wisp_about.privacy()
+    assert "Depending on your settings, I may add a reminder or a Tentative hold" in text
+    assert CALENDAR_PROMISE not in text and "without your OK" not in text
+    # The policy itself can't be read.
+    import service.safety as safety
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("policy unavailable")
+    monkeypatch.setattr(safety, "decide", broken)
+    _access(monkeypatch, full=True, held=False)
+    text = wisp_about.privacy()
+    assert "Depending on your settings" in text and CALENDAR_PROMISE not in text
+    _access(monkeypatch, full=True, learning=False)
+    text = wisp_about.privacy()
+    assert CALENDAR_PROMISE not in text and "In View Only" not in text
+
+
+def test_default_access_acts_like_full_access_for_routine_adds(monkeypatch):
+    # Neither View Only nor Full access: assistant_write ("Wisp's commitment
+    # store") is still ALLOW, so routine actions add on their own after the hold.
+    from service.safety import Tier, decide
+    _access(monkeypatch, held=False)
+    assert decide("assistant_write", {"title": "", "kind": "reminder"}, tool="add_reminder").tier is Tier.ALLOW
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    assert "from your routine on my own" in wisp_about.privacy()
+
+
+def test_routine_actions_the_policy_refuses_are_only_suggested(monkeypatch):
+    # When decide() refuses assistant_write (anything short of ALLOW),
+    # behavior_runtime.policy_block refuses every automatic add.
+    import service.safety as safety
+    from service.safety import Decision, Tier
+    _access(monkeypatch, held=False)
+    monkeypatch.setattr(safety, "decide", lambda *a, **k: Decision(Tier.DENY, "remote profile"))
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    text = wisp_about.privacy()
+    assert "Right now I only suggest reminders from your routine" in text
+    assert ROUTINE_ON_MY_OWN not in text
+
+
+def test_with_learning_off_and_no_auto_add_calendar_changes_wait(monkeypatch):
+    _access(monkeypatch, full=True, learning=False)
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    assert CALENDAR_PROMISE in wisp_about.overview()
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
     for text in (wisp_about.privacy(), wisp_about.overview()):
         assert "change your calendar" not in text and "calendar changes" not in text
