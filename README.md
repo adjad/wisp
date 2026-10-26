@@ -86,16 +86,22 @@ can answer.
 
 ### Connect Google (optional)
 
-Wisp can read your Gmail and Google Calendar so Brief and Day cover them too.
+Wisp can read your Gmail and Google Calendar so Brief and Day cover them too, and your Drive, Docs,
+Sheets, Slides, Chat, Tasks and Contacts so Ask can answer questions about them. It is one
+sign-in, and everything it asks for is read-only.
 
-- Open **Settings ▸ Google** and click **Connect a Google account**. Before you have connected
+- Open **Settings ▸ Google** and click **Connect Google account**. Before you have connected
   an account, the notch's Google row (**Connect Google**) does the same thing.
 - **You have to be on the tester list.** For now Wisp's Google sign-in is in Google's "Testing"
   mode, so only Google accounts the developer has added can use it. If you see "Access blocked" or
   "This Google account isn't on Wisp's tester list yet", send the developer the address you tried.
 - **Google shows an "unverified app" warning.** That is expected while Wisp is in testing. Choose
-  **Continue** (on some screens **Advanced**, then **Go to Wisp**), and leave both permissions ticked.
-  Wisp asks only to read mail and calendar.
+  **Continue** (on some screens **Advanced**, then **Go to Wisp**). Google then lists what Wisp wants
+  to read. Gmail is required; you can untick the rest, and **Reconnect** in Settings adds them
+  later. Wisp can't send, edit or delete anything in Google with this sign-in.
+- **The Google tools set themselves up on your first connection.** Ask's Drive, Docs and other
+  Google tools need a small download the first time, so connect while online. Nothing else needs
+  installing: the tool that runs them (uv) is inside Wisp.
 - **Sign-in expires every 7 days** while Wisp is in testing. Wisp sends a notification when it does.
   Open **Settings ▸ Google** and reconnect that account.
 - **Disconnect & erase** in the same pane revokes Wisp's access and deletes that account's mail,
@@ -110,6 +116,11 @@ Wisp can read your Gmail and Google Calendar so Brief and Day cover them too.
   one yourself in Settings.
 - **What does go out.** The search terms of a web question, plus the requests that connecting Google
   makes to Google. The model download comes from Hugging Face.
+- **Getting to know you stays here.** Your answers live in `~/.moe/profile.json` and go only to
+  Wisp's own model on this Mac, or to your own Mac on your tailnet if you set one up. They are never
+  sent to an optional cloud model. (If you hand-edit the config to run all of Wisp on a cloud
+  model, they go there with everything else.) **Erase everything** in the Wisp window's Memory ▸ About you
+  deletes them.
 - **It asks before sending.** Wisp prepares mail and message drafts and waits for you. Nothing is
   sent, and no event is changed in Calendar, until you approve it.
 
@@ -246,9 +257,14 @@ Linear, GitHub, Postgres…) contributes its tools to the same loop.
 
 **Safety.** Every tool declares a category; `service/config/policy.yaml` decides
 allow / confirm / deny. `read_only` makes Wisp inspect-only — including through
-shell, where view-only strings cannot write — `full_access` auto-runs everything,
+shell, where view-only strings cannot write — `full_access` auto-runs routine work,
 and a safety floor blocks catastrophic commands (`rm -rf /`, `sudo`, disk wipes)
-even then, so a prompt-injected model can't nuke the machine. Irreversible
+even then, so a prompt-injected model can't nuke the machine. A few things ask even
+under `full_access`: every AppleScript, and any shell command that could send
+something off the Mac, drive another app or read a key or saved sign-in. The card
+shows the exact command or script. After Wisp has read a file, page, mail or message
+in a turn, a Shortcut, a call, a web request or an action from an MCP server or
+skill asks as well. Irreversible
 deletes (recursive, wildcard) always show the exact command for approval in every
 mode and cannot be pre-approved. Per-tool grants and a `~/.moe/audit.jsonl` log
 sit alongside it. Research mode is the same story applied to hostile web content:
