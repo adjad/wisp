@@ -32,8 +32,9 @@ jobs:
   # other; each checks out and bootstraps independently.
   # Every upload in the PR jobs, and the diagnostics in full, only keeps copies
   # for people to download: continue-on-error, so a full artifact quota can't
-  # turn a gate that passed red. The candidate and mini uploads in full stay
-  # strict, because a release is promoted from them.
+  # turn a gate that passed red. In full, the candidate, mini and ACL report
+  # uploads stay strict: they are the retained evidence for main and tags
+  # (releases still rebuild from source).
   preview:
     name: Preview build (PR)
     if: github.event_name == 'pull_request'
@@ -76,7 +77,7 @@ jobs:
           name: wisp-acl-qualification-${{ github.event.pull_request.head.sha || github.sha }}
           path: .wisp-build/run-acl-fixture/qualification.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
       # Same Swift build, assembly, structure/native validation, ad-hoc signing
       # and relocated-backend smoke as `all`. Simulation QA runs in its own job;
       # the artifact is marked preview and every release command refuses it.
@@ -201,7 +202,6 @@ jobs:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 build-support/isolated_acl_fixture.py --ephemeral-macos --expected-sha "$CANDIDATE_SHA" --output .wisp-build/run-acl-fixture
       - name: Upload isolated ACL qualification report
-        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
