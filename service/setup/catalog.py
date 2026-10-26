@@ -38,7 +38,9 @@ MELLUM_R1_Q4 = CatalogModel(
 # with enable_thinking false it returns zero tokens on the step after a tool
 # result, so every tool-using answer came back empty (measured 2026-10-24).
 # Sampling: the model card's top_p/top_k, with temperature lowered from its 1.0
-# to 0.8 (user decision, 2026-10-25).
+# to 0.8 (user decision, 2026-10-25). KV cache: TurboQuant at 6 bits on a new
+# install (user decision, 2026-10-26). Only the two keys the bundled oMLX 0.7.0
+# knows; `turboquant_kv_scheme` exists from 0.7.3 and would be refused.
 GEMMA_E4B_MTP = CatalogModel(
     "gemma-4-E4B-it-oQ4e-mtp", "Gemma 4 E4B", "4-bit (oQ4e) + MTP", 5.5, 8,
     "Jundot/gemma-4-E4B-it-oQ4e-mtp",
@@ -48,6 +50,7 @@ GEMMA_E4B_MTP = CatalogModel(
         "enable_thinking": True,
         "mtp_enabled": True, "mtp_adaptive_max_depth": 4,
         "max_context_window": 16384,
+        "turboquant_kv_enabled": True, "turboquant_kv_bits": 6,
         "trust_remote_code": True,
     })
 
