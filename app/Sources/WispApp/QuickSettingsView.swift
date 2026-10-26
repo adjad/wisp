@@ -40,7 +40,14 @@ struct QuickSettingsView: View {
                 learningRow
             }
             group("Daily brief") { briefRow }
-            group("Google") { NotchConnectGoogle() }
+            group("Google") {
+                // Without the user's own OAuth client this is one quiet line to
+                // Settings ▸ Google (SettingsView's "WispSettingsPane" choice).
+                NotchConnectGoogle(openSetup: {
+                    UserDefaults.standard.set("google", forKey: "WispSettingsPane")
+                    WispRouter.shared.open(.settings)
+                })
+            }
             group("Advanced") {
                 row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
                     Text("Model, timing and tools under each reply")
