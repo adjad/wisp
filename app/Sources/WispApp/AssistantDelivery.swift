@@ -62,6 +62,15 @@ final class AssistantDelivery {
         return value.doubleValue
     }
 
+    /// A reminder whose moment has passed (the backend's `expires_at`, two
+    /// minutes after the event) is acknowledged without a banner. An app that
+    /// reconnects late must never show "in 9 min" for something already over.
+    static func expiredReminder(_ event: WispClient.Event,
+                                now: Double = Date().timeIntervalSince1970) -> Bool {
+        guard event.type == "reminder", let expires = number(event.payload["expires_at"]) else { return false }
+        return expires <= now
+    }
+
     nonisolated static func validReminderDate(_ value: Any?) -> Bool {
         guard let value = value as? String,
               value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", options: .regularExpression) != nil else { return false }
@@ -464,7 +473,9 @@ final class AssistantDelivery {
         } else {
             let receipt = receipts[id] ?? [:]
             let done = Set(receipt.keys) == ["kind", "done"] && Self.jsonBoolean(receipt["done"]) == true
-            if !done {
+            // An expired reminder needs no receipt: the server retires it, and
+            // a lost ACK only replays a row this check skips again.
+            if !done && !Self.expiredReminder(event) {
                 guard await perform(event) else { return false }
                 // A changed event only invalidates UI data. Repeating that
                 // refresh after a lost ACK is safe; persisting every refresh
