@@ -98,7 +98,7 @@ enum NotchQADriver {
                                                              actions: state { $0.qaReset(account: judgeAccount) })) }),
             ("brief-legacy", .brief, { AnyView(NotchBriefView(model: model, today: legacy, open: nil)) }),
             ("day", .day, { AnyView(NotchDayView(model: model, today: today)) }),
-        ]
+        ] + NotchQASetup.scenes()
         for scene in scenes {
             let name = scene.name
             let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 760),

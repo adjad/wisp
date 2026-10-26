@@ -37,6 +37,10 @@ struct SetupStatus: Decodable {
         let source: String; let installed: [ModelEntry]; let recommended: String
         let use: String?; let warning: String?
         let recommendedLabel: String?
+        /// False when no model Wisp can download fits this Mac's memory (or the
+        /// memory couldn't be read): setup offers another route, not a download.
+        /// Absent from an older service, which never said.
+        let fits: Bool?
         let download: Download?; let embeddingDownload: Download?
     }
     struct RoleRow: Decodable, Identifiable {
@@ -74,6 +78,21 @@ final class SetupGuideModel: ObservableObject {
         let message: String?
         var id: String { model }
         var active: Bool { state == "pending" || state == "downloading" }
+
+        /// "45% · 2.5 GB of 5.5 GB · 10 MB/s", or "Preparing download…" before the
+        /// engine knows the size. Shared by the setup window and the notch card.
+        var progressText: String {
+            guard totalBytes > 0 else { return "Preparing download…" }
+            let received = ByteCountFormatter.string(fromByteCount: Int64(downloadedBytes), countStyle: .file)
+            let total = ByteCountFormatter.string(fromByteCount: Int64(totalBytes), countStyle: .file)
+            return "\(Int(progress))% · \(received) of \(total)" + (speedText.map { " · \($0)" } ?? "")
+        }
+
+        /// "10 MB/s" while bytes are arriving; nil when nothing is moving.
+        var speedText: String? {
+            guard bytesPerSecond > 0 else { return nil }
+            return ByteCountFormatter.string(fromByteCount: Int64(bytesPerSecond), countStyle: .file) + "/s"
+        }
     }
     private struct Downloads: Decodable { let tasks: [DownloadTask] }
 
@@ -109,6 +128,17 @@ final class SetupGuideModel: ObservableObject {
     // Counted, so a view that appears before its predecessor disappears (SwiftUI
     // doesn't order the two) never stops the poll it still needs.
     @Published private(set) var hosts: [String: Int] = [:]
+    /// The host a transfer holds while it runs, so collapsing the notch panel
+    /// or closing a window doesn't stop the poll (and with it the automatic
+    /// switch to the new model). It is taken only while setup is on screen, and
+    /// let go once nothing is transferring and the finished model has had time
+    /// to arrive.
+    static let downloadHost = "download"
+    /// How long a finished download keeps the poll going while the engine lists
+    /// the model and Wisp switches over to it.
+    nonisolated static let finishingGrace: TimeInterval = 120
+    private var finishedAt: Date?
+    private var keepAwake: NSObjectProtocol?
     private var monitorTask: Task<Void, Never>?
     private var configurationObserver: AnyCancellable?
 
@@ -140,6 +170,40 @@ final class SetupGuideModel: ObservableObject {
         monitorTask?.cancel()
         monitorTask = nil
         stopMonitoring()
+    }
+
+    /// Whether a transfer still needs the poll: one is running, or one finished
+    /// within `finishingGrace` and Wisp can't answer yet. Pure.
+    nonisolated static func holdsDownloadHost(_ downloads: [DownloadTask], finishedAt: Date?,
+                                              ready: Bool, now: Date) -> Bool {
+        if downloads.contains(where: \.active) { return true }
+        guard let finishedAt, !ready else { return false }
+        return now.timeIntervalSince(finishedAt) < finishingGrace
+    }
+
+    /// Take or let go of the download host after each look at the transfers.
+    /// `previous`: the transfers seen before, to notice one that just finished.
+    private func updateDownloadHost(previous: [DownloadTask]? = nil, now: Date = Date()) {
+        if let previous {
+            let wasActive = Set(previous.filter(\.active).map(\.model))
+            if downloads.contains(where: { $0.state == "completed" && wasActive.contains($0.model) }) {
+                finishedAt = now
+            }
+        }
+        let holding = hosts[Self.downloadHost] != nil
+        let hold = Self.holdsDownloadHost(downloads, finishedAt: finishedAt,
+                                          ready: statusIsCurrent && status?.ready == true, now: now)
+        if hold, !holding, isShown {
+            show(in: Self.downloadHost)
+            // Idle sleep would pause the transfer; a closed lid still sleeps.
+            keepAwake = ProcessInfo.processInfo.beginActivity(
+                options: [.idleSystemSleepDisabled], reason: "Downloading Wisp's model")
+        } else if !hold, holding {
+            finishedAt = nil
+            if let keepAwake { ProcessInfo.processInfo.endActivity(keepAwake) }
+            keepAwake = nil
+            hide(from: Self.downloadHost)
+        }
     }
 
     /// Something outside setup changed which models or engine Wisp uses. What is
@@ -189,6 +253,7 @@ final class SetupGuideModel: ObservableObject {
             selectedModel = next.models.use ?? next.models.installed.first?.id
         }
         autoAdvanceFirstSetup(next)
+        updateDownloadHost()
     }
 
     #if WISP_NOTCH_QA
@@ -360,8 +425,10 @@ final class SetupGuideModel: ObservableObject {
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             let next = try decoder.decode(Downloads.self, from: await call("GET", "engine/downloads")).tasks
             guard generation == downloadGeneration, !monitoringStopped, !Task.isCancelled else { return }
+            let previous = downloads
             downloads = next
             downloadError = nil
+            updateDownloadHost(previous: previous)
         } catch {
             guard generation == downloadGeneration, !monitoringStopped, !Task.isCancelled else { return }
             downloadError = "Wisp couldn't check the download. Choose Check again to retry."
@@ -653,7 +720,8 @@ struct SetupGuideView: View {
         let check = s.checks.first { $0.id == "model" }
         return card(step: "2", title: "Model", state: check?.state ?? "todo") {
             recommendationText(s)
-            if let check, check.state != "ok" {
+            // The no-fit check repeats the memory warning just below; say it once.
+            if let check, check.state != "ok", check.detail != s.models.warning {
                 Text(check.detail).font(.callout).foregroundStyle(Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -662,10 +730,10 @@ struct SetupGuideView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if s.models.installed.isEmpty {
-                Text(s.omlx.running ? (s.models.download == nil
-                                      ? "Add a local model to the engine's model folder to get started."
-                                      : "Download a model below to get started.")
-                                    : "Start the engine above to see your models.")
+                Text(!s.omlx.running ? "Start the engine above to see your models."
+                     : s.models.fits == false ? "Connect a model you run in another app under Other local apps below."
+                     : s.models.download == nil ? "Add a local model to the engine's model folder to get started."
+                     : "Download a model below to get started.")
                     .font(.callout).foregroundStyle(Theme.textSecondary)
             } else {
                 VStack(spacing: 6) {
@@ -703,6 +771,10 @@ struct SetupGuideView: View {
 
     private func recommendationText(_ s: SetupStatus) -> some View {
         let name = recommendedName(s)
+        if s.models.fits == false {
+            return Text("None of the models Wisp can download fits this Mac.").font(.callout)
+                .foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+        }
         let text = s.models.installed.contains(where: { $0.id == s.models.recommended })
             ? "\(name) is the best fit for this Mac, and it is installed."
             : "Recommended for this Mac (\(s.hardware.ramGb > 0 ? "\(s.hardware.ramGb) GB" : "memory unknown")): \(name). Wisp also works with the models you already have."
@@ -786,7 +858,7 @@ struct SetupGuideView: View {
                     if task.active {
                         ProgressView(value: task.progress, total: 100)
                         HStack {
-                            Text(downloadProgress(task)).font(.caption).foregroundStyle(Theme.textSecondary)
+                            Text(task.progressText).font(.caption).foregroundStyle(Theme.textSecondary)
                             Spacer()
                             action("Cancel") { Task { await model.download(d.model, cancel: true) } }
                                 .disabled(model.busy != nil)
@@ -900,14 +972,6 @@ struct SetupGuideView: View {
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
-    }
-
-    private func downloadProgress(_ task: SetupGuideModel.DownloadTask) -> String {
-        let received = ByteCountFormatter.string(fromByteCount: Int64(task.downloadedBytes), countStyle: .file)
-        let total = ByteCountFormatter.string(fromByteCount: Int64(task.totalBytes), countStyle: .file)
-        let speed = ByteCountFormatter.string(fromByteCount: Int64(task.bytesPerSecond), countStyle: .file)
-        return task.totalBytes > 0 ? "\(Int(task.progress))% · \(received) of \(total) · \(speed)/s"
-                                  : "Preparing download…"
     }
 
     private func connectRow(key: String, port: Int, models: [String]) -> some View {
