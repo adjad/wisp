@@ -20,8 +20,6 @@ def test_fresh_engine_gets_gemma_profile(tmp_path):
     entry = _entries(settings)[GEMMA.id]
     assert entry["temperature"] == 0.8 and entry["top_p"] == 0.95 and entry["top_k"] == 64
     assert entry["enable_thinking"] is True and entry["mtp_enabled"] is True
-    assert entry["turboquant_kv_enabled"] is True and entry["turboquant_kv_bits"] == 6
-    assert "turboquant_kv_scheme" not in entry
     assert json.loads(settings.read_text())["version"] == 1
     assert stat.S_IMODE(settings.stat().st_mode) == 0o600
 
@@ -134,7 +132,6 @@ def test_a_failed_push_is_retried_instead_of_counted(engine):
     assert GEMMA.id in downloads._profiles_pushed and downloads._push_failed_at == {}
     sent = engine.puts[0]
     assert sent["max_context_window"] == 16384 and sent["enable_thinking"] is True
-    assert sent["turboquant_kv_enabled"] is True and sent["turboquant_kv_bits"] == 6
     # Pushed once: later polls leave the engine alone.
     asyncio.run(downloads._push_profiles([_task(GEMMA.id, "completed")], now=lambda: 500.0))
     assert len(engine.puts) == 1
@@ -193,34 +190,3 @@ def test_a_watch_starts_once_and_only_for_a_profiled_download(engine):
         assert first is not None and downloads._watch is first
         first.cancel()
     asyncio.run(run())
-
-
-def test_turboquant_keys_survive_a_schema_filtered_push(engine, monkeypatch):
-    # The PUT sends only what the engine's schema accepts; the seed after it puts
-    # back whatever the PUT's rewrite dropped, so the file always has the profile.
-    schema = {"components": {"schemas": {"ModelSettingsRequest": {"properties": {
-        "temperature": {}, "turboquant_kv_enabled": {}, "turboquant_kv_bits": {}}}}}}
-    pushed = []
-
-    async def call(method, path, payload=None):
-        if path == "/openapi.json":
-            return schema
-        pushed.append(payload)
-        engine.settings.write_text(json.dumps({"version": 1, "models": {GEMMA.id: payload}}))
-        return {"success": True}
-    monkeypatch.setattr(downloads, "_call", call)
-    asyncio.run(downloads._push_profiles([_task(GEMMA.id, "completed")]))
-    assert pushed[0] == {"temperature": 0.8, "turboquant_kv_enabled": True, "turboquant_kv_bits": 6}
-    entry = _entries(engine.settings)[GEMMA.id]
-    assert entry["turboquant_kv_enabled"] is True and entry["turboquant_kv_bits"] == 6
-    assert entry["max_context_window"] == 16384 and entry["mtp_enabled"] is True
-
-
-def test_installs_seeded_before_turboquant_get_it(tmp_path):
-    # The record holds the old profile's fingerprint, so the new version is applied.
-    settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
-    old = {k: v for k, v in GEMMA.engine_profile.items() if not k.startswith("turboquant_")}
-    record.write_text(json.dumps({GEMMA.id: profiles.fingerprint(old)}))
-    settings.write_text(json.dumps({"version": 1, "models": {GEMMA.id: old}}))
-    assert profiles.seed(settings, record) == [GEMMA.id]
-    assert _entries(settings)[GEMMA.id]["turboquant_kv_bits"] == 6
