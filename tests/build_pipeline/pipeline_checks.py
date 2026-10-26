@@ -270,6 +270,126 @@ class PipelineTests(unittest.TestCase):
         self.assertIn('BUILTIN_CLIENT_PATH = Path(__file__).with_name("google_oauth_client.json")', source)
         self.assertIn("service/google_oauth_client.json", (ROOT / ".gitignore").read_text().splitlines())
 
+    # --- bundled uv (fake tarballs only; nothing is downloaded) -------------
+
+    @staticmethod
+    def fake_uv_tarball(files=None, extra=None, link=False):
+        import io, tarfile
+        files = files if files is not None else {"uv": b"\xcf\xfa\xed\xfe fake uv", "uvx": b"\xcf\xfa\xed\xfe fake uvx"}
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            info = tarfile.TarInfo("uv-aarch64-apple-darwin")
+            info.type, info.mode = tarfile.DIRTYPE, 0o755
+            tar.addfile(info)
+            for name, data in {**files, **(extra or {})}.items():
+                info = tarfile.TarInfo("uv-aarch64-apple-darwin/" + name)
+                info.size, info.mode = len(data), 0o755
+                tar.addfile(info, io.BytesIO(data))
+            if link:
+                info = tarfile.TarInfo("uv-aarch64-apple-darwin/uvx")
+                info.type, info.linkname = tarfile.SYMTYPE, "/usr/bin/true"
+                tar.addfile(info)
+        return buffer.getvalue()
+
+    def fake_uv_fetch(self, payload, calls):
+        def fetch(url, destination, limit):
+            calls.append((url, limit))
+            Path(destination).write_bytes(payload)
+        return fetch
+
+    def test_uv_pin_is_a_real_release_digest(self):
+        uv = p.uv_tool
+        self.assertRegex(uv.UV_VERSION, r"^\d+\.\d+\.\d+$")
+        self.assertRegex(uv.UV_SHA256, r"^[0-9a-f]{64}$")
+        self.assertEqual(uv.UV_URL, f"https://github.com/astral-sh/uv/releases/download/{uv.UV_VERSION}/"
+                                    "uv-aarch64-apple-darwin.tar.gz")
+        self.assertGreater(uv.UV_SIZE, 1_000_000)
+
+    def test_uv_download_is_verified_cached_and_reverified(self):
+        uv = p.uv_tool
+        payload, calls = self.fake_uv_tarball(), []
+        pin = dict(size=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+        cache = self.root / "uv-cache"
+        archive = uv.verified_archive(cache, fetch=self.fake_uv_fetch(payload, calls), **pin)
+        self.assertEqual(archive.read_bytes(), payload)
+        self.assertEqual([url for url, _ in calls], [uv.UV_URL])
+        # A cached, matching archive is reused without a download, offline too.
+        self.assertEqual(uv.verified_archive(cache, offline=True, **pin), archive)
+        self.assertEqual(len(calls), 1)
+        # A tampered cache entry is discarded, never reused.
+        archive.write_bytes(payload[:-1] + b"x")
+        with self.assertRaisesRegex(uv.UVToolError, "offline"):
+            uv.verified_archive(cache, offline=True, **pin)
+        self.assertFalse(archive.exists())
+
+    def test_uv_download_that_differs_from_the_pin_fails_the_build(self):
+        uv = p.uv_tool
+        payload, calls = self.fake_uv_tarball(), []
+        cache = self.root / "uv-cache"
+        with self.assertRaisesRegex(uv.UVToolError, "does not match the pinned size and SHA-256"):
+            uv.verified_archive(cache, fetch=self.fake_uv_fetch(payload, calls),
+                                size=len(payload), sha256="0" * 64)
+        with self.assertRaisesRegex(uv.UVToolError, "does not match"):
+            uv.verified_archive(cache, fetch=self.fake_uv_fetch(payload, calls),
+                                size=len(payload) + 1, sha256=hashlib.sha256(payload).hexdigest())
+        self.assertEqual(list(cache.iterdir()), [])      # nothing partial is left to reuse
+        # The real pin refuses the fake outright.
+        with self.assertRaises(uv.UVToolError):
+            uv.verified_archive(cache, fetch=self.fake_uv_fetch(payload, calls))
+
+    def test_uv_archive_contents_are_exact(self):
+        uv = p.uv_tool
+        good = self.root / "good.tar.gz"
+        good.write_bytes(self.fake_uv_tarball())
+        self.assertEqual(set(uv.binaries(good)), {"uv", "uvx"})
+        for name, payload in (("extra", self.fake_uv_tarball(extra={"install.sh": b"#!/bin/sh"})),
+                              ("missing", self.fake_uv_tarball(files={"uv": b"\xcf\xfa\xed\xfe uv"})),
+                              ("link", self.fake_uv_tarball(files={"uv": b"\xcf\xfa\xed\xfe uv"}, link=True)),
+                              ("not macho", self.fake_uv_tarball(files={"uv": b"#!/bin/sh", "uvx": b"#!/bin/sh"})),
+                              ("garbage", b"not a tarball")):
+            with self.subTest(name=name):
+                bad = self.root / (name.replace(" ", "-") + ".tar.gz")
+                bad.write_bytes(payload)
+                with self.assertRaises(uv.UVToolError):
+                    uv.binaries(bad)
+
+    def test_bundle_ships_executable_uv_only_when_built_with_it(self):
+        uv = p.uv_tool
+        archive = self.root / "uv.tar.gz"
+        archive.write_bytes(self.fake_uv_tarball())
+        bundle = self.fixture()
+        meta = dict(self.meta, uv=uv.stage(bundle, archive))
+        self.assertEqual(meta["uv"]["version"], uv.UV_VERSION)
+        self.assertEqual(meta["uv"]["sha256"], uv.UV_SHA256)
+        for name in ("uv", "uvx"):
+            path = bundle / "Contents/Resources/bin" / name
+            self.assertTrue(os.access(path, os.X_OK), name)
+        p.validate_structure(bundle, meta)
+        self.assertIn("Contents/Resources/bin/uvx", p.inventory(bundle))
+        with self.assertRaisesRegex(p.BuildError, "does not declare"):
+            p.validate_structure(bundle, dict(meta, uv=None))
+        with self.assertRaisesRegex(p.BuildError, "pinned release"):
+            p.validate_structure(bundle, dict(meta, uv=dict(meta["uv"], sha256="0" * 64)))
+        (bundle / "Contents/Resources/bin/uvx").chmod(0o644)
+        with self.assertRaisesRegex(p.BuildError, "non-executable"):
+            p.validate_structure(bundle, meta)
+        # A --no-uv build declares none and ships none; old metadata is not judged.
+        clean = self.root / "clean"
+        clean.mkdir()
+        self.root, saved = clean, self.root
+        try:
+            bare = self.fixture()
+            p.validate_structure(bare, dict(self.meta, uv=None))
+            p.validate_structure(bare, dict(self.meta))
+        finally:
+            self.root = saved
+
+    def test_no_uv_flag_and_loud_failure_are_wired(self):
+        source = (ROOT / "build-support/pipeline.py").read_text()
+        self.assertIn('p.add_argument("--no-uv", action="store_true"', source)
+        self.assertIn('uv_tool.verified_archive(STATE / "uv-tool-cache", offline=args.offline)', source)
+        self.assertIn("Pass --no-uv to build without the bundled uv.", source)
+
     def test_mode_validation(self):
         bundle = self.fixture()
         (bundle / "Contents/MacOS/Wisp").chmod(0o644)
@@ -1943,7 +2063,8 @@ print('external venv readable; private home and writes denied')
         self.assertTrue(p.plist(dict(meta, dirty=False))["WispPreviewBuild"])
         self.assertFalse(p.plist(dict(meta, dirty=False, preview=False))["WispPreviewBuild"])
 
-    def test_preview_skips_qa_stages_and_never_verifies_as_release(self):
+    def run_preview(self, *flags, uv=None):
+        """main() for a preview build with every stage faked; returns (exit code, stages, uv fetch mock)."""
         meta = dict(self.meta, preview=True, tracked_source_sha256="0" * 64)
         output = p.ROOT / "dist" / "unit-test-preview-output"
         stages = []
@@ -1955,7 +2076,7 @@ print('external venv readable; private home and writes denied')
                 pass
             def run(inner, *a, **k):
                 return 0, self.root / "x.log"
-        with patch.object(sys, "argv", ["pipeline.py", "preview"]), \
+        with patch.object(sys, "argv", ["pipeline.py", "preview", *flags]), \
                 patch.object(p, "Runner", FakeRunner), \
                 patch.object(p, "check_locks"), patch.object(p, "doctor", return_value={}), \
                 patch.object(p, "metadata", return_value=meta) as metadata, \
@@ -1965,7 +2086,10 @@ print('external venv readable; private home and writes denied')
                 patch.object(p, "simulation_tests", side_effect=lambda *a, **k: stages.append("simulation")), \
                 patch.object(p, "verify_artifacts", side_effect=lambda *a, **k: stages.append("verify")), \
                 patch.object(p, "build_swift", side_effect=lambda *a, **k: stages.append("swift") or Path("bin")), \
-                patch.object(p, "assemble", side_effect=lambda *a, **k: stages.append("assemble") or self.root / "Wisp.app"), \
+                patch.object(p, "assemble", side_effect=lambda *a, **k: stages.append(("assemble", k.get("uv_archive")))
+                             or self.root / "Wisp.app"), \
+                patch.object(p.uv_tool, "verified_archive",
+                             **(uv or {"return_value": Path("pinned-uv.tar.gz")})) as uv_fetch, \
                 patch.object(p, "validate_structure", side_effect=lambda *a, **k: stages.append("structure")), \
                 patch.object(p, "prepare_native_for_signing"), \
                 patch.object(p, "validate_native", side_effect=lambda *a, **k: stages.append("native")), \
@@ -1973,9 +2097,32 @@ print('external venv readable; private home and writes denied')
                 patch.object(p, "relocation_smoke", side_effect=lambda *a, **k: stages.append("smoke")), \
                 patch.object(p, "finalize", side_effect=lambda *a, **k: stages.append("finalize")), \
                 patch.object(Path, "mkdir"):
-            self.assertEqual(p.main(), 0)
+            code = p.main()
+        return code, stages, uv_fetch, metadata
+
+    def test_preview_skips_qa_stages_and_never_verifies_as_release(self):
+        code, stages, uv_fetch, metadata = self.run_preview()
+        self.assertEqual(code, 0)
+        uv_fetch.assert_called_once_with(p.STATE / "uv-tool-cache", offline=False)
         metadata.assert_called_once_with(False, None, True)
-        self.assertEqual(stages, ["swift", "assemble", "structure", "native", "sign", "smoke", "finalize"])
+        self.assertEqual(stages, ["swift", ("assemble", Path("pinned-uv.tar.gz")), "structure", "native", "sign",
+                                  "smoke", "finalize"])
+
+    def test_uv_fetch_failure_stops_the_build_unless_no_uv(self):
+        import io
+        from contextlib import redirect_stderr
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code, stages, _, _ = self.run_preview(uv={"side_effect": p.uv_tool.UVToolError("uv release download failed")})
+        self.assertEqual(code, 1)
+        self.assertEqual(stages, [])                       # before Swift, tests or assembly
+        self.assertIn("Pass --no-uv", err.getvalue())
+        code, stages, uv_fetch, _ = self.run_preview("--no-uv")
+        self.assertEqual(code, 0)
+        uv_fetch.assert_not_called()
+        self.assertIn(("assemble", None), stages)
+
+
 
     def test_preview_artifact_is_refused_by_release_verification(self):
         self.artifact()

@@ -25,6 +25,7 @@ import zipfile
 
 import engine as engine_build
 import engine_licenses
+import uv_tool
 
 ROOT = Path(__file__).resolve().parents[1]
 SUPPORT = ROOT / "build-support"
@@ -628,7 +629,8 @@ def source_files() -> list[Path]:
     return result
 
 
-def assemble(runner, binary, destination, meta, offline=False, engine_app=None, google_client=None):
+def assemble(runner, binary, destination, meta, offline=False, engine_app=None, google_client=None,
+             uv_archive=None):
     bundle = destination / "Wisp.app"
     contents = bundle / "Contents"
     resources = contents / "Resources"
@@ -651,6 +653,12 @@ def assemble(runner, binary, destination, meta, offline=False, engine_app=None, 
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, dest)
     write_google_oauth_client(bundle, meta, google_client)
+    # uv/uvx for the Google tools (uv_tool.py): pinned, digest-checked, signed
+    # with the app below. None only for an explicit --no-uv build.
+    try:
+        meta["uv"] = uv_tool.stage(bundle, uv_archive) if uv_archive is not None else None
+    except uv_tool.UVToolError as exc:
+        raise BuildError(str(exc)) from None
     embedded = backend / ".venv"
     from bootstrap_uv import unpack_runtime
     unpack_runtime(CONFIG, STATE, embedded)
@@ -741,6 +749,11 @@ def validate_structure(bundle: Path, meta: dict):
         if not os.access(bundle / name, os.X_OK):
             raise BuildError(f"Bundle program is not executable: {name}")
     validate_google_oauth_client(bundle, meta)
+    if "uv" in meta:                 # metadata from before bundled uv has no record
+        try:
+            uv_tool.validate(bundle, meta["uv"])
+        except uv_tool.UVToolError as exc:
+            raise BuildError(str(exc)) from None
     if engine_build.read_engine_json(bundle) is not None or meta.get("engine"):
         try:
             engine_build.validate_structure(bundle, meta.get("engine"))
@@ -1392,6 +1405,9 @@ def main():
     p.add_argument("--google-oauth-client", type=Path,
                    help="Local JSON file with the built-in Google OAuth client ({client_id, client_secret}); "
                         "otherwise $WISP_GOOGLE_OAUTH_CLIENT; without either the app ships no built-in client")
+    p.add_argument("--no-uv", action="store_true",
+                   help="Build without the bundled uv/uvx (Google tools then need uv on the Mac); "
+                        "otherwise a missing or mismatched pinned uv release fails the build")
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
     p.add_argument("--qa-runtime", type=Path,
                    help="Closed Python runtime tree for the separate managed-QA artifact")
@@ -1473,6 +1489,13 @@ def main():
             meta = metadata(args.allow_dirty, args.build_number, preview) if packaging else None
             # Read (and drop from the environment) before any test or build step runs.
             google_client = google_oauth_client(args.google_oauth_client) if packaging else None
+            # Fetched and verified before any test runs, so a bad pin fails fast.
+            uv_archive = None
+            if packaging and not args.no_uv:
+                try:
+                    uv_archive = uv_tool.verified_archive(STATE / "uv-tool-cache", offline=args.offline)
+                except uv_tool.UVToolError as exc:
+                    raise BuildError(f"{exc}. Pass --no-uv to build without the bundled uv.") from None
             source_start = source_fingerprint() if meta else None
             if meta:
                 meta["tracked_source_sha256"] = source_start
@@ -1496,7 +1519,7 @@ def main():
                         except engine_build.EngineBuildError as exc:
                             raise BuildError(str(exc)) from None
                     bundle = assemble(runner, binary, output, meta, args.offline, engine_app,
-                                      google_client=google_client)
+                                      google_client=google_client, uv_archive=uv_archive)
                 validate_structure(bundle, meta)
                 prepare_native_for_signing(runner, bundle)
                 validate_native(runner, bundle, meta)
