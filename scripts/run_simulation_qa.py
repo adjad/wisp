@@ -253,6 +253,7 @@ ADDITIONAL_FULL_TESTS = {
     # rc1 Ask backend: reply-needed reads stay read-only, the capability welcome, Gmail-only identity.
     "tests/test_router_reply_needed_reads.py",
     "tests/test_capability_welcome.py",
+    "tests/test_wisp_self_questions.py",
     "tests/test_email_gmail_only_and_dedup.py",
     # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
     "tests/test_needs_you_clear.py",
