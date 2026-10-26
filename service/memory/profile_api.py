@@ -16,18 +16,11 @@ from service.memory import profile as P
 router = APIRouter(prefix="/profile", tags=["profile"])
 
 
-def _local_only() -> bool:
-    """False while a cloud model answers everything: the profile then rides in
-    that model's prompt, and the app must not say "Stays on this Mac"."""
-    try:
-        from service.wisp_about import cloud_state
-        return cloud_state()[0] != "everything"
-    except Exception:  # noqa: BLE001 - unknown reads as the shipped default
-        return True
-
-
 def _payload(profile: dict) -> dict[str, Any]:
-    status = {**P.status(profile), "local_only": _local_only()}
+    # The same predicate the prompts use (P.may_send_to): the label can't
+    # say "Stays on this Mac" while the profile rides to a cloud model.
+    host = P.sent_to()
+    status = {**P.status(profile), "local_only": not host, "sent_to": host}
     return {"profile": profile, "status": status, "preview": P.preview(profile)}
 
 

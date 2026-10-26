@@ -1360,11 +1360,15 @@ async def chat(body: dict[str, Any]):
             await owned.aclose()
 
 
-def _profile_block() -> str:
-    """The user's own description of themselves, for a LOCAL managed-model
-    prompt. Best-effort: a missing or unreadable profile never breaks a turn."""
+def _profile_block(endpoint) -> str:
+    """The user's own description of themselves (About you), for a prompt to
+    `endpoint`, only where profile.may_send_to allows: Wisp's own on-Mac model,
+    or any model while Cloud "Everything" is on. Never an optional cloud model.
+    Best-effort: a missing or unreadable profile never breaks a turn."""
     try:
-        from service.memory.profile import profile_block
+        from service.memory.profile import may_send_to, profile_block
+        if not may_send_to(managed=getattr(endpoint, "managed", False)):
+            return ""
         return profile_block()
     except Exception:  # noqa: BLE001
         return ""
@@ -2561,9 +2565,10 @@ async def agent(body: dict[str, Any]):
                 else:
                     from service.skills import always_skills_block, selected_skill_block
                     # Who the user is, in their own words (service/memory/profile.py):
-                    # local managed model only, like the memory block beside it.
+                    # Wisp's on-Mac model, or any model under Cloud "Everything";
+                    # never a role bound to an optional cloud model.
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
-                            + _profile_block()
+                            + _profile_block(target.endpoint)
                             + memory_block(query=prompt)
                             + ("" if literal_envelope else selected_skill_block(prompt, active_skill))
                             + (always_skills_block() if not literal_envelope and decision.role != "coding" else "")

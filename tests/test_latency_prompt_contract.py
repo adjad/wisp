@@ -29,6 +29,8 @@ from service.tools.registry import REGISTRY, is_tool_searchable, tool_schemas
 
 
 class ScriptedClient:
+    managed = True  # Wisp's own on-Mac model: the About you profile may ride along
+
     def __init__(self, *responses):
         self.responses = list(responses)
         self.requests = []

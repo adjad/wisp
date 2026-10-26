@@ -6,10 +6,11 @@ reply had one tone. A chief of staff starts by learning who they work for. The
 notch's Getting to know you flow (KnowYouView.swift) asks, one question at a
 time, and this module keeps the answers and puts them to work in three places:
 
-  * `profile_block()`  — the system-prompt block every LOCAL text path carries
-    after the identity block (service/agent/loop.py, main.py's plain chat
-    branches): name, goals, struggles, people, tone, boundaries, plus the rules
-    for using them kindly.
+  * `profile_block()`  — the system-prompt block carried after the identity
+    block (service/agent/loop.py, main.py's plain chat branch) on a prompt for
+    Wisp's own on-Mac model, or any model while Cloud "Everything" is on
+    (`may_send_to`): name, goals, struggles, people, tone, boundaries, plus the
+    rules for using them kindly.
   * `keeping_in_mind()` — the brief's deterministic "Keeping in mind" section
     (service/assistant/brief.py). No model writes it; it fires only on signals
     the day actually shows.
@@ -21,10 +22,13 @@ time, and this module keeps the answers and puts them to work in three places:
 
 Everything is optional, bounded and local. The file is plain JSON under
 ~/.moe (owner-only, 0600) so it is easy to read, edit and erase. The profile
-does not travel to an external local provider. When the user runs ALL of Wisp
-on a cloud model (Settings > Cloud, "Everything", or WISP_REMOTE_ONLY), it rides
-in that model's system prompt like the rest of Wisp's context; `status()` then
-reports local_only=False so the app stops saying "Stays on this Mac".
+goes only where `may_send_to` allows: Wisp's own on-Mac model, or, when the
+user runs ALL of Wisp on a cloud model (Cloud "Everything", or
+WISP_REMOTE_ONLY), that model's system prompt like the rest of Wisp's context.
+Never an optional cloud model (the Super Model, or a role bound to the cloud
+endpoint), an external local provider or another machine. profile_api reports
+the same rule (local_only, sent_to), so the app's "Stays on this Mac" and the
+prompts can't disagree.
 
 What this deliberately is NOT: a VIP list for notifications. Proactive attention
 decides what may interrupt from recent two-way contact (user decision P4,
@@ -419,6 +423,43 @@ _DETAIL_RULES = {
     "short": "Keep replies short (a line or two) unless they ask for more.",
     "thorough": "They prefer thorough answers: include the detail and the reasoning.",
 }
+
+
+# ---------------------------------------------------------------------------
+# Where the profile may go. One predicate for both the prompt and the app's
+# "Stays on this Mac" label, so what Wisp does and what it says can't disagree.
+
+
+def _everything_host() -> str | None:
+    """The host while Cloud "Everything" is on (a remote-only build, or the
+    setting turned on), "" while it is off, None when that can't be read."""
+    try:
+        from service.wisp_about import cloud_detail
+        detail = cloud_detail()
+    except Exception:  # noqa: BLE001
+        return None
+    if detail["mode"] == "everything" and detail["known"]:
+        return detail["host"] or "your cloud provider"
+    if not detail["known"]:
+        return None
+    return ""
+
+
+def sent_to() -> str:
+    """Where the profile goes with each question: "" while it stays on this
+    Mac, else the host. Unknown never reads as local."""
+    host = _everything_host()
+    return "your cloud provider" if host is None else host
+
+
+def may_send_to(*, managed: bool) -> bool:
+    """Whether a prompt for this endpoint may carry the profile: only the
+    endpoint Wisp manages on this Mac, or any endpoint while Cloud "Everything"
+    is on (the user chose to send everything; the app then says so, naming the
+    host). Never an optional cloud model (the Super Model, or a role bound to
+    the cloud endpoint), an external local provider, or another machine.
+    Unknown sends nothing."""
+    return bool(managed) or bool(_everything_host())
 
 
 def profile_block(profile: dict | None = None) -> str:

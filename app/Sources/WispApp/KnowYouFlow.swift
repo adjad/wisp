@@ -345,10 +345,14 @@ struct ProfileStatus: Equatable {
     var stale = false
     var filled: [String] = []
     var daysSinceUpdate: Int?
-    /// False while a cloud model answers everything: the answers then travel
-    /// with each question, so "Stays on this Mac" would not be true. An older
-    /// service that doesn't say reads as local, which it always was.
+    /// False while Cloud "Everything" is on: the answers then travel with each
+    /// question (service/memory/profile.py's may_send_to, the same rule the
+    /// prompts follow), so "Stays on this Mac" would not be true. An optional
+    /// cloud model never gets them. An older service that doesn't say reads as
+    /// local, which it always was.
     var localOnly = true
+    /// The host they're sent to while localOnly is false ("" when unnamed).
+    var sentTo = ""
 
     init() {}
     init(json: [String: Any]) {
@@ -361,11 +365,14 @@ struct ProfileStatus: Equatable {
             daysSinceUpdate = days.intValue
         }
         localOnly = json["local_only"] as? Bool ?? true
+        sentTo = (json["sent_to"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The lock line under every Getting to know you screen and in About you.
     var whereItLives: String {
-        localOnly ? "Stays on this Mac" : "Sent with your questions to your cloud model"
+        if localOnly { return "Stays on this Mac" }
+        return sentTo.isEmpty ? "Sent with your questions to your cloud model"
+                              : "Sent with your questions to \(sentTo)"
     }
 }
 

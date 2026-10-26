@@ -420,3 +420,104 @@ def test_api_says_whether_the_answers_stay_on_this_mac(client, monkeypatch):
     _patch_cloud(monkeypatch, "everything", "api.example.com")
     assert client.get("/profile").json()["status"]["local_only"] is False
 
+
+# --- where the profile may go (re-review b7623e76) ---------------------------
+# One predicate, profile.may_send_to / sent_to, decides both what the prompts
+# carry and what the app's lock line says.
+
+def test_api_keeps_the_profile_local_under_an_optional_cloud_model(client, monkeypatch):
+    _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("reasoning",))
+    status = client.get("/profile").json()["status"]
+    assert status["local_only"] is True and status["sent_to"] == ""
+    _patch_cloud(monkeypatch, "everything", "gpu.example.net")
+    status = client.get("/profile").json()["status"]
+    assert status["local_only"] is False and status["sent_to"] == "gpu.example.net"
+    # Unknown never reads as local.
+    _patch_cloud(monkeypatch, "super", "your cloud provider", known=False)
+    status = client.get("/profile").json()["status"]
+    assert status["local_only"] is False and status["sent_to"] == "your cloud provider"
+
+
+@pytest.mark.parametrize("mode,managed,rides", [
+    ("", True, True),                  # Wisp's own model on this Mac
+    ("", False, False),                # another machine, or the external local provider
+    ("super", True, True),
+    ("super", False, False),           # a role bound to the cloud endpoint
+    ("everything", False, True),       # the user chose to send everything
+])
+def test_may_send_to(monkeypatch, mode, managed, rides):
+    _patch_cloud(monkeypatch, mode, "openrouter.ai" if mode else "")
+    assert P.may_send_to(managed=managed) is rides
+
+
+def test_unknown_cloud_state_sends_the_profile_nowhere_but_this_mac(monkeypatch):
+    _patch_cloud(monkeypatch, "everything", "your cloud provider", known=False)
+    assert P.may_send_to(managed=False) is False and P.may_send_to(managed=True) is True
+    assert P.sent_to() == "your cloud provider", "and the app doesn't say it stays here"
+
+
+def test_main_chat_branch_carries_the_profile_only_where_allowed(monkeypatch):
+    import inspect
+    from service import main
+    from service.config.endpoints import endpoint_from_config
+    P.update(SAMPLE)
+    local = endpoint_from_config("local", {"base_url": "http://127.0.0.1:8000"})
+    cloud = endpoint_from_config("cloud", {"base_url": "https://openrouter.ai", "provider": "openai-compatible",
+                                           "api_prefix": "/api/v1", "credential_ref": "keychain:cloud"})
+    _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("reasoning",))
+    assert "ABOUT THE USER" in main._profile_block(local)
+    assert main._profile_block(cloud) == "", "a cloud-bound role gets no About you"
+    _patch_cloud(monkeypatch, "everything", "openrouter.ai")
+    assert "ABOUT THE USER" in main._profile_block(cloud)
+    # The plain chat branch passes its own target's endpoint.
+    assert "_profile_block(target.endpoint)" in inspect.getsource(main)
+
+
+class _PromptClient:
+    def __init__(self, managed):
+        self.managed = managed
+        self.endpoint_name = "local" if managed else "cloud"
+        self.systems = []
+
+    async def ensure_only(self, *args, **kwargs):
+        pass
+
+    async def stream_events(self, model, messages, **kwargs):
+        self.systems.append("\n".join(str(m.get("content")) for m in messages if m["role"] == "system"))
+        yield {"kind": "final", "message": {"role": "assistant", "content": "Done."}}
+
+
+@pytest.mark.parametrize("mode,managed,carried", [
+    ("super", True, True),       # a local turn
+    ("super", False, False),     # a turn on a cloud-bound role
+    ("", False, False),
+    ("everything", False, True), # Cloud Everything
+])
+def test_agent_loop_carries_the_profile_only_where_allowed(monkeypatch, mode, managed, carried):
+    import asyncio
+    from service.agent import loop
+    from service.memory import identity
+    P.update(SAMPLE)
+    _patch_cloud(monkeypatch, mode, "openrouter.ai" if mode else "")
+    called = []
+    monkeypatch.setattr(identity, "identity_prompt_block",
+                        lambda **kw: called.append(kw.get("preferred_name")) or "\nIDENTITY")
+    monkeypatch.setattr(loop.prompt_blocks, "memory_block", lambda **kw: "")
+    monkeypatch.setattr(loop, "audit", lambda *a, **k: None)
+    client = _PromptClient(managed)
+
+    async def emit(event):
+        pass
+
+    class _Approver:
+        async def confirm(self, action):
+            return False
+
+    asyncio.run(loop.run_agent(client, "Ling-3.0-tiny-oQ4e", [{"role": "user", "content": "Plan my week."}],
+                               emit, _Approver(), debug=False, max_steps=1, tools=["get_upcoming"]))
+    system = client.systems[0]
+    assert ("ABOUT THE USER" in system) is carried
+    assert ("Run a half marathon" in system) is carried
+    # The chosen name ("call me …") is part of the profile and follows the same rule.
+    assert called == [carried]
+

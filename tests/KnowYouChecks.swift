@@ -159,6 +159,10 @@ struct KnowYouChecks {
               "an older service reads as local")
         check(!ProfileStatus(json: ["local_only": false]).whereItLives.contains("this Mac"),
               "a cloud model changes the lock line")
+        check(ProfileStatus(json: ["local_only": false, "sent_to": "openrouter.ai"]).whereItLives
+              == "Sent with your questions to openrouter.ai", "Cloud Everything names the host")
+        check(ProfileStatus(json: ["local_only": true, "sent_to": ""]).whereItLives == "Stays on this Mac",
+              "an optional cloud model keeps the profile here")
 
         // The notices after the flow.
         check(KnowYouNotice.notNow.contains("/about") && KnowYouNotice.notNow.contains("Tell Wisp About You…"),
