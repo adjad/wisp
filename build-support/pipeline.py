@@ -534,6 +534,87 @@ def plist(meta: dict) -> dict:
     }
 
 
+# The built-in Google OAuth client (service/gmail_source.py BUILTIN_CLIENT_PATH).
+# The repository is public: the value comes only from the CI secret or a local
+# file at build time, is written straight into the bundle, and is never logged,
+# put on a command line, or recorded anywhere but the bundle (build-info and
+# provenance say only whether it is present).
+GOOGLE_OAUTH_CLIENT_ENV = "WISP_GOOGLE_OAUTH_CLIENT"
+GOOGLE_OAUTH_CLIENT_BUNDLE = "Contents/Resources/backend/service/google_oauth_client.json"
+
+
+def _google_oauth_client_json(raw: str) -> bytes:
+    """Canonical {"client_id","client_secret"} JSON. Errors never echo input."""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise BuildError("The Google OAuth client is not valid JSON") from None
+    if isinstance(data, dict) and isinstance(data.get("installed"), dict):
+        data = data["installed"]          # the JSON Google Cloud Console downloads
+    client_id = data.get("client_id") if isinstance(data, dict) else None
+    secret = data.get("client_secret") if isinstance(data, dict) else None
+    if not (isinstance(client_id, str) and isinstance(secret, str)
+            and client_id.strip() and secret.strip()):
+        raise BuildError("The Google OAuth client needs non-empty client_id and client_secret strings")
+    return json.dumps({"client_id": client_id.strip(), "client_secret": secret.strip()},
+                      separators=(",", ":"), sort_keys=True).encode()
+
+
+def google_oauth_client(path: Path | None = None, environ=None) -> bytes | None:
+    """The built-in Google OAuth client to ship, or None for a build without one.
+
+    `--google-oauth-client PATH` wins; otherwise WISP_GOOGLE_OAUTH_CLIENT (the
+    CI secret, empty on pull requests from forks). The variable is removed from
+    this process once read, so no later step can inherit it (clean_env already
+    leaves it out of every child)."""
+    environ = os.environ if environ is None else environ
+    raw = environ.pop(GOOGLE_OAUTH_CLIENT_ENV, "") or ""
+    if path is not None:
+        try:
+            raw = Path(path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            raise BuildError("Could not read the Google OAuth client file") from None
+        if not raw.strip():
+            raise BuildError("The Google OAuth client file is empty")
+    if not raw.strip():
+        return None
+    return _google_oauth_client_json(raw)
+
+
+def write_google_oauth_client(bundle: Path, meta: dict, google_client: bytes | None) -> None:
+    """Ship the client (or record that there is none) in an assembled bundle.
+    Written directly, never through a subprocess, a command line or a log."""
+    target = bundle / GOOGLE_OAUTH_CLIENT_BUNDLE
+    if target.exists() or target.is_symlink():
+        raise BuildError("Tracked source must not provide the Google OAuth client")
+    meta["google_oauth_client"] = google_client is not None
+    if google_client is None:
+        return
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(google_client)
+
+
+def validate_google_oauth_client(bundle: Path, meta: dict) -> None:
+    """The bundle ships the client exactly when build-info says it does."""
+    expected = meta.get("google_oauth_client")
+    shipped = bundle / GOOGLE_OAUTH_CLIENT_BUNDLE
+    if expected is None:          # metadata from before the built-in client
+        return
+    if not expected:
+        if shipped.exists() or shipped.is_symlink():
+            raise BuildError("Bundle has a Google OAuth client its build-info does not declare")
+        return
+    if shipped.is_symlink() or not shipped.is_file():
+        raise BuildError("Missing bundled Google OAuth client")
+    try:
+        canonical = _google_oauth_client_json(shipped.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        raise BuildError("Unreadable bundled Google OAuth client") from None
+    if canonical != shipped.read_bytes():
+        raise BuildError("Bundled Google OAuth client is not in canonical form")
+
+
 def source_files() -> list[Path]:
     files = [name for name in git("ls-files", "-z", "--", "service").split("\0") if name]
     if not files or not files[0]:
@@ -547,7 +628,7 @@ def source_files() -> list[Path]:
     return result
 
 
-def assemble(runner, binary, destination, meta, offline=False, engine_app=None):
+def assemble(runner, binary, destination, meta, offline=False, engine_app=None, google_client=None):
     bundle = destination / "Wisp.app"
     contents = bundle / "Contents"
     resources = contents / "Resources"
@@ -569,6 +650,7 @@ def assemble(runner, binary, destination, meta, offline=False, engine_app=None):
         dest = backend / path.relative_to(ROOT)
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, dest)
+    write_google_oauth_client(bundle, meta, google_client)
     embedded = backend / ".venv"
     from bootstrap_uv import unpack_runtime
     unpack_runtime(CONFIG, STATE, embedded)
@@ -658,6 +740,7 @@ def validate_structure(bundle: Path, meta: dict):
     for name in ("Contents/MacOS/Wisp", "Contents/Resources/backend/.venv/bin/python"):
         if not os.access(bundle / name, os.X_OK):
             raise BuildError(f"Bundle program is not executable: {name}")
+    validate_google_oauth_client(bundle, meta)
     if engine_build.read_engine_json(bundle) is not None or meta.get("engine"):
         try:
             engine_build.validate_structure(bundle, meta.get("engine"))
@@ -1306,6 +1389,9 @@ def main():
     p.add_argument("--fetch-engine", action="store_true",
                    help="Download the oMLX release pinned in build-support/engine-source.json (size and SHA-256 "
                         "checked, mounted read-only) and bundle its engine; same as --engine-app for that release")
+    p.add_argument("--google-oauth-client", type=Path,
+                   help="Local JSON file with the built-in Google OAuth client ({client_id, client_secret}); "
+                        "otherwise $WISP_GOOGLE_OAUTH_CLIENT; without either the app ships no built-in client")
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
     p.add_argument("--qa-runtime", type=Path,
                    help="Closed Python runtime tree for the separate managed-QA artifact")
@@ -1385,6 +1471,8 @@ def main():
             packaging = args.command in ("all", "preview")
             preview = args.command == "preview"
             meta = metadata(args.allow_dirty, args.build_number, preview) if packaging else None
+            # Read (and drop from the environment) before any test or build step runs.
+            google_client = google_oauth_client(args.google_oauth_client) if packaging else None
             source_start = source_fingerprint() if meta else None
             if meta:
                 meta["tracked_source_sha256"] = source_start
@@ -1407,7 +1495,8 @@ def main():
                                 engine_build.fetched_app(STATE / "engine-cache", offline=args.offline))
                         except engine_build.EngineBuildError as exc:
                             raise BuildError(str(exc)) from None
-                    bundle = assemble(runner, binary, output, meta, args.offline, engine_app)
+                    bundle = assemble(runner, binary, output, meta, args.offline, engine_app,
+                                      google_client=google_client)
                 validate_structure(bundle, meta)
                 prepare_native_for_signing(runner, bundle)
                 validate_native(runner, bundle, meta)

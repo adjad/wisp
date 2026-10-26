@@ -17,6 +17,7 @@ from unittest.mock import patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+GOOGLE_CLIENT_SECRET_LINE = "WISP_GOOGLE_OAUTH_CLIENT: ${{ secrets.WISP_GOOGLE_OAUTH_CLIENT }}"
 sys.path.insert(0, str(ROOT / "build-support"))
 import pipeline as p
 import engine_licenses
@@ -188,6 +189,86 @@ class PipelineTests(unittest.TestCase):
         bundle = self.fixture()
         with self.assertRaisesRegex(p.BuildError, "Info.plist mismatch"):
             p.validate_structure(bundle, dict(self.meta, version="999.0.0"))
+
+    # --- built-in Google OAuth client (synthetic values only) ---------------
+
+    FAKE_GOOGLE_CLIENT = {"client_id": "fake-id.apps.googleusercontent.com",
+                          "client_secret": "FAKE-not-a-real-secret"}
+
+    def test_google_client_is_absent_without_env_or_file(self):
+        self.assertIsNone(p.google_oauth_client(environ={}))
+        # A fork pull request sees the secret as an empty string.
+        self.assertIsNone(p.google_oauth_client(environ={p.GOOGLE_OAUTH_CLIENT_ENV: ""}))
+
+    def test_google_client_env_is_canonical_consumed_and_never_printed(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        environ = {p.GOOGLE_OAUTH_CLIENT_ENV: json.dumps(self.FAKE_GOOGLE_CLIENT, indent=2), "PATH": "/usr/bin"}
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            value = p.google_oauth_client(environ=environ)
+        self.assertEqual(json.loads(value), self.FAKE_GOOGLE_CLIENT)
+        self.assertEqual(value, json.dumps(self.FAKE_GOOGLE_CLIENT, separators=(",", ":"), sort_keys=True).encode())
+        self.assertNotIn(p.GOOGLE_OAUTH_CLIENT_ENV, environ)   # no later step can inherit it
+        self.assertEqual(out.getvalue() + err.getvalue(), "")
+        with patch.dict(os.environ, {p.GOOGLE_OAUTH_CLIENT_ENV: "x"}):
+            self.assertNotIn(p.GOOGLE_OAUTH_CLIENT_ENV, p.clean_env())
+
+    def test_google_client_accepts_the_console_download_shape(self):
+        environ = {p.GOOGLE_OAUTH_CLIENT_ENV: json.dumps({"installed": self.FAKE_GOOGLE_CLIENT})}
+        self.assertEqual(json.loads(p.google_oauth_client(environ=environ)), self.FAKE_GOOGLE_CLIENT)
+
+    def test_google_client_errors_never_echo_the_value(self):
+        for raw in ('{"client_id": "fake-id", "client_secret": FAKE-not-a-real-secret',
+                    json.dumps({"client_id": "fake-id"}), json.dumps({"client_secret": "FAKE-not-a-real-secret"}),
+                    json.dumps(["FAKE-not-a-real-secret"])):
+            with self.subTest(raw=raw), self.assertRaises(p.BuildError) as caught:
+                p.google_oauth_client(environ={p.GOOGLE_OAUTH_CLIENT_ENV: raw})
+            self.assertNotIn("FAKE-not-a-real-secret", str(caught.exception))
+            self.assertNotIn("fake-id", str(caught.exception))
+
+    def test_google_client_local_file_wins_and_must_be_readable(self):
+        path = self.root / "client.json"
+        path.write_text(json.dumps(self.FAKE_GOOGLE_CLIENT))
+        other = json.dumps({"client_id": "other.apps.googleusercontent.com", "client_secret": "FAKE-other"})
+        value = p.google_oauth_client(path, environ={p.GOOGLE_OAUTH_CLIENT_ENV: other})
+        self.assertEqual(json.loads(value), self.FAKE_GOOGLE_CLIENT)
+        with self.assertRaisesRegex(p.BuildError, "Could not read"):
+            p.google_oauth_client(self.root / "missing.json", environ={})
+        (self.root / "empty.json").write_text("  ")
+        with self.assertRaisesRegex(p.BuildError, "empty"):
+            p.google_oauth_client(self.root / "empty.json", environ={})
+
+    def test_bundle_ships_the_google_client_only_when_given(self):
+        bundle = self.fixture()
+        meta = dict(self.meta)
+        p.write_google_oauth_client(bundle, meta, None)
+        self.assertIs(meta["google_oauth_client"], False)
+        self.assertFalse((bundle / p.GOOGLE_OAUTH_CLIENT_BUNDLE).exists())
+        p.validate_structure(bundle, meta)
+        value = p.google_oauth_client(environ={p.GOOGLE_OAUTH_CLIENT_ENV: json.dumps(self.FAKE_GOOGLE_CLIENT)})
+        meta = dict(self.meta)
+        p.write_google_oauth_client(bundle, meta, value)
+        self.assertIs(meta["google_oauth_client"], True)
+        self.assertEqual((bundle / p.GOOGLE_OAUTH_CLIENT_BUNDLE).read_bytes(), value)
+        p.validate_structure(bundle, meta)
+        # The file and build-info must agree, both ways.
+        with self.assertRaisesRegex(p.BuildError, "does not declare"):
+            p.validate_structure(bundle, dict(meta, google_oauth_client=False))
+        (bundle / p.GOOGLE_OAUTH_CLIENT_BUNDLE).unlink()
+        with self.assertRaisesRegex(p.BuildError, "Missing bundled Google OAuth client"):
+            p.validate_structure(bundle, meta)
+        # Tracked source can never smuggle one in.
+        (bundle / p.GOOGLE_OAUTH_CLIENT_BUNDLE).write_bytes(value)
+        with self.assertRaisesRegex(p.BuildError, "Tracked source"):
+            p.write_google_oauth_client(bundle, dict(self.meta), None)
+
+    def test_google_client_path_matches_the_backend_lookup(self):
+        self.assertEqual(p.GOOGLE_OAUTH_CLIENT_BUNDLE,
+                         "Contents/Resources/backend/service/google_oauth_client.json")
+        source = (ROOT / "service/gmail_source.py").read_text()
+        self.assertIn('BUILTIN_CLIENT_PATH = Path(__file__).with_name("google_oauth_client.json")', source)
+        self.assertIn("service/google_oauth_client.json", (ROOT / ".gitignore").read_text().splitlines())
 
     def test_mode_validation(self):
         bundle = self.fixture()
@@ -2235,7 +2316,9 @@ print('external venv readable; private home and writes denied')
             self.assertIn('echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"', job)
             self.assertIn("sha: ${{ steps.candidate.outputs.sha }}", job)
             self.assertIn("pipeline.check_locks()", job)
-            self.assertNotIn("secrets.", job)
+            # The preview build step may read the built-in Google OAuth client;
+            # no other secret reaches either PR job.
+            self.assertNotIn("secrets.", job.replace(GOOGLE_CLIENT_SECRET_LINE, ""))
             self.assertNotIn("download-artifact", job)
             self.assertNotIn("wisp-build all", job)
         self.assertIn("./scripts/wisp-build preview --strict-toolchain --fetch-engine --output dist/preview", preview)
@@ -2245,6 +2328,22 @@ print('external venv readable; private home and writes denied')
         self.assertIn("tests/test_primary_runtime_completion.py", preview)
         self.assertIn("./scripts/wisp-build test --strict-toolchain\n", qa)
         self.assertNotIn("wisp-build preview", qa)
+        self.assertNotIn("WISP_GOOGLE_OAUTH_CLIENT", qa)
+        build = self.workflow_step(preview, "Build, sign and smoke-test preview from source")
+        self.assertEqual(preview.count(GOOGLE_CLIENT_SECRET_LINE), 1)
+        self.assertIn(GOOGLE_CLIENT_SECRET_LINE, build)
+
+    def test_every_ci_build_receives_only_the_google_client_secret_on_its_build_step(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        self.assertEqual(workflow.count(GOOGLE_CLIENT_SECRET_LINE), 4)
+        steps = {"preview": "Build, sign and smoke-test preview from source",
+                 "full": "Build and verify from source",
+                 "release": "Rebuild approved source with strict validation",
+                 "publish-ad-hoc-release": "Rebuild ad-hoc source with strict validation"}
+        for job, name in steps.items():
+            step = self.workflow_step(self.workflow_job(workflow, job), name)
+            self.assertIn(GOOGLE_CLIENT_SECRET_LINE, step)
+            self.assertEqual(step.count("secrets."), 1, job)
 
     def test_every_ci_build_stages_the_pinned_engine(self):
         """A release made by CI must carry the engine: every build command passes --fetch-engine."""
