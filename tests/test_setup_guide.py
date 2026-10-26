@@ -69,7 +69,7 @@ def test_hardware_rounds_real_memory_and_survives_failure():
 
 # --- recommendations --------------------------------------------------------
 
-def test_fresh_mac_downloads_gemma_on_every_memory_size():
+def test_fresh_mac_downloads_gemma_on_every_mac_it_fits():
     missing = _status(ram=32, installed=[], roles=_roles(Q4))
     assert missing["models"]["recommended"] == GEMMA
     assert missing["models"]["download"]["model"] == GEMMA
@@ -152,6 +152,7 @@ def test_gemma_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkeyp
 
 @pytest.mark.parametrize("ram", [64, 24, 16, 12, 8, 0])
 def test_first_choice_is_gemma_on_every_mac(ram):
+    # The catalog's first choice; whether it is offered depends on `fits`.
     assert catalog.recommend(ram, [])["first_choice"] == GEMMA
     assert catalog.recommend(ram, [Q4])["first_choice"] == GEMMA
 
@@ -182,14 +183,68 @@ def test_best_installed_model_wins_and_nothing_is_offered_when_optimal():
 def test_heavy_model_on_16gb_is_flagged_but_kept():
     assert catalog.fit(catalog.by_id(Q6), 16) == "heavy"
     assert catalog.fit(catalog.by_id(Q6), 24) == "good"
-    assert catalog.fit(catalog.by_id(GEMMA), 8) == "recommended"
+    assert catalog.fit(catalog.by_id(GEMMA), 16) == "recommended"
     assert catalog.recommend(16, [Q6])["use"] == Q6
 
 
-def test_small_memory_warns_and_unknown_memory_is_cautious():
-    assert "less than 16 GB" in catalog.recommend(8, [])["warning"]
-    assert "could not read" in catalog.recommend(0, [])["warning"]
+# --- memory tiers: offer only what the engine would load --------------------
+
+def test_8gb_mac_is_offered_no_download_and_told_why():
+    rec = catalog.recommend(8, [])
+    assert rec["get"] is None and rec["fits"] is False and rec["use"] is None
+    assert "at least 16 GB" in rec["warning"] and "8 GB" in rec["warning"]
+    assert "Ollama" in rec["warning"]
+    # Gemma (5.88 GiB with overhead) and Ling's 4-bit build both fail the
+    # admission math on 8 GB; neither is "recommended" there.
+    for model in catalog.PRIMARY_MODELS:
+        assert not catalog.fits_memory(model, 8)
+        assert catalog.fit(model, 8) == "heavy"
+
+
+def test_16gb_mac_is_offered_gemma():
+    rec = catalog.recommend(16, [])
+    assert rec["get"] == GEMMA and rec["fits"] is True and rec["warning"] is None
+    assert catalog.fits_memory(catalog.GEMMA_E4B_MTP, 16)
+    assert catalog.fit(catalog.by_id(GEMMA), 16) == "recommended"
+
+
+def test_unreadable_memory_offers_nothing_and_says_so_plainly():
+    rec = catalog.recommend(0, [])
+    assert rec["get"] is None and rec["fits"] is False
+    assert rec["warning"].startswith("Wisp couldn't read how much memory this Mac has")
+    assert "smallest build" not in rec["warning"]
+
+
+def test_12gb_mac_is_below_the_floor():
+    rec = catalog.recommend(12, [])
+    assert rec["get"] is None and rec["fits"] is False
+    assert "at least 16 GB" in rec["warning"]
+
+
+def test_small_mac_with_a_model_already_keeps_it_with_an_honest_warning():
+    rec = catalog.recommend(8, [Q4])
+    assert rec["use"] == Q4 and rec["get"] is None
+    assert "8 GB" in rec["warning"] and "Ollama" not in rec["warning"]
     assert catalog.recommend(24, [])["warning"] is None
+
+
+@pytest.mark.parametrize("ram", [8, 0])
+def test_status_on_a_mac_nothing_fits_offers_another_route(ram):
+    s = _status(ram=ram, installed=[], roles=_roles(GEMMA))
+    assert s["models"]["fits"] is False and s["models"]["download"] is None
+    check = _check(s, "model")
+    assert check["action"] == "no_local_fit" and check["state"] == "todo"
+    assert check["detail"] == s["models"]["warning"]
+    assert not s["ready"]
+    assert _status(ram=16, installed=[], roles=_roles(GEMMA))["models"]["fits"] is True
+
+
+def test_admission_math_matches_the_engine_ceiling():
+    gemma = catalog.GEMMA_E4B_MTP
+    needed = gemma.size_gb * 1e9 / 2**30 * catalog.LOAD_OVERHEAD + catalog.LOAD_WORKING_GIB
+    assert 5.8 < needed < 6.0
+    assert needed > 8 - catalog.SYSTEM_RESERVE_GIB          # refused on 8 GB
+    assert needed < 16 - catalog.SYSTEM_RESERVE_GIB         # admitted on 16 GB
 
 
 # --- checklist --------------------------------------------------------------
@@ -360,10 +415,9 @@ def test_download_command_is_shell_safe_for_hostile_folder_names():
         assert len(tokens) == 5
 
 
-def test_unknown_memory_does_not_mark_the_smallest_build_heavy():
-    assert catalog.fit(catalog.by_id(GEMMA), 0) == "recommended"
-    assert catalog.fit(catalog.by_id(Q4), 0) == "good"
-    assert catalog.fit(catalog.by_id(Q6), 0) == "heavy"
+def test_unknown_memory_marks_nothing_heavy_or_recommended():
+    for model in (GEMMA, Q4, Q6):
+        assert catalog.fit(catalog.by_id(model), 0) == "good"
 
 
 def test_partial_role_mapping_does_not_crash_the_checklist():

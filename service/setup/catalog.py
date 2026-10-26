@@ -40,9 +40,9 @@ MELLUM_R1_Q4 = CatalogModel(
 # Sampling: the model card's top_p/top_k, with temperature lowered from its 1.0
 # to 0.8 (user decision, 2026-10-25).
 GEMMA_E4B_MTP = CatalogModel(
-    "gemma-4-E4B-it-oQ4e-mtp", "Gemma 4 E4B", "4-bit (oQ4e) + MTP", 5.5, 8,
+    "gemma-4-E4B-it-oQ4e-mtp", "Gemma 4 E4B", "4-bit (oQ4e) + MTP", 5.5, 16,
     "Jundot/gemma-4-E4B-it-oQ4e-mtp",
-    "Wisp's default. Fast on every Apple silicon Mac, with clean tool calls.", tested=True,
+    "Wisp's default. Fast on Macs with 16 GB of memory or more, with clean tool calls.", tested=True,
     engine_profile={
         "temperature": 0.8, "top_p": 0.95, "top_k": 64,
         "enable_thinking": True,
@@ -100,40 +100,80 @@ def ranked_for(ram_gb: int, installed: list[str] | None = None) -> tuple[Catalog
     return obtainable or order
 
 
+# The engine's admission check, in the form Wisp can apply before a download:
+# a model loads only when its weights plus about 5% (runtime buffers) and half a
+# GiB of working room stay under what the engine leaves itself, about the Mac's
+# memory less 3 GiB for macOS and other apps. Gemma 4 E4B (5.5 GB, 5.88 GiB
+# with that overhead) fits on 16 GB and is refused on 8 GB (a 5 GiB ceiling),
+# where the first question would fail with "Free some memory". Ling's 4-bit
+# build (4.6 GB) lands within a few MB of the 8 GB ceiling, so it is no
+# small-Mac fallback either: below LOCAL_FLOOR_GB nothing is offered.
+LOCAL_FLOOR_GB = 16
+LOAD_OVERHEAD = 1.05
+LOAD_WORKING_GIB = 0.5
+SYSTEM_RESERVE_GIB = 3.0
+
+
+def fits_memory(model: CatalogModel, ram_gb: int) -> bool:
+    """Whether the engine would admit this model on a Mac with `ram_gb` GiB,
+    with room to spare: at least LOCAL_FLOOR_GB, and inside the admission math.
+
+    Unreadable memory (0) fits nothing: Wisp can't promise a load it can't
+    check. A model with no measured size falls back to its `min_ram_gb`.
+    """
+    if ram_gb < LOCAL_FLOOR_GB:
+        return False
+    if model.size_gb is None:
+        return ram_gb >= model.min_ram_gb
+    needed_gib = model.size_gb * 1e9 / 2**30 * LOAD_OVERHEAD + LOAD_WORKING_GIB
+    return needed_gib < ram_gb - SYSTEM_RESERVE_GIB
+
+
 def fit(model: CatalogModel, ram_gb: int, installed: list[str] | None = None) -> str:
-    """`recommended` (first choice), `good`, or `heavy` (bigger than advised)."""
-    ranked = ranked_for(ram_gb, installed)
-    known_ram = ram_gb if ram_gb > 0 else 8      # unreadable memory: assume the smallest tier
-    if model.min_ram_gb > known_ram:
+    """`recommended` (first choice), `good`, or `heavy` (bigger than advised, or
+    more than the engine would load on this Mac). Unreadable memory (0) claims
+    neither: every model reads `good` until the next read says more."""
+    if ram_gb <= 0:
+        return "good"
+    if model.min_ram_gb > ram_gb or not fits_memory(model, ram_gb):
         return "heavy"
-    return "recommended" if model == ranked[0] else "good"
+    return "recommended" if model == ranked_for(ram_gb, installed)[0] else "good"
 
 
 def recommend(ram_gb: int, installed: list[str]) -> dict:
     """Pick what to run and, when something better is missing, how to get it.
 
     `use` is the best-ranked catalog model already installed (None if none is).
-    `get` is the best-ranked model that ranks above `use`, is not installed, and
-    has a public download; None when nothing better can be fetched.
+    `get` is the best-ranked model that ranks above `use`, is not installed, has
+    a public download, and fits this Mac's memory; None when nothing better can
+    be fetched. `fits` is False when no downloadable model fits this Mac (or its
+    memory can't be read): setup then says so and offers another route instead
+    of a download the engine would refuse to load.
     """
     ranked = ranked_for(ram_gb, installed)
     have = set(installed)
     use = next((m for m in ranked if m.id in have), None)
     better = ranked if use is None else ranked[:ranked.index(use)]
-    get = next((m for m in better if m.repo and m.id not in have), None)
+    get = next((m for m in better if m.repo and m.id not in have and fits_memory(m, ram_gb)), None)
     # A local preferred model must not silently turn into an offer to download
     # a different family. Existing installed choices remain usable. (On a fresh
     # Mac it was dropped from `ranked`, so the best public build is offered.)
     if ranked[0].repo is None:
         get = None
+    fits = any(m.repo and fits_memory(m, ram_gb) for m in ranked)
     warning = None
     if ram_gb == 0:
-        warning = "Wisp could not read this Mac's memory, so it is recommending the smallest build."
-    elif ram_gb < 16:
-        warning = ("This Mac has less than 16 GB. Wisp will run, but "
-                   "close other heavy apps and expect slower replies.")
+        warning = ("Wisp couldn't read how much memory this Mac has, so it can't tell yet which "
+                   "model will fit. It tries again in a moment.")
+    elif not fits and use is not None:
+        warning = (f"This Mac has {ram_gb} GB of memory, less than Wisp's models are made for. "
+                   "Close other apps while you use Wisp, and expect slower replies.")
+    elif not fits:
+        warning = (f"Wisp's models need a Mac with at least {LOCAL_FLOOR_GB} GB of memory, and this one "
+                   f"has {ram_gb} GB. If you already run a smaller model in another app, such as Ollama "
+                   "or LM Studio, you can connect it in the detailed setup.")
     return {"first_choice": ranked[0].id, "use": use.id if use else None,
-            "get": get.id if get else None, "warning": warning}
+            "get": get.id if get else None, "fits": fits, "warning": warning}
 
 
 def by_id(model_id: str) -> CatalogModel | None:

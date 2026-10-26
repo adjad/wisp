@@ -166,7 +166,13 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                        "detail": "Wisp will list your models once oMLX is running."})
     elif not chat_models:
         preferred = catalog.by_id(rec["first_choice"])
-        if preferred is not None and preferred.repo is None and rec["get"] is None:
+        if not rec["fits"]:
+            # Nothing Wisp can download would load here (or the memory can't be
+            # read yet): say so, and point at another route, never a download.
+            checks.append({"id": "model", "state": "todo", "title": "No model fits this Mac",
+                           "detail": rec["warning"] or "No model Wisp can download fits this Mac.",
+                           "action": "no_local_fit"})
+        elif preferred is not None and preferred.repo is None and rec["get"] is None:
             checks.append({"id": "model", "state": "todo", "title": "Add a local model",
                            "detail": f"Add {preferred.label}'s model folder to the engine's model directory, then check again.",
                            "action": "add_local_model"})
@@ -205,6 +211,7 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
         "models": {"source": models_source, "installed": entries,
                    "recommended": rec["first_choice"],
                    "recommended_label": _label(rec["first_choice"]), "use": rec["use"], "warning": rec["warning"],
+                   "fits": rec["fits"],
                    "download": download_info(rec["get"], omlx.model_dir),
                    "embedding_download": None if embedder.id in installed
                                          else download_info(embedder.id, omlx.model_dir)},
