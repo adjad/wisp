@@ -82,6 +82,7 @@ def main():
             ("backend-credentials", ["BackendCredentials.swift"], "BackendCredentialChecks.swift"),
             ("backend-recovery", ["BackendCredentials.swift", "BackendManager.swift", "PortGuard.swift", "BackendOwnership.swift"], "BackendRecoveryChecks.swift"),
             ("prompt-queue", ["PromptQueue.swift", "AgentSend.swift"], "PromptQueueChecks.swift"),
+            ("google-connect", ["GoogleAccountState.swift"], "GoogleConnectChecks.swift"),
         ):
             binary = str(build / (os.environ["WISP_BUILD_FIXTURE_PREFIX"] + "-" + name))
             result.extend([

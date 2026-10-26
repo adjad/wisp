@@ -20,11 +20,18 @@ import re
 
 TOPICS = ("overview", "identity", "privacy", "howto")
 
-_SOURCE_LABELS = (("calendar", "Calendar"), ("reminders", "Reminders"),
-                  ("email", "Mail"), ("messages", "Messages"), ("notes", "Notes"))
-
-TRY_PROMPTS = ("What's on my calendar today?", "Any emails I need to reply to?",
-               "Remind me to call Mom at 6pm")
+# One try-it prompt per connected source, in this order, then prompts that need
+# no source. Each one routes to a real, scoped tool today
+# (tests/test_capability_welcome.py checks the routes).
+TRY_IT = (
+    ("calendar", "What's on my calendar tomorrow?"),
+    ("email", "Any emails I need to reply to?"),
+    ("reminders", "Remind me at 5pm to call Mom."),
+    ("messages", "Any texts I need to respond to?"),
+    (None, "Set a timer for 10 minutes."),
+    (None, "What time is it in Tokyo?"),
+    (None, "What's the weather in Paris this weekend?"),
+)
 
 
 def _usable_tools() -> set[str]:
@@ -35,20 +42,20 @@ def _usable_tools() -> set[str]:
         return set()
 
 
-def _source_states() -> dict[str, str]:
-    """Calendar/Reminders/Mail/Messages/Notes -> ready | syncing | unavailable | disabled.
-    Empty when the readers can't be asked (the answer then leaves the line out)."""
+def _sources() -> list[dict] | None:
+    """Every source's live status (service/assistant/sync_status), or None when
+    the readers can't be asked at all. One unreadable source never hides the rest."""
     try:
-        from service.assistant.sync_status import source_status
+        from service.assistant.sync_status import SOURCE_IDS, source_status
     except Exception:  # noqa: BLE001
-        return {}
-    states = {}
-    for source, label in _SOURCE_LABELS:
+        return None
+    out = []
+    for source_id in SOURCE_IDS:
         try:
-            states[label] = str(source_status(source).get("state") or "")
+            out.append(source_status(source_id))
         except Exception:  # noqa: BLE001
             continue
-    return states
+    return out
 
 
 def _google_connected() -> bool:
@@ -94,24 +101,27 @@ def _join(labels: list[str]) -> str:
     return ", ".join(labels[:-1]) + " and " + labels[-1]
 
 
-def _sources_line() -> str:
-    states = _source_states()
-    if not states:
-        return ""
-    ready = [label for label, state in states.items() if state == "ready"]
-    waiting = [label for label, state in states.items() if state == "syncing"]
-    blocked = [label for label, state in states.items() if state in {"unavailable", "disabled"}]
-    parts = []
+def _status_lines(sources: list[dict] | None) -> list[str]:
+    if not sources:
+        return ["I couldn't check which of your apps are connected just now."]
+    lines = []
+    ready = [s["label"] for s in sources if s.get("state") == "ready"]
+    syncing = [s["label"] for s in sources if s.get("state") == "syncing"]
     if ready:
-        parts.append(f"I can read your {_join(ready)}.")
-    if waiting:
-        parts.append(f"Still reading {_join(waiting)} for the first time.")
-    if blocked:
-        parts.append(f"I can't read {_join(blocked)} yet: allow it in System Settings → "
-                     "Privacy & Security, or choose **Grant More Access…** from Wisp's menu bar icon.")
-    if not ready and not waiting and not blocked:
-        return ""
-    return " ".join(parts)
+        lines.append(f"Connected: {', '.join(ready)}.")
+    if syncing:
+        lines.append(f"Still reading for the first time: {', '.join(syncing)}.")
+    for source in sources:
+        if source.get("state") in ("ready", "syncing"):
+            continue
+        reason = str(source.get("reason") or "").strip()
+        lines.append(f"Not connected: {source['label']}" + (f". {reason}" if reason else "."))
+    return lines
+
+
+def _try_its(sources: list[dict] | None) -> list[str]:
+    connected = {s.get("id") for s in sources or () if s.get("state") == "ready"}
+    return [prompt for source, prompt in TRY_IT if source is None or source in connected][:3]
 
 
 def _can_lines(tools: set[str]) -> list[str]:
@@ -144,28 +154,27 @@ def _can_lines(tools: set[str]) -> list[str]:
 
 
 def overview() -> str:
+    """"What can you do?": what Wisp does (only usable features), which sources
+    it can read right now, three try-its that fit them, and where things are."""
     tools = _usable_tools()
-    out = ["**Hi, I'm Wisp.** I live in your Mac's notch and my AI runs right here on this Mac.",
-           "",
-           "**Where things are**",
-           "- **Ask**: type anything. Press **⌥Space** to open me from any app. Type **/** for shortcuts.",
-           "- **Brief**: your day at a glance: what's on, what needs a reply, what I'm keeping in mind.",
-           "- **Day**: today's calendar and reminders on a timeline, and what needs you.",
-           "",
-           "**What I can do**"]
+    sources = _sources()
+    out = ["**Hi, I'm Wisp.** My AI runs right here on this Mac.", "", "**What I can do**"]
     out += ["- " + line for line in _can_lines(tools)]
-    out.append("- Get to know you: type **/about** to tell me your name, goals and how you like to be talked to.")
-    google = ("- Google: your account is connected, so I read its Gmail and Calendar too."
-              if _google_connected() else
-              "- Google: connect a Google account in **Settings → Google** and I'll read its Gmail "
-              "and Calendar too.")
-    out.append(google)
-    sources = _sources_line()
-    if sources:
-        out += ["", "**Right now**", sources]
-    out += ["", "**Try asking**"] + [f"- \"{prompt}\"" for prompt in TRY_PROMPTS]
-    out.append("")
-    out.append("Ask \"is my data private?\" or \"how do I use Wisp?\" any time.")
+    out.append("- Google: your account is connected, so I read its Gmail and Calendar too."
+               if _google_connected() else
+               "- Google: connect a Google account in **Settings → Google** and I'll read its "
+               "Gmail and Calendar too.")
+    out += ["", "**Right now**"] + _status_lines(sources)
+    out += ["", "**Try asking**"] + [f"- \"{prompt}\"" for prompt in _try_its(sources)]
+    out += ["",
+            "**Where things are**",
+            "- Press ⌥ Space to ask me from anywhere.",
+            "- Type / in Ask to see shortcuts, like /today and /report.",
+            "- Brief and Day are the tabs next to Ask: a summary of what's new, and your plan for today.",
+            "- Getting to know you (type /about) tells me your name and what matters to you, "
+            "so my answers fit you better.",
+            "",
+            "Ask \"is my data private?\" or \"how do I use Wisp?\" any time."]
     return "\n".join(out)
 
 
@@ -274,10 +283,13 @@ def answer(topic: str = "overview", query: str = "") -> str:
 # A general "what can you do" (not "can you send texts?", which keeps the
 # precise Yes/No capability report).
 _GENERAL_INVENTORY = re.compile(
-    r"^\s*(?:(?:please|hey|hi|so)[,\s]+)*(?:what\s+(?:else\s+)?can\s+you\s+do|"
-    r"what\s+(?:tools|capabilities)\s+(?:are\s+available|do\s+you\s+have)|"
-    r"which\s+assistant\s+capabilities\s+do\s+you\s+have)\b[^,;]*[?.!]*\s*$", re.I)
+    r"\W*(?:(?:please|hey|hi|ok|okay|so|wisp)[,\s]+)*(?:"
+    r"what\s+(?:else\s+)?(?:can|could)\s+you\s+(?:do|help\s+(?:me\s+)?with)|"
+    r"what\s+(?:tools|capabilities)\s+(?:are\s+available|do\s+you\s+have)(?:\s+to\s+you)?|"
+    r"which\s+(?:assistant\s+)?capabilities\s+do\s+you\s+have|"
+    r"what\s+are\s+you\s+able\s+to\s+do)"
+    r"(?:\s+(?:for\s+me|here|now|right\s+now|exactly))?[?.!\s]*", re.I)
 
 
 def is_general_inventory(query: str) -> bool:
-    return not (query or "").strip() or bool(_GENERAL_INVENTORY.match(query or ""))
+    return not (query or "").strip() or bool(_GENERAL_INVENTORY.fullmatch(query or ""))

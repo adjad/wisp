@@ -77,6 +77,10 @@ class TurnInferenceClient:
         # what is resident. Any failure falls back to the full start path.
         if await self._probe():
             return
+        # The full start can take many seconds on a cold engine; say so
+        # instead of leaving the panel on a bare "Thinking…".
+        if self._emit is not None:
+            await self._emit({"type": "status", "text": "Starting the AI engine…"})
         await self._start_engine()
         self._engine_ready = True
 

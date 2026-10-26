@@ -106,10 +106,23 @@ def attention_read(text: str) -> PersonalRead | None:
     a source-specific date, or an additional clause keeps its existing owner.
     """
     prefix = r"\s*(?:(?:please|can you|could you)\s+)?"
+    # "Any emails I need to reply to?" is a read. Without these it reached the
+    # email read+write route, which offers send/reply tools for a question.
+    # The source list must parse completely ("emails from Sam" does not), so a
+    # sender or topic filter keeps its existing owner.
+    any_ = r"(?:(?:are\s+there|do\s+I\s+have|have\s+I\s+got|got)\s+)?any\s+"
+    owed = r"(?:reply|respond|get\s+back)\s+to"
+    must = r"(?:need\s+to|have\s+to|ought\s+to|should|must)\s+"
+    reply = r"(?:a\s+|my\s+)?(?:reply|response|answer)"
     patterns = (
         r"what\s+(?:needs|requires)\s+(?:my\s+)?attention\s+(?:in|on|from|across)\s+(?P<sources>.+?)",
         r"(?:which|what)\s+(?P<sources>.+?)\s+(?:are|is)\s+(?:important|urgent)",
         r"which\s+(?P<sources>.+?)\s+should\s+I\s+(?:reply|respond)\s+to(?:\s+first)?",
+        any_ + r"(?P<sources>.+?)\s+(?:that\s+|which\s+)?I\s+(?:still\s+)?" + must
+        + owed + r"(?:\s+first)?",
+        any_ + r"(?P<sources>.+?)\s+(?:that\s+|which\s+)?(?:still\s+)?(?:needs?|requires?|awaits?)\s+" + reply,
+        any_ + r"(?P<sources>.+?)\s+(?:that\s+(?:are|is)\s+|which\s+(?:are|is)\s+)?(?:still\s+)?"
+        r"(?:waiting|wait)\s+(?:for|on)\s+" + reply,
     )
     sources = None
     for pattern in patterns:
@@ -117,6 +130,9 @@ def attention_read(text: str) -> PersonalRead | None:
             sources = _evidence_sources(match["sources"], None, ("email", "messages"))
             break
     if re.fullmatch(prefix + r"what\s+should\s+I\s+(?:reply|respond)\s+to\s+first[.!?\s]*", text, re.I):
+        sources = ("email", "messages")
+    if re.fullmatch(prefix + r"(?:is\s+there\s+)?anything\s+(?:that\s+)?I\s+(?:still\s+)?" + must
+                    + owed + r"[.!?\s]*", text, re.I):
         sources = ("email", "messages")
     if not sources:
         return None

@@ -94,5 +94,5 @@ def translate(exc: Exception, *, retry_omlx: _RetryHook = None, endpoint_name: s
         return ("That request took too long and timed out. Try again, or "
                 "with a shorter question."), detail
 
-    return ("Something went wrong on Wisp's end. Try again — if it keeps "
-            "happening, check the debug export."), detail
+    return ("Something went wrong. Try again. If it keeps happening, right-click "
+            "the Wisp icon in the menu bar and choose Report a Problem…"), detail

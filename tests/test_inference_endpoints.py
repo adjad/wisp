@@ -303,8 +303,10 @@ def test_quit_still_stops_when_the_engine_does_not_answer(monkeypatch, tmp_path)
 
 
 def test_quit_bounds_the_bundled_stop(monkeypatch):
+    import importlib
     from service import main
-    from service.engine import runtime
+    # The module the endpoint will import, even if another test dropped it from sys.modules.
+    runtime = importlib.import_module("service.engine.runtime")
     seen = []
     monkeypatch.setattr(main, "client", type("Local", (), {"managed": True})(), raising=False)
     monkeypatch.setattr(main, "is_bundled", lambda: True)

@@ -13,6 +13,8 @@ which is the worst possible failure for a severe-weather tool.
 """
 from __future__ import annotations
 
+import re
+
 import httpx
 
 from service.tools.registry import register
@@ -169,14 +171,24 @@ async def wisp_status(topic: str = "models") -> str:
              "which assistant capabilities do you have"],
 )
 def wisp_capabilities(query: str = "", topic: str = "") -> str:
-    # A new user's self-questions get the written, live-state answers in
-    # service/wisp_about.py. A specific "can you X?" keeps the Yes/No report.
+    """One answer set for questions about Wisp itself (service/wisp_about.py):
+    a general "what can you do?" gets the short live-state welcome; who /
+    privacy / how-to get their topics; a question about specific abilities
+    ("can you send texts?") gets the Yes/No report, honest "No" rows included."""
     from service import wisp_about
     if topic in wisp_about.TOPICS:
         return wisp_about.answer(topic, query)
     if wisp_about.is_general_inventory(query):
         return wisp_about.overview()
-    from service.tools.registry import REGISTRY, routable_tool_names
+    return _capability_report(query)
+
+
+# Re-exported for tests/test_capability_welcome.py: the welcome's try-its.
+from service.wisp_about import TRY_IT as _TRY_IT  # noqa: E402
+
+
+def _capability_report(query: str) -> str:
+    from service.tools.registry import routable_tool_names
 
     names = routable_tool_names()
     capabilities = [
@@ -205,12 +217,7 @@ def wisp_capabilities(query: str = "", topic: str = "") -> str:
         "No — inspect or understand the screen visually (Wisp has no vision model)",
         "No — access a bank balance unless a dedicated connected banking tool is installed",
     ]
-    unavailable = len(REGISTRY) - len(names)
-    return (f"Wisp currently has {len(names)} usable tools"
-            + (f" ({unavailable} compatibility registrations are unavailable and non-routable)"
-               if unavailable else "")
-            + ". Complete capability summary"
-            + (f" for {query!r}" if query.strip() else "") + ":\n" + "\n".join(rows))
+    return "Here's what Wisp can and can't do:\n" + "\n".join(rows)
 
 
 @register(

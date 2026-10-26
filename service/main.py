@@ -2695,7 +2695,11 @@ async def agent(body: dict[str, Any]):
             message, detail = translate_error(e, retry_omlx=ensure_omlx if remote_only_profile() is None and owned_inference_client is None else None,
                                               endpoint_name=(remote_only_profile().endpoint_name if remote_only_profile() is not None
                                                              else owned_inference_client.endpoint_name if owned_inference_client else "local"))
-            await emit({"type": "error", "message": message, "detail": detail})
+            error_event = {"type": "error", "message": message, "detail": detail}
+            if getattr(e, "reason", "") == "setup_needed":
+                # The model isn't downloaded: the app can point at setup.
+                error_event["code"] = "setup_needed"
+            await emit(error_event)
             await emit({"type": "done"})
             # Persist the user's prompt even though the turn failed — it was
             # NEVER saved, because the only add_turn call sat past everything
@@ -3235,18 +3239,23 @@ async def gmail_status() -> dict[str, Any]:
 
 @app.post("/assistant/gmail/connect")
 async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
-    """Begin read-only Gmail consent. `client_id`/`client_secret` come from the
-    user's own Google Cloud Desktop OAuth client; open the returned `auth_url`
-    in a browser."""
+    """Begin read-only Gmail consent and return the `auth_url` to open.
+
+    The client is the user's own Desktop OAuth client (given here, saved in
+    gmail.json, or the Workspace setup's), else the build's built-in client
+    (gmail_source.resolve_client). `reconnect` names a connected account to
+    sign in again (e.g. after its sign-in expired): it keeps that account's
+    client and passes the account to Google as login_hint."""
     from service import gmail_source
-    from service import google_workspace
-    saved_id, saved_secret = google_workspace.saved_credentials()
-    cfg = gmail_source.load_config()
-    client_id = str(body.get("client_id") or cfg.get("client_id") or saved_id or "")
-    secret = str(body.get("client_secret") or
-                 (cfg.get("client_secret") if client_id == cfg.get("client_id") else "") or "")
-    if not secret and client_id == (saved_id or client_id) and saved_id:
-        secret = saved_secret      # same client as the Workspace setup: reuse its secret
+    reconnect = str(body.get("reconnect") or "").strip().lower()
+    if reconnect:
+        resolved = gmail_source.reconnect_client(reconnect)
+        if resolved is None:
+            return {"ok": False, "error": "That Google account isn't connected"}
+        client_id, secret, source = resolved
+    else:
+        client_id, secret, source = gmail_source.resolve_client(
+            client_id=str(body.get("client_id") or ""), client_secret=str(body.get("client_secret") or ""))
     if not client_id:
         return {"ok": False, "error": "client_id is required"}
     native_id = str(body.get("mail_account_id") or "")
@@ -3256,10 +3265,12 @@ async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
             return {"ok": False, "error": "That Mail account is no longer available; refresh Settings and select it again"}
     try:
         receipt = await gmail_source.begin_authorization(
-            client_id, secret, mail_account_id=native_id, include_receipt=True)
+            client_id, secret, mail_account_id=native_id, include_receipt=True,
+            client_source=source, login_hint=reconnect)
     except gmail_source.GmailError as exc:
         return {"ok": False, "error": str(exc)}
-    return {"ok": True, **receipt}
+    return {"ok": True, **receipt, "client_source": source,
+            "consent_notice": gmail_source.UNVERIFIED_NOTICE if source == "builtin" else ""}
 
 
 @app.post("/assistant/gmail/workspace")
@@ -3628,10 +3639,16 @@ async def google_workspace_status() -> dict[str, Any]:
 
 @app.post("/assistant/google/workspace/enable")
 async def google_workspace_enable(body: dict[str, Any]) -> dict[str, Any]:
-    from service import google_workspace
+    """Set up the Workspace server. Without a client in the body it uses the
+    same client Connect would (the user's own, else the built-in one)."""
+    from service import gmail_source, google_workspace
+    client_id, secret = str(body.get("client_id") or ""), str(body.get("client_secret") or "")
+    source = "user"
+    if not client_id.strip():
+        client_id, secret, source = gmail_source.resolve_client()
     return await google_workspace.enable(
-        str(body.get("client_id") or ""), str(body.get("client_secret") or ""),
-        str(body.get("email") or ""), str(body.get("tier") or "core"))
+        client_id, secret, str(body.get("email") or ""), str(body.get("tier") or "core"),
+        client_source="builtin" if source == "builtin" else "user")
 
 
 @app.post("/assistant/google/workspace/disable")

@@ -89,11 +89,11 @@ def test_answers_are_current_and_plain(topic):
 
 def test_overview_names_the_real_surfaces():
     text = wisp_capabilities("what can you do", "overview")
-    for needle in ("**Ask**", "**Brief**", "**Day**", "⌥Space", "/about", "Settings → Google",
-                   "wait for your OK"):
+    for needle in ("Ask", "Brief and Day", "⌥ Space", "/about", "Settings → Google",
+                   "wait for your OK", "**Right now**"):
         assert needle in text, needle
-    # Three starter prompts a fresh install can try.
-    assert text.count('- "') >= 3
+    # Three try-it prompts, fitted to what is connected.
+    assert text.count('\n- "') == 3
 
 
 def test_general_inventory_without_topic_is_the_overview():
@@ -107,13 +107,18 @@ def test_overview_only_lists_usable_features(monkeypatch):
 
 
 def test_overview_reports_live_source_state(monkeypatch):
-    monkeypatch.setattr(wisp_about, "_source_states",
-                        lambda: {"Calendar": "ready", "Reminders": "ready", "Mail": "unavailable",
-                                 "Messages": "syncing", "Notes": "disabled"})
+    rows = [("calendar", "Calendar", "ready", ""), ("reminders", "Reminders", "ready", ""),
+            ("email", "Email", "unavailable", "Open Mail once so Wisp can read it."),
+            ("messages", "Messages", "syncing", ""), ("notes", "Notes", "disabled", "")]
+    monkeypatch.setattr(wisp_about, "_sources",
+                        lambda: [{"id": i, "label": l, "state": st, "reason": r} for i, l, st, r in rows])
     text = wisp_about.overview()
-    assert "I can read your Calendar and Reminders." in text
-    assert "Still reading Messages" in text
-    assert "I can't read Mail and Notes yet" in text and "Grant More Access…" in text
+    assert "Connected: Calendar, Reminders." in text
+    assert "Still reading for the first time: Messages." in text
+    assert "Not connected: Email. Open Mail once so Wisp can read it." in text
+    assert "Not connected: Notes." in text
+    # Try-its follow what is connected: no mail prompt while Mail can't be read.
+    assert "What's on my calendar tomorrow?" in text and "Any emails I need to reply to?" not in text
 
 
 def test_overview_says_when_google_is_connected(monkeypatch):

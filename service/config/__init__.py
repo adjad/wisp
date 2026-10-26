@@ -732,6 +732,13 @@ def no_thinking_capable() -> list[str]:
     return models_config().get("no_thinking_capable", [])
 
 
+def thinking_after_tool_required(model: str) -> bool:
+    """True when `model` must keep thinking ON for a step that follows a tool
+    result (models.yaml `thinking_required_after_tool`): with thinking off it
+    returns zero tokens there."""
+    return model in (models_config().get("thinking_required_after_tool") or [])
+
+
 def explicit_thinking_models() -> list[str]:
     """Models whose think block Wisp states explicitly on every request."""
     return models_config().get("explicit_thinking", [])

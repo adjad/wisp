@@ -2015,6 +2015,16 @@ final class OverlayModel: ObservableObject {
                 brief = DailyBrief(text: briefText, receivedAt: created ?? Date(),
                                    traceID: ev.payload["trace_id"] as? String, sessionId: "")
             }
+        case "google_signin_expired":
+            // A Testing-mode Google sign-in ended after 7 days
+            // (gmail_source._announce_expired): one durable event per expiry,
+            // so one notification. Settings ▸ Google shows Reconnect.
+            let account = ev.str("account")
+            guard !account.isEmpty else { return false }
+            return await Notifications.deliver(
+                id: "google-signin-expired:\(account):\(ev.payload["expired_at"] as? Int ?? 0)",
+                title: "Google sign-in expired", body: "Reconnect in Settings ▸ Google.",
+                subtitle: account)
         default:
             return false
         }
