@@ -47,6 +47,29 @@ enum NotchQADriver {
         let today = dayModel(.ready)
         let working = dayModel(.working)
         let legacy = dayModel(.none)
+        // First-day states: a new user's empty day, the same day with Calendar,
+        // Reminders, Mail and Messages unreadable, and the service still starting.
+        func variantModel(_ variant: DayVariant) -> TodayModel {
+            TodayModel(now: { now }, timeZoneProvider: { zone }, transport: { request in
+                let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }
+                if variant == .starting { throw URLError(.cannotConnectToHost) }
+                if components?.path == "/assistant/daily_summary/latest" {
+                    return (Data(#"{"detail":"no composed summary for that day"}"#.utf8),
+                            HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+                }
+                let body = components?.path == "/assistant/upcoming" ? Data(#"{"commitments":[]}"#.utf8)
+                    : try fixtureVariantPlan(variant, day: components?.queryItems?.first { $0.name == "day" }?.value ?? "",
+                                             dayStart: dayStart)
+                return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            })
+        }
+        let dayOne = variantModel(.dayOne)
+        let blocked = variantModel(.blocked)
+        let blockedProactive = variantModel(.blockedProactive)
+        let starting = variantModel(.starting)
+        starting.retrySleep = { _ in try await Task.sleep(for: .seconds(3600)) }
+        let startingModel = OverlayModel()
+        startingModel.serviceStarting = true
         let attention = AttentionModel(now: { now }, transport: { request in
             (try fixtureAttention(dayStart: dayStart),
              HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
@@ -98,6 +121,12 @@ enum NotchQADriver {
                                                              actions: state { $0.qaReset(account: judgeAccount) })) }),
             ("brief-legacy", .brief, { AnyView(NotchBriefView(model: model, today: legacy, open: nil)) }),
             ("day", .day, { AnyView(NotchDayView(model: model, today: today)) }),
+            ("brief-dayone", .brief, { AnyView(NotchBriefView(model: model, today: dayOne, open: nil)) }),
+            ("day-dayone", .day, { AnyView(NotchDayView(model: model, today: dayOne)) }),
+            ("brief-blocked", .brief, { AnyView(NotchBriefView(model: model, today: blocked, open: nil)) }),
+            ("brief-blocked-proactive", .brief, { AnyView(NotchBriefView(model: model, today: blockedProactive, actions: state())) }),
+            ("day-blocked", .day, { AnyView(NotchDayView(model: model, today: blocked)) }),
+            ("day-starting", .day, { AnyView(NotchDayView(model: startingModel, today: starting)) }),
         ]
         for scene in scenes {
             let name = scene.name
@@ -122,11 +151,20 @@ enum NotchQADriver {
             await working.refresh()
             await legacy.refresh()
             await legacy.refreshUpcoming()
+            for variant in [dayOne, blocked, blockedProactive] {
+                await variant.refresh()
+                await variant.refreshUpcoming()
+                await variant.refreshStoredBrief()
+            }
+            await starting.refresh()
             let deadline = Date().addingTimeInterval(5)
             @MainActor func populated() -> Bool {
                 today.currentPlan?.workspace?.proactive?.cards.count == 3 && today.upcomingReply != nil && today.storedBriefChecked &&
                 working.currentPlan?.workspace?.proactive?.isWorking == true &&
                 legacy.currentPlan?.workspace != nil && legacy.currentPlan?.workspace?.proactive == nil &&
+                dayOne.currentPlan != nil && blocked.currentPlan?.unreadSources.count == 4 &&
+                blockedProactive.currentPlan?.workspace?.proactive?.hasReadNothing == true &&
+                starting.currentPlan == nil && starting.error.isEmpty &&
                 attention.items.count == 1 && stale.asks.count == 2
             }
             while !populated() && Date() < deadline {
@@ -184,6 +222,60 @@ enum NotchQADriver {
 
     /// Which `workspace.proactive` the fixture carries.
     enum ProactiveFixture { case ready, working, none }
+
+    /// A first-day state: `dayOne` is a new user's empty day with every source
+    /// read; `blocked` is that day with Calendar and Reminders access off and
+    /// Mail and Messages unreadable; `starting` never answers (cold launch).
+    enum DayVariant { case dayOne, blocked, blockedProactive, starting }
+
+    static func fixtureVariantPlan(_ variant: DayVariant, day: String, dayStart: Double) throws -> Data {
+        func at(_ h: Double) -> Double { dayStart + h * 3600 }
+        let isBlocked = variant == .blocked || variant == .blockedProactive
+        let coverage: [[String: Any]] = isBlocked ? [
+            ["source": "calendar", "ready": false, "detail": "", "inspected": 0, "omitted": 0, "state": "unavailable",
+             "blocked": "calendar_access",
+             "reason": "Calendar access is off for Wisp. Turn on Calendar for Wisp in System Settings > Privacy & Security > Calendars."],
+            ["source": "reminders", "ready": false, "detail": "", "inspected": 0, "omitted": 0, "state": "unavailable",
+             "blocked": "reminders_access"],
+            ["source": "email", "ready": false, "detail": "", "inspected": 0, "omitted": 0, "state": "unavailable",
+             "blocked": "mail_closed"],
+            ["source": "messages", "ready": false, "detail": "", "inspected": 0, "omitted": 0, "state": "unavailable",
+             "blocked": "full_disk_access"],
+        ] : ["calendar", "reminders", "email", "messages"].map {
+            ["source": $0, "ready": true, "detail": "", "inspected": 0, "omitted": 0]
+        }
+        var workspace: [String: Any] = [
+            "attention": [], "attention_omitted": 0, "needs_you": ["items": [], "more": 0],
+            "source_coverage": coverage, "behavior_detail": "", "explanation": "",
+            "proposed_plan": ["blocks": [], "unscheduled": [],
+                              "warnings": isBlocked ? ["Calendar is not current. Flexible tasks are waiting for a successful sync.",
+                                                       "Reminders are not current; some deadlines may be missing."] : []],
+        ]
+        if variant == .blockedProactive {
+            // The proactive Brief on the same day: nothing read, so no all-clear.
+            workspace["proactive"] = [
+                "state": "ready", "as_of": at(10.3), "accounts": [String](), "owner": ["id": "me", "label": "Adi"],
+                "lede": "Wisp can't see your calendar yet.", "summary": "Wisp can't see your calendar yet.",
+                "stats": ["read": 0, "found": 0, "drafted": 0], "cards": [], "todos": [], "threads": [],
+                "unread": ["calendar", "reminders", "email", "messages"],
+            ] as [String: Any]
+        }
+        func source(_ blockedKind: String) -> [String: Any] {
+            isBlocked ? ["ready": false, "last_sync": at(10.4), "state": "unavailable", "blocked": blockedKind,
+                         "reason": blockedKind == "calendar_access"
+                             ? "Calendar access is off for Wisp. Turn on Calendar for Wisp in System Settings > Privacy & Security > Calendars."
+                             : "Reminders access is off for Wisp. Turn on Reminders for Wisp in System Settings > Privacy & Security > Reminders."]
+                : ["ready": true, "last_sync": at(10.4), "reason": "Up to date", "state": "ready"]
+        }
+        let payload: [String: Any] = [
+            "day": day, "timezone": zone.identifier, "generated_at": at(10.5), "revision": 0, "provisional": isBlocked,
+            "warnings": [], "tasks": [], "blocks": [], "deadlines": [], "all_day": [], "unscheduled": [],
+            "sources": ["calendar": source("calendar_access"), "reminders": source("reminders_access")],
+            "preferences": ["start_minute": 540, "end_minute": 1080, "not_before": NSNull()],
+            "workspace": workspace,
+        ]
+        return try JSONSerialization.data(withJSONObject: payload)
+    }
 
     static let judgeAccount = "judge.demo@gmail.com"
 
