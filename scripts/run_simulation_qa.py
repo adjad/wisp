@@ -242,6 +242,10 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # rc1 Ask backend: reply-needed reads stay read-only, the capability welcome, Gmail-only identity.
+    "tests/test_router_reply_needed_reads.py",
+    "tests/test_capability_welcome.py",
+    "tests/test_email_gmail_only_and_dedup.py",
     # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
     "tests/test_needs_you_clear.py",
     # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
