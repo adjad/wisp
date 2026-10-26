@@ -46,8 +46,12 @@ def world(tmp_path):
         pytest.skip("macOS defaults(1) only")
     domain = f"wisp.demo-test.{uuid.uuid4()}"
     for key in ("wisp.setupGuide.shown", "wisp.notchTip.shown"):
-        if subprocess.run(["defaults", "write", domain, key, "-bool", "true"],
-                          capture_output=True).returncode:
+        try:
+            written = subprocess.run(["defaults", "write", domain, key, "-bool", "true"],
+                                     capture_output=True).returncode == 0
+        except OSError:
+            written = False
+        if not written:
             pytest.skip("cannot write UserDefaults here (sandboxed shell)")
     demo = wisp_demo.Demo(tmp_path, domain, "WispDemoTestNoSuchApp", ())
     yield demo
