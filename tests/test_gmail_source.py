@@ -27,6 +27,8 @@ from service.tools import cache_store, email_tools as E
 
 ME = "me@gmail.com"
 SCHOOL = "me@school.edu"
+# The real automatic Workspace setup; every test class replaces G._ensure_workspace.
+ENSURE_WORKSPACE = G._ensure_workspace
 
 
 def msg(mid, subject="New email", unread=False, stamp=None):
@@ -57,6 +59,8 @@ class GmailSource(unittest.TestCase):
         self.enterContext(patch.multiple(G, _last={}, _errors={}, _access={}, _epochs={}, _locks={},
                                         _meta={}, _pending_flow=None, _flow_generation=0,
                                         _authorization={"state": "idle", "generation": 0, "error": ""}))
+        # Never set up (download, start) a real Workspace server from a test.
+        self.ensure_workspace = self.enterContext(patch.object(G, "_ensure_workspace", AsyncMock(return_value="existing")))
         self.accounts = {ME: {"client_id": "synthetic", "refresh_token": "fake-refresh"}}
         self.enterContext(patch.object(G, "connected_accounts", lambda cfg=None: dict(self.accounts)))
         E.configure_external_accounts(self.accounts)
@@ -2487,6 +2491,8 @@ class GoogleConnectAndErase(unittest.TestCase):
                                         _authorization={"state": "idle", "generation": 0, "error": ""}))
         self.store = AssistantStore(root / "assistant.db")
         self.enterContext(patch.object(C, "_store_override", self.store))
+        # Never set up (download, start) a real Workspace server from a test.
+        self.ensure_workspace = self.enterContext(patch.object(G, "_ensure_workspace", AsyncMock(return_value="existing")))
         self.enterContext(patch.multiple(C, _status={}, _locks={}))
         from service import google_workspace
         self.W = google_workspace
@@ -2525,43 +2531,36 @@ class GoogleConnectAndErase(unittest.TestCase):
         self.assertIn("redirect_uri=http%3A%2F%2F127.0.0.1%3A50123", url)
         return parse_qs(urlparse(url).query)
 
-    def test_consent_asks_for_gmail_and_calendar_read_only(self):
+    def test_every_consent_asks_for_read_and_workspace_scopes_in_one_go(self):
         query = self.consent_query()
-        # A first sign-in (and any sign-in while no account has Workspace tools
-        # switched on) asks for mail and calendar, read-only, and nothing else.
-        self.assertEqual(query["scope"][0].split(), [G.SCOPE, G.CALENDAR_SCOPE])
+        # One sign-in serves Brief's sync and the Workspace tools: Gmail and
+        # Calendar plus the read-only Workspace scopes, nothing that writes.
+        scopes = query["scope"][0].split()
+        self.assertEqual(scopes, [G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES])
+        self.assertTrue(all(scope.endswith(".readonly") for scope in scopes))
+        # No account is guessed as the login hint; only Reconnect passes one.
         self.assertNotIn("login_hint", query)
 
-    def test_workspace_scopes_are_asked_only_after_the_user_switches_them_on(self):
-        self.assertEqual(G.status()["workspace_consent"], [])
-        result = G.set_workspace(ME, True)
-        # Google grants the scopes only at a sign-in, so the switch says to reconnect.
-        self.assertTrue(result["ok"] and result["reconnect"])
-        self.assertEqual(G.status()["workspace_consent"], [ME])
-        query = self.consent_query()
-        scopes = query["scope"][0].split()
-        self.assertEqual(set(scopes), {G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES})
-        self.assertTrue(all(scope.endswith(".readonly") for scope in scopes))
-        self.assertEqual(query["login_hint"], [ME])
-        # Once that sign-in granted them, the next one is narrow again.
-        cfg = G.load_config()
-        cfg["accounts"][ME]["scopes"] = [G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES]
-        G._save_config(cfg)
-        self.W.credentials_path(ME).unlink(missing_ok=True)
-        self.assertEqual(G.status()["workspace_consent"], [])
-        self.assertEqual(self.consent_query()["scope"][0].split(), [G.SCOPE, G.CALENDAR_SCOPE])
-        self.assertEqual(G.set_workspace(ME, True), {"ok": True})
+    def test_older_sign_ins_without_workspace_scopes_need_one_reconnect(self):
+        # The fixture accounts signed in before every consent asked for Workspace.
+        rows = {r["email"]: r for r in G.status()["accounts"]}
+        self.assertEqual(rows[ME]["state"], "needs_reconnect")
+        self.assertEqual(rows[ME]["message"], "Reconnect to finish setup.")
+        email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES], email=ME)
+        row = next(r for r in G.status()["accounts"] if r["email"] == email)
+        self.assertTrue(row["workspace"] and row["workspace_full"])
+        self.assertNotEqual(row["state"], "needs_reconnect")
 
-    def finish(self, granted):
+    def finish(self, granted, email="New@Gmail.com"):
         token = {"refresh_token": "new-refresh", "access_token": "fake", "scope": " ".join(granted)}
         async def run():
             with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200, json=token))), \
                  patch.object(httpx.AsyncClient, "get",
-                              AsyncMock(return_value=httpx.Response(200, json={"emailAddress": "New@Gmail.com"}))), \
+                              AsyncMock(return_value=httpx.Response(200, json={"emailAddress": email}))), \
                  patch.object(G, "_after_connect", AsyncMock()) as after:
-                email = await G._finish("synthetic", "s", "code", "verifier", "http://127.0.0.1", generation=0)
+                done = await G._finish("synthetic", "s", "code", "verifier", "http://127.0.0.1", generation=0)
                 await asyncio.sleep(0)
-                return email, after
+                return done, after
         return asyncio.run(run())
 
     def test_finish_records_the_scopes_google_granted(self):
@@ -2574,38 +2573,46 @@ class GoogleConnectAndErase(unittest.TestCase):
         self.assertEqual(G._authorization["phase"], "reading")
         self.assertEqual(G._authorization["phase_email"], email)
 
-    def test_new_sign_in_leaves_workspace_tools_off_and_erase_removes_them(self):
-        email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE])
-        # Off for a new account: its refresh token is not copied for the server.
-        self.assertFalse(G.connected_accounts()[email]["workspace"])
-        self.assertFalse(self.W.credentials_path(email).exists())
-        self.assertEqual(self.W.enabled_accounts(), [])
-        # The user switches them on, then reconnects to grant the scopes.
-        self.assertTrue(G.set_workspace(email, True)["reconnect"])
-        self.finish([G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES])
+    def test_new_sign_in_switches_workspace_on_and_erase_removes_it(self):
+        email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES])
+        # On for every new account: its refresh token is copied for the server.
         self.assertTrue(G.connected_accounts()[email]["workspace"])
         creds = json.loads(self.W.credentials_path(email).read_text())
         self.assertEqual(creds["refresh_token"], "new-refresh")
+        self.assertIn(email, self.W.enabled_accounts())
         row = next(r for r in G.status()["accounts"] if r["email"] == email)
         self.assertTrue(row["workspace"] and row["workspace_full"])
-        # Switching off removes the server's sign-in; on restores it.
+        # The API switch still exists for older accounts; a reconnect turns it back on.
         self.assertTrue(G.set_workspace(email, False)["ok"])
         self.assertFalse(self.W.credentials_path(email).exists())
-        self.assertEqual(self.W.enabled_accounts(), [])
-        G.set_workspace(email, True)
-        self.assertEqual(self.W.enabled_accounts(), [email])
+        self.assertEqual(next(r for r in G.status()["accounts"] if r["email"] == email)["state"],
+                         "needs_reconnect")
+        self.finish([G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES])
+        self.assertTrue(G.connected_accounts()[email]["workspace"])
+        self.assertTrue(self.W.credentials_path(email).exists())
         self.assertFalse(G.set_workspace("nobody@gmail.com", True)["ok"])
         with patch("httpx.AsyncClient.post", AsyncMock()):
             result = asyncio.run(G.disconnect(email))
         self.assertEqual(result["erased"][email]["workspace"], "erased")
         self.assertFalse(self.W.credentials_path(email).exists())
 
-    def test_reconnect_keeps_the_workspace_choice(self):
-        email, _ = self.finish([G.SCOPE])
-        G.set_workspace(email, False)
-        self.finish([G.SCOPE])
-        self.assertFalse(G.connected_accounts()[email]["workspace"])
-        self.assertFalse(self.W.credentials_path(email).exists())
+    def test_first_connect_sets_the_workspace_server_up_with_that_client(self):
+        email, _ = self.finish([G.SCOPE, G.CALENDAR_SCOPE, *self.W.WORKSPACE_SCOPES])
+        self.ensure_workspace.assert_called_once_with("synthetic", "s", email)
+        enable = AsyncMock(return_value={"ok": True, "state": "preparing"})
+        with patch.object(self.W, "enable", enable), \
+             patch.object(self.W, "status", return_value={"configured": False}):
+            self.assertEqual(asyncio.run(ENSURE_WORKSPACE("cid", "sec", email)), "enabled")
+        enable.assert_awaited_once_with("cid", "sec", email)
+        # An existing setup (perhaps the user's own client and tier) is left alone.
+        enable.reset_mock()
+        with patch.object(self.W, "enable", enable), \
+             patch.object(self.W, "status", return_value={"configured": True}):
+            self.assertEqual(asyncio.run(ENSURE_WORKSPACE("cid", "sec", email)), "existing")
+        enable.assert_not_awaited()
+        with patch.object(self.W, "enable", AsyncMock(return_value={"ok": False, "error": "uv missing"})), \
+             patch.object(self.W, "status", return_value={"configured": False}):
+            self.assertEqual(asyncio.run(ENSURE_WORKSPACE("cid", "sec", email)), "failed")
 
     def test_unticked_calendar_still_connects_mail(self):
         email, _ = self.finish([G.SCOPE])
@@ -3101,7 +3108,8 @@ class BuiltInGoogleClient(unittest.TestCase):
         self.assertFalse(row["fresh"])
         self.assertEqual(row["last_error"], "Google sign-in expired. Reconnect in Settings ▸ Google.")
         other = next(r for r in G.status()["accounts"] if r["email"] == JUDGE)
-        self.assertEqual(other["state"], "ok")
+        self.assertFalse(other["expired"])
+        self.assertNotEqual(other["state"], "expired")
         self.assertNotIn("me-refresh", json.dumps(G.status()))
 
     def test_reconnect_clears_the_expired_state(self):
@@ -3146,6 +3154,75 @@ class BuiltInGoogleClient(unittest.TestCase):
         self.assertEqual(kwargs["dedupe_key"], f"google-signin-expired:{ME}:1700000000")
         self.assertEqual(event["title"] + ". " + event["body"],
                          "Google sign-in expired. Reconnect in Settings ▸ Google.")
+
+
+
+class MergedAccountState(unittest.TestCase):
+    """One status line per account: mail sync, calendar and Workspace merged.
+    Pure: rows as status() builds them, Workspace status as W.status() does."""
+
+    WORKSPACE_OK = {"configured": True, "running": True, "uvx": True, "error": "",
+                    "prepare": {"state": "ready", "detail": ""}}
+
+    def row(self, **changes):
+        base = {"email": ME, "workspace": True, "workspace_full": True, "expired": False,
+                "last_error": "", "calendar_error": "", "client_source": "builtin"}
+        return {**base, **changes}
+
+    def state(self, server=None, **changes):
+        return G.account_state(self.row(**changes), self.WORKSPACE_OK if server is None else server)
+
+    def test_a_healthy_account_is_connected(self):
+        self.assertEqual(self.state(), {"state": "connected", "message": "Connected", "detail": ""})
+        # A brand-new sign-in waiting for its first refresh is not a problem.
+        self.assertEqual(self.state(last_error="New sign-in is waiting for its first refresh")["state"], "connected")
+        # Nor is a Workspace server that is still downloading.
+        preparing = {**self.WORKSPACE_OK, "running": False, "prepare": {"state": "preparing"}}
+        self.assertEqual(self.state(preparing)["state"], "connected")
+
+    def test_expired_outranks_everything(self):
+        result = self.state(expired=True, workspace_full=False, last_error="anything", calendar_error="x")
+        self.assertEqual(result["state"], "expired")
+        self.assertIn("Reconnect", result["message"])
+
+    def test_missing_workspace_scopes_need_reconnect_to_finish_setup(self):
+        for changes in ({"workspace_full": False}, {"workspace": False}):
+            result = self.state(**changes, calendar_error="x")
+            self.assertEqual((result["state"], result["message"]), ("needs_reconnect", "Reconnect to finish setup."))
+
+    def test_developer_instructions_are_reworded_for_testers(self):
+        raw = ("Turn on the Google Calendar API in your Google Cloud project "
+               "(APIs & Services ▸ Library), then wait a minute")
+        result = self.state(calendar_error=raw)
+        self.assertEqual(result["state"], "attention")
+        self.assertEqual(result["message"], "Calendar isn't available for this account yet.")
+        self.assertEqual(result["detail"], raw)          # kept for Advanced
+        for message in (result["message"],):
+            self.assertNotIn("Cloud", message)
+            self.assertNotIn("API", message)
+        # Someone on their own OAuth client is a developer: they see the detail.
+        self.assertEqual(self.state(calendar_error=raw, client_source="user")["message"], raw)
+
+    def test_mail_comes_before_calendar_before_workspace(self):
+        broken = {**self.WORKSPACE_OK, "error": "server exited"}
+        result = self.state(broken, last_error="Google could not be reached; try again when online",
+                            calendar_error="Google Calendar refused the request (HTTP 500)")
+        self.assertEqual(result["message"], "Google couldn't be reached. Wisp will try again.")
+        result = self.state(broken, calendar_error="Calendar access wasn't granted; reconnect and allow Calendar")
+        self.assertEqual(result["message"], "Calendar wasn't shared. Reconnect and allow Calendar.")
+        result = self.state(broken)
+        self.assertEqual((result["state"], result["message"]), ("attention", "Google tools aren't running right now."))
+        self.assertEqual(result["detail"], "server exited")
+
+    def test_workspace_problems_are_plain(self):
+        cases = [({"configured": False, "uvx": True}, "Google tools aren't set up yet. Try Reconnect."),
+                 ({**self.WORKSPACE_OK, "uvx": False}, "Google tools need the uv helper. Install it with: brew install uv"),
+                 ({**self.WORKSPACE_OK, "prepare": {"state": "failed", "detail": "Couldn't fetch workspace-mcp: x"}},
+                  "Google tools couldn't be set up. Try Reconnect.")]
+        for workspace, message in cases:
+            with self.subTest(message=message):
+                result = self.state(workspace)
+                self.assertEqual((result["state"], result["message"]), ("attention", message))
 
 
 if __name__ == "__main__":

@@ -79,9 +79,9 @@ from service.publication_authority import Authority, Witness, mutating, revocati
 
 SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
-# Requested together at consent. Only SCOPE is required; Calendar is optional.
-# Nothing else: the Workspace scopes are asked for only when the user switches
-# Workspace tools on for an account (_workspace_consent).
+# Requested together at consent, with the read-only Workspace scopes
+# (google_workspace.WORKSPACE_SCOPES, see _consent_scopes): one sign-in per
+# account serves Brief's sync and the Workspace tools. Only SCOPE is required.
 CONSENT_SCOPES = (SCOPE, CALENDAR_SCOPE)
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -310,22 +310,22 @@ def status() -> dict:
     sources = {row["account"]: row for row in E.email_source_details() if row["source"] == "gmail"}
     from service import google_calendar_source as C
     from service import google_workspace as W
+    workspace = W.status()
     rows = []
     for email, item in accounts.items():
         expired = bool(item.get("auth_expired"))
         error = (SIGNIN_EXPIRED if expired else
                  _errors.get(email) or sources.get(email, {}).get("error", ""))
-        rows.append({"email": email, "workspace": bool(item.get("workspace")),
-                     "workspace_full": W.has_full_scopes(email, item),
-                     "last_headers_sync": sources.get(email, {}).get("last_success"),
-                     "fresh": sources.get(email, {}).get("fresh", False) and not expired,
-                     "last_error": error,
-                     # "expired" (reconnect needed) | "error" | "ok"
-                     "state": "expired" if expired else "error" if error else "ok",
-                     "expired": expired, "expired_at": item.get("auth_expired") or None,
-                     "client_source": "builtin" if item.get("client_source") == "builtin" else "user",
-                     "mail_account_id": item.get("mail_account_id", ""),
-                     "calendar": has_calendar(email, item), **C.account_status(email)})
+        row = {"email": email, "workspace": bool(item.get("workspace")),
+               "workspace_full": W.has_full_scopes(email, item),
+               "last_headers_sync": sources.get(email, {}).get("last_success"),
+               "fresh": sources.get(email, {}).get("fresh", False) and not expired,
+               "last_error": error,
+               "expired": expired, "expired_at": item.get("auth_expired") or None,
+               "client_source": "builtin" if item.get("client_source") == "builtin" else "user",
+               "mail_account_id": item.get("mail_account_id", ""),
+               "calendar": has_calendar(email, item), **C.account_status(email)}
+        rows.append({**row, **account_state(row, workspace)})
     first = rows[0] if rows else {}
     _, _, source = resolve_client(cfg)
     return {"connected": bool(rows), "email": first.get("email", ""), "accounts": rows,
@@ -338,7 +338,81 @@ def status() -> dict:
             "authorizing": _pending_flow is not None, "authorization": dict(_authorization),
             # Accounts whose next sign-in also asks for the Workspace scopes.
             "workspace_consent": [r["email"] for r in rows if r["workspace"] and not r["workspace_full"]],
-            "mail_accounts": E.native_email_accounts(), "workspace": W.status()}
+            "mail_accounts": E.native_email_accounts(), "workspace": workspace}
+
+
+# The one status line per account. Brief's sync (mail, calendar) and the
+# Workspace server are plumbing behind one sign-in, so their problems merge
+# into one state and one plain sentence. `detail` keeps the raw reason for
+# Advanced; an account on the user's own OAuth client (a developer) sees it
+# as the message itself.
+_SETTING_UP = "New sign-in is waiting for its first refresh"
+
+
+def _plain_mail_error(reason: str) -> str:
+    low = reason.lower()
+    if "read access is missing" in low:
+        return "Mail access wasn't granted. Reconnect and allow Gmail."
+    if "couldn't" in low or "could not be reached" in low or "timed out" in low or "offline" in low:
+        return "Google couldn't be reached. Wisp will try again."
+    return "Mail isn't syncing right now. Wisp will try again."
+
+
+def _plain_calendar_error(reason: str) -> str:
+    low = reason.lower()
+    if "google calendar api" in low or "cloud project" in low:
+        return "Calendar isn't available for this account yet."
+    if "wasn't granted" in low or "allow calendar" in low:
+        return "Calendar wasn't shared. Reconnect and allow Calendar."
+    if "timed out" in low:
+        return "Google Calendar couldn't be reached. Wisp will try again."
+    return "Calendar isn't syncing right now. Wisp will try again."
+
+
+def _workspace_problem(workspace: dict) -> tuple[str, str]:
+    """(plain message, raw detail) when the Workspace server can't serve the
+    Google tools, else ("", "")."""
+    workspace = workspace if isinstance(workspace, dict) else {}
+    prepare = workspace.get("prepare") if isinstance(workspace.get("prepare"), dict) else {}
+    if prepare.get("state") == "preparing":
+        return "", ""
+    if not workspace.get("uvx", True):
+        return ("Google tools need the uv helper. Install it with: brew install uv",
+                "uvx was not found on this Mac")
+    if prepare.get("state") == "failed":
+        return "Google tools couldn't be set up. Try Reconnect.", str(prepare.get("detail") or "")
+    if not workspace.get("configured"):
+        return "Google tools aren't set up yet. Try Reconnect.", "The Workspace server has no entry in mcp.json"
+    if workspace.get("error"):
+        return "Google tools aren't running right now.", str(workspace["error"])
+    return "", ""
+
+
+def account_state(row: dict, workspace: dict) -> dict:
+    """{state, message, detail} for one account row of status().
+
+    state: connected | expired | needs_reconnect | attention. Precedence:
+    expired, then needs_reconnect (a sign-in to redo fixes more than any
+    single problem), then the first problem of mail, calendar, Workspace."""
+    developer = row.get("client_source") == "user"
+    def attention(plain: str, detail: str) -> dict:
+        return {"state": "attention", "message": detail if developer and detail else plain, "detail": detail}
+    if row.get("expired"):
+        return {"state": "expired", "message": "Sign-in expired. Reconnect to keep this account up to date.",
+                "detail": SIGNIN_EXPIRED}
+    if not row.get("workspace") or not row.get("workspace_full"):
+        return {"state": "needs_reconnect", "message": "Reconnect to finish setup.",
+                "detail": "This sign-in predates the Google Workspace scopes"}
+    mail = str(row.get("last_error") or "")
+    if mail and mail != _SETTING_UP:
+        return attention(_plain_mail_error(mail), mail)
+    calendar = str(row.get("calendar_error") or "")
+    if calendar:
+        return attention(_plain_calendar_error(calendar), calendar)
+    plain, detail = _workspace_problem(workspace)
+    if plain:
+        return attention(plain, detail)
+    return {"state": "connected", "message": "Connected", "detail": ""}
 
 
 def _current() -> tuple[str, dict, int]:
@@ -833,16 +907,13 @@ async def begin_authorization(client_id: str, client_secret: str = "",
             _pending_flow = None
 
     asyncio.create_task(expire())
-    awaiting = _workspace_consent()
     query = {
         "client_id": client_id, "redirect_uri": redirect, "response_type": "code",
-        "scope": " ".join(_consent_scopes(workspace=bool(awaiting))),
+        "scope": " ".join(_consent_scopes()),
         "code_challenge": challenge, "code_challenge_method": "S256",
         "state": state, "access_type": "offline", "prompt": "consent"}
     if login_hint:
-        query["login_hint"] = login_hint      # Reconnect: the account whose sign-in expired
-    elif len(awaiting) == 1:
-        query["login_hint"] = awaiting[0]     # the account the Workspace scopes are for
+        query["login_hint"] = login_hint      # Reconnect: the account this sign-in is for
     url = AUTH_URL + "?" + urlencode(query)
     return {"auth_url": url, "generation": generation} if include_receipt else url
 
@@ -892,9 +963,10 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         _last.pop(email, None)
         _sent.pop(email, None)
         _errors.pop(email, None)       # e.g. the expired sign-in this replaces
-        # New accounts start with Workspace tools off (their refresh token is
-        # not copied for the Workspace server); a reconnect keeps the choice.
-        workspace = accounts.get(email, {}).get("workspace", False)
+        # Every sign-in serves the Workspace tools too: its refresh token is
+        # copied for the Workspace server (sync_credentials below). An older
+        # account switched off is switched on again by its reconnect.
+        workspace = True
         builtin = client_source == "builtin"
         accounts[email] = {"client_id": client_id, "client_secret": client_secret,
                            "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id,
@@ -921,8 +993,28 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         except Exception as exc:  # noqa: BLE001
             print(f"[google_calendar] scope-drop erase failed: {type(exc).__name__}", flush=True)
     _authorization.update(phase="reading", phase_email=email, analyze="")
+    _spawn(_ensure_workspace(client_id, client_secret, email))
     _spawn(_after_connect(email))
     return email
+
+
+async def _ensure_workspace(client_id: str, client_secret: str, email: str) -> str:
+    """Set the Workspace server up with this sign-in's client the first time
+    an account connects: there is no separate enable step. An existing setup
+    is left alone (it may be the user's own, with a chosen tool tier).
+    Returns enabled | existing | failed."""
+    try:
+        from service import google_workspace
+        if google_workspace.status().get("configured"):
+            return "existing"
+        result = await google_workspace.enable(client_id, client_secret, email)
+    except Exception as exc:  # noqa: BLE001 — Brief still works; status shows the problem
+        print(f"[google_workspace] automatic setup failed: {type(exc).__name__}", flush=True)
+        return "failed"
+    if not result.get("ok"):
+        print("[google_workspace] automatic setup did not complete", flush=True)
+        return "failed"
+    return "enabled"
 
 
 def reconnect_client(account: str) -> tuple[str, str, str] | None:
@@ -940,21 +1032,19 @@ def reconnect_client(account: str) -> tuple[str, str, str] | None:
     return item.get("client_id", ""), item.get("client_secret", ""), "user"
 
 
-def _consent_scopes(workspace: bool = False) -> tuple[str, ...]:
-    """Gmail (required) and Calendar, read-only. The read-only Workspace scopes
-    are added only for a sign-in that serves an account the user switched
-    Workspace tools on for (see _workspace_consent)."""
-    if not workspace:
-        return CONSENT_SCOPES
+def _consent_scopes() -> tuple[str, ...]:
+    """Every sign-in asks for Gmail (required) and Calendar plus the
+    read-only Workspace scopes, in one consent. Writes (sending, editing
+    files) stay with the Workspace server's own on-demand sign-in, and each
+    of those tools still asks before it runs (service.mcp._category_for)."""
     from service import google_workspace
     return CONSENT_SCOPES + google_workspace.WORKSPACE_SCOPES
 
 
 def _workspace_consent() -> list[str]:
     """Accounts with Workspace tools switched on whose sign-in still lacks the
-    Workspace scopes. Switching them on asks for a reconnect, and that next
-    sign-in asks Google for the scopes (with the account as login_hint when
-    there is one). A first sign-in never does."""
+    Workspace scopes: a sign-in from before every consent asked for them.
+    Their row says "Reconnect to finish setup"."""
     try:
         from service import google_workspace
         return sorted(email for email, item in connected_accounts().items()

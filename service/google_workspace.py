@@ -8,8 +8,10 @@ fetches the Google sign-in link from the server's own auth tool. The server is
 subprocess, so mail and files go Google -> this Mac and nothing is relayed
 through a third party.
 
-The OAuth client id/secret are the user's own (Google Cloud "Desktop app").
-They live in mcp.json, written 0600 like the rest of ~/.moe's personal files.
+The OAuth client is the one Google sign-in used (gmail_source.resolve_client:
+the user's own Desktop client, else the build's built-in one); the first
+connect sets the server up with it (gmail_source._ensure_workspace). It lives
+in mcp.json, written 0600 like the rest of ~/.moe's personal files.
 Tools keep the MCP client's normal rule: confirm-tier unless the user lists them
 in `trusted_read_only`; only plainly read-only lookups are pre-listed here.
 """
@@ -46,15 +48,14 @@ TRUSTED_READ_ONLY = [
     "list_tasks", "get_task", "list_task_lists",
     "list_contacts", "get_contact", "search_contacts",
 ]
-# The server's per-account sign-ins. Wisp owns this folder: only an account the
-# user switches on in Settings ▸ Google Workspace gets a credential file here,
-# written from Wisp's own Google sign-in. Accounts start switched off.
+# The server's per-account sign-ins. Wisp owns this folder: every connected
+# account (each sign-in switches Workspace on) gets a credential file here,
+# written from Wisp's own Google sign-in.
 CREDENTIALS_DIR = MOE_DIR / "google_workspace" / "credentials"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
-# Read-only Workspace scopes, requested at a sign-in only once the user has
-# switched Workspace tools on for that account (gmail_source._workspace_consent);
-# a first sign-in asks for mail and calendar alone. Writes (sending, editing
-# files) stay with the server's own on-demand sign-in.
+# Read-only Workspace scopes, requested at every sign-in together with mail and
+# calendar (gmail_source._consent_scopes). Writes (sending, editing files) stay
+# with the server's own on-demand sign-in.
 WORKSPACE_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/documents.readonly",
@@ -334,8 +335,8 @@ def route_arguments(schema: dict, args: dict) -> dict | str:
         return args
     allowed = enabled_accounts()
     if not allowed:
-        return ("(no Google account is switched on for Workspace tools. "
-                "Turn one on in Settings ▸ Google Workspace.)")
+        return ("(no Google account is connected for Google tools. "
+                "Connect one in Settings ▸ Google.)")
     asked = str(args.get("user_google_email") or "").strip().lower()
     if asked in allowed:
         return {**args, "user_google_email": asked}
