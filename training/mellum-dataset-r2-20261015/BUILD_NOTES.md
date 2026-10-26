@@ -1,5 +1,14 @@
 # R2 build notes
 
+## Archived (2026-10-26)
+
+Mellum is no longer used by Wisp, so this dataset is archived. Its source-contract
+check (`tests/test_mellum_r2_source_contracts.py`) was removed from Simulation QA
+and CI, and router or tool changes no longer rebind `validation.json` or
+`upload-zip.json`. The hashes there describe the sources as of the last rebind,
+not current main. Before training on this data again, restore the check from git
+history and run `build.py validate-rendered` and `package` against the then-current tree.
+
 ## Current-main source acceptance (2026-10-22)
 
 The 2026-10-15/16 corpus below is preserved byte for byte: 3,270 train rows and
