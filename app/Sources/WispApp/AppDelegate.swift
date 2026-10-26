@@ -287,7 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: .wispContinueFirstRun, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.openFirstRunSetup() }
+            MainActor.assumeIsolated { self?.bringSetupForward() }
         }
         let defaults = UserDefaults.standard
         let reopens = defaults.integer(forKey: FirstRunSetup.reopensKey)
@@ -443,6 +443,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       let ready = object["ready"] as? Bool else { continue }
                 answered = true
                 let canAnswer = ready || object["remote_only"] as? Bool == true
+                self.setupMenuItem?.title = canAnswer ? "Model & Engine…" : "Finish Setup…"
                 let cue = FirstRunSetup.setupCue(self.model.setupCard, canAnswer: canAnswer,
                                                  firstRunWindowUp: self.firstRunWindow != nil)
                 if cue != self.model.setupCard { self.model.setupCard = cue }
@@ -460,10 +461,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Clicking the Dock icon, or opening Wisp again from Finder or Spotlight while it
     // is running, opens the Wisp window. Closing the window does not quit Wisp.
+    // While first-run setup is up, the Dock brings that forward instead: setup
+    // never shows in two places at once.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        open(.chat(sessionId: nil))
+        if firstRunWindow != nil { bringSetupForward() } else { open(.chat(sessionId: nil)) }
         return true
     }
+
+    /// The one setup surface on screen, forward: the detailed guide while it
+    /// stands in for the first-run window, else the first-run window (reopened at
+    /// its step when setup is unfinished), else the notch's setup card.
+    private func bringSetupForward() {
+        if firstRunHiddenForGuide, let guide = setupWindow, guide.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            guide.makeKeyAndOrderFront(nil)
+        } else if firstRunWindow != nil || FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {
+            openFirstRunSetup()
+        } else {
+            openSetupInNotch()
+        }
+    }
+
+    // The menu's setup item says where setup is: "Finish Setup…" until Wisp can
+    // answer, then "Model & Engine…" (the same place, for changing them later).
+    private var setupMenuItem: NSMenuItem?
+
+    @objc private func openSetupFromMenu() { bringSetupForward() }
 
     /// Opening the window at launch used to be how Wisp said "I'm running". Now
     /// that it starts in the notch, open the notch once and say where Wisp lives,
@@ -512,7 +535,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .settings:
             openSettings()
         case .setup:
-            openSetupInNotch()
+            bringSetupForward()
         case .knowYou:
             knowYouChosen = true
             openAssistant()
@@ -642,7 +665,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // progress UI instead of duplicating five shortcuts here.
         menu.addItem(withTitle: "Open Wisp Window", action: #selector(openChat), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupInNotch), keyEquivalent: "")
+        setupMenuItem = menu.addItem(withTitle: "Model & Engine…", action: #selector(openSetupFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "Tell Wisp About You…", action: #selector(tellWispAboutYou), keyEquivalent: "")
         menu.addItem(withTitle: "Grant More Access…", action: #selector(grantMoreAccess), keyEquivalent: "")
         menu.addItem(.separator())
@@ -1435,7 +1458,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The full setup guide in its own window: every step, including Smart
     /// Search, other local apps and model downloads. Settings opens it, and so
     /// does the notch card's ⤢.
+    // The first-run window steps aside while the detailed guide is up (both
+    // centred, the guide covering it, read as two Wisp windows at once) and
+    // comes back, at its step, when the guide closes.
+    private var firstRunHiddenForGuide = false
+
     @objc private func openSetupGuide() {
+        if let welcome = firstRunWindow, welcome.isVisible {
+            welcome.orderOut(nil)
+            firstRunHiddenForGuide = true
+        }
         // Already open: just bring it forward, so an in-flight action isn't discarded.
         if let open = setupWindow, open.isVisible {
             NSApp.activate(ignoringOtherApps: true)
@@ -1454,7 +1486,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setupCloseObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.willCloseNotification, object: win, queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.setupModel.hide(from: "window") }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.setupModel.hide(from: "window")
+                    if self.firstRunHiddenForGuide {
+                        self.firstRunHiddenForGuide = false
+                        DispatchQueue.main.async { self.openFirstRunSetup() }
+                    }
+                }
             }
             return win
         }()
