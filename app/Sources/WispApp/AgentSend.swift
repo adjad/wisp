@@ -114,6 +114,23 @@ enum AskStarters {
         return Array(out.prefix(limit))
     }
 
+    /// The starters not yet asked in this chat, in their original order. A starter
+    /// counts as asked when a user turn says it (ignoring case and surrounding
+    /// whitespace), so the set resets with a new chat and survives reopening the panel.
+    static func remaining(_ all: [String], askedTexts: [String]) -> [String] {
+        let asked = Set(askedTexts.map(normalized))
+        return all.filter { !asked.contains(normalized($0)) }
+    }
+
+    private static func normalized(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// The chat window's own starters, shown on an empty chat and, once it has
+    /// begun, as "Try another" for the ones not yet asked.
+    static let chatWindow = ["What can you do?", "What's on my calendar this week?", "Any emails I need to reply to?",
+                             "Draft a reply to my last email", "Is my data private?"]
+
     /// Source states that mean Wisp can't read the source on this Mac.
     static func unreadable(states: [String: String]) -> Set<String> {
         Set(states.filter { $0.value == "unavailable" || $0.value == "disabled" }.keys)

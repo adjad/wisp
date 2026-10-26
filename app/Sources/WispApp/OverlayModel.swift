@@ -473,6 +473,23 @@ final class OverlayModel: ObservableObject {
     // answer, even before any source is allowed (AgentSend.swift's AskStarters).
     var suggestions: [String] { AskStarters.prompts(unreadable: unreadableSources) }
 
+    /// Starters not yet asked in this chat (derived from its user turns, so New chat resets them).
+    var remainingSuggestions: [String] {
+        AskStarters.remaining(suggestions, askedTexts: turns.filter { $0.role == "user" }.map(\.text))
+    }
+
+    /// The compact "Try another" row under a conversation: only while Ask is at rest
+    /// (a finished reply is the last turn; nothing streaming, queued, typed, awaiting
+    /// approval, drafted or being reported) and some starter is still unasked.
+    var offersTryAnother: Bool {
+        guard phase == .idle || phase == .done, turns.last?.role == "assistant",
+              !isProcessing, !willQueuePrompt, answer.isEmpty,
+              input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              pending == nil, messageDraft == nil, report.snapshot == nil
+        else { return false }
+        return !remainingSuggestions.isEmpty
+    }
+
     func refreshStarters() {
         Task { [weak self] in
             guard let self, let status = await self.client.assistantSyncStatus(sources: ["calendar", "email"]) else { return }

@@ -483,6 +483,7 @@ struct OverlayView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(model.turns) { turn in turnView(turn) }
                         liveTurn
+                        if model.offersTryAnother { tryAnotherRow }
                         Color.clear.frame(height: 1).id("bottom")
                     }
                 }
@@ -698,6 +699,31 @@ struct OverlayView: View {
                 .buttonStyle(.plain)
                 .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                 .help("Ask \u{201C}\(s)\u{201D}")
+            }
+        }
+    }
+
+    // A light row of the starters not yet asked in this chat, under the last reply.
+    // Buttons here are not focusable, so Return and the Ask field keep the keyboard.
+    private var tryAnotherRow: some View {
+        HStack(spacing: 8) {
+            Text("Try another").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                .fixedSize()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(model.remainingSuggestions, id: \.self) { s in
+                        Button { model.pick(s) } label: {
+                            Text(s).lineLimit(1).fixedSize()
+                                .padding(.horizontal, 10).padding(.vertical, 4)
+                                .background(Capsule().fill(Theme.chipFill))
+                                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain).focusable(false)
+                        .font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                        .help("Ask \u{201C}\(s)\u{201D}")
+                    }
+                }
             }
         }
     }
