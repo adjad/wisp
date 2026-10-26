@@ -37,6 +37,16 @@ SAMPLE = {
 }
 
 
+def _patch_cloud(monkeypatch, mode="", host="", *, pending=False, super_model=None, roles=(), known=True):
+    """Stand in for wisp_about.cloud_detail(): one mode for every answer."""
+    from service import wisp_about as about
+    if super_model is None:
+        super_model = mode == "super" and not roles
+    monkeypatch.setattr(about, "cloud_detail", lambda: {
+        "mode": mode, "host": host, "pending": pending, "super_model": super_model,
+        "roles": list(roles), "known": known})
+
+
 # --- store -----------------------------------------------------------------
 
 def test_round_trip_and_defaults():
@@ -405,7 +415,8 @@ def test_api_dismiss_counts(client):
 
 def test_api_says_whether_the_answers_stay_on_this_mac(client, monkeypatch):
     from service import wisp_about
-    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("", ""))
+    _patch_cloud(monkeypatch, "", "")
     assert client.get("/profile").json()["status"]["local_only"] is True
-    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("everything", "api.example.com"))
+    _patch_cloud(monkeypatch, "everything", "api.example.com")
     assert client.get("/profile").json()["status"]["local_only"] is False
+

@@ -51,6 +51,16 @@ NOT_SELF_QUESTIONS = [
 ]
 
 
+def _patch_cloud(monkeypatch, mode="", host="", *, pending=False, super_model=None, roles=(), known=True):
+    """Stand in for wisp_about.cloud_detail(): one mode for every answer."""
+    from service import wisp_about as about
+    if super_model is None:
+        super_model = mode == "super" and not roles
+    monkeypatch.setattr(about, "cloud_detail", lambda: {
+        "mode": mode, "host": host, "pending": pending, "super_model": super_model,
+        "roles": list(roles), "known": known})
+
+
 def routed(prompt: str):
     return asyncio.run(route(prompt))
 
@@ -133,7 +143,7 @@ def test_overview_says_when_google_is_connected(monkeypatch):
 
 
 def test_privacy_is_local_by_default(monkeypatch):
-    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("", ""))
+    _patch_cloud(monkeypatch, "", "")
     text = wisp_about.privacy()
     assert text.startswith("**Your data stays on this Mac.**")
     assert "No cloud AI is used unless you turn one on" in text
@@ -142,15 +152,64 @@ def test_privacy_is_local_by_default(monkeypatch):
 
 
 def test_privacy_never_claims_local_when_a_cloud_model_runs_everything(monkeypatch):
-    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("everything", "api.example.com"))
+    _patch_cloud(monkeypatch, "everything", "api.example.com")
     text = wisp_about.privacy()
     assert "stays on this Mac" not in text.split("\n")[0]
     assert "api.example.com" in text and "turn the cloud model off" in text
 
 
-def test_privacy_mentions_an_optional_cloud_model(monkeypatch):
-    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("super", "your cloud provider"))
-    assert "You've turned on a cloud model" in wisp_about.privacy()
+def test_privacy_under_an_optional_cloud_model_says_exactly_what_goes(monkeypatch):
+    # Super Model: only the question itself (service/main.py's super_model_cloud path).
+    _patch_cloud(monkeypatch, "super", "openrouter.ai", super_model=True)
+    text = wisp_about.privacy()
+    assert not text.startswith("**Your data stays on this Mac.**")
+    assert "kept on this Mac, not on a server" not in text
+    assert "stored on this Mac" in text and "openrouter.ai" in text
+    assert "only the question itself" in text
+    assert "Getting to know you is never sent" in text
+    # A role bound to the cloud: the direct-chat branch sends the conversation,
+    # related memory and routine patterns, never About you (profile.may_send_to).
+    _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("reasoning", "coding"))
+    text = wisp_about.privacy()
+    assert "hard reasoning questions and code questions" in text
+    assert "recent conversation" in text and "remember" in text and "routines" in text
+    assert "only the question itself" not in text
+    assert "Getting to know you is never sent" in text
+
+
+def test_pending_everything_matches_the_models_report(monkeypatch):
+    _patch_cloud(monkeypatch, "everything", "gpu.example.net", pending=True)
+    for text in (wisp_about.privacy(), wisp_about.identity(), wisp_about.overview()):
+        assert "after Wisp restarts" in text and "this Mac answers" in text, text[:160]
+        assert "gpu.example.net" in text
+        assert "Right now a cloud model is on" not in text
+
+
+def test_an_unreadable_cloud_setting_never_reads_as_local(monkeypatch):
+    import service.config as config
+    import service.inference.remote_policy as remote_policy
+
+    def broken():
+        raise RuntimeError("config unreadable")
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)
+    monkeypatch.setattr(config, "cloud_everything_enabled", lambda: False)
+    monkeypatch.setattr(config, "cloud_provider_settings", broken)
+    monkeypatch.setattr(config, "cloud_super_model_enabled", lambda: True)
+    # The provider settings can't be read, but a flag says cloud: cloud, generic host.
+    assert wisp_about.cloud_state() == ("super", "your cloud provider")
+    monkeypatch.setattr(config, "cloud_super_model_enabled", broken)
+    detail = wisp_about.cloud_detail()
+    assert detail["mode"] == "super" and detail["known"] is False
+    monkeypatch.setattr(config, "cloud_everything_enabled", broken)
+    assert wisp_about.cloud_state() == ("everything", "your cloud provider")
+    assert "runs right here on this Mac" not in wisp_about.overview()
+    assert not wisp_about.privacy().startswith("**Your data stays on this Mac.**")
+    for text in (wisp_about.overview(), wisp_about.identity(), wisp_about.privacy()):
+        assert "couldn't read the cloud settings" in text
+        assert "Right now a cloud model is on" not in text, "unknown isn't claimed either way"
+    monkeypatch.setattr(remote_policy, "remote_only_profile", broken)
+    monkeypatch.setattr(config, "cloud_everything_enabled", lambda: False)
+    assert wisp_about.cloud_state()[0] == "everything", "an unreadable remote-only check isn't local"
 
 
 def test_identity_uses_the_name_the_user_gave(monkeypatch):
@@ -174,7 +233,7 @@ LOCAL_CLAIMS = ("runs right here on this Mac", "without sending them to a server
 
 @pytest.mark.parametrize("host", ["api.example.com", "your cloud provider"])
 def test_overview_and_identity_never_claim_local_when_everything_runs_in_the_cloud(monkeypatch, host):
-    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("everything", host))
+    _patch_cloud(monkeypatch, "everything", host)
     for text in (wisp_about.overview(), wisp_about.identity()):
         for claim in LOCAL_CLAIMS:
             assert claim not in text, (claim, text[:200])
@@ -182,13 +241,13 @@ def test_overview_and_identity_never_claim_local_when_everything_runs_in_the_clo
 
 
 def test_overview_and_identity_say_local_when_it_is(monkeypatch):
-    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("", ""))
+    _patch_cloud(monkeypatch, "", "")
     assert wisp_about.overview().startswith("**Hi, I'm Wisp.** My AI runs right here on this Mac.")
     assert "without sending them to a server" in wisp_about.identity()
 
 
 def test_overview_and_identity_name_an_optional_cloud_model(monkeypatch):
-    monkeypatch.setattr(wisp_about, "cloud_state", lambda: ("super", "api.example.com"))
+    _patch_cloud(monkeypatch, "super", "api.example.com")
     for text in (wisp_about.overview(), wisp_about.identity()):
         assert "You've also turned on a cloud model" in text and "api.example.com" in text
         assert "without sending them to a server" not in text

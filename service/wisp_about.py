@@ -74,35 +74,82 @@ def _host(url: object) -> str:
         return "your cloud provider"
 
 
-def cloud_state() -> tuple[str, str]:
-    """Where Wisp's AI runs, for every answer that says so (this module, the
-    profile's "Stays on this Mac", wisp_status's models report): one helper, so
-    the claims can't drift apart.
+_GENERIC_HOST = "your cloud provider"
+# What each cloud-assignable role answers, in the user's words.
+_ROLE_LABELS = {"reasoning": "hard reasoning questions", "coding": "code questions",
+                "research": "research"}
 
-    ("everything", host): a remote-only build, or Cloud "Everything" turned on
-    (it takes over once Wisp restarts). ("super", host): an optional cloud
-    model answers some questions (the Super Model, or a role bound to the cloud
-    endpoint). ("", ""): everything runs on this Mac. Unknown reads as local
-    only when nothing could be read at all."""
+
+_UNKNOWN = object()
+
+
+def _read(read):
+    """A setting's value, or _UNKNOWN when it can't be read. Each one is read
+    on its own, so one broken setting can't hide another."""
     try:
-        from service.inference.remote_policy import remote_only_profile
-        profile = remote_only_profile()
-        if profile is not None:
-            return "everything", _host(profile.base_url)
+        return read()
     except Exception:  # noqa: BLE001
-        pass
+        return _UNKNOWN
+
+
+def cloud_detail() -> dict:
+    """Everything the answers need to say where Wisp's AI runs:
+
+    mode     "everything" (a remote-only build, or Cloud "Everything" turned
+             on), "super" (an optional cloud model answers some questions),
+             or "" (all on this Mac)
+    host     the provider's host, or "your cloud provider" when the config
+             can't name it
+    pending  Cloud "Everything" is turned on but takes over only after Wisp
+             restarts; until then this Mac answers
+    super_model, roles   which optional cloud model is on: the Super Model,
+             and/or roles bound to the cloud endpoint
+    known    False when a setting couldn't be read. Unknown is never read as
+             local: an unreadable Everything setting reports "everything", an
+             unreadable optional model "super", each with the generic host.
+             (profile.may_send_to treats unknown as "send nothing".)"""
+    def result(mode="", host="", *, pending=False, super_model=False, roles=(), known=True):
+        return {"mode": mode, "host": host, "pending": pending, "super_model": super_model,
+                "roles": list(roles), "known": known}
+
     try:
-        from service.config import (cloud_everything_enabled, cloud_provider_settings,
-                                    cloud_super_model_enabled, models_config)
-        settings = cloud_provider_settings()
-        if cloud_everything_enabled():
-            remote = (models_config().get("inference") or {}).get("remote_only") or {}
-            return "everything", _host(remote.get("base_url") if isinstance(remote, dict) else "")
-        if cloud_super_model_enabled() or (settings.get("enabled") and settings.get("roles")):
-            return "super", _host(settings.get("base_url"))
+        from service import config
+        from service.inference import remote_policy
     except Exception:  # noqa: BLE001
-        pass
-    return "", ""
+        return result("everything", _GENERIC_HOST, known=False)
+    profile = _read(remote_policy.remote_only_profile)
+    if profile is not None and profile is not _UNKNOWN:
+        return result("everything", _host(getattr(profile, "base_url", "")))
+    everything = _read(config.cloud_everything_enabled)
+    if profile is _UNKNOWN or everything is not False:
+        remote = _read(lambda: (config.models_config().get("inference") or {}).get("remote_only"))
+        host = _host(remote.get("base_url")) if isinstance(remote, dict) else _GENERIC_HOST
+        if everything is True and profile is None:
+            # Turned on but not active: remote_only_profile() is None until a restart.
+            return result("everything", host, pending=True)
+        return result("everything", host if everything is True else _GENERIC_HOST, known=False)
+    settings = _read(config.cloud_provider_settings)
+    super_model = _read(config.cloud_super_model_enabled)
+    if isinstance(settings, dict):
+        roles = [r for r in settings.get("roles") or () if r in _ROLE_LABELS] \
+            if settings.get("enabled") else []
+        cloud_host = _host(settings.get("base_url"))
+    else:
+        roles, cloud_host = [], _GENERIC_HOST
+    known = isinstance(settings, dict) and super_model is not _UNKNOWN
+    if super_model is True or roles:
+        return result("super", cloud_host, super_model=super_model is True, roles=roles, known=known)
+    if not known:
+        return result("super", _GENERIC_HOST, known=False)
+    return result()
+
+
+def cloud_state() -> tuple[str, str]:
+    """(mode, host) from cloud_detail(), for every answer that says where Wisp's
+    AI runs (this module, the profile's "Stays on this Mac" and its prompt
+    predicate, wisp_status's models report): one helper, so they can't drift."""
+    detail = cloud_detail()
+    return detail["mode"], detail["host"]
 
 
 def _auto_add_on() -> bool:
@@ -200,13 +247,27 @@ def _can_lines(tools: set[str]) -> list[str]:
     return lines
 
 
+def _pending_line(host: str) -> str:
+    return (f"Cloud \"Everything\" is turned on and takes over after Wisp restarts. From then on, "
+            f"what you ask, and the data a reply needs, is sent to {host}. Until then, this Mac answers.")
+
+
+_UNKNOWN_LINE = ("I couldn't read the cloud settings just now, so I can't promise everything stays "
+                 "on this Mac. Check the cloud model in **Settings**.")
+
+
 def _greeting() -> str:
     """The overview's first line. "Runs on this Mac" is said only when it is true."""
-    cloud, host = cloud_state()
-    if cloud == "everything":
+    detail = cloud_detail()
+    host = detail["host"]
+    if not detail["known"]:
+        return "**Hi, I'm Wisp.** " + _UNKNOWN_LINE
+    if detail["mode"] == "everything" and detail["pending"]:
+        return "**Hi, I'm Wisp.** " + _pending_line(host)
+    if detail["mode"] == "everything":
         return (f"**Hi, I'm Wisp.** Right now I'm answering with a cloud model at {host}, not on "
                 "this Mac. Turn it off in **Settings** to keep everything here.")
-    if cloud == "super":
+    if detail["mode"] == "super":
         return (f"**Hi, I'm Wisp.** My AI runs right here on this Mac. You've also turned on a "
                 f"cloud model, so questions it answers go to {host}.")
     return "**Hi, I'm Wisp.** My AI runs right here on this Mac."
@@ -239,8 +300,15 @@ def overview() -> str:
 
 def identity() -> str:
     name = _user_name()
-    cloud, host = cloud_state()
-    if cloud == "everything":
+    detail = cloud_detail()
+    cloud, host = detail["mode"], detail["host"]
+    if not detail["known"]:
+        intro = ("I'm **Wisp**, your assistant in the Mac's notch. I help with your calendar, "
+                 "reminders, mail, messages and notes. " + _UNKNOWN_LINE)
+    elif cloud == "everything" and detail["pending"]:
+        intro = ("I'm **Wisp**, your assistant in the Mac's notch. I help with your calendar, "
+                 "reminders, mail, messages and notes. " + _pending_line(host))
+    elif cloud == "everything":
         intro = ("I'm **Wisp**, your assistant in the Mac's notch. I help with your calendar, "
                  "reminders, mail, messages and notes. Right now a cloud model is on, so what you "
                  f"ask, and the data a reply needs, is sent to {host} to be answered.")
@@ -264,22 +332,60 @@ def identity() -> str:
     return "\n".join(out)
 
 
+def _optional_cloud_lines(detail: dict) -> list[str]:
+    """What an optional cloud model is sent, exactly (service/main.py's direct
+    chat branch and super-model path; profile.may_send_to keeps About you off
+    both)."""
+    host = detail["host"]
+    lines = []
+    if detail["super_model"]:
+        lines.append(f"- The Super Model you turned on answers some general questions at {host}. "
+                     "It gets only the question itself: no conversation, memory or personal data.")
+    roles = [_ROLE_LABELS[r] for r in detail["roles"]]
+    if roles:
+        lines.append(f"- You've set a cloud model at {host} to answer {_join(roles)}. When it "
+                     "answers, the question goes there with the recent conversation, things you "
+                     "asked me to remember that relate to it, and patterns I've noticed in your "
+                     "routines. Research also sends the web pages it read, and a document search "
+                     "you upgrade sends the passages it answers from.")
+    if not lines:
+        lines.append(f"- A cloud model may answer some questions, at {host}. Check **Settings** "
+                     "to see which.")
+    lines.append("- What you told me in Getting to know you is never sent to it.")
+    return lines
+
+
 def privacy() -> str:
-    cloud, host = cloud_state()
-    out = ["**Your data stays on this Mac.**", ""]
-    if cloud == "everything":
+    detail = cloud_detail()
+    cloud, host = detail["mode"], detail["host"]
+    if not detail["known"]:
+        out = ["**I couldn't check whether a cloud model is on.**", "",
+               "- " + _UNKNOWN_LINE,
+               "- Your mail, messages, calendar, notes and what you tell me are stored on this Mac.",
+               "- What you told me in Getting to know you goes only to Wisp's own model on this Mac "
+               "while I can't check."]
+    elif cloud == "everything" and detail["pending"]:
+        out = ["**Cloud \"Everything\" is turned on.** It takes over after Wisp restarts; until "
+               "then this Mac answers.", "",
+               f"- After the restart, what you ask, and the data a reply needs (your mail, "
+               f"messages, calendar and what you told me about yourself), is sent to {host}.",
+               "- To keep everything on this Mac, turn it off in **Settings** before restarting."]
+    elif cloud == "everything":
         out = ["**Right now a cloud model is on**, so this is different from usual.", "",
                f"- What you ask, and the data a reply needs (your mail, messages, calendar and what "
                f"you told me about yourself), is sent to {host} to be answered.",
                "- To keep everything on this Mac again, turn the cloud model off in **Settings**."]
+    elif cloud == "super":
+        out = ["**Your data is stored on this Mac**, and you've turned on a cloud model for some "
+               "questions.", "",
+               "- My main AI model runs here, on your Mac. Your mail, messages, calendar, notes, "
+               "and what you tell me are read and stored on this Mac."]
+        out += _optional_cloud_lines(detail)
     else:
-        out.append("- My AI model runs here, on your Mac. Your mail, messages, calendar, notes, "
-                   "and what you tell me are read and kept on this Mac, not on a server.")
-        if cloud == "super":
-            out.append("- You've turned on a cloud model in Settings. Questions it answers go to "
-                       "that provider. Everything else stays here.")
-        else:
-            out.append("- No cloud AI is used unless you turn one on in **Settings**.")
+        out = ["**Your data stays on this Mac.**", "",
+               "- My AI model runs here, on your Mac. Your mail, messages, calendar, notes, "
+               "and what you tell me are read and kept on this Mac, not on a server.",
+               "- No cloud AI is used unless you turn one on in **Settings**."]
     out += ["- Some things have to go online: web searches, weather, stocks and research. "
             "If you connect Google, I fetch that account's mail and calendar from Google.",
             ("- I never send a message or email without showing it to you first. Because "

@@ -85,17 +85,21 @@ async def weather_alerts_at(lat: float, lon: float, name: str, country: str) -> 
 # --------------------------------------------------------------------------
 def _where_inference_runs() -> str:
     """The models report's line on where answers come from. It reads the same
-    cloud_state() as Wisp's privacy and "who are you" answers, so the two can't
+    cloud_detail() as Wisp's privacy and "who are you" answers, so the two can't
     disagree. A remote-only build never reaches here (wisp_status reports it
     first)."""
-    from service.wisp_about import cloud_state
-    cloud, host = cloud_state()
-    if cloud == "everything":
-        # Configured but not yet active: remote_only_profile() is None until
+    from service.wisp_about import cloud_detail
+    detail = cloud_detail()
+    cloud, host = detail["mode"], detail["host"]
+    if cloud == "everything" and detail["pending"]:
+        # Turned on but not yet active: remote_only_profile() is None until
         # Wisp restarts, so the local model above is still the one answering.
         return ("Cloud \"Everything\" is turned on and takes over when Wisp restarts. From then "
                 f"on, what you ask, and the data a reply needs, is sent to {host}. Until then, "
                 "the model above answers on this Mac.")
+    if not detail["known"]:
+        return ("I couldn't read the cloud settings, so I can't confirm that every answer comes "
+                "from this Mac. Check the cloud model in **Settings**.")
     if cloud == "super":
         return ("The model above runs on this Mac. You've also turned on a cloud model: questions "
                 f"it answers, and the data they need, are sent to {host}.")
