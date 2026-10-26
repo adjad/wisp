@@ -559,3 +559,78 @@ def test_squashed_and_camel_case_mcp_verbs_ask(name, full_access):
 ])
 def test_what_arms_the_untrusted_read_rule(tool, category, args, arms):
     assert policy.turn_reads_untrusted(tool, category, args) is arms
+
+
+# --- final audit (b23ecd18): every workspace-mcp 2.2.0 write asks under full access ---
+
+# Every tool workspace-mcp 2.2.0 registers (@server.tool in its package), by
+# whether it changes anything. clear_completed_tasks is an older name kept for
+# servers that still expose it.
+WORKSPACE_WRITES = """
+append_table_rows batch_modify_gmail_message_labels batch_update_doc batch_update_form
+batch_update_presentation clear_completed_tasks copy_drive_file create_calendar create_doc
+create_drive_file create_drive_folder create_form create_presentation create_reaction create_sheet
+create_spreadsheet create_table_with_data draft_gmail_message export_doc_to_pdf find_and_replace_doc
+format_sheet_range import_to_google_doc import_to_google_sheets import_to_google_slides
+insert_doc_elements insert_doc_image manage_conditional_formatting manage_contact
+manage_contact_group manage_contacts_batch manage_deployment manage_doc_tab manage_drive_access
+manage_event manage_focus_time manage_gmail_filter manage_gmail_label manage_named_range
+manage_out_of_office manage_script_content manage_script_project manage_script_trigger
+manage_script_version manage_sheet_tab manage_task manage_task_list modify_doc_text
+modify_gmail_message_labels modify_sheet_values move_sheet_rows resize_sheet_dimensions
+run_script_function send_gmail_message send_message set_drive_file_permissions
+set_publish_settings start_google_auth update_doc_headers_footers update_drive_file
+update_paragraph_style
+""".split()
+WORKSPACE_READS = """
+check_drive_file_public_access debug_table_structure download_chat_attachment generate_trigger_code
+get_contact get_contact_group get_doc_as_markdown get_doc_content get_drive_file_content
+get_drive_file_download_url get_drive_file_permissions get_events get_form get_form_response
+get_gmail_attachment_content get_gmail_message_content get_gmail_messages_content_batch
+get_gmail_thread_content get_gmail_threads_content_batch get_messages get_page get_presentation
+get_script_activity get_script_project get_script_version get_search_engine_info
+get_spreadsheet_info get_task get_task_list inspect_doc_structure list_calendars
+list_contact_groups list_contacts list_docs_in_folder list_drive_items list_form_responses
+list_gmail_filters list_gmail_labels list_script_deployments list_sheet_tables list_spaces
+list_spreadsheets list_task_lists list_tasks query_freebusy read_sheet_values render_page_to_image
+search_contacts search_custom search_docs search_drive_files search_gmail_messages search_messages
+""".split()
+# A read whose name holds a write word ("shareable"): it asks, which is safe.
+WORKSPACE_READS_THAT_ASK = ["get_drive_shareable_link"]
+
+
+def _workspace_tier(name, annotations=None):
+    from service.mcp import _category_for
+    from service.google_workspace import TRUSTED_READ_ONLY
+    spec = {"name": name, **({"annotations": annotations} if annotations else {})}
+    category = _category_for(spec, {"trusted_read_only": list(TRUSTED_READ_ONLY)})
+    return policy.decide(category, {}, tool=f"mcp_google_workspace_{name}").tier
+
+
+@pytest.mark.parametrize("name", WORKSPACE_WRITES)
+def test_every_workspace_write_asks_with_full_access_on(name, full_access):
+    assert _workspace_tier(name) is policy.Tier.CONFIRM, name
+    # A server that falsely labels a write read-only gains nothing.
+    assert _workspace_tier(name, {"readOnlyHint": True}) is policy.Tier.CONFIRM, name
+
+
+@pytest.mark.parametrize("name", WORKSPACE_READS)
+def test_workspace_reads_run_with_full_access_on(name, full_access):
+    assert _workspace_tier(name) is policy.Tier.ALLOW, name
+
+
+@pytest.mark.parametrize("name", WORKSPACE_READS_THAT_ASK)
+def test_workspace_reads_with_a_write_word_ask(name, full_access):
+    assert _workspace_tier(name) is policy.Tier.CONFIRM
+
+
+@pytest.mark.parametrize("name", ["readMessage", "getEmailThread", "getOrderStatus", "getPostById",
+                                  "mcp_x_getpostbyid", "mcp_shop_get_order_status"])
+def test_noun_like_words_in_reads_do_not_ask(name, full_access):
+    assert policy.decide("mcp_action", {}, tool=name).tier is policy.Tier.ALLOW
+
+
+@pytest.mark.parametrize("name", ["slack_post_message", "post_tweet", "mcp_shop_order",
+                                  "mcp_x_email_contact", "mcp_x_message_channel"])
+def test_noun_like_words_still_ask_as_actions(name, full_access):
+    assert policy.decide("mcp_action", {}, tool=name).tier is policy.Tier.CONFIRM

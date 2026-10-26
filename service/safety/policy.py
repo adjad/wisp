@@ -961,9 +961,20 @@ def shell_grant_problem(args: dict) -> str | None:
 _MCP_EFFECT_STEMS = ("send", "delete", "remove", "trash", "create", "update", "modify",
                      "share", "publish", "upload", "forward", "reply", "invite", "write",
                      "transfer", "purchase", "cancel", "archive", "comment", "merge",
-                     "submit", "execute", "insert", "notify")
+                     "submit", "execute", "insert", "notify", "manage", "append", "replace",
+                     "resize", "rename", "restore", "export", "draft")
+# Whole words only: as substrings these sit inside reads (copyright, important,
+# information, unclear, labels, restart).
 _MCP_EFFECT_WORDS = frozenset({"post", "push", "run", "edit", "save", "add", "set", "put",
-                               "book", "pay", "order", "message", "email", "move"})
+                               "book", "pay", "order", "message", "email", "move", "copy",
+                               "import", "clear", "format", "batch", "label", "start", "apply",
+                               "complete", "respond"})
+# Words that are nouns as often as verbs. In a name that also says get, read,
+# list or the like (getOrderStatus, readMessage, getEmailThread, getPostById,
+# get_gmail_messages_content_batch) they name the thing being read.
+_MCP_NOUN_VERBS = frozenset({"message", "email", "order", "post", "batch"})
+_MCP_READ_VERBS = frozenset({"get", "read", "list", "search", "find", "fetch", "query", "view",
+                             "show", "check", "lookup", "describe", "count", "inspect", "download"})
 
 
 # Objects a short verb is squashed onto in a lowercased name: chat_postmessage,
@@ -981,8 +992,10 @@ def mcp_effect_word(tool: str | None) -> str | None:
     name = raw.lower()
     if (stem := next((w for w in _MCP_EFFECT_STEMS if w in name), None)):
         return stem
-    for word in re.split(r"[^a-z0-9]+", name):
-        if word in _MCP_EFFECT_WORDS:
+    words = re.split(r"[^a-z0-9]+", name)
+    reading = bool(_MCP_READ_VERBS.intersection(words))
+    for word in words:
+        if word in _MCP_EFFECT_WORDS and not (reading and word in _MCP_NOUN_VERBS):
             return word
         for verb in _MCP_EFFECT_WORDS:
             if word.startswith(verb) and _MCP_OBJECTS.fullmatch(word[len(verb):]):
