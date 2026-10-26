@@ -242,6 +242,33 @@ struct FirstRunSetupChecks {
         check(FirstRunBrain.from(status: status(bundled: false, available: false), downloads: [])
                 == .unavailable("Wisp's engine needs macOS 26."), "Unsupported macOS says why")
         check(FirstRunBrain.from(status: status(running: false), downloads: []) == .startingEngine, "Engine not running yet")
+        // The person's own oMLX (external mode) before its server answers: connecting,
+        // never the "can't set this up" card, however long the first answer takes.
+        let connecting = FirstRunBrain.from(status: status(bundled: false, running: false), downloads: [])
+        check(connecting == .startingEngine, "External mode, not ready yet, is not unavailable")
+        check(connecting.footer(stalled: false) == .working("Starting the engine…"), "Connecting shows a spinner, not a failure")
+        check(FirstRunBrain.from(status: status(bundled: false, running: false, available: false), downloads: [])
+                == .startingEngine, "A Mac that can't run the built-in engine still connects to its own oMLX")
+        if case .unavailable(let why) = FirstRunBrain.from(status: status(bundled: false), downloads: []) {
+            check(why.hasPrefix("Your oMLX app is running but doesn't have Gemma 4 E4B"),
+                  "A running oMLX without Wisp's model is the stuck case, and says so")
+        } else { check(false, "A running oMLX without the model goes to the detailed setup") }
+        // A model the person's oMLX serves that would replace a choice: one click, never automatic.
+        let offered = FirstRunBrain.offered(model: gemma, label: "Gemma 4 E4B")
+        check(offered.modelToUse == gemma && offered.footer(stalled: false) == .tryAgain
+              && !offered.isArriving && !offered.waitsForDownloadClick && offered.modelToFetch == nil,
+              "An offered model waits for its Use click and is never fetched")
+        // Connecting to the person's oMLX always reaches a Try again, even with no automatic start.
+        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: true, waited: 9),
+              "Connecting is not stalled inside the grace period")
+        check(FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: true,
+                                         waited: FirstRunBrain.connectGrace),
+              "Connecting past the grace period offers Try again without an automatic start")
+        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: false, waited: 600),
+              "The built-in engine keeps its own rule: stalled only after Wisp's start or a failure")
+        check(FirstRunBrain.startStalled(autoStarted: true, failed: false, connecting: false, waited: 0)
+              && FirstRunBrain.startStalled(autoStarted: false, failed: true, connecting: false, waited: 0),
+              "An automatic start that left nothing running, or a failure, offers Try again")
         check(FirstRunBrain.from(status: status(), downloads: []) == .needsDownload(model: gemma, label: "Gemma 4 E4B", sizeGb: 5.5),
               "Nothing installed: offer the download")
         guard case .downloading(_, _, let fraction, let done, let total, let left) =

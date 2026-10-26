@@ -37,7 +37,7 @@ enum NotchModelOffer: Equatable {
             return .download(brain)
         case .startingEngine, .checking:
             return .startEngineFirst
-        case .unavailable, .switching, .ready:
+        case .unavailable, .switching, .offered, .ready:
             return .none
         }
     }

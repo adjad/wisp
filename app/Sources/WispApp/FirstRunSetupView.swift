@@ -208,9 +208,20 @@ enum FirstRunBrain: Equatable {
     case waitingForEngine(model: String, label: String)
     /// Installed and not in use yet: switch Wisp over to it.
     case switching(model: String, label: String)
+    /// The person's own oMLX serves a model, but switching to it would replace their
+    /// choice (or it isn't the recommended one): one click, never automatic.
+    case offered(model: String, label: String)
     case ready(label: String)
 
     var isReady: Bool { if case .ready = self { return true } else { return false } }
+
+    /// The model a "Switch"/"Use" click applies.
+    var modelToUse: String? {
+        switch self {
+        case .switching(let model, _), .offered(let model, _): return model
+        default: return nil
+        }
+    }
 
     /// Step 1 is waiting on the person's one click: Download, or Retry after a stop.
     var waitsForDownloadClick: Bool {
@@ -240,6 +251,7 @@ enum FirstRunBrain: Equatable {
         case .waitingForEngine: return 6
         case .switching: return 7
         case .ready: return 8
+        case .offered: return 9
         }
     }
 
@@ -277,6 +289,7 @@ enum FirstRunBrain: Equatable {
         case .needsDownload: return .download
         case .failed: return .retry
         case .unavailable: return .detailedSetup
+        case .offered: return .tryAgain
         }
     }
 
@@ -287,12 +300,26 @@ enum FirstRunBrain: Equatable {
             let label = status.models.installed.first(where: { $0.id == model })?.label ?? model
             return .ready(label: plainLabel(label))
         }
+        // The oMLX app this Mac already has (a fresh install picks it when oMLX.app is
+        // installed). Until its server answers it is connecting, never a failure: it may
+        // be starting or loading the model. Only a running oMLX without the model is stuck.
+        switch status.existingOmlx {
+        case .connecting: return .startingEngine
+        case .serving(let model, let label): return .switching(model: model, label: plainLabel(label))
+        case .offering(let model, let label): return .offered(model: model, label: plainLabel(label))
+        case nil: break
+        }
         // The engine's own reason first: a Mac whose macOS is too old for it also
         // falls back to external mode, and "set to use another app" would be untrue.
         if let engine = status.bundledEngine, !engine.available {
             return .unavailable(engine.unavailableReason ?? "Wisp's built-in engine can't run on this Mac.")
         }
         guard status.omlx.bundled == true else {
+            if status.omlx.installed, status.omlx.running {
+                let wanted = plainLabel(status.models.recommendedLabel ?? status.models.recommended)
+                return .unavailable("Your oMLX app is running but doesn't have \(wanted) or another of Wisp's models. "
+                                    + "Use the detailed setup to pick one of its models.")
+            }
             return .unavailable("Wisp is set to use another app for its model. Use the detailed setup to finish.")
         }
         // No model Wisp can download fits this Mac's memory (or it couldn't be
@@ -344,6 +371,16 @@ enum FirstRunBrain: Equatable {
         guard free < needed else { return nil }
         return String(format: "This Mac has %.1f GB free; the download needs about %.0f GB. Free up some space first.",
                       free, needed)
+    }
+
+    /// Connecting to the person's own oMLX offers Try again after this long even when
+    /// Wisp never got to start it by itself, so the step never spins with no button.
+    static let connectGrace: TimeInterval = 10
+
+    /// `.startingEngine` needs a click: Wisp's own start finished without an engine,
+    /// a start failed, or the person's oMLX has been connecting past the grace period.
+    static func startStalled(autoStarted: Bool, failed: Bool, connecting: Bool, waited: TimeInterval) -> Bool {
+        autoStarted || failed || (connecting && waited >= connectGrace)
     }
 
     /// How long a cold start has taken, once it is long enough to be worth saying.
@@ -648,6 +685,9 @@ struct FirstRunSetupView: View {
     @State private var progressWatch = DownloadProgressWatch()
     /// A finished download the engine still hadn't listed after 30 s.
     @State private var stuckDownload: String?
+    /// When step 1 began connecting to the person's own oMLX (FirstRunBrain.connectGrace).
+    @State private var connectingSince: Date?
+    @State private var connectGraceTick = 0
     /// The one automatic test once Wisp is ready (it also loads the model).
     @State private var testedOnce = false
     @State private var showAdvanced = false
@@ -732,6 +772,7 @@ struct FirstRunSetupView: View {
         // start or download must not sit under the next one.
         .onChange(of: brain.stage) { _, _ in
             announce(brain)
+            if case .startingEngine = brain {} else { connectingSince = nil }
             if setup.busy == nil, setup.messageIsError {
                 setup.message = nil
                 setup.messageIsError = false
@@ -755,6 +796,14 @@ struct FirstRunSetupView: View {
             stepChanged(next)
         }
         .onDisappear { permissions.stop() }
+        // The automatic start of the person's oMLX may have been skipped (a request in
+        // flight, a stale status) while the brain stayed the same: try again as either clears.
+        .onChange(of: setup.statusIsCurrent) { _, _ in retryStart() }
+        .onChange(of: setup.busy) { _, _ in retryStart() }
+    }
+
+    private func retryStart() {
+        if case .startingEngine = brain { drive(brain) }
     }
 
     /// The parts of step 1 that need no click: switch the model on as soon as it
@@ -765,7 +814,17 @@ struct FirstRunSetupView: View {
         switch state {
         case .switching(let model, _) where appliedModel != model && setup.busy == nil:
             appliedModel = model
-            Task { await setup.apply(model) }
+            // Atomic: applied only if the configuration is still the one this saw.
+            Task { await setup.apply(model, expectedConfiguration: setup.status?.configurationToken) }
+        case .startingEngine:
+            // The person's own oMLX hasn't answered: start it once (first run only).
+            setup.startExistingOmlxOnce()
+            if setup.status?.existingOmlx == .connecting, connectingSince == nil {
+                connectingSince = Date()
+                DispatchQueue.main.asyncAfter(deadline: .now() + FirstRunBrain.connectGrace + 0.1) {
+                    connectGraceTick += 1    // redraw, so `stalled` sees the time pass
+                }
+            }
         case .ready where !testedOnce && setup.busy == nil && setup.statusIsCurrent:
             // "Ready" only means the engine lists the model. One short question
             // proves it answers, and loads it while the person reads the rest, so
@@ -924,7 +983,12 @@ struct FirstRunSetupView: View {
     private var stalled: Bool {
         guard setup.busy == nil else { return false }
         switch brain {
-        case .startingEngine: return setup.autoStartedEngine || setup.messageIsError
+        case .startingEngine:
+            _ = connectGraceTick
+            return FirstRunBrain.startStalled(
+                autoStarted: setup.autoStartedEngine, failed: setup.messageIsError,
+                connecting: setup.status?.existingOmlx == .connecting,
+                waited: connectingSince.map { Date().timeIntervalSince($0) } ?? 0)
         case .switching(let model, _): return appliedModel == model && setup.messageIsError
         case .waitingForEngine(let model, _): return stuckDownload == model
         default: return false
@@ -946,7 +1010,7 @@ struct FirstRunSetupView: View {
         case .retry:
             if case .waitingForEngine = brain { fetchButton("Download again") } else { fetchButton("Retry download") }
         case .tryAgain:
-            if case .switching(let model, _) = brain {
+            if let model = brain.modelToUse {
                 Button("Switch to the model") { Task { await setup.apply(model) } }
                     .buttonStyle(FirstRunButtonStyle())
                     .disabled(setup.busy != nil)
@@ -1044,9 +1108,17 @@ struct FirstRunSetupView: View {
                 }
             }
         case .startingEngine:
-            OnboardingCard(icon: "bolt", title: "Starting Wisp's engine…", detail: "It's built into Wisp, so there's nothing else to install.") {
+            let ownOmlx = setup.status?.existingOmlx == .connecting
+            OnboardingCard(icon: "bolt", title: ownOmlx ? "Connecting to your oMLX…" : "Starting Wisp's engine…",
+                           detail: ownOmlx ? "Wisp uses the oMLX app you already have, so there's nothing to download."
+                                           : "It's built into Wisp, so there's nothing else to install.") {
                 if stalled {
-                    Button("Try again") { Task { await setup.startEngine() } }.buttonStyle(FirstRunButtonStyle())
+                    HStack(spacing: 8) {
+                        Button("Try again") { Task { await setup.startEngine() } }.buttonStyle(FirstRunButtonStyle())
+                        if ownOmlx {
+                            Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+                        }
+                    }
                 } else {
                     ProgressView().controlSize(.small)
                 }
@@ -1111,17 +1183,27 @@ struct FirstRunSetupView: View {
                     ProgressView().controlSize(.small)
                 }
             }
+        case .offered(let model, let label):
+            OnboardingCard(icon: "checkmark.circle", title: label,
+                           detail: "Found in your oMLX. Wisp can use it for chat, tools, coding and reasoning.") {
+                Button("Use \(label)") { Task { await setup.apply(model) } }
+                    .buttonStyle(FirstRunButtonStyle(primary: true))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(setup.busy != nil)
+            }
         case .switching(let model, let label):
             if stalled {
                 OnboardingCard(icon: "exclamationmark.triangle", title: label,
-                               detail: "Downloaded, but Wisp couldn't switch over to it.") {
+                               detail: (setup.status?.omlx.bundled == true ? "Downloaded" : "Found in your oMLX")
+                                   + ", but Wisp couldn't switch over to it.") {
                     Button("Try again") { Task { await setup.apply(model) } }
                         .buttonStyle(FirstRunButtonStyle(primary: true))
                         .keyboardShortcut(.defaultAction)
                         .disabled(setup.busy != nil)
                 }
             } else {
-                OnboardingCard(icon: "checkmark.circle", title: label, detail: "Downloaded. Switching Wisp over to it…") {
+                OnboardingCard(icon: "checkmark.circle", title: label, detail: (setup.status?.omlx.bundled == true ? "Downloaded" : "Found in your oMLX")
+                                   + ". Switching Wisp over to it…") {
                     ProgressView().controlSize(.small)
                 }
             }
