@@ -803,8 +803,9 @@ struct FirstRunSetupView: View {
     private var brainStep: some View {
         VStack(alignment: .leading, spacing: 0) {
             heading("Welcome to Wisp",
-                    "Wisp runs a private AI model on this Mac. Nothing you ask leaves your computer. "
-                        + "First it needs to download that model once.")
+                    "The AI model runs on this Mac. Your mail, calendar and messages stay here; when you ask "
+                        + "for something from the web, only the search terms are sent. First Wisp needs to "
+                        + "download that model once.")
             if let hw = setup.status?.hardware {
                 card(icon: "cpu", title: "Picked for your Mac",
                      detail: "\(hw.chip) · \(hw.ramGb > 0 ? "\(hw.ramGb) GB memory" : "memory unknown")") {
@@ -938,7 +939,7 @@ struct FirstRunSetupView: View {
     private var permissionsStep: some View {
         VStack(alignment: .leading, spacing: 0) {
             heading("Let Wisp see your day",
-                    "Each one is optional. Wisp only reads; it never sends or changes anything without your tap.")
+                    "Each one is optional. Wisp reads these to help; it asks before sending or changing anything.")
             permissionRow(.calendar, icon: "calendar", title: "Calendar",
                           detail: "Your day plan: meetings and events")
             permissionRow(.reminders, icon: "checklist", title: "Reminders",
