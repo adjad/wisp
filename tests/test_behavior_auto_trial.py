@@ -149,3 +149,36 @@ def test_receipt_written_with_the_old_id_suffix_is_the_same_action(tmp_path, sto
     changed = [{**actions[0], "context": actions[0]["context"] + " extra"}, actions[1]]
     with pytest.raises(PublicationUnavailable):
         store.prepare_nudge_write(rt, payload, canonical.to_event(), changed, prior, NOW, canonical.expires_at)
+
+
+def _soon_nudge(due_ts: float):
+    from service.behavior.types import Action, Nudge
+    return Nudge(id="n-soon", kind="habit_conflict", title="Gym vs. 9:05 call",
+                 body="Your call lands on gym time.", because="14 of the last 16 weekday mornings",
+                 created_at=NOW, expires_at=NOW + 3600, priority=0.8, pattern_ids=("p_gym",),
+                 actions=(Action("add_reminder", {"title": "Review calendar overlap", "when_ts": due_ts},
+                                 auto=True, label="Remind me"),))
+
+
+def test_tapped_reminder_due_eight_minutes_later_alerts(tmp_path, store):
+    """Regression (audit B1): during the trial every routine action is a tap. A
+    reminder the user taps to add must alert even when it is due minutes later."""
+    from service.assistant.reminders import due_reminders
+    _first_launch(store, NOW - 3600)
+    rt, _ = make_runtime(tmp_path, FakeEngine(nudges=[_soon_nudge(NOW + 480)]))
+    tick(rt, store, FakeHub())
+    assert _commitments(store) == 0                      # offered, not added
+    added = rt.perform_action(store, "n-soon", 0, _soon_nudge(NOW + 480).actions[0], NOW)
+    assert added is not None
+    [note] = due_reminders(store, NOW + 481)
+    assert note["title"] == "Review calendar overlap" and note["stage"] == "due"
+
+
+def test_automatic_reminder_due_at_its_nudge_does_not_repeat_it(tmp_path, store, monkeypatch):
+    from service.assistant.reminders import due_reminders
+    monkeypatch.setattr(br.BehaviorRuntime, "auto_actions_held", lambda self, store, now: False)
+    rt, _ = make_runtime(tmp_path, FakeEngine(nudges=[_soon_nudge(NOW + 300)]))
+    hub = FakeHub()
+    tick(rt, store, hub)
+    assert [a["type"] for a in _nudge_event(hub)["auto_performed"]] == ["add_reminder"]
+    assert due_reminders(store, NOW + 301) == []

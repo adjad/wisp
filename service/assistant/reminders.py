@@ -6,7 +6,7 @@ restart replays only unacknowledged events. When several stages for one commitme
 passed (e.g. you just added a same-day event), it fires only the most imminent
 and supersedes earlier pending stages — no burst of stale alerts.
 
-Every reminder event expires REMINDER_EXPIRY_S after its event time. An app that
+Every reminder event expires shortly after its event time. An app that
 reconnects later (sleep, quit, a lost stream) must not flush a stale "in 9 min"
 banner for something that already happened: the store supersedes expired rows
 before replay, and the app skips any it still receives.
@@ -34,15 +34,24 @@ _STAGES: dict[str, list[tuple[str, float]]] = {
 # grace after `when_ts` during which a just-passed trigger may still fire (s)
 _GRACE = 60.0
 
-# A reminder event is stale this long after its event time (s). Shared with the
-# store, which applies it to rows queued before events carried expires_at.
+# How long after its event time a reminder event stays worth showing (s).
+# A lead-time stage ("in 10 min") is wrong once the event starts, so it expires
+# two minutes after the start. A "due" alert is the reminder itself, and a
+# Wisp-only reminder has no other alert behind it, so a late one is still shown
+# for half an hour. Shared with the store, which applies the same rule to rows
+# queued before events carried expires_at.
 REMINDER_EXPIRY_S = 120.0
+DUE_EXPIRY_S = 30 * 60.0
 
-# A routine reminder due this soon after Wisp created it is the nudge itself.
+# An automatic routine reminder due this soon after Wisp created it is the nudge itself.
 _BEHAVIOR_SAME_AS_NUDGE_S = 600.0
 
 
-def _from_routine(c: dict) -> bool:
+def reminder_expires_at(stage: str | None, when: float) -> float:
+    return when + (DUE_EXPIRY_S if stage == "due" else REMINDER_EXPIRY_S)
+
+
+def _from_routine(store, c: dict) -> bool:
     """A row Wisp added from a learned routine whose nudge already notified."""
     from service.assistant.store import MANUAL_SOURCE
     if c.get("source") != MANUAL_SOURCE:
@@ -55,9 +64,12 @@ def _from_routine(c: dict) -> bool:
         return routine or " ".join(str(c.get("title") or "").split()).endswith("(Wisp suggested)")
     if not routine:
         return False
+    # Only a reminder the nudge delivery added by itself (it has an automatic-action
+    # receipt) and that is due right at the nudge repeats it. One the user tapped
+    # to add, or one due later, is the alert they asked for.
     created = c.get("created_at")
-    # A reminder the user asked for later in the day still fires at its time.
-    return not isinstance(created, (int, float)) or c["when_ts"] - created < _BEHAVIOR_SAME_AS_NUDGE_S
+    return (isinstance(created, (int, float)) and c["when_ts"] - created < _BEHAVIOR_SAME_AS_NUDGE_S
+            and store.behavior_auto_action(c["id"]))
 
 
 def _native_alarm_covers(store, c: dict) -> bool:
@@ -90,6 +102,21 @@ def lapsed_stages(kind: str, when: float, now: float) -> list[str]:
     return [label for label, lead in _STAGES.get(kind, _STAGES["event"]) if when - lead <= now]
 
 
+# On a first Calendar read, an item starting this soon keeps its most imminent alert.
+IMMINENT_S = 600.0
+
+
+def first_sync_stages(kind: str, when: float, now: float) -> list[str]:
+    """Stages to record as already sent on a new install's first Calendar read.
+
+    Every lapsed stage, except that an item starting within IMMINENT_S keeps its
+    most imminent one: a meeting in five minutes is still worth one alert."""
+    lapsed = lapsed_stages(kind, when, now)
+    if lapsed and 0 <= when - now <= IMMINENT_S:
+        lapsed = lapsed[:-1]   # stages are listed longest lead first
+    return lapsed
+
+
 def due_reminders(store, now: float | None = None) -> list[dict]:
     """Persist due notifications; stages become final only on app acknowledgement."""
     now = now if now is not None else time.time()
@@ -107,7 +134,7 @@ def due_reminders(store, now: float | None = None) -> list[dict]:
                   if when - lead <= now < when + _GRACE]
         if not passed:
             continue
-        if _from_routine(c):
+        if _from_routine(store, c):
             continue
         passed.sort(key=lambda x: x[1])          # smallest lead = most imminent
         target_label, _ = passed[0]
@@ -132,14 +159,14 @@ def due_reminders(store, now: float | None = None) -> list[dict]:
             "when_ts": when,
             "stage": target_label,
             "when_label": _humanize(when - now),
-            "expires_at": when + REMINDER_EXPIRY_S,
+            "expires_at": reminder_expires_at(target_label, when),
         }
         row = store.enqueue_event(payload, dedupe_key=key, target={
             "type": "reminder", "identity": [" ".join(c["title"].split()).casefold(), int(when // 60)],
             "schedules": {cid: member["when_ts"] for cid, member in snapshot.items()},
             "generations": {cid: member["generation"] for cid, member in snapshot.items()},
             "when_ts": when, "stages": [label for label, _ in passed],
-        }, reminder_snapshot=snapshot, expires_at=when + REMINDER_EXPIRY_S)
+        }, reminder_snapshot=snapshot, expires_at=reminder_expires_at(target_label, when))
         if row is not None:
             out.append({**row["payload"], "event_id": row["id"]})
     return out

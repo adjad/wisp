@@ -62,8 +62,9 @@ final class AssistantDelivery {
         return value.doubleValue
     }
 
-    /// A reminder whose moment has passed (the backend's `expires_at`, two
-    /// minutes after the event) is acknowledged without a banner. An app that
+    /// A reminder whose moment has passed (the backend's `expires_at`: two
+    /// minutes after an event's start for a lead-time alert, half an hour after
+    /// a reminder's due time) is acknowledged without a banner. An app that
     /// reconnects late must never show "in 9 min" for something already over.
     static func expiredReminder(_ event: WispClient.Event,
                                 now: Double = Date().timeIntervalSince1970) -> Bool {

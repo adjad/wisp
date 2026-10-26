@@ -1486,17 +1486,27 @@ class AssistantStore:
         return ids
 
     @staticmethod
-    def _reminder_expired(row, target: dict, now: float) -> bool:
+    def _reminder_expired(row, target: dict, payload: dict, now: float) -> bool:
         """A reminder event is stale once its expiry passes. Rows queued before
-        events carried expires_at expire the same interval after their event time."""
-        from service.assistant.reminders import REMINDER_EXPIRY_S
+        events carried expires_at expire by the same rule from their event time,
+        read from the target or, failing that, the payload."""
+        from service.assistant.reminders import reminder_expires_at
         expires = row["expires_at"]
         if expires is None:
-            when = target.get("when_ts")
-            if type(when) not in (int, float) or not math.isfinite(when):
+            for when in (target.get("when_ts"), payload.get("when_ts")):
+                if type(when) in (int, float) and math.isfinite(when):
+                    expires = reminder_expires_at(payload.get("stage"), when)
+                    break
+            else:
                 return False
-            expires = when + REMINDER_EXPIRY_S
         return expires <= now
+
+    def behavior_auto_action(self, cid: str) -> bool:
+        """Whether a nudge delivery added this item automatically (a tapped one has no receipt)."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT 1 FROM assistant_behavior_action_receipts WHERE commitment_id=? "
+                "AND receipt_state='active'", (cid,)).fetchone() is not None
 
     def _invalidate_reminders(self, event_id: str | None = None) -> None:
         """Supersede pending reminders whose schedule changed or whose time passed.
@@ -1512,8 +1522,9 @@ class AssistantStore:
             target = json.loads(row["target"])
             if target.get("type") != "reminder":
                 continue
-            if (self._reminder_expired(row, target, now)
-                    or not self._reminder_targets(target, json.loads(row["payload"]))):
+            payload = json.loads(row["payload"])
+            if (self._reminder_expired(row, target, payload, now)
+                    or not self._reminder_targets(target, payload)):
                 self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (row["id"],))
 
     def pending_events(self) -> list[dict]:
@@ -2266,7 +2277,8 @@ class AssistantStore:
         Without this, granting Calendar access fires one alert per upcoming item
         at once ("in 3 days", "in 20 min", "in 6 hours"…): every exam, deadline
         and meeting whose lead time had already started before Wisp could see it.
-        Later stages still fire on time. Runs once, inside the sync transaction;
+        Later stages still fire on time, and an item starting within ten minutes
+        keeps its most imminent alert (reminders.first_sync_stages). Runs once, inside the sync transaction;
         an upgraded install (first launch recorded as "0") only records the marker.
         """
         if self._db.execute("SELECT 1 FROM assistant_completion WHERE key=?",
@@ -2282,14 +2294,14 @@ class AssistantStore:
             fresh = False
         if not fresh:
             return
-        from service.assistant.reminders import lapsed_stages
+        from service.assistant.reminders import first_sync_stages
         rows = self._db.execute(
             "SELECT id, kind, when_ts FROM scheduled_commitments WHERE source='calendar' "
             "AND status='active' AND all_day=0 AND when_ts >= ? AND when_ts <= ?",
             (now - 300, now + 30 * 86400)).fetchall()
         marks = []
         for row in rows:
-            stages = lapsed_stages(row["kind"], row["when_ts"], now)
+            stages = first_sync_stages(row["kind"], row["when_ts"], now)
             if stages:
                 for cid in [row["id"]] + self.duplicate_ids(row["id"]):
                     marks.extend((cid, stage, now) for stage in stages)
