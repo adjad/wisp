@@ -6,6 +6,9 @@ import Dispatch
 // scan/capture/order/post/account-observation and pure history-state bodies.
 // This URLSession records requests; it cannot create a network connection.
 enum WispClient { static let baseURL = URL(string: "http://127.0.0.1:8765")! }
+enum Permissions {
+    // WISP_OBSERVER_PERMISSIONS
+}
 final class SyncProgress {
     static let shared = SyncProgress()
     var mailHistoryFraction: Double?
@@ -147,6 +150,9 @@ final class Reader {
         precondition(URLSession.shared.acknowledged, "Native work preceded begin acknowledgement")
         events.append(event)
     }
+    // A closed-read failure only matters here with Mail closed.
+    func mailAppOpen() -> Bool { false }
+    static func automationDecided(_ bundleID: String) -> Bool { true }
     func isMailRunning() -> Bool {
         touch("running"); runningChecks += 1
         if which == "closed" { return false }

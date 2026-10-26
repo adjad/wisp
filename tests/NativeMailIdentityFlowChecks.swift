@@ -9,6 +9,9 @@ struct AccountTarget { let id: String; let label: String }
 enum Enumeration: Equatable { case accounts([String: String]), unavailable, duplicateLabels }
 enum AccountLabelCache { static func learn(accounts: [String: String]) {} }
 enum WispClient { static let baseURL = URL(string: "http://127.0.0.1:8765")! }
+enum Permissions {
+    // WISP_NATIVE_PERMISSIONS
+}
 struct RecordedTask { let perform: () -> Void; func resume() { perform() } }
 final class URLSession {
     static let shared = URLSession()
@@ -104,6 +107,9 @@ final class Reader {
     func incompleteMarker(account: AccountTarget?, reason: String) -> String { "synthetic incomplete marker" }
     func mergeHeaderChunks(_ chunks: [String]) -> String { chunks.joined(separator: "\n") }
     func markHeadersCompleted() {}
+    // Every scenario that reaches the closed-read failure has Mail closed.
+    func mailAppOpen() -> Bool { false }
+    static func automationDecided(_ bundleID: String) -> Bool { true }
 
     // WISP_NATIVE_READER_METHODS
 }
