@@ -242,6 +242,10 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # rc1 reminders: expiry and supersede, the first-launch auto-action hold, the day-one Daily Summary.
+    "tests/test_reminder_expiry.py",
+    "tests/test_behavior_auto_trial.py",
+    "tests/test_brief_day_one.py",
     # rc1 Ask backend: reply-needed reads stay read-only, the capability welcome, Gmail-only identity.
     "tests/test_router_reply_needed_reads.py",
     "tests/test_capability_welcome.py",
