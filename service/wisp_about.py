@@ -119,9 +119,19 @@ def _status_lines(sources: list[dict] | None) -> list[str]:
     return lines
 
 
-def _try_its(sources: list[dict] | None) -> list[str]:
+# The tool each source-free try-it needs, so a prompt is never offered for a
+# feature this build can't run.
+_TRY_TOOL = {"Set a timer for 10 minutes.": "set_timer", "What time is it in Tokyo?": "world_time",
+             "What's the weather in Paris this weekend?": "get_weather"}
+
+
+def _try_its(sources: list[dict] | None, tools: set[str]) -> list[str]:
     connected = {s.get("id") for s in sources or () if s.get("state") == "ready"}
-    return [prompt for source, prompt in TRY_IT if source is None or source in connected][:3]
+    def usable(prompt: str) -> bool:
+        needed = _TRY_TOOL.get(prompt)
+        return not tools or needed is None or needed in tools
+    return [prompt for source, prompt in TRY_IT
+            if (source is None or source in connected) and usable(prompt)][:3]
 
 
 def _can_lines(tools: set[str]) -> list[str]:
@@ -165,7 +175,7 @@ def overview() -> str:
                "- Google: connect a Google account in **Settings → Google** and I'll read its "
                "Gmail and Calendar too.")
     out += ["", "**Right now**"] + _status_lines(sources)
-    out += ["", "**Try asking**"] + [f"- \"{prompt}\"" for prompt in _try_its(sources)]
+    out += ["", "**Try asking**"] + [f"- \"{prompt}\"" for prompt in _try_its(sources, tools)]
     out += ["",
             "**Where things are**",
             "- Press ⌥ Space to ask me from anywhere.",
