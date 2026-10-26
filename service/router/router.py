@@ -1258,6 +1258,15 @@ _SELF_PRIVACY_RE = re.compile(
     r"(?:does|do)\s+(?:my\s+data|anything|wisp|you)\s+(?:leave|go\s+off)\s+(?:my|this)\s+mac|"
     r"what\s+(?:data|information|info)\s+do\s+you\s+(?:collect|store|keep|see|have|send)|"
     r"(?:what\s+about\s+)?privacy)" + _SELF_END, re.I)
+# How-to verbs and Wisp's own features, for "how do I <verb> <feature> in Wisp".
+_SELF_FEATURE_VERB = (r"(?:set\s+up|setup|connect|disconnect|link|turn\s+(?:on|off)|switch\s+(?:on|off)|"
+                      r"enable|disable|change|edit|reset|open|find|use|see|view|show|hide|pin|unpin|"
+                      r"add|remove|erase|clear|delete|grant|allow)")
+_SELF_FEATURE = (r"(?:notch|brief|day(?:\s+tab)?|ask(?:\s+tab)?|settings?|tone|name|memory|memories|"
+                 r"about\s+you|profile|google(?:\s+account)?|gmail|shortcuts?|hotkey|keyboard\s+shortcut|"
+                 r"notifications?|sources?|permissions?|access|model|cloud(?:\s+model)?|"
+                 r"research(?:\s+mode)?|debug\s+mode|chats?|chat\s+history|history|"
+                 r"getting\s+to\s+know\s+you|menu\s+bar\s+icon)")
 _SELF_HOWTO_RE = re.compile(
     _SELF_LEAD + r"(?:help|help\s+me\s+get\s+started|getting\s+started|"
     r"how\s+(?:do|can|should)\s+i\s+(?:use|get\s+started\s+with|start\s+using|set\s+up|work\s+with|"
@@ -1266,11 +1275,15 @@ _SELF_HOWTO_RE = re.compile(
     r"how\s+(?:do|can)\s+i\s+(?:connect|link|add|set\s+up)\s+(?:my\s+)?(?:google|gmail|google\s+calendar)"
     r"(?:\s+account)?(?:\s+(?:to|with)\s+(?:you|wisp))?|"
     # The catch-all needs Wisp itself as the object ("quit wisp", "open the
-    # brief tab", "change settings in wisp"). A trailing ", Wisp" is only an
-    # address: "how do I reply to Sam, Wisp?" is a request about Sam.
-    r"how\s+(?:do|can)\s+i\s+(?:[a-z']+\s+){1,3}?(?:wisp|this\s+app|the\s+notch|"
+    # brief tab"), or a set-up verb on one of Wisp's own features "in Wisp"
+    # ("change the tone in Wisp"). A trailing ", Wisp" is only an address:
+    # "how do I reply to Sam, Wisp?" is a request about Sam, and "how do I
+    # write a cover letter in Wisp" is a task to do, not a feature to explain.
+    r"how\s+(?:do|can)\s+i\s+(?:(?!(?:in|with|on|to|from|using|for|via)\s)[a-z']+\s+){1,3}?"
+    r"(?:wisp|this\s+app|the\s+notch|"
     r"the\s+(?:brief|day|ask)\s+tab|(?:wisp'?s|your)\s+(?:settings|shortcuts?|hotkey|notch|panel|memory))|"
-    r"how\s+(?:do|can)\s+i\s+[^?.!,]{1,60}?\s+in\s+wisp)" + _SELF_END, re.I)
+    r"how\s+(?:do|can)\s+i\s+" + _SELF_FEATURE_VERB + r"\s+(?:(?:the|my|a|an)\s+)?"
+    + _SELF_FEATURE + r"\s+(?:in|on|for)\s+wisp)" + _SELF_END, re.I)
 
 
 def _self_question_topic(t: str) -> str:

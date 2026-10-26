@@ -33,7 +33,9 @@ SELF_QUESTIONS = {
     "howto": ["How do I use Wisp?", "how do I use you", "How do I connect Google?",
               "how does wisp work", "help", "How do I get started?", "how do I quit wisp",
               "how do I turn off wisp", "how do I open the brief tab",
-              "how do I change your settings", "How do I change the tone in Wisp?"],
+              "how do I change your settings", "How do I change the tone in Wisp?",
+              "how do I connect my google account in wisp", "how do I turn off notifications in Wisp?",
+              "how do I erase my profile in wisp"],
 }
 
 # Requests with work in them, or about something other than Wisp, stay with
@@ -48,6 +50,9 @@ NOT_SELF_QUESTIONS = [
     "is it private?", "is this private", "is this safe?", "is it secure", "how private is this",
     "how do I reply to Sam, Wisp?", "Wisp, how do I reply to Sam?", "how do I free up memory",
     "how do I change my iphone settings", "how do I send this to Sam with wisp",
+    # A task phrased "in Wisp" is still a task (re-review b7623e76).
+    "how do I write a cover letter in wisp", "how do I plan my week in Wisp?",
+    "how can I summarize this pdf in wisp", "how do I email Sam in wisp",
 ]
 
 
