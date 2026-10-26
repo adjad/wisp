@@ -312,11 +312,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let defaults = UserDefaults.standard
         let reopens = defaults.integer(forKey: FirstRunSetup.reopensKey)
-        let firstRun = FirstRunSetup.shouldShow({ defaults.bool(forKey: $0) }, reopens: reopens)
+        let flag: (String) -> Bool = { defaults.bool(forKey: $0) }
+        let firstRun = FirstRunSetup.shouldShow(flag, reopens: reopens)
+        let countsTowardCap = FirstRunSetup.launchCountsTowardCap(flag)
+        // A quit with the window up (or macOS's Quit & Reopen after Full Disk
+        // Access) resumes once, here; the next quit sets it again if the window is up.
+        defaults.removeObject(forKey: FirstRunSetup.resumeKey)
         if firstRun {
-            // Opening by itself again after a quit or an early close counts toward
-            // the cap; past it, the notch's setup cue carries setup instead.
-            if defaults.bool(forKey: FirstRunSetup.startedKey) {
+            // Opening by itself again after an early close counts toward the cap;
+            // past it, Continue setup and the Dock still open it. Wisp ending under
+            // the window never counts (FirstRunSetup.launchCountsTowardCap).
+            if countsTowardCap {
                 defaults.set(reopens + 1, forKey: FirstRunSetup.reopensKey)
             }
             // The window gets the model, offers permissions and shows where Wisp
@@ -403,6 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Done, or one of the last step's prompts: close the window and open the
     /// notch on Ask. A prompt waits in Ask's box, unsent, for the person's Return.
+    /// This is the only way setup becomes done (FirstRunSetup.marksDone).
     private func finishFirstRun(asking prompt: String? = nil) {
         firstRunFinishing = true
         let ready = setupModel.status?.canAnswer == true
@@ -422,10 +429,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func firstRunClosed() {
         let defaults = UserDefaults.standard
         let canAnswer = setupModel.status?.canAnswer == true
-        if FirstRunSetup.closeFinishes(finished: firstRunFinishing, ready: canAnswer) {
+        // Only Done (or a last-step prompt) ends setup. A close while Wisp is
+        // quitting is the quit, and an early close, even with a ready model, leaves
+        // setup unfinished at its saved step.
+        let ending = FirstRunSetup.ending(finishing: firstRunFinishing, terminating: appTerminating)
+        if FirstRunSetup.marksDone(ending) {
             defaults.set(true, forKey: FirstRunSetup.doneKey)
             defaults.removeObject(forKey: FirstRunSetup.stepKey)
             defaults.removeObject(forKey: FirstRunSetup.reopensKey)
+            defaults.removeObject(forKey: FirstRunSetup.resumeKey)
+        } else if FirstRunSetup.resumesAtNextLaunch(ending) {
+            defaults.set(true, forKey: FirstRunSetup.resumeKey)
         }
         setupModel.hide(from: "first-run")
         if let observer = firstRunCloseObserver { NotificationCenter.default.removeObserver(observer) }
@@ -436,7 +450,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         firstRunWindow = nil
         DispatchQueue.main.async { closing?.contentView = nil }
         defer { firstRunFinishing = false }
-        guard !firstRunFinishing else { return }
+        guard ending == .closedEarly else { return }
         // An early close opens nothing by itself: the notch keeps its quiet setup
         // cue, the Dock or Continue setup brings the window back at this step, and
         // "Wisp is ready" follows once the model has arrived.
@@ -1385,7 +1399,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notesReader?.sync()
         case .contacts:
             contactsReader?.sync()
-        case .notifications:
+        case .messages, .notifications:
+            // Sending only: nothing here reads with them.
             break
         }
     }
@@ -1423,10 +1438,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var shutdownStarted = false
     private var shutdownFinished = false
+    /// Set before anything else on every way out, so the first-run window's close
+    /// (if AppKit sends one while Wisp ends) is read as the quit, never as the
+    /// person finishing or putting setup aside.
+    private var appTerminating = false
+
+    /// Wisp is ending: with setup unfinished and its window up (or stood aside for
+    /// the detailed guide), the next launch reopens it at its step, uncounted.
+    private func noteTerminating() {
+        guard !appTerminating else { return }
+        appTerminating = true
+        let defaults = UserDefaults.standard
+        if firstRunWindow != nil, FirstRunSetup.resumesAtNextLaunch(.appQuit),
+           FirstRunSetup.isUnfinished({ defaults.bool(forKey: $0) }) {
+            defaults.set(true, forKey: FirstRunSetup.resumeKey)
+        }
+    }
     /// True when the system (logout, restart) asked to quit and is waiting for a reply.
     private var systemAwaitingReply = false
 
     private func beginShutdown() {
+        noteTerminating()
         shutdownStarted = true
         todayModel.stopBackgroundRefresh()
         // Quitting must never hang: exit after a bound even if a stop step stalls.
@@ -1462,6 +1494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Exit without stopping the engine. Used when this launch only hands over to a
     /// copy that is already running, and when an alert quits Wisp without a service.
     private func terminateWithoutShutdown() {
+        noteTerminating()
         shutdownFinished = true
         exitNow()
     }
@@ -1478,6 +1511,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // A quit from the Dock, the application menu or the system does not call quit().
     // Run the same shutdown and reply once it finishes, so a logout is not cancelled.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        noteTerminating()
         if shutdownFinished { return .terminateNow }
         systemAwaitingReply = true
         if !shutdownStarted { beginShutdown() }

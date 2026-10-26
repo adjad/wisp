@@ -81,8 +81,8 @@ struct FirstRunSetupChecks {
         check(FirstRunSetup.shouldShow { set.contains($0) }, "Quit before finishing: the window opens again")
         check(!FirstRunSetup.shouldShow { set.contains($0) || $0 == FirstRunSetup.doneKey },
               "Closed or finished: never again")
-        // Left part-way (a quit, macOS reopening Wisp after Full Disk Access, an early
-        // close): it opens by itself a few times, then the notch's cue carries it.
+        // Closed early: it opens by itself a few times, then Continue setup and the
+        // Dock carry it.
         for reopens in 0..<FirstRunSetup.maxAutomaticReopens {
             check(FirstRunSetup.shouldShow({ set.contains($0) }, reopens: reopens), "Reopen \(reopens + 1) opens it")
         }
@@ -92,9 +92,43 @@ struct FirstRunSetupChecks {
         check(FirstRunSetup.isUnfinished { set.contains($0) }, "Started, not done: Continue setup opens the window")
         check(!FirstRunSetup.isUnfinished { set.contains($0) || $0 == FirstRunSetup.doneKey }
               && !FirstRunSetup.isUnfinished { _ in false }, "Done, or never started: the notch card instead")
-        check(!FirstRunSetup.closeFinishes(finished: false, ready: false), "An early close before Wisp can answer keeps it unfinished")
-        check(FirstRunSetup.closeFinishes(finished: true, ready: false), "Start using Wisp finishes it")
-        check(FirstRunSetup.closeFinishes(finished: false, ready: true), "Closing once Wisp can answer finishes it")
+        // Only the explicit finish ends setup: never a quit, never an early close,
+        // whether or not the model is ready (it plays no part any more).
+        check(FirstRunSetup.ending(finishing: true, terminating: false) == .finished, "Done — open Wisp finishes it")
+        check(FirstRunSetup.ending(finishing: true, terminating: true) == .finished,
+              "Done at the same moment as a quit: the explicit finish wins")
+        check(FirstRunSetup.ending(finishing: false, terminating: true) == .appQuit,
+              "A close while Wisp is ending (Quit & Reopen after Full Disk Access) is the quit")
+        check(FirstRunSetup.ending(finishing: false, terminating: false) == .closedEarly, "The red button or ⌘W")
+        check(FirstRunSetup.marksDone(.finished), "Finishing marks setup done")
+        check(!FirstRunSetup.marksDone(.appQuit), "A quit never marks setup done")
+        check(!FirstRunSetup.marksDone(.closedEarly), "An early close never marks setup done, even with Wisp able to answer")
+        check(FirstRunSetup.resumesAtNextLaunch(.appQuit) && !FirstRunSetup.resumesAtNextLaunch(.closedEarly)
+              && !FirstRunSetup.resumesAtNextLaunch(.finished), "Only a quit under the window resumes uncounted")
+
+        // The relaunch after macOS's Quit & Reopen (or any quit with the window up).
+        let quitMidSetup = set + [FirstRunSetup.resumeKey]
+        check(FirstRunSetup.shouldShow({ quitMidSetup.contains($0) }, reopens: 0), "Quit with the window up: it comes back")
+        check(FirstRunSetup.shouldShow({ quitMidSetup.contains($0) }, reopens: FirstRunSetup.maxAutomaticReopens + 5),
+              "Wisp ending under the window comes back even past the cap")
+        check(!FirstRunSetup.launchCountsTowardCap { quitMidSetup.contains($0) }, "and never uses up a reopen")
+        check(FirstRunSetup.launchCountsTowardCap { set.contains($0) }, "Reopening after an early close counts")
+        check(!FirstRunSetup.launchCountsTowardCap { _ in false }, "A fresh Mac's first window isn't a reopen")
+        check(!FirstRunSetup.shouldShow { quitMidSetup.contains($0) || $0 == FirstRunSetup.doneKey },
+              "Finished users are never pulled back in, even with a leftover resume mark")
+        check(!FirstRunSetup.shouldShow { $0 == FirstRunSetup.resumeKey || $0 == FirstRunSetup.notchTipShownKey },
+              "A resume mark without a started window (an upgrader) shows nothing")
+        // Before System Settings opens for Full Disk Access.
+        var marked: [String] = []
+        FirstRunSetup.expectRelaunch({ set.contains($0) }, { marked.append($0) })
+        check(marked == [FirstRunSetup.resumeKey], "Mid-setup: opening Full Disk Access marks setup to come back")
+        marked = []
+        FirstRunSetup.expectRelaunch({ set.contains($0) || $0 == FirstRunSetup.doneKey }, { marked.append($0) })
+        FirstRunSetup.expectRelaunch({ _ in false }, { marked.append($0) })
+        check(marked.isEmpty, "Finished, or an upgrader opening Permissions…: nothing marked")
+        check(FirstRunPermissions.fullDiskAccessRelaunchNote.contains("quit and reopen")
+              && FirstRunPermissions.fullDiskAccessRelaunchNote.contains("picks up right here"),
+              "The Full Disk Access row says macOS may quit and reopen Wisp, and setup picks up here")
         check(FirstRunSetup.canAnswer(ready: false, remoteOnly: true), "Remote-only (Cloud Everything) counts as able to answer")
         check(FirstRunSetup.canAnswer(ready: true, remoteOnly: false) && !FirstRunSetup.canAnswer(ready: false, remoteOnly: false),
               "Otherwise only a ready local model can answer")
@@ -379,6 +413,18 @@ struct FirstRunSetupChecks {
         // Calendar and Reminders are separate rows that open their own Settings pages.
         check(FirstRunSetupView.settingsPane(.calendar).hasSuffix("Privacy_Calendars")
               && FirstRunSetupView.settingsPane(.reminders).hasSuffix("Privacy_Reminders"), "Each opens its own page")
+        // Messages: its own Automation row, so the first send from Ask isn't the
+        // moment macOS asks. Mail & Notes keeps its own targets and its own answer.
+        check(FirstRunPermissions.Item.allCases == [.calendar, .reminders, .mail, .messages, .fullDiskAccess,
+                                                    .contacts, .notifications], "Messages sits after Mail & Notes")
+        check(FirstRunPermissions.messagesAutomationTargets == ["com.apple.MobileSMS"], "Messages asks about Messages only")
+        check(FirstRunPermissions.automationTargets == ["com.apple.mail", "com.apple.Notes"]
+              && Set(FirstRunPermissions.automationTargets).isDisjoint(with: FirstRunPermissions.messagesAutomationTargets),
+              "Mail & Notes' targets are unchanged and never include Messages")
+        check(FirstRunPermissions.label(.messages, .notAsked) == "Not set"
+              && FirstRunPermissions.label(.messages, .allowed) == "Allowed"
+              && FirstRunPermissions.label(.messages, .notAllowed) == "Denied", "Messages: Not set, Allowed, Denied")
+        check(FirstRunSetupView.settingsPane(.messages).hasSuffix("Privacy_Automation"), "Denied Messages opens Automation")
         // No score: every row is optional, and a Mac without that data is not "off".
         check(FirstRunPermissions.summary([.calendar: .allowed, .reminders: .notAllowed, .mail: .notAsked,
                                            .fullDiskAccess: .notOnThisMac, .contacts: .allowed, .notifications: .allowed])

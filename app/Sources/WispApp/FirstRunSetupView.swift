@@ -30,8 +30,14 @@ enum FirstRunSetup {
     /// The step on screen, so a quit (or macOS reopening Wisp after Full Disk
     /// Access) comes back to it.
     static let stepKey = "wisp.firstRun.step"
-    /// Launches that opened the window again by themselves.
+    /// Launches that opened the window again by themselves after the person
+    /// closed it early (FirstRunSetup.launchCountsTowardCap).
     static let reopensKey = "wisp.firstRun.reopens"
+    /// Wisp ended while the window was up (a quit, a logout, macOS's Quit & Reopen
+    /// after Full Disk Access), or System Settings was opened for Full Disk Access.
+    /// The next launch opens the window again at its step whatever the cap says,
+    /// without counting it, and clears this.
+    static let resumeKey = "wisp.firstRun.resumeAtLaunch"
     /// Set when the window's About you step was finished (Done) or explicitly
     /// skipped. Only then does the notch stop offering Getting to know you: being
     /// shown the step, or closing the window before it, doesn't count.
@@ -40,14 +46,56 @@ enum FirstRunSetup {
     /// by the notch's quiet setup cue instead; Continue setup there still opens it.
     static let maxAutomaticReopens = 3
 
-    /// On a Mac that has never run Wisp, and again after leaving part-way through
-    /// it (a quit, a restart, or closing it before Wisp could answer), up to
-    /// `maxAutomaticReopens` times. Anyone who saw the old setup card or the notch
-    /// tip without ever starting this window is an existing user and never gets it.
+    /// On a Mac that has never run Wisp, and again while setup is unfinished:
+    /// always after Wisp ended with the window up (`resumeKey`: a quit, a restart,
+    /// macOS's Quit & Reopen after Full Disk Access), and after the person closed
+    /// it early up to `maxAutomaticReopens` times. Anyone who finished it, or saw
+    /// the old setup card or the notch tip without ever starting this window, is
+    /// an existing user and never gets it.
     static func shouldShow(_ flag: (String) -> Bool, reopens: Int = 0) -> Bool {
         guard !flag(doneKey) else { return false }
-        if flag(startedKey) { return reopens < maxAutomaticReopens }
+        if flag(startedKey) { return flag(resumeKey) || reopens < maxAutomaticReopens }
         return !flag(setupGuideShownKey) && !flag(notchTipShownKey)
+    }
+
+    /// A launch that opens the window by itself uses up one of the reopens only
+    /// when the person had closed it early. Wisp ending under it (`resumeKey`)
+    /// is not the person putting setup aside, and a fresh Mac isn't a reopen.
+    static func launchCountsTowardCap(_ flag: (String) -> Bool) -> Bool {
+        flag(startedKey) && !flag(resumeKey)
+    }
+
+    /// How the window went away.
+    enum Ending: Equatable {
+        /// Done — open Wisp, or one of the last step's prompts.
+        case finished
+        /// The red button or ⌘W, before finishing.
+        case closedEarly
+        /// Wisp itself is ending (a quit, a logout, Quit & Reopen): the window
+        /// goes with it, or never sees a close at all.
+        case appQuit
+    }
+
+    /// The explicit finish wins over a quit that happens at the same moment; a
+    /// close while Wisp is ending is the quit, never the person.
+    static func ending(finishing: Bool, terminating: Bool) -> Ending {
+        finishing ? .finished : (terminating ? .appQuit : .closedEarly)
+    }
+
+    /// Only the explicit finish ends setup. A ready model no longer does: the
+    /// window has steps after the model, and a quit or an early close with Wisp
+    /// already able to answer used to throw them away for good.
+    static func marksDone(_ ending: Ending) -> Bool { ending == .finished }
+
+    /// Whether the next launch reopens the window at its step without counting
+    /// toward the cap (and past it): only when Wisp ended with the window up.
+    static func resumesAtNextLaunch(_ ending: Ending) -> Bool { ending == .appQuit }
+
+    /// Before System Settings opens for Full Disk Access during setup: switching
+    /// Wisp on there makes macOS offer Quit & Reopen, and that quit (or a kill
+    /// that never reaches applicationShouldTerminate) must bring setup back here.
+    static func expectRelaunch(_ flag: (String) -> Bool, _ set: (String) -> Void) {
+        if isUnfinished(flag) { set(resumeKey) }
     }
 
     /// The window's size: 600 pt tall where it fits, else what the screen has
@@ -69,11 +117,6 @@ enum FirstRunSetup {
     /// later from Permissions… or a Brief link, it never touches the model of
     /// someone already set up.
     static func drivesModel(setupDone: Bool) -> Bool { !setupDone }
-
-    /// Closing the window ends setup only when the person finished it or Wisp can
-    /// already answer. An early close (the red button, ⌘W) before that keeps it
-    /// unfinished, so it comes back instead of being silently given up.
-    static func closeFinishes(finished: Bool, ready: Bool) -> Bool { finished || ready }
 
     /// Wisp can answer: a local model is ready, or every role runs on a remote
     /// provider (/setup/status `remote_only`). SetupStatus holds the rule.
@@ -333,10 +376,12 @@ struct DownloadProgressWatch: Equatable {
 @MainActor
 final class FirstRunPermissions: ObservableObject {
     /// `mail` is Automation for Mail and Notes, which only helps while those apps
-    /// are open; `fullDiskAccess` is what reads Messages, and Mail and Notes when
-    /// they are closed.
+    /// are open; `messages` is Automation for Messages, which sends the texts the
+    /// person approves in Ask (OutboundSender.sendMessage), asked here so the
+    /// first send doesn't stop on a macOS prompt; `fullDiskAccess` is what reads
+    /// Messages, and Mail and Notes when they are closed.
     enum Item: String, CaseIterable, Identifiable {
-        case calendar, reminders, mail, fullDiskAccess, contacts, notifications
+        case calendar, reminders, mail, messages, fullDiskAccess, contacts, notifications
         var id: String { rawValue }
     }
     enum State: Equatable { case checking, notAsked, allowed, notAllowed, notOnThisMac }
@@ -371,6 +416,10 @@ final class FirstRunPermissions: ObservableObject {
         case .notOnThisMac: return "Not needed"
         }
     }
+
+    /// The Full Disk Access row's promise, before System Settings opens.
+    static let fullDiskAccessRelaunchNote =
+        "macOS may ask Wisp to quit and reopen. That's expected: setup picks up right here."
 
     /// Contacts puts names on Messages, so it is asked for only once Messages can
     /// be read (the rule ContactsReader kept at launch, now the row's).
@@ -411,6 +460,7 @@ final class FirstRunPermissions: ObservableObject {
         next[.fullDiskAccess] = Self.fullDiskAccessState()
         next[.notifications] = await Self.notificationsState()
         next[.mail] = await Self.automationState(ask: false)
+        next[.messages] = await Self.messagesAutomationState(ask: false)
         states = next
     }
 
@@ -437,9 +487,20 @@ final class FirstRunPermissions: ObservableObject {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             NSApp.activate(ignoringOtherApps: true)
             _ = await Self.automationState(ask: true)
+        case .messages:
+            // The same for Messages, on its own target list: its answer never
+            // changes the Mail & Notes row or what Mail's reader reports.
+            for id in Self.messagesAutomationTargets { await Self.launchHidden(id) }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            NSApp.activate(ignoringOtherApps: true)
+            _ = await Self.messagesAutomationState(ask: true)
         case .fullDiskAccess:
             // Full Disk Access can't be asked for: open its page and let the person
-            // switch Wisp on. The poll notices when they come back.
+            // switch Wisp on. The poll notices when they come back. Switching it on
+            // makes macOS offer Quit & Reopen, so setup is marked to come back
+            // here first (FirstRunSetup.expectRelaunch).
+            let defaults = UserDefaults.standard
+            FirstRunSetup.expectRelaunch({ defaults.bool(forKey: $0) }, { defaults.set(true, forKey: $0) })
             Permissions.openFullDiskAccessPane()
         }
         await refresh()
@@ -518,8 +579,23 @@ final class FirstRunPermissions: ObservableObject {
 
     /// The same answer, on the calling thread (quick unless `ask` shows a prompt).
     nonisolated static func automationStateNow(ask: Bool) -> State {
+        automationStateNow(of: automationTargets, ask: ask)
+    }
+
+    /// Messages, which OutboundSender scripts to send a text. Kept apart from
+    /// `automationTargets` so the Mail & Notes row and its reader checks never
+    /// depend on it. System Events (typing a draft) stays asked at use.
+    nonisolated static let messagesAutomationTargets = ["com.apple.MobileSMS"]
+
+    private static func messagesAutomationState(ask: Bool) async -> State {
+        await Task.detached { automationStateNow(of: messagesAutomationTargets, ask: ask) }.value
+    }
+
+    /// Allowed only when every target is; a target that isn't running can't be
+    /// asked about, which reads as not asked yet.
+    nonisolated static func automationStateNow(of targets: [String], ask: Bool) -> State {
         var states: [OSStatus] = []
-        for id in automationTargets {
+        for id in targets {
             var target = AEAddressDesc()
             let created = id.withCString { pointer in
                 AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
@@ -1070,6 +1146,8 @@ struct FirstRunSetupView: View {
             permissionRow(.mail, icon: "envelope", title: "Mail & Notes",
                           detail: "Emails that need a reply, and your notes, while those apps are open. "
                               + "Opens Mail and Notes in the background to ask.")
+            permissionRow(.messages, icon: "message", title: "Messages",
+                          detail: "Sends the texts you approve in Ask. Opens Messages in the background to ask.")
             permissionRow(.fullDiskAccess, icon: "internaldrive", title: "Full Disk Access",
                           detail: fullDiskAccessDetail)
             contactsRow
@@ -1082,13 +1160,14 @@ struct FirstRunSetupView: View {
         }
     }
 
-    /// Said before the Settings page opens: switching it on can make macOS reopen
-    /// Wisp, and setup comes back at this step when it does.
+    /// Said in the row before the Settings page opens (never a modal): switching
+    /// it on can make macOS quit and reopen Wisp, and setup comes back at this
+    /// step when it does (FirstRunSetup.resumeKey).
     private var fullDiskAccessDetail: String {
         switch permissions.state(.fullDiskAccess) {
-        case .notAllowed:
+        case .notAllowed, .notAsked:
             return "So Wisp can read Messages, and Mail and Notes when those apps are closed. In the page "
-                + "that opens, switch on Wisp. macOS may ask to reopen Wisp; setup picks up where you left off."
+                + "that opens, switch on Wisp. " + FirstRunPermissions.fullDiskAccessRelaunchNote
         case .notOnThisMac: return "Nothing here needs it yet: no Messages, Mail or Notes data on this Mac."
         default: return "So Wisp can read Messages, and Mail and Notes when those apps are closed."
         }
@@ -1165,7 +1244,7 @@ struct FirstRunSetupView: View {
         switch item {
         case .calendar: return base + "Privacy_Calendars"
         case .reminders: return base + "Privacy_Reminders"
-        case .mail: return base + "Privacy_Automation"
+        case .mail, .messages: return base + "Privacy_Automation"
         case .fullDiskAccess: return Permissions.fullDiskAccessPane
         case .contacts: return base + "Privacy_Contacts"
         case .notifications: return "com.apple.preference.notifications"
