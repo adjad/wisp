@@ -566,7 +566,8 @@ _HOWTO = (
      "To read a Google account's Gmail and Calendar, connect it in **Settings → Google**."),
     (r"log ?out|sign ?out|logout|signout",
      "**Signing out**: Wisp has no account to sign out of. To stop reading a Google account, "
-     "choose **Disconnect & erase** in **Settings → Google**."),
+     "choose **Disconnect & erase** in **Settings → Google**. That also removes the mail, "
+     "events and to-dos Wisp kept from it."),
     (r"update (?:wisp|the app|this app|you)|upgrade|new version|latest version",
      "**Updating Wisp**: Wisp doesn't update itself. To move to a new version, quit Wisp from "
      "the menu bar icon, then replace the Wisp app in your Applications folder with the new one."),
