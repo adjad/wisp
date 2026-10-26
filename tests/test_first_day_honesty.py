@@ -282,8 +282,9 @@ def test_mail_counts_as_read_only_through_a_connected_fresh_google_account():
 
 
 def test_google_mail_read_is_narrow_and_strict(monkeypatch, tmp_path):
-    """Only connected accounts with a fresh mail sync count, and the reader
-    never takes the history guard or re-parses headers (status/load_config)."""
+    """Only a fresh, verified, error-free mail sync on an unexpired sign-in
+    counts; a calendar error or missing Workspace scopes don't matter. The
+    reader never takes the history guard or re-parses headers."""
     import json
     from service import gmail_source
     from service import google_calendar_source as calendar
@@ -295,25 +296,30 @@ def test_google_mail_read_is_narrow_and_strict(monkeypatch, tmp_path):
     monkeypatch.setattr(gmail_source, "status", forbidden)
     monkeypatch.setattr(gmail_source, "load_config", forbidden)
     monkeypatch.setattr(E, "email_source_details", forbidden)
-    monkeypatch.setattr(workspace, "has_full_scopes", lambda email, item: True)
-    monkeypatch.setattr(calendar, "account_status",
-                        lambda email: {"calendar_error": "Calendar isn't syncing" if email.startswith("cal") else ""})
+    monkeypatch.setattr(workspace, "has_full_scopes", forbidden)
+    monkeypatch.setattr(calendar, "account_status", forbidden)
+    monkeypatch.setattr(gmail_source, "account_state", forbidden)
     monkeypatch.setattr(gmail_source, "_errors", {"failing@gmail.com": "Mail read access is missing"})
     good = dict(refresh_token="r", client_id="c", workspace=True, workspace_requested=True)
-    names = ["ok", "stale", "expired", "failing", "old", "cal", "unsynced"]
+    names = ["ok", "stale", "expired", "failing", "old", "cal", "unsynced", "unverified", "errored", "edge"]
     accounts = {f"{n}@gmail.com": dict(good) for n in names}
     accounts["expired@gmail.com"]["auth_expired"] = 1.0
-    accounts["old@gmail.com"] = dict(refresh_token="r", client_id="c")       # needs_reconnect
+    # Missing optional Workspace scopes (Settings: needs_reconnect): mail still counts.
+    accounts["old@gmail.com"] = dict(refresh_token="r", client_id="c")
     config = tmp_path / "gmail.json"
     config.write_text(json.dumps({"accounts": accounts}))
     monkeypatch.setattr(gmail_source, "CONFIG_PATH", config)
     now = 1_790_000_000.0
     receipt = dict(headers_verified=True, headers_at=now - 30)
     external = {f"{n}@gmail.com": dict(receipt) for n in names if n != "unsynced"}
-    external["stale@gmail.com"]["headers_at"] = now - 3600
+    external["stale@gmail.com"]["headers_at"] = now - 301
+    external["edge@gmail.com"]["headers_at"] = now - 300
+    external["unverified@gmail.com"]["headers_verified"] = False
+    external["errored@gmail.com"]["headers_error"] = "HTTP 500"
     monkeypatch.setattr(E, "_external_accounts", external)
     monkeypatch.setattr(E, "_source_receipt", lambda value: float(value or 0))
-    assert cycle.google_mail_read(now) == ["ok@gmail.com"]
+    # "cal" has a calendar error (Settings: attention): its mail still counts.
+    assert cycle.google_mail_read(now) == ["cal@gmail.com", "edge@gmail.com", "ok@gmail.com", "old@gmail.com"]
     config.write_text("{not json")
     assert cycle.google_mail_read(now) == [], "unknown Google status is never a read"
 

@@ -601,6 +601,15 @@ struct TodayPlanChecks {
         check(google.workspace?.proactive?.unreadSources(rawCoverage).map(\.source) == ["messages"],
               "the proactive rule alone also reads Google mail as read")
         check(proactiveUnread == google.unreadSources, "the top line and the proactive section agree: \(proactiveUnread)")
+        // The mail tile agrees with the top line: ready, and no Mail.app problem shown.
+        let rawMail = google.workspace?.source_coverage.first { $0.source == "email" }?.access
+        let tileLines = BriefDetail.mail(needing: [], ready: google.mailTile?.ready == true,
+                                         access: google.mailTile?.access).lines.map(\.text)
+        check(google.mailTile?.ready == true && google.mailTile?.access?.readable == true
+              && rawMail?.readable == false && !tileLines.contains(rawMail?.headline ?? "?"),
+              "Google-read mail: the tile shows mail, not the Mail.app problem: \(tileLines)")
+        check(plan.mailTile?.ready == false && plan.mailTile?.access?.state == .syncing,
+              "without Google the tile keeps the coverage row's state")
         var linkedOnly = googleWorkspace
         linkedOnly["proactive"] = ["state": "ready", "accounts": ["me", "ada@gmail.com"]]
         viaGoogle["workspace"] = linkedOnly

@@ -1192,9 +1192,14 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
 
 
 def google_mail_read(now: float | None = None) -> list[str]:
-    """Linked Google accounts whose mail Wisp has read recently: the account's
-    unified Google state (gmail_source.account_state) is "connected" (not
-    expired, failing or awaiting a reconnect) and its mail sync is fresh.
+    """Linked Google accounts whose mail Wisp has read recently: the sign-in
+    has not expired, the last mail sync is verified and error-free (no Gmail
+    error recorded either), and its receipt is at most _EXTERNAL_MAX_AGE
+    (300 s) old.
+
+    Only the mail matters here: a calendar error or missing optional
+    Workspace scopes (the account's "attention" or "needs_reconnect" state in
+    Settings) never turns a fresh, verified Gmail sync into unread mail.
 
     Narrow on purpose, since every Today snapshot asks: it reads the Google
     config file and in-memory sync receipts only. It never takes the history
@@ -1202,8 +1207,6 @@ def google_mail_read(now: float | None = None) -> list[str]:
     Any doubt is an empty list, never a read."""
     try:
         from service import gmail_source
-        from service import google_calendar_source as calendar
-        from service import google_workspace as workspace
         from service.tools import email_tools as mail
         cfg = json.loads(gmail_source.CONFIG_PATH.read_text(encoding="utf-8"))
         accounts = gmail_source.connected_accounts(cfg if isinstance(cfg, dict) else {})
@@ -1212,17 +1215,9 @@ def google_mail_read(now: float | None = None) -> list[str]:
         for email, item in accounts.items():
             receipt = mail._external_accounts.get(email) or {}
             stamp = mail._source_receipt(receipt.get("headers_at"))
-            error = str(receipt.get("headers_error") or "")
-            fresh = bool(receipt.get("headers_verified") and stamp and not error
+            fresh = bool(receipt.get("headers_verified") and stamp and not receipt.get("headers_error")
                          and 0 <= now - stamp <= mail._EXTERNAL_MAX_AGE)
-            expired = bool(item.get("auth_expired"))
-            row = {"expired": expired, "client_source": "builtin" if item.get("client_source") == "builtin" else "user",
-                   "last_error": gmail_source.SIGNIN_EXPIRED if expired else (gmail_source._errors.get(email) or error),
-                   "workspace": bool(item.get("workspace")),
-                   "workspace_full": workspace.has_full_scopes(email, item),
-                   "workspace_requested": bool(item.get("workspace_requested")),
-                   **calendar.account_status(email)}
-            if fresh and not expired and gmail_source.account_state(row).get("state") == "connected":
+            if fresh and not item.get("auth_expired") and not gmail_source._errors.get(email):
                 read.append(email)
         return sorted(read)
     except Exception:  # noqa: BLE001 — status unknown: nothing counts as read
