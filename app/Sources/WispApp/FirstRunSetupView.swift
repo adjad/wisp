@@ -270,6 +270,12 @@ enum FirstRunBrain: Equatable {
         return .needsDownload(model: model, label: label, sizeGb: status.models.download?.sizeGb)
     }
 
+    /// How long a cold start has taken, once it is long enough to be worth saying.
+    static func waited(_ seconds: Int) -> String? {
+        guard seconds >= 20 else { return nil }
+        return seconds < 120 ? "\(seconds) s so far" : "\(seconds / 60) min so far"
+    }
+
     /// "about 6 minutes left", rounded the way a person would say it.
     static func timeLeft(_ seconds: Int?) -> String? {
         guard let seconds, seconds > 0 else { return nil }
@@ -462,6 +468,7 @@ struct FirstRunSetupView: View {
     @ObservedObject private var display = DisplayGeometry.shared
     @State private var step: Step
     @State private var appliedModel: String?
+    @State private var openedAt = Date()
     /// A finished download the engine still hadn't listed after 30 s.
     @State private var stuckDownload: String?
     var openDetailedSetup: () -> Void
@@ -645,6 +652,19 @@ struct FirstRunSetupView: View {
         .padding(.horizontal, 22).padding(.vertical, 12)
     }
 
+    /// A missed poll, said for this window: it has no Check again button (the
+    /// shared model's wording names one), and it does try again by itself. While
+    /// nothing has answered yet, the Starting Wisp card already says so.
+    private var transientNote: String? {
+        if setup.downloadError != nil {
+            return "Wisp couldn't check the download just now. It tries again by itself."
+        }
+        if setup.refreshError != nil, setup.status != nil {
+            return "Wisp's service didn't answer just now. This updates by itself."
+        }
+        return nil
+    }
+
     /// Wisp's own step for this state stopped and needs the person's click.
     private var stalled: Bool {
         guard setup.busy == nil else { return false }
@@ -724,8 +744,14 @@ struct FirstRunSetupView: View {
     @ViewBuilder private var modelCard: some View {
         switch brain {
         case .checking:
-            card(icon: "magnifyingglass", title: "Checking this Mac…", detail: "This takes a few seconds on first launch.") {
-                ProgressView().controlSize(.small)
+            // Wisp's service is still starting: a cold first launch (bundle checks,
+            // first imports) can take minutes, so say so and show the time.
+            TimelineView(.periodic(from: openedAt, by: 5)) { context in
+                let waited = FirstRunBrain.waited(Int(context.date.timeIntervalSince(openedAt)))
+                card(icon: "hourglass", title: "Starting Wisp…",
+                     detail: "The first launch can take a few minutes." + (waited.map { " (\($0))" } ?? "")) {
+                    ProgressView().controlSize(.small)
+                }
             }
         case .startingEngine:
             card(icon: "bolt", title: "Starting Wisp's engine…", detail: "It's built into Wisp, so there's nothing else to install.") {
@@ -805,8 +831,8 @@ struct FirstRunSetupView: View {
         }
         if setup.messageIsError, let message = setup.message {
             Text(message).font(.system(size: 12)).foregroundStyle(Theme.bad).padding(.top, 6)
-        } else if let error = setup.downloadError ?? setup.refreshError {
-            Text(error).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.top, 6)
+        } else if let note = transientNote {
+            Text(note).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.top, 6)
         }
     }
 

@@ -180,6 +180,10 @@ struct FirstRunSetupChecks {
               && FirstRunBrain.from(status: status(), downloads: [task("downloading")]).modelToFetch == nil,
               "Download and Retry fetch the recommended model")
 
+        // A cold start says how long it has taken, once that is worth saying.
+        check(FirstRunBrain.waited(5) == nil && FirstRunBrain.waited(19) == nil, "A few seconds: nothing")
+        check(FirstRunBrain.waited(45) == "45 s so far" && FirstRunBrain.waited(150) == "2 min so far", "Then the time")
+
         // Time left, said the way a person would.
         check(FirstRunBrain.timeLeft(nil) == nil && FirstRunBrain.timeLeft(0) == nil, "Unknown speed says nothing")
         check(FirstRunBrain.timeLeft(30) == "less than a minute left", "Seconds")
