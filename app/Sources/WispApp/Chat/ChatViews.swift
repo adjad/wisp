@@ -347,8 +347,7 @@ struct ChatWelcome: View {
 
 struct ChatEmptyState: View {
     let ask: (String) -> Void
-    private let suggestions = ["What can you do?", "What's on my calendar this week?", "Any emails I need to reply to?",
-                               "Draft a reply to my last email", "Is my data private?"]
+    private let suggestions = AskStarters.chatWindow
     var body: some View {
         VStack(spacing: 18) {
             Spacer(minLength: 24)
@@ -460,6 +459,7 @@ struct ChatThread: View {
                         ChatMessageRow(store: store, conversation: conversation, message: message)
                             .id(message.id)
                     }
+                    if offersTryAnother { tryAnotherRow }
                     Color.clear.frame(height: 1).id("bottom")
                 }
                 .frame(maxWidth: 740)
@@ -479,6 +479,34 @@ struct ChatThread: View {
             .onChange(of: conversation.messages.last?.approval) { _, _ in follow(proxy) }
             .onChange(of: conversation.messages.last?.draft) { _, _ in follow(proxy) }
         }
+    }
+
+    /// Starters not yet asked in this chat, from its user messages.
+    private var remainingStarters: [String] {
+        AskStarters.remaining(AskStarters.chatWindow,
+                              askedTexts: conversation.messages.filter { $0.role == .user }.map(\.text))
+    }
+
+    /// Only once the last reply has finished, with nothing awaiting approval or a draft.
+    private var offersTryAnother: Bool {
+        guard !conversation.busy, !conversation.loading, let last = conversation.messages.last,
+              last.role == .assistant, !last.isLive, last.approval == nil, last.draft == nil
+        else { return false }
+        return !remainingStarters.isEmpty
+    }
+
+    private var tryAnotherRow: some View {
+        ChatFlowLayout(spacing: 8) {
+            ForEach(remainingStarters, id: \.self) { s in
+                Button { store.submit(s) } label: {
+                    Text(s).font(.system(size: 12.5)).foregroundStyle(ChatTheme.text2)
+                        .padding(.horizontal, 12).padding(.vertical, 5)
+                        .background(Capsule().fill(ChatTheme.glass))
+                        .overlay(Capsule().stroke(ChatTheme.line2, lineWidth: 1))
+                }.buttonStyle(.plain).focusable(false)
+            }
+        }
+        .accessibilityLabel("Try another")
     }
 
     private func follow(_ proxy: ScrollViewProxy) {

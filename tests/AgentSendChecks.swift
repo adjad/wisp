@@ -129,6 +129,19 @@ enum AgentSendChecks {
         check(AskStarters.prompts(unreadable: []).allSatisfy { !$0.lowercased().contains("organize") && !$0.contains("/corpus") },
               "no dead or developer starters")
 
+        // "Try another": the starters not yet asked in this chat.
+        let all = AskStarters.prompts(unreadable: [])
+        check(AskStarters.remaining(all, askedTexts: []) == all, "nothing asked: every starter remains")
+        check(AskStarters.remaining(all, askedTexts: ["What can you do?"]) == Array(all.dropFirst()),
+              "an asked starter drops out, order kept")
+        check(AskStarters.remaining(all, askedTexts: ["  what CAN you do?\n", "unrelated question"]) == Array(all.dropFirst()),
+              "matching ignores case and whitespace; other questions change nothing")
+        check(AskStarters.remaining(all, askedTexts: all).isEmpty, "every starter asked: none remain")
+        check(AskStarters.remaining([], askedTexts: ["x"]).isEmpty, "no starters: none remain")
+        check(Set(AskStarters.chatWindow).isSuperset(of: ["What can you do?", "Is my data private?"])
+              && AskStarters.remaining(AskStarters.chatWindow, askedTexts: ["Is my data private?"]).count
+                  == AskStarters.chatWindow.count - 1, "the chat window's starters shrink the same way")
+
         print("AgentSend: \(passed) checks passed")
     }
 }
