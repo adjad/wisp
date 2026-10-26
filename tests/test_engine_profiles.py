@@ -20,6 +20,7 @@ def test_fresh_engine_gets_gemma_profile(tmp_path):
     entry = _entries(settings)[GEMMA.id]
     assert entry["temperature"] == 0.8 and entry["top_p"] == 0.95 and entry["top_k"] == 64
     assert entry["enable_thinking"] is True and entry["mtp_enabled"] is True
+    assert not any(key.startswith("turboquant_") for key in entry)    # withdrawn: no TurboQuant
     assert json.loads(settings.read_text())["version"] == 1
     assert stat.S_IMODE(settings.stat().st_mode) == 0o600
 
@@ -190,3 +191,36 @@ def test_a_watch_starts_once_and_only_for_a_profiled_download(engine):
         assert first is not None and downloads._watch is first
         first.cancel()
     asyncio.run(run())
+
+
+def _seeded_with_turboquant(tmp_path, kv_bits=6):
+    """An install that seeded the briefly shipped TurboQuant 6-bit profile."""
+    settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
+    withdrawn = {**GEMMA.engine_profile, "turboquant_kv_enabled": True, "turboquant_kv_bits": 6}
+    record.write_text(json.dumps({GEMMA.id: profiles.fingerprint(withdrawn)}))
+    entry = {**withdrawn, "turboquant_kv_bits": kv_bits, "is_favorite": True}
+    settings.write_text(json.dumps({"version": 1, "models": {GEMMA.id: entry}}))
+    return settings, record
+
+
+def test_an_install_that_got_turboquant_has_it_removed_once(tmp_path):
+    settings, record = _seeded_with_turboquant(tmp_path)
+    assert profiles.seed(settings, record) == [GEMMA.id]
+    entry = _entries(settings)[GEMMA.id]
+    assert not any(key.startswith("turboquant_") for key in entry)
+    assert entry["is_favorite"] is True and entry["max_context_window"] == 16384
+    # The record now holds the current profile: nothing is written again.
+    assert profiles.seed(settings, record) == []
+
+
+def test_turboquant_the_person_chose_themselves_is_kept(tmp_path):
+    settings, record = _seeded_with_turboquant(tmp_path, kv_bits=4)   # retuned in the admin UI
+    profiles.seed(settings, record)
+    entry = _entries(settings)[GEMMA.id]
+    assert entry["turboquant_kv_enabled"] is True and entry["turboquant_kv_bits"] == 4
+
+
+def test_a_never_turboquant_install_is_left_alone(tmp_path):
+    settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
+    profiles.seed(settings, record)
+    assert profiles.seed(settings, record) == []

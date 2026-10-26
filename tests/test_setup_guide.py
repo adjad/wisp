@@ -89,6 +89,8 @@ def test_gemma_repo_name_is_the_model_id_and_its_profile_is_set():
     # Thinking off returns zero tokens after a tool result on this model.
     assert p["enable_thinking"] is True
     assert p["mtp_enabled"] is True and p["max_context_window"] == 16384
+    # TurboQuant KV was briefly the default and was withdrawn (user decision).
+    assert not any(key.startswith("turboquant_") for key in p)
 
 
 def test_mellum_repo_name_is_the_model_id():
