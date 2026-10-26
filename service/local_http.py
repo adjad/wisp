@@ -12,7 +12,8 @@ reach the port two ways:
   The browser then treats Wisp as same-origin with evil.example, so the page
   can read responses too. The request's Host header still says evil.example.
 
-This middleware refuses both, on every route, before any handler runs:
+This middleware refuses both, on every route and WebSocket, before any
+handler runs:
 
 * A browser request (one carrying `Origin` or any `Sec-Fetch-*` header) must
   name a loopback Host: 127.0.0.1, localhost or [::1], any port. This applies
@@ -20,6 +21,8 @@ This middleware refuses both, on every route, before any handler runs:
 * A browser request that can change something (anything but GET, HEAD and
   OPTIONS) must also be same-origin: its Origin, when present, is exactly
   http://<that Host>, and Sec-Fetch-Site, when present, is same-origin or none.
+  A WebSocket handshake is held to the same rule: it can push and receive
+  anything, and browsers send Origin on every handshake.
 
 What it does not do: a local program that is not a browser can send any
 headers it likes, so this is no defence against code already running on the
@@ -32,6 +35,7 @@ from __future__ import annotations
 
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
+from starlette.websockets import WebSocketClose
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
@@ -73,9 +77,16 @@ class LocalOriginGuard:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") == "http":
+        kind = scope.get("type")
+        if kind == "http":
             problem = browser_request_problem(scope.get("method", "GET"), Headers(scope=scope))
             if problem:
                 await JSONResponse({"detail": problem}, status_code=403)(scope, receive, send)
+                return
+        elif kind == "websocket":
+            # Judged like a request that changes something. Closing before
+            # accept makes the server answer the handshake with 403.
+            if browser_request_problem("WEBSOCKET", Headers(scope=scope)):
+                await WebSocketClose(code=1008)(scope, receive, send)
                 return
         await self.app(scope, receive, send)
