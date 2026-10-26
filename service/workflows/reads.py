@@ -514,6 +514,17 @@ def read_failure_reply(name: str, args: dict, raw) -> tuple[str, str] | None:
                       else "I couldn't finish that read.")
 
 
+def _read_reply_text(item: dict) -> str:
+    """What the person reads for one successful read. The tool result itself
+    stays untouched for the model and follow-up turns; only this text changes."""
+    if item["name"] == "get_weather" and item["status"] == "succeeded":
+        from service.workflows.weather_reply import format_weather_reply
+        sentence = format_weather_reply(item["result"])
+        if sentence:
+            return sentence
+    return item["result"]
+
+
 async def execute_read(compiled, emit, *, test_mode=False):
     planned, response = compiled
     calls, results, displays = [], [], []
@@ -551,7 +562,7 @@ async def execute_read(compiled, emit, *, test_mode=False):
     replies = [read_failure_reply(r["name"], call["args"], r["result"])
                if r["status"] == "failed" else None
                for r, call in zip(results, calls)]
-    response = "\n\n".join(reply[1] if reply else r["result"]
+    response = "\n\n".join(reply[1] if reply else _read_reply_text(r)
                             for r, reply in zip(results, replies))
     if has_display_only:
         response = DisplayOnlyToolResult("\n\n".join(displays), model_text=response,

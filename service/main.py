@@ -1635,7 +1635,25 @@ async def agent(body: dict[str, Any]):
         fact_store.bind_source(req_id, sid, persisted_user_idx)
         return persisted_user_idx
 
+    from service.answer_text import AnswerEdgeTrimmer
+    from service.tools.registry import DisplayOnlyToolResult as _DisplayOnly
+    answer_edges = AnswerEdgeTrimmer()
+
     async def emit(ev: dict):
+        # No blank lines above or below the answer, however it is produced
+        # (streamed deltas, a final text event, or any path in between).
+        # Whitespace inside the answer is left exactly as written.
+        t = ev.get("type")
+        if t == "delta" and isinstance(ev.get("text"), str):
+            piece = answer_edges.delta(ev["text"])
+            if not piece:
+                return
+            ev = {**ev, "text": piece}
+        elif t == "text" and isinstance(ev.get("text"), str) and not isinstance(
+                ev["text"], _DisplayOnly):
+            ev = {**ev, "text": AnswerEdgeTrimmer.whole(ev["text"])}
+        elif t == "clear_answer":
+            answer_edges.reset()
         if trace is not None:
             diagnostic_event = ({**ev, "name": tool_names_by_id.get(str(ev.get("id", "")), "")}
                                 if ev.get("type") == "tool_result" else ev)
