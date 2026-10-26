@@ -609,84 +609,190 @@ struct SetupGuideChecks {
             }
             let t0 = Date(timeIntervalSince1970: 1000)
             func at(_ seconds: TimeInterval) -> Date { t0.addingTimeInterval(seconds) }
+            /// Reads every 3 s, as the poll does, from `from` to `to` seconds.
+            func read(_ hold: inout SetupDownloadHold, _ rows: [SetupGuideModel.DownloadTask],
+                      from: TimeInterval, to: TimeInterval) {
+                var second = from
+                while second <= to {
+                    hold.observe(rows, previous: rows, now: at(second))
+                    _ = hold.decide(rows, ready: false, now: at(second))
+                    second += SetupDownloadHold.fastPoll
+                }
+            }
             // Running, starting, finishing, stopped.
             var hold = SetupDownloadHold()
             hold.observe([task("pending")], previous: [], now: t0)
-            check(hold.decide([task("pending")], ready: false, now: t0), "Pending holds")
+            check(hold.decide([task("pending")], ready: false, now: t0) == .hold, "Pending holds")
             hold = SetupDownloadHold()
             hold.observe([task("failed")], previous: [], now: t0)
-            check(!hold.decide([task("failed")], ready: false, now: t0), "Failed lets go")
+            check(hold.decide([task("failed")], ready: false, now: t0) == .none, "Failed lets go")
             hold = SetupDownloadHold()
             hold.starting = true
-            check(hold.decide([], ready: false, now: t0), "Download pressed holds before the engine answers")
+            check(hold.decide([], ready: false, now: t0) == .hold, "Download pressed holds before the engine answers")
             hold = SetupDownloadHold()
             hold.observe([task("completed")], previous: [task("downloading")], now: t0)
-            check(hold.decide([task("completed")], ready: false, now: at(60)), "Finishing holds a while")
-            check(!hold.decide([task("completed")], ready: false, now: at(SetupDownloadHold.finishingGrace + 1)),
-                  "A model that never arrives doesn't poll forever")
-            check(!hold.decide([task("completed")], ready: true, now: at(1)), "Ready lets go at once")
-
-            // An engine that leaves a transfer "downloading" at 0 B/s.
+            check(hold.decide([task("completed")], ready: false, now: at(20)) == .hold, "Finishing holds a while")
+            check(hold.decide([task("completed")], ready: true, now: at(21)) == .none, "Ready lets go at once")
             hold = SetupDownloadHold()
-            hold.observe([task("downloading", bytes: 40)], previous: [], now: t0)
-            for minute in 1...9 {
-                hold.observe([task("downloading", bytes: 40)], previous: [task("downloading", bytes: 40)], now: at(Double(minute) * 60))
-            }
-            check(hold.decide([task("downloading", bytes: 40)], ready: false, now: at(9 * 60)), "Under 10 minutes still: held")
-            hold.observe([task("downloading", bytes: 40)], previous: [task("downloading", bytes: 40)], now: at(10 * 60))
-            check(!hold.decide([task("downloading", bytes: 40)], ready: false, now: at(10 * 60)),
-                  "No progress for 10 minutes lets go")
-            hold.released()
-            hold.observe([task("downloading", bytes: 41)], previous: [task("downloading", bytes: 40)], now: at(11 * 60))
-            check(hold.decide([task("downloading", bytes: 41)], ready: false, now: at(11 * 60)), "Progress again: held again")
+            hold.observe([task("completed")], previous: [task("downloading")], now: t0)
+            read(&hold, [task("completed")], from: 3, to: SetupDownloadHold.finishingGrace + 3)
+            check(hold.level == .none, "A model that never arrives doesn't poll forever")
 
-            // A stale snapshot: the service stops answering while "downloading" is on screen.
+            // An engine that leaves a transfer "downloading" at 0 B/s: watched, not held.
+            hold = SetupDownloadHold()
+            read(&hold, [task("downloading", bytes: 40)], from: 0, to: 9 * 60)
+            check(hold.level == .hold, "Under 10 minutes without progress: still held")
+            read(&hold, [task("downloading", bytes: 40)], from: 9 * 60 + 3, to: 10 * 60 + 3)
+            check(hold.level == .watch, "No progress for 10 minutes: watched slowly, no longer held")
+            hold.observe([task("downloading", bytes: 41)], previous: [task("downloading", bytes: 40)], now: at(11 * 60))
+            check(hold.decide([task("downloading", bytes: 41)], ready: false, now: at(11 * 60)) == .hold,
+                  "Progress again: held again")
+
+            // Failed reads: a short outage (a restart) is not a reason to let go.
             hold = SetupDownloadHold()
             hold.observe([task("downloading")], previous: [], now: t0)
-            hold.failed(); hold.failed()
-            check(hold.decide([task("downloading")], ready: false, now: at(6)), "Two failed reads: still held")
-            hold.failed()
-            check(!hold.decide([task("downloading")], ready: false, now: at(9)), "Three failed reads in a row let go")
-            hold.released()
-            hold.observe([task("downloading", bytes: 60)], previous: [task("downloading")], now: at(30))
-            check(hold.decide([task("downloading", bytes: 60)], ready: false, now: at(30)), "A good read with progress takes it again")
+            for second in [3.0, 6, 9] { hold.failed(now: at(second)) }
+            check(hold.decide([task("downloading")], ready: false, now: at(9)) == .hold,
+                  "Three failed reads within 9 s: still held")
+            var second = 12.0
+            // The first failure was at 3 s, so 90 s of failing ends at 93 s.
+            while second < 3 + SetupDownloadHold.failureSpan { hold.failed(now: at(second)); second += 3 }
+            check(hold.decide([task("downloading")], ready: false, now: at(second - 3)) == .hold,
+                  "Still failing, under 90 s since the first failure: held")
+            hold.failed(now: at(second))
+            check(hold.decide([task("downloading")], ready: false, now: at(second)) == .watch,
+                  "Failing for 90 s: watched slowly")
+            hold.observe([task("downloading", bytes: 60)], previous: [task("downloading")], now: at(second + 60))
+            check(hold.decide([task("downloading", bytes: 60)], ready: false, now: at(second + 60)) == .hold,
+                  "A good read with progress holds it again")
+
+            // A Mac that sleeps for 20 minutes: the gap is not a stall.
+            hold = SetupDownloadHold()
+            read(&hold, [task("downloading")], from: 0, to: 60)
+            check(hold.decide([task("downloading")], ready: false, now: at(60 + 20 * 60)) == .hold,
+                  "Waking, before any read: no stall is judged on the old snapshot")
+            hold.failed(now: at(60 + 20 * 60 + 1))
+            check(hold.decide([task("downloading")], ready: false, now: at(60 + 20 * 60 + 1)) == .hold,
+                  "A failed first read after waking: still no stall")
+            read(&hold, [task("downloading")], from: 60 + 20 * 60 + 3, to: 60 + 20 * 60 + 9 * 60)
+            check(hold.level == .hold, "The stall clock restarted at the wake")
 
             // The six-hour cap, like the backend's own watch; never retaken by the same transfer.
             hold = SetupDownloadHold()
             hold.observe([task("downloading", bytes: 1)], previous: [], now: t0)
             hold.since = t0
-            hold.observe([task("downloading", bytes: 2)], previous: [task("downloading", bytes: 1)], now: at(3600))
-            check(hold.decide([task("downloading", bytes: 2)], ready: false, now: at(3600)), "Moving, within the cap: held")
+            hold.observe([task("downloading", bytes: 2)], previous: [task("downloading", bytes: 1)], now: at(10))
+            check(hold.decide([task("downloading", bytes: 2)], ready: false, now: at(10)) == .hold, "Within the cap: held")
             hold.observe([task("downloading", bytes: 3)], previous: [task("downloading", bytes: 2)], now: at(SetupDownloadHold.cap))
-            check(!hold.decide([task("downloading", bytes: 3)], ready: false, now: at(SetupDownloadHold.cap)),
+            check(hold.decide([task("downloading", bytes: 3)], ready: false, now: at(SetupDownloadHold.cap)) == .none,
                   "Six hours lets go even while moving")
             hold.released()
-            hold.observe([task("downloading", bytes: 4)], previous: [task("downloading", bytes: 3)], now: at(SetupDownloadHold.cap + 60))
-            check(!hold.decide([task("downloading", bytes: 4)], ready: false, now: at(SetupDownloadHold.cap + 60)),
+            hold.observe([task("downloading", bytes: 4)], previous: [task("downloading", bytes: 3)], now: at(SetupDownloadHold.cap + 3))
+            check(hold.decide([task("downloading", bytes: 4)], ready: false, now: at(SetupDownloadHold.cap + 3)) == .none,
                   "The capped transfer doesn't take it again")
-            hold.observe([], previous: [task("downloading", bytes: 4)], now: at(SetupDownloadHold.cap + 120))
-            hold.observe([task("pending", bytes: 0)], previous: [], now: at(SetupDownloadHold.cap + 180))
-            check(hold.decide([task("pending", bytes: 0)], ready: false, now: at(SetupDownloadHold.cap + 180)),
+            hold.observe([], previous: [task("downloading", bytes: 4)], now: at(SetupDownloadHold.cap + 6))
+            hold.observe([task("pending", bytes: 0)], previous: [], now: at(SetupDownloadHold.cap + 9))
+            check(hold.decide([task("pending", bytes: 0)], ready: false, now: at(SetupDownloadHold.cap + 9)) == .hold,
                   "A new transfer after the cap is held")
 
-            // In the model: three failed reads release the host and the sleep assertion.
+            // The same rules in the model, with its clock injected. Its own poll runs
+            // alongside on the frozen clock, so each check waits (bounded) to settle.
+            final class Clock { var now = Date(timeIntervalSince1970: 1000) }
+            var bytes = 40.0
+            var engineDown = false
+            func moving(_ state: String) -> [String: Any] {
+                ["tasks": [["model": "G", "state": state, "progress": 40,
+                            "downloaded_bytes": bytes, "total_bytes": 100, "bytes_per_second": 0]]]
+            }
             transferState = "downloading"
             readyNow = false
-            let flaky = SetupGuideModel(session: session)
-            flaky.show(in: "notch")
-            await flaky.refresh()
-            await flaky.refreshDownloads()
-            let heldFlaky = try await waitForSetupRequest { flaky.hosts[SetupGuideModel.downloadHost] == 1 }
-            check(heldFlaky, "Held while downloading")
-            flaky.hide(from: "notch")
             SetupHTTP.configure { request in
-                if request.url!.path == "/engine/downloads" { return (503, ["detail": "Engine down"], 0) }
-                return (503, ["detail": "Service down"], 0)
+                if engineDown { return (503, ["detail": "Engine restarting"], 0) }
+                if request.url!.path == "/engine/downloads" { return (200, moving(transferState), 0) }
+                var snapshot = setupSnapshot("G", ready: false)
+                snapshot["omlx"] = ["installed": true, "running": true, "bundled": true, "min_macos": 15,
+                                    "url": "https://example.invalid", "admin_url": "http://127.0.0.1:8791/admin"]
+                if readyNow { snapshot = setupSnapshot("G", ready: true) }
+                return (200, snapshot, 0)
             }
-            for _ in 0..<SetupDownloadHold.failureLimit { await flaky.refreshDownloads() }
-            let releasedFlaky = try await waitForSetupRequest { flaky.hosts.isEmpty }
-            check(releasedFlaky && flaky.downloads.first?.state == "downloading",
-                  "A stale \"downloading\" snapshot with the service down lets the host and the poll go")
+            func heldModel(_ clock: Clock) async throws -> SetupGuideModel {
+                let model = SetupGuideModel(session: session, clock: { clock.now })
+                model.show(in: "notch")
+                await model.refresh()
+                await model.refreshDownloads()
+                _ = try await waitForSetupRequest { model.downloadHold.level == .hold }
+                model.hide(from: "notch")
+                return model
+            }
+
+            // 1. A backend restart (failures for under 90 s) keeps the hold.
+            let restartClock = Clock()
+            let restart = try await heldModel(restartClock)
+            check(restart.keepsMacAwake && restart.hosts[SetupGuideModel.downloadHost] == 1, "Held while downloading")
+            engineDown = true
+            for step in 1...3 {
+                restartClock.now = at(Double(step) * 3)
+                await restart.refreshDownloads()
+            }
+            check(restart.downloadHold.level == .hold && restart.keepsMacAwake,
+                  "Three failed reads in 9 s, as a restart takes: still held and awake")
+            restartClock.now = at(95)
+            await restart.refreshDownloads()
+            let watchedDown = try await waitForSetupRequest { restart.downloadHold.level == .watch }
+            check(watchedDown && !restart.keepsMacAwake && restart.hosts[SetupGuideModel.downloadHost] == 1
+                  && restart.pollsSlowly && restart.downloads.first?.state == "downloading",
+                  "Down for 90 s: the sleep assertion goes, a slow poll keeps watching the stale transfer")
+            engineDown = false
+            bytes = 70
+            restartClock.now = at(160)
+            await restart.refreshDownloads()
+            let backUp = try await waitForSetupRequest { restart.downloadHold.level == .hold }
+            check(backUp && restart.keepsMacAwake && !restart.pollsSlowly, "Back and moving: held and awake again")
+
+            // 2. The Mac sleeps 20 minutes mid-download: no stall on waking.
+            bytes = 40
+            let sleepClock = Clock()
+            let sleeper = try await heldModel(sleepClock)
+            sleepClock.now = at(20 * 60)
+            await sleeper.refresh()
+            check(sleeper.downloadHold.level == .hold && sleeper.keepsMacAwake,
+                  "Waking: a status read on the old snapshot doesn't call it a stall")
+            await sleeper.refreshDownloads()
+            check(sleeper.downloadHold.level == .hold, "The first read after waking restarts the stall clock")
+            // Then a real stall: 10 minutes of reads with no bytes moving.
+            var tick = 20.0 * 60
+            while tick <= 30 * 60 + 3 {
+                tick += SetupDownloadHold.fastPoll
+                sleepClock.now = at(tick)
+                await sleeper.refreshDownloads()
+            }
+            let stalled = try await waitForSetupRequest { sleeper.downloadHold.level == .watch }
+            check(stalled && !sleeper.keepsMacAwake && sleeper.hosts[SetupGuideModel.downloadHost] == 1 && sleeper.pollsSlowly,
+                  "Stalled 10 minutes: no sleep assertion, still watched slowly")
+
+            // 3. The slow poll still sees the download finish, and Wisp switches over.
+            transferState = "completed"
+            sleepClock.now = at(tick + 60)
+            await sleeper.refreshDownloads()
+            let finishing = try await waitForSetupRequest { sleeper.downloads.first?.state == "completed" }
+            check(finishing && sleeper.hosts[SetupGuideModel.downloadHost] == 1, "Finished while watched: kept until the model arrives")
+            readyNow = true
+            sleepClock.now = at(tick + 63)
+            await sleeper.refresh()
+            let switched = try await waitForSetupRequest { !sleeper.isShown }
+            check(switched && !sleeper.keepsMacAwake, "Wisp can answer: the host and the poll go")
+
+            // ...and stops at the six-hour cap.
+            transferState = "downloading"
+            readyNow = false
+            bytes = 40
+            let capClock = Clock()
+            let capped = try await heldModel(capClock)
+            capClock.now = at(SetupDownloadHold.cap + 1)
+            await capped.refresh()
+            let cappedOff = try await waitForSetupRequest { !capped.isShown }
+            check(cappedOff && !capped.keepsMacAwake, "Six hours: the host, the poll and the assertion all go")
+            engineDown = false
 
             // Pressing Download in the card holds the poll before the engine answers.
             // The start request answers after a second, as an engine that is busy would.
