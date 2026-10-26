@@ -67,6 +67,8 @@ from service.publication_authority import Authority, Witness, mutating, revocati
 SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 # Requested together at consent. Only SCOPE is required; Calendar is optional.
+# Nothing else: the Workspace scopes are asked for only when the user switches
+# Workspace tools on for an account (_workspace_consent).
 CONSENT_SCOPES = (SCOPE, CALENDAR_SCOPE)
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -249,6 +251,8 @@ def status() -> dict:
             "client_id": cfg.get("client_id", ""), "has_secret": bool(cfg.get("client_secret")),
             "last_headers_sync": first.get("last_headers_sync"), "last_error": first.get("last_error", ""),
             "authorizing": _pending_flow is not None, "authorization": dict(_authorization),
+            # Accounts whose next sign-in also asks for the Workspace scopes.
+            "workspace_consent": [r["email"] for r in rows if r["workspace"] and not r["workspace_full"]],
             "mail_accounts": E.native_email_accounts(), "workspace": W.status()}
 
 
@@ -688,10 +692,15 @@ async def begin_authorization(client_id: str, client_secret: str = "",
             _pending_flow = None
 
     asyncio.create_task(expire())
-    url = AUTH_URL + "?" + urlencode({
+    awaiting = _workspace_consent()
+    query = {
         "client_id": client_id, "redirect_uri": redirect, "response_type": "code",
-        "scope": " ".join(_consent_scopes()), "code_challenge": challenge, "code_challenge_method": "S256",
-        "state": state, "access_type": "offline", "prompt": "consent"})
+        "scope": " ".join(_consent_scopes(workspace=bool(awaiting))),
+        "code_challenge": challenge, "code_challenge_method": "S256",
+        "state": state, "access_type": "offline", "prompt": "consent"}
+    if len(awaiting) == 1:
+        query["login_hint"] = awaiting[0]     # the account the Workspace scopes are for
+    url = AUTH_URL + "?" + urlencode(query)
     return {"auth_url": url, "generation": generation} if include_receipt else url
 
 
@@ -739,8 +748,9 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         _access.pop(email, None)
         _last.pop(email, None)
         _sent.pop(email, None)
-        # New accounts get the Workspace tools; a reconnect keeps the user's choice.
-        workspace = accounts.get(email, {}).get("workspace", True)
+        # New accounts start with Workspace tools off (their refresh token is
+        # not copied for the Workspace server); a reconnect keeps the choice.
+        workspace = accounts.get(email, {}).get("workspace", False)
         accounts[email] = {"client_id": client_id, "client_secret": client_secret,
                            "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id,
                            "scopes": granted, "workspace": workspace}
@@ -765,15 +775,33 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
     return email
 
 
-def _consent_scopes() -> tuple[str, ...]:
-    """Gmail (required), Calendar, and the read-only Workspace scopes, so the one
-    Google sign-in also serves the Workspace tools for this account."""
+def _consent_scopes(workspace: bool = False) -> tuple[str, ...]:
+    """Gmail (required) and Calendar, read-only. The read-only Workspace scopes
+    are added only for a sign-in that serves an account the user switched
+    Workspace tools on for (see _workspace_consent)."""
+    if not workspace:
+        return CONSENT_SCOPES
     from service import google_workspace
     return CONSENT_SCOPES + google_workspace.WORKSPACE_SCOPES
 
 
+def _workspace_consent() -> list[str]:
+    """Accounts with Workspace tools switched on whose sign-in still lacks the
+    Workspace scopes. Switching them on asks for a reconnect, and that next
+    sign-in asks Google for the scopes (with the account as login_hint when
+    there is one). A first sign-in never does."""
+    try:
+        from service import google_workspace
+        return sorted(email for email, item in connected_accounts().items()
+                      if item.get("workspace") and not google_workspace.has_full_scopes(email, item))
+    except Exception:  # noqa: BLE001 — unknown: the narrow consent
+        return []
+
+
 def set_workspace(account: str, enabled: bool) -> dict:
-    """Switch one connected account's Workspace tools on or off."""
+    """Switch one connected account's Workspace tools on or off. On, for an
+    account whose sign-in lacks the Workspace scopes, the answer says to
+    reconnect: Google grants them only at the next sign-in."""
     from service import google_workspace
     account = account.strip().lower()
     with revocation():
@@ -785,6 +813,10 @@ def set_workspace(account: str, enabled: bool) -> dict:
         _save_config({"client_id": cfg.get("client_id", ""),
                       "client_secret": cfg.get("client_secret", ""), "accounts": accounts})
     google_workspace.sync_credentials(accounts)
+    if enabled and not google_workspace.has_full_scopes(account, accounts[account]):
+        return {"ok": True, "reconnect": True,
+                "message": "Reconnect this account to grant read-only Drive, Docs, Sheets, Slides, "
+                           "Chat, Tasks and Contacts access."}
     return {"ok": True}
 
 

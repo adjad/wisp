@@ -24,6 +24,9 @@ final class NotchGoogleModel: ObservableObject {
 
     @Published var accounts: [Account] = []
     @Published var configured = true
+    /// Accounts whose next sign-in also asks for the Workspace scopes: the user
+    /// switched Workspace tools on for them in Settings ▸ Google.
+    @Published var workspaceConsent: [String] = []
     @Published var stage: NotchGoogleStage = .idle
     @Published var confirming: String?
     @Published var erasing: String?
@@ -38,6 +41,7 @@ final class NotchGoogleModel: ObservableObject {
 
     private func apply(_ s: [String: Any], generation: Int? = nil) {
         configured = !((s["client_id"] as? String) ?? "").isEmpty
+        workspaceConsent = s["workspace_consent"] as? [String] ?? []
         accounts = (s["accounts"] as? [[String: Any]] ?? []).compactMap { row in
             guard let email = row["email"] as? String else { return nil }
             let error = (row["last_error"] as? String).flatMap { $0.isEmpty ? nil : $0 }
@@ -48,6 +52,17 @@ final class NotchGoogleModel: ObservableObject {
             stage = NotchGoogleStage.from(authorization: s["authorization"] as? [String: Any] ?? [:],
                                           generation: generation, current: stage)
         }
+    }
+
+    /// Exactly what Connect Google asks Google for (gmail_source._consent_scopes):
+    /// mail and calendar, read-only, and the Workspace scopes only for an account
+    /// the user switched Workspace tools on for.
+    var consentLine: String {
+        guard !workspaceConsent.isEmpty else {
+            return "Read-only mail & calendar. Wisp builds your to-dos on this Mac."
+        }
+        return "Read-only mail & calendar, plus read-only Drive, Docs, Sheets, Slides, Chat, Tasks and Contacts for "
+            + ListFormatter.localizedString(byJoining: workspaceConsent) + "."
     }
 
     func connect() {
@@ -206,8 +221,9 @@ struct NotchConnectGoogle: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Google account").font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(Theme.textPrimary)
-                    Text("Read-only mail & calendar. Wisp builds your to-dos on this Mac.")
+                    Text(model.consentLine)
                         .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
                 if model.configured {

@@ -4,8 +4,9 @@ Gmail, Calendar and Drive reach Wisp through the existing MCP client
 (service/mcp): this module only writes the `google_workspace` entry into
 ~/.moe/mcp.json, warms the first-run download, restarts the MCP manager, and
 fetches the Google sign-in link from the server's own auth tool. The server is
-`workspace-mcp` run by uvx as a local stdio subprocess, so mail and files go
-Google -> this Mac and nothing is relayed through a third party.
+`workspace-mcp`, pinned to one version (PACKAGE), run by uvx as a local stdio
+subprocess, so mail and files go Google -> this Mac and nothing is relayed
+through a third party.
 
 The OAuth client id/secret are the user's own (Google Cloud "Desktop app").
 They live in mcp.json, written 0600 like the rest of ~/.moe's personal files.
@@ -25,6 +26,13 @@ from service.mcp import CONFIG_PATH, manager
 from service.paths import MOE_DIR
 
 SERVER = "google_workspace"
+# Pinned, never "latest": the server is handed the user's OAuth client and the
+# refresh tokens of every account switched on, so a new release is taken
+# deliberately. 2.2.0 is the newest release uv had resolved locally during
+# 0.5.0 dev1 testing; it has --tool-tier, start_google_auth and
+# WORKSPACE_MCP_CREDENTIALS_DIR, which this module relies on.
+PACKAGE = "workspace-mcp==2.2.0"
+_SERVER_ARGS = ("--from", PACKAGE, "workspace-mcp")
 TIERS = ("core", "extended", "complete")
 # Read-only lookups safe to run unprompted. Honoured only while the server still
 # annotates them read-only (see service.mcp._category_for), so a wrong name here
@@ -38,13 +46,15 @@ TRUSTED_READ_ONLY = [
     "list_tasks", "get_task", "list_task_lists",
     "list_contacts", "get_contact", "search_contacts",
 ]
-# The server's per-account sign-ins. Wisp owns this folder: each account the
+# The server's per-account sign-ins. Wisp owns this folder: only an account the
 # user switches on in Settings ▸ Google Workspace gets a credential file here,
-# written from Wisp's own Google sign-in, so one consent covers Brief and Ask.
+# written from Wisp's own Google sign-in. Accounts start switched off.
 CREDENTIALS_DIR = MOE_DIR / "google_workspace" / "credentials"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
-# Read-only Workspace scopes requested with Gmail at consent. Writes (sending,
-# editing files) stay with the server's own on-demand sign-in.
+# Read-only Workspace scopes, requested at a sign-in only once the user has
+# switched Workspace tools on for that account (gmail_source._workspace_consent);
+# a first sign-in asks for mail and calendar alone. Writes (sending, editing
+# files) stay with the server's own on-demand sign-in.
 WORKSPACE_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/documents.readonly",
@@ -103,12 +113,12 @@ def _entry() -> dict:
 
 
 async def _warm(uvx: str) -> None:
-    """First `uvx workspace-mcp` downloads its packages, longer than the MCP
-    client's 20s handshake budget, so fetch them before the server is started."""
+    """The first run of the pinned server downloads its packages, longer than the
+    MCP client's 20s handshake budget, so fetch them before it is started."""
     _prepare.update(state="preparing", detail="Downloading the Google Workspace server…")
     try:
         proc = await asyncio.create_subprocess_exec(
-            uvx, "workspace-mcp", "--help",
+            uvx, *_SERVER_ARGS, "--help",
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _, err = await asyncio.wait_for(proc.communicate(), 300)
         if proc.returncode:
@@ -140,7 +150,7 @@ async def enable(client_id: str, client_secret: str, email: str, tier: str = "co
         return {"ok": False, "error": "Enter the client secret that belongs to this OAuth client ID. Saved settings were kept."}
     env = {"GOOGLE_OAUTH_CLIENT_ID": client_id, "GOOGLE_OAUTH_CLIENT_SECRET": secret,
            "WORKSPACE_MCP_CREDENTIALS_DIR": str(CREDENTIALS_DIR)}
-    servers[SERVER] = {"command": uvx, "args": ["workspace-mcp", "--tool-tier", tier],
+    servers[SERVER] = {"command": uvx, "args": [*_SERVER_ARGS, "--tool-tier", tier],
                        "env": env, "enabled": True,
                        "trusted_read_only": TRUSTED_READ_ONLY}
     data["servers"] = servers
@@ -221,10 +231,22 @@ async def signin(email: str) -> dict:
 
 # --- accounts: which connected Google accounts the Workspace tools may use ------
 
+def _pinned_args(args) -> list[str]:
+    """An entry's arguments with the server pinned to PACKAGE: an unpinned
+    `workspace-mcp …` (or another version) keeps only its own flags."""
+    args = [str(a) for a in args] if isinstance(args, list) else []
+    if args[:1] == ["--from"]:
+        args = args[3:]
+    elif args[:1] and args[0].split("@")[0].split("==")[0] == "workspace-mcp":
+        args = args[1:]
+    return [*_SERVER_ARGS, *(args or ["--tool-tier", "core"])]
+
+
 def ensure_env() -> bool:
-    """Point an existing server entry at Wisp's credentials folder and drop a
-    fixed USER_GOOGLE_EMAIL (the account now comes from the user's choice).
-    True when mcp.json changed and the server needs a reload."""
+    """Point an existing server entry at Wisp's credentials folder, drop a
+    fixed USER_GOOGLE_EMAIL (the account now comes from the user's choice), and
+    pin an entry written before PACKAGE was. True when mcp.json changed and the
+    server needs a reload."""
     data = _read_file()
     entry = (data.get("servers") or {}).get(SERVER) if isinstance(data.get("servers"), dict) else None
     if not isinstance(entry, dict):
@@ -236,10 +258,14 @@ def ensure_env() -> bool:
     trusted = (sorted(set(listed) | set(TRUSTED_READ_ONLY))
                if isinstance(listed, list) and all(isinstance(n, str) for n in listed)
                else list(TRUSTED_READ_ONLY))
-    if wanted == env and trusted == listed:
+    # Only Wisp's own uvx entry is re-pinned; a hand-written one is left alone.
+    pinned = (_pinned_args(entry.get("args")) if Path(str(entry.get("command") or "uvx")).name == "uvx"
+              else entry.get("args"))
+    if wanted == env and trusted == listed and pinned == entry.get("args"):
         return False
     entry["env"] = wanted
     entry["trusted_read_only"] = trusted
+    entry["args"] = pinned
     _write_file(data)
     return True
 
