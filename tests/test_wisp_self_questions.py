@@ -317,7 +317,7 @@ def test_full_access_during_the_routine_hold(monkeypatch):
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
     for text in (wisp_about.privacy(), wisp_about.overview()):
         assert ("For your first few days I only suggest reminders from your routine. After that I may "
-                "add a reminder or a Tentative hold on my own and tell you, with Undo.") in text
+                "add a reminder or a Tentative hold in Wisp's own schedule on my own and tell you, with Undo.") in text
         assert CALENDAR_PROMISE not in text and "change your calendar" not in text
 
 
@@ -325,7 +325,8 @@ def test_full_access_after_the_routine_hold(monkeypatch):
     _access(monkeypatch, full=True, held=False)
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
     for text in (wisp_about.privacy(), wisp_about.overview()):
-        assert ("I may add a reminder or a Tentative hold from your routine on my own, and tell you, "
+        assert ("I may add a reminder or a Tentative hold in Wisp's own schedule from your routine on "
+                "my own, and tell you, "
                 "with Undo.") in text
         assert CALENDAR_PROMISE not in text
 
@@ -335,7 +336,8 @@ def test_auto_add_combines_with_routine_actions(monkeypatch):
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
     text = wisp_about.privacy()
     assert ("On my own I may add a time-sensitive event or deadline to your Calendar or Reminders "
-            "(auto-add is on); and a reminder or a Tentative hold from your routine, and tell you "
+            "(auto-add is on); and reminders or Tentative holds in Wisp's own schedule, from your routine, "
+            "and tell you "
             "each time.") in text
     assert CALENDAR_PROMISE not in text
 
@@ -345,7 +347,7 @@ def test_cant_tell_says_the_cautious_version(monkeypatch):
     _access(monkeypatch, full=True, held=None)
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
     text = wisp_about.privacy()
-    assert "Depending on your settings, I may add a reminder or a Tentative hold" in text
+    assert "Depending on your settings, I may add a reminder or a Tentative hold in Wisp's own schedule" in text
     assert CALENDAR_PROMISE not in text and "without your OK" not in text
     # The policy itself can't be read.
     import service.safety as safety
@@ -535,7 +537,8 @@ def test_caught_for_you_live_with_events_adds_calendar_events(monkeypatch):
     # Combined with the routine into one sentence.
     _access(monkeypatch, full=True, held=False, attention=LIVE_EVENTS)
     text = wisp_about.privacy()
-    assert ("On my own I may add a reminder or a Tentative hold from your routine; and reminders and "
+    assert ("On my own I may add reminders or Tentative holds in Wisp's own schedule, from your "
+            "routine; and reminders and "
             "Calendar events from what Caught for you finds in your mail and messages, and tell you "
             "each time.") in text
 
@@ -544,7 +547,8 @@ def test_caught_for_you_settings_unreadable_says_the_cautious_version(monkeypatc
     _access(monkeypatch, full=True, learning=False, attention="{not json")
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
     text = wisp_about.privacy()
-    assert "Depending on your Caught for you settings, I may also add reminders or Calendar events" in text
+    assert "Depending on your Caught for you settings, I may add reminders or Calendar events" in text
+    assert "may also add" not in text  # nothing else is listed for it to be "also" to
     assert CALENDAR_PROMISE not in text
     _access(monkeypatch, full=True, learning=False, attention='{"mode": "sometimes"}')
     assert "Depending on your Caught for you settings" in wisp_about.privacy()

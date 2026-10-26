@@ -319,10 +319,12 @@ _AUTO_ADD = ("Because auto-add is on, I may add a time-sensitive event or deadli
              "or Reminders on my own, then tell you, with Undo.")
 _ROUTINE = {
     "held": ("For your first few days I only suggest reminders from your routine. After that I may "
-             "add a reminder or a Tentative hold on my own and tell you, with Undo."),
-    "acting": ("I may add a reminder or a Tentative hold from your routine on my own, and tell you, "
+             "add a reminder or a Tentative hold in Wisp's own schedule on my own and tell you, with Undo."),
+    "acting": ("I may add a reminder or a Tentative hold in Wisp's own schedule from your routine on "
+               "my own, and tell you, "
                "with Undo."),
-    "unknown": ("Depending on your settings, I may add a reminder or a Tentative hold from your "
+    "unknown": ("Depending on your settings, I may add a reminder or a Tentative hold in Wisp's own "
+                "schedule from your "
                 "routine on my own, and tell you, with Undo."),
 }
 _CAUGHT = "what Caught for you finds in your mail and messages"
@@ -344,12 +346,15 @@ def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
     if mode == "unknown" and routine != "off":
         routine = "unknown"
     if mode != "suggest" and routine in _ROUTINE:
-        fragment = ("after your first few days, a reminder or a Tentative hold from your routine"
-                    if routine == "held" else "a reminder or a Tentative hold from your routine")
+        # Routine actions stay in Wisp's own schedule, never Apple Reminders
+        # or Calendar (behavior_runtime.py's "Acting").
+        fragment = ("after your first few days, reminders or Tentative holds in Wisp's own schedule, "
+                    "from your routine" if routine == "held" else
+                    "reminders or Tentative holds in Wisp's own schedule, from your routine")
         adds.append((_ROUTINE[routine], fragment, routine == "unknown"))
     attention = _attention_state()
     if attention is None or (mode == "unknown" and attention[0] == "live"):
-        adds.append(("Depending on your Caught for you settings, I may also add reminders or Calendar "
+        adds.append(("Depending on your Caught for you settings, I may add reminders or Calendar "
                      "events from your mail and messages on my own, and tell you.",
                      f"reminders or Calendar events from {_CAUGHT}", True))
     elif mode == "allow" and attention[0] == "live":
