@@ -237,7 +237,7 @@ enum FirstRunBrain: Equatable {
         if status.ready {
             let model = status.roles.first(where: { $0.endpoint == "local" })?.model ?? status.models.recommended
             let label = status.models.installed.first(where: { $0.id == model })?.label ?? model
-            return .ready(label: label)
+            return .ready(label: plainLabel(label))
         }
         // The engine's own reason first: a Mac whose macOS is too old for it also
         // falls back to external mode, and "set to use another app" would be untrue.
@@ -249,7 +249,7 @@ enum FirstRunBrain: Equatable {
         }
         if !status.omlx.running { return .startingEngine }
         let model = status.models.download?.model ?? status.models.recommended
-        let label = status.models.download?.label ?? status.models.recommendedLabel ?? model
+        let label = plainLabel(status.models.download?.label ?? status.models.recommendedLabel ?? model)
         if status.models.installed.contains(where: { $0.id == model }) {
             return .switching(model: model, label: label)
         }
@@ -271,6 +271,12 @@ enum FirstRunBrain: Equatable {
             }
         }
         return .needsDownload(model: model, label: label, sizeGb: status.models.download?.sizeGb)
+    }
+
+    /// The model's name without its build details: "Gemma 4 E4B", not
+    /// "Gemma 4 E4B · 4-bit (oQ4e) + MTP". The detailed setup keeps the full label.
+    static func plainLabel(_ label: String) -> String {
+        label.components(separatedBy: " · ").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? label
     }
 
     /// Space a download needs while it runs: the model, plus room for the engine
@@ -809,7 +815,7 @@ struct FirstRunSetupView: View {
             if let hw = setup.status?.hardware {
                 card(icon: "cpu", title: "Picked for your Mac",
                      detail: "\(hw.chip) · \(hw.ramGb > 0 ? "\(hw.ramGb) GB memory" : "memory unknown")") {
-                    pill("Recommended")
+                    EmptyView()
                 }
             }
             modelCard
@@ -854,7 +860,10 @@ struct FirstRunSetupView: View {
         case .needsDownload(let model, let label, let size):
             card(icon: "arrow.down.circle", title: label + (size.map { String(format: " · %.1f GB", $0) } ?? ""),
                  detail: "Fast and private. The engine is built into Wisp, so there's nothing else to install.") {
-                downloadButton("Download", model: model)
+                HStack(spacing: 8) {
+                    pill("Recommended")
+                    downloadButton("Download", model: model)
+                }
             }
             if let warning = FirstRunBrain.diskWarning(freeBytes: Self.freeBytes(), sizeGb: size) {
                 Text(warning).font(.system(size: 12)).foregroundStyle(Color.orange).padding(.bottom, 4)

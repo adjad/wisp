@@ -9,11 +9,13 @@ struct FirstRunSetupChecks {
     }
 
     static let gemma = "gemma-4-E4B-it-oQ4e-mtp"
+    /// What the service really sends (setup/guide.py: label · quant).
+    static let realLabel = "Gemma 4 E4B · 4-bit (oQ4e) + MTP"
 
     static func status(ready: Bool = false, bundled: Bool = true, running: Bool = true,
                        available: Bool = true, installed: [String] = [], roles: String = "Ling-3.0-tiny-oQ4e") -> SetupStatus {
         let installedJSON = installed.map {
-            #"{"id":"\#($0)","label":"\#($0 == gemma ? "Gemma 4 E4B" : $0)","size_gb":5.5,"fit":"recommended","tested":true,"note":""}"#
+            #"{"id":"\#($0)","label":"\#($0 == gemma ? realLabel : $0)","size_gb":5.5,"fit":"recommended","tested":true,"note":""}"#
         }.joined(separator: ",")
         let json = """
         {"ready":\(ready),
@@ -22,7 +24,7 @@ struct FirstRunSetupChecks {
          "bundled_engine":{"available":\(available),"minimum_macos":"26.0","unavailable_reason":\(available ? "null" : "\"Wisp's engine needs macOS 26.\"")},
          "models":{"source":"engine","installed":[\(installedJSON)],"recommended":"\(gemma)","use":null,"warning":null,
                    "recommended_label":"Gemma 4 E4B · 4-bit (oQ4e) + MTP",
-                   "download":{"model":"\(gemma)","label":"Gemma 4 E4B","size_gb":5.5,"repo":"Jundot/\(gemma)","url":"","command":"","install_hf":""},
+                   "download":{"model":"\(gemma)","label":"\(realLabel)","size_gb":5.5,"repo":"Jundot/\(gemma)","url":"","command":"","install_hf":""},
                    "embedding_download":null},
          "roles":[{"role":"general","label":"General","model":"\(roles)","endpoint":"local"}],
          "engines":[],"checks":[],"disclosure":"","configuration_token":null}
@@ -204,6 +206,10 @@ struct FirstRunSetupChecks {
         check(watch.stalled(at: t0.addingTimeInterval(31)), "30 s without a byte: No progress")
         watch.observe(doneGb: 1.2, at: t0.addingTimeInterval(32))
         check(!watch.stalled(at: t0.addingTimeInterval(40)), "Moving again")
+
+        // The window names the model plainly; build details stay in the detailed setup.
+        check(FirstRunBrain.plainLabel(realLabel) == "Gemma 4 E4B" && FirstRunBrain.plainLabel("Ling") == "Ling",
+              "Plain model name")
 
         // A cold start says how long it has taken, once that is worth saying.
         check(FirstRunBrain.waited(5) == nil && FirstRunBrain.waited(19) == nil, "A few seconds: nothing")
