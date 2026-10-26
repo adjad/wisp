@@ -242,8 +242,14 @@ class ShellBoundary(unittest.TestCase):
                 marker = self.root / f"{mode}.marker"
                 # A grant is scoped to the first word, so it only ever covers a
                 # single plain program (policy.shell_grant_problem).
-                cmd = (shlex.join(["touch", str(marker)]) if mode == "grant"
-                       else f"echo fixture; {self.marker_command(marker)}")
+                # CI's Simulation QA sandbox may exec only a fixed list of
+                # programs (build-support/pipeline.py); /bin/mv is on it, touch isn't.
+                if mode == "grant":
+                    staged = self.root / "grant.staged"
+                    staged.write_text("fixture-only")
+                    cmd = shlex.join(["/bin/mv", str(staged), str(marker)])
+                else:
+                    cmd = f"echo fixture; {self.marker_command(marker)}"
                 policy.set_read_only(mode == "grant")
                 policy.set_full_access(mode == "full-access")
                 with patch.object(grants, "check", return_value="allow" if mode == "grant" else None):
@@ -255,9 +261,7 @@ class ShellBoundary(unittest.TestCase):
                         builtin.run_shell(cmd)
                 self.assertTrue(run.call_args.kwargs["shell"])
                 self.assertEqual(run.call_args.args[0], cmd)
-                self.assertTrue(marker.exists())
-                if mode != "grant":
-                    self.assertEqual(marker.read_text(), "fixture-only")
+                self.assertEqual(marker.read_text(), "fixture-only")
 
     def test_a_grant_never_covers_a_compound_or_interpreter_command(self):
         policy.set_read_only(True)
