@@ -127,7 +127,7 @@ enum NotchQADriver {
             ("brief-blocked-proactive", .brief, { AnyView(NotchBriefView(model: model, today: blockedProactive, actions: state())) }),
             ("day-blocked", .day, { AnyView(NotchDayView(model: model, today: blocked)) }),
             ("day-starting", .day, { AnyView(NotchDayView(model: startingModel, today: starting)) }),
-        ]
+        ] + NotchQASetup.scenes()
         for scene in scenes {
             let name = scene.name
             let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 760),

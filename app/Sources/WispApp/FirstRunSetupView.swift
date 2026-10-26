@@ -270,6 +270,11 @@ enum FirstRunBrain: Equatable {
         guard status.omlx.bundled == true else {
             return .unavailable("Wisp is set to use another app for its model. Use the detailed setup to finish.")
         }
+        // No model Wisp can download fits this Mac's memory (or it couldn't be
+        // read): the engine would refuse to load one, so offer no Download.
+        if status.models.fits == false, status.models.installed.isEmpty, status.models.download == nil {
+            return .unavailable(status.models.warning ?? "No model Wisp can download fits this Mac.")
+        }
         if !status.omlx.running { return .startingEngine }
         let model = status.models.download?.model ?? status.models.recommended
         let label = plainLabel(status.models.download?.label ?? status.models.recommendedLabel ?? model)

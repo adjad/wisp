@@ -13,7 +13,9 @@ struct FirstRunSetupChecks {
     static let realLabel = "Gemma 4 E4B · 4-bit (oQ4e) + MTP"
 
     static func status(ready: Bool = false, bundled: Bool = true, running: Bool = true,
-                       available: Bool = true, installed: [String] = [], roles: String = "Ling-3.0-tiny-oQ4e") -> SetupStatus {
+                       available: Bool = true, installed: [String] = [], roles: String = "Ling-3.0-tiny-oQ4e",
+                       fits: Bool? = nil, download: Bool = true, warning: String? = nil,
+                       modelAction: String? = nil) -> SetupStatus {
         let installedJSON = installed.map {
             #"{"id":"\#($0)","label":"\#($0 == gemma ? realLabel : $0)","size_gb":5.5,"fit":"recommended","tested":true,"note":""}"#
         }.joined(separator: ",")
@@ -22,12 +24,16 @@ struct FirstRunSetupChecks {
          "hardware":{"chip":"Apple M5 Pro","ram_gb":24,"tier":"comfortable"},
          "omlx":{"installed":true,"running":\(running),"model_dir":null,"min_macos":26,"url":"","admin_url":"","bundled":\(bundled)},
          "bundled_engine":{"available":\(available),"minimum_macos":"26.0","unavailable_reason":\(available ? "null" : "\"Wisp's engine needs macOS 26.\"")},
-         "models":{"source":"engine","installed":[\(installedJSON)],"recommended":"\(gemma)","use":null,"warning":null,
+         "models":{"source":"engine","installed":[\(installedJSON)],"recommended":"\(gemma)","use":null,
+                   "warning":\(warning.map { "\"\($0)\"" } ?? "null"),
+                   \(fits.map { "\"fits\":\($0)," } ?? "")
                    "recommended_label":"Gemma 4 E4B · 4-bit (oQ4e) + MTP",
-                   "download":{"model":"\(gemma)","label":"\(realLabel)","size_gb":5.5,"repo":"Jundot/\(gemma)","url":"","command":"","install_hf":""},
+                   "download":\(download ? #"{"model":"\#(gemma)","label":"\#(realLabel)","size_gb":5.5,"repo":"Jundot/\#(gemma)","url":"","command":"","install_hf":""}"# : "null"),
                    "embedding_download":null},
          "roles":[{"role":"general","label":"General","model":"\(roles)","endpoint":"local"}],
-         "engines":[],"checks":[],"disclosure":"","configuration_token":null}
+         "engines":[],
+         "checks":[\(modelAction.map { #"{"id":"model","state":"todo","title":"","detail":"\#(warning ?? "")","action":"\#($0)","url":null}"# } ?? "")],
+         "disclosure":"","configuration_token":null}
         """
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -192,6 +198,52 @@ struct FirstRunSetupChecks {
               && FirstRunBrain.from(status: status(), downloads: []).modelToFetch == gemma
               && FirstRunBrain.from(status: status(), downloads: [task("downloading")]).modelToFetch == nil,
               "Download and Retry fetch the recommended model")
+
+        // A Mac nothing fits (8 GB, or memory unread): no Download the engine would
+        // refuse; the reason, with the detailed setup's other routes.
+        let tooSmall = "Wisp's models need a Mac with at least 16 GB of memory, and this one has 8 GB."
+        check(FirstRunBrain.from(status: status(fits: false, download: false, warning: tooSmall), downloads: [])
+                == .unavailable(tooSmall), "Nothing fits: say why, never Download")
+        check(FirstRunBrain.from(status: status(fits: false, download: false, warning: tooSmall), downloads: []).footer(stalled: false)
+                == .detailedSetup, "Nothing fits: the footer offers the detailed setup")
+        check(FirstRunBrain.from(status: status(fits: true), downloads: []) == .needsDownload(model: gemma, label: "Gemma 4 E4B", sizeGb: 5.5),
+              "It fits: Download")
+        check(FirstRunBrain.from(status: status(), downloads: []) == .needsDownload(model: gemma, label: "Gemma 4 E4B", sizeGb: 5.5),
+              "An older service that never says fits: Download as before")
+
+        // The notch card's model step offers what the window does, in place.
+        func offer(_ s: SetupStatus, _ tasks: [SetupGuideModel.DownloadTask] = []) -> NotchModelOffer {
+            NotchModelOffer.from(status: s, downloads: tasks)
+        }
+        check(offer(status()) == .download(.needsDownload(model: gemma, label: "Gemma 4 E4B", sizeGb: 5.5)),
+              "Notch: Download in the card, not a window")
+        if case .download(.downloading) = offer(status(), [task("downloading")]) {} else { check(false, "Notch: progress in the card") }
+        if case .download(.downloading) = offer(status(), [task("pending", done: 0, total: 0, bps: 0)]) {} else {
+            check(false, "Notch: a pending transfer shows as starting")
+        }
+        if case .download(.failed(_, _, _, true)) = offer(status(), [task("cancelled")]) {} else { check(false, "Notch: paused") }
+        if case .download(.failed(_, _, _, false)) = offer(status(), [task("failed")]) {} else { check(false, "Notch: failed, Try again") }
+        check(offer(status(), [task("completed")]) == .download(.waitingForEngine(model: gemma, label: "Gemma 4 E4B")),
+              "Notch: finishing")
+        check(offer(status(running: false)) == .startEngineFirst, "Notch: the engine step comes first")
+        check(offer(status(bundled: false)) == .elsewhere("Download a model  ⤢"), "Notch: an external oMLX keeps ⤢")
+        check(offer(status(download: false, modelAction: "add_local_model")) == .elsewhere("Add a model  ⤢"),
+              "Notch: no public download keeps ⤢")
+        check(offer(status(download: false)) == .elsewhere("Add a model  ⤢"), "Notch: nothing to fetch keeps ⤢")
+        check(offer(status(fits: false, download: false, warning: tooSmall, modelAction: "no_local_fit")) == .noFit(tooSmall),
+              "Notch: nothing fits says why")
+        check(offer(status(ready: true, installed: [gemma], roles: gemma)) == .none, "Notch: ready has nothing to offer")
+        check(NotchModelOffer.progressLine(doneGb: 0, totalGb: 5.5, speed: nil, secondsLeft: nil, stalled: false)
+                == "Starting download…", "Notch: starting")
+        check(NotchModelOffer.progressLine(doneGb: 2.5, totalGb: 5.5, speed: "10 MB/s", secondsLeft: 300, stalled: false)
+                == "2.5 of 5.5 GB · 10 MB/s · about 5 minutes left", "Notch: size, speed and time left")
+        check(NotchModelOffer.progressLine(doneGb: 2.5, totalGb: 5.5, speed: "10 MB/s", secondsLeft: 300, stalled: true)
+                == "2.5 of 5.5 GB · No progress — check your connection", "Notch: stalled after 30 s")
+        check(NotchModelOffer.stoppedDetail(paused: true, engineMessage: "x") == "Resume picks up where it left off."
+              && NotchModelOffer.stoppedDetail(paused: false, engineMessage: nil) == "Try again picks up where it left off."
+              && NotchModelOffer.stoppedDetail(paused: false, engineMessage: "Disk full.")
+                 == "Disk full. Try again picks up where it left off.", "Notch: a stop says what its button does")
+        check(NotchModelOffer.listingWait == 30, "Notch: Download again after the same 30 s as the window")
 
         // Paused and failed downloads are told apart.
         if case .failed(_, _, _, let paused) = FirstRunBrain.from(status: status(), downloads: [task("cancelled")]) {

@@ -540,6 +540,87 @@ struct SetupGuideChecks {
                       "Actual managed completion/route/native pipeline: \(item["name"]!)")
             }
         }
+        // A transfer keeps setup's poll alive after the notch card or a window
+        // goes away, until the model has arrived; it never starts one by itself.
+        do {
+            func tasks(_ state: String) -> [String: Any] {
+                ["tasks": [["model": "G", "state": state, "progress": 40,
+                            "downloaded_bytes": 40, "total_bytes": 100, "bytes_per_second": 5]]]
+            }
+            var transferState = "downloading"
+            var readyNow = false
+            // Wisp's own engine, running, no model yet; then ready once readyNow.
+            SetupHTTP.configure { request in
+                if request.url!.path == "/engine/downloads" { return (200, tasks(transferState), 0) }
+                var snapshot = setupSnapshot("G", ready: false)
+                snapshot["omlx"] = ["installed": true, "running": true, "bundled": true, "min_macos": 15,
+                                    "url": "https://example.invalid", "admin_url": "http://127.0.0.1:8791/admin"]
+                if readyNow { snapshot = setupSnapshot("G", ready: true) }
+                return (200, snapshot, 0)
+            }
+            let watcher = SetupGuideModel(session: session)
+            watcher.show(in: "notch")
+            // The poll show() starts runs alongside these calls and may supersede
+            // them, so each check waits (bounded) for the state to settle.
+            await watcher.refresh()
+            await watcher.refreshDownloads()
+            let settled1 = try await waitForSetupRequest { watcher.hosts[SetupGuideModel.downloadHost] == 1 }
+            check(settled1, "An active transfer seen from a shown setup holds the download host")
+            watcher.hide(from: "notch")
+            check(watcher.isShown, "Collapsing the notch card leaves the poll running while the transfer does")
+            transferState = "completed"
+            await watcher.refreshDownloads()
+            let settled2 = try await waitForSetupRequest { watcher.downloads.first?.state == "completed" }
+            check(settled2 && watcher.hosts[SetupGuideModel.downloadHost] == 1, "A just-finished download keeps the poll until the model arrives")
+            readyNow = true
+            await watcher.refresh()
+            let settled3 = try await waitForSetupRequest { watcher.hosts[SetupGuideModel.downloadHost] == nil && !watcher.isShown }
+            check(settled3, "Once Wisp can answer, the download host lets go and the poll stops")
+
+            // Seen with nothing on screen (a direct call), a transfer never starts a poll.
+            transferState = "downloading"
+            readyNow = false
+            let unseen = SetupGuideModel(session: session)
+            await unseen.refresh()
+            await unseen.refreshDownloads()
+            check(unseen.hosts.isEmpty, "No host is taken while setup isn't on screen")
+
+            // Cancelled or failed: nothing is transferring, so the host goes.
+            let stopper = SetupGuideModel(session: session)
+            stopper.show(in: "window")
+            await stopper.refresh()
+            await stopper.refreshDownloads()
+            let settled4 = try await waitForSetupRequest { stopper.hosts[SetupGuideModel.downloadHost] == 1 }
+            check(settled4, "Held while downloading")
+            transferState = "cancelled"
+            await stopper.refreshDownloads()
+            let settled5 = try await waitForSetupRequest { stopper.hosts[SetupGuideModel.downloadHost] == nil }
+            check(settled5 && stopper.hosts["window"] == 1,
+                  "A paused transfer lets the download host go; the window keeps its own")
+            stopper.hide(from: "window")
+
+            let task = { (state: String) in
+                try! { () throws -> SetupGuideModel.DownloadTask in
+                    let decoder = JSONDecoder()
+                    decoder.keyDecodingStrategy = .convertFromSnakeCase
+                    let data = try JSONSerialization.data(withJSONObject: (tasks(state)["tasks"] as! [[String: Any]])[0])
+                    return try decoder.decode(SetupGuideModel.DownloadTask.self, from: data)
+                }()
+            }
+            let t0 = Date(timeIntervalSince1970: 1000)
+            check(SetupGuideModel.holdsDownloadHost([task("pending")], finishedAt: nil, ready: false, now: t0), "Pending holds")
+            check(!SetupGuideModel.holdsDownloadHost([task("failed")], finishedAt: nil, ready: false, now: t0), "Failed lets go")
+            check(SetupGuideModel.holdsDownloadHost([task("completed")], finishedAt: t0, ready: false,
+                                                    now: t0.addingTimeInterval(60)), "Finishing holds a while")
+            check(!SetupGuideModel.holdsDownloadHost([task("completed")], finishedAt: t0, ready: false,
+                                                     now: t0.addingTimeInterval(SetupGuideModel.finishingGrace + 1)),
+                  "A model that never arrives doesn't poll forever")
+            check(!SetupGuideModel.holdsDownloadHost([task("completed")], finishedAt: t0, ready: true, now: t0),
+                  "Ready lets go at once")
+            check(task("downloading").progressText == "40% · 40 bytes of 100 bytes · 5 bytes/s"
+                  && task("downloading").speedText == "5 bytes/s", "Shared progress text: percent, size and speed")
+        }
+
         if failures > 0 {
             FileHandle.standardError.write(Data("\(failures) of \(checks) setup checks failed\n".utf8))
             exit(1)
