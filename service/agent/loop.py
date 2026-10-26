@@ -1795,21 +1795,26 @@ async def run_agent(
                                 f"{_web_detail(args)}, which is not a host you typed. "
                                 "Confirm the exact destination.")
         dec = decide(tool.category, args, tool=tool.name)
-        if model_led_discovery and dec.tier is Tier.ALLOW:
-            from service.router.model_led import OPAQUE_OUTBOUND_TOOLS
-            if tool.name in OPAQUE_OUTBOUND_TOOLS and not _validated_shell_read(tool, args):
-                # Full access and standing grants do not cover actions whose
-                # real-world effect the host cannot inspect.
-                from service.safety.policy import Decision
-                return Decision(Tier.CONFIRM, "opaque outbound action chosen by the model: "
-                                "confirmation is always required in model-led routing")
+        # Full access and standing grants do not cover actions whose real-world
+        # effect the host cannot inspect: always in model-led routing, and in
+        # legacy routing once this turn has read a file, page, mail or other
+        # text that could carry planted instructions.
+        if dec.tier is Tier.ALLOW and (model_led_discovery or untrusted_read_in_turn[0]):
+            from service.safety.policy import (
+                OPAQUE_ACTION_CATEGORIES, opaque_outbound_decision)
+            if model_led_discovery:
+                return opaque_outbound_decision(
+                    tool.name, tool.category, args, dec,
+                    reason="opaque outbound action chosen by the model: "
+                           "confirmation is always required in model-led routing")
+            return opaque_outbound_decision(
+                tool.name, tool.category, args, dec, categories=OPAQUE_ACTION_CATEGORIES,
+                reason="this turn read a file, page or message Wisp did not write, so "
+                       "this action is confirmed even with full access")
         return dec
 
-    def _validated_shell_read(tool, args):
-        if tool.name != "run_shell":
-            return False
-        from service.safety.policy import read_only_shell_argv
-        return set(args) == {"cmd"} and read_only_shell_argv(args.get("cmd")) is not None
+    # Set once a tool runs whose result carries outside text (a file, page, mail...).
+    untrusted_read_in_turn = [False]
 
     # update_event: the exact occurrence each confirmation card showed, by the call's
     # fingerprint (see bind_event_move). Execution moves only that occurrence.
@@ -1884,6 +1889,10 @@ async def run_agent(
                         and (private_at_start or private_read_in_turn))
         try:
             _exec_state["ran"] = True
+            from service.safety.policy import UNTRUSTED_CONTENT_CATEGORIES, shell_prints_file_content
+            if (tool.category in UNTRUSTED_CONTENT_CATEGORIES
+                    or (tool.category == "shell" and shell_prints_file_content(args))):
+                untrusted_read_in_turn[0] = True
             from service.research.web import strict_host_fetch
             with strict_host_fetch(strict_fetch):
                 if private_shell_read_only:

@@ -58,9 +58,21 @@ _READ_DENY_ROOTS = [
 # has no business in the user's keys or Wisp's own credential/session stores,
 # and these are the paths where a mistake is unrecoverable rather than annoying.
 _NEVER_READ = [
-    "~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gh", "~/Library/Keychains",
+    "~/.ssh", "~/.aws", "~/.gnupg", "~/.netrc", "~/.config/gh", "~/.config/gcloud",
+    "~/Library/Keychains",
     "~/.moe/sessions.db", "~/.moe/facts.db", "~/.moe/assistant.db",
+    "~/.moe/gmail.json", "~/.moe/mcp.json", "~/.moe/google_workspace", "~/.moe/grants.json",
 ]
+# The same Wisp files under WISP_HOME, when it points somewhere else.
+_NEVER_READ_WISP = ["sessions.db", "facts.db", "assistant.db", "gmail.json", "mcp.json",
+                    "google_workspace", "grants.json"]
+
+# Network: a skill tool may reach the internet (a weather skill must), but not
+# this Mac's own services. Wisp's API on 127.0.0.1:8765 treats some requests
+# as the user's own tap, and oMLX takes load/unload commands; neither is a
+# skill's business. Verified: with this rule a loopback connect fails with
+# EPERM while an outside host still connects.
+_NETWORK_DENY = ['(deny network-outbound (remote ip "localhost:*"))']
 
 
 def available() -> bool:
@@ -99,10 +111,13 @@ def build_profile(skill_dir: Path, read_scopes: list[Path],
     # Re-deny the sensitive paths LAST so they win even if a granted scope
     # (e.g. all of ~) would otherwise cover them. In SBPL the last matching
     # rule applies, so ordering here is load-bearing, not stylistic.
-    for raw in _NEVER_READ:
-        p = Path(raw.replace("~", str(home)))
+    from service.paths import MOE_DIR
+    never = [Path(raw.replace("~", str(home), 1)) for raw in _NEVER_READ]
+    never += [MOE_DIR / name for name in _NEVER_READ_WISP]
+    for p in dict.fromkeys(never):
         lines.append(f'(deny file-read* (subpath "{_q(p)}"))')
         lines.append(f'(deny file-write* (subpath "{_q(p)}"))')
+    lines.extend(_NETWORK_DENY)
     return "\n".join(lines) + "\n"
 
 

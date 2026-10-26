@@ -1,10 +1,10 @@
 """Raw AppleScript execution.
 
-`run_applescript` is the escape hatch ABOVE run_shell for anything Wisp's
-dedicated tools don't cover but the target app IS scriptable — the same
-relationship run_shell has to "anything at all", just narrower and safer
-(AppleScript can't touch the filesystem or network the way an arbitrary shell
-command can).
+`run_applescript` is the escape hatch for anything Wisp's dedicated tools
+don't cover but the target app IS scriptable. It is not narrower than
+run_shell: one line can send an iMessage or a Mail message as the user, and
+`do shell script` is a full shell. So the policy confirms it on every call,
+full access or not (policy.ALWAYS_CONFIRM_TOOLS), and the card shows the script.
 """
 from __future__ import annotations
 
@@ -30,9 +30,16 @@ _TIMEOUT = 30
 )
 def run_applescript(script: str) -> str:
     from service.router.model_led import BuiltinCompletion
+    from service.safety.policy import Tier, decide
     src = (script or "").strip()
     if not src:
         return "(error: run_applescript needs a `script`.)"
+    # Recheck at execution time, like run_shell: a direct call or a mode change
+    # while the card was open must still meet the deny floor. CONFIRM was the
+    # caller's to fulfil.
+    decision = decide("shell", {"script": src}, tool="run_applescript")
+    if decision.tier is Tier.DENY:
+        return f"(error: blocked by safety policy: {decision.reason})"
     p = subprocess.run(["osascript", "-e", src], capture_output=True,
                        text=True, timeout=_TIMEOUT)
     if p.returncode != 0:
