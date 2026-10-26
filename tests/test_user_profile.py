@@ -126,12 +126,38 @@ def test_a_name_alone_still_offers_the_rest():
     assert status["has_content"] is True and status["offer"] is True
 
 
-def test_clear_removes_the_file():
+def test_clear_erases_every_answer_and_keeps_the_decision():
     P.update(SAMPLE)
-    assert P.PROFILE_PATH.exists()
-    assert P.clear() == P.empty()
-    assert not P.PROFILE_PATH.exists()
-    assert P.load() == P.empty()
+    erased = P.clear(now=5.0)
+    for field in P.EDITABLE:
+        assert erased[field] == P.empty()[field], field
+    assert P.load() == erased and not P.has_content(P.load())
+    on_disk = P.PROFILE_PATH.read_text()
+    for value in ("Adi", "Mom", "weight", "Ship Wisp"):
+        assert value not in on_disk, "no answer survives an erase"
+    # Erasing on purpose is a decision: the questions are not offered again on
+    # their own (the menu bar and /about still open them).
+    assert P.status(P.load(), now=5.0 + 10 * P.REOFFER_AFTER_S)["offer"] is False
+
+
+def test_profile_file_is_owner_only():
+    P.update(SAMPLE)
+    assert P.PROFILE_PATH.stat().st_mode & 0o777 == 0o600
+    P.clear()
+    assert P.PROFILE_PATH.stat().st_mode & 0o777 == 0o600
+
+
+def test_version_one_short_reads_as_the_default_length():
+    # The old flow saved its preselected "short" with every answer.
+    P.PROFILE_PATH.write_text(json.dumps({"version": 1, "name": "Adi", "tone": "warm", "detail": "short"}))
+    loaded = P.load()
+    assert loaded["detail"] == "thorough"
+    assert P.filled_fields(loaded) == ["name"]
+    assert "Keep replies short" not in P.profile_block(loaded)
+    # A current file keeps an explicit Short.
+    P.update({"detail": "short"})
+    assert P.load()["detail"] == "short"
+    assert json.loads(P.PROFILE_PATH.read_text())["version"] == P.VERSION
 
 
 # --- status / offer ----------------------------------------------------------
@@ -154,13 +180,13 @@ def test_offer_logic():
 
 def test_status_filled_ignores_defaults():
     assert P.status(P.empty())["has_content"] is False
-    assert P.filled_fields(P.empty() | P.validate({"tone": "warm", "detail": "short"})) == []
+    assert P.filled_fields(P.empty() | P.validate({"tone": "warm", "detail": "thorough"})) == []
 
 
 @pytest.mark.parametrize("patch,field,rule", [
     ({"tone": "direct"}, "tone", "straight to the point"),
     ({"tone": "gentle"}, "tone", "Speak gently"),
-    ({"detail": "thorough"}, "detail", "thorough answers"),
+    ({"detail": "short"}, "detail", "Keep replies short"),
 ])
 def test_nondefault_style_alone_is_applied_and_can_be_erased(patch, field, rule, client):
     response = client.patch("/profile", json=patch)
@@ -172,8 +198,9 @@ def test_nondefault_style_alone_is_applied_and_can_be_erased(patch, field, rule,
     assert not any("haven't told me anything" in line for line in saved["preview"])
     assert client.get("/profile").json()["status"]["has_content"] is True
     erased = client.delete("/profile").json()
-    assert erased["profile"] == P.empty() and erased["status"]["has_content"] is False
-    assert P.profile_block() == "" and not P.PROFILE_PATH.exists()
+    assert all(erased["profile"][f] == P.empty()[f] for f in P.EDITABLE)
+    assert erased["status"]["has_content"] is False and erased["status"]["offer"] is False
+    assert P.profile_block() == ""
 
 
 # --- use 1: prompt block ---------------------------------------------------------
@@ -193,9 +220,18 @@ def test_prompt_block_is_empty_without_content_and_complete_with_it():
 
 
 def test_prompt_block_tone_and_detail_variants():
-    direct = P.profile_block(P.empty() | {"name": "A", "tone": "direct", "detail": "thorough"})
-    assert "straight to the point" in direct and "thorough answers" in direct
+    direct = P.profile_block(P.empty() | {"name": "A", "tone": "direct", "detail": "short"})
+    assert "straight to the point" in direct and "Keep replies short" in direct
     assert "Call them A" in direct
+
+
+def test_a_name_alone_adds_no_voice_rule():
+    # Wisp's own voice is the default. A person who only gave a name must not
+    # silently get "keep replies short" or a second tone rule.
+    block = P.profile_block(P.empty() | {"name": "Sam"})
+    assert "Call them Sam" in block
+    assert "How to talk to them" not in block
+    assert not any("talk to you" in line or "replies" in line for line in P.preview(P.empty() | {"name": "Sam"}))
 
 
 # --- use 2: keeping in mind ---------------------------------------------------------
@@ -285,7 +321,8 @@ def test_preview_names_real_behaviour():
     lines = P.preview(P.empty() | SAMPLE)
     joined = "\n".join(lines)
     assert "I'll call you Adi" in joined
-    assert "Mom and Sam Lee rise to the top of Needs you" in joined
+    assert "When Mom and Sam Lee show up on your calendar or in your mail and texts, your morning brief points it out" in joined
+    assert "Needs you" not in joined, "the notch's Needs you does not rank by the profile"
     assert "never changes what I alert you about" in joined
     assert "talk to you gently" in joined
     assert P.preview(P.empty())[-1].startswith("You haven't told me anything yet")
@@ -311,10 +348,19 @@ def test_api_round_trip(client):
     done = client.post("/profile/complete").json()
     assert done["status"]["completed"] is True and done["status"]["offer"] is False
     gone = client.delete("/profile").json()
-    assert gone["profile"] == P.empty() and gone["status"]["has_content"] is False
+    assert all(gone["profile"][f] == P.empty()[f] for f in P.EDITABLE)
+    assert gone["status"]["has_content"] is False and gone["status"]["offer"] is False
 
 
 def test_api_dismiss_counts(client):
     client.post("/profile/dismiss")
     out = client.get("/profile").json()
     assert out["profile"]["dismiss_count"] == 1 and out["status"]["offer"] is False
+
+
+def test_api_says_whether_the_answers_stay_on_this_mac(client, monkeypatch):
+    from service import wisp_about
+    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("", ""))
+    assert client.get("/profile").json()["status"]["local_only"] is True
+    monkeypatch.setattr(wisp_about, "_cloud_state", lambda: ("everything", "api.example.com"))
+    assert client.get("/profile").json()["status"]["local_only"] is False

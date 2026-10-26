@@ -1,47 +1,51 @@
 import Foundation
 
 /// "Getting to know you": the three questions Wisp asks up front so it can work
-/// for a person rather than a user. Everything else it learns from the daily
-/// check-ins, and About you in the Memory window edits every field. The answers live in the service's profile
+/// for a person rather than a user. About you in the Memory window shows and
+/// edits every field. The answers live in the service's profile
 /// (service/memory/profile.py, GET/PATCH /profile) and feed every local system
-/// prompt, the morning brief's Keeping in mind section, and the order of Today's
-/// Needs you. This file is the flow's pure logic: the steps, their copy, the
-/// chips, and the patch each step saves. KnowYouView.swift draws it in the notch.
+/// prompt and the morning brief's Keeping in mind section. This file is the
+/// flow's pure logic: the steps, their copy, the chips, and the patch each step
+/// saves. KnowYouView.swift draws it in the notch.
+///
+/// The flow opens straight on the first question. Whoever opened it (the
+/// offer, /about, the menu bar) already said yes, so there is no welcome screen
+/// to confirm again; the first question carries the reassurance instead.
 ///
 /// Checked by tests/KnowYouChecks.swift without the app.
 enum KnowYouStep: Int, CaseIterable, Equatable {
-    case welcome, name, goals, tone, done
+    case name, goals, tone, done
 
-    var isQuestion: Bool { self != .welcome && self != .done }
+    var isQuestion: Bool { self != .done }
     static var questions: [KnowYouStep] { allCases.filter(\.isQuestion) }
 
     /// The question, asked the way a kind colleague would.
     var title: String {
         switch self {
-        case .welcome: return "Let me get to know you"
         case .name: return "What should I call you?"
         case .goals: return "What are you working toward?"
-        case .tone: return "How do you like to be talked to?"
-        case .done: return "Here's how I'll use this"
+        case .tone: return "How should I talk to you?"
+        case .done: return "All set"
         }
     }
 
     /// Why Wisp asks, which is also exactly what it will do with the answer.
     var why: String {
         switch self {
-        case .welcome:
-            return "Three quick questions, under a minute. Every one is optional. Everything stays on this Mac, and you can change or erase it any time in Memory → About you."
-        case .name: return "I'll use it in your morning brief and when we talk."
-        case .goals: return "Pick everything that's true right now, up to five. Each morning's brief keeps one in view, taking turns, and once a week I'll ask with one tap whether you're on track."
-        case .tone: return "Say the word and I'll match it, everywhere."
-        case .done: return "Everything below is already in effect. Each evening I'll ask how the day went, one tap per task. It all lives on this Mac; change or erase it any time in Memory → About you."
+        case .name:
+            return "Three quick questions so I can help you better. Skip any you like."
+        case .goals:
+            return "Pick up to five. Your morning brief keeps one in view each day, and once a week I'll ask, with one tap, how it's going."
+        case .tone: return "Pick what feels right. You can change it any time."
+        case .done:
+            return "Here's what changes now. To change or erase any of it, type /about, or open About you in the Wisp window's Memory."
         }
     }
 
     var placeholder: String {
         switch self {
-        case .name: return "Your first name, or a nickname"
-        case .goals: return "Something more specific, in your words"
+        case .name: return "Your first name or a nickname"
+        case .goals: return "Or say it in your own words"
         default: return ""
         }
     }
@@ -52,19 +56,19 @@ enum KnowYouStep: Int, CaseIterable, Equatable {
         case .name: return ["name"]
         case .goals: return ["goals"]
         case .tone: return ["tone", "detail"]
-        default: return []
+        case .done: return []
         }
     }
 }
 
 /// Where the flow is and how it moves. Progress counts questions, so the
-/// welcome screen is 0 and the summary is 1.
+/// first question is 0 and the summary is 1.
 struct KnowYouFlow: Equatable {
-    private(set) var step: KnowYouStep = .welcome
+    private(set) var step: KnowYouStep = .name
 
-    init(step: KnowYouStep = .welcome) { self.step = step }
+    init(step: KnowYouStep = .name) { self.step = step }
 
-    var isWelcome: Bool { step == .welcome }
+    var isFirst: Bool { step == KnowYouStep.questions.first }
     var isDone: Bool { step == .done }
     var questionNumber: Int? {
         guard let index = KnowYouStep.questions.firstIndex(of: step) else { return nil }
@@ -73,29 +77,29 @@ struct KnowYouFlow: Equatable {
     static var questionCount: Int { KnowYouStep.questions.count }
 
     var progress: Double {
-        switch step {
-        case .welcome: return 0
-        case .done: return 1
-        default: return Double((questionNumber ?? 1) - 1) / Double(Self.questionCount)
-        }
+        if step == .done { return 1 }
+        return Double((questionNumber ?? 1) - 1) / Double(Self.questionCount)
     }
 
-    var canGoBack: Bool { step != .welcome && step != .name }
+    var canGoBack: Bool { !isFirst }
     var isLastQuestion: Bool { step == KnowYouStep.questions.last }
 
-    mutating func begin() { if step == .welcome { step = .name } }
+    /// Next step. Skip and Continue both land here; from the last question it
+    /// is the summary, and the summary stays put.
     mutating func advance() {
         guard let next = KnowYouStep(rawValue: step.rawValue + 1) else { return }
         step = next
     }
+
+    /// The step before, nothing before the first question.
     mutating func back() {
-        guard canGoBack, let previous = KnowYouStep(rawValue: step.rawValue - 1), previous != .welcome else { return }
+        guard canGoBack, let previous = KnowYouStep(rawValue: step.rawValue - 1) else { return }
         step = previous
     }
 
     /// Where to pick up for someone who already answered some questions: the
     /// first question they have not answered, or the summary when all are. A
-    /// profile with nothing in it starts at the welcome.
+    /// profile with nothing in it starts at the first question.
     static func resume(for profile: UserProfile) -> KnowYouFlow {
         guard profile.hasContent else { return KnowYouFlow() }
         for step in KnowYouStep.questions where !profile.answered(step) {
@@ -145,14 +149,20 @@ enum KnowYouChips {
     ]
     static let maxGoals = 5
 
+    /// Wisp's own voice is the default: upbeat, full answers. Only a different
+    /// choice changes what the model is told (service/memory/profile.py), so the
+    /// labels describe exactly what each choice does.
+    static let defaultTone = "warm"
+    static let defaultDetail = "thorough"
+
     static let tones: [(value: String, label: String, detail: String)] = [
-        ("gentle", "Gently", "Lead with what's going well. Never scold."),
-        ("warm", "Warm and plain", "Friendly, direct, to the point."),
-        ("direct", "Straight to the point", "Skip the preamble. Answer first."),
+        ("warm", "Upbeat", "Warm and lively, with a bit of personality."),
+        ("gentle", "Gentle", "Calm and kind. Good news first, never a scolding."),
+        ("direct", "Straight to the point", "The answer first. No small talk."),
     ]
     static let details: [(value: String, label: String, detail: String)] = [
-        ("short", "Short", "Replies stay brief unless I ask for more."),
-        ("thorough", "Thorough", "Include the detail and the reasoning."),
+        ("thorough", "Full answers", "The details that matter, with examples."),
+        ("short", "Short", "A line or two, unless I ask for more."),
     ]
 }
 
@@ -169,13 +179,15 @@ struct UserProfile: Equatable {
         var label: String { relation.isEmpty ? name : "\(name) · \(relation)" }
     }
 
+    static let editableFields = ["name", "about", "goals", "struggles", "people", "tone", "detail", "boundaries", "notes"]
+
     var name = ""
     var about = ""
     var goals: [String] = []
     var struggles: [String] = []
     var people: [Person] = []
-    var tone = "warm"
-    var detail = "short"
+    var tone = KnowYouChips.defaultTone
+    var detail = KnowYouChips.defaultDetail
     var boundaries = ""
     var notes = ""
     var completedAt: Double?
@@ -193,8 +205,8 @@ struct UserProfile: Equatable {
             guard let row = raw as? [String: Any], let name = row["name"] as? String, !name.isEmpty else { return nil }
             return Person(name: name, relation: row["relation"] as? String ?? "", note: row["note"] as? String ?? "")
         } ?? []
-        tone = json["tone"] as? String ?? "warm"
-        detail = json["detail"] as? String ?? "short"
+        tone = json["tone"] as? String ?? KnowYouChips.defaultTone
+        detail = json["detail"] as? String ?? KnowYouChips.defaultDetail
         boundaries = json["boundaries"] as? String ?? ""
         notes = json["notes"] as? String ?? ""
         completedAt = Self.number(json["completed_at"])
@@ -210,7 +222,8 @@ struct UserProfile: Equatable {
 
     var hasContent: Bool {
         !name.isEmpty || !about.isEmpty || !goals.isEmpty || !struggles.isEmpty || !people.isEmpty
-            || !boundaries.isEmpty || !notes.isEmpty || tone != "warm" || detail != "short"
+            || !boundaries.isEmpty || !notes.isEmpty
+            || tone != KnowYouChips.defaultTone || detail != KnowYouChips.defaultDetail
     }
 
     /// Whether the user gave this step an answer. Tone always holds a default,
@@ -220,7 +233,7 @@ struct UserProfile: Equatable {
         case .name: return !name.isEmpty
         case .goals: return !goals.isEmpty
         case .tone: return !name.isEmpty || !goals.isEmpty
-        default: return true
+        case .done: return true
         }
     }
 
@@ -232,13 +245,32 @@ struct UserProfile: Equatable {
         return body
     }
 
-    /// Everything editable, for About you's Save.
+    /// Everything editable.
     var fullPatch: [String: Any] {
         var body: [String: Any] = [:]
-        for field in ["name", "about", "goals", "struggles", "people", "tone", "detail", "boundaries", "notes"] {
+        for field in Self.editableFields { body[field] = value(for: field) }
+        return body
+    }
+
+    /// About you's Save: only the fields that differ from what was loaded, so
+    /// a field the person never touched is never rewritten (and a stale screen
+    /// can't overwrite an answer saved from the notch meanwhile).
+    func changes(since original: UserProfile) -> [String: Any] {
+        var body: [String: Any] = [:]
+        for field in Self.editableFields where !Self.same(value(for: field), original.value(for: field)) {
             body[field] = value(for: field)
         }
         return body
+    }
+
+    private static func same(_ a: Any, _ b: Any) -> Bool {
+        switch (a, b) {
+        case let (a as String, b as String): return a == b
+        case let (a as [String], b as [String]): return a == b
+        case let (a as [[String: Any]], b as [[String: Any]]):
+            return a.count == b.count && zip(a, b).allSatisfy { NSDictionary(dictionary: $0).isEqual(to: $1) }
+        default: return false
+        }
     }
 
     private func value(for field: String) -> Any {
@@ -276,12 +308,31 @@ struct UserProfile: Equatable {
         goals.filter { goal in !KnowYouChips.focusAreas.contains { $0.goal.caseInsensitiveCompare(goal) == .orderedSame } }
     }
 
+    /// Titles and generic account names that are not what anyone is called.
+    private static let notNames: Set<String> = [
+        "dr", "mr", "mrs", "ms", "mx", "miss", "prof", "sir", "rev",
+        "admin", "administrator", "user", "owner", "guest", "mac", "macbook", "apple", "test", "root",
+    ]
+
     /// The first name from the Mac account's full name, offered (never saved)
-    /// as the answer to "What should I call you?".
+    /// as the answer to "What should I call you?". Skips a title ("Dr. Ana
+    /// Ruiz" gives Ana), an initial, a "Last, First" comma, and generic
+    /// account names, offering nothing rather than "Administrator".
     static func suggestedName(fullName: String) -> String {
-        let trimmed = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let first = trimmed.split(separator: " ").first else { return "" }
-        return String(first)
+        var words = fullName.split(whereSeparator: \.isWhitespace).map(String.init)
+        if let comma = words.firstIndex(where: { $0.hasSuffix(",") }), comma + 1 < words.count {
+            words = Array(words[(comma + 1)...])  // "Smith, Jane" is Jane
+        }
+        var skippedInitial = false
+        for (index, word) in words.enumerated() {
+            let bare = word.trimmingCharacters(in: CharacterSet(charactersIn: ".,"))
+            if notNames.contains(bare.lowercased()) { continue }
+            guard bare.count > 1, bare.contains(where: \.isLetter) else { skippedInitial = true; continue }
+            // "J. Smith": the only word left is a surname, which nobody wants to be called.
+            if skippedInitial && index == words.count - 1 && words.count > 1 { return "" }
+            return bare
+        }
+        return ""
     }
 }
 
@@ -294,6 +345,10 @@ struct ProfileStatus: Equatable {
     var stale = false
     var filled: [String] = []
     var daysSinceUpdate: Int?
+    /// False while a cloud model answers everything: the answers then travel
+    /// with each question, so "Stays on this Mac" would not be true. An older
+    /// service that doesn't say reads as local, which it always was.
+    var localOnly = true
 
     init() {}
     init(json: [String: Any]) {
@@ -305,6 +360,12 @@ struct ProfileStatus: Equatable {
         if let days = json["days_since_update"] as? NSNumber, CFGetTypeID(days) != CFBooleanGetTypeID() {
             daysSinceUpdate = days.intValue
         }
+        localOnly = json["local_only"] as? Bool ?? true
+    }
+
+    /// The lock line under every Getting to know you screen and in About you.
+    var whereItLives: String {
+        localOnly ? "Stays on this Mac" : "Sent with your questions to your cloud model"
     }
 }
 
@@ -320,5 +381,15 @@ struct ProfileEnvelope: Equatable {
         self.profile = UserProfile(json: profile)
         self.status = ProfileStatus(json: status)
         preview = (json["preview"] as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+}
+
+/// What the notch says after the flow ends without Done: Not now, or the
+/// service couldn't take the answer.
+enum KnowYouNotice {
+    static let notNow = "No problem. Whenever you like, type /about, or choose Tell Wisp About You… from the menu bar icon."
+    static let notNowUnsaved = "No problem. Wisp's service didn't answer, so I may ask again later. Type /about any time."
+    static func thanks(name: String) -> String {
+        name.isEmpty ? "Thank you. I'll put this to work." : "Thank you, \(name). I'll put this to work."
     }
 }

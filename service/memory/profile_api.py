@@ -16,8 +16,19 @@ from service.memory import profile as P
 router = APIRouter(prefix="/profile", tags=["profile"])
 
 
+def _local_only() -> bool:
+    """False while a cloud model answers everything: the profile then rides in
+    that model's prompt, and the app must not say "Stays on this Mac"."""
+    try:
+        from service.wisp_about import _cloud_state
+        return _cloud_state()[0] != "everything"
+    except Exception:  # noqa: BLE001 - unknown reads as the shipped default
+        return True
+
+
 def _payload(profile: dict) -> dict[str, Any]:
-    return {"profile": profile, "status": P.status(profile), "preview": P.preview(profile)}
+    status = {**P.status(profile), "local_only": _local_only()}
+    return {"profile": profile, "status": status, "preview": P.preview(profile)}
 
 
 @router.get("")

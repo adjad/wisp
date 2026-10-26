@@ -1,11 +1,10 @@
 """Who the user is, in their own words — the profile behind "Getting to know you".
 
 Wisp reads the user's calendar, mail and messages, but until this module it knew
-nothing the user had not typed into a chat: the brief greeted "you", every reply
-had one tone, and "what needs you" was ranked by source and due time alone. A
-chief of staff starts by learning who they work for. The notch's Getting to know
-you flow (KnowYouView.swift) asks, one question at a time, and this module keeps
-the answers and puts them to work in three places:
+nothing the user had not typed into a chat: the brief greeted "you" and every
+reply had one tone. A chief of staff starts by learning who they work for. The
+notch's Getting to know you flow (KnowYouView.swift) asks, one question at a
+time, and this module keeps the answers and puts them to work in three places:
 
   * `profile_block()`  — the system-prompt block every LOCAL text path carries
     after the identity block (service/agent/loop.py, main.py's plain chat
@@ -14,13 +13,18 @@ the answers and puts them to work in three places:
   * `keeping_in_mind()` — the brief's deterministic "Keeping in mind" section
     (service/assistant/brief.py). No model writes it; it fires only on signals
     the day actually shows.
-  * `prioritize()` — raises a Today "Needs you" item that names one of the
-    user's people (service/assistant/daily_workspace.py).
+  * `prioritize()` — raises a "Needs you" item that names one of the user's
+    people in the Wisp window's day planner (service/assistant/daily_workspace.py,
+    via daily_workspace_api.current_workspace). The notch's Day and Brief do not
+    pass the profile yet, so nothing the user is TOLD promises that ordering:
+    `preview()` and About you promise only the brief's people line.
 
 Everything is optional, bounded and local. The file is plain JSON under
-~/.moe so it is easy to read, edit and erase. The profile never travels to a
-cloud model or to an external local provider: those paths already exclude
-memory, and the callers above apply the same rule here.
+~/.moe (owner-only, 0600) so it is easy to read, edit and erase. The profile
+does not travel to an external local provider. When the user runs ALL of Wisp
+on a cloud model (Settings > Cloud, "Everything", or WISP_REMOTE_ONLY), it rides
+in that model's system prompt like the rest of Wisp's context; `status()` then
+reports local_only=False so the app stops saying "Stays on this Mac".
 
 What this deliberately is NOT: a VIP list for notifications. Proactive attention
 decides what may interrupt from recent two-way contact (user decision P4,
@@ -39,7 +43,10 @@ import time
 from service.paths import MOE_DIR
 
 PROFILE_PATH = MOE_DIR / "profile.json"
-VERSION = 1
+# 2: the default length became "thorough" (Wisp's own full-answer voice). Every
+# version-1 file holds "short" whether or not the person chose it, because the
+# old flow saved its preselected default; see _read.
+VERSION = 2
 
 TONES = ("gentle", "warm", "direct")
 DETAILS = ("short", "thorough")
@@ -64,7 +71,7 @@ _lock = threading.Lock()
 
 def empty() -> dict:
     return {"version": VERSION, "name": "", "about": "", "goals": [], "struggles": [],
-            "people": [], "tone": "warm", "detail": "short",
+            "people": [], "tone": "warm", "detail": "thorough",
             "boundaries": "", "notes": "", "completed_at": None, "updated_at": None,
             "dismissed_at": None, "dismiss_count": 0,
             # Weekly goal pulse: its clock starts at a goal change or an answer.
@@ -128,7 +135,9 @@ def _people(value) -> list[dict]:
     return out
 
 
-_DEFAULT_CHOICE = {"tone": "warm", "detail": "short"}
+# Wisp's own voice (the base prompts: energetic, full and vivid). A default
+# choice adds nothing to the prompt; only a different one does.
+_DEFAULT_CHOICE = {"tone": "warm", "detail": "thorough"}
 
 
 def _choice(value, options: tuple[str, ...], field: str) -> str:
@@ -209,6 +218,10 @@ def _read() -> dict:
         _quarantine()
         return empty()
     profile = empty()
+    if (raw.get("version") or 1) < 2 and raw.get("detail") == "short":
+        # Version 1 saved the preselected "short" with every answer, so it is
+        # not evidence of a choice. Read it as Wisp's default.
+        raw = {**raw, "detail": _DEFAULT_CHOICE["detail"]}
     try:
         profile.update(validate({k: raw.get(k) for k in EDITABLE if k in raw}))
     except ValueError:
@@ -237,8 +250,15 @@ def _read() -> dict:
 def _write(profile: dict) -> None:
     PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = PROFILE_PATH.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(profile, handle, indent=2, ensure_ascii=False, allow_nan=False)
+    # Owner-only from the first byte: struggles, people and boundaries are the
+    # most personal text Wisp keeps.
+    try:
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump({**profile, "version": VERSION}, handle, indent=2, ensure_ascii=False, allow_nan=False)
     os.replace(tmp, PROFILE_PATH)
 
 
@@ -307,13 +327,16 @@ def dismiss(*, now: float | None = None) -> dict:
         return profile
 
 
-def clear() -> dict:
+def clear(*, now: float | None = None) -> dict:
+    """Erase every answer. What remains is only the fact that the person chose
+    to erase, so the questions are not offered again on their own (the menu
+    bar and /about still open them)."""
     with _lock:
-        try:
-            PROFILE_PATH.unlink()
-        except FileNotFoundError:
-            pass
-        return empty()
+        profile = empty()
+        profile["dismissed_at"] = time.time() if now is None else now
+        profile["dismiss_count"] = MAX_AUTO_OFFERS
+        _write(profile)
+        return profile
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +393,7 @@ _TONE_RULES = {
                "answer or the ask first."),
 }
 _DETAIL_RULES = {
-    "short": "Keep replies short unless they ask for more.",
+    "short": "Keep replies short (a line or two) unless they ask for more.",
     "thorough": "They prefer thorough answers: include the detail and the reasoning.",
 }
 
@@ -411,9 +434,13 @@ def profile_block(profile: dict | None = None) -> str:
                      + ". Recognise these names in their mail, texts and calendar. This "
                        "list says who matters to the user; it does not make Wisp alert "
                        "about them, and it is never a reason to send anything.")
-    tone = _TONE_RULES.get(profile.get("tone") or "warm", _TONE_RULES["warm"])
-    detail = _DETAIL_RULES.get(profile.get("detail") or "short", _DETAIL_RULES["short"])
-    lines.append(f"- How to talk to them: {tone} {detail}")
+    # Only a choice that differs from Wisp's own voice is stated: the default
+    # adds a second, competing voice rule to every prompt for nothing.
+    manner = [rule for field, rules in (("tone", _TONE_RULES), ("detail", _DETAIL_RULES))
+              if (choice := profile.get(field)) and choice != _DEFAULT_CHOICE[field]
+              and (rule := rules.get(choice))]
+    if manner:
+        lines.append("- How to talk to them: " + " ".join(manner))
     if profile.get("boundaries"):
         lines.append(f"- Be careful about: {profile['boundaries']}. Respect this even when "
                      "it would be convenient not to.")
@@ -601,16 +628,21 @@ def preview(profile: dict | None = None) -> list[str]:
         names = _oxford([p["name"] for p in profile["people"]][:3])
         more = len(profile["people"]) - 3
         tail = f" and {more} more" if more > 0 else ""
-        lines.append(f"Mail and texts from {names}{tail} rise to the top of Needs you, and I'll "
-                     "notice when they're on your day. This never changes what I alert you about.")
+        # Exactly what keeping_in_mind() does; nothing about ranking, which the
+        # notch's Needs you does not do with the profile.
+        lines.append(f"When {names}{tail} show up on your calendar or in your mail and texts, "
+                     "your morning brief points it out. This never changes what I alert you about.")
     if profile.get("struggles"):
         lines.append("When a day shows the pattern you described, your brief says so once, gently, "
                      "with a small next step. Never a reproach.")
-    tone = profile.get("tone") or "warm"
-    detail = profile.get("detail") or "short"
-    manner = {"gentle": "gently", "warm": "warmly and with energy", "direct": "straight to the point"}[tone]
-    length = {"short": "short", "thorough": "thorough"}[detail]
-    lines.append(f"I'll talk to you {manner}, and keep replies {length}.")
+    tone = profile.get("tone") or _DEFAULT_CHOICE["tone"]
+    detail = profile.get("detail") or _DEFAULT_CHOICE["detail"]
+    manner = {"gentle": "gently", "warm": "",
+              "direct": "straight to the point"}[tone]
+    length = {"short": "keep replies short", "thorough": ""}[detail]
+    said = [part for part in (f"talk to you {manner}" if manner else "", length) if part]
+    if said:
+        lines.append("I'll " + " and ".join(said) + ".")
     if profile.get("boundaries"):
         lines.append("I'll respect what you asked me to be careful about.")
     if profile.get("about") or profile.get("notes"):
