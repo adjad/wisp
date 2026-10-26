@@ -5,7 +5,20 @@ Show Wisp as if it had just been installed (empty Brief and Day, no caches, no
 again) while it reads your **current real** Calendar, Reminders, Mail, Messages,
 Notes and Contacts. When you finish, your normal Wisp comes back exactly as it was.
 
-## Start a demo
+## From the notch
+
+Type `/demo` (or just `/d`) in the Ask tab and confirm. Wisp quits and reopens as a
+fresh install. To end the demo, type `/demo` again and confirm, and Wisp quits and
+reopens as your own Wisp.
+
+Behind the scenes Wisp runs `service/demo_mode.py` from its bundled Python as a
+detached helper. The helper checks it can go ahead, waits up to 90 seconds for Wisp
+and its engine to stop, swaps the homes, and reopens the app. If something stops it
+partway, you get a "Wisp demo" notification and Wisp still reopens. The details are
+in `~/Library/Logs/Wisp/demo.log`. `/demo` needs the installed app; from a source
+checkout, use the commands below.
+
+## Start a demo from Terminal
 
 ```bash
 python3 scripts/wisp_demo.py start --quit-app --launch
@@ -20,7 +33,7 @@ permission prompts appear again. The Brief, Day cards, proactive cards and
 summaries are rebuilt from your real sources as they sync, which takes a few
 minutes, as on a new install.
 
-## End the demo
+## End the demo from Terminal
 
 ```bash
 python3 scripts/wisp_demo.py stop --quit-app --launch

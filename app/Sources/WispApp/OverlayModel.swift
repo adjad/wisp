@@ -667,6 +667,8 @@ final class OverlayModel: ObservableObject {
         case .window: openTabInWindow()
         case .new: newChat()
         case .about: startKnowYou()
+        case .demo:
+            if let problem = DemoMode.toggle() { showTransientNotice(problem, duration: 8) }
         }
     }
 
