@@ -679,7 +679,7 @@ struct DayTimeline: Equatable {
     static func lede(weekday: String, isToday: Bool, load: DayLoad.Verdict?, dueToday: [String], overdue: [String],
                      next: (title: String, time: String)?, othersNeedYou: Bool = false,
                      openingOverride: String? = nil, dueReference: String? = nil,
-                     unread: [String] = []) -> String {
+                     unread: [String] = [], uncheckedMail: [String] = []) -> String {
         var parts: [String] = []
         let due = dueToday.filter { !isJunk($0) }
         let late = overdue.filter { !isJunk($0) }
@@ -696,7 +696,7 @@ struct DayTimeline: Equatable {
             if let next { return opening + " Next up: \(next.title) at \(next.time)." }
             if othersNeedYou { return opening }
             // An all-clear only from sources Wisp has read.
-            if !unread.isEmpty { return opening + " " + SourceAccess.cantSee(unread) }
+            if !unread.isEmpty { return opening + " " + SourceAccess.cantSee(unread, uncheckedMail: uncheckedMail) }
             return opening + (isToday ? " Nothing needs you right now." : " Nothing needs you that day.")
         }
         return opening + " " + parts.joined(separator: ", and ").capitalizedFirst + "."
@@ -1112,6 +1112,9 @@ struct SourceAccess: Equatable {
     /// The service's one sentence about it, when it sent one.
     var reason: String = ""
 
+    /// Connected Google accounts Wisp couldn't check (blocked "google_mail").
+    var uncheckedAccounts: [String] = []
+
     var readable: Bool { state == .ready }
 
     /// - Parameters:
@@ -1140,6 +1143,41 @@ struct SourceAccess: Equatable {
 
     var noun: String { Self.noun(source) }
 
+    /// Mail as the Brief shows it, by one rule everywhere (TodayPlan.access,
+    /// ProactiveState.unreadSources): fully read only when no connected Google
+    /// account was left unchecked (`unreadBy`, the service's mail_unread_by)
+    /// and either Mail.app's row is ready or a Google account read it
+    /// (`readBy`, mail_read_by). One account unchecked: partly read, so not
+    /// readable, and its headline names the account.
+    static func mail(_ row: SourceAccess, readBy: [String], unreadBy: [String]) -> SourceAccess {
+        if !unreadBy.isEmpty {
+            var partly = SourceAccess(source: "email", ready: false, state: "unavailable", blocked: "google_mail",
+                                      reason: "Reconnect \(unreadBy.count == 1 ? "it" : "them") in Wisp's Settings > Google so Wisp can read that mail.")
+            partly.uncheckedAccounts = unreadBy
+            return partly
+        }
+        if !row.readable && !readBy.isEmpty { return SourceAccess(source: "email", ready: true) }
+        return row
+    }
+
+    /// "work@gmail.com", "a@x.com and b@y.com", "a, b and c".
+    static func accountList(_ accounts: [String]) -> String {
+        switch accounts.count {
+        case 0: return "an account"
+        case 1: return accounts[0]
+        case 2: return accounts[0] + " and " + accounts[1]
+        default: return accounts.dropLast().joined(separator: ", ") + " and " + accounts[accounts.count - 1]
+        }
+    }
+
+    /// The top line for unread sources, naming Google accounts Wisp couldn't
+    /// check when mail is only partly read.
+    static func cantSee(_ sources: [String], uncheckedMail: [String]) -> String {
+        guard !uncheckedMail.isEmpty, sources.contains("email") else { return cantSee(sources) }
+        let others = cantSee(sources.filter { $0 != "email" })
+        return (others.isEmpty ? "" : others + " ") + "Wisp couldn't check \(accountList(uncheckedMail)). Reconnect in Settings."
+    }
+
     /// The short line a row shows.
     var headline: String {
         switch state {
@@ -1150,6 +1188,7 @@ struct SourceAccess: Equatable {
             case "mail_not_configured", "no_accounts": return "No Mail accounts on this Mac"
             case "mail_closed": return "Wisp reads Mail while Mail is open"
             case "notes_closed": return "Wisp reads Notes while Notes is open"
+            case "google_mail": return "Couldn't check " + Self.accountList(uncheckedAccounts)
             case .some: return "Wisp can't see your \(noun) yet"
             case .none: return "Wisp couldn't read your \(noun) just now"
             }

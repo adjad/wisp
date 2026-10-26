@@ -1191,56 +1191,96 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     return result
 
 
-def google_mail_read(now: float | None = None) -> list[str]:
-    """Linked Google accounts whose mail Wisp has read recently: the sign-in
-    has not expired, the last mail sync is verified and error-free (no Gmail
-    error recorded either), and its receipt is at most _EXTERNAL_MAX_AGE
-    (300 s) old.
+def google_mail_status(now: float | None = None) -> tuple[list[str], list[str]]:
+    """(read, unread): the connected Google accounts whose mail Wisp read
+    recently, and the ones it couldn't check.
 
-    Only the mail matters here: a calendar error or missing optional
-    Workspace scopes (the account's "attention" or "needs_reconnect" state in
-    Settings) never turns a fresh, verified Gmail sync into unread mail.
+    Read: the sign-in has not expired, the last mail sync is verified and
+    error-free (no Gmail error recorded either), and its receipt is at most
+    _EXTERNAL_MAX_AGE (300 s) old. Only the mail matters: a calendar error or
+    missing optional Workspace scopes never make a fresh Gmail sync unread.
+
+    Unread: every other connected account, unless a fresh Mail.app read covers
+    it (the account is also in Mail and Mail.app's headers were read within the
+    same 300 s); then Mail.app's read stands for it.
 
     Narrow on purpose, since every Today snapshot asks: it reads the Google
-    config file and in-memory sync receipts only. It never takes the history
-    guard or re-parses the header snapshot (gmail_source.status() does both).
-    Any doubt is an empty list, never a read."""
+    config file and in-memory sync receipts. It never takes the history guard
+    or calls gmail_source.status(); Mail.app's accounts are listed only when an
+    account is left unchecked. If the config can't be read, there is no
+    account to vouch for: ([], [])."""
     try:
         from service import gmail_source
         from service.tools import email_tools as mail
         cfg = json.loads(gmail_source.CONFIG_PATH.read_text(encoding="utf-8"))
         accounts = gmail_source.connected_accounts(cfg if isinstance(cfg, dict) else {})
-        now = time.time() if now is None else now
-        read = []
-        for email, item in accounts.items():
-            receipt = mail._external_accounts.get(email) or {}
-            stamp = mail._source_receipt(receipt.get("headers_at"))
-            fresh = bool(receipt.get("headers_verified") and stamp and not receipt.get("headers_error")
-                         and 0 <= now - stamp <= mail._EXTERNAL_MAX_AGE)
-            if fresh and not item.get("auth_expired") and not gmail_source._errors.get(email):
-                read.append(email)
-        return sorted(read)
     except Exception:  # noqa: BLE001 — status unknown: nothing counts as read
-        return []
+        return [], []
+    now = time.time() if now is None else now
+    read, unchecked = [], []
+    for email, item in accounts.items():
+        receipt = mail._external_accounts.get(email) or {}
+        stamp = mail._source_receipt(receipt.get("headers_at"))
+        fresh = bool(receipt.get("headers_verified") and stamp and not receipt.get("headers_error")
+                     and 0 <= now - stamp <= mail._EXTERNAL_MAX_AGE)
+        ok = fresh and not item.get("auth_expired") and not gmail_source._errors.get(email)
+        (read if ok else unchecked).append(email)
+    unread = [email for email in unchecked if not _mail_app_covers(email, now)]
+    return sorted(read), sorted(unread)
 
 
-def honest(view: dict, coverage, google_mail=()) -> dict:
+def _mail_app_covers(email: str, now: float) -> bool:
+    """Mail.app read its headers within the last 300 s and one of its accounts
+    is this Google address (email_tools._covered_source, the same matching the
+    mail tools use)."""
+    try:
+        from service.tools import email_tools as mail
+        native_at = mail._source_receipt(mail._native_headers_at)
+        if not (mail._email_available is True and mail._email_read_source == "mail_app" and native_at
+                and 0 <= now - native_at <= mail._EXTERNAL_MAX_AGE):
+            return False
+        item = mail._external_accounts.get(email) or {}
+        return any(mail._covered_source(str(row.get("name") or ""), str(row.get("id") or ""), email, item)
+                   for row in mail.native_email_accounts())
+    except Exception:  # noqa: BLE001 — unknown coverage is not a read
+        return False
+
+
+def google_mail_read(now: float | None = None) -> list[str]:
+    """The connected Google accounts whose mail Wisp read recently."""
+    return google_mail_status(now)[0]
+
+
+def honest(view: dict, coverage, google_mail=(), google_unread=()) -> dict:
     """The Brief's view without an all-clear about a source Wisp couldn't read.
 
     ``coverage`` is the workspace's source_coverage. Each source that isn't
     ready is listed in ``unread`` (the app suppresses its "nothing" lines and
     shows why), and "Nothing on your calendar" becomes "Wisp can't see your
-    calendar yet" when the calendar wasn't read. ``google_mail`` lists linked
-    Google accounts whose mail was read recently (google_mail_read); mail
-    counts as read through them even when Mail.app couldn't be, and only then
-    (an expired or failing account is not a read). It is echoed as
-    ``mail_read_by`` so the app applies the same rule."""
+    calendar yet" when the calendar wasn't read.
+
+    Mail is fully read only when no connected Google account was left
+    unchecked (``google_unread``, google_mail_status) and either Mail.app's
+    coverage row is ready or a Google account read it (``google_mail``). With
+    one account unchecked, mail is partly read: it stays in ``unread`` and the
+    app names the account. Both lists are echoed (``mail_read_by``,
+    ``mail_unread_by``) so the app applies the same rule."""
     google_mail = sorted(str(a) for a in google_mail or () if a)
-    unread = [row.get("source") for row in coverage or []
-              if isinstance(row, dict) and row.get("ready") is not True and row.get("source")
-              and not (row.get("source") == "email" and google_mail)]
+    google_unread = sorted(str(a) for a in google_unread or () if a)
+    unread = []
+    for row in coverage or []:
+        source = row.get("source") if isinstance(row, dict) else None
+        if not source:
+            continue
+        if source == "email":
+            read = (row.get("ready") is True or bool(google_mail)) and not google_unread
+            if not read:
+                unread.append(source)
+        elif row.get("ready") is not True:
+            unread.append(source)
     view["unread"] = unread
     view["mail_read_by"] = google_mail
+    view["mail_unread_by"] = google_unread
     if "calendar" in unread:
         for key in ("summary", "lede"):
             if isinstance(view.get(key), str):
@@ -1251,6 +1291,6 @@ def honest(view: dict, coverage, google_mail=()) -> dict:
 def attach(workspace: dict, now: float | None = None) -> None:
     """Add workspace["proactive"] to the Today workspace. Never fatal."""
     try:
-        workspace["proactive"] = honest(snapshot(now=now), workspace.get("source_coverage"), google_mail_read())
+        workspace["proactive"] = honest(snapshot(now=now), workspace.get("source_coverage"), *google_mail_status())
     except Exception:  # noqa: BLE001
         traceback.print_exc()
