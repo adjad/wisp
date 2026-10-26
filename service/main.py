@@ -1115,34 +1115,23 @@ def _omlx_model_dir() -> str | None:
     return str(Path.home() / ".omlx" / "models")     # oMLX's documented default
 
 
-def _omlx_model_dirs() -> list[str]:
-    """Every folder the engine loads models from. Read only: the settings are never written.
-
-    External mode: the model folders in oMLX.app's own settings. Bundled mode: Wisp's
-    engine folder first (where it downloads), then folders added in its admin page.
-    """
-    from pathlib import Path
-    from service.config import omlx_settings
-    dirs: list[str] = []
-    if is_bundled():
-        from service.engine.mode import engine_data_dir
-        dirs.append(str(engine_data_dir() / "models"))
-    try:
-        model = omlx_settings().get("model", {})
-        saved = model.get("model_dirs") if isinstance(model, dict) else None
-        if not isinstance(saved, list) or not saved:
-            saved = [model.get("model_dir")] if isinstance(model, dict) else []
-        dirs += [d for d in saved if isinstance(d, str) and d and d not in dirs]
-    except Exception:  # noqa: BLE001 — unreadable settings: the default folder below
-        pass
-    return dirs or [str(Path.home() / ".omlx" / "models")]
+# A status poll waits at most this long for the disk check below.
+_DISK_SCAN_SECONDS = 1.0
 
 
 def _models_on_disk() -> list[str]:
-    """Wisp's catalogue models already in the engine's folders (no engine needed)."""
+    """Wisp's catalogue models already in its own engine folder (no engine needed).
+
+    Built-in engine only. External mode never looks: an oMLX.app model folder can sit
+    on the Desktop or in Documents, where listing it from Wisp makes macOS ask for
+    permission, and the first-run step doesn't need it (it connects, then asks oMLX).
+    """
+    if not is_bundled():
+        return []
+    from service.engine.mode import engine_data_dir
     from service.setup.local_models import catalogue_models_on_disk
     try:
-        return catalogue_models_on_disk(_omlx_model_dirs())
+        return catalogue_models_on_disk([engine_data_dir() / "models"])
     except Exception:  # noqa: BLE001 — a folder Wisp can't read just isn't evidence
         return []
 
@@ -1179,11 +1168,13 @@ async def setup_status() -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — not running/unreachable is an answer, not an error
         saved = models_config().get("installed_models") or []
         installed = [m for m in saved if isinstance(m, str)]
-        # The engine can't be asked, but a model folder already on disk is installed all
-        # the same: a fresh install must not offer to download what the person's oMLX
-        # (or Wisp's engine folder) already holds, and the first-run step needs to know
-        # the oMLX it is about to use has the recommended model.
-        on_disk = [m for m in await asyncio.to_thread(_models_on_disk) if m not in installed]
+        # The built-in engine can't be asked yet, but a model folder already in Wisp's
+        # engine folder is installed all the same: never offer to download it again.
+        try:
+            on_disk = await asyncio.wait_for(asyncio.to_thread(_models_on_disk), _DISK_SCAN_SECONDS)
+        except TimeoutError:
+            on_disk = []
+        on_disk = [m for m in on_disk if m not in installed]
         if on_disk:
             installed, source = installed + on_disk, "disk"
     from service.config import tool_capable_models

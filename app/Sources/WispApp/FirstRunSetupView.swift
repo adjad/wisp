@@ -153,9 +153,20 @@ enum FirstRunBrain: Equatable {
     case waitingForEngine(model: String, label: String)
     /// Installed and not in use yet: switch Wisp over to it.
     case switching(model: String, label: String)
+    /// The person's own oMLX serves a model, but switching to it would replace their
+    /// choice (or it isn't the recommended one): one click, never automatic.
+    case offered(model: String, label: String)
     case ready(label: String)
 
     var isReady: Bool { if case .ready = self { return true } else { return false } }
+
+    /// The model a "Switch"/"Use" click applies.
+    var modelToUse: String? {
+        switch self {
+        case .switching(let model, _), .offered(let model, _): return model
+        default: return nil
+        }
+    }
 
     /// Step 1 is waiting on the person's one click: Download, or Retry after a stop.
     var waitsForDownloadClick: Bool {
@@ -185,6 +196,7 @@ enum FirstRunBrain: Equatable {
         case .waitingForEngine: return 6
         case .switching: return 7
         case .ready: return 8
+        case .offered: return 9
         }
     }
 
@@ -222,6 +234,7 @@ enum FirstRunBrain: Equatable {
         case .needsDownload: return .download
         case .failed: return .retry
         case .unavailable: return .detailedSetup
+        case .offered: return .tryAgain
         }
     }
 
@@ -238,6 +251,7 @@ enum FirstRunBrain: Equatable {
         switch status.existingOmlx {
         case .connecting: return .startingEngine
         case .serving(let model, let label): return .switching(model: model, label: plainLabel(label))
+        case .offering(let model, let label): return .offered(model: model, label: plainLabel(label))
         case nil: break
         }
         // The engine's own reason first: a Mac whose macOS is too old for it also
@@ -690,7 +704,11 @@ struct FirstRunSetupView: View {
         switch state {
         case .switching(let model, _) where appliedModel != model && setup.busy == nil:
             appliedModel = model
-            Task { await setup.apply(model) }
+            // Atomic: applied only if the configuration is still the one this saw.
+            Task { await setup.apply(model, expectedConfiguration: setup.status?.configurationToken) }
+        case .startingEngine:
+            // The person's own oMLX hasn't answered: start it once (first run only).
+            setup.startExistingOmlxOnce()
         case .ready where !testedOnce && setup.busy == nil && setup.statusIsCurrent:
             // "Ready" only means the engine lists the model. One short question
             // proves it answers, and loads it while the person reads the rest, so
@@ -871,7 +889,7 @@ struct FirstRunSetupView: View {
         case .retry:
             if case .waitingForEngine = brain { fetchButton("Download again") } else { fetchButton("Retry download") }
         case .tryAgain:
-            if case .switching(let model, _) = brain {
+            if let model = brain.modelToUse {
                 Button("Switch to the model") { Task { await setup.apply(model) } }
                     .buttonStyle(FirstRunButtonStyle())
                     .disabled(setup.busy != nil)
@@ -1043,6 +1061,14 @@ struct FirstRunSetupView: View {
                 OnboardingCard(icon: "checkmark.circle", title: label, detail: "Downloaded. Waiting for Wisp's engine to load it…") {
                     ProgressView().controlSize(.small)
                 }
+            }
+        case .offered(let model, let label):
+            OnboardingCard(icon: "checkmark.circle", title: label,
+                           detail: "Found in your oMLX. Wisp can use it for chat, tools, coding and reasoning.") {
+                Button("Use \(label)") { Task { await setup.apply(model) } }
+                    .buttonStyle(FirstRunButtonStyle(primary: true))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(setup.busy != nil)
             }
         case .switching(let model, let label):
             if stalled {

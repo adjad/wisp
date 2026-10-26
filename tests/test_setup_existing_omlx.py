@@ -77,33 +77,57 @@ def test_missing_or_unreadable_folders_are_just_not_evidence(tmp_path):
     assert catalogue_models_on_disk([tmp_path / "file"]) == []
 
 
-# -- which folders the engine loads from ------------------------------------------
+# -- bounds ----------------------------------------------------------------------
 
-def test_external_mode_reads_omlx_model_dirs(monkeypatch, tmp_path):
-    import service.config as config
+def test_scan_examines_a_bounded_number_of_entries_and_roots(monkeypatch, tmp_path):
+    from service.setup import local_models
+    monkeypatch.setattr(local_models, "MAX_ENTRIES", 5)
+    for n in range(10):
+        (tmp_path / f"org{n:02d}").mkdir()
+    _model(tmp_path, "zzz-last", GEMMA)                 # past the cap: never examined
+    assert len(local_models._entries(tmp_path)) == 5
+    roots = []
+    for n in range(local_models.MAX_ROOTS + 1):
+        roots.append(tmp_path / f"root{n}")
+        roots[-1].mkdir()
+    _model(roots[-1], GEMMA)                            # only in the root past the cap
+    assert catalogue_models_on_disk(roots) == []
+
+
+def test_an_oversized_index_is_not_read(monkeypatch, tmp_path):
+    from service.setup import local_models
+    folder = _model(tmp_path, LING, shards=2, index=True)
+    assert weights_complete(folder)
+    monkeypatch.setattr(local_models, "MAX_INDEX_BYTES", 10)
+    monkeypatch.setattr(local_models.json, "loads", lambda *_: pytest.fail("index read"))
+    assert weights_complete(folder)                     # numbering alone still decides
+
+
+# -- which folders are looked at (N1: never a folder the person chose) -------------
+
+def test_external_mode_never_lists_a_folder(monkeypatch):
     import service.main as main
+    import service.setup.local_models as local_models
     monkeypatch.setattr(main, "is_bundled", lambda: False)
-    monkeypatch.setattr(config, "omlx_settings",
-                        lambda: {"model": {"model_dirs": [str(tmp_path / "a"), str(tmp_path / "b")]},
-                                 "auth": {"api_key": "never-read-here"}})
-    assert main._omlx_model_dirs() == [str(tmp_path / "a"), str(tmp_path / "b")]
-    monkeypatch.setattr(config, "omlx_settings", lambda: {"model": {"model_dir": str(tmp_path / "c")}})
-    assert main._omlx_model_dirs() == [str(tmp_path / "c")]
-    monkeypatch.setattr(config, "omlx_settings", lambda: {})
-    assert main._omlx_model_dirs() == [str(Path.home() / ".omlx" / "models")]
+    monkeypatch.setattr(local_models, "catalogue_models_on_disk",
+                        lambda *_a, **_k: pytest.fail("external mode listed a folder"))
+    monkeypatch.setattr(Path, "iterdir", lambda self: pytest.fail(f"listed {self}"))
+    assert main._models_on_disk() == []
 
 
-def test_bundled_mode_looks_in_wisps_engine_folder_first(monkeypatch, tmp_path):
+def test_bundled_mode_looks_only_in_wisps_engine_folder(monkeypatch, tmp_path):
     import service.config as config
     import service.engine.mode as mode
     import service.main as main
+    import service.setup.local_models as local_models
     monkeypatch.setattr(main, "is_bundled", lambda: True)
     monkeypatch.setattr(mode, "engine_data_dir", lambda: tmp_path / "engine")
-    monkeypatch.setattr(config, "omlx_settings", lambda: {})       # engine never started yet
-    assert main._omlx_model_dirs() == [str(tmp_path / "engine" / "models")]
-    monkeypatch.setattr(config, "omlx_settings", lambda: {"model": {"model_dirs": [
-        str(tmp_path / "engine" / "models"), str(tmp_path / "extra")]}})
-    assert main._omlx_model_dirs() == [str(tmp_path / "engine" / "models"), str(tmp_path / "extra")]
+    monkeypatch.setattr(config, "omlx_settings", lambda: {"model": {"model_dirs": [str(tmp_path / "Desktop")]}})
+    seen = []
+    monkeypatch.setattr(local_models, "catalogue_models_on_disk",
+                        lambda dirs, *a, **k: seen.extend(map(str, dirs)) or [])
+    main._models_on_disk()
+    assert seen == [str(tmp_path / "engine" / "models")]
 
 
 # -- /setup/status on a fresh install --------------------------------------------
@@ -126,7 +150,9 @@ def _fresh(monkeypatch, main, *, client, bundled, model_dirs):
     monkeypatch.setattr(main, "detect_external_engines", no_externals)
     monkeypatch.setattr(main, "_omlx_installed", lambda: True)
     monkeypatch.setattr(main, "_omlx_model_dir", lambda: str(model_dirs[0]))
-    monkeypatch.setattr(main, "_omlx_model_dirs", lambda: [str(d) for d in model_dirs])
+    monkeypatch.setattr(main, "is_bundled", lambda: bundled)
+    import service.engine.mode as engine_mode
+    monkeypatch.setattr(engine_mode, "engine_data_dir", lambda: Path(model_dirs[0]).parent)
     monkeypatch.setattr(main, "_omlx_admin_url", lambda: "http://127.0.0.1:8000/admin")
     monkeypatch.setattr(main, "current_hardware", lambda: Hardware("Apple M5 Pro", 24))
     monkeypatch.setattr(main, "models_config", lambda: {})          # fresh: nothing saved
@@ -152,34 +178,42 @@ def test_omlx_already_serving_gemma_is_ready_with_no_download(monkeypatch, tmp_p
     assert s["models"]["use"] == GEMMA and s["models"]["download"] is None
 
 
-def test_omlx_server_off_with_gemma_on_disk_is_installed_and_offers_a_start(monkeypatch, tmp_path):
-    # Wisp's own quit stops oMLX.app's server, so a first run often finds it off.
+def test_omlx_server_off_is_a_start_and_reads_no_folder(monkeypatch, tmp_path):
+    # Wisp's own quit stops oMLX.app's server, so a first run often finds it off. The
+    # status must not list the person's model folder (it can be on the Desktop).
     import service.main as main
-    _model(tmp_path, "Jundot", GEMMA)
-    _fresh(monkeypatch, main, client=_FakeClient(fail=True), bundled=False, model_dirs=[tmp_path])
+    _model(tmp_path / "models", "Jundot", GEMMA)
+    _fresh(monkeypatch, main, client=_FakeClient(fail=True), bundled=False, model_dirs=[tmp_path / "models"])
+    import service.setup.local_models as local_models
+    monkeypatch.setattr(local_models, "catalogue_models_on_disk",
+                        lambda *_a, **_k: pytest.fail("external mode scanned a folder"))
     s = asyncio.run(main.setup_status())
     assert s["omlx"] == {**s["omlx"], "installed": True, "running": False, "bundled": False}
-    assert s["models"]["source"] == "disk"
-    assert [e["id"] for e in s["models"]["installed"]] == [GEMMA]
-    assert s["models"]["use"] == GEMMA and s["models"]["download"] is None    # never re-download
+    assert s["models"]["source"] == "saved" and s["models"]["installed"] == []
     assert _check(s, "engine")["action"] == "start_engine"
-    assert _check(s, "model")["state"] == "ok"
     assert s["ready"] is False                    # not until the server answers
 
 
-def test_omlx_without_gemma_still_points_at_the_detailed_setup(monkeypatch, tmp_path):
+def test_a_slow_disk_check_never_holds_the_status(monkeypatch, tmp_path):
+    import time as clock
     import service.main as main
-    _model(tmp_path, "mlx-community", "Some-Other-Model")
-    _fresh(monkeypatch, main, client=_FakeClient(fail=True), bundled=False, model_dirs=[tmp_path])
-    s = asyncio.run(main.setup_status())
-    assert s["models"]["installed"] == [] and s["models"]["use"] is None
-    assert s["models"]["source"] == "saved"
+    _fresh(monkeypatch, main, client=_FakeClient(fail=True), bundled=True, model_dirs=[tmp_path / "models"])
+    monkeypatch.setattr(main, "_DISK_SCAN_SECONDS", 0.2)
+    monkeypatch.setattr(main, "_models_on_disk", lambda: clock.sleep(1.0) or [GEMMA])
+    async def timed():
+        started = clock.monotonic()
+        status = await main.setup_status()
+        return status, clock.monotonic() - started
+    s, waited = asyncio.run(timed())
+    assert waited < 0.9
+    assert s["models"]["installed"] == []
 
 
 def test_built_in_engine_finds_a_copied_model_before_it_starts(monkeypatch, tmp_path):
     import service.main as main
     engine_models = tmp_path / "engine" / "models"
     _model(engine_models, "Jundot", GEMMA)
+    _model(tmp_path / "Desktop" / "OMLX_Model_Files", catalog.LING_Q6.id)   # never looked at
     _fresh(monkeypatch, main, client=_FakeClient(fail=True), bundled=True, model_dirs=[engine_models])
     s = asyncio.run(main.setup_status())
     assert s["omlx"]["bundled"] is True and s["models"]["use"] == GEMMA
@@ -189,7 +223,7 @@ def test_built_in_engine_finds_a_copied_model_before_it_starts(monkeypatch, tmp_
 
 def test_no_model_anywhere_still_offers_the_download(monkeypatch, tmp_path):
     import service.main as main
-    _fresh(monkeypatch, main, client=_FakeClient(fail=True), bundled=True, model_dirs=[tmp_path])
+    _fresh(monkeypatch, main, client=_FakeClient(fail=True), bundled=True, model_dirs=[tmp_path / "models"])
     s = asyncio.run(main.setup_status())
     assert s["models"]["download"]["model"] == GEMMA
 

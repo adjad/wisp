@@ -209,6 +209,11 @@ struct FirstRunSetupChecks {
             check(why.hasPrefix("Your oMLX app is running but doesn't have Gemma 4 E4B"),
                   "A running oMLX without Wisp's model is the stuck case, and says so")
         } else { check(false, "A running oMLX without the model goes to the detailed setup") }
+        // A model the person's oMLX serves that would replace a choice: one click, never automatic.
+        let offered = FirstRunBrain.offered(model: gemma, label: "Gemma 4 E4B")
+        check(offered.modelToUse == gemma && offered.footer(stalled: false) == .tryAgain
+              && !offered.isArriving && !offered.waitsForDownloadClick && offered.modelToFetch == nil,
+              "An offered model waits for its Use click and is never fetched")
         check(FirstRunBrain.from(status: status(), downloads: []) == .needsDownload(model: gemma, label: "Gemma 4 E4B", sizeGb: 5.5),
               "Nothing installed: offer the download")
         guard case .downloading(_, _, let fraction, let done, let total, let left) =

@@ -1,13 +1,16 @@
-"""Which of Wisp's catalogue models are already on disk where the engine loads models.
+"""Which of Wisp's catalogue models are already on disk in Wisp's own engine folder.
 
-When the engine isn't answering (oMLX.app's server is off, or Wisp's built-in engine
-has not started yet), setup can't ask it for its model list. A model folder already
-on disk is still installed: offering to download it again would waste gigabytes and,
-on a first run, hide the oMLX the person already has.
+Before the built-in engine has started, setup can't ask it for its model list. A
+model folder already in ~/.moe/engine/models is still installed: offering to
+download it again would waste gigabytes.
 
-Read-only and bounded. Only catalogue ids are looked for, using the same layout the
-engine scans (oMLX's two-level discovery): `<dir>/<model id>/` or
-`<dir>/<organisation>/<model id>/`, holding a config.json and complete weights.
+Only Wisp's own folder is looked at, never a folder the person chose (an oMLX.app
+model folder on the Desktop or in Documents would make macOS ask for permission,
+and Wisp never asks for one by itself). Read-only and bounded: a few roots, a fixed
+number of directory entries examined at each level, small index files only. Only
+catalogue ids are looked for, in the layout the engine scans (oMLX's two-level
+discovery): `<dir>/<model id>/` or `<dir>/<organisation>/<model id>/`, holding a
+config.json and complete weights.
 """
 from __future__ import annotations
 
@@ -18,14 +21,31 @@ from pathlib import Path
 
 from . import catalog
 
-# Organisation folders scanned per model directory. A model folder sits one or two
-# levels down; anything wider is not a model directory and is not walked.
-_MAX_ENTRIES = 512
+# Model directories looked at per call.
+MAX_ROOTS = 4
+# Directory entries examined (not just kept) in any one listing: a model directory,
+# an organisation folder, or a model's own folder. A wider folder is cut off there.
+MAX_ENTRIES = 512
+# A safetensors index is a few hundred KB at most; anything bigger is not read.
+MAX_INDEX_BYTES = 1024 * 1024
 _SHARD = re.compile(r"-(\d+)-of-(\d+)\.safetensors$")
 
 
 def catalogue_ids() -> tuple[str, ...]:
     return tuple(m.id for m in (*catalog.PRIMARY_MODELS, catalog.EMBEDDING_MODEL))
+
+
+def _entries(folder: Path) -> list[Path]:
+    """At most MAX_ENTRIES entries of `folder`, counting every entry examined."""
+    found: list[Path] = []
+    try:
+        for count, entry in enumerate(folder.iterdir()):
+            if count >= MAX_ENTRIES:
+                break
+            found.append(entry)
+    except OSError:
+        return []
+    return found
 
 
 def weights_complete(folder: Path) -> bool:
@@ -37,7 +57,7 @@ def weights_complete(folder: Path) -> bool:
     try:
         if not (folder / "config.json").is_file() or (folder / "adapter_config.json").exists():
             return False
-        weights = [p for p in folder.iterdir() if p.name.endswith(".safetensors") and p.is_file()]
+        weights = [p for p in _entries(folder) if p.name.endswith(".safetensors") and p.is_file()]
         if not weights or any(p.stat().st_size == 0 for p in weights):
             return False
     except OSError:
@@ -45,7 +65,11 @@ def weights_complete(folder: Path) -> bool:
     names = {p.name for p in weights}
     promised: set[str] = set()
     index = folder / "model.safetensors.index.json"
-    if index.is_file():
+    try:
+        readable = index.is_file() and index.stat().st_size <= MAX_INDEX_BYTES
+    except OSError:
+        readable = False
+    if readable:
         try:
             weight_map = json.loads(index.read_text()).get("weight_map")
         except (OSError, ValueError, AttributeError, RecursionError):
@@ -64,17 +88,8 @@ def weights_complete(folder: Path) -> bool:
     return promised <= names
 
 
-def _children(folder: Path) -> list[Path]:
-    try:
-        entries = []
-        for entry in folder.iterdir():
-            if len(entries) >= _MAX_ENTRIES:
-                break
-            if not entry.name.startswith(".") and entry.is_dir():
-                entries.append(entry)
-        return entries
-    except OSError:
-        return []
+def _folders(folder: Path) -> list[Path]:
+    return [e for e in _entries(folder) if not e.name.startswith(".") and e.is_dir()]
 
 
 def catalogue_models_on_disk(model_dirs: Iterable[Path | str],
@@ -82,18 +97,20 @@ def catalogue_models_on_disk(model_dirs: Iterable[Path | str],
     """Catalogue model ids whose complete folders are in `model_dirs`, sorted."""
     targets = set(wanted if wanted is not None else catalogue_ids())
     found: set[str] = set()
-    for raw in model_dirs:
+    for index, raw in enumerate(model_dirs):
+        if index >= MAX_ROOTS:
+            break
         root = Path(raw).expanduser()
         if not root.is_dir():
             continue
-        for entry in _children(root):
+        for entry in _folders(root):
             if entry.name in targets:
                 if weights_complete(entry):
                     found.add(entry.name)
                 continue
             if (entry / "config.json").exists():
                 continue  # a model itself, not an organisation folder
-            for child in _children(entry):
+            for child in _folders(entry):
                 if child.name in targets and weights_complete(child):
                     found.add(child.name)
     return sorted(found)

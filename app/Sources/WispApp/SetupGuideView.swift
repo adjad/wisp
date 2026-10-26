@@ -74,23 +74,33 @@ struct SetupStatus: Decodable {
     static func canAnswer(ready: Bool, remoteOnly: Bool) -> Bool { ready || remoteOnly }
 
     /// Wisp is set to use the oMLX app this Mac already has (a fresh install picks it
-    /// when oMLX.app is installed) and isn't ready yet. `nil`: not that case (the
-    /// built-in engine, no oMLX app, or a running oMLX without the configured model or
-    /// any of Wisp's models — that one needs the detailed setup).
+    /// when oMLX.app is installed), at least one role runs on it, and it isn't ready
+    /// yet. `nil`: not that case (the built-in engine, no oMLX app, every role on another
+    /// app, or a running oMLX without any of Wisp's models — the detailed setup).
     enum ExistingOmlx: Equatable {
         /// Its server hasn't answered yet: it is starting (Wisp's last quit stops it),
         /// or busy loading a model. A connection in progress, never a failure.
         case connecting
-        /// Running and serving `model` (one of Wisp's), which no role uses yet: switch to it.
+        /// Running and serving `model`, safe to switch to without asking: the model Wisp
+        /// recommends (or, with nothing to download, a tested one), every role is local
+        /// and none already names an installed model, so no choice is overwritten.
         case serving(model: String, label: String)
+        /// Running and serving `model`, but switching would replace a choice (or the
+        /// model isn't Wisp's recommended one): the person decides with one click.
+        case offering(model: String, label: String)
     }
 
     var existingOmlx: ExistingOmlx? {
-        guard omlx.bundled != true, omlx.installed, !ready else { return nil }
+        let local = roles.filter { $0.endpoint == "local" }
+        guard omlx.bundled != true, omlx.installed, !ready, !local.isEmpty else { return nil }
         guard omlx.running else { return .connecting }
         guard let model = models.use,
               let entry = models.installed.first(where: { $0.id == model }) else { return nil }
-        return .serving(model: model, label: entry.label)
+        let installed = Set(models.installed.map(\.id))
+        let wisps = model == models.recommended || (models.download == nil && entry.tested)
+        let nothingOverwritten = local.count == roles.count && !local.contains { installed.contains($0.model) }
+        return wisps && nothingOverwritten ? .serving(model: model, label: entry.label)
+                                           : .offering(model: model, label: entry.label)
     }
 }
 
@@ -436,15 +446,6 @@ final class SetupGuideModel: ObservableObject {
             Task { await startEngine() }
             return
         }
-        // The person's own oMLX app hasn't answered (Wisp's last quit stops its server):
-        // start it once, the same way. Start only — the service never restarts or
-        // reconfigures their app for a start nobody clicked.
-        if next.existingOmlx == .connecting, !autoStartedEngine,
-           next.checks.contains(where: { $0.id == "engine" && $0.action == "start_engine" }) {
-            autoStartedEngine = true
-            Task { await startEngine(automatic: true) }
-            return
-        }
         // A model was just installed and nothing points at one: use it. Only when
         // no local role already names an installed model, so a deliberate choice
         // is never overwritten.
@@ -539,6 +540,18 @@ final class SetupGuideModel: ObservableObject {
                 ? "Wisp's service isn't answering yet. Give it a few seconds, then choose Check again. (\(lastError.localizedDescription))"
                 : "Wisp couldn't refresh this list, so it is showing what it saw last. (\(lastError.localizedDescription))"
         }
+    }
+
+    /// First-run setup only (FirstRunSetupView drives it while setup is unfinished):
+    /// the person's own oMLX app hasn't answered (Wisp's last quit stops its server),
+    /// so start it once a session. A plain start — the service never restarts or
+    /// reconfigures their app for a start nobody clicked. Never when no role uses it.
+    func startExistingOmlxOnce() {
+        guard busy == nil, !autoStartedEngine, statusIsCurrent, let status,
+              status.existingOmlx == .connecting,
+              status.checks.contains(where: { $0.id == "engine" && $0.action == "start_engine" }) else { return }
+        autoStartedEngine = true
+        Task { await startEngine(automatic: true) }
     }
 
     /// `automatic`: Wisp started it by itself, so the person's own oMLX gets a plain
