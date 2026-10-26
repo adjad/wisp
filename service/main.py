@@ -456,6 +456,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Wisp", lifespan=lifespan)
 from service.config.quarantine import RecoveryMiddleware
 app.add_middleware(RecoveryMiddleware)
+from service.local_http import LocalOriginGuard
+app.add_middleware(LocalOriginGuard)    # web pages: loopback Host, same-origin changes only
 from service.memory.api import router as memory_router
 app.include_router(memory_router)
 from service.memory.profile_api import router as profile_router
