@@ -2164,7 +2164,8 @@ def brief_without_model() -> str:
 
 
 async def run_scheduled_brief(part_of_day: str, day: str | None = None,
-                              abort: Callable[[], bool] | None = None) -> bool | None:
+                              abort: Callable[[], bool] | None = None,
+                              revision: str | None = None) -> bool | None:
     """Scheduler entry: compose the brief and push it to the app as a
     'daily_brief' event carrying the full text plus two notification bodies —
     one for the schedule, one for messages.
@@ -2187,9 +2188,14 @@ async def run_scheduled_brief(part_of_day: str, day: str | None = None,
     Returns None, also publishing nothing, when `abort()` is true once the brief
     is composed: the user started a turn, and the brief's card and transcript
     entry must not land in the middle of it. That is a deferral, not a failure.
+
+    `revision` rebuilds a run that was already delivered (on the first launch
+    day only: a source the user granted afterwards, or Getting to know you just
+    finished). It publishes once under its own key and marks the event
+    `recomposed`, so the app can update the summary without announcing it again.
     """
     day = day or datetime.now().date().isoformat()
-    key = f"daily_brief:{day}:{part_of_day}"
+    key = f"daily_brief:{day}:{part_of_day}" + (f":{revision}" if revision else "")
     if assistant_store.event_by_key(key):
         return True
     sections = await _sections(part_of_day)
@@ -2204,12 +2210,15 @@ async def run_scheduled_brief(part_of_day: str, day: str | None = None,
         brief_latest.record(sections["FULL"], part_of_day, trace_id=diagnostics.current_id(), day=day)
     except Exception:  # noqa: BLE001 — keeping a copy never stops the brief
         traceback.print_exc()
-    await hub.publish({
+    event = {
         "trace_id": diagnostics.current_id(),
         "type": "daily_brief",
         "part_of_day": part_of_day,
         "text": sections["FULL"],
         "today_summary": sections.get("TODAY", ""),
         "messages_summary": sections.get("MESSAGES", ""),
-    }, dedupe_key=key, target={"type": "brief", "date": day, "part": part_of_day})
+    }
+    if revision:
+        event["recomposed"] = True
+    await hub.publish(event, dedupe_key=key, target={"type": "brief", "date": day, "part": part_of_day})
     return True
