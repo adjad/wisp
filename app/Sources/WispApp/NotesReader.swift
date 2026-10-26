@@ -118,12 +118,12 @@ final class NotesReader {
             if let raw = self.dbReader.readNotes() {
                 self.post(snapshotStartedAt: snapshotStartedAt, raw: raw)
             } else {
-                // Without Full Disk Access the store can't be opened; that is
-                // the usual reason, and the one with a setting to change.
+                // The reader says why, from the error: only macOS's privacy
+                // denial points at Full Disk Access.
+                let failure = self.dbReader.lastFailure
+                    ?? NotesDBReader.failure(openErrno: 0)
                 self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false,
-                          reason: "Wisp reads Notes while Notes is open. Open Notes, or give Wisp Full Disk Access "
-                              + "to read it when Notes is closed.",
-                          kind: "full_disk_access")
+                          reason: failure.reason, kind: failure.kind)
             }
             return
         }

@@ -188,6 +188,14 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         let granted = A.diagnostics(for: A.report(status: .authorized, requestOutstanding: false,
                                                   lastRequestAt: 1000, now: 1001), snapshotStartedAt: 5)
         check(granted["reason_kind"] == nil && granted["reason"] == nil, "authorized has neither")
+        // Re-asks after a finished, undecided request back off and stop; only
+        // the first ask brings Wisp forward.
+        check(A.reaskDue(requestsMade: 1, lastRequestAt: 0, now: A.reaskDelays[0]), "first re-ask")
+        check(!A.reaskDue(requestsMade: 2, lastRequestAt: 0, now: A.reaskDelays[0]), "second re-ask waits longer")
+        check(A.reaskDue(requestsMade: 3, lastRequestAt: 0, now: A.reaskDelays[2]), "third re-ask")
+        check(!A.reaskDue(requestsMade: 4, lastRequestAt: 0, now: 1e9), "no fourth re-ask this launch")
+        check(!A.reaskDue(requestsMade: 0, lastRequestAt: 0, now: 1e9), "nothing to re-ask before a first ask")
+        check(A.shouldActivate(requestsMade: 0) && !A.shouldActivate(requestsMade: 1), "only the first ask activates")
         check(A.report(status: .deniedOrRestricted, requestOutstanding: false, lastRequestAt: nil, now: 1)
               .reason == "Reminders access is turned off for Wisp. Turn it on in "
                 + "System Settings > Privacy & Security > Reminders.", "Reminders copy is unchanged")

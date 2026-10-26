@@ -25,6 +25,7 @@ final class CalendarReader {
     private typealias Access = RemindersWriter.Access
     private var accessRequestOutstanding = false
     private var lastAccessRequestAt: TimeInterval?
+    private var accessRequestsMade = 0
 
     // Sync now (which asks for access only while macOS has no answer), then
     // keep a repeating timer regardless of the result, so a permission granted
@@ -58,12 +59,16 @@ final class CalendarReader {
     /// Ask for access and remember that we did, so a request that finishes
     /// without a decision is reported as such instead of as an endless sync. A
     /// menu-bar app is not frontmost, and macOS can leave its prompt hidden
-    /// behind other windows, so Wisp is brought forward first. Main thread only.
+    /// behind other windows, so Wisp is brought forward for the first request
+    /// only (Access.shouldActivate). Main thread only.
     private func requestAccessTracked() {
         guard !accessRequestOutstanding else { return }
         accessRequestOutstanding = true
         lastAccessRequestAt = Date().timeIntervalSince1970
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        if Access.shouldActivate(requestsMade: accessRequestsMade) {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+        accessRequestsMade += 1
         requestAccess { [weak self] _ in
             DispatchQueue.main.async {
                 self?.accessRequestOutstanding = false
@@ -91,7 +96,7 @@ final class CalendarReader {
             let report = Access.report(status: Access.status(of: raw),
                                        requestOutstanding: accessRequestOutstanding,
                                        lastRequestAt: lastAccessRequestAt, now: snapshotStartedAt,
-                                       source: .calendar)
+                                       source: .calendar, requestsMade: accessRequestsMade)
             if report.needsRequest { requestAccessTracked() }
             var diagnostics = Access.diagnostics(for: report, snapshotStartedAt: snapshotStartedAt)
             diagnostics["status"] = raw.rawValue
@@ -112,14 +117,7 @@ final class CalendarReader {
         let pred = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         let events = store.events(matching: pred)
         // Declined and cancelled events are not on the person's day.
-        let kept = events.filter { ev in
-            CalendarEventPolicy.include(
-                cancelled: ev.status == .canceled,
-                attendees: (ev.attendees ?? []).map {
-                    CalendarEventPolicy.Attendee(isCurrentUser: $0.isCurrentUser,
-                                                 declined: $0.participantStatus == .declined)
-                })
-        }
+        let kept = events.filter(Self.keeps)
 
         let payload: [[String: Any]] = kept.compactMap { ev in
             guard let sd = ev.startDate else { return nil }
@@ -212,6 +210,9 @@ final class CalendarReader {
                         guard let id = ev.eventIdentifier, !id.isEmpty,
                               let first = ev.startDate, let last = ev.endDate else { return (nil,"invalid_record") }
                         guard first.timeIntervalSince1970 < end && last.timeIntervalSince1970 > start else { continue }
+                        // A declined or cancelled event didn't happen to the person;
+                        // learning from it would teach habits they don't have.
+                        guard Self.keeps(ev) else { continue }
                         guard let row = Self.historyEventRow(id: id, title: ev.title ?? "(untitled)",
                             start: first.timeIntervalSince1970, end: last.timeIntervalSince1970,
                             allDay: ev.isAllDay, calendar: ev.calendar?.title ?? "") else { return (nil,"invalid_record") }
@@ -227,6 +228,16 @@ final class CalendarReader {
                 await Task.yield()
             }
         }
+    }
+
+    /// CalendarEventPolicy.include for one EventKit event.
+    static func keeps(_ ev: EKEvent) -> Bool {
+        CalendarEventPolicy.include(
+            cancelled: ev.status == .canceled,
+            attendees: (ev.attendees ?? []).map {
+                CalendarEventPolicy.Attendee(isCurrentUser: $0.isCurrentUser,
+                                             declined: $0.participantStatus == .declined)
+            })
     }
 
     static func historyEventRow(id: String, title: String, start: Double, end: Double,
@@ -444,12 +455,19 @@ final class CalendarReader {
 ///   is not on their day. It is dropped, never announced or planned around.
 /// - IMPORTANT: kinds match whole words only. Matching inside words made
 ///   "Latest", "Contest", "Ashwin" and "Southwest" read as exams and
-///   assignments, and each one raised a deadline notification.
+///   assignments, and each one raised a deadline notification. The word
+///   lists themselves are the long-standing ones; only the matching changed.
 enum CalendarEventPolicy {
     /// Words that make an event an exam.
-    static let examWords: Set<String> = ["exam", "exams", "midterm", "midterms", "quiz", "quizzes"]
+    static let examWords: Set<String> = ["exam", "exams", "midterm", "midterms", "final", "finals",
+                                         "quiz", "quizzes", "test", "tests"]
     /// Words that make an event an assignment.
-    static let assignmentWords: Set<String> = ["assignment", "assignments", "homework", "hw", "due"]
+    static let assignmentWords: Set<String> = ["assignment", "assignments", "homework", "hw", "due",
+                                               "deadline", "deadlines", "project", "projects", "paper",
+                                               "papers", "essay", "essays", "submission", "submissions",
+                                               "lab", "labs", "pset", "psets"]
+    /// Two-word phrases that make an event an assignment.
+    static let assignmentPhrases: [(String, String)] = [("problem", "set"), ("problem", "sets")]
 
     /// "exam", "assignment" or "event". A word may carry a trailing number
     /// ("HW3", "Quiz2"), which still counts as that word.
@@ -463,6 +481,8 @@ enum CalendarEventPolicy {
             }
         if words.contains(where: examWords.contains) { return "exam" }
         if words.contains(where: assignmentWords.contains) { return "assignment" }
+        let pairs = zip(words, words.dropFirst())
+        if pairs.contains(where: { pair in assignmentPhrases.contains { $0 == pair } }) { return "assignment" }
         return "event"
     }
 

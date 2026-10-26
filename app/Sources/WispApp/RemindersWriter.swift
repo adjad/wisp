@@ -68,14 +68,31 @@ final class RemindersWriter {
 
         /// A prompt that has been outstanding this long is not "syncing".
         static let promptGrace: TimeInterval = 120
-        /// A finished request that left the status undecided is retried this often, no faster.
-        static let retryInterval: TimeInterval = 300
+        /// A finished request that left the status undecided is asked again at
+        /// most this many times per launch, after these growing waits. After
+        /// that the reason stays up and Wisp stops asking until it relaunches.
+        static let reaskDelays: [TimeInterval] = [300, 900, 2700]
+        /// The first re-ask's wait, no faster.
+        static var retryInterval: TimeInterval { reaskDelays[0] }
+
+        /// Only the first request this launch brings Wisp forward, so the
+        /// prompt isn't hidden behind other windows. A re-ask never takes focus
+        /// from whatever the person is doing.
+        static func shouldActivate(requestsMade: Int) -> Bool { requestsMade == 0 }
+
+        /// Whether the next re-ask is due: `requestsMade` counts finished and
+        /// outstanding requests this launch, the first one included.
+        static func reaskDue(requestsMade: Int, lastRequestAt: TimeInterval, now: TimeInterval) -> Bool {
+            let reasks = requestsMade - 1
+            guard reasks >= 0, reasks < reaskDelays.count else { return false }
+            return now - lastRequestAt >= reaskDelays[reasks]
+        }
 
         static let settingsPath = Source.reminders.settingsPath
 
         static func report(status: Status, requestOutstanding: Bool,
                            lastRequestAt: TimeInterval?, now: TimeInterval,
-                           source: Source = .reminders) -> Report {
+                           source: Source = .reminders, requestsMade: Int = 1) -> Report {
             let name = source.name, path = source.settingsPath
             func blocked(_ reason: String, needsRequest: Bool = false) -> Report {
                 Report(authorized: false, syncing: false, needsRequest: needsRequest,
@@ -99,7 +116,7 @@ final class RemindersWriter {
                 }
                 return blocked("macOS hasn't recorded an answer about \(name) for Wisp. "
                                + "Allow it in \(path); if Wisp isn't listed there, quit and reopen Wisp.",
-                               needsRequest: now - last >= retryInterval)
+                               needsRequest: reaskDue(requestsMade: requestsMade, lastRequestAt: last, now: now))
             }
         }
 
@@ -131,6 +148,7 @@ final class RemindersWriter {
     // Main-thread state for the permission request (see Access).
     private var accessRequestOutstanding = false
     private var lastAccessRequestAt: TimeInterval?
+    private var accessRequestsMade = 0
 
     private var snapshotState = SnapshotState()
     private var consecutiveTransientReports = 0
@@ -505,12 +523,16 @@ final class RemindersWriter {
     /// Ask for access and remember that we did, so a request that finishes without
     /// a decision is reported as such instead of as an endless sync. A menu-bar app
     /// is not frontmost, and macOS can leave its prompt hidden behind other
-    /// windows, so it is brought forward first. Main thread only.
+    /// windows, so it is brought forward for the first request only
+    /// (Access.shouldActivate); re-asks never take focus. Main thread only.
     private func requestAccessTracked() {
         guard !accessRequestOutstanding else { return }
         accessRequestOutstanding = true
         lastAccessRequestAt = Date().timeIntervalSince1970
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        if Access.shouldActivate(requestsMade: accessRequestsMade) {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+        accessRequestsMade += 1
         requestAccess { [weak self] _ in
             DispatchQueue.main.async {
                 self?.accessRequestOutstanding = false
@@ -562,7 +584,8 @@ final class RemindersWriter {
             let report = Access.report(
                 status: Access.status(of: EKEventStore.authorizationStatus(for: .reminder)),
                 requestOutstanding: accessRequestOutstanding,
-                lastRequestAt: lastAccessRequestAt, now: snapshotStartedAt)
+                lastRequestAt: lastAccessRequestAt, now: snapshotStartedAt,
+                requestsMade: accessRequestsMade)
             if report.needsRequest { requestAccessTracked() }
             post(reminders: [], diagnostics: Access.diagnostics(for: report, snapshotStartedAt: snapshotStartedAt),
                  startedAt: snapshotStartedAt, authoritative: false)

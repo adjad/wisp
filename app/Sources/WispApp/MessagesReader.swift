@@ -656,24 +656,32 @@ enum TypedStreamText {
 /// on a cold launch or a backend restart.
 ///
 /// Rules:
-/// - IMPORTANT: only "nothing is listening" failures are retried. An HTTP error
-///   or a cancelled request is an answer from the backend, not its absence.
+/// - IMPORTANT: only "nothing is listening" failures are retried (connection
+///   refused or lost, no route). An HTTP error, a cancelled request or a
+///   timeout means something answered, so it is not the backend's absence.
 /// - The retry re-reads the source. It never re-sends an old snapshot, which a
 ///   newer read may already have replaced.
 /// - One retry is pending at a time. The delays grow 3, 8, 20, then 60 seconds,
 ///   about five minutes in all; after that the reader's own timer takes over.
-///   Any completed request starts the schedule over.
+///   The next completed request (any HTTP status) starts the schedule over, so
+///   a later backend restart gets the full schedule again.
 /// MailReader keeps its own copy of this schedule, so its spliced flow checks
 /// compile without this file.
 final class NativeBackendRetry {
     static let delays: [TimeInterval] = [3, 8, 20, 60, 60, 60, 60]
+    private let delays: [TimeInterval]
     private let lock = NSLock()
     private var attempt = 0
     private var pending = false
 
+    /// `delays` is the production schedule; checks pass a short one.
+    init(delays: [TimeInterval] = NativeBackendRetry.delays) { self.delays = delays }
+
     static func isBackendUnreachable(_ error: Error?) -> Bool {
         guard let error = error as? URLError else { return false }
-        return [.cannotConnectToHost, .networkConnectionLost, .timedOut,
+        // A timeout is not on the list: something accepted the connection
+        // and was slow, which a re-read can't help and could pile onto.
+        return [.cannotConnectToHost, .networkConnectionLost,
                 .cannotFindHost, .notConnectedToInternet, .dnsLookupFailed].contains(error.code)
     }
 
@@ -692,10 +700,10 @@ final class NativeBackendRetry {
     /// The delay before the next retry, marking it pending, or nil.
     func nextDelay() -> TimeInterval? {
         lock.lock(); defer { lock.unlock() }
-        guard !pending, attempt < Self.delays.count else { return nil }
+        guard !pending, attempt < delays.count else { return nil }
         pending = true
         attempt += 1
-        return Self.delays[attempt - 1]
+        return delays[attempt - 1]
     }
 
     /// The pending retry is running now.
