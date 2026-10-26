@@ -49,6 +49,7 @@ final class FakeDB {
     let which: String
     init(_ which: String) { self.which = which }
     func readHeadersAndHistory() -> (String, String)? { which == "closed_failed_index" ? nil : ("", "") }
+    func closedReadFailure() -> (kind: String, reason: String) { ("full_disk_access", "synthetic closed-read reason") }
 }
 final class Reader {
     let which: String
@@ -144,6 +145,22 @@ final class Reader {
                 let payload = legacy["body"] as! [String: Any]
                 let diagnostic = payload["diagnostics"] as! [String: Any]
                 precondition(diagnostic["available"] as! Bool == (which == "closed_before_identity"))
+            }
+            // Why Mail can't be read travels as reason_kind, the key the Brief's
+            // button uses; a transient failure carries a reason and no kind.
+            let diagnostics = session.requests.compactMap {
+                ($0["body"] as? [String: Any])?["diagnostics"] as? [String: Any] }
+            let kinds = diagnostics.compactMap { $0["reason_kind"] as? String }
+            switch which {
+            case "closed_failed_index": precondition(kinds == ["full_disk_access"])
+            case "failed":
+                precondition(kinds == ["mail_automation"] && diagnostics.last?["available"] as? Bool == false)
+            case "empty", "closed_empty":
+                precondition(kinds == ["mail_not_configured"] && diagnostics.last?["available"] as? Bool == true)
+            case "closed_during_header":
+                precondition(kinds.isEmpty && diagnostics.last?["available"] as? Bool == false)
+            case "success", "partial", "closed_index": precondition(kinds.isEmpty)
+            default: break
             }
             results.append(["case": which, "requests": session.requests, "events": reader.events])
         }
