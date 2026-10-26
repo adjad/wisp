@@ -54,6 +54,15 @@ enum FirstRunSetup {
     /// unfinished, so it comes back instead of being silently given up.
     static func closeFinishes(finished: Bool, ready: Bool) -> Bool { finished || ready }
 
+    /// The notch's setup cue after one /setup/status answer, on every launch: while
+    /// Wisp can't answer and no first-run window is up, the quiet cue (the `!` and
+    /// a one-line row on Ask), never the full card; it goes once Wisp can answer.
+    /// An open card is left to the person (it waits for Done or Later).
+    static func setupCue(_ current: NotchSetupCard, canAnswer: Bool, firstRunWindowUp: Bool) -> NotchSetupCard {
+        if canAnswer { return current.afterReadiness(true) }
+        return !firstRunWindowUp && current == .hidden ? .later : current
+    }
+
     /// The old first launch asked for Calendar, Reminders and Notifications as soon
     /// as the notch appeared, showed a tip before Wisp could answer, and opened the
     /// setup card. This window does all three, in order, so mark them as handled.

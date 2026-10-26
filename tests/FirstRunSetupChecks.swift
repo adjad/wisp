@@ -69,6 +69,14 @@ struct FirstRunSetupChecks {
         check(FirstRunSetup.closeFinishes(finished: true, ready: false), "Start using Wisp finishes it")
         check(FirstRunSetup.closeFinishes(finished: false, ready: true), "Closing once Wisp can answer finishes it")
 
+        // Every launch: Wisp can't answer and no window is up → the quiet cue, never the full card.
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false) == .later, "Not set up: the ! cue")
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: true) == .hidden, "Not over the first-run window")
+        check(FirstRunSetup.setupCue(.open, canAnswer: false, firstRunWindowUp: false) == .open, "An open card is left alone")
+        check(FirstRunSetup.setupCue(.later, canAnswer: true, firstRunWindowUp: false) == .hidden, "Ready: the cue goes")
+        check(FirstRunSetup.setupCue(.open, canAnswer: true, firstRunWindowUp: false) == .open, "Ready: an open card waits for Done")
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: true, firstRunWindowUp: false) == .hidden, "Ready: nothing to show")
+
         // While the window is up it is the only thing that asks macOS for access.
         let readers = FirstRunReaderGate.Reader.allCases
         let waiting = FirstRunReaderGate(windowUp: true) { _ in false }

@@ -308,6 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
+        watchSetupReadiness()
         // Wisp starts in the notch. The Wisp window opens only when asked for:
         // the Dock icon, the menu bar, or a hand-off from the notch.
         if firstRun { openFirstRunSetup() } else { showNotchTipOnce() }
@@ -397,30 +398,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         offerKnowYouWhenReady()
     }
 
-    private var readyWatch: Task<Void, Never>?
+    private var setupWatch: Task<Void, Never>?
+    private var notifyOnReady = false
 
     /// After the first-run window closes before Wisp can answer, say so once it
     /// can: the model download is the long wait, and nobody should have to keep
-    /// checking. Gives up after about three hours; the setup card stays the way in.
+    /// checking. The setup cue stays the way in until then.
     private func notifyWhenReady() {
-        guard readyWatch == nil else { return }
-        readyWatch = Task { @MainActor [weak self] in
+        notifyOnReady = true
+        watchSetupReadiness()
+    }
+
+    /// From launch until Wisp can answer, on every launch: while it can't and no
+    /// first-run window is up, the notch carries the quiet setup cue
+    /// (FirstRunSetup.setupCue), so leaving setup aside, an early close or a quit
+    /// never leaves Wisp silent on a later launch. Once it can, the cue goes, and
+    /// "Wisp is ready" follows if it was promised.
+    private func watchSetupReadiness() {
+        guard setupWatch == nil else { return }
+        let started = Date()
+        setupWatch = Task { @MainActor [weak self] in
             var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
             request.timeoutInterval = 10
-            for _ in 0..<2160 {
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            var answered = false
+            while !Task.isCancelled {
+                // Quick until the service first answers (a cold first launch takes
+                // minutes); then every 5 s while a notification is promised, else
+                // every 30 s, easing to 5 minutes after an hour.
+                let seconds: UInt64 = !answered ? 2 : self?.notifyOnReady == true ? 5
+                    : Date().timeIntervalSince(started) < 3600 ? 30 : 300
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
                 guard let self else { return }
                 guard let (data, _) = try? await URLSession.shared.data(for: request),
                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      object["ready"] as? Bool == true else { continue }
-                if self.firstRunWindow?.isVisible != true {
+                      let ready = object["ready"] as? Bool else { continue }
+                answered = true
+                let canAnswer = ready || object["remote_only"] as? Bool == true
+                let cue = FirstRunSetup.setupCue(self.model.setupCard, canAnswer: canAnswer,
+                                                 firstRunWindowUp: self.firstRunWindow != nil)
+                if cue != self.model.setupCard { self.model.setupCard = cue }
+                guard canAnswer else { continue }
+                if self.notifyOnReady, self.firstRunWindow == nil {
                     Notifications.post(id: Notifications.readyId, title: "Wisp is ready",
                                        body: "Press ⌥ Space and ask about your day.")
                 }
-                self.readyWatch = nil
+                self.notifyOnReady = false
+                self.setupWatch = nil
                 return
             }
-            self?.readyWatch = nil
         }
     }
 
