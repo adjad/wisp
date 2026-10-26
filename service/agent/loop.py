@@ -1803,14 +1803,29 @@ async def run_agent(
             from service.safety.policy import (
                 OPAQUE_ACTION_CATEGORIES, opaque_outbound_decision)
             if model_led_discovery:
-                return opaque_outbound_decision(
+                dec = opaque_outbound_decision(
                     tool.name, tool.category, args, dec,
                     reason="opaque outbound action chosen by the model: "
                            "confirmation is always required in model-led routing")
-            return opaque_outbound_decision(
-                tool.name, tool.category, args, dec, categories=OPAQUE_ACTION_CATEGORIES,
-                reason="this turn read a file, page or message Wisp did not write, so "
-                       "this action is confirmed even with full access")
+            else:
+                dec = opaque_outbound_decision(
+                    tool.name, tool.category, args, dec, categories=OPAQUE_ACTION_CATEGORIES,
+                    reason="this turn read a file, page or message Wisp did not write, so "
+                           "this action is confirmed even with full access")
+                if dec.tier is Tier.ALLOW and (target := _egress_target(tool, args)) is not None:
+                    # A fetch, or a link or page handed to an app, can carry what
+                    # was just read to any host: show where it goes.
+                    from service.safety.policy import Decision
+                    return Decision(Tier.CONFIRM, "this turn read a file, page or message Wisp "
+                                    f"did not write, and this would contact {target[:300]}. "
+                                    "Confirm the exact destination.")
+        if (dec.tier is Tier.CONFIRM and tool.category == "shell"
+                and untrusted_read_in_turn[0]):
+            # After an untrusted read, a script file the card cannot show whole
+            # (missing, unreadable, binary or too long) is refused.
+            from service.safety.policy import script_file_problem
+            if (problem := script_file_problem(args)) is not None:
+                return problem
         return dec
 
     # Set once a tool runs whose result carries outside text (a file, page, mail...).
@@ -1889,9 +1904,8 @@ async def run_agent(
                         and (private_at_start or private_read_in_turn))
         try:
             _exec_state["ran"] = True
-            from service.safety.policy import UNTRUSTED_CONTENT_CATEGORIES, shell_prints_file_content
-            if (tool.category in UNTRUSTED_CONTENT_CATEGORIES
-                    or (tool.category == "shell" and shell_prints_file_content(args))):
+            from service.safety.policy import turn_reads_untrusted
+            if turn_reads_untrusted(tool.name, tool.category, args):
                 untrusted_read_in_turn[0] = True
             from service.research.web import strict_host_fetch
             with strict_host_fetch(strict_fetch):
