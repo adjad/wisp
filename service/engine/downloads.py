@@ -85,7 +85,7 @@ async def _ensure_engine() -> None:
         async with asyncio.timeout(150):
             await ensure_omlx()
     except Exception:
-        raise DownloadError("The built-in engine could not start. Choose Start engine to try again.") from None
+        raise DownloadError("Wisp's built-in engine didn't start. Try again in a moment.") from None
 
 
 @asynccontextmanager

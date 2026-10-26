@@ -153,7 +153,11 @@ enum FirstRunBrain: Equatable {
     case needsDownload(model: String, label: String, sizeGb: Double?)
     case downloading(model: String, label: String, fraction: Double, doneGb: Double, totalGb: Double, secondsLeft: Int?)
     case failed(model: String, label: String, message: String)
-    case finishing(model: String, label: String)
+    /// The download finished but the engine doesn't list the model yet: wait,
+    /// never apply. Lasting long means its files are missing (Download again).
+    case waitingForEngine(model: String, label: String)
+    /// Installed and not in use yet: switch Wisp over to it.
+    case switching(model: String, label: String)
     case ready(label: String)
 
     var isReady: Bool { if case .ready = self { return true } else { return false } }
@@ -169,15 +173,30 @@ enum FirstRunBrain: Equatable {
     /// The model a Download or Retry click fetches.
     var modelToFetch: String? {
         switch self {
-        case .needsDownload(let model, _, _), .failed(let model, _, _): return model
+        case .needsDownload(let model, _, _), .failed(let model, _, _), .waitingForEngine(let model, _): return model
         default: return nil
+        }
+    }
+
+    /// The state without its numbers: a download's progress is not a new stage.
+    var stage: Int {
+        switch self {
+        case .checking: return 0
+        case .unavailable: return 1
+        case .startingEngine: return 2
+        case .needsDownload: return 3
+        case .downloading: return 4
+        case .failed: return 5
+        case .waitingForEngine: return 6
+        case .switching: return 7
+        case .ready: return 8
         }
     }
 
     /// The model is on its way with nothing more to click, so the person can move on.
     var isArriving: Bool {
         switch self {
-        case .downloading, .finishing: return true
+        case .downloading, .waitingForEngine, .switching: return true
         default: return false
         }
     }
@@ -194,14 +213,17 @@ enum FirstRunBrain: Equatable {
         case detailedSetup
     }
 
-    /// `engineStartFailed`: a start was tried and nothing is running now.
-    func footer(engineStartFailed: Bool) -> Footer {
+    /// `stalled`: the step Wisp takes by itself here stopped and needs a click (the
+    /// engine didn't start, switching to the model failed, or a finished download
+    /// never showed up in the engine).
+    func footer(stalled: Bool) -> Footer {
         switch self {
         case .ready: return .ready
         case .checking: return .working("Starting Wisp…")
-        case .startingEngine: return engineStartFailed ? .tryAgain : .working("Starting the engine…")
+        case .startingEngine: return stalled ? .tryAgain : .working("Starting the engine…")
         case .downloading(_, _, let fraction, _, _, _): return .working("Downloading · \(Int(fraction * 100))%")
-        case .finishing: return .working("Finishing setup…")
+        case .switching: return stalled ? .tryAgain : .working("Finishing setup…")
+        case .waitingForEngine: return stalled ? .retry : .working("Finishing setup…")
         case .needsDownload: return .download
         case .failed: return .retry
         case .unavailable: return .detailedSetup
@@ -227,7 +249,7 @@ enum FirstRunBrain: Equatable {
         let model = status.models.download?.model ?? status.models.recommended
         let label = status.models.download?.label ?? status.models.recommendedLabel ?? model
         if status.models.installed.contains(where: { $0.id == model }) {
-            return .finishing(model: model, label: label)
+            return .switching(model: model, label: label)
         }
         if let task = downloads.first(where: { $0.model == model }) {
             switch task.state {
@@ -239,7 +261,7 @@ enum FirstRunBrain: Equatable {
                 return .downloading(model: model, label: label, fraction: fraction,
                                     doneGb: task.downloadedBytes / 1e9, totalGb: total / 1e9, secondsLeft: left)
             case "completed":
-                return .finishing(model: model, label: label)
+                return .waitingForEngine(model: model, label: label)
             default:
                 return .failed(model: model, label: label,
                                message: task.message ?? "The download stopped. Choose Retry to pick up where it left off.")
@@ -439,8 +461,9 @@ struct FirstRunSetupView: View {
     @StateObject private var permissions = FirstRunPermissions()
     @ObservedObject private var display = DisplayGeometry.shared
     @State private var step: Step
-    @State private var engineStartTried = false
     @State private var appliedModel: String?
+    /// A finished download the engine still hadn't listed after 30 s.
+    @State private var stuckDownload: String?
     var openDetailedSetup: () -> Void
     var finish: (_ tellAboutYou: Bool) -> Void
     /// Every permission read, so the readers waiting on a row can start.
@@ -486,6 +509,14 @@ struct FirstRunSetupView: View {
         .foregroundStyle(Theme.textPrimary)
         .preferredColorScheme(.dark)
         .onChange(of: brain) { _, next in drive(next) }
+        // An error belongs to the stage it happened in: a red line from a failed
+        // start or download must not sit under the next one.
+        .onChange(of: brain.stage) { _, _ in
+            if setup.busy == nil, setup.messageIsError {
+                setup.message = nil
+                setup.messageIsError = false
+            }
+        }
         .onAppear {
             drive(brain)
             // One read up front, so access answered before a quit lets its readers start.
@@ -500,16 +531,18 @@ struct FirstRunSetupView: View {
         .onDisappear { permissions.stop() }
     }
 
-    /// The parts of step 1 that need no click: start the engine once, and switch
-    /// the model on as soon as it has arrived.
+    /// The parts of step 1 that need no click: switch the model on as soon as it
+    /// has arrived, and notice a finished download the engine never lists. Starting
+    /// the engine is SetupGuideModel's own (autoAdvanceFirstSetup), once a session.
     private func drive(_ state: FirstRunBrain) {
         switch state {
-        case .startingEngine where !engineStartTried && setup.busy == nil:
-            engineStartTried = true
-            Task { await setup.startEngine() }
-        case .finishing(let model, _) where appliedModel != model && setup.busy == nil:
+        case .switching(let model, _) where appliedModel != model && setup.busy == nil:
             appliedModel = model
             Task { await setup.apply(model) }
+        case .waitingForEngine(let model, _):
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+                if case .waitingForEngine(let current, _) = brain, current == model { stuckDownload = model }
+            }
         default:
             break
         }
@@ -561,7 +594,7 @@ struct FirstRunSetupView: View {
     private var compactProgress: String? {
         switch brain {
         case .downloading(_, _, let fraction, _, _, _): return "Downloading · \(Int(fraction * 100))%"
-        case .finishing: return "Finishing setup…"
+        case .waitingForEngine, .switching: return "Finishing setup…"
         case .ready: return "Model ready"
         case .failed: return "Download stopped"
         default: return nil
@@ -612,15 +645,21 @@ struct FirstRunSetupView: View {
         .padding(.horizontal, 22).padding(.vertical, 12)
     }
 
-    /// A start was tried and nothing is under way now, Wisp's own automatic start included.
-    private var engineStartFailed: Bool {
-        setup.busy == nil && (engineStartTried || setup.messageIsError)
+    /// Wisp's own step for this state stopped and needs the person's click.
+    private var stalled: Bool {
+        guard setup.busy == nil else { return false }
+        switch brain {
+        case .startingEngine: return setup.autoStartedEngine || setup.messageIsError
+        case .switching(let model, _): return appliedModel == model && setup.messageIsError
+        case .waitingForEngine(let model, _): return stuckDownload == model
+        default: return false
+        }
     }
 
     /// The model, on the last step: a spinner only while it is really on its way,
     /// otherwise the one click that gets it going, so the step never waits on nothing.
     @ViewBuilder private var tourModelStatus: some View {
-        switch brain.footer(engineStartFailed: engineStartFailed) {
+        switch brain.footer(stalled: stalled) {
         case .ready:
             Circle().fill(Theme.orb).frame(width: 9, height: 9)
             Text("Model ready").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
@@ -630,11 +669,17 @@ struct FirstRunSetupView: View {
         case .download:
             fetchButton("Download the model")
         case .retry:
-            fetchButton("Retry download")
+            if case .waitingForEngine = brain { fetchButton("Download again") } else { fetchButton("Retry download") }
         case .tryAgain:
-            Button("Start the engine") { Task { await setup.startEngine() } }
-                .buttonStyle(FirstRunButtonStyle())
-                .disabled(setup.busy != nil)
+            if case .switching(let model, _) = brain {
+                Button("Switch to the model") { Task { await setup.apply(model) } }
+                    .buttonStyle(FirstRunButtonStyle())
+                    .disabled(setup.busy != nil)
+            } else {
+                Button("Start the engine") { Task { await setup.startEngine() } }
+                    .buttonStyle(FirstRunButtonStyle())
+                    .disabled(setup.busy != nil)
+            }
         case .detailedSetup:
             Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
         }
@@ -684,7 +729,7 @@ struct FirstRunSetupView: View {
             }
         case .startingEngine:
             card(icon: "bolt", title: "Starting Wisp's engine…", detail: "It's built into Wisp, so there's nothing else to install.") {
-                if engineStartFailed {
+                if stalled {
                     Button("Try again") { Task { await setup.startEngine() } }.buttonStyle(FirstRunButtonStyle())
                 } else {
                     ProgressView().controlSize(.small)
@@ -725,9 +770,33 @@ struct FirstRunSetupView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(setup.busy != nil)
             }
-        case .finishing(_, let label):
-            card(icon: "checkmark.circle", title: label, detail: "Downloaded. Switching Wisp over to it…") {
-                ProgressView().controlSize(.small)
+        case .waitingForEngine(let model, let label):
+            if stuckDownload == model {
+                card(icon: "exclamationmark.triangle", title: label,
+                     detail: "Downloaded, but Wisp's engine can't find its files. Download it again to fix that.") {
+                    Button("Download again") { Task { await setup.download(model) } }
+                        .buttonStyle(FirstRunButtonStyle(primary: true))
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(setup.busy != nil)
+                }
+            } else {
+                card(icon: "checkmark.circle", title: label, detail: "Downloaded. Waiting for Wisp's engine to load it…") {
+                    ProgressView().controlSize(.small)
+                }
+            }
+        case .switching(let model, let label):
+            if stalled {
+                card(icon: "exclamationmark.triangle", title: label,
+                     detail: "Downloaded, but Wisp couldn't switch over to it.") {
+                    Button("Try again") { Task { await setup.apply(model) } }
+                        .buttonStyle(FirstRunButtonStyle(primary: true))
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(setup.busy != nil)
+                }
+            } else {
+                card(icon: "checkmark.circle", title: label, detail: "Downloaded. Switching Wisp over to it…") {
+                    ProgressView().controlSize(.small)
+                }
             }
         case .ready(let label):
             card(icon: "checkmark.circle.fill", title: "\(label) is ready", detail: "Wisp can answer now.") {
@@ -815,7 +884,7 @@ struct FirstRunSetupView: View {
         VStack(alignment: .leading, spacing: 0) {
             heading("Wisp lives at the top of your screen", "No window to find. It's always one gesture away.")
             tourPicture.padding(.bottom, 14)
-            if case .working = brain.footer(engineStartFailed: engineStartFailed) {
+            if case .working = brain.footer(stalled: stalled) {
                 Text("You can start now. Wisp lets you know when its model is ready.")
                     .font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.bottom, 10)
             }

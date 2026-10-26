@@ -133,9 +133,9 @@ struct FirstRunSetupChecks {
         check(left == 300, "3 GB at 10 MB/s is five minutes")
         if case .failed = FirstRunBrain.from(status: status(), downloads: [task("failed")]) {} else { check(false, "Failed") }
         if case .failed = FirstRunBrain.from(status: status(), downloads: [task("cancelled")]) {} else { check(false, "Cancelled") }
-        check(FirstRunBrain.from(status: status(), downloads: [task("completed")]) == .finishing(model: gemma, label: "Gemma 4 E4B"),
-              "Completed but not listed yet")
-        check(FirstRunBrain.from(status: status(installed: [gemma]), downloads: []) == .finishing(model: gemma, label: "Gemma 4 E4B"),
+        check(FirstRunBrain.from(status: status(), downloads: [task("completed")]) == .waitingForEngine(model: gemma, label: "Gemma 4 E4B"),
+              "Completed but not listed yet: wait for the engine, never apply")
+        check(FirstRunBrain.from(status: status(installed: [gemma]), downloads: []) == .switching(model: gemma, label: "Gemma 4 E4B"),
               "Installed but not in use: switch it on")
         check(FirstRunBrain.from(status: status(ready: true, installed: [gemma], roles: gemma), downloads: []) == .ready(label: "Gemma 4 E4B"),
               "Ready names the model in use")
@@ -152,7 +152,7 @@ struct FirstRunSetupChecks {
         // The last step's footer never spins on nothing: each state either shows
         // something under way or offers the click that gets it going.
         func footer(_ s: SetupStatus?, _ tasks: [SetupGuideModel.DownloadTask] = [], failed: Bool = false) -> FirstRunBrain.Footer {
-            FirstRunBrain.from(status: s, downloads: tasks).footer(engineStartFailed: failed)
+            FirstRunBrain.from(status: s, downloads: tasks).footer(stalled: failed)
         }
         check(footer(nil) == .working("Starting Wisp…"), "Service still starting")
         check(footer(status(running: false)) == .working("Starting the engine…"), "Engine starting")
@@ -162,6 +162,13 @@ struct FirstRunSetupChecks {
         check(footer(status(available: false)) == .detailedSetup, "Can't run here: the detailed setup")
         check(footer(status(), [task("downloading")]) == .working("Downloading · 45%"), "Downloading shows progress")
         check(footer(status(), [task("completed")]) == .working("Finishing setup…"), "Finishing")
+        check(footer(status(), [task("completed")], failed: true) == .retry, "Never listed by the engine: Download again")
+        check(footer(status(installed: [gemma])) == .working("Finishing setup…")
+              && footer(status(installed: [gemma]), failed: true) == .tryAgain, "Switching over failed: Try again")
+        check(FirstRunBrain.from(status: status(), downloads: [task("completed")]).modelToFetch == gemma, "Download again fetches it")
+        let progress = [task("downloading", done: 1e9), task("downloading", done: 2e9)]
+            .map { FirstRunBrain.from(status: status(), downloads: [$0]) }
+        check(progress[0] != progress[1] && progress[0].stage == progress[1].stage, "Progress is not a new stage")
         check(footer(status(ready: true)) == .ready, "Ready")
         check(FirstRunBrain.from(status: status(), downloads: [task("downloading")]).isArriving
               && FirstRunBrain.from(status: status(), downloads: [task("completed")]).isArriving
