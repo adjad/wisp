@@ -1,43 +1,153 @@
-# Wisp — a private, local-first assistant for macOS
+# Wisp: a private, local-first assistant for macOS
 
-A privacy-first AI assistant with local and explicitly configured remote inference.
-A Swift menu-bar app talks to a bundled Python (FastAPI) agent service. The default
-path uses **oMLX** on the same Mac; optional OpenAI-compatible providers can handle
-selected generation roles. Other local apps (Ollama, LM Studio, llama.cpp, MTPLX) can also
-run the tool loop once they pass Wisp's tool-calling test; Wisp's native tools, private
-stores, embeddings, and reranking stay on Wisp's own managed components.
+Wisp lives at the top of your screen, in the notch. Ask it things, get a daily Brief of what
+needs you, and see your day hour by hour. The AI model runs on your Mac, and your mail, calendar
+and messages stay there.
 
-The app targets Apple silicon running macOS 14 or newer. Its bundled oMLX engine
-requires macOS 26.2 or newer; older systems need a separately compatible engine or
-an explicitly configured [remote-only server](docs/REMOTE_INFERENCE.md).
+A Swift menu-bar app talks to a bundled Python (FastAPI) agent service and a private copy of the
+oMLX model engine. This is the **0.5.0 release candidate** for testers; see
+[docs/releases/0.5.0-rc1.md](docs/releases/0.5.0-rc1.md) for what is new and what is still rough.
 
-## Status
+## Install Wisp (read this first)
 
-Wisp runs as a menu-bar app that launches its own bundled backend and ships as a
-sealed, ad-hoc-signed ZIP from [GitHub Releases](https://github.com/adjad/wisp/releases).
-It routes across a primary generation model, a small embedding model, and an optional
-reranker; drives the Mac through a broad tool-calling agent loop; reads
-Mail/Messages/Notes/Calendar; remembers things; answers questions about the current
-screen; and runs multi-source cited web research.
+**macOS will block Wisp the first time you open it.** The app is not notarized by Apple yet, so
+on macOS 15 (Sequoia) and later you have to allow it once by hand:
 
-Common multi-step requests — reminders, replies, scheduled sends — no longer rely
-on free-form tool selection at all: a **typed task engine** compiles them into a
-plan that application code resolves and executes.
+1. Download the ZIP from [GitHub Releases](https://github.com/adjad/wisp/releases), double-click
+   it to unzip, and drag **Wisp.app** into your **Applications** folder.
+2. Open Wisp. macOS says it can't verify the app. Click **Done** (do not move it to the Bin).
+3. Open **System Settings**, choose **Privacy & Security** in the sidebar, and scroll all the way
+   down to the **Security** section.
+4. Next to the message about "Wisp" being blocked, click **Open Anyway**.
+5. Enter your Mac password or use Touch ID, then click **Open Anyway** once more in the dialog.
+
+You only do this once. On macOS 14 and earlier, Control-click **Wisp.app**, choose **Open**, and
+confirm. If macOS still refuses, open Terminal and run
+`xattr -dr com.apple.quarantine /Applications/Wisp.app`, then open Wisp again.
+
+If you are updating from an earlier build, quit the old Wisp first (menu-bar icon, **Quit Wisp**).
+macOS can ask you to allow permissions again after an update. If Full Disk Access stops working,
+remove Wisp from the list with the **−** button and add it again.
+
+### What you need
+
+| | |
+| --- | --- |
+| Mac | Apple silicon (M1 or later). Intel Macs are not supported. |
+| macOS | **26.2 or newer** for the AI engine built into Wisp. The app itself opens on macOS 14 and newer, but on an older Mac it needs another engine (see [Using another local inference app](#using-another-local-inference-app)). |
+| Memory | **16 GB is the minimum and 24 GB is recommended.** Wisp's model keeps several GB in memory while it answers, so close other heavy apps on a 16 GB Mac. |
+| Disk | About 8 GB free for the first download. |
+| Internet | For the first-run model download, and for web questions and Google. |
+
+### First run
+
+The first time Wisp opens it shows a short setup window. It never blocks you: every step can be
+skipped and finished later from the menu-bar icon (**Finish Setup...**).
+
+1. **Welcome and download.** Wisp picks the AI model for your Mac, **Gemma 4 E4B**, and downloads
+   it once. It is about **5.5 GB**: roughly 10 minutes on a fast home connection and half an hour or
+   more on a slow one. The engine that runs it is already inside Wisp, so there is nothing else to
+   install. The first start of the engine can take a few minutes. You can keep going through the
+   other steps while it downloads, and Wisp sends a notification when it is ready. When the download
+   finishes, Wisp checks that the model really answers.
+2. **Permissions.** Each one is optional, and you can change your mind later in System Settings:
+
+   | Permission | Why Wisp asks |
+   | --- | --- |
+   | Calendar | To plan your day from your meetings and events, and to add or move events when you ask. |
+   | Reminders | To show what is due, and to add or complete reminders when you ask. |
+   | Mail and Notes (Automation) | To read your mail and notes while those apps are open. Wisp opens them in the background to ask. |
+   | Full Disk Access | To read Messages, and Mail and Notes when those apps are closed. macOS can't prompt for this one, so Wisp opens the right page of System Settings and you switch **Wisp** on. macOS may offer to reopen Wisp, and setup picks up where you left off. |
+   | Contacts | To show names instead of phone numbers. |
+   | Notifications | For reminder alerts and "Wisp is ready". |
+
+   Screen Recording (for "what is on my screen?") and Accessibility (to search text inside other
+   apps) are not asked for here. macOS asks the first time a feature needs them.
+3. **How to use it.** A short tour of the notch and the shortcuts, with a few questions to try.
+
+If you leave before the model is ready, Wisp keeps a small cue on the notch and tells you when it
+can answer.
+
+### Using Wisp
+
+- **Where it is.** On a MacBook with a notch, hover over the notch to open it. On a Mac without a
+  notch (M1 Air, 13-inch Pro, iMac) nothing is drawn: click the Wisp icon in the menu bar, or push
+  the pointer against the top-centre edge of the screen. On an external monitor a small bar sits
+  under the menu bar.
+- **Three tabs: Ask, Brief and Day.** **Ask** is the conversation. **Brief** is a short summary of
+  what needs you today, from your mail, texts, calendar and reminders. **Day** lays the rest of today
+  out hour by hour.
+- **Shortcuts.** **⌥Space** opens Ask from anywhere. **⌘⇧F** searches the document on
+  screen (Smart Search). **⌘,** opens Settings. If another app already uses one of these, the
+  setup tour says so, and the top of the screen always works.
+- **Getting to know you.** Once Wisp can answer, it offers three optional questions (what to call
+  you, your goals, how you like replies). Reopen it any time with **Tell Wisp About You...** in the
+  menu-bar icon's menu.
+
+### Connect Google (optional)
+
+Wisp can read your Gmail and Google Calendar so Brief and Day cover them too.
+
+- Open **Settings ▸ Google** and click **Connect a Google account**. Before you have connected
+  an account, the notch's Google row (**Connect Google**) does the same thing.
+- **You have to be on the tester list.** For now Wisp's Google sign-in is in Google's "Testing"
+  mode, so only Google accounts the developer has added can use it. If you see "Access blocked" or
+  "This Google account isn't on Wisp's tester list yet", send the developer the address you tried.
+- **Google shows an "unverified app" warning.** That is expected while Wisp is in testing. Choose
+  **Continue** (on some screens **Advanced**, then **Go to Wisp**), and leave both permissions ticked.
+  Wisp asks only to read mail and calendar.
+- **Sign-in expires every 7 days** while Wisp is in testing. Wisp sends a notification when it does.
+  Open **Settings ▸ Google** and reconnect that account.
+- **Disconnect & erase** in the same pane revokes Wisp's access and deletes that account's mail,
+  events and to-dos from Wisp.
+- A build without a built-in Google sign-in needs your own Google Cloud client instead. See
+  [docs/google-cloud-setup.md](docs/google-cloud-setup.md).
+
+### Your privacy
+
+- **Local by default.** The AI model runs on your Mac. Your mail, calendar, messages and notes are
+  read on the Mac and stored in `~/.moe`. Wisp doesn't send them to a cloud model unless you set up
+  one yourself in Settings.
+- **What does go out.** The search terms of a web question, plus the requests that connecting Google
+  makes to Google. The model download comes from Hugging Face.
+- **It asks before sending.** Wisp prepares mail and message drafts and waits for you. Nothing is
+  sent, and no event is changed in Calendar, until you approve it.
+
+### Quit, uninstall and reset
+
+- **Quit.** Click the Wisp icon in the menu bar and choose **Quit Wisp**. Quitting unloads the model
+  and stops the engine, so the memory is free again. Closing a window does not quit Wisp.
+- **Uninstall.** Disconnect any Google account first (**Settings ▸ Google ▸ Disconnect & erase**),
+  quit Wisp, and drag **Wisp.app** from Applications to the Bin. To delete everything Wisp stored,
+  including the 5.5 GB model, also delete the `~/.moe` folder. To remove the preferences and
+  permissions, run `defaults delete com.wisp.assistant` and `tccutil reset All com.wisp.assistant`
+  in Terminal.
+- **Reset first run.** Quit Wisp, run `defaults delete com.wisp.assistant`, and open Wisp again to see
+  the setup window again. Your chats, memory and downloaded model are kept.
+
+### Logs and bug reports
+
+- **Report a Problem...** in the menu-bar icon's menu (or `/report` in the notch) builds a report
+  under the reply it is about. It is saved only where you choose and is never uploaded. Attach it
+  to your bug report.
+- **Export Chat Debug Log...** in the same menu saves the detailed log of the current chat.
+- **Service log.** `$TMPDIR/moe-backend.log` (in Terminal: `open "$TMPDIR"`).
+- **Engine log.** `~/.moe/engine/engine.log`.
+- **Audit log of actions Wisp took.** `~/.moe/audit.jsonl`.
 
 ## What it does
 
-**Chat overlay — ⌥Space.** A top-centre panel that looks the same on every
-MacBook and adapts to monitors. On a MacBook it hangs from the notch: collapsed
-it is a small black bar wrapped around the camera housing, and hovering it opens
-the panel. Every MacBook gets the same 185 × 32 pt notch — the real one where
-there is one, and a matching virtual one on the M1 Air and 13" Pro, which have
-none. On an external monitor no notch is drawn: a small capsule sits under the
-menu bar and opens into a rounded floating card. Hover opens it only after a
-brief dwell, never while a mouse button is held (so dragging a file past the
-notch doesn't trigger it), and never again under a pointer that simply stayed
-put after you closed it. Layout follows the displays live, so plugging in a
-monitor or changing resolution re-fits it. Streaming replies, markdown, session
-history, per-action confirmation prompts.
+**Chat overlay — ⌥Space.** A top-centre panel with three tabs (Ask, Brief and Day) that
+adapts to your display. On a MacBook with a notch it hangs from the notch: collapsed it is a
+small black bar wrapped around the camera housing, and hovering it opens the panel. On a Mac
+without a notch (M1 Air, 13" Pro, iMac) nothing is drawn: the menu-bar icon is the anchor and
+carries the status (working, due today, setup unfinished), and pushing the pointer against the
+top-centre edge opens the same panel as a card under the menu bar. On an external monitor a
+small capsule sits under the menu bar. Hover opens it only after a brief dwell, never while a
+mouse button is held (so dragging a file past the notch doesn't trigger it), and never again
+under a pointer that simply stayed put after you closed it. Layout follows the displays live,
+so plugging in a monitor or changing resolution re-fits it. Streaming replies, markdown,
+session history, per-action confirmation prompts.
 
 **Smart Search — ⌘⇧F.** Ask a question about whatever document is on screen and
 get a grounded answer. Four tiers stream out as they land, each independently
@@ -63,7 +173,7 @@ each claim and exports to Downloads. A Research Library keeps finished reports
 in the main app. Search queries and page requests go to the public web;
 planning, evidence, and synthesis remain local.
 
-**Operating the Mac.** The agent loop drives 168 built-in tools across these areas:
+**Operating the Mac.** The agent loop drives about 90 built-in tools across these areas:
 
 | Area | Examples |
 | --- | --- |
@@ -80,7 +190,7 @@ planning, evidence, and synthesis remain local.
 | Authoring | `create_tool` |
 
 Because a long tool list measurably degrades selection, each request sees a
-narrowed subset rather than all 168 — built from the request's read *and* write
+narrowed subset rather than the whole list — built from the request's read *and* write
 intent, so a "summarize this and send it" request keeps the sending tool. An
 ambiguous route retrieves its menu by lexical shortlist (a cross-encoder
 reranker is available for comparison but is not the default: the lexical top-20
@@ -153,77 +263,23 @@ sentence and, where one exists, a next step; the raw error goes to the debug
 export instead of the headline. Debug Mode captures tool-internal model calls
 (source plus inner request and response), not just the final output.
 
-## Install the app
-
-1. Download the latest macOS ZIP from [GitHub Releases](https://github.com/adjad/wisp/releases).
-2. Extract it and move `Wisp.app` to `/Applications`.
-3. Open Wisp (see **First launch** below).
-4. Let Wisp's **setup guide** walk you through the engine and model choices. Compatible
-   Macs can use the included private oMLX engine. If oMLX is already installed, Wisp
-   preserves that choice; older systems need an engine build compatible with their OS
-   or the separate remote-only configuration. The guide opens by itself the first time
-   Wisp can't answer yet, and any time from the menu-bar icon (right-click →
-   **Set Up Inference…**) or **Settings → Models → Setup guide…**.
-5. Grant only the macOS permissions needed for the features you use, such as Calendar,
-   Contacts, Automation, Notifications, or Full Disk Access for local stores.
-
-The release contains `Wisp.app`, its backend, Python runtimes, and a private copy of
-oMLX. Model weights are separate. The bundled engine has its own settings and model
-directory and does not change an installed oMLX app's settings.
-
-### First launch
-
-The public build is ad-hoc signed, not notarized, so macOS Gatekeeper blocks the first
-open. Control-click `Wisp.app` and choose **Open**, or go to **System Settings → Privacy
-& Security → Open Anyway**. If macOS still refuses, clear the quarantine flag once:
-`xattr -dr com.apple.quarantine /Applications/Wisp.app`.
-
-Wisp's built-in engine needs macOS 26.2 or newer, and oMLX 0.7+ needs macOS 26. On an
-older Mac the setup guide says so and points to Ollama, LM Studio, llama.cpp (Wisp tests
-that the model can call tools) or the remote-only mode. Wisp asks for notifications,
-Calendar and Reminders at first launch. macOS asks for Screen Recording and Accessibility
-the first time a feature uses them. Full Disk Access (for Messages, Mail and Notes) can't
-be requested by an app: right-click the menu-bar icon → **Grant More Access…** asks for
-the rest and opens its Settings pane.
-
-### The setup guide
-
-It checks this Mac and shows one page with what to do next:
-
-1. **Engine** — is the selected engine answering, and can this Mac run the included
-   engine? The guide explains compatibility and can start the selected engine.
-2. **Model** — lists the models oMLX has, marks the best fit for this Mac's memory,
-   and applies your choice to chat, tools, coding, and reasoning in one click. If the
-   model Wisp is set to use isn't installed, it says so.
-3. **Smart Search** — whether the small embedding model that powers ⌘⇧F is installed.
-4. **Other local apps** — detects Ollama, LM Studio, llama.cpp and other
-   OpenAI-compatible apps on `127.0.0.1` and connects one for chat and reasoning.
-5. **Try it** — explicitly sends a test message through the model you picked.
-   “Ready to test” means the engine and model were discovered; “Test passed” requires
-   a complete visible reply. Neither model files nor a successful download prove that
-   the model can load within the engine's current memory limit.
-
-For catalog entries with a verified public repository, the bundled engine supports
-downloads with progress, cancellation and explicit retry. External engines have a
-manual download path. The optional merged Mellum build downloads from
-[`Neo-Arid/Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e`](https://huggingface.co/Neo-Arid/Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e);
-an existing local folder in the engine's model directory works too (**Check again**,
-then **Use this model**).
-
 ### Which model for which Mac
 
-Fresh text roles use **`Ling-3.0-tiny-oQ4e`** as a conservative fallback. Guided
-setup recommends the Ling build below for this Mac's memory. Existing role
-overrides and working models are preserved. Mellum remains an optional choice,
+Fresh installs use **Gemma 4 E4B** (4-bit with multi-token prediction, `Jundot/gemma-4-E4B-it-oQ4e-mtp`,
+about 5.5 GB). It is the model the first-run window downloads, and the engine's per-model
+settings for it (sampling, thinking, a 16k context window) are written by Wisp itself. The
+Ling 3.0 tiny builds below remain available in the detailed setup guide (menu-bar icon,
+**Finish Setup...** or **Model & Engine...**, or **Settings → Models → Setup guide...**).
+Existing role overrides and working models are preserved. Mellum remains an optional choice,
 marked validation pending. The guide ranks memory fit separately from test status:
 
 | Memory | Recommended | Download | Notes |
 | --- | --- | --- | --- |
-| 24 GB or more | `Ling-3.0-tiny-oQ6e` | 6.6 GB from Hugging Face | Public 6-bit build recommended by guided setup. |
-| 16 GB | `Ling-3.0-tiny-oQ5e`, else `Ling-3.0-tiny-oQ4e` | oQ4e 4.6 GB | Sized to leave room for your other apps. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). No public oQ5e build was found; use it if you already have one. |
-| Under 16 GB | `Ling-3.0-tiny-oQ4e` | 4.6 GB | The smallest build that keeps tool selection reliable. Untested on Macs this small: expect it to be tight, and close heavy apps. |
+| 24 GB or more | `gemma-4-E4B-it-oQ4e-mtp` | 5.5 GB from Hugging Face | The default. `Ling-3.0-tiny-oQ6e` (6.6 GB) is the best-quality alternative. |
+| 16 GB | `gemma-4-E4B-it-oQ4e-mtp` | 5.5 GB | Leaves room for your other apps; close heavy ones. `Ling-3.0-tiny-oQ4e` (4.6 GB) is the smaller alternative. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). |
+| Under 16 GB | not supported for this release | | Wisp may still offer the default. Expect it to be tight. |
 
-Ling sizes are the published files' sizes on Hugging Face
+Sizes are the published files' sizes on Hugging Face
 (`mlx-works/Ling-3.0-tiny-oQ6e`, `mlx-works/Ling-3.0-tiny-oQ4e`). For Smart Search, also
 install `mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ` (0.35 GB). Any other model oMLX
 serves can be selected, but it is marked untested. Memory-fit rankings are estimates,
@@ -281,9 +337,10 @@ plain-completion path (pass a `role` or a `model`, optional `stream`).
 
 `build-support/` produces an **ad-hoc sealed local candidate**: the Swift app,
 tracked backend source and resources, and a relocatable Python runtime installed
-from a hash-pinned lockfile. The build never installs or launches Wisp, verifies
-the sealed artifact, and keeps signing QA isolated from simulation. oMLX and its
-models stay separately installed runtime prerequisites. Ad-hoc sealing carries no
+from a hash-pinned lockfile, plus a private copy of the oMLX engine. The build never
+installs or launches Wisp, verifies the sealed artifact, and keeps signing QA isolated
+from simulation. Model weights are not part of the app; the first-run window downloads
+them. Ad-hoc sealing carries no
 team identity and is **not** notarization. See [docs/build-release.md](docs/build-release.md)
 and the non-mutating release gate in [docs/SIMULATION_QA.md](docs/SIMULATION_QA.md).
 
@@ -294,7 +351,7 @@ model id. `~/.moe/config.yaml` overlays that at runtime (Settings writes here).
 
 | Role | Model | Why |
 | --- | --- | --- |
-| `fast`, `router`, `coding`, `reasoning`, `agent`, `general` | `Ling-3.0-tiny-oQ4e` | one resident model for every text/tool role — no swap, no cold load, no routing decision that hinges on which model a request lands on |
+| `fast`, `router`, `coding`, `reasoning`, `agent`, `general` | `gemma-4-E4B-it-oQ4e-mtp` | one resident model for every text/tool role — no swap, no cold load, no routing decision that hinges on which model a request lands on |
 | `research` | defaults to `coding`'s model unless overridden | Wisp Research's plan/query/extraction/synthesis calls; independently settable in Settings |
 | `embedding` | `Qwen3-Embedding-0.6B-4bit-DWQ` | Smart Search's T2 retrieval tier; small enough (320 MB) to co-fit with the chat model, so search never evicts it |
 | `reranker` | `Qwen3-Reranker-0.6B-mlx-6bit` | optional cross-encoder for tool retrieval; not the default, and it evicts the embedder before use so all three never sit resident together |
@@ -340,6 +397,8 @@ Idle local models auto-unload after a configurable timeout (default 5 minutes).
 Wisp-owned state is stored under `~/.moe/`:
 `config.yaml` (role overlay), `sessions.db`, `facts.db`, `assistant.db`,
 `research.db` + `research_cache/`, `cache/` (Mail/Messages/Notes snapshots),
+`gmail.json` (connected Google accounts), `engine/` (the built-in engine, its settings, its
+downloaded models and `engine.log`),
 `skills/`, `mcp.json`, `grants.json`, `audit.jsonl`, plus small state files for
 the brief, delivery receipts, and the Codex monitor.
 

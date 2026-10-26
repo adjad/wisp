@@ -41,7 +41,9 @@ Start with the root [README](../README.md) for what Wisp is and how to run it.
 - [SIMULATION_QA.md](SIMULATION_QA.md) — the non-mutating release gate.
 - [DEBUGGING.md](DEBUGGING.md) — local problem reports, private trace history, and offline Today replay.
 - [../TESTING.md](../TESTING.md) — manual test plan.
-- [DEMO_TEST_PROMPTS.md](DEMO_TEST_PROMPTS.md) — demo-day prompt checklist, including notch and display checks.
+- [DEMO_TEST_PROMPTS.md](DEMO_TEST_PROMPTS.md) — manual prompt checklist, including notch and display checks.
+- [google-cloud-setup.md](google-cloud-setup.md) — Google Cloud project, tester list and OAuth client for Connect Google.
+- [releases/](releases/) — curated release notes; start with [0.5.0-rc1](releases/0.5.0-rc1.md).
 
 ## Audits and backlog
 

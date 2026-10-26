@@ -365,9 +365,13 @@ builds and tags perform local ad-hoc signing only; they do not use Developer ID
 credentials, notarize, or publish a release.
 
 Because the public ZIP is ad-hoc signed and not notarized, `create_public_draft` in
-`build-support/release.py` puts a two-line "First launch" note (Control-click, Open /
-Open Anyway; `xattr -dr com.apple.quarantine`) directly under the first-line download
-link. The same guidance is in the README's "First launch" section.
+`build-support/release.py` puts a short "First launch" note directly under the
+first-line download link: open Wisp once (macOS 15 and later blocks it), then System
+Settings > Privacy & Security > Open Anyway > confirm. Control-click > Open is only for
+macOS 14 and earlier, and `xattr -dr com.apple.quarantine <path to Wisp.app>` is the
+fallback. The same steps lead the README's install section. A release promoted by hand
+(for example a release candidate) uses its curated `docs/releases/<version>.md` as the
+notes file, so the same steps must be at the top of that file.
 
 Release preflight requires a clean candidate matching HEAD, passing full QA and
 strict compiler evidence, the exact tag on main, no existing GitHub release, and
@@ -409,9 +413,10 @@ with Finder or `ditto`. Maintainers can download the complete CI candidate and
 verify its internal files with `shasum -a 256 -c SHA256SUMS`. The public app ZIP
 uses a download-friendly alias while retaining the verified archive bytes.
 This build is ad-hoc signed only: it is not notarized and
-does not establish Gatekeeper trust. macOS may require Control-clicking
-`Wisp.app`, choosing **Open**, or removing the downloaded quarantine attribute
-before first launch. A free Apple personal-team signature is not suitable for
+does not establish Gatekeeper trust. On macOS 15 and later, the first open is
+blocked and must be allowed under System Settings > Privacy & Security >
+**Open Anyway** (Control-click > **Open** only works on macOS 14 and earlier).
+Removing the downloaded quarantine attribute with `xattr` is the fallback. A free Apple personal-team signature is not suitable for
 general GitHub distribution; use the protected Developer ID path for a signed,
 notarized public release.
 

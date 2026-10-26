@@ -1,8 +1,15 @@
-# Google Cloud setup for "Connect Google" (hackathon)
+# Google Cloud setup for Connect Google
 
-Wisp does not ship a Google OAuth client. You create one in your own Google Cloud project, once, and
-paste it into Wisp. After that anyone can tap **Connect Google** in the notch and sign in with their own
-account. Allow about 15 minutes.
+This guide is for whoever owns Wisp's Google sign-in: the developer who ships the tester builds, or
+anyone who wants to use their own Google Cloud project instead.
+
+A tester build can carry a built-in OAuth client, supplied at build time with `WISP_GOOGLE_OAUTH_CLIENT`
+(see [build-release.md](build-release.md)). That client belongs to a Google Cloud project in **Testing**
+mode, so only the Google accounts on its **Test users** list can sign in (sections 3 to 5 below). Testers
+see an "unverified app" warning and choose Continue, and their sign-in expires every 7 days. A build with
+no built-in client, or someone who prefers their own project, creates a client once (sections 1 to 8) and
+pastes it into **Settings ▸ Google**. Wisp always uses a client you paste in before the built-in one.
+Allow about 15 minutes.
 
 Wisp asks for exactly two read-only scopes:
 
@@ -38,7 +45,7 @@ Google Cloud project…" for each account until you enable it. It can take a min
 2. If you see "Google Auth Platform not configured yet", click **Get started**:
    - **App Information**: App name `Wisp`. User support email: your email. Click **Next**.
    - **Audience**: choose **External**. Click **Next**.
-     - "Internal" only works for accounts in your own Workspace organization, so judges' Gmail accounts can't use it.
+     - "Internal" only works for accounts in your own Workspace organization, so testers' Gmail accounts can't use it.
    - **Contact Information**: your email. Click **Next**.
    - **Finish**: tick the box agreeing to the Google API Services User Data Policy. Click **Continue**, then **Create**.
 3. Optional, under **Branding**: add a logo and an app home page.
@@ -57,35 +64,36 @@ Google Cloud project…" for each account until you enable it. It can take a min
      above, one per line, then click **Add to table**.
 4. Click **Update**, then **Save** on the Data Access page.
 
-You don't need to submit for verification for the demo. Section 6 covers what that means.
+You don't need to submit for verification for testing. Section 6 covers what that means.
 
-## 5. Audience: test users (recommended path)
+## 5. Audience: test users (the tester whitelist)
 
 1. Go to **Google Auth Platform ▸ Audience**. Publishing status should read **Testing**.
-2. Under **Test users**, click **+ Add users**. Enter your own Gmail address and each judge's Google address
+2. Under **Test users**, click **+ Add users**. Enter your own Gmail address and each tester's Google address
    (comma separated). Click **Save**.
-3. Judges you add can sign in with no warning screen. Anyone not on the list gets
-   **"Access blocked: Wisp has not completed the Google verification process" (Error 403: access_denied)**.
+3. Testers you add can sign in. Google still shows its "Google hasn't verified this app" warning: they click
+   **Continue** (older screens: **Advanced**, then **Go to Wisp**). Anyone not on the list gets
+   **"Access blocked: Wisp has not completed the Google verification process" (Error 403: access_denied)**,
+   and Wisp says their account isn't on the tester list yet.
 
 Testing-mode limits:
 
 - **Test users are capped at 100** per project. Removing a user may not give the slot back *(unverified)*.
 - **Tokens last 7 days.** Google issues refresh tokens that expire after 7 days when an External app is in
   Testing and asks for anything beyond name/email/profile, which Wisp does. Wisp then shows "Google sign-in
-  expired or was revoked; reconnect this account in Settings ▸ Google". For a one-day demo that's fine.
-  Reconnect your own account the morning of the demo so it doesn't lapse mid-demo.
+  expired; reconnect in Settings ▸ Google" and posts one "Google sign-in expired" notification per expiry. Tell testers to reconnect about once a week.
 - Tokens issued while the app was in Testing keep that 7-day expiry even after you publish *(unverified)*.
   Reconnect after you change the status.
 
-## 6. Fallback if you can't collect judges' emails in advance: publish unverified
+## 6. Fallback if you can't collect testers' emails in advance: publish unverified
 
 1. Go to **Google Auth Platform ▸ Audience** and click **Publish app**. Confirm.
    - The status changes to **In production**.
-   - The Verification Center shows the app needs verification. Don't submit for the demo.
-2. What a judge sees when they tap Connect Google:
+   - The Verification Center shows the app needs verification. Don't submit it for verification yet.
+2. What a tester sees when they tap Connect Google:
    1. The Google account chooser.
    2. **"Google hasn't verified this app"**: the app is asking for sensitive info.
-   3. The judge clicks **Advanced**, then **Go to Wisp (unsafe)**.
+   3. The tester clicks **Advanced**, then **Go to Wisp (unsafe)**.
    4. The consent screen, with checkboxes for "View your email messages and settings" and "See … your
       calendars". They should tick both.
       - If they untick Calendar, Wisp still connects mail and shows "Mail only (calendar not shared)".
@@ -93,13 +101,13 @@ Testing-mode limits:
    5. "Google connected. You can close this tab and return to Wisp."
 3. Caveats:
    - An unverified app in production has a lifetime cap of **100 new users** for sensitive or restricted
-     scopes. That's plenty for a hackathon.
+     scopes. That's plenty for a small tester group.
    - Google may restrict an unverified app that asks for **restricted** scopes such as `gmail.readonly`. If the
      "Go to Wisp (unsafe)" link is missing for an account, go back to the test-user path *(unverified;
      behavior has varied)*.
    - Production tokens don't have the 7-day expiry.
    - Prefer personal `@gmail.com` accounts. A school or company Google Workspace admin can block unverified
-     third-party apps entirely. The judge then sees an admin-policy error, and nothing in Wisp can fix it.
+     third-party apps entirely. The tester then sees an admin-policy error, and nothing in Wisp can fix it.
 
 ## 7. Clients: create the Desktop OAuth client
 
@@ -131,17 +139,17 @@ Testing-mode limits:
 From then on the notch **Connect Google** button reuses the saved client. If no client is saved, the notch
 shows "Add your Google OAuth client in Settings ▸ Google first."
 
-## 9. During the demo
+## 9. When a tester connects
 
-1. The judge taps **Connect Google** in the notch, and their browser opens Google sign-in.
+1. The tester taps **Connect Google** in the notch, and their browser opens Google sign-in.
 2. The notch shows, in order:
    - **Waiting for sign-in in your browser…**
    - **Reading mail & calendar…**: about 50 recent message bodies, recent headers, and the next 7 days of
      events.
    - **Building your to-dos…**
-   - **Connected as judge@gmail.com**
+   - **Connected as tester@gmail.com**
 3. Their cards and to-dos fill in under Brief as the proactive engine finishes.
-4. After the demo, tap **Disconnect & erase** next to their address, then **Erase**. Wisp then:
+4. To remove a tester's data, tap **Disconnect & erase** next to their address, then **Erase**. Wisp then:
    - Revokes the token with Google.
    - Removes the account from `~/.moe/gmail.json`.
    - Deletes the account's cached mail (headers, history, bodies, identity), its Google Calendar events and
@@ -149,7 +157,7 @@ shows "Add your Google OAuth client in Settings ▸ Google first."
    - Deletes its proactive cards, to-dos and summaries.
 
    Your own account and your OAuth client stay.
-5. Optional extra cleanup: the judge can also remove Wisp at <https://myaccount.google.com/permissions>.
+5. Optional extra cleanup: the tester can also remove Wisp at <https://myaccount.google.com/permissions>.
 
 ## What "Disconnect & erase" does and does not reach
 
@@ -169,13 +177,13 @@ confirmed. Anything else is listed as "Not confirmed erased".
   progress
 - the account's proactive cards, to-dos and thread summaries
 
-**Not erased, so plan the demo around it:**
-- **Chat history.** If anyone asked Ask about the judge's mail or calendar, those turns stay in the chat
-  history. Start a new chat for the judge's demo and delete it afterwards.
+**Not erased:**
+- **Chat history.** If anyone asked Ask about the tester's mail or calendar, those turns stay in the chat
+  history. Delete those chats separately.
 - **Debug and corpus logs.** Debug Mode recordings, corpus exports and service logs may quote tool output
-  from the judge's data. Keep Debug Mode off during the judge's turn.
-- **Saved memory facts.** These exist only if the judge's data led Wisp to remember something.
-  Check Memory ▸ Facts after the demo.
-- **Mail.app.** Its own copy, if the judge's account was ever added there.
-- **The Google side.** Wisp's access is revoked. The judge can confirm at
+  from the tester's data. Keep Debug Mode off while testing with real mail.
+- **Saved memory facts.** These exist only if the tester's data led Wisp to remember something.
+  Check Memory ▸ Facts afterwards.
+- **Mail.app.** Its own copy, if the tester's account was ever added there.
+- **The Google side.** Wisp's access is revoked. The tester can confirm at
   <https://myaccount.google.com/permissions>.
