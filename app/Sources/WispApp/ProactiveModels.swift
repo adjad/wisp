@@ -30,6 +30,10 @@ struct ProactiveState: Decodable, Equatable {
     var summary: String = ""
     /// One sentence for the top of the Brief (W1); else the summary's first.
     var lede: String = ""
+    /// Why there is nothing yet, when the engine hasn't read anything.
+    var reason: String = ""
+    /// The sources the service says Wisp couldn't read (cycle.honest).
+    var unread: [String] = []
     /// The work behind the cards: what Wisp read, found and drafted.
     var stats: Stats? = nil
 
@@ -46,6 +50,46 @@ struct ProactiveState: Decodable, Equatable {
 
     var isWorking: Bool { state == "working" }
     var isUnavailable: Bool { state != "ready" && state != "working" }
+    /// "Ready" with nothing read and no account is a cycle that never read
+    /// anything (no source could be opened), not an all-clear.
+    var hasReadNothing: Bool {
+        state == "ready" && (stats?.read ?? 0) == 0 && accounts.isEmpty && cards.isEmpty && todos.isEmpty && threads.isEmpty
+    }
+
+    // MARK: Honesty about unread sources
+
+    /// The day's sources Wisp couldn't read, from the workspace's coverage
+    /// (`source_coverage`), in reading order. Mail read from a linked Google
+    /// account counts as read even when Mail.app couldn't be.
+    func unreadSources(_ coverage: [SourceAccess]) -> [SourceAccess] {
+        let linkedGoogle = accounts.contains { $0.caseInsensitiveCompare(ownerID) != .orderedSame }
+        return ["calendar", "reminders", "email", "messages"].compactMap { source in
+            guard let access = coverage.first(where: { $0.source == source }), !access.readable else { return nil }
+            if source == "email" && linkedGoogle { return nil }
+            return access
+        }
+    }
+
+    /// The mail-and-texts list's line when it lists nothing: an all-clear only
+    /// once both were read; nil otherwise (the unread rows say why).
+    static func attentionEmptyLine(unread: [SourceAccess]) -> String? {
+        unread.contains { $0.source == "email" || $0.source == "messages" } ? nil
+            : "Nothing in your inbox or texts needs you."
+    }
+
+    /// The collapsed to-do row, honest about what couldn't be read.
+    func todoLine(unread: [SourceAccess]) -> String {
+        let open = todos.filter { !$0.done }
+        if open.isEmpty && !unread.isEmpty {
+            return todos.isEmpty ? "No to-dos in what Wisp could read" : "All to-dos done in what Wisp could read"
+        }
+        return todoLine
+    }
+
+    /// The calendar row's line when nothing else is on today.
+    static func emptyDayLine(calendarUnread: Bool) -> String {
+        calendarUnread ? "Wisp can't see your calendar yet" : "Nothing else on your calendar today"
+    }
 
     init(state: String = "ready", asOf: Double? = nil, progress: Progress? = nil, accounts: [String] = [],
          summary: String = "", cards: [ProactiveCard] = [], todos: [ProactiveTodo] = [], threads: [ProactiveThread] = []) {
@@ -59,7 +103,7 @@ struct ProactiveState: Decodable, Equatable {
         self.threads = threads
     }
 
-    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats, owner }
+    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats, owner, reason, unread }
     private enum OwnerKeys: String, CodingKey { case id, label }
     private enum StatsKeys: String, CodingKey { case read, found, drafted, filtered, as_of }
 
@@ -72,6 +116,8 @@ struct ProactiveState: Decodable, Equatable {
         }
         accounts = c.lenient(.accounts, LossyList<String>.self)?.items.filter { !$0.isEmpty } ?? []
         lede = c.lenientString(.lede) ?? ""
+        reason = c.lenientString(.reason) ?? ""
+        unread = c.lenient(.unread, LossyList<String>.self)?.items.filter { !$0.isEmpty } ?? []
         if let o = try? c.nestedContainer(keyedBy: OwnerKeys.self, forKey: .owner) {
             ownerID = o.lenientString(.id).flatMap { $0.isEmpty ? nil : $0 } ?? "me"
             ownerLabel = o.lenientString(.label) ?? ""
@@ -285,6 +331,19 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
 
         /// Whether the draft is something the person sends, so it opens editable.
         var sendsDraft: Bool { method == "email_reply" || method == "text_reply" }
+
+        /// What the card's main button does now. A reply never sends a draft the
+        /// person hasn't seen: its first tap opens the draft, and Send sits
+        /// inside the shown draft.
+        enum Step: Equatable { case openDraft, fire }
+        func primaryStep(draftOpen: Bool) -> Step { sendsDraft && !draftOpen ? .openDraft : .fire }
+
+        /// The main button's words for that step: the card's question until the
+        /// draft is open, then "Send".
+        func primaryLabel(draftOpen: Bool) -> String {
+            guard sendsDraft else { return label }
+            return draftOpen ? "Send" : label
+        }
     }
 
     var id = ""

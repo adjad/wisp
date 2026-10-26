@@ -192,6 +192,40 @@ struct ProactiveChecks {
               && actionable?.todos.first?.actionRow.help(.clear).contains("stays in Reminders") == true,
               "each Clear says what it leaves alone")
 
+        // A reply never sends a draft the person hasn't seen: the first tap opens
+        // it, and Send (inside the shown draft) sends it.
+        let reply = ProactiveCard.Action(method: "text_reply", button: "Text Maya back?", draft: "Sounds good!")
+        check(reply.primaryStep(draftOpen: false) == .openDraft && reply.primaryLabel(draftOpen: false) == "Text Maya back?",
+              "a closed reply's button opens the draft")
+        check(reply.primaryStep(draftOpen: true) == .fire && reply.primaryLabel(draftOpen: true) == "Send",
+              "an open reply's button is Send")
+        let reminder = ProactiveCard.Action(method: "reminder", button: "Set the reminder?")
+        check(reminder.primaryStep(draftOpen: false) == .fire && reminder.primaryLabel(draftOpen: false) == "Set the reminder?",
+              "a card with nothing to send fires on its first tap")
+
+        // Unread sources: no all-clear for what Wisp couldn't read.
+        let coverage = [SourceAccess(source: "calendar", ready: false, blocked: "calendar_access"),
+                        SourceAccess(source: "reminders", ready: true),
+                        SourceAccess(source: "email", ready: false, state: "unavailable", blocked: "mail_closed"),
+                        SourceAccess(source: "messages", ready: false, blocked: "full_disk_access")]
+        let ownOnly = ProactiveState(state: "ready")
+        check(ownOnly.unreadSources(coverage).map { $0.source } == ["calendar", "email", "messages"], "unread in reading order")
+        var linked = ProactiveState(state: "ready", accounts: ["me", "ada@gmail.com"])
+        linked.ownerID = "me"
+        check(linked.unreadSources(coverage).map { $0.source } == ["calendar", "messages"],
+              "mail from a linked Google account counts as read")
+        check(ProactiveState.attentionEmptyLine(unread: ownOnly.unreadSources(coverage)) == nil,
+              "no \"Nothing in your inbox or texts\" while either is unread")
+        check(ProactiveState.attentionEmptyLine(unread: []) == "Nothing in your inbox or texts needs you.", "the all-clear when both were read")
+        check(ownOnly.todoLine(unread: ownOnly.unreadSources(coverage)) == "No to-dos in what Wisp could read"
+              && ownOnly.todoLine(unread: []) == "No to-dos", "the to-do row is honest about what was read")
+        check(ProactiveState.emptyDayLine(calendarUnread: true) == "Wisp can't see your calendar yet"
+              && ProactiveState.emptyDayLine(calendarUnread: false) == "Nothing else on your calendar today", "the calendar row")
+        let nothingRead = decode(#"{"state":"ready","stats":{"read":0},"accounts":[],"reason":"Wisp hasn't read your mail and texts yet. Tap Analyze now.","unread":["calendar","email"]}"#)
+        check(nothingRead?.hasReadNothing == true && nothingRead?.reason.hasPrefix("Wisp hasn't read") == true
+              && nothingRead?.unread == ["calendar", "email"], "ready with nothing read is not an all-clear; reason and unread decode")
+        check(decode(#"{"state":"ready","stats":{"read":4}}"#)?.hasReadNothing == false, "a cycle that read something")
+
         print("Proactive checks: \(count) passed")
     }
 }

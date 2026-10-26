@@ -569,14 +569,16 @@ def needs_you(attention, *, now, day_end, dismissed=None):
             # A review the user already kept on the day plan is listed there, once.
             planned = {title.casefold(), named.casefold().removeprefix("review: ")}
             mail.append(dict(id=item["id"], kind="mail", text=text, due_ts=None, all_day=False,
-                             received_ts=item.get("received_ts"), planned=planned))
+                             received_ts=item.get("received_ts"), planned=planned,
+                             vip=bool(item.get("profile_people"))))
         elif source == "messages" and item.get("replied") is not True:
             sender = clean(item.get("sender"), 80)
             if not sender or sender == "Me":
                 continue
             entry = texts.setdefault(sender, dict(id=item["id"], kind="text", count=0, due_ts=None,
-                                                  all_day=False, received_ts=item.get("received_ts")))
+                                                  all_day=False, received_ts=item.get("received_ts"), vip=False))
             entry["count"] += 1
+            entry["vip"] = entry["vip"] or bool(item.get("profile_people"))
             if finite(item.get("received_ts")) and (not finite(entry["received_ts"])
                                                      or item["received_ts"] > entry["received_ts"]):
                 entry["received_ts"] = item["received_ts"]
@@ -588,9 +590,14 @@ def needs_you(attention, *, now, day_end, dismissed=None):
     overdue.sort(key=lambda e: e["due_ts"])
     due.sort(key=lambda e: e["due_ts"])
     mail = [e for e in sorted(mail, key=newest) if not e.pop("planned") & seen]
-    picked = sorted(alerts.values(), key=newest) + overdue + due + plan + mail + people
+    # Mail and texts from the people the user said matter to them (assess's
+    # profile prioritization) rise to the top, after critical alerts.
+    vip = [e for e in mail + people if e.get("vip")]
+    picked = (sorted(alerts.values(), key=newest) + sorted(vip, key=newest) + overdue + due + plan
+              + [e for e in mail if not e.get("vip")] + [e for e in people if not e.get("vip")])
     for entry in picked:
         entry.pop("received_ts", None)
+        entry.pop("vip", None)
         entry["fingerprint"] = needs_you_fingerprint(entry["text"], entry["due_ts"])
     if dismissed:
         picked = [e for e in picked if dismissed.get(e["id"]) != e["fingerprint"]]
@@ -629,9 +636,14 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
                              detail=clean(info.get("detail") or "Source evidence is unavailable", 500),
                              inspected=info.get("inspected", len(records)),
                              omitted=info.get("omitted", 0)))
-        # What the user must grant before this source can be read, when known.
-        if info.get("blocked") == "full_disk_access":
-            coverage[-1]["blocked"] = "full_disk_access"
+        # What the user must grant before this source can be read, when known,
+        # and why it isn't ready, so the Brief never reads "can't read" as "nothing".
+        if isinstance(info.get("blocked"), str) and info["blocked"]:
+            coverage[-1]["blocked"] = info["blocked"]
+        if info.get("ready") is not True:
+            coverage[-1]["state"] = info.get("state") if info.get("state") in ("syncing", "unavailable") else "unavailable"
+            if isinstance(info.get("reason"), str) and info["reason"].strip():
+                coverage[-1]["reason"] = clean(info["reason"], 300)
         if info.get("ready") is not True:
             records = [r for r in records if r.get("wisp_only") is True]
         for record in records:
@@ -1066,7 +1078,50 @@ def collect_evidence(store, state, day, timezone, *, now):
                    "Notes unavailable, stale or not verified in this launch; note tasks withheld.")
     except Exception:
         result["notes"] = dict(ready=False, records=[], detail="Notes could not be assessed.")
+    _annotate_access(result, now)
     return result
+
+
+def _annotate_access(result, now):
+    """For each source Wisp couldn't read: ``state`` ("syncing" or
+    "unavailable"), ``blocked`` (what the person must grant, when known) and a
+    plain ``reason``, so the Brief says "Calendar access is off" with the setting
+    that fixes it instead of "nothing" or "hasn't synced yet". From this launch's
+    reader reports; never fatal, and a ready source is left as it is."""
+    try:
+        from service.assistant import scheduler
+        from service.assistant.today import ACCESS_KINDS, source_access
+        live = scheduler.connectors_status()
+        started = scheduler.STARTED_AT
+    except Exception:  # noqa: BLE001
+        return
+    for source in ("calendar", "reminders"):
+        info = result.get(source)
+        if not isinstance(info, dict) or info.get("ready") is True:
+            continue
+        access = source_access(source, live.get(source), now=now, started_at=started)
+        # A ready reader with a stale or partial receipt is still being read.
+        info.update(state="syncing" if access["state"] == "ready" else access["state"],
+                    reason=access["reason"] if access["state"] != "ready" else "Reading…")
+        if access["blocked"] in ACCESS_KINDS:
+            info["blocked"] = access["blocked"]
+    for source in ("email", "notes", "messages"):
+        info = result.get(source)
+        if not isinstance(info, dict) or info.get("ready") is True:
+            continue
+        try:
+            from service.assistant.sync_status import source_status
+            status = source_status(source)
+        except Exception:  # noqa: BLE001
+            continue
+        state = status.get("state")
+        info["state"] = "syncing" if state == "syncing" else "unavailable"
+        kind = status.get("reason_kind")
+        if kind in ACCESS_KINDS and not info.get("blocked"):
+            info["blocked"] = kind
+        reason = str(status.get("reason") or "").strip()
+        if reason:
+            info["reason"] = clean(reason, 300)
 
 
 def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), profile=None):

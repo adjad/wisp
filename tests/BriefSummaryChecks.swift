@@ -264,7 +264,7 @@ func briefTileChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Dou
     check(empty.lines.map(\.text) == ["Nothing scheduled today"] && empty.lines[0].leading.isEmpty,
           "a zero Events count opens on Nothing scheduled today")
     check(BriefTiles.eventsDetail(today: [], unsynced: true, soon: nil, when: { _ in "" }).lines.map(\.text)
-            == ["Calendar hasn't synced yet"], "an unsynced calendar says so instead of claiming an empty day")
+            == ["Reading your calendar…"], "an unsynced calendar says so instead of claiming an empty day")
 
     // Top 3: the service's pick first, then to-dos, then the next event, each once.
     let picked = [NeedsYouRow(id: "a", label: "OVERDUE", text: "Return library book", overdue: true),
@@ -317,4 +317,30 @@ func briefTileChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Dou
     check(BriefTile.allCases.map(\.shortcut) == ["1", "2", "3", "4"]
             && BriefTile.allCases.map(\.title) == ["Today", "Mail", "Messages", "Events"],
           "tiles in order with 1–4")
+
+    // Unread sources: why, and the setting that fixes it, never an all-clear.
+    let calendarOff = SourceAccess(source: "calendar", ready: false, state: "unavailable", blocked: "calendar_access")
+    let eventsOff = BriefTiles.eventsDetail(today: [], unsynced: true, soon: nil, when: { _ in "" }, access: calendarOff)
+    check(eventsOff.lines.first?.text == "Wisp can't see your calendar yet" && eventsOff.action == BriefDetail.calendarsAccess,
+          "Events says the calendar can't be read and opens its setting")
+    check(BriefTiles.eventsDetail(today: [], unsynced: true, soon: nil, when: { _ in "" }).lines.first?.text == "Reading your calendar…",
+          "with no reason known, Events says it's reading")
+    let remindersOff = SourceAccess(source: "reminders", ready: false, blocked: "reminders_access")
+    let noTodos = BriefTiles.todayDetail([], now: now, dayStart: dayStart, clock: { _ in "" }, reminders: remindersOff)
+    check(noTodos.lines.first?.text == "Wisp can't see your reminders yet" && noTodos.action == BriefDetail.remindersAccess,
+          "Today never says \"Nothing to do\" while Reminders is unread")
+    let someTodos = BriefTiles.todayDetail([BriefTodo(id: "a", title: "Essay", due: now + 60)], now: now, dayStart: dayStart,
+                                           clock: { _ in "" }, reminders: remindersOff)
+    check(someTodos.lines.last?.text == "Wisp can't see your reminders yet" && someTodos.action == BriefDetail.remindersAccess,
+          "a Today list from what was read says Reminders is missing")
+    check(BriefTiles.emptyTop(unread: []) == "Nothing needs you right now"
+          && BriefTiles.emptyTop(unread: ["calendar", "email"]) == "Wisp can't see your calendar and mail yet.",
+          "the Top 3's empty line names what wasn't read")
+    let mailClosed = BriefDetail.mail(needing: [], ready: false, access: SourceAccess(source: "email", ready: false, blocked: "mail_closed"))
+    check(mailClosed.lines.first?.text == "Wisp reads Mail while Mail is open" && mailClosed.action == BriefDetail.fullDiskAccess,
+          "Mail closed says so and offers Full Disk Access")
+    check(BriefDetail.texts(needing: [], ready: false, access: SourceAccess(source: "messages", ready: false, state: "syncing"),
+                            age: { _ in "" }).lines.first?.text == "Reading your texts…", "texts being read say so")
+    check(BriefDetail.calendar(allDay: ["🎂"], events: [(title: "1:1", start: now, end: nil)], unsynced: false, clock: { _ in "9" })
+            .lines.map(\.text) == ["🎂", "1:1"], "calendar details keep letterless titles")
 }

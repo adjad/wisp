@@ -226,7 +226,7 @@ def build(store, day: str, timezone: str, *, now: float, profile: dict | None = 
     record = day_record(day)
     tomorrow = next_day(day)
     try:
-        events = _event_rows(store, tomorrow, timezone)
+        events = [e for e in _event_rows(store, tomorrow, timezone) if askable_event(e)]
     except Exception:  # noqa: BLE001 — tomorrow's events are a courtesy, never a failure
         events = []
     return {
@@ -237,8 +237,27 @@ def build(store, day: str, timezone: str, *, now: float, profile: dict | None = 
         "tasks": active,
         "tomorrow": {"day": tomorrow, "events": events},
         "carried": list(record.get("carried") or []),
+        # No evening check-in has ever been answered or sent: the card says once
+        # what it is for.
+        "first": first_checkin(day),
         "goal_pulse": goal_pulse(profile, now=now) if profile is not None else None,
     }
+
+
+def askable_event(event: dict) -> bool:
+    """Whether the check-in asks about one of tomorrow's events. An all-day
+    event (a birthday, a holiday, a course marker) has no time to move, and a
+    read-only calendar's event can't be changed from this Mac, so neither is
+    something to answer tonight, nor counted in the evening notification."""
+    return not event.get("all_day") and event.get("calendar_writable") is not False
+
+
+def first_checkin(day: str) -> bool:
+    """No earlier day's check-in was ever sent or answered."""
+    with _lock:
+        days = _read_state()["days"]
+    return not any(isinstance(record, dict) and (record.get("completed_at") or record.get("notified_at"))
+                   for other, record in days.items() if other != day)
 
 
 def decide_task(store, task_id: str, decision: str, *, day: str, timezone: str, now: float) -> dict:
