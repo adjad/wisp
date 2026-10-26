@@ -115,7 +115,8 @@ def retire(store, *, answered: set[str], sched: dict | None = None, now: float |
     for todo in todos.values():
         if todo.get("id") in done_ids or todo.get("source") not in ("mail", "messages"):
             continue
-        if todo.get("kind") == "reply" and _refs(todo) & answered:
+        reply = todo.get("kind") == "reply" or bool(_REPLY_TITLE.match(str(todo.get("title") or "")))
+        if reply and _refs(todo) & answered:
             store.set_todo_done(todo, True, now)
             done_ids.add(todo["id"])
             finished.append(todo["id"])

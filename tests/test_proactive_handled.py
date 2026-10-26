@@ -126,6 +126,12 @@ def test_a_reminder_card_about_replying_leaves_but_a_plan_card_stays(store):
     assert "todo:b" not in store.done_todos(NOW)
 
 
+def test_a_reply_todo_without_a_card_is_checked_whatever_its_kind(store):
+    store.save_state(todos=[todo("todo:r", MOM, kind="meet", title="Reply to Mom about coffee tomorrow"),
+                            todo("todo:c", MOM, kind="meet", title="Coffee with Mom")])
+    assert handled.sweep(store, now=NOW, texts={"Mom": NOW - 60}, sent=[])["todos"] == ["todo:r"]
+
+
 def test_a_mail_card_leaves_once_answered_from_gmail(store):
     store.save_state(cards=[card("card:prof", PROF, method="email_reply", title="Reply to Dr. Patel")])
     changed = handled.sweep(store, now=NOW, texts={}, sent=[sent("RE: Thesis draft", NOW - 120)])
