@@ -30,6 +30,10 @@ jobs:
   # the same exact head, and the required "Verified macOS artifact" check below
   # passes only when both pass for that head. Neither job hands files to the
   # other; each checks out and bootstraps independently.
+  # Every upload in the PR jobs, and the diagnostics in full, only keeps copies
+  # for people to download: continue-on-error, so a full artifact quota can't
+  # turn a gate that passed red. The candidate and mini uploads in full stay
+  # strict, because a release is promoted from them.
   preview:
     name: Preview build (PR)
     if: github.event_name == 'pull_request'
@@ -65,6 +69,7 @@ jobs:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 build-support/isolated_acl_fixture.py --ephemeral-macos --expected-sha "$CANDIDATE_SHA" --output .wisp-build/run-acl-fixture
       - name: Upload isolated ACL qualification report
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -87,13 +92,15 @@ jobs:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 build-support/mini_artifact.py --source-sha "$CANDIDATE_SHA" --output dist/mini
       - name: Upload verified mini artifact
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: wisp-mini-${{ github.event.pull_request.head.sha || github.sha }}
           path: dist/mini/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
       - name: Upload preview build
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wisp-preview-${{ github.event.pull_request.head.sha || github.sha }}
@@ -103,8 +110,9 @@ jobs:
             dist/preview/*.md
             dist/preview/SHA256SUMS
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 3
       - name: Upload preview diagnostics
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -152,6 +160,7 @@ jobs:
       - name: Run sandboxed Simulation QA and contract gates
         run: ./scripts/wisp-build test --strict-toolchain
       - name: Upload Simulation QA diagnostics
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -192,6 +201,7 @@ jobs:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 build-support/isolated_acl_fixture.py --ephemeral-macos --expected-sha "$CANDIDATE_SHA" --output .wisp-build/run-acl-fixture
       - name: Upload isolated ACL qualification report
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -229,6 +239,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload diagnostics
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
