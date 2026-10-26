@@ -239,12 +239,15 @@ def test_status_on_a_mac_nothing_fits_offers_another_route(ram):
     assert _status(ram=16, installed=[], roles=_roles(GEMMA))["models"]["fits"] is True
 
 
-def test_admission_math_matches_the_engine_ceiling():
+def test_load_formula_reproduces_the_catalog_comment_numbers():
+    # Not a measurement of the engine: this pins the formula's output to the
+    # figures the catalog comment states (Gemma 5.88 GiB; 5 GiB left on 8 GB,
+    # 13 GiB on 16 GB), so a change to a constant has to update that comment.
     gemma = catalog.GEMMA_E4B_MTP
     needed = gemma.size_gb * 1e9 / 2**30 * catalog.LOAD_OVERHEAD + catalog.LOAD_WORKING_GIB
-    assert 5.8 < needed < 6.0
-    assert needed > 8 - catalog.SYSTEM_RESERVE_GIB          # refused on 8 GB
-    assert needed < 16 - catalog.SYSTEM_RESERVE_GIB         # admitted on 16 GB
+    assert round(needed, 2) == 5.88
+    assert 8 - catalog.SYSTEM_RESERVE_GIB == 5.0 and 16 - catalog.SYSTEM_RESERVE_GIB == 13.0
+    assert not catalog.fits_memory(gemma, 8) and catalog.fits_memory(gemma, 16)
 
 
 # --- checklist --------------------------------------------------------------

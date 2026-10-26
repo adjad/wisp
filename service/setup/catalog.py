@@ -100,10 +100,11 @@ def ranked_for(ram_gb: int, installed: list[str] | None = None) -> tuple[Catalog
     return obtainable or order
 
 
-# The engine's admission check, in the form Wisp can apply before a download:
-# a model loads only when its weights plus about 5% (runtime buffers) and half a
-# GiB of working room stay under what the engine leaves itself, about the Mac's
-# memory less 3 GiB for macOS and other apps. Gemma 4 E4B (5.5 GB, 5.88 GiB
+# Wisp's estimate of the engine's admission check, applied before a download
+# (an approximation of oMLX's memory guard, not a reading of it): a model loads
+# only when its weights plus about 5% (runtime buffers) and half a GiB of
+# working room stay under what the engine leaves itself, about the Mac's memory
+# less 3 GiB for macOS and other apps. Gemma 4 E4B (5.5 GB, 5.88 GiB
 # with that overhead) fits on 16 GB and is refused on 8 GB (a 5 GiB ceiling),
 # where the first question would fail with "Free some memory". Ling's 4-bit
 # build (4.6 GB) lands within a few MB of the 8 GB ceiling, so it is no
