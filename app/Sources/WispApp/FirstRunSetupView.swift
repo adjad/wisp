@@ -517,6 +517,8 @@ struct FirstRunSetupView: View {
     @State private var progressWatch = DownloadProgressWatch()
     /// A finished download the engine still hadn't listed after 30 s.
     @State private var stuckDownload: String?
+    /// The one automatic test once Wisp is ready (it also loads the model).
+    @State private var testedOnce = false
     var openDetailedSetup: () -> Void
     var finish: (_ tellAboutYou: Bool) -> Void
     /// Every permission read, so the readers waiting on a row can start.
@@ -599,6 +601,12 @@ struct FirstRunSetupView: View {
         case .switching(let model, _) where appliedModel != model && setup.busy == nil:
             appliedModel = model
             Task { await setup.apply(model) }
+        case .ready where !testedOnce && setup.busy == nil && setup.statusIsCurrent:
+            // "Ready" only means the engine lists the model. One short question
+            // proves it answers, and loads it while the person reads the rest, so
+            // the first real question doesn't pay the cold load.
+            testedOnce = true
+            Task { await setup.test() }
         case .waitingForEngine(let model, _):
             DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
                 if case .waitingForEngine(let current, _) = brain, current == model { stuckDownload = model }
@@ -907,8 +915,15 @@ struct FirstRunSetupView: View {
                 }
             }
         case .ready(let label):
-            card(icon: "checkmark.circle.fill", title: "\(label) is ready", detail: "Wisp can answer now.") {
-                pill("Ready")
+            card(icon: "checkmark.circle.fill", title: "\(label) is ready",
+                 detail: setup.testing ? "Checking it answers…" : (setup.testResult ?? "Wisp can answer now.")) {
+                if setup.testing {
+                    ProgressView().controlSize(.small)
+                } else if setup.testResult != nil && !setup.testPassed {
+                    Button("Try again") { Task { await setup.test() } }.buttonStyle(FirstRunButtonStyle())
+                } else {
+                    pill("Ready")
+                }
             }
         }
         if setup.messageIsError, let message = setup.message {
