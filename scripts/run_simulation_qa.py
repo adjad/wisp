@@ -352,6 +352,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_engine_downloads.py",
     # Per-model engine settings seeded into a temp model_settings.json; no engine runs.
     "tests/test_engine_profiles.py",
+    "tests/test_engine_memory_guard.py",
     "tests/test_bundled_engine.py",
     "tests/test_bundled_engine_mode.py",
     # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.

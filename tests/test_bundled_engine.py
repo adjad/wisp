@@ -197,7 +197,8 @@ def test_key_and_settings_persistence() -> None:
         again = EngineManager(layout)
         check("restart keeps the key", again.api_key == first.api_key)
         doc = json.loads(layout.settings_path.read_text())
-        check("fresh settings do not set a vendor memory profile", "memory" not in doc)
+        check("fresh settings start the memory guard on aggressive",
+              doc.get("memory") == {"memory_guard_tier": "aggressive"})
         memory = {"memory_guard_tier": "balanced", "prefill_memory_guard": True,
                   "max_process_memory": "70%", "max_model_memory": "60%"}
         doc["memory"] = memory
