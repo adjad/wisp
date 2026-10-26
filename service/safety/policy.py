@@ -959,8 +959,9 @@ def shell_grant_problem(args: dict) -> str | None:
 # readOnlyHint/destructiveHint handling (service.mcp._category_for) decide
 # mcp_read separately and are unchanged. Names are judged in their
 # registered form: lowercased, with every non-alphanumeric made `_`.
+# Not "check": check_task and check_item mean "mark done".
 _MCP_READ_VERBS = frozenset({"get", "list", "search", "read", "fetch", "query", "find", "view",
-                             "check", "inspect", "describe", "lookup", "count", "show", "preview",
+                             "inspect", "describe", "lookup", "count", "show", "preview",
                              "render", "retrieve"})
 # Backstop for names that start with a read verb: any of these, as a whole
 # word, means it asks (search_and_post, query_post, get_and_delete...).
@@ -973,10 +974,16 @@ _MCP_EFFECT_WORDS = frozenset({
     "label", "start", "apply", "complete", "respond", "mark", "patch", "fork", "star", "rerun",
     "assign", "dismiss", "close", "duplicate", "request", "exercise", "trade", "buy", "sell",
     "approve", "subscribe", "unsubscribe", "enable", "disable", "toggle", "trigger",
+    "drop", "purge", "revoke", "install", "uninstall",
+    # A name that joins two actions (get_and_purge, fetch_then_install):
+    # the read verb in front says nothing about the second one.
+    "and", "then", "or",
 })
 # And as a substring of a squashed word (getandsend, readthensubmit).
 _MCP_EFFECT_STEMS = ("send", "delete", "remove", "create", "update", "modify", "upload",
-                     "forward", "transfer", "purchase", "submit", "execute", "insert", "publish")
+                     "forward", "transfer", "purchase", "submit", "execute", "insert", "publish",
+                     "write", "archive", "share", "reply", "cancel", "merge", "export", "draft",
+                     "replace", "rename")
 
 
 def _mcp_tool_part(tool: str) -> str | None:
@@ -1001,6 +1008,8 @@ def mcp_effect_word(tool: str | None) -> str | None:
     words = [w for w in re.split(r"[_\-.]+", part) if w]
     if not words or words[0] not in _MCP_READ_VERBS:
         return "change things (its name does not start with get, list, search or read)"
+    if words == ["query"]:
+        return "run any query it is given (a bare query tool can write)"
     if (word := next((w for w in words[1:] if w in _MCP_EFFECT_WORDS), None)):
         return word
     if (stem := next((s for s in _MCP_EFFECT_STEMS if any(s in w for w in words)), None)):

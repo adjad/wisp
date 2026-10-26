@@ -280,7 +280,8 @@ class MCPManager:
     def _register(self, server: MCPServer) -> None:
         for spec in server.tools:
             prefix = _local_name(f"mcp_{server.name}_")
-            local = _local_name(f"mcp_{server.name}_{spec['name']}")[:64]
+            full = _local_name(f"mcp_{server.name}_{spec['name']}")
+            local = full[:64]
             if local in REGISTRY and local not in self._registered:
                 continue                # never shadow a built-in
             schema = spec.get("inputSchema") or {"type": "object", "properties": {}}
@@ -292,7 +293,8 @@ class MCPManager:
                 func=_make_caller(server, spec["name"], schema),
             )
             self._registered.add(local)
-            TOOL_PARTS[local] = local[len(prefix):]
+            # From the untruncated name, so an effect word past the cut still counts.
+            TOOL_PARTS[local] = full[len(prefix):]
 
     async def stop(self) -> None:
         for name in self._registered:

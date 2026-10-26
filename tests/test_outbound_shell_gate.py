@@ -599,10 +599,12 @@ def _tier(name):
     return policy.decide(REGISTRY[name].category, {}, tool=name).tier
 
 
-# Reads that do not lead with a read verb (debug, download, generate) or hold
-# an effect word (batch): they ask, which is safe.
-WORKSPACE_READS_THAT_ASK = ["debug_table_structure", "download_chat_attachment", "generate_trigger_code",
-                            "get_gmail_messages_content_batch", "get_gmail_threads_content_batch"]
+# Reads that do not lead with a read verb (check, debug, download, generate)
+# or hold an effect word (batch, share in "shareable"): they ask, which is safe.
+WORKSPACE_READS_THAT_ASK = ["check_drive_file_public_access", "debug_table_structure",
+                            "download_chat_attachment", "generate_trigger_code",
+                            "get_gmail_messages_content_batch", "get_gmail_threads_content_batch",
+                            "get_drive_shareable_link"]
 
 
 def test_workspace_tool_lists_cover_all_of_2_2_0():
@@ -653,7 +655,7 @@ def test_names_from_the_re_review_ask(server, tool, full_access, registered_mcp)
 @pytest.mark.parametrize("server,tool", [
     ("linear", "get_issue"), ("slack", "list_channels"), ("slack", "search_messages"),
     ("fs", "read_file"), ("chat", "get_messages"), ("notion", "query_database"),
-    ("brave-search", "search"), ("google_workspace", "get_drive_shareable_link"),
+    ("brave-search", "search"), ("db", "query_database"), ("docs", "list_pages"),
 ])
 def test_common_reads_stay_card_free(server, tool, full_access, registered_mcp):
     (name,) = registered_mcp(server, tool)
@@ -678,4 +680,32 @@ def test_an_unregistered_mcp_name_asks(full_access):
 def test_outside_full_access_every_mcp_action_still_asks(full_access, registered_mcp, monkeypatch):
     monkeypatch.setattr(policy, "_FULL_ACCESS", False)
     (name,) = registered_mcp("linear", "get_issue")
+    assert _tier(name) is policy.Tier.CONFIRM
+
+
+# --- pre-freeze notes on 7d792dd6 ---------------------------------------------
+
+@pytest.mark.parametrize("server,tool", [
+    ("x", "get_and_purge"), ("x", "list_and_revoke_tokens"), ("x", "fetch_and_install"),
+    ("x", "fetch_then_install"), ("x", "get_or_create_page"), ("db", "query_drop_table"),
+    ("todo", "check_task"), ("todo", "check_item"), ("db", "query"),
+    ("x", "get_threadandarchive"), ("x", "fetch_and_writefile"), ("mail", "get_drafts"),
+    ("x", "list_shared_files"), ("x", "get_replyto"),
+])
+def test_pre_freeze_names_ask(server, tool, full_access, registered_mcp):
+    (name,) = registered_mcp(server, tool)
+    assert _tier(name) is policy.Tier.CONFIRM, name
+
+
+@pytest.mark.parametrize("server,tool", [("db", "query_database"), ("db", "query_rows"),
+                                         ("x", "search_orders"), ("x", "list_ordinals")])
+def test_a_query_with_an_object_still_reads(server, tool, full_access, registered_mcp):
+    (name,) = registered_mcp(server, tool)
+    assert _tier(name) is policy.Tier.ALLOW, name
+
+
+def test_an_effect_word_past_the_64_character_cut_still_asks(full_access, registered_mcp):
+    tool = "get_" + "very_long_" * 7 + "and_delete_everything"
+    (name,) = registered_mcp("server", tool)
+    assert len(name) == 64 and "delete" not in name
     assert _tier(name) is policy.Tier.CONFIRM
