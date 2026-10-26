@@ -118,18 +118,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One Wisp at a time. A second launch used to terminate the first one's
         // backend and race it for the port; now it hands over to the running app.
-        let peers = NSRunningApplication
-            .runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-            .map(\.processIdentifier)
         let selfPID = ProcessInfo.processInfo.processIdentifier
+        let peerApps = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0.processIdentifier != selfPID }
         if SingleInstance.shouldYield(bundleIdentifier: Bundle.main.bundleIdentifier,
-                                      selfPID: selfPID, peers: peers) {
-            NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-                .first { $0.processIdentifier != selfPID }?
-                .activate(options: [])
-            terminateWithoutShutdown()
+                                      selfPID: selfPID, peers: peerApps.map(\.processIdentifier)) {
+            // macOS's Quit & Reopen (after Full Disk Access) can relaunch Wisp while
+            // the old copy is still stopping its engine (up to 20 s). Handing over
+            // to that dying copy left nothing running, so wait for it to go, then
+            // launch. A live copy still gets the hand-over, as before.
+            let defaults = UserDefaults.standard
+            let shuttingDown = defaults.integer(forKey: Self.shuttingDownPIDKey)
+            if FirstRunSetup.waitsForPeerToQuit(
+                resumePending: defaults.bool(forKey: FirstRunSetup.resumeKey),
+                peerShuttingDown: peerApps.contains { Int($0.processIdentifier) == shuttingDown }) {
+                Task { @MainActor [weak self] in
+                    // Polled on the main actor between sleeps, so the run loop keeps
+                    // turning (isTerminated is updated there) and nothing hangs.
+                    let deadline = Date().addingTimeInterval(FirstRunSetup.peerQuitWait)
+                    while !peerApps.allSatisfy(\.isTerminated), Date() < deadline {
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                    }
+                    guard let self else { return }
+                    if peerApps.allSatisfy(\.isTerminated) { self.launch() } else { self.yield(to: peerApps) }
+                }
+                return
+            }
+            yield(to: peerApps)
             return
         }
+        launch()
+    }
+
+    /// Set by a Wisp that has started quitting (noteTerminating), so a copy
+    /// launched in the meantime waits for it instead of handing over to it.
+    private static let shuttingDownPIDKey = "wisp.shuttingDownPID"
+    /// The full launch ran. Until then (a second copy waiting for the first to
+    /// quit) a Dock click or a quit does nothing of Wisp's own.
+    private var launched = false
+
+    private func yield(to peers: [NSRunningApplication]) {
+        peers.first { !$0.isTerminated }?.activate(options: [])
+        terminateWithoutShutdown()
+    }
+
+    private func launch() {
+        launched = true
+        // Whoever was shutting down is gone now.
+        UserDefaults.standard.removeObject(forKey: Self.shuttingDownPIDKey)
         // Port 8000 belongs to oMLX and is deliberately NOT policed here: it used to be
         // cleared by killing whatever listened (which took out MTPLX and Homebrew oMLX
         // along with the odd stray server). oMLX's own peer attribution refuses an
@@ -440,6 +477,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defaults.removeObject(forKey: FirstRunSetup.resumeKey)
         } else if FirstRunSetup.resumesAtNextLaunch(ending) {
             defaults.set(true, forKey: FirstRunSetup.resumeKey)
+        } else {
+            // Closed early: the person put setup aside, so a mark left by opening
+            // Full Disk Access (and never toggling it) must not reopen it past the cap.
+            defaults.removeObject(forKey: FirstRunSetup.resumeKey)
         }
         setupModel.hide(from: "first-run")
         if let observer = firstRunCloseObserver { NotificationCenter.default.removeObserver(observer) }
@@ -521,6 +562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // also bring back a minimized window of its own choosing: that, and opening
     // chat while unfinished setup sat in the notch, was the "two windows" bug.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard launched else { return false }
         let guideStandsIn = firstRunHiddenForGuide && (setupWindow?.isVisible == true || setupWindow?.isMiniaturized == true)
         let unfinished = firstRunWindow != nil || guideStandsIn
             || FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) })
@@ -1448,7 +1490,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func noteTerminating() {
         guard !appTerminating else { return }
         appTerminating = true
+        // A copy that is only handing over (or waiting) owns nothing to resume.
+        guard launched else { return }
         let defaults = UserDefaults.standard
+        defaults.set(Int(ProcessInfo.processInfo.processIdentifier), forKey: Self.shuttingDownPIDKey)
         if firstRunWindow != nil, FirstRunSetup.resumesAtNextLaunch(.appQuit),
            FirstRunSetup.isUnfinished({ defaults.bool(forKey: $0) }) {
             defaults.set(true, forKey: FirstRunSetup.resumeKey)
@@ -1513,6 +1558,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         noteTerminating()
         if shutdownFinished { return .terminateNow }
+        // Still waiting for a quitting copy: no engine or backend of ours to stop.
+        if !launched { shutdownFinished = true; return .terminateNow }
         systemAwaitingReply = true
         if !shutdownStarted { beginShutdown() }
         return .terminateLater

@@ -170,7 +170,7 @@ def test_setup_resumes_at_its_step_after_a_quit():
     # The step is cleared only when setup is finished.
     assert app.count("removeObject(forKey: FirstRunSetup.stepKey)") == 1
     # Launch: the resume mark is consumed, and only a reopen after an early close counts.
-    launch = _body(app, "func applicationDidFinishLaunching(")
+    launch = _body(app, "private func launch()")
     assert "FirstRunSetup.launchCountsTowardCap(flag)" in launch
     assert "defaults.removeObject(forKey: FirstRunSetup.resumeKey)" in launch
     assert "if countsTowardCap {" in launch
@@ -211,3 +211,38 @@ def test_messages_has_its_own_permission_row():
     # No System Events or Accessibility in setup: those stay asked at use.
     assert "com.apple.systemevents" not in setup.lower()
     assert "AXIsProcessTrustedWithOptions" not in setup
+
+
+def test_relaunch_waits_for_a_quitting_copy_instead_of_yielding_to_it():
+    """macOS's Quit & Reopen can start a new Wisp while the old one is still
+    stopping its engine. Handing over to that dying copy left nothing running."""
+    app = _sources()["AppDelegate.swift"]
+    launch = _body(app, "func applicationDidFinishLaunching(")
+    assert "SingleInstance.shouldYield(" in launch
+    assert "FirstRunSetup.waitsForPeerToQuit(" in launch
+    assert "defaults.bool(forKey: FirstRunSetup.resumeKey)" in launch
+    assert "Self.shuttingDownPIDKey" in launch
+    # Bounded, polled with an async sleep (never a blocking wait on the main thread).
+    assert "FirstRunSetup.peerQuitWait" in launch and "Task.sleep" in launch
+    for blocking in ("Thread.sleep", "usleep(", "waitUntilExit", "semaphore", "DispatchGroup"):
+        assert blocking not in launch, blocking
+    # Gone: launch. Still alive at the deadline: the old hand-over.
+    assert "if peerApps.allSatisfy(\\.isTerminated) { self.launch() } else { self.yield(to: peerApps) }" in launch
+    assert launch.rstrip("} \n").endswith("launch()")
+    yield_body = _body(app, "private func yield(to peers: [NSRunningApplication])")
+    assert ".activate(options: [])" in yield_body and "terminateWithoutShutdown()" in yield_body
+    # The quitting copy says so before anything else, and only a launched copy does.
+    note = _body(app, "private func noteTerminating()")
+    assert note.index("guard launched else { return }") < note.index("forKey: Self.shuttingDownPIDKey")
+    # While waiting, a Dock click or a quit touches nothing of Wisp's own.
+    assert _body(app, "func applicationShouldHandleReopen(").lstrip("{ \n").startswith("guard launched else { return false }")
+    assert "if !launched { shutdownFinished = true; return .terminateNow }" in _body(app, "func applicationShouldTerminate(")
+    assert _body(app, "private func launch()").lstrip("{ \n").startswith("launched = true")
+
+
+def test_an_early_close_clears_a_stale_resume_mark():
+    app = _sources()["AppDelegate.swift"]
+    closed = _body(app, "private func firstRunClosed()")
+    tail = closed[closed.index("else if FirstRunSetup.resumesAtNextLaunch(ending)"):]
+    early = _body(tail, "} else")
+    assert "defaults.removeObject(forKey: FirstRunSetup.resumeKey)" in early

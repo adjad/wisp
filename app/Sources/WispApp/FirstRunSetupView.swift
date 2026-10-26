@@ -91,6 +91,18 @@ enum FirstRunSetup {
     /// toward the cap (and past it): only when Wisp ended with the window up.
     static func resumesAtNextLaunch(_ ending: Ending) -> Bool { ending == .appQuit }
 
+    /// How long a relaunched Wisp waits for an old copy that is quitting: longer
+    /// than that copy's own 20 s bound on stopping its engine.
+    static let peerQuitWait: TimeInterval = 25
+
+    /// A second Wisp normally hands over to the running one. It waits for that
+    /// one to quit instead (then launches) when the running one said it is
+    /// shutting down, or setup expects a relaunch (macOS's Quit & Reopen after
+    /// Full Disk Access): handing over to a dying copy leaves nothing running.
+    static func waitsForPeerToQuit(resumePending: Bool, peerShuttingDown: Bool) -> Bool {
+        resumePending || peerShuttingDown
+    }
+
     /// Before System Settings opens for Full Disk Access during setup: switching
     /// Wisp on there makes macOS offer Quit & Reopen, and that quit (or a kill
     /// that never reaches applicationShouldTerminate) must bring setup back here.

@@ -118,6 +118,16 @@ struct FirstRunSetupChecks {
               "Finished users are never pulled back in, even with a leftover resume mark")
         check(!FirstRunSetup.shouldShow { $0 == FirstRunSetup.resumeKey || $0 == FirstRunSetup.notchTipShownKey },
               "A resume mark without a started window (an upgrader) shows nothing")
+        // A copy macOS relaunches while the old one is still quitting waits for it
+        // instead of handing over to it; a live copy still gets the hand-over.
+        check(!FirstRunSetup.waitsForPeerToQuit(resumePending: false, peerShuttingDown: false),
+              "A live copy, nothing pending: hand over at once, as before")
+        check(FirstRunSetup.waitsForPeerToQuit(resumePending: false, peerShuttingDown: true),
+              "The running copy said it is shutting down: wait, then launch")
+        check(FirstRunSetup.waitsForPeerToQuit(resumePending: true, peerShuttingDown: false),
+              "Setup expects a relaunch (Quit & Reopen after Full Disk Access): wait, then launch")
+        check(FirstRunSetup.peerQuitWait > 20 && FirstRunSetup.peerQuitWait <= 30,
+              "The wait outlasts the old copy's 20 s shutdown bound, and stays bounded")
         // Before System Settings opens for Full Disk Access.
         var marked: [String] = []
         FirstRunSetup.expectRelaunch({ set.contains($0) }, { marked.append($0) })
