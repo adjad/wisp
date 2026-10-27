@@ -23,6 +23,7 @@ First release candidate for testers; see [docs/releases/0.5.0-rc1.md](docs/relea
 - **Connect Google for testers.** A tester build can carry a built-in Google sign-in. The account must be on the developer's tester list, Google shows an "unverified app" warning (choose Continue), and the sign-in expires every 7 days while Wisp is in testing: Wisp posts one "Google sign-in expired" notification and Settings ▸ Google offers to reconnect. One sign-in asks, read-only, for Gmail (required), Calendar, Drive, Docs, Sheets, Slides, Chat, Tasks and Contacts; any but Gmail can be unticked and added later with Reconnect. The Google tools run through a pinned `workspace-mcp` 2.2.0 that the first connection sets up, with a `uv` 0.12.23 bundled in the app (pinned by size and SHA-256), so nothing needs installing. A client you paste into Settings ▸ Google is always used before the built-in one. See [docs/google-cloud-setup.md](docs/google-cloud-setup.md) and [docs/build-release.md](docs/build-release.md).
 - **Brief and Day on a first day.** A source Wisp couldn't read is never an all-clear: the row says why and links to the System Settings page that fixes it (Calendars, Reminders, Full Disk Access, Automation, Internet Accounts). A Google account whose mail wasn't checked is named, as "hasn't finished checking" or "reconnect". The day-one Daily Summary waits up to 15 minutes after first launch for permissions still unanswered, then is rebuilt once when a missing source arrives or Getting to know you finishes. Routine actions are only offered for the first 3 days (or until you tap Useful or Undo once). A reply card opens its draft first, and the service refuses to send a reply without the shown words.
 - **Ask answers questions about Wisp.** "What can you do?", "Who are you?", "Is my data private?" and "How do I use Wisp?" are answered by Wisp itself, without the model, from what is live on this Mac. Getting to know you stays on this Mac, goes only to Wisp's own model or your verified tailnet Mac (never an optional cloud model), and Erase deletes every copy.
+- **Long-email digests in Ask.** An email too long for Ask's tool result is digested whole by the on-Mac model (thinking off, no tools, one at a time, 20 s limit) instead of cut off at about 6,000 characters; dates, amounts, codes and times are repeated verbatim. Mail is never sent off the Mac for it, and any failure returns the email as before.
 - **Model download in the notch's setup card.** Progress, speed and time left; the Mac is kept awake while bytes move and let go after 10 minutes with no progress, 90 s of failed reads or 6 hours; Wisp still switches to the model when it finishes. Macs under 16 GB are not offered a model the engine would refuse to load.
 - **Wisp on a Mac without a notch** (M1 Air, 13" Pro, iMac): no bar is drawn. The menu-bar icon shows the status, and pushing the pointer against the top-centre edge opens the panel as a card under the menu bar.
 
@@ -36,6 +37,9 @@ First release candidate for testers; see [docs/releases/0.5.0-rc1.md](docs/relea
 - New **Permissions...** item in the menu-bar icon's right-click menu. It opens the setup window at the Permissions step.
 - Calendar, Reminders, Notifications and Contacts are no longer requested at launch or by their readers. Contacts is offered once Messages is readable.
 - Setup appears in one place at a time: while the first-run window is up, the Dock icon, the menu and the notch's Continue setup bring it forward instead of opening a second surface. A Dock click brings forward exactly one window, and every window can be minimized.
+- Setup uses an oMLX you already run instead of downloading again: it starts it once, shows "Connecting to your oMLX…", and offers **Try again** after about 10 seconds. Setup finishes only on **Done**; a quit, an early close or macOS's Quit & Reopen after Full Disk Access resumes it at the same step. Permissions has a **Messages** row. Ask's **Try another** row keeps unused starters reachable.
+- Priority email evidence cuts each body to 400 characters and gives mail a larger budget, so one long newsletter no longer hides the rest; each record carries its unread flag.
+- The Mellum R2 dataset is archived and its source-contract check retired, since Wisp no longer uses Mellum.
 - Accessibility requests from the search panel show one system surface instead of a prompt and a Settings page together.
 
 ### Security and privacy
@@ -45,7 +49,7 @@ First release candidate for testers; see [docs/releases/0.5.0-rc1.md](docs/relea
 
 ### Known issues
 - Not notarized (see above). Google sign-in is limited to the tester list and expires every 7 days. The first Google connection downloads the Google tools, so it needs internet.
-- TODO: add anything the clean-account run finds before publishing.
+- Reopening setup from **Permissions…** after finishing it, with your own oMLX off, can show "Connecting…" with no **Try again**; the Mail and Notes and Messages rows read "Not set" while those apps are closed. A long-email digest adds about 5 seconds.
 
 ## [0.5.0] - In preparation
 
