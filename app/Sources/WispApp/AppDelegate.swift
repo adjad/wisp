@@ -520,7 +520,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openDetailedSetup: { [weak self] in self?.openSetupGuide() },
             finish: { [weak self] prompt in self?.finishFirstRun(asking: prompt) },
             permissionsChanged: { [weak self] states in self?.firstRunPermissionsChanged(states) },
-            stepChanged: { step in UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey) },
+            stepChanged: { [weak self] step in
+                UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey)
+                // The last step means the permissions and About you are answered, so the
+                // first Brief can be composed now instead of at its hour. Only during
+                // setup (Permissions… opened later never gets here), and only once the
+                // model answers: a Brief made without it would stand as the day's.
+                if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }),
+                   self?.setupModel.status?.canAnswer == true {
+                    Task { await self?.client.onboardingBriefReady() }
+                }
+            },
             askKeyRegistered: hotKey?.registered ?? false,
             searchKeyRegistered: searchHotKey?.registered ?? false,
             // "Setup still unfinished" (started, not done), not "doneKey unset": someone

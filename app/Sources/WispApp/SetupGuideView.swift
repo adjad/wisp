@@ -90,9 +90,16 @@ struct SetupStatus: Decodable {
         case offering(model: String, label: String)
     }
 
+    /// Setup is on the person's own oMLX app: not the built-in engine, oMLX.app is
+    /// installed, Wisp can't answer yet, and at least one role runs locally. Whether
+    /// its model list has filled in is a separate question (`existingOmlx`).
+    var usesOwnOmlx: Bool {
+        omlx.bundled != true && omlx.installed && !ready && roles.contains { $0.endpoint == "local" }
+    }
+
     var existingOmlx: ExistingOmlx? {
         let local = roles.filter { $0.endpoint == "local" }
-        guard omlx.bundled != true, omlx.installed, !ready, !local.isEmpty else { return nil }
+        guard usesOwnOmlx else { return nil }
         guard omlx.running else { return .connecting }
         guard let model = models.use,
               let entry = models.installed.first(where: { $0.id == model }) else { return nil }

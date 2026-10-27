@@ -336,6 +336,16 @@ final class WispClient {
         return BriefTimes.parse(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    // POST /assistant/onboarding/brief_ready. First-run onboarding reached its last
+    // step, so the service may compose the first Brief now. Fire-and-forget: the
+    // service records it once, and a failure only means the Brief waits for its hour.
+    func onboardingBriefReady() async {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/onboarding/brief_ready"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        _ = try? await URLSession.shared.data(for: req)
+    }
+
     // --- behavior engine (service/behavior) ---------------------------------
     // Learned routines, predictions and nudges. Nudges themselves arrive as
     // `nudge` events on the assistant stream; these calls answer them.

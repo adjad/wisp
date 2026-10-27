@@ -322,4 +322,4 @@ def test_first_run_retries_a_skipped_start_and_always_reaches_try_again():
     assert ".onChange(of: setup.statusIsCurrent) { _, _ in retryStart() }" in view
     assert ".onChange(of: setup.busy) { _, _ in retryStart() }" in view
     assert "if case .startingEngine = brain { drive(brain) }" in view
-    assert "FirstRunBrain.startStalled(" in view and "connecting: setup.status?.existingOmlx == .connecting" in view
+    assert "FirstRunBrain.startStalled(" in view and "ownOmlx: setup.status?.usesOwnOmlx == true" in view

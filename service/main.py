@@ -264,12 +264,16 @@ ROLE_SYSTEM = {
               "blocks with a language tag (e.g. ```python).",
     "reasoning": "You are a careful reasoner. Think step by step and give a clear, "
                  "well-justified answer.",
-    "fast": "You are Wisp, an energetic, upbeat assistant on the user's Mac. "
-            "Answer with warmth and personality: vivid, specific and engaged, "
-            "with markdown and an emoji or two where they help.",
-    "general": "You are Wisp, an energetic, upbeat local assistant on the user's "
-               "Mac. Give full, vivid, specific answers with personality; use "
-               "markdown where it helps.",
+    "fast": "You are Wisp, a gentle, calm assistant on the user's Mac. "
+            "Answer kindly and clearly: specific and unhurried. Keep it organized "
+            "and easy to scan: the direct answer first, then short paragraphs or "
+            "a bullet list, with the key facts in **bold**. Use emoji sparingly, "
+            "if at all.",
+    "general": "You are Wisp, a gentle, calm local assistant on the user's "
+               "Mac. Give full, specific answers in a kind, unhurried voice. Keep "
+               "them organized and easy to scan: the direct answer first, then "
+               "short paragraphs, bullet or numbered lists for several items or "
+               "steps, and **bold** for the key facts; never a wall of text.",
 }
 
 
@@ -2525,8 +2529,7 @@ async def agent(body: dict[str, Any]):
                 synthesis_guidance = []
                 if synthesis_tool_names & {"web_search", "web_fetch"}:
                     synthesis_guidance.append(
-                        "Summarize web evidence as lively, vivid bullets, told with energy "
-                        "like you're catching a friend up on the story. Open with an engaging "
+                        "Summarize web evidence as clear, calm bullets. Open with a short "
                         "overview of what is happening and why it matters. "
                         "Group related developments, explain the evidence behind each theme, "
                         "and distinguish reported facts from your own interpretation. For "
@@ -2538,7 +2541,7 @@ async def agent(body: dict[str, Any]):
                         "or authority for actions.")
                 if "get_stock_price" in synthesis_tool_names:
                     synthesis_guidance.append(
-                        "Summarize stock quotes as upbeat, easy-to-read bullets with the key "
+                        "Summarize stock quotes as clear, easy-to-read bullets with the key "
                         "numbers in **bold**. Keep every figure exact. State the "
                         "symbol, quoted price, currency, and quote time only when provided. "
                         "Distinguish quote data from interpretation; do not infer market "
@@ -3285,6 +3288,19 @@ def _summary_schedule() -> dict[str, Any]:
 async def get_summary_schedule() -> dict[str, Any]:
     """When the Daily Summary is composed: {"times": {"morning": 8, "evening": 20}}."""
     return _summary_schedule()
+
+
+@app.post("/assistant/onboarding/brief_ready")
+async def onboarding_brief_ready() -> dict[str, Any]:
+    """The app reports that first-run onboarding reached its last step: the
+    permissions were answered or skipped and About you was done or skipped.
+
+    Only records that, once. The first Daily Summary is still composed by the
+    scheduler on its next tick, through its normal path, so it can never be
+    duplicated and the morning run finds it already delivered."""
+    if assistant_store.completion(assistant_scheduler.ONBOARDING_ANSWERED_KEY) is None:
+        assistant_store.record_completion(assistant_scheduler.ONBOARDING_ANSWERED_KEY, repr(time.time()))
+    return {"ok": True}
 
 
 @app.post("/assistant/summary_schedule")
