@@ -15,7 +15,7 @@ Second release candidate for testers; it builds on rc1. See [docs/releases/0.5.0
 - TODO: list what rc2 adds.
 
 ### Changed
-- TODO: list what rc2 changes.
+- **Wisp takes about 2 GB less disk.** The engine's prompt cache is capped at 2 GB instead of 4 GB (an existing 4 GB limit is lowered the next time the engine starts; a smaller limit you set stays), and its image cache at 256 MB instead of 1 GB. The built-in engine also drops 108 MB of build-only files it never runs. Replies may be a little slower on the first turn after the model switches.
 
 ### Fixed
 - Reopening setup from **Permissions…** after finishing it, with your own oMLX off, now shows **Try again** after 10 seconds and says your oMLX isn't running, instead of "Connecting…" forever. Wisp still starts your oMLX by itself only during an unfinished first run.
