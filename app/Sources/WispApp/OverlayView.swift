@@ -34,6 +34,9 @@ struct OverlayView: View {
     // built-in displays (the menu-bar icon stands in), floating capsule on
     // monitors. Refreshes when displays change.
     @ObservedObject private var display = DisplayGeometry.shared
+    // The header's laid-out height (it grows with Text size), for the Brief and
+    // Day scroll cap.
+    @State private var headerHeight: CGFloat = 30
 
     var body: some View {
         Group {
@@ -73,9 +76,23 @@ struct OverlayView: View {
     private var layout: SurfaceLayout { display.layout }
     private var isNotch: Bool { layout.style == .notch }
 
+    /// Brief and Day under the fixed header: as tall as their content until the
+    /// panel would pass the screen's bottom (SurfaceLayout.maxPanelHeight), then
+    /// scrolling. Without this the window clipped the last rows out of reach.
+    private func tabScroll<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true) {
+            content().frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.top, SurfaceLayout.tabTopPadding)
+    }
+
     private var expandedPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+                .background(GeometryReader { geo in
+                    Color.clear.onAppear { headerHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { headerHeight = geo.size.height }
+                })
             if model.resetCard != nil {
                 // /resetwisp's confirmation takes the tab's place until Cancel.
                 ResetWispCard(model: model)
@@ -112,9 +129,9 @@ struct OverlayView: View {
                     }
                 }
             case .brief:
-                NotchBriefView(model: model, today: todayModel).padding(.top, 12)
+                tabScroll { NotchBriefView(model: model, today: todayModel) }
             case .day:
-                NotchDayView(model: model, today: todayModel).padding(.top, 12)
+                tabScroll { NotchDayView(model: model, today: todayModel) }
             case .research:
                 if model.showingResearch {
                     ResearchView(model: researchModel, compact: true,
@@ -140,7 +157,7 @@ struct OverlayView: View {
         // so its center is behind the camera housing — push the content
         // below it. A floating card just uses ordinary padding.
         .padding(EdgeInsets(top: layout.contentTopInset,
-                            leading: 22, bottom: 16, trailing: 22))
+                            leading: 22, bottom: SurfaceLayout.panelBottomPadding, trailing: 22))
         // Re-fit the native window whenever the CONTENT height changes. The
         // window doesn't auto-size to SwiftUI — OverlayPanel sets its height
         // from host.fittingSize, and its bottom edge hard-CLIPS anything taller
