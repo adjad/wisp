@@ -279,14 +279,22 @@ def _delete_or_trash(folder: Path, name: str, device: int, trash_id: str | None,
 
 def _erase_names(folder: Path, names: list[str], device: int, trash_id: str | None,
                  prefix: str, out: dict) -> None:
-    """Delete these entries of one folder, SQLite sidecars before their database
-    (a database whose sidecar stays is never deleted before it: with ``trash_id``
-    it is moved to the trash beside it, so the pair keeps its names)."""
+    """Delete these entries of one folder, SQLite sidecars before their database.
+    A database whose sidecar stays is never deleted before it: with ``trash_id``
+    it is moved to the trash beside that sidecar, so the pair keeps its names;
+    when a sidecar can be neither deleted nor moved, its database stays where it
+    is too (reported, never retried), so a fresh database never sits beside an
+    old write-ahead log."""
     entries = set(names)
     order = sorted(entries, key=lambda n: (_sidecar_owner(n, entries) is None, n))
     blocked: set[str] = set()
+    pinned: set[str] = set()
     for name in order:
         owner = _sidecar_owner(name, entries)
+        if owner is None and name in pinned:
+            out["failed"].append(prefix + name)
+            out["stuck"].append(prefix + name)
+            continue
         outcome, kept_as = _delete_or_trash(folder, name, device, trash_id,
                                             skip_delete=owner is None and name in blocked)
         if outcome == "removed":
@@ -294,6 +302,8 @@ def _erase_names(folder: Path, names: list[str], device: int, trash_id: str | No
             continue
         if owner is not None:
             blocked.add(owner)
+            if outcome != "trashed":
+                pinned.add(owner)
         out["failed"].append(prefix + name)
         if outcome == "trashed":
             out["trashed"].append(prefix + kept_as)
@@ -313,6 +323,19 @@ def _erase_engine(root: Path, device: int, doomed: list[str], trash_id: str | No
         if not _real_folder(folder, device) or not os.path.lexists(folder / name):
             continue
         _erase_names(folder, [name], device, trash_id, "engine/" + (folder_rel + "/" if folder_rel else ""), out)
+
+
+def _engine_trash(root: Path, device: int, trash_id: str) -> list[str]:
+    """This reset's trash entries in engine/ and engine/base/ (as paths inside engine/)."""
+    found: list[str] = []
+    for rel in ("", "base"):
+        folder = root / "engine" / rel if rel else root / "engine"
+        if not _real_folder(root / "engine", device) or not _real_folder(folder, device):
+            continue
+        with contextlib.suppress(OSError):
+            found += [f"{rel}/{name}" if rel else name for name in sorted(os.listdir(folder))
+                      if trash_path_ok(f"engine/{rel}/{name}" if rel else f"engine/{name}", trash_id)]
+    return found
 
 
 def erase_engine_caches(home: Path, user_home: Path, trash_id: str) -> dict:
@@ -344,8 +367,11 @@ def erase_home(home: Path, user_home: Path, *, engine_caches: bool = False,
     out: dict[str, list[str]] = {"removed": [], "failed": [], "trashed": [], "stuck": []}
     names = [entry.name for entry in os.scandir(root) if entry.name not in KEEP_ENTRIES]
     _erase_names(root, names, device, trash_id, "", out)
-    _erase_engine(root, device, sorted(ENGINE_DELETE) + (list(ENGINE_CACHES) if engine_caches else []),
-                  trash_id, out)
+    doomed = sorted(ENGINE_DELETE) + (list(ENGINE_CACHES) if engine_caches else [])
+    if trash_id is not None:
+        # Trash an earlier, interrupted pass of this reset left inside the engine.
+        doomed += _engine_trash(root, device, trash_id)
+    _erase_engine(root, device, doomed, trash_id, out)
     try:
         if _rewrite_config(root) == "removed":
             out["removed"].append("config.yaml")
@@ -355,6 +381,17 @@ def erase_home(home: Path, user_home: Path, *, engine_caches: bool = False,
     kept = sorted(name for name in os.listdir(root) if name in KEEP_ENTRIES)
     return {"removed": sorted(out["removed"]), "failed": sorted(set(out["failed"])), "kept": kept,
             "trashed": sorted(out["trashed"]), "stuck": sorted(set(out["stuck"]))}
+
+
+CONFIG_NOT_TRIMMED = "Couldn't trim config.yaml."
+
+
+def cant_delete_lines(names) -> list[str]:
+    """The problem lines for entries left behind (config.yaml is trimmed, not deleted)."""
+    names = sorted(set(names))
+    lines = [CONFIG_NOT_TRIMMED] if "config.yaml" in names else []
+    rest = [n for n in names if n != "config.yaml"]
+    return (["Couldn't delete: " + ", ".join(rest)] if rest else []) + lines
 
 
 def trash_path_ok(path: str, trash_id: str) -> bool:
@@ -531,13 +568,36 @@ def read_marker(home: Path) -> dict | None:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as source:
-            doc = json.loads(source.read(65536))
+            doc = parse_marker_json(source.read(65536))
     except (OSError, ValueError):
         return InvalidMarker(reason="not valid JSON")
-    checks = isinstance(doc, dict) and doc.get("version") == 1 and doc.get("phase") in PHASES
+    return marker_from_json(doc)
+
+
+def _no_constant(name: str):
+    raise ValueError(f"{name} is not JSON")
+
+
+def parse_marker_json(data: bytes) -> Any:
+    """Strict JSON, as the app's JSONSerialization reads it: NaN and Infinity are refused."""
+    return json.loads(data, parse_constant=_no_constant)
+
+
+def marker_from_json(doc: Any) -> dict:
+    """A parsed marker, or InvalidMarker. The app applies exactly these rules
+    (ResetWisp.swift, WispReset.Marker.parse; tests/fixtures/reset_markers.json
+    holds the cases both sides check), so the two never disagree on a marker.
+
+    version is the integer 1, phase one of PHASES, id 1-64 ASCII letters and
+    digits; when present, attempts is a non-negative integer, full_pass,
+    engine_cache and in_progress are booleans, pending lists this reset's trash
+    paths and problems lists strings."""
+    checks = (isinstance(doc, dict) and type(doc.get("version")) is int and doc["version"] == 1
+              and isinstance(doc.get("phase"), str) and doc["phase"] in PHASES and "id" in doc)
     if checks:
         doc = {**new_marker(), **doc}
-        checks = (isinstance(doc["id"], str) and 0 < len(doc["id"]) <= 64 and doc["id"].isalnum()
+        checks = (isinstance(doc["id"], str) and 0 < len(doc["id"]) <= 64
+                  and doc["id"].isascii() and doc["id"].isalnum()
                   and type(doc["attempts"]) is int and doc["attempts"] >= 0
                   and type(doc["full_pass"]) is bool and type(doc["engine_cache"]) is bool
                   and type(doc["in_progress"]) is bool
@@ -693,16 +753,16 @@ def resume_pending(home: Path | None = None, user_home: Path | None = None) -> d
                         # The engine was running at the first pass; its cache is only a cache.
                         cache = erase_engine_caches(root, user_home, doc["id"])
                         doc["pending"] = sorted(set(doc["pending"]) | set(cache["trashed"]))
-                        if cache["stuck"]:
-                            note("Couldn't delete: " + ", ".join(cache["stuck"]))
+                        for line in cant_delete_lines(cache["stuck"]):
+                            note(line)
                         doc["engine_cache"] = True
                 else:
                     sweep = erase_home(root, user_home, engine_caches=engine_stopped, trash_id=doc["id"])
                     doc["full_pass"] = True
                     doc["pending"] = sweep["trashed"]
                     doc["engine_cache"] = engine_stopped
-                    if sweep["stuck"]:
-                        note("Couldn't delete: " + ", ".join(sweep["stuck"]))
+                    for line in cant_delete_lines(sweep["stuck"]):
+                        note(line)
                 _log(f"restart pass {doc['attempts']}: removed {len(sweep['removed'])}, "
                      f"{len(doc['pending'])} left")
             except Exception as exc:  # noqa: BLE001 — counted; it can't run past MAX_ATTEMPTS
@@ -712,8 +772,8 @@ def resume_pending(home: Path | None = None, user_home: Path | None = None) -> d
         if finished or doc["attempts"] >= MAX_ATTEMPTS:
             if not doc["full_pass"]:
                 note("Wisp couldn't finish deleting its data.")
-            if doc["pending"]:
-                note("Couldn't delete: " + ", ".join(sorted({display_name(n) for n in doc["pending"]})))
+            for line in cant_delete_lines(display_name(n) for n in doc["pending"]):
+                note(line)
             if doc["full_pass"] and not doc["engine_cache"]:
                 note("The engine's prompt cache was kept because the engine was still running.")
             doc["phase"] = "erased"
@@ -935,7 +995,7 @@ async def reset_wisp(request: Request) -> dict[str, Any]:
             return _reply(erased=False, accounts=accounts, problems=problems,
                           detail=problems[-1]["detail"])
         if sweep["failed"]:
-            problems.append({"part": "files", "detail": "Couldn't delete: " + ", ".join(sweep["failed"])})
+            problems.append({"part": "files", "detail": " ".join(cant_delete_lines(sweep["failed"]))})
         with contextlib.suppress(OSError):
             # Never "erased" here: only the restart pass, with this service and the
             # engine stopped, may say that (resume_pending).

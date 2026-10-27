@@ -347,7 +347,15 @@ final class BackendManager {
         return line.count > 160 ? String(line.prefix(159)) + "…" : line
     }
 
+    /// service/wisp_reset.REFUSED_EXIT: the backend refused to start because a
+    /// /resetwisp is unfinished. Its log line is longer than lastLogLine keeps, so the
+    /// way out is said here in full.
+    nonisolated static let resetUnfinishedStatus: Int32 = 75
+    nonisolated static let resetUnfinishedReason = "Wisp couldn't finish its reset. Retry; if it keeps failing, "
+        + "delete ~/.moe/.reset-pending (Wisp then starts with what wasn't deleted)."
+
     nonisolated static func startFailureReason(status: Int32, logTail: String?) -> String {
+        if status == resetUnfinishedStatus { return resetUnfinishedReason }
         var reason = "Wisp's service stopped while starting (exit status \(status))."
         if let logTail, !logTail.isEmpty { reason += " Last log line: " + logTail }
         return reason

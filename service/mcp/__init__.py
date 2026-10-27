@@ -41,6 +41,7 @@ import os
 import shutil
 from pathlib import Path
 
+from service.identity import NEVER_INHERITED as _NEVER_INHERITED
 from service.paths import MOE_DIR
 from service.tools.registry import REGISTRY, Tool
 
@@ -319,9 +320,6 @@ class MCPManager:
                 for s in self.servers.values()
             ],
         }
-
-
-_NEVER_INHERITED = frozenset({"WISP_LAUNCH_NONCE"})
 
 
 def _inherited_env(config: dict | None) -> dict[str, str]:

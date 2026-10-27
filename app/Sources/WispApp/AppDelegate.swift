@@ -175,8 +175,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Never once the service says "erased": a crash between removing the marker
             // and the app's record, or a marker that won't delete, must not wipe the
             // settings of a Wisp already set up again.
-            if !marker.serviceDone && WispReset.readAppDone()?.id != marker.id {
+            if !marker.serviceDone && !WispReset.appPartRan(
+                markerID: marker.id, record: WispReset.readAppDone(),
+                defaultsID: UserDefaults.standard.string(forKey: WispReset.appPartDoneKey)) {
                 let problems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)
+                UserDefaults.standard.set(marker.id, forKey: WispReset.appPartDoneKey)
                 WispReset.writeAppDone(WispReset.AppDone(id: marker.id, problems: problems))
                 // The model read Debug Mode before the defaults were cleared.
                 if model.debugMode { model.debugMode = false }
@@ -420,6 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if markerGone, !WispReset.removeOwnedFile(WispReset.appDoneURL().path) {
                         NSLog("%@", "Wisp reset: couldn't remove the app's reset record")
                     }
+                    if markerGone { UserDefaults.standard.removeObject(forKey: WispReset.appPartDoneKey) }
                     if !markerGone { NSLog("%@", "Wisp reset: couldn't remove the reset marker") }
                     let notice = WispReset.launchNotice(marker: marker, appProblems: appProblems)
                     let text = markerGone ? notice : [notice, WispReset.markerStuckNotice].compactMap { $0 }
