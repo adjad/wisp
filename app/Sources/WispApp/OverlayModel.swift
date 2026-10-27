@@ -155,7 +155,7 @@ final class OverlayModel: ObservableObject {
             if oldValue == .research { releaseResearchDispatch() }
             // Any way off Ask (⌘1-3, a deep link, a notification) ends the
             // questionnaire; its answers so far are already saved.
-            if tab != .ask { leaveKnowYou() }
+            if tab != .ask { leaveKnowYou(); voice.cancel() }
             showingQuickSettings = false
             onResize()
         }
@@ -237,6 +237,13 @@ final class OverlayModel: ObservableObject {
     // about (or at the top of Ask when it isn't about a reply on screen).
     let report = ReportDraft()
     private var reportObserver: AnyCancellable?
+    /// Ask by voice: the mic in the Ask bar, the Brief/Day header mic and ⌥⇧Space.
+    let voice = VoiceInput()
+    /// Reads answers aloud (VoiceReplyMode), on this Mac.
+    let speaker = AnswerSpeaker()
+    private var voiceObservers: [AnyCancellable] = []
+    /// Questions sent from voice and not yet answered, so their answers are spoken.
+    private var voicePrompts: [String] = []
 
     init(loadDebugMode: () -> Bool = { UserDefaults.standard.bool(forKey: "wisp.debugMode") },
          saveDebugMode: @escaping (Bool) -> Void = { UserDefaults.standard.set($0, forKey: "wisp.debugMode") },
@@ -246,6 +253,15 @@ final class OverlayModel: ObservableObject {
         _debugMode = Published(initialValue: loadDebugMode())
         // Rows that show the report read it through this model, so redraw with it.
         reportObserver = report.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        voiceObservers = [
+            voice.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() },
+            speaker.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() },
+            // The listening line and a failure change the panel's height.
+            voice.$state.removeDuplicates().sink { [weak self] _ in
+                DispatchQueue.main.async { self?.onResize() }
+            },
+        ]
+        voice.onTranscript = { [weak self] text in self?.askByVoice(text) }
         startFailureObserver = NotificationCenter.default.addObserver(
             forName: .wispBackendStartFailed, object: nil, queue: .main) { [weak self] note in
             let reason = note.userInfo?["reason"] as? String ?? ""
@@ -270,6 +286,7 @@ final class OverlayModel: ObservableObject {
             if collapsed && !oldValue {
                 tabMemory.panelClosed(at: Date())
                 showingQuickSettings = false
+                voice.cancel()
             }
             onCollapsedChanged()
         }
@@ -376,6 +393,7 @@ final class OverlayModel: ObservableObject {
     // the notch bar's dot shows it is still working.
     var holdsOpen: Bool {
         pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
+            || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || knowYou != nil
             || setupCard == .open || report.isOpen || (tab == .day && todayReport?.isOpen == true)
@@ -583,6 +601,53 @@ final class OverlayModel: ObservableObject {
         }
     }
 
+    /// The mic, from any tab: Brief and Day hand over to Ask, which listens.
+    /// While an answer is being read aloud the same press stops the voice.
+    func toggleVoice() {
+        if speaker.speaking && voice.state != .listening {
+            speaker.stop()
+            return
+        }
+        if tab != .ask { leaveKnowYou(); tab = .ask }
+        showingQuickSettings = false
+        voice.toggle()
+    }
+
+    /// A spoken question arrives like a typed one. Into an empty box it is sent
+    /// at once, as Siri does; next to words already typed it is added for the
+    /// person to finish and send.
+    func askByVoice(_ text: String) {
+        let typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard typed.isEmpty else {
+            input = typed + " " + text
+            return
+        }
+        input = text
+        voicePrompts.append(text)
+        if voicePrompts.count > 8 { voicePrompts.removeFirst() }
+        submit()
+        // A slash command or a held prompt never became an Ask turn.
+        if input == text { voicePrompts.removeAll { $0 == text } }
+    }
+
+    /// After an answer: read it aloud when the person wants that, and tell
+    /// VoiceOver either way, so a reply never arrives silently.
+    private func answered(_ text: String, question: String?, isError: Bool) {
+        var byVoice = false
+        if let question, let i = voicePrompts.firstIndex(of: question) {
+            voicePrompts.remove(at: i)
+            byVoice = true
+        }
+        if !isError, VoiceReplyMode.current.speaks(askedByVoice: byVoice) {
+            speaker.speak(text)
+        } else if NSWorkspace.shared.isVoiceOverEnabled {
+            let spoken = SpokenText.plain(text)
+            let line = (isError ? "Wisp couldn't answer: " : "Wisp: ") + spoken
+            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                                 userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        }
+    }
+
     func submit() {
         let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else {
@@ -696,6 +761,7 @@ final class OverlayModel: ObservableObject {
             return
         }
         let prompt = submission.text
+        speaker.stop()
         turns.append(Turn(role: "user", text: prompt))
         answer = ""; reasoning = ""; showReasoning = false; activity = []
         role = ""; modelAbbrev = ""; routeSource = ""; statusText = ""
@@ -1407,6 +1473,7 @@ final class OverlayModel: ObservableObject {
                 t.errorDetail = detail.isEmpty ? nil : detail
                 applyDebugFields(to: &t)
                 turns.append(t)
+                answered(msg, question: turns.dropLast().last(where: { $0.role == "user" })?.text, isError: true)
                 answer = ""; activity = []
                 completedDispatch = true
             }
@@ -1425,6 +1492,7 @@ final class OverlayModel: ObservableObject {
                 var t = Turn(role: "assistant", text: answer, activity: activity)
                 applyDebugFields(to: &t)
                 turns.append(t)
+                answered(answer, question: turns.dropLast().last(where: { $0.role == "user" })?.text, isError: false)
                 answer = ""
             }
             activity = []

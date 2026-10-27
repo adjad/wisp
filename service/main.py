@@ -1282,6 +1282,27 @@ async def set_mode(body: dict[str, Any]) -> dict[str, Any]:
     return {"read_only": read_only(), "full_access": full_access()}
 
 
+@app.post("/voice/transcribe")
+async def voice_transcribe(body: dict[str, Any]) -> dict[str, Any]:
+    """The words in a short spoken clip from the notch's voice input.
+
+    `audio` is a base64 16-bit PCM WAV of at most 30 s. The Ask model hears it on
+    this Mac, or nothing does (service/voice.py). 409 says, for the person, why
+    voice can't run with the current model; 503 means the model stayed busy.
+    """
+    from service import voice
+    try:
+        return {"text": await voice.transcribe(body.get("audio"))}
+    except voice.VoiceUnavailable as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=f"Wisp couldn't read that recording ({error}).") from None
+    except (TimeoutError, asyncio.TimeoutError):
+        raise HTTPException(status_code=503, detail="Wisp is busy finishing something else. Try again in a moment.") from None
+    except Exception:  # noqa: BLE001 — an engine failure is a failed transcript, never a crash
+        raise HTTPException(status_code=502, detail="Wisp couldn't make out that recording. Try again, or type your question.") from None
+
+
 @app.post("/unload_all")
 async def unload_all() -> dict[str, Any]:
     """Free memory/power: unload every resident model from oMLX."""

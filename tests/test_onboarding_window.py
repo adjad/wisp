@@ -40,7 +40,16 @@ def test_prompts_only_follow_a_click():
     for name, text in _sources().items():
         for match in PROMPTING.finditer(text):
             hits.setdefault(name, []).append(text.count("\n", 0, match.start()) + 1)
-    assert set(hits) == {"FirstRunSetupView.swift", "ContactsReader.swift"}, hits
+    assert set(hits) == {"FirstRunSetupView.swift", "ContactsReader.swift", "VoiceInput.swift"}, hits
+    # The microphone is asked for only by pressing the mic (or ⌥⇧Space): the one
+    # prompt is inside start(), reached only through toggle(), which only the
+    # mic button and the voice hotkey call (OverlayModel.toggleVoice).
+    voice = _sources()["VoiceInput.swift"]
+    assert len(PROMPTING.findall(_body(voice, "func start()"))) == len(PROMPTING.findall(voice)) == 1
+    voice_input = _body(voice, "final class VoiceInput")
+    assert len(re.findall(r"(?<![\w.])start\(\)", voice_input)) == 2 and "case .idle, .failed: start()" in voice
+    overlay = _sources()["OverlayModel.swift"]
+    assert overlay.count("voice.toggle()") == 1 and "voice.toggle()" in _body(overlay, "func toggleVoice()")
     setup = _sources()["FirstRunSetupView.swift"]
     request = _body(setup, "func request(_ item: Item) async")
     assert len(PROMPTING.findall(request)) == len(PROMPTING.findall(setup)), \

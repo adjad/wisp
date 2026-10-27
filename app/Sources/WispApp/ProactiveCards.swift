@@ -280,8 +280,8 @@ struct ProactiveBriefSection: View {
             if !unread.isEmpty { accessRows(unread) }
             if let work = proactive.workLine {
                 HStack(spacing: 6) {
-                    Image(systemName: "sparkles").font(.system(size: 10)).foregroundStyle(Theme.textSecondary)
-                    Text(work).font(.system(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                    Image(systemName: "sparkles").font(.wisp(size: 10)).foregroundStyle(Theme.textSecondary)
+                    Text(work).font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
                 }
                 .padding(.top, -4)
                 .accessibilityElement(children: .combine)
@@ -318,9 +318,9 @@ struct ProactiveBriefSection: View {
         VStack(alignment: .leading, spacing: 5) {
             ForEach(rows, id: \.source) { access in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: DayTimeline.sourceSymbol(access.source)).font(.system(size: 10.5))
+                    Image(systemName: DayTimeline.sourceSymbol(access.source)).font(.wisp(size: 10.5))
                         .foregroundStyle(Theme.textMuted).frame(width: 15)
-                    Text(access.headline).font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                    Text(access.headline).font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                         .help(access.detail)
                     Spacer(minLength: 6)
@@ -349,9 +349,9 @@ struct ProactiveBriefSection: View {
             } label: {
                 HStack(spacing: 3) {
                     Text(chosen.map(proactive.chipName) ?? "All")
-                    Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold))
+                    Image(systemName: "chevron.down").font(.wisp(size: 7, weight: .bold))
                 }
-                .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                .font(.wisp(size: 11, weight: .medium)).foregroundStyle(Theme.textSecondary)
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .background(Capsule().fill(chosen == nil ? Theme.chipFill : Theme.chipOn))
                 .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
@@ -366,10 +366,10 @@ struct ProactiveBriefSection: View {
 
     private func header(_ title: String, trailing: String = "") -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+            Text(title).font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 .accessibilityAddTraits(.isHeader)
             if !trailing.isEmpty {
-                Text(trailing).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted.opacity(0.8))
+                Text(trailing).font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
             }
         }
     }
@@ -386,10 +386,10 @@ struct ProactiveBriefSection: View {
             }
             if proactive.isWorking || actions.analyzePending() { progressRow }
             if !actions.analyzeError.isEmpty {
-                Text(actions.analyzeError).font(.system(size: 11)).foregroundStyle(Theme.bad)
+                Text(actions.analyzeError).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
             }
             if cards.isEmpty {
-                Text(emptyCardsLine).font(.system(size: 12.5)).foregroundStyle(Theme.textMuted)
+                Text(emptyCardsLine).font(.wisp(size: 12.5)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 cardView(cards[index], position: index, of: cards)
@@ -409,7 +409,7 @@ struct ProactiveBriefSection: View {
                     withAnimation(.easeOut(duration: 0.15)) { actions.heroID = card.id }
                     model.onResize()
                 } label: {
-                    Text(card.chipTitle).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                    Text(card.chipTitle).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                         .lineLimit(1).truncationMode(.tail)
                         .padding(.horizontal, 10).padding(.vertical, 4)
                         .background(Capsule().fill(Theme.chipFill))
@@ -418,6 +418,7 @@ struct ProactiveBriefSection: View {
                 }
                 .buttonStyle(.plain)
                 .help(card.title)
+                .accessibilityLabel(card.title)
             }
             Spacer(minLength: 0)
         }
@@ -440,7 +441,7 @@ struct ProactiveBriefSection: View {
         return Button {
             Task { await actions.analyze(today: today, account: chosen); model.onResize() }
         } label: {
-            Image(systemName: busy ? "ellipsis" : "sparkles").font(.system(size: 10, weight: .semibold))
+            Image(systemName: busy ? "ellipsis" : "sparkles").font(.wisp(size: 10, weight: .semibold))
                 .foregroundStyle(Theme.textSecondary)
                 .frame(width: 22, height: 20)
                 .background(Capsule().fill(Theme.chipFill))
@@ -456,7 +457,7 @@ struct ProactiveBriefSection: View {
     private var progressRow: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(proactive.isWorking ? proactive.progressLabel : "Starting…")
-                .font(.system(size: 12)).foregroundStyle(Theme.textSecondary).monospacedDigit()
+                .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary).monospacedDigit()
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.white.opacity(0.08))
@@ -479,7 +480,7 @@ struct ProactiveBriefSection: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(card.metaLine)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(0.6)
+                    .font(.wisp(size: 10, weight: .medium, design: .monospaced)).tracking(0.6)
                     .foregroundStyle(Theme.textMuted).lineLimit(1)
                     .help(card.why)
                 Spacer(minLength: 4)
@@ -487,7 +488,7 @@ struct ProactiveBriefSection: View {
                     ProgressView().controlSize(.mini)
                 } else if fire != .sending, !isDone(fire) {
                     Button { Task { await actions.dismiss(card, today: today) } } label: {
-                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.textMuted)
+                        Image(systemName: "xmark").font(.wisp(size: 9, weight: .bold)).foregroundStyle(Theme.textMuted)
                             .frame(width: 16, height: 16).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -496,11 +497,11 @@ struct ProactiveBriefSection: View {
                 }
             }
             Text(card.title)
-                .font(.system(size: 15.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                .font(.wisp(size: 15.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             if !card.body.isEmpty {
                 Text(card.body)
-                    .font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                    .font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary)
                     .lineSpacing(1.5).lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -529,9 +530,9 @@ struct ProactiveBriefSection: View {
                     } label: {
                         HStack(spacing: 3) {
                             Text("\(position + 1) of \(cards.count)").monospacedDigit()
-                            Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .bold))
+                            Image(systemName: "chevron.right").font(.wisp(size: 8.5, weight: .bold))
                         }
-                        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textMuted)
+                        .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textMuted)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -541,11 +542,11 @@ struct ProactiveBriefSection: View {
             }
             .padding(.top, 3)
             if case .failed(let reason) = fire {
-                Text(reason).font(.system(size: 11)).foregroundStyle(Theme.bad)
+                Text(reason).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let error = actions.cardErrors[card.id] {
-                Text(error).font(.system(size: 11)).foregroundStyle(Theme.bad)
+                Text(error).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
             }
         }
         .padding(EdgeInsets(top: 11, leading: 13, bottom: 11, trailing: 11))
@@ -560,9 +561,9 @@ struct ProactiveBriefSection: View {
         Button(action: action) {
             HStack(spacing: 3) {
                 Text(title)
-                if let chevron { Image(systemName: chevron).font(.system(size: 8.5, weight: .bold)) }
+                if let chevron { Image(systemName: chevron).font(.wisp(size: 8.5, weight: .bold)) }
             }
-            .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
+            .font(.wisp(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -587,15 +588,15 @@ struct ProactiveBriefSection: View {
         case .sending:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text(action.sendsDraft ? "Sending…" : "Working…").font(.system(size: 12.5, weight: .medium))
+                Text(action.sendsDraft ? "Sending…" : "Working…").font(.wisp(size: 12.5, weight: .medium))
                     .foregroundStyle(Theme.textSecondary)
             }
             .padding(.horizontal, 12).padding(.vertical, 5)
             .background(Capsule().fill(Theme.chipFill))
         case .done(let message):
             HStack(spacing: 5) {
-                Image(systemName: "checkmark").font(.system(size: 10.5, weight: .bold))
-                Text(message).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
+                Image(systemName: "checkmark").font(.wisp(size: 10.5, weight: .bold))
+                Text(message).font(.wisp(size: 12.5, weight: .medium)).lineLimit(1)
             }
             .foregroundStyle(Theme.textPrimary)
             .padding(.horizontal, 12).padding(.vertical, 5)
@@ -605,7 +606,7 @@ struct ProactiveBriefSection: View {
             Button { Task { await actions.fire(card, today: today); model.onResize() } } label: {
                 Text(isFailed(fire) && (draftOpen || !action.sendsDraft) ? "Try again"
                      : action.sendsDraft ? action.primaryLabel(draftOpen: draftOpen) : buttonLabel(action))
-                    .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Color.black)
+                    .font(.wisp(size: 12.5, weight: .semibold)).foregroundStyle(Color.black)
                     .lineLimit(1)
                     .padding(.horizontal, 13).padding(.vertical, 5)
                     .background(Capsule().fill(Color.white.opacity(0.92)))
@@ -629,15 +630,15 @@ struct ProactiveBriefSection: View {
         VStack(alignment: .leading, spacing: 5) {
             if let source = card.sources.first(where: { !$0.quote.isEmpty }) {
                 Text((source.who.isEmpty ? "" : source.who + ": ") + "“" + source.quote + "”")
-                    .font(.system(size: 11.5)).italic().foregroundStyle(Theme.textMuted)
+                    .font(.wisp(size: 11.5)).italic().foregroundStyle(Theme.textMuted)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             if !action.recipient.isEmpty {
-                Text("TO  " + action.recipient).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                Text("TO  " + action.recipient).font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                     .lineLimit(1)
             }
             TextEditor(text: Binding(get: { actions.draft(card) }, set: { actions.drafts[card.id] = $0 }))
-                .font(.system(size: 12.5)).foregroundStyle(Theme.textPrimary)
+                .font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary)
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, 5).padding(.vertical, 6)
                 .frame(minHeight: 64, idealHeight: draftHeight(actions.draft(card)), maxHeight: 150)
@@ -647,7 +648,7 @@ struct ProactiveBriefSection: View {
                 .disabled(actions.fires[card.id] == .sending)
                 .accessibilityLabel("Draft; edit before sending")
             if actions.drafts[card.id].map({ $0 != action.draft }) == true {
-                Text("Edited — Wisp sends your version.").font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                Text("Edited — Wisp sends your version.").font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted)
             }
             if withSend {
                 // Send, under the words it sends and the person it sends them to.
@@ -672,14 +673,14 @@ struct ProactiveBriefSection: View {
             : events.prefix(3).map { today.clock($0.start) + " " + $0.title }.joined(separator: " · ")
         return Button { model.tab = .day } label: {
             HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Image(systemName: "clock").font(.system(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
-                Text(line).font(.system(size: 13)).foregroundStyle(events.isEmpty ? Theme.textMuted : Theme.textPrimary)
+                Image(systemName: "clock").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+                Text(line).font(.wisp(size: 13)).foregroundStyle(events.isEmpty ? Theme.textMuted : Theme.textPrimary)
                     .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 2) {
                     Text("Day")
-                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
+                    Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
                 }
-                .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
+                .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
             }
             .padding(.vertical, 8)
             .contentShape(Rectangle())
@@ -699,12 +700,12 @@ struct ProactiveBriefSection: View {
                 model.onResize()
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
-                    Image(systemName: icon).font(.system(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
-                    Text(text).font(.system(size: 13)).foregroundStyle(empty ? Theme.textMuted : Theme.textPrimary)
+                    Image(systemName: icon).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+                    Text(text).font(.wisp(size: 13)).foregroundStyle(empty ? Theme.textMuted : Theme.textPrimary)
                         .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     if !empty {
                         Image(systemName: open ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 8.5, weight: .bold)).foregroundStyle(Theme.textMuted)
+                            .font(.wisp(size: 8.5, weight: .bold)).foregroundStyle(Theme.textMuted)
                     }
                 }
                 .padding(.vertical, 8)
@@ -732,7 +733,7 @@ struct ProactiveBriefSection: View {
                     actions.showAllTodos.toggle()
                     model.onResize()
                 }
-                .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                .buttonStyle(.plain).font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
                 .padding(.leading, 26).padding(.top, 2)
             }
         }
@@ -748,7 +749,7 @@ struct ProactiveBriefSection: View {
             HStack(alignment: .center, spacing: 9) {
                 Button { Task { await actions.toggleDone(todo, today: today) } } label: {
                     Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 15, weight: .light))
+                        .font(.wisp(size: 15, weight: .light))
                         .foregroundStyle(done ? Theme.textSecondary : Theme.textPrimary.opacity(0.85))
                         .frame(width: 18, height: 18).contentShape(Rectangle())
                 }
@@ -757,22 +758,22 @@ struct ProactiveBriefSection: View {
                 .help(done ? "Mark as not done" : "Check it off")
                 .accessibilityLabel(done ? "Done: \(todo.title)" : "Check off \(todo.title)")
                 Image(systemName: DayTimeline.sourceSymbol(todo.source))
-                    .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                     .frame(width: 15)
                     .help(DayTimeline.sourceName(todo.source))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(todo.title).font(.system(size: 13.5))
+                    Text(todo.title).font(.wisp(size: 13.5))
                         .foregroundStyle(done ? Theme.textMuted : Theme.textPrimary)
                         .strikethrough(done, color: Theme.textMuted)
                         .lineLimit(1)
                     if !sub.isEmpty && !done {
-                        Text(sub).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                        Text(sub).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
                     }
                 }
                 Spacer(minLength: 6)
                 if !todo.dueLabel.isEmpty && !done {
                     Text(todo.dueLabel.uppercased())
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.wisp(size: 10, design: .monospaced))
                         .foregroundStyle(todo.dueLabel.lowercased().contains("overdue") ? Theme.textPrimary : Theme.textSecondary)
                         .lineLimit(1).fixedSize()
                 }
@@ -780,7 +781,7 @@ struct ProactiveBriefSection: View {
                     ProgressView().controlSize(.small)
                 } else if todo.canAddToDay && !done {
                     if actions.addedToDay.contains(todo.id) {
-                        Text("ON DAY ✓").font(.system(size: 9.5, design: .monospaced)).foregroundStyle(Theme.textMuted).fixedSize()
+                        Text("ON DAY ✓").font(.wisp(size: 9.5, design: .monospaced)).foregroundStyle(Theme.textMuted).fixedSize()
                     } else {
                         NotchChrome.small("Add to Day") { Task { await actions.addToDay(todo, today: today) } }
                             .help("Fit it into today's plan")
@@ -790,10 +791,10 @@ struct ProactiveBriefSection: View {
             }
             .padding(.vertical, 3)
             if let error = actions.todoErrors[todo.id] {
-                Text(error).font(.system(size: 11)).foregroundStyle(Theme.bad).padding(.leading, 51)
+                Text(error).font(.wisp(size: 11)).foregroundStyle(Theme.bad).padding(.leading, 51)
             }
             if let failure = itemActions.failures[todo.id] {
-                Text(failure).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                Text(failure).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true).padding(.leading, 51)
             }
         }
@@ -825,10 +826,10 @@ struct ProactiveBriefSection: View {
             if threads.isEmpty {
                 // An all-clear only when both were read; the rows above say why not.
                 if let line = ProactiveState.attentionEmptyLine(unread: unread) {
-                    Text(line).font(.system(size: 12.5)).foregroundStyle(Theme.textMuted)
+                    Text(line).font(.wisp(size: 12.5)).foregroundStyle(Theme.textMuted)
                 } else {
                     Text("No mail or texts to show from what Wisp could read.")
-                        .font(.system(size: 12.5)).foregroundStyle(Theme.textMuted)
+                        .font(.wisp(size: 12.5)).foregroundStyle(Theme.textMuted)
                 }
             } else {
                 ForEach(visible) { thread in threadRow(thread) }
@@ -838,7 +839,7 @@ struct ProactiveBriefSection: View {
                         actions.showAllThreads.toggle()
                         model.onResize()
                     }
-                    .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                    .buttonStyle(.plain).font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
                     .padding(.leading, 26).padding(.top, 3)
                 }
             }
@@ -859,22 +860,22 @@ struct ProactiveBriefSection: View {
                 } label: {
                     HStack(alignment: .top, spacing: 9) {
                         Image(systemName: DayTimeline.sourceSymbol(thread.source))
-                            .font(.system(size: 11)).foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted)
+                            .font(.wisp(size: 11)).foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted)
                             .frame(width: 15).padding(.top, 2)
-                        (Text(thread.who.isEmpty ? "Someone" : thread.who).font(.system(size: 13, weight: .semibold))
+                        (Text(thread.who.isEmpty ? "Someone" : thread.who).font(.wisp(size: 13, weight: .semibold))
                             .foregroundColor(hot ? Theme.textPrimary : Theme.textSecondary)
-                         + Text("  " + thread.line).font(.system(size: 13))
+                         + Text("  " + thread.line).font(.wisp(size: 13))
                             .foregroundColor(hot ? Theme.textSecondary : Theme.textMuted))
                             .lineLimit(open ? nil : 2)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         VStack(alignment: .trailing, spacing: 3) {
-                            Text(hot ? "NEEDS REPLY" : "FYI").font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            Text(hot ? "NEEDS REPLY" : "FYI").font(.wisp(size: 9, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(hot ? Theme.textPrimary : Theme.textMuted)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .overlay(Capsule().stroke(hot ? Color.white.opacity(0.45) : Theme.chipStroke, lineWidth: 1))
                                 .fixedSize()
-                            Text(timeLabel(thread.receivedTs)).font(.system(size: 10, design: .monospaced))
+                            Text(timeLabel(thread.receivedTs)).font(.wisp(size: 10, design: .monospaced))
                                 .foregroundStyle(Theme.textMuted).fixedSize()
                         }
                     }
@@ -895,7 +896,7 @@ struct ProactiveBriefSection: View {
                 rowControls(thread.actionRow).padding(.top, 6)
             }
             if let failure = itemActions.failures[thread.id] {
-                Text(failure).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                Text(failure).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true).padding(.leading, 32)
             }
             if open { threadDetail(thread) }
@@ -905,7 +906,7 @@ struct ProactiveBriefSection: View {
     private func threadDetail(_ thread: ProactiveThread) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if !thread.title.isEmpty && thread.title != thread.line {
-                Text(thread.title).font(.system(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                Text(thread.title).font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
             HStack(spacing: 6) {
                 if thread.canReply {
@@ -936,7 +937,7 @@ struct ProactiveBriefSection: View {
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Replying from the Brief isn't set up in this build. Open the thread in Mail to answer it.")
-                    .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    .font(.wisp(size: 12)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }

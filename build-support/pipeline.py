@@ -531,6 +531,7 @@ def plist(meta: dict) -> dict:
         "NSRemindersUsageDescription": "Wisp reads your reminders to show what is due, and adds, completes or removes ones you ask for.",
         "NSAppleEventsUsageDescription": "Wisp reads Mail and Notes to find what needs your attention, and, only when you approve, sends emails and messages or opens a script in Terminal.",
         "NSContactsUsageDescription": "Wisp reads your contacts to show names instead of phone numbers in messages.",
+        "NSMicrophoneUsageDescription": "Wisp listens only while you ask by voice (the mic or ⌥⇧Space). Your question is turned into text on this Mac and never saved or sent anywhere.",
         "WispSourceCommit": meta["commit"], "WispPreviewBuild": bool(meta["dirty"] or meta.get("preview")),
     }
 

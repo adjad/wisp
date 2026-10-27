@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: OverlayPanel?
     private var hotKey: GlobalHotKey?
     private var searchHotKey: GlobalHotKey?
+    private var voiceHotKey: GlobalHotKey?
     // Hosted in an OverlayPanel — the SAME notch-fused reveal panel class the
     // chat assistant uses (see createSearchPanelIfNeeded), so Smart Search
     // gets identical chrome and animation rather than a separately-styled
@@ -304,6 +305,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ⌥Space summons the overlay
         hotKey = GlobalHotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
             DispatchQueue.main.async { self?.toggle() }
+        }
+        // ⌥⇧Space asks by voice, like holding the Siri key: it opens Ask and
+        // listens; pressed again while listening, it sends at once.
+        voiceHotKey = GlobalHotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey | shiftKey)) { [weak self] in
+            DispatchQueue.main.async { self?.askByVoice() }
         }
         // ⌘⇧F is Smart Search. Deliberately NOT ⌘F: Carbon would claim that
         // system-wide and break native find in every app on the machine,
@@ -823,6 +829,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // The panel is always on screen; the hotkey and menu-bar click just flip
     // between the notch bar and the expanded assistant. No reset — the visible
     // transcript (and server-side session) survive collapse/expand.
+    private func askByVoice() {
+        notchDocked = true
+        if presentation.desired != .chat {
+            model.prepareTab(byHover: false)
+            expand()
+        }
+        model.toggleVoice()
+    }
+
     @objc private func toggle() {
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let menu = rightClickMenu {
             statusItem.menu = menu

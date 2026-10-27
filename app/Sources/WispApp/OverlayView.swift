@@ -18,6 +18,12 @@ struct OverlayView: View {
     var onDismiss: () -> Void = {}
     @FocusState private var focused: Bool
     @State private var breathe = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // Text size (Settings > Voice & accessibility) and Increase Contrast both
+    // change values that child views read when they are built, so a change
+    // rebuilds the panel's content once. Cheap: both are rare, deliberate.
+    @AppStorage(Theme.textSizeKey) private var textSize: Double = 1.0
+    @State private var contrastTick = 0
     // Replies whose Details the person toggled away from the default (open in
     // Debug Mode, closed otherwise).
     @State private var detailsToggled: Set<UUID> = []
@@ -34,7 +40,17 @@ struct OverlayView: View {
                 expandedPanel
             }
         }
+        .id(renderKey)
         .onAppear { breathe = true }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)) { _ in
+            contrastTick &+= 1
+        }
+        // The rebuilt content is laid out fresh, so its height-change observer
+        // never sees a change; ask the window to re-fit to the new size.
+        .onChange(of: renderKey) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { model.onResize() }
+        }
         .onChange(of: model.collapsed) { _, isCollapsed in
             if !isCollapsed {
                 if !model.tab.showsDay { focused = true }
@@ -48,6 +64,7 @@ struct OverlayView: View {
         }
     }
 
+    private var renderKey: String { "\(textSize)-\(contrastTick)" }
     private var layout: SurfaceLayout { display.layout }
     private var isNotch: Bool { layout.style == .notch }
 
@@ -99,10 +116,10 @@ struct OverlayView: View {
                     promptArea
                     HStack(alignment: .firstTextBaseline) {
                         Text("Wisp drafts an editable plan first, then reads the web and writes a cited report.")
-                            .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                            .font(.wisp(size: 12)).foregroundStyle(Theme.textMuted)
                         Spacer(minLength: 12)
                         Button("Research library") { WispRouter.shared.open(.research) }
-                            .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.textSecondary)
+                            .buttonStyle(.plain).font(.wisp(size: 10)).foregroundStyle(Theme.textSecondary)
                             .fixedSize()
                     }
                     statusRow.padding(.top, 10)
@@ -158,14 +175,15 @@ struct OverlayView: View {
                 Circle().fill(.white.opacity(0.9))
                     .frame(width: 4, height: 4)
                     .padding(.bottom, 5)
-                    .opacity(breathe ? 0.3 : 1)
-                    .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: breathe)
+                    .opacity(!reduceMotion && breathe ? 0.3 : 1)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 1).repeatForever(autoreverses: true), value: breathe)
+                    .accessibilityHidden(true)
             } else if model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
                 // What's due today or overdue, from the day's last load (it loads only
                 // while Brief or Day is open, so the bar never triggers a load).
                 HStack(spacing: 6) {
                     if !isNotch { orb.scaleEffect(0.7) }
-                    Text("\(todayCount)").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.black)
+                    Text("\(todayCount)").font(.wisp(size: 9.5, weight: .bold)).foregroundStyle(.black)
                         .padding(.horizontal, 5).frame(minWidth: 14, minHeight: 13)
                         .background(Capsule().fill(.white))
                 }
@@ -175,7 +193,7 @@ struct OverlayView: View {
                 // Setup was set aside and Wisp still can't answer.
                 HStack(spacing: 6) {
                     if !isNotch { orb.scaleEffect(0.7) }
-                    Text("!").font(.system(size: 10, weight: .heavy)).foregroundStyle(Color.orange)
+                    Text("!").font(.wisp(size: 10, weight: .heavy)).foregroundStyle(Color.orange)
                 }
                 .padding(.bottom, isNotch ? 3 : 8)
                 .accessibilityLabel("Wisp isn't set up yet")
@@ -183,7 +201,7 @@ struct OverlayView: View {
                 HStack(spacing: 8) {
                     orb.scaleEffect(0.7)
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.wisp(size: 10, weight: .bold))
                         .foregroundStyle(Theme.textMuted)
                 }
                 .padding(.bottom, 8)
@@ -198,12 +216,29 @@ struct OverlayView: View {
         // fallback for click-to-open.
         .onTapGesture { model.requestExpand() }
         .help("Wisp — hover to open (⌥Space)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Wisp")
+        .accessibilityValue(notchBarStatus)
+        .accessibilityHint("Opens the panel")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { model.requestExpand() }
+    }
+
+    /// What the collapsed bar shows, for VoiceOver: the bar is one button, so
+    /// its dot and badge cannot be read as separate elements.
+    private var notchBarStatus: String {
+        if model.isProcessing || model.phase == .streaming { return "Working" }
+        if model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
+            return todayCount == 1 ? "1 thing is due today" : "\(todayCount) things are due today"
+        }
+        if model.setupCard == .later { return "Wisp isn't set up yet" }
+        return ""
     }
 
     private var header: some View {
         HStack(spacing: 10) {
             orb
-            Text("Wisp").font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.textPrimary)
+            Text("Wisp").font(.wisp(size: 15, weight: .medium)).foregroundStyle(Theme.textPrimary)
             tabStrip.padding(.leading, 6)
             Spacer()
             windowControls
@@ -213,7 +248,7 @@ struct OverlayView: View {
     @ViewBuilder private var transientNotice: some View {
         if let notice = model.transientNotice {
             Text(notice)
-                .font(.system(size: 11))
+                .font(.wisp(size: 11))
                 .foregroundStyle(model.transientNoticeIsInfo ? Theme.textSecondary : Theme.bad)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -224,6 +259,7 @@ struct OverlayView: View {
     // The Ask field (Research's prompt on that tab), its command list and the rule under it.
     @ViewBuilder private var promptArea: some View {
         inputRow.padding(.top, 10)
+        VoiceStatusLine(voice: model.voice)
         if !model.commandSuggestions.isEmpty {
             commandList.padding(.top, 8)
         }
@@ -250,7 +286,7 @@ struct OverlayView: View {
         let shortcut = tab.title + (tab.shortcutDigit.map { " (⌘" + String($0) + ")" } ?? "")
         return Button { model.leaveKnowYou(); model.tab = tab } label: {
             HStack(spacing: 5) {
-                Text(tab.title).font(.system(size: 11.5, weight: .medium))
+                Text(tab.title).font(.wisp(size: 11.5, weight: .medium))
                 if count > 0 { countBadge(count, selected: selected) }
             }
             .foregroundStyle(selected ? Color.black : Theme.textSecondary)
@@ -266,7 +302,7 @@ struct OverlayView: View {
 
     private func countBadge(_ count: Int, selected: Bool) -> some View {
         Text(String(count))
-            .font(.system(size: 9.5, weight: .bold).monospacedDigit())
+            .font(.wisp(size: 9.5, weight: .bold).monospacedDigit())
             .foregroundStyle(selected ? Color.white : Color.black)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(Capsule().fill(selected ? Color.black : Color.white.opacity(0.85)))
@@ -276,6 +312,10 @@ struct OverlayView: View {
         HStack(spacing: 6) {
             if model.tab == .ask && (!model.turns.isEmpty || model.showingCorpus) {
                 ctrl("square.and.pencil", "New chat (⌘N)", { model.newChat() })
+            }
+            // Brief and Day: ask about your day out loud; it opens Ask and listens.
+            if model.tab != .ask && model.tab != .research {
+                ctrl("mic", "Ask about your day by voice (⌥⇧Space)", { model.toggleVoice() })
             }
             ctrl("gearshape", model.showingQuickSettings ? "Close quick settings" : "Quick settings",
                  active: model.showingQuickSettings, { model.showingQuickSettings.toggle() })
@@ -321,7 +361,7 @@ struct OverlayView: View {
                       _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 9, weight: .bold))
+                .font(.wisp(size: 9, weight: .bold))
                 .foregroundStyle(active ? Color.black : Theme.textSecondary)
                 .frame(width: 19, height: 19)
                 .background(Circle().fill(active ? Color.white : Theme.chipFill))
@@ -352,9 +392,9 @@ struct OverlayView: View {
             } label: {
                 HStack(spacing: 4) {
                     Text(model.chatTitle).lineLimit(1).truncationMode(.tail)
-                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                    Image(systemName: "chevron.down").font(.wisp(size: 8, weight: .bold))
                 }
-                .font(.system(size: 11.5, weight: .medium))
+                .font(.wisp(size: 11.5, weight: .medium))
                 .foregroundStyle(Theme.textPrimary)
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(Capsule().fill(Theme.chipFill))
@@ -366,10 +406,12 @@ struct OverlayView: View {
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
+            .accessibilityLabel("Recent chats")
+            .accessibilityValue(model.chatTitle)
             .disabled(!model.conversationSettled)
             .help(model.conversationSettled ? "Switch to a recent chat" : "Available when Wisp finishes answering")
             Spacer()
-            Text("Type / for commands").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Text("Type / for commands").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
         }
     }
 
@@ -383,13 +425,13 @@ struct OverlayView: View {
                     model.run(command)
                 } label: {
                     HStack(spacing: 10) {
-                        Text(command.title).font(.system(size: 12, design: .monospaced))
+                        Text(command.title).font(.wisp(size: 12, design: .monospaced))
                             .foregroundStyle(Theme.textPrimary)
-                            .frame(width: 84, alignment: .leading)
-                        Text(command.summary).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                            .frame(minWidth: 84, alignment: .leading)
+                        Text(command.summary).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                         Spacer()
                         if NotchCommand.match(model.input) == command {
-                            Text("↩").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                            Text("↩").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                         }
                     }
                     .padding(.horizontal, 10).padding(.vertical, 5)
@@ -407,10 +449,11 @@ struct OverlayView: View {
         Circle()
             .fill(Theme.orb)
             .frame(width: 26, height: 26)
-            .scaleEffect(breathe ? 1.1 : 0.94)
-            .opacity(breathe ? 1.0 : 0.85)
+            .scaleEffect(reduceMotion ? 1 : (breathe ? 1.1 : 0.94))
+            .opacity(reduceMotion ? 1 : (breathe ? 1.0 : 0.85))
             .shadow(color: .white.opacity(0.12), radius: 5)
-            .animation(.easeInOut(duration: 4).repeatForever(autoreverses: true), value: breathe)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 4).repeatForever(autoreverses: true), value: breathe)
+            .accessibilityHidden(true)
     }
 
     private var statusColor: Color {
@@ -427,12 +470,14 @@ struct OverlayView: View {
 
     private var inputRow: some View {
         HStack(spacing: 10) {
-            TextField(model.researchMode ? "What would you like to research?" : "Ask anything…",
+            TextField(model.voice.isActive ? model.voice.placeholder
+                      : model.researchMode ? "What would you like to research?" : "Ask anything…",
                       text: $model.input, axis: .vertical)
                 .textFieldStyle(.plain)
-                .font(.system(size: 19))
+                .font(.wisp(size: 19))
                 .foregroundStyle(Theme.textPrimary)
                 .focused($focused)
+                .accessibilityLabel(model.researchMode ? "Research question" : "Ask Wisp")
                 .onSubmit { model.submit() }
                 // Enlarge the click target well beyond the glyph height and make
                 // the whole padded area focus the field, so a click lands in text
@@ -445,28 +490,31 @@ struct OverlayView: View {
                 .onTapGesture { focused = true }
             if let name = model.attachedImageName {
                 Label(name, systemImage: "paperclip")
-                    .font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1).frame(maxWidth: 84)
+                    .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1).frame(maxWidth: 84)
                 Button(action: model.removeAttachment) {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textMuted)
                 }.buttonStyle(.plain).help("Remove image").accessibilityLabel("Remove image")
             }
             if !model.queueLabel.isEmpty {
                 Text(model.queueLabel)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.wisp(size: 11, weight: .medium))
                     .foregroundStyle(Theme.textMuted)
             }
             // Wisp has no vision model in this release, so an attached image
             // can't be looked at; the paperclip is a Debug Mode tool only.
             if model.debugMode {
                 Button(action: pickImage) {
-                    Image(systemName: "paperclip").font(.system(size: 16)).foregroundStyle(Theme.textSecondary)
+                    Image(systemName: "paperclip").font(.wisp(size: 16)).foregroundStyle(Theme.textSecondary)
                 }
                 .buttonStyle(.plain).help("Attach an image (Debug Mode: Wisp can't look at images yet)")
                 .accessibilityLabel("Attach an image")
             }
+            if !model.researchMode {
+                VoiceMicButton(voice: model.voice, speaker: model.speaker, action: model.toggleVoice)
+            }
             Button(action: { model.submit() }) {
                 Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 22))
+                    .font(.wisp(size: 22))
                     .foregroundStyle(canSend ? Theme.accent : Theme.textMuted)
             }
             .buttonStyle(.plain).help(model.willQueuePrompt ? "Queue prompt" : "Send")
@@ -514,7 +562,7 @@ struct OverlayView: View {
             HStack {
                 Spacer(minLength: 40)
                 Text(turn.text)
-                    .font(.system(size: 14))
+                    .font(.wisp(size: 14))
                     .foregroundStyle(Theme.textPrimary)
                     .padding(.horizontal, 12).padding(.vertical, 7)
                     .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
@@ -528,14 +576,14 @@ struct OverlayView: View {
                 // message was sent, with no trace in the transcript at all.
                 if turn.isError {
                     HStack(spacing: 5) {
-                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11))
-                        Text("Error").font(.system(size: 11, weight: .semibold))
+                        Image(systemName: "exclamationmark.triangle.fill").font(.wisp(size: 11))
+                        Text("Error").font(.wisp(size: 11, weight: .semibold))
                     }
                     .foregroundStyle(Theme.bad)
                 }
                 if !turn.activity.isEmpty {
                     ForEach(turn.activity.indices, id: \.self) { i in
-                        Text(turn.activity[i]).font(.system(size: 12, design: .monospaced))
+                        Text(turn.activity[i]).font(.wisp(size: 12, design: .monospaced))
                             .foregroundStyle(Theme.textMuted)
                     }
                 }
@@ -550,7 +598,7 @@ struct OverlayView: View {
                     && turn.id == model.turns.last?.id {
                     // Nothing ran, so sending the same question again is safe.
                     Button("Try again") { model.tryAgain(turn) }
-                        .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                        .buttonStyle(.plain).font(.wisp(size: 12, weight: .medium)).foregroundStyle(Theme.textPrimary)
                         .padding(.horizontal, 12).padding(.vertical, 4)
                         .background(Capsule().fill(Theme.chipFill))
                         .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
@@ -566,10 +614,12 @@ struct OverlayView: View {
                             Label("Details", systemImage: showDetails ? "chevron.down" : "chevron.right")
                         }
                         .help("Model, route, timing and tool calls for this reply")
+                        .accessibilityLabel("Details")
+                        .accessibilityValue(showDetails ? "Expanded" : "Collapsed")
                     }
                     Button("Report a problem") { model.reportProblem(for: turn) }
                 }
-                .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.textMuted)
+                .buttonStyle(.plain).font(.wisp(size: 10)).foregroundStyle(Theme.textMuted)
                 if showDetails { debugLine(for: turn) }
                 if model.report.snapshot?.key == OverlayModel.reportKey(for: turn) {
                     ReportDraftCard(draft: model.report, save: { model.saveReport(model.report) })
@@ -590,12 +640,12 @@ struct OverlayView: View {
         let headline = debugHeadline(for: turn)
         VStack(alignment: .leading, spacing: 2) {
             Text(headline)
-                .font(.system(size: 10.5, design: .monospaced))
+                .font(.wisp(size: 10.5, design: .monospaced))
                 .foregroundStyle(Theme.textMuted)
             if let reason = turn.routeReason, !reason.isEmpty {
                 Text(reason)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Theme.textMuted.opacity(0.75))
+                    .font(.wisp(size: 10, design: .monospaced))
+                    .foregroundStyle(Theme.textMuted)
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
@@ -631,7 +681,7 @@ struct OverlayView: View {
         }
         if !model.activity.isEmpty {
             ForEach(model.activity.indices, id: \.self) { i in
-                Text(model.activity[i]).font(.system(size: 12, design: .monospaced))
+                Text(model.activity[i]).font(.wisp(size: 12, design: .monospaced))
                     .foregroundStyle(Theme.textMuted)
             }
         }
@@ -645,14 +695,14 @@ struct OverlayView: View {
                 // as one complete block (not token-by-token), so this starts at
                 // the top, not auto-scrolled to the end.
                 ScrollView {
-                    Text(model.reasoning).font(.system(size: 12))
+                    Text(model.reasoning).font(.wisp(size: 12))
                         .foregroundStyle(Theme.textMuted)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
                 .frame(maxHeight: 160)
             } label: {
-                Text("Show reasoning").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                Text("Show reasoning").font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
             }
             .tint(Theme.textSecondary)
         }
@@ -671,11 +721,12 @@ struct OverlayView: View {
             if model.phase == .streaming {
                 HStack(spacing: 6) {
                     Circle().fill(Theme.textMuted).frame(width: 5, height: 5)
-                        .opacity(breathe ? 0.25 : 0.9)
-                        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: breathe)
+                        .opacity(reduceMotion ? 0.9 : (breathe ? 0.25 : 0.9))
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: breathe)
+                        .accessibilityHidden(true)
                     if model.heartbeats > 0 {
                         Text("still generating… (\(model.heartbeats * 8)s)")
-                            .font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+                            .font(.wisp(size: 10)).foregroundStyle(Theme.textMuted)
                     }
                 }
             }
@@ -697,7 +748,7 @@ struct OverlayView: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                 .help("Ask \u{201C}\(s)\u{201D}")
             }
         }
@@ -707,7 +758,7 @@ struct OverlayView: View {
     // Buttons here are not focusable, so Return and the Ask field keep the keyboard.
     private var tryAnotherRow: some View {
         HStack(spacing: 8) {
-            Text("Try another").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Text("Try another").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                 .fixedSize()
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
@@ -720,7 +771,7 @@ struct OverlayView: View {
                                 .contentShape(Capsule())
                         }
                         .buttonStyle(.plain).focusable(false)
-                        .font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                        .font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
                         .help("Ask \u{201C}\(s)\u{201D}")
                     }
                 }
@@ -732,7 +783,7 @@ struct OverlayView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.shield").foregroundStyle(Theme.textPrimary)
-                Text(p.reason).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                Text(p.reason).font(.wisp(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)
             }
             // The actual code being installed, when this is a create_tool
             // confirm. Scrollable and height-capped so a long script can be
@@ -740,7 +791,7 @@ struct OverlayView: View {
             if !p.preview.isEmpty {
                 ScrollView {
                     Text(p.preview)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.wisp(size: 11, design: .monospaced))
                         .foregroundStyle(Theme.textPrimary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -756,24 +807,24 @@ struct OverlayView: View {
             // can meaningfully consent to.
             if p.grantable && !p.scopeHint.isEmpty {
                 Text("Always allow applies to \(p.tool) on \(p.scopeHint)")
-                    .font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                    .font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
             }
             HStack(spacing: 8) {
                 Spacer()
                 Button("Deny") { model.resolve(false) }.buttonStyle(.plain)
-                    .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                    .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                     .padding(.horizontal, 14).padding(.vertical, 6)
                     .background(Capsule().fill(Theme.chipFill))
                 if p.grantable {
                     Button("Always allow") { model.resolve(true, scope: "always") }
                         .buttonStyle(.plain)
-                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                         .padding(.horizontal, 14).padding(.vertical, 6)
                         .background(Capsule().fill(Theme.chipFill))
                         .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                 }
                 Button("Allow once") { model.resolve(true) }.buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(.black)
+                    .font(.wisp(size: 12, weight: .medium)).foregroundStyle(.black)
                     .padding(.horizontal, 14).padding(.vertical, 6)
                     .background(Capsule().fill(.white))
             }
@@ -788,11 +839,11 @@ struct OverlayView: View {
                 Image(systemName: draft.sent ? "checkmark.circle.fill" : "bubble.left")
                     .foregroundStyle(Theme.textPrimary)
                 Text(draft.sent ? "Message sent" : "Message draft")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.wisp(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
                 Spacer()
                 Text("To: \(draft.to)")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.wisp(size: 11, design: .monospaced))
                     .foregroundStyle(Theme.textSecondary)
             }
 
@@ -801,7 +852,7 @@ struct OverlayView: View {
                     TextEditor(text: Binding(
                         get: { model.messageDraft?.text ?? "" },
                         set: { model.setDraftText($0) }))
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.wisp(size: 12, design: .monospaced))
                         .foregroundStyle(Theme.textPrimary)
                         .scrollContentBackground(.hidden)
                         .frame(minHeight: 90, maxHeight: 220)
@@ -809,7 +860,7 @@ struct OverlayView: View {
                 } else {
                     ScrollView {
                         Text(draft.text)
-                            .font(.system(size: 12, design: .monospaced))
+                            .font(.wisp(size: 12, design: .monospaced))
                             .foregroundStyle(Theme.textPrimary)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -823,7 +874,7 @@ struct OverlayView: View {
 
             if !draft.status.isEmpty {
                 Text(draft.status)
-                    .font(.system(size: 11))
+                    .font(.wisp(size: 11))
                     .foregroundStyle((draft.sent || draft.isSending)
                                      ? Theme.textSecondary : Theme.bad)
             }
@@ -832,20 +883,20 @@ struct OverlayView: View {
                     Spacer()
                     Button("Discard") { model.discardMessageDraft() }
                         .buttonStyle(.plain)
-                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                         .padding(.horizontal, 14).padding(.vertical, 6)
                         .background(Capsule().fill(Theme.chipFill))
                         .disabled(draft.isSending)
                     Button(draft.isEditing ? "Done" : "Edit") { model.toggleDraftEditing() }
                         .buttonStyle(.plain)
-                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                         .padding(.horizontal, 14).padding(.vertical, 6)
                         .background(Capsule().fill(Theme.chipFill))
                         .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                         .disabled(draft.isSending)
                     Button(draft.isSending ? "Sending…" : "Send") { model.sendMessageDraft() }
                         .buttonStyle(.plain)
-                        .font(.system(size: 12, weight: .medium)).foregroundStyle(.black)
+                        .font(.wisp(size: 12, weight: .medium)).foregroundStyle(.black)
                         .padding(.horizontal, 14).padding(.vertical, 6)
                         .background(Capsule().fill(.white))
                         .disabled(draft.isSending || draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -863,36 +914,36 @@ struct OverlayView: View {
         HStack(spacing: 6) {
             Circle().fill(model.serviceDown ? Theme.bad : statusColor).frame(width: 5, height: 5)
             if model.serviceDown {
-                Text("Wisp's service isn't running").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                Text("Wisp's service isn't running").font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
                 Button("Retry") { model.retryService() }
-                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                    .buttonStyle(.plain).font(.wisp(size: 11, weight: .medium)).foregroundStyle(Theme.textPrimary)
                     .padding(.horizontal, 8).padding(.vertical, 2)
                     .background(Capsule().fill(Theme.chipFill))
                     .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                     .accessibilityLabel("Retry starting the Wisp service")
             } else if model.serviceStarting {
-                Text("Starting Wisp…").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                Text("Starting Wisp…").font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
             } else if model.setupCard == .later {
                 // Set aside, and Wisp still can't answer: one tap back to it.
                 Button("Finish setup") { model.setupCard = .open }
-                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                    .buttonStyle(.plain).font(.wisp(size: 11, weight: .medium)).foregroundStyle(Theme.textPrimary)
                     .help("Wisp needs its AI model before it can answer")
             } else if model.debugMode && !model.modelAbbrev.isEmpty {
                 // Model and route are details for Debug Mode, not a first-time user.
                 if !model.routeLabel.isEmpty {
-                    Text(model.routeLabel).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
-                    Image(systemName: "arrow.right").font(.system(size: 8, weight: .bold))
+                    Text(model.routeLabel).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
+                    Image(systemName: "arrow.right").font(.wisp(size: 8, weight: .bold))
                         .foregroundStyle(Theme.textMuted)
                 }
-                Text(model.modelAbbrev).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                Text(model.modelAbbrev).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
                 if model.tokPerSec > 0 {
-                    Text("· \(model.tokPerSec) tok/s").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Text("· \(model.tokPerSec) tok/s").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                 }
             } else {
-                Text("Ready").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                Text("Ready").font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
             }
             Spacer()
-            Text("⌥ Space").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Text("⌥ Space").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .background(Capsule().fill(Theme.chipFill))
         }
@@ -903,23 +954,23 @@ struct OverlayView: View {
     /// a blank panel that silently fails.
     private var serviceDownCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Wisp's service isn't running").font(.system(size: 13, weight: .semibold))
+            Text("Wisp's service isn't running").font(.wisp(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
             Text("Wisp can't answer until it starts. Press Retry. If it keeps happening, send a report.")
-                .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let failure = model.serviceStartFailure {
-                Text(failure).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text(failure).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
             HStack(spacing: 8) {
                 Button("Retry") { model.retryService() }
-                    .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(.black)
+                    .buttonStyle(.plain).font(.wisp(size: 12, weight: .semibold)).foregroundStyle(.black)
                     .padding(.horizontal, 14).padding(.vertical, 5)
                     .background(Capsule().fill(.white))
                 Button("Report") { model.reportCurrentProblem() }
-                    .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                    .buttonStyle(.plain).font(.wisp(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
                     .padding(.horizontal, 12).padding(.vertical, 5)
                     .background(Capsule().fill(Theme.chipFill))
                     .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
@@ -948,6 +999,7 @@ struct OverlayView: View {
 struct ProcessingRow: View {
     let label: String
     @State private var animate = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 8) {
@@ -956,12 +1008,14 @@ struct ProcessingRow: View {
                     Circle()
                         .fill(Theme.textSecondary)
                         .frame(width: 6, height: 6)
-                        .opacity(animate ? 0.25 : 1.0)
-                        .animation(.easeInOut(duration: 0.6).repeatForever().delay(Double(i) * 0.18), value: animate)
+                        .opacity(!reduceMotion && animate ? 0.25 : 1.0)
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.6).repeatForever().delay(Double(i) * 0.18), value: animate)
                 }
             }
-            Text(label).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+            .accessibilityHidden(true)
+            Text(label).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
         }
+        .accessibilityElement(children: .combine)
         .onAppear { animate = true }
     }
 }
@@ -1008,7 +1062,7 @@ struct SourceSyncTip: View {
                 .help(source.detail)
             }
         }
-        .font(.system(size: 11))
+        .font(.wisp(size: 11))
         .foregroundStyle(Theme.textMuted)
     }
 }
