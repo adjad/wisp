@@ -4,10 +4,6 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
-### Added
-- **Ask by voice.** Press **⌥⇧Space** from any app, or click the mic in Ask (or in Brief and Day to ask about your day), and say your question. Wisp listens until you pause (at most 30 seconds), and the words appear in Ask and send like typed text. Your Ask model hears the clip on this Mac and turns it into text: Gemma 4 E4B, the default, does this in about a second. Wisp keeps no copy of the recording, and it never leaves your Mac. A model that can't hear (one with no audio encoder, or a cloud model) is refused before any audio is sent, so a made-up transcript never becomes your question. The microphone permission is asked for the first time you press the mic, never before.
-- **Answers read aloud.** Answers to spoken questions are read with your Mac's own voice (System Settings ▸ Accessibility ▸ Spoken Content). **Read answers aloud** in the notch's settings can switch this to every answer or to never. The mic button stops the voice. VoiceOver now announces every answer and error in the notch.
-
 ### Changed
 - **Versions renumbered down by 1.0.** Wisp is not yet a finished product, so every release is now 0.x (1.4.0 became 0.4.0, 1.3.3 became 0.3.3, and so on). Release tags and GitHub releases were renamed to match, and the old v0.1.0 is now v0.0.0-initial. The next release is 0.5.0.
 
@@ -16,7 +12,9 @@ All notable changes to Wisp are documented here.
 Second release candidate for testers; it builds on rc1. See [docs/releases/0.5.0-rc2.md](docs/releases/0.5.0-rc2.md) for the release notes.
 
 ### Added
-- TODO: list what rc2 adds.
+- **Ask by voice.** Press **⌥⇧Space** from any app, or click the mic in Ask (or in Brief and Day to ask about your day), and say your question. Wisp listens until you pause (at most 30 seconds), and the words appear in Ask and send like typed text. Your Ask model hears the clip on this Mac and turns it into text: Gemma 4 E4B, the default, does this in about a second. Wisp keeps no copy of the recording, and it never leaves your Mac. A model that can't hear (one with no audio encoder, or a cloud model) is refused before any audio is sent, so a made-up transcript never becomes your question. The microphone permission is asked for the first time you press the mic, never before.
+- **Answers read aloud.** Answers to spoken questions are read with your Mac's own voice (System Settings ▸ Accessibility ▸ Spoken Content). **Read answers aloud** in the notch's settings can switch this to every answer or to never. The mic button stops the voice. VoiceOver now announces every answer and error in the notch.
+- **Accessibility in the notch.** Reduce Motion (System Settings ▸ Accessibility ▸ Display) stops the looping animations (the breathing orb, the thinking dots, the listening pulse) and drops the fades. VoiceOver reads labels on the notch's controls and announces every answer and error. **Increase Contrast** makes secondary text, hairlines and outlines brighter. **Settings ▸ Voice & accessibility ▸ Text size** (Default, Large, Extra large) enlarges the notch's text by up to 30%; Settings and the Wisp window are unchanged.
 
 ### Changed
 - **Wisp takes about 2 GB less disk.** The engine's prompt cache is capped at 2 GB instead of 4 GB (an existing 4 GB limit is lowered the next time the engine starts; a smaller limit you set stays), and its image cache at 256 MB instead of 1 GB. The built-in engine also drops 108 MB of build-only files it never runs. Replies may be a little slower on the first turn after the model switches.
