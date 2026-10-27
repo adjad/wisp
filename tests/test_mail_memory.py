@@ -598,16 +598,12 @@ async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypa
     assert await runner.tick(now=NOW + 2) == runner.BUSY_GAP_S
 
 
-@pytest.mark.parametrize("remote, loaded, busy, gap", [(True, ["fast-model"], False, "FAILURE_GAP_S"),
-                                                       (False, [], False, "BUSY_GAP_S"),
-                                                       (False, ["fast-model", "other"], False, "BUSY_GAP_S"),
-                                                       (False, ["fast-model"], True, "BUSY_GAP_S")])
-async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, quiet, remote, loaded, busy, gap):
-    """A remote-only profile, a model that isn't resident, or one already answering
-    another call: no index read, no body read."""
+@pytest.mark.parametrize("remote, loaded, gap", [(True, ["fast-model"], "FAILURE_GAP_S"),
+                                                 (False, [], "BUSY_GAP_S"),
+                                                 (False, ["fast-model", "other"], "BUSY_GAP_S")])
+async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, remote, loaded, gap):
+    """A remote-only profile or a model that isn't resident: no index read, no body read."""
     st = ticking
-    if busy:
-        monkeypatch.setattr(quiet, "in_flight", lambda key: 1)
     monkeypatch.setattr(runner, "_stand_down", _REAL_STAND_DOWN)
     monkeypatch.setattr(runner, "_model_key", lambda: "fast-model")
     from service.inference import remote_policy
@@ -638,6 +634,29 @@ async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, qu
     st.upsert_index([_row(5)], extract.tier, now=1)
     assert await runner.tick(now=NOW + 2) == getattr(runner, gap)
     assert st.message("<m5@x>")["attempts"] == 0
+
+
+async def test_stand_down_says_why(monkeypatch, quiet):
+    from service.inference import remote_policy
+    from service.assistant import brief
+    from service import config
+
+    class Client:
+        async def loaded_models(self):
+            return ["fast-model"]
+
+        def keep_warm(self):
+            return []
+
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)
+    monkeypatch.setattr(brief, "_c", lambda: Client())
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast-model")
+    monkeypatch.setattr(runner, "_model_key", lambda: "fast-model")
+    assert await runner._stand_down() is None
+    monkeypatch.setattr(quiet, "in_flight", lambda key: 1)              # another call is on the model
+    assert await runner._stand_down() == "busy"
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
+    assert await runner._stand_down() == "remote_only"
 
 
 def test_schedule_waits_for_a_running_brief(monkeypatch, quiet):
