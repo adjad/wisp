@@ -124,7 +124,16 @@ def test_reopened_window_leaves_the_model_alone():
     switch the model or run its test by itself."""
     setup = _sources()["FirstRunSetupView.swift"]
     drive = _body(setup, "private func drive(_ state: FirstRunBrain)")
-    assert drive.lstrip("{ \n").startswith("guard FirstRunSetup.drivesModel(setupDone: setupDone) else { return }")
+    guard = "guard FirstRunSetup.drivesModel(setupDone: setupDone) else { return }"
+    assert guard in drive
+    # Only the connect timer runs before the guard (so Try again appears after
+    # setup is finished); starting the person's oMLX is gated on drivesModel too.
+    before, after = drive.split(guard, 1)
+    assert "setup.apply(" not in before and "setup.apply(" in after
+    assert "setup.startExistingOmlxOnce()" not in after
+    assert "if steps.startsOmlx { setup.startExistingOmlxOnce() }" in before
+    gate = _body(setup, "static func whileConnecting(setupDone: Bool, connecting: Bool)")
+    assert "connecting && FirstRunSetup.drivesModel(setupDone: setupDone)" in gate
     app = _sources()["AppDelegate.swift"]
     assert "setupDone: !FirstRunSetup.isUnfinished { defaults.bool(forKey: $0) }" in app
 
