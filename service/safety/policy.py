@@ -190,6 +190,8 @@ _LOCAL_SEND_DENY = [
     r"assistant/+proactive/+cards/+[^/\s'\"]+/+fire\b",
     r"assistant/+needs_you/+[^/\s'\"]+/+(?:done|clear)\b",
     r"assistant/+proactive/+(?:todos|threads)/+[^/\s'\"]+/+(?:done|clear)\b",
+    # /resetwisp's erase: only the app, after the person's Reset Wisp click.
+    r"assistant/+reset_wisp\b",
     # Bounded: unbounded lazy runs here were quadratic on a long command.
     # The route patterns above already match the path at any length.
     r"(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^\s'\"]{0,256}?:8765\b[^\s'\"]{0,256}?(email_reply|send_message_draft)",

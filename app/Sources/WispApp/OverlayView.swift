@@ -54,7 +54,10 @@ struct OverlayView: View {
     private var expandedPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if let knowYou = model.knowYou {
+            if model.resetCard != nil {
+                // /resetwisp's confirmation takes the tab's place until Cancel.
+                ResetWispCard(model: model)
+            } else if let knowYou = model.knowYou {
                 // Getting to know you takes the tab's place until Done or a tab.
                 KnowYouView(model: knowYou)
             } else if model.showingQuickSettings {

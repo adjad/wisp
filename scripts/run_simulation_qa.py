@@ -150,6 +150,8 @@ PROFILE_TESTS = {
         "tests/test_forced_step_withholding.py",
         "tests/test_shell_boundary.py",
         "tests/test_shell_local_service_deny.py",
+        # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
+        "tests/test_wisp_reset.py",
         "tests/test_outbound_shell_gate.py",
         "tests/test_local_http_guard.py",
         "tests/test_tool_calling_invariants.py",

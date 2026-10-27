@@ -677,6 +677,21 @@ final class WispClient {
     }
 
     // Stop the oMLX engine entirely: its models and its ~2GB baseline. Used on quit.
+    /// POST /assistant/reset_wisp (service/wisp_reset.py): the HTTP status and body,
+    /// or a nil status when the service didn't answer. Only after the person's
+    /// Reset Wisp click (AppDelegate.performWispReset).
+    func resetWisp() async -> (status: Int?, body: [String: Any]?) {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent(WispReset.route))
+        req.httpMethod = "POST"
+        // Longer than the service's own bounds: stop work, sign out of Google, forget, delete.
+        req.timeoutInterval = 180
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["confirm": WispReset.confirmPhrase])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse else { return (nil, nil) }
+        return (http.statusCode, (try? JSONSerialization.jsonObject(with: data)) as? [String: Any])
+    }
+
     // The wait is longer than the backend's own bound on the stop, so the engine is
     // gone before the backend is; an engine left running would keep its models loaded.
     func shutdownOMLX() async {

@@ -127,6 +127,12 @@ final class OverlayModel: ObservableObject {
     var onResetCorpus: () -> Void = {}
     var onOpenCorpus: () -> Void = {}
 
+    /// /resetwisp's confirmation card (ResetWisp.swift), nil when closed.
+    @Published var resetCard: ResetCardState?
+    /// Runs the reset after the Reset Wisp click (AppDelegate.performWispReset).
+    /// Returns why it stopped before erasing anything; on success Wisp relaunches.
+    var onResetWisp: (() async -> String)?
+
     @Published var input = ""
     @Published var answer = ""
     @Published var reasoning = ""
@@ -767,7 +773,39 @@ final class OverlayModel: ObservableObject {
         case .window: openTabInWindow()
         case .new: newChat()
         case .about: startKnowYou()
+        case .resetwisp: openResetCard()
         }
+    }
+
+    /// /resetwisp typed in Ask: the confirmation card, never the reset itself.
+    func openResetCard() {
+        if let refusal = WispReset.refusal(corpusBusy: corpusBusy, replying: !conversationSettled) {
+            showTransientNotice(refusal)
+            return
+        }
+        showingQuickSettings = false
+        tab = .ask
+        resetCard = .confirm
+        onResize()
+    }
+
+    /// The card's Reset Wisp button, and only it.
+    func confirmReset() {
+        guard resetCard == .confirm, let onResetWisp else { return }
+        resetCard = .running
+        onResize()
+        Task { [weak self] in
+            let stopped = await onResetWisp()
+            guard let self else { return }
+            self.resetCard = .failed(stopped)
+            self.onResize()
+        }
+    }
+
+    func cancelReset() {
+        guard resetCard != .running else { return }
+        resetCard = nil
+        onResize()
     }
 
     /// Quick settings' Model memory: unload the models now. Wisp reloads them on
@@ -887,6 +925,8 @@ final class OverlayModel: ObservableObject {
 
     /// A starter question was tapped: ask it, exactly as if typed.
     func pick(_ s: String) {
+        // A starter comes from the service, not the person's typing: never the reset.
+        guard !NotchCommand.isReset(s) else { return }
         input = s
         submit()
     }

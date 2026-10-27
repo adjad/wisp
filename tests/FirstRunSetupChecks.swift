@@ -487,6 +487,8 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .allowed, "Readable Mail folder")
         try? FileManager.default.removeItem(at: scratch)
 
+        // /resetwisp brings all of the above back to a fresh Mac (tests/WispResetChecks.swift).
+        WispResetChecks.run()
         print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access")
     }
 }

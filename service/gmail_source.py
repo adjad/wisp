@@ -1226,15 +1226,21 @@ async def disconnect(account: str = "") -> dict:
                 _observe_history_config({})
         E.configure_external_accounts(accounts)
     erased = {email: erase_account_data(email) for email in removed}
-    for item in removed.values():
+    # Revocation is best effort: the local disconnect already succeeded. Each
+    # account says whether Google confirmed it ("revoked"), refused the token
+    # ("rejected", e.g. already revoked) or could not be reached ("offline").
+    revoked: dict[str, str] = {}
+    for email, item in removed.items():
         try:
             async with httpx.AsyncClient(timeout=5) as http:
-                await http.post("https://oauth2.googleapis.com/revoke", data={"token": item["refresh_token"]})
+                answer = await http.post("https://oauth2.googleapis.com/revoke",
+                                         data={"token": item["refresh_token"]})
+            revoked[email] = "revoked" if answer.status_code == 200 else "rejected"
         except Exception:
-            pass  # Local disconnect already succeeded.
+            revoked[email] = "offline"
     complete = all(value == "erased" or value.startswith("erased ")
                    for parts in erased.values() for value in parts.values())
-    return {"removed": sorted(removed), "erased": erased, "complete": complete}
+    return {"removed": sorted(removed), "erased": erased, "complete": complete, "revoked": revoked}
 
 
 def erase_account_data(account: str) -> dict:

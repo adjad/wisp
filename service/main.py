@@ -424,6 +424,8 @@ async def lifespan(app: FastAPI):
             started_tasks.append(asyncio.create_task(gmail_source.run()))
             from service.memory.api import worker as memory_worker
             started_tasks.append(asyncio.create_task(memory_worker.run(client)))
+    # /resetwisp stops these before it deletes anything (service/wisp_reset.py).
+    app.state.wisp_background_tasks = started_tasks
     recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
@@ -456,6 +458,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Wisp", lifespan=lifespan)
 from service.config.quarantine import RecoveryMiddleware
 app.add_middleware(RecoveryMiddleware)
+from service.wisp_reset import ResetGate, router as wisp_reset_router
+app.add_middleware(ResetGate)           # /resetwisp: refuse everything else once deleting starts
+app.include_router(wisp_reset_router)
 from service.local_http import LocalOriginGuard
 app.add_middleware(LocalOriginGuard)    # web pages: loopback Host, same-origin changes only
 from service.memory.api import router as memory_router
