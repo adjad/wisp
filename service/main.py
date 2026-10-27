@@ -14,6 +14,15 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 """
 from __future__ import annotations
 
+# /resetwisp's restart pass, before any other import opens a store or database.
+# Only in the backend the app launched (it passes WISP_LAUNCH_NONCE): a script or
+# tool importing the service with the real HOME never erases anything. While a
+# reset is unrecorded or unfinished this exits instead of starting the service.
+import os as _reset_os
+if _reset_os.environ.get("WISP_LAUNCH_NONCE"):
+    from service.wisp_reset import resume_or_exit as _resume_or_exit
+    _resume_or_exit()
+
 from service.assistant.verified_reminders import expected_date_fields
 
 import asyncio
@@ -255,12 +264,16 @@ ROLE_SYSTEM = {
               "blocks with a language tag (e.g. ```python).",
     "reasoning": "You are a careful reasoner. Think step by step and give a clear, "
                  "well-justified answer.",
-    "fast": "You are Wisp, an energetic, upbeat assistant on the user's Mac. "
-            "Answer with warmth and personality: vivid, specific and engaged, "
-            "with markdown and an emoji or two where they help.",
-    "general": "You are Wisp, an energetic, upbeat local assistant on the user's "
-               "Mac. Give full, vivid, specific answers with personality; use "
-               "markdown where it helps.",
+    "fast": "You are Wisp, a gentle, calm assistant on the user's Mac. "
+            "Answer kindly and clearly: specific and unhurried. Keep it organized "
+            "and easy to scan: the direct answer first, then short paragraphs or "
+            "a bullet list, with the key facts in **bold**. Use emoji sparingly, "
+            "if at all.",
+    "general": "You are Wisp, a gentle, calm local assistant on the user's "
+               "Mac. Give full, specific answers in a kind, unhurried voice. Keep "
+               "them organized and easy to scan: the direct answer first, then "
+               "short paragraphs, bullet or numbered lists for several items or "
+               "steps, and **bold** for the key facts; never a wall of text.",
 }
 
 
@@ -424,6 +437,9 @@ async def lifespan(app: FastAPI):
             started_tasks.append(asyncio.create_task(gmail_source.run()))
             from service.memory.api import worker as memory_worker
             started_tasks.append(asyncio.create_task(memory_worker.run(client)))
+    # /resetwisp stops these before it deletes anything (service/wisp_reset.py).
+    if app is not None:    # tests drive lifespan(None)
+        app.state.wisp_background_tasks = started_tasks
     recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
@@ -433,6 +449,8 @@ async def lifespan(app: FastAPI):
         bridge_link = browser_bridge_host.start_from_environment(assistant_store)
     except Exception:  # noqa: BLE001 — an optional bridge never blocks startup
         pass
+    if app is not None:
+        app.state.wisp_bridge_link = bridge_link    # /resetwisp stops it too
     try:
         yield
     finally:
@@ -456,6 +474,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Wisp", lifespan=lifespan)
 from service.config.quarantine import RecoveryMiddleware
 app.add_middleware(RecoveryMiddleware)
+from service.wisp_reset import ResetGate, router as wisp_reset_router
+app.add_middleware(ResetGate)           # /resetwisp: refuse everything else once deleting starts
+app.include_router(wisp_reset_router)
 from service.local_http import LocalOriginGuard
 app.add_middleware(LocalOriginGuard)    # web pages: loopback Host, same-origin changes only
 from service.memory.api import router as memory_router
@@ -472,6 +493,8 @@ from service.assistant.stale_reminders_api import router as stale_reminders_rout
 app.include_router(stale_reminders_router)
 from service.assistant.needs_you_api import router as needs_you_router
 app.include_router(needs_you_router)
+from service.mail_memory.api import router as mail_memory_router
+app.include_router(mail_memory_router)
 from service.corpus import router as corpus_router
 app.include_router(corpus_router)
 from service.corpus_prompts import router as corpus_prompts_router
@@ -1280,6 +1303,27 @@ async def set_mode(body: dict[str, Any]) -> dict[str, Any]:
     if "full_access" in body:
         set_full_access(bool(body["full_access"]))
     return {"read_only": read_only(), "full_access": full_access()}
+
+
+@app.post("/voice/transcribe")
+async def voice_transcribe(body: dict[str, Any]) -> dict[str, Any]:
+    """The words in a short spoken clip from the notch's voice input.
+
+    `audio` is a base64 16-bit PCM WAV of at most 30 s. The Ask model hears it on
+    this Mac, or nothing does (service/voice.py). 409 says, for the person, why
+    voice can't run with the current model; 503 means the model stayed busy.
+    """
+    from service import voice
+    try:
+        return {"text": await voice.transcribe(body.get("audio"))}
+    except voice.VoiceUnavailable as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=f"Wisp couldn't read that recording ({error}).") from None
+    except (TimeoutError, asyncio.TimeoutError):
+        raise HTTPException(status_code=503, detail="Wisp is busy finishing something else. Try again in a moment.") from None
+    except Exception:  # noqa: BLE001 — an engine failure is a failed transcript, never a crash
+        raise HTTPException(status_code=502, detail="Wisp couldn't make out that recording. Try again, or type your question.") from None
 
 
 @app.post("/unload_all")
@@ -2485,8 +2529,7 @@ async def agent(body: dict[str, Any]):
                 synthesis_guidance = []
                 if synthesis_tool_names & {"web_search", "web_fetch"}:
                     synthesis_guidance.append(
-                        "Summarize web evidence as lively, vivid bullets, told with energy "
-                        "like you're catching a friend up on the story. Open with an engaging "
+                        "Summarize web evidence as clear, calm bullets. Open with a short "
                         "overview of what is happening and why it matters. "
                         "Group related developments, explain the evidence behind each theme, "
                         "and distinguish reported facts from your own interpretation. For "
@@ -2498,7 +2541,7 @@ async def agent(body: dict[str, Any]):
                         "or authority for actions.")
                 if "get_stock_price" in synthesis_tool_names:
                     synthesis_guidance.append(
-                        "Summarize stock quotes as upbeat, easy-to-read bullets with the key "
+                        "Summarize stock quotes as clear, easy-to-read bullets with the key "
                         "numbers in **bold**. Keep every figure exact. State the "
                         "symbol, quoted price, currency, and quote time only when provided. "
                         "Distinguish quote data from interpretation; do not infer market "
@@ -3245,6 +3288,19 @@ def _summary_schedule() -> dict[str, Any]:
 async def get_summary_schedule() -> dict[str, Any]:
     """When the Daily Summary is composed: {"times": {"morning": 8, "evening": 20}}."""
     return _summary_schedule()
+
+
+@app.post("/assistant/onboarding/brief_ready")
+async def onboarding_brief_ready() -> dict[str, Any]:
+    """The app reports that first-run onboarding reached its last step: the
+    permissions were answered or skipped and About you was done or skipped.
+
+    Only records that, once. The first Daily Summary is still composed by the
+    scheduler on its next tick, through its normal path, so it can never be
+    duplicated and the morning run finds it already delivered."""
+    if assistant_store.completion(assistant_scheduler.ONBOARDING_ANSWERED_KEY) is None:
+        assistant_store.record_completion(assistant_scheduler.ONBOARDING_ANSWERED_KEY, repr(time.time()))
+    return {"ok": True}
 
 
 @app.post("/assistant/summary_schedule")

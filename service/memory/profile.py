@@ -51,7 +51,9 @@ PROFILE_PATH = MOE_DIR / "profile.json"
 # 2: the default length became "thorough" (Wisp's own full-answer voice). Every
 # version-1 file holds "short" whether or not the person chose it, because the
 # old flow saved its preselected default; see _read.
-VERSION = 2
+# 3: the default tone became "gentle". Every version-2 file holds "warm" whether
+# or not the person chose it, because that flow saved its preselected default too.
+VERSION = 3
 
 TONES = ("gentle", "warm", "direct")
 DETAILS = ("short", "thorough")
@@ -76,7 +78,7 @@ _lock = threading.Lock()
 
 def empty() -> dict:
     return {"version": VERSION, "name": "", "about": "", "goals": [], "struggles": [],
-            "people": [], "tone": "warm", "detail": "thorough",
+            "people": [], "tone": "gentle", "detail": "thorough",
             "boundaries": "", "notes": "", "completed_at": None, "updated_at": None,
             "dismissed_at": None, "dismiss_count": 0,
             # Weekly goal pulse: its clock starts at a goal change or an answer.
@@ -140,9 +142,9 @@ def _people(value) -> list[dict]:
     return out
 
 
-# Wisp's own voice (the base prompts: energetic, full and vivid). A default
+# Wisp's own voice (the base prompts: gentle, full answers). A default
 # choice adds nothing to the prompt; only a different one does.
-_DEFAULT_CHOICE = {"tone": "warm", "detail": "thorough"}
+_DEFAULT_CHOICE = {"tone": "gentle", "detail": "thorough"}
 
 
 def _choice(value, options: tuple[str, ...], field: str) -> str:
@@ -269,6 +271,10 @@ def _read() -> dict:
         # Version 1 saved the preselected "short" with every answer, so it is
         # not evidence of a choice. Read it as Wisp's default.
         raw = {**raw, "detail": _DEFAULT_CHOICE["detail"]}
+    if version < 3 and raw.get("tone") == "warm":
+        # Version 2 saved the preselected "warm" with every answer, so it is not
+        # evidence of a choice either. "gentle" and "direct" were picked.
+        raw = {**raw, "tone": _DEFAULT_CHOICE["tone"]}
     try:
         profile.update(validate({k: raw.get(k) for k in EDITABLE if k in raw}))
     except ValueError:
@@ -757,7 +763,7 @@ def preview(profile: dict | None = None) -> list[str]:
                      "with a small next step. Never a reproach.")
     tone = profile.get("tone") or _DEFAULT_CHOICE["tone"]
     detail = profile.get("detail") or _DEFAULT_CHOICE["detail"]
-    manner = {"gentle": "gently", "warm": "",
+    manner = {"gentle": "", "warm": "with upbeat energy",
               "direct": "straight to the point"}[tone]
     length = {"short": "keep replies short", "thorough": ""}[detail]
     said = [part for part in (f"talk to you {manner}" if manner else "", length) if part]

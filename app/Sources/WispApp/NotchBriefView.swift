@@ -92,6 +92,7 @@ struct NotchBriefView: View {
                                           events: restOfToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
                                           coverage: Self.coverage(plan))
+                    MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
                     HStack {
                         askChip(plan)
                         Spacer()
@@ -132,7 +133,7 @@ struct NotchBriefView: View {
 
     private func lede(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 16.5)).foregroundStyle(Theme.textPrimary)
+            .font(.wisp(size: 16.5)).foregroundStyle(Theme.textPrimary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
@@ -190,6 +191,7 @@ struct NotchBriefView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .clipped()
         if !brief.suggestions.isEmpty { suggestionsRow(brief.suggestions) }
+        MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
         footerChips(plan)
         if !brief.summary.isEmpty { goalLines(brief.summary) }
     }
@@ -225,10 +227,10 @@ struct NotchBriefView: View {
         return Button { keyboardNav = false; toggle(tile) } label: {
             VStack(alignment: .leading, spacing: 3) {
                 Text(tile.title.uppercased())
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.wisp(size: 10, design: .monospaced))
                     .foregroundStyle(isOpen ? Theme.textSecondary : Theme.textMuted)
                 Text(count.map(String.init) ?? "–")
-                    .font(.system(size: 20, weight: .semibold)).monospacedDigit()
+                    .font(.wisp(size: 20, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(quiet && !isOpen ? Theme.textSecondary : Theme.textPrimary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -286,7 +288,7 @@ struct NotchBriefView: View {
         let width = Self.labelWidth(lines + glance)
         return VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("TOP 3").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                Text("TOP 3").font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                     .accessibilityAddTraits(.isHeader)
                 if lines.isEmpty {
                     row(BriefDetail.Line(id: "empty", leading: "", text: BriefTiles.emptyTop(unread: unread, uncheckedMail: uncheckedMail), muted: true), width: width)
@@ -312,14 +314,14 @@ struct NotchBriefView: View {
     private func tileList(_ tile: BriefTile, _ detail: BriefDetail) -> some View {
         let width = Self.labelWidth(detail.lines)
         return VStack(alignment: .leading, spacing: 6) {
-            Text(tile.title.uppercased()).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+            Text(tile.title.uppercased()).font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 .accessibilityAddTraits(.isHeader)
             ForEach(detail.lines) { row($0, width: width) }
             Button {
                 if let action = detail.action, let url = URL(string: action.url) { Permissions.openFix(url) }
                 else { NotchChrome.open(detail.source) }
             } label: {
-                Text(detail.action.map(Permissions.fixLabel) ?? "Open \(NotchChrome.appName(detail.source)) ↗").font(.system(size: 12.5, weight: .medium))
+                Text(detail.action.map(Permissions.fixLabel) ?? "Open \(NotchChrome.appName(detail.source)) ↗").font(.wisp(size: 12.5, weight: .medium))
                     .foregroundStyle(Theme.textPrimary).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -353,7 +355,7 @@ struct NotchBriefView: View {
                     needControls(need)
                 }
                 if let failure = needActions.failures[need.id] {
-                    Text(failure).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                    Text(failure).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.leading, width + Self.labelGap)
                 }
@@ -374,9 +376,9 @@ struct NotchBriefView: View {
             // An empty label still sets a baseline; an empty Text doesn't, and
             // throws the row's first-baseline alignment off.
             Text(line.leading.isEmpty ? " " : line.leading.uppercased())
-                .font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                .font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 .frame(width: width, alignment: .leading)
-            Text(line.text).font(.system(size: line.paragraph ? 14 : 13.5))
+            Text(line.text).font(.wisp(size: line.paragraph ? 14 : 13.5))
                 .foregroundStyle(line.muted ? Theme.textMuted : secondary ? Theme.textSecondary : Theme.textPrimary)
                 .lineLimit(line.paragraph ? nil : 2).fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, line.paragraph ? 3 : 0)
@@ -430,7 +432,7 @@ struct NotchBriefView: View {
     private var heading: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(today.selectedDate, format: .dateTime.weekday(.wide).month(.abbreviated).day())
-                .font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                .font(.wisp(size: 18, weight: .semibold)).foregroundStyle(Theme.textPrimary)
             if !today.followsToday {
                 NotchChrome.chip("Back to today", icon: "calendar", help: "Show today instead of the day picked in the planner") {
                     today.returnToToday()
@@ -441,7 +443,7 @@ struct NotchBriefView: View {
             Spacer()
             if let updated = updatedAt {
                 Text("Updated " + updated.formatted(date: .omitted, time: .shortened))
-                    .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    .font(.wisp(size: 12)).foregroundStyle(Theme.textMuted)
             }
             NotchChrome.iconButton(model.briefComposing ? "ellipsis" : "arrow.clockwise",
                                    help: "Compose a new brief and reload your day") {
@@ -642,7 +644,7 @@ struct NeedsYouRowControls: View {
         } else if let working = actions.busy[row.id] {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini)
-                Text(working.progress).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                Text(working.progress).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
             }
             .fixedSize()
             .accessibilityElement(children: .combine)
@@ -662,7 +664,7 @@ struct NeedsYouRowControls: View {
 
     private func icon(_ symbol: String, action: NeedsYouRowAction) -> some View {
         Button { answer(action) } label: {
-            Image(systemName: symbol).font(.system(size: 9, weight: .semibold))
+            Image(systemName: symbol).font(.wisp(size: 9, weight: .semibold))
                 .foregroundStyle(Theme.textMuted).frame(width: 16, height: 16).contentShape(Rectangle())
         }
         .buttonStyle(.plain)

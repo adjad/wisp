@@ -149,15 +149,15 @@ enum KnowYouChips {
     ]
     static let maxGoals = 5
 
-    /// Wisp's own voice is the default: upbeat, full answers. Only a different
+    /// Wisp's own voice is the default: gentle, full answers. Only a different
     /// choice changes what the model is told (service/memory/profile.py), so the
     /// labels describe exactly what each choice does.
-    static let defaultTone = "warm"
+    static let defaultTone = "gentle"
     static let defaultDetail = "thorough"
 
     static let tones: [(value: String, label: String, detail: String)] = [
-        ("warm", "Upbeat", "Warm and lively, with a bit of personality."),
         ("gentle", "Gentle", "Calm and kind. Good news first, never a scolding."),
+        ("warm", "Upbeat", "Warm and lively, with a bit of personality."),
         ("direct", "Straight to the point", "The answer first. No small talk."),
     ]
     static let details: [(value: String, label: String, detail: String)] = [

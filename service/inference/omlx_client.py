@@ -799,9 +799,14 @@ class OMLXClient:
         tool_choice: str | dict | None = None,
         temperature: float | None = None,
         max_tokens: int = 2048,
+        engine_headers: dict[str, str] | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
-        """Non-streaming chat completion. Returns the raw oMLX response dict."""
+        """Non-streaming chat completion. Returns the raw oMLX response dict.
+
+        `engine_headers` go only to the local managed engine (for example
+        oMLX's `X-oMLX-Cache-Store: off`); a remote provider never sees them.
+        """
         model, messages, tools, max_tokens = self._fit_request(model, messages, tools, max_tokens)
         payload = self._payload(model, messages, tools, tool_choice,
                                 temperature, max_tokens, stream=False, **extra)
@@ -811,7 +816,11 @@ class OMLXClient:
         idle.begin(self.activity_key(model))
         try:
             if self.managed:
-                r = await self._client.post(self.api_prefix + "/chat/completions", json=payload)
+                if engine_headers:
+                    r = await self._client.post(self.api_prefix + "/chat/completions", json=payload,
+                                                headers=engine_headers)
+                else:
+                    r = await self._client.post(self.api_prefix + "/chat/completions", json=payload)
                 self._check_response(r)
                 data = self._completion_data(r)
             else:

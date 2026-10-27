@@ -157,7 +157,7 @@ struct AboutYouView: View {
                     section("People who matter to you", detail: "When they show up on your calendar or in your mail and texts, your morning brief points it out. This never changes what Wisp alerts you about.") {
                         peopleList
                     }
-                    section("How you like to be talked to", detail: "Upbeat with full answers is how Wisp talks unless you choose otherwise.") {
+                    section("How you like to be talked to", detail: "Gentle, with full answers, is how Wisp talks unless you choose otherwise.") {
                         HStack(spacing: 18) {
                             Picker("Tone", selection: $model.profile.tone) {
                                 ForEach(KnowYouChips.tones, id: \.value) { Text($0.label).tag($0.value) }

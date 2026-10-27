@@ -641,3 +641,66 @@ def test_a_chat_is_not_withheld_just_because_summarizing_redacted_a_number():
     assert not triage.withheld(item)
     otp = sources.text_items([(NOW - 60, "Mom", "Mom: your code is 482913", GUID_MOM)], now=NOW, own=ME)[0]
     assert triage.withheld(otp)
+
+
+# --- a reply card speaks to the latest lines, not an ask already answered -------------
+
+
+def credit_texts():
+    """The user's rc1 thread: an ask they answered, then a new line waiting."""
+    who, guid = "(650) 796-1110", "iMessage;-;+16507961110"
+    return [(NOW - 9000, who, f"{who}: Let me know if you run out of credits", guid),
+            (NOW - 8900, who, "Me: Thanks for sending that over. I will let you know if I need more credits.", guid),
+            (NOW - 8000, who, f"{who}: How was the birthday party? When does your midterm start?", guid),
+            (NOW - 7900, who, "Me: Yes it was good. Wednesday", guid),
+            (NOW - 7200, who, f"{who}: Okay, prepare well. You will do great.", guid)]
+
+
+@pytest.mark.parametrize("judge_items", [
+    [{"title": "Reply about credits", "action": "reply", "why": "They asked you to let them know if you run out of credits.",
+      "due": "", "sources": ["S1"], "urgency": "high"}],
+    [],                                  # the judge left it out: the waiting-people path
+])
+def test_reply_card_quotes_the_latest_lines_not_an_answered_ask(store, judge_items):
+    items = sources.text_items(credit_texts(), now=NOW, own=ME)
+    assert items[0]["pending"] == ["Okay, prepare well. You will do great."]
+    model = Model(
+        triage_reply=lambda m: {"title": "Checking in about credits and midterm", "junk": False, "sensitive": False,
+                                "summary": "Someone sent you credits and asked about your birthday party.",
+                                "asks_of_me": "Let them know if you run out of credits."},
+        judge_reply=lambda m: {"summary": "", "items": judge_items},
+        draft="Thanks for the good wishes. I will start studying for my midterm now.")
+    run(store, model, items)
+    card = next(c for c in snap(store)["cards"] if c["action"]["method"] == "text_reply")
+    assert card["sources"][0]["quote"] == "Okay, prepare well. You will do great."
+    assert "credits" not in card["body"] and "credits" not in card["why"]
+    assert card["body"].startswith("They texted again after your last reply.")
+
+
+def test_a_why_about_the_latest_lines_is_kept(store):
+    items = sources.text_items(mom_texts(), now=NOW, own=ME)
+    model = Model(triage_reply=lambda m: {"title": "Coffee chat", "summary": "Mom wants to talk tomorrow.", "junk": False,
+                                          "sensitive": False, "asks_of_me": "Talk with Mom tomorrow"},
+                  judge_reply=lambda m: {"summary": "", "items": [
+                      {"title": "Reply to Mom", "action": "reply", "why": "Mom wants to talk tomorrow.",
+                       "due": "tmrw", "sources": ["S1"], "urgency": "high"}]})
+    run(store, model, items)
+    card = next(c for c in snap(store)["cards"] if c["action"]["method"] == "text_reply")
+    assert "talk tomorrow" in card["why"] and card["sources"][0]["quote"] == "yes! let's talk tmrw"
+
+
+def test_a_never_answered_text_keeps_its_own_sentence(store):
+    """Audit: with no line from the user, nothing came "after your last reply"."""
+    rows = [(NOW - 600, "Mom", "Mom: u free fri? need a hand w the move", GUID_MOM)]
+    items = sources.text_items(rows, now=NOW, own=ME)
+    assert items[0]["pending"] == []
+    model = Model(triage_reply=lambda m: {"title": "Moving help", "summary": "Mom asked if you are free Friday.",
+                                          "junk": False, "sensitive": False, "asks_of_me": "Help Mom move Friday"},
+                  judge_reply=lambda m: {"summary": "", "items": [
+                      {"title": "Reply to Mom", "action": "reply", "why": "Mom is waiting on your answer.",
+                       "due": "", "sources": ["S1"], "urgency": "high"}]})
+    run(store, model, items)
+    card = next(c for c in snap(store)["cards"] if c["action"]["method"] == "text_reply")
+    assert "after your last reply" not in card["body"] and "after your last reply" not in card["why"]
+    assert card["sources"][0]["quote"] == "u free fri? need a hand w the move"
+

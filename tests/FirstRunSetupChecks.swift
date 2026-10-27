@@ -253,22 +253,68 @@ struct FirstRunSetupChecks {
             check(why.hasPrefix("Your oMLX app is running but doesn't have Gemma 4 E4B"),
                   "A running oMLX without Wisp's model is the stuck case, and says so")
         } else { check(false, "A running oMLX without the model goes to the detailed setup") }
+        // Right after Wisp starts their oMLX its server answers before it lists any model: that is
+        // still the search, not the stuck case, until the search window has passed.
+        let running = status(bundled: false)
+        check(running.usesOwnOmlx && running.existingOmlx == nil, "A running oMLX without the model is still their oMLX")
+        check(FirstRunBrain.from(status: running, downloads: [], stillLooking: true) == .startingEngine,
+              "Inside the search window a running oMLX without the model is still being looked for")
+        check(FirstRunBrain.from(status: running, downloads: [], stillLooking: true).footer(stalled: false)
+                == .working("Starting the engine…"), "...with a spinner, no failure copy and no Try again")
+        check(FirstRunBrain.from(status: status(bundled: false, available: false), downloads: [], stillLooking: true)
+                == .startingEngine, "...even on a Mac that can't run the built-in engine")
+        if case .unavailable = FirstRunBrain.from(status: running, downloads: [], stillLooking: false) {} else {
+            check(false, "Past the search window the stuck case reaches the detailed setup")
+        }
+        if case .unavailable = FirstRunBrain.from(status: running, downloads: []) {} else {
+            check(false, "The window is off by default: the notch's card reads it as before")
+        }
+        if case .unavailable = FirstRunBrain.from(status: status(available: false), downloads: [], stillLooking: true) {} else {
+            check(false, "The window never hides the built-in engine's own failure")
+        }
+        check(FirstRunBrain.from(status: status(ready: true, bundled: false), downloads: [], stillLooking: true).isReady,
+              "Ready wins over the search window")
+        check(FirstRunBrain.stillLooking(waited: nil) && FirstRunBrain.stillLooking(waited: 0)
+              && FirstRunBrain.stillLooking(waited: FirstRunBrain.connectGrace - 0.1)
+              && !FirstRunBrain.stillLooking(waited: FirstRunBrain.connectGrace),
+              "The search lasts exactly connectGrace, and starts when it is first seen")
+        check(FirstRunBrain.connectGrace >= 30, "A cold oMLX gets a long search before anything is called wrong")
+        check(FirstRunBrain.startingTitle(ownOmlx: true) == "Looking for your oMLX…"
+              && FirstRunBrain.startingTitle(ownOmlx: false) == "Starting Wisp's engine…",
+              "Their oMLX is looked for, the built-in engine is started")
         // A model the person's oMLX serves that would replace a choice: one click, never automatic.
         let offered = FirstRunBrain.offered(model: gemma, label: "Gemma 4 E4B")
         check(offered.modelToUse == gemma && offered.footer(stalled: false) == .tryAgain
               && !offered.isArriving && !offered.waitsForDownloadClick && offered.modelToFetch == nil,
               "An offered model waits for its Use click and is never fetched")
         // Connecting to the person's oMLX always reaches a Try again, even with no automatic start.
-        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: true, waited: 9),
-              "Connecting is not stalled inside the grace period")
-        check(FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: true,
+        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, ownOmlx: true,
+                                          waited: FirstRunBrain.connectGrace - 1),
+              "Looking for their oMLX is not stalled inside the grace period")
+        check(FirstRunBrain.startStalled(autoStarted: false, failed: false, ownOmlx: true,
                                          waited: FirstRunBrain.connectGrace),
-              "Connecting past the grace period offers Try again without an automatic start")
-        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: false, waited: 600),
+              "Looking for their oMLX past the grace period offers Try again without an automatic start")
+        check(!FirstRunBrain.startStalled(autoStarted: true, failed: false, ownOmlx: true, waited: 1)
+              && !FirstRunBrain.startStalled(autoStarted: false, failed: true, ownOmlx: true, waited: 1),
+              "An early or failed automatic start of their oMLX waits out the search before Try again")
+        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, ownOmlx: false, waited: 600),
               "The built-in engine keeps its own rule: stalled only after Wisp's start or a failure")
-        check(FirstRunBrain.startStalled(autoStarted: true, failed: false, connecting: false, waited: 0)
-              && FirstRunBrain.startStalled(autoStarted: false, failed: true, connecting: false, waited: 0),
+        check(FirstRunBrain.startStalled(autoStarted: true, failed: false, ownOmlx: false, waited: 0)
+              && FirstRunBrain.startStalled(autoStarted: false, failed: true, ownOmlx: false, waited: 0),
               "An automatic start that left nothing running, or a failure, offers Try again")
+        // S1: setup finished, reopened from Permissions…, the person's oMLX off. The wait is
+        // still timed so Try again appears and says oMLX isn't running; Wisp never starts it.
+        let reopened = FirstRunBrain.whileConnecting(setupDone: true, connecting: true)
+        check(!reopened.startsOmlx && reopened.timesGrace, "Finished setup: Try again after the grace, no automatic start")
+        check(FirstRunBrain.whileConnecting(setupDone: false, connecting: true) == (true, true)
+              && FirstRunBrain.whileConnecting(setupDone: false, connecting: false) == (false, false),
+              "Only an unfinished first run starts the person's oMLX by itself")
+        check(FirstRunBrain.from(status: status(bundled: false, running: false), downloads: []).footer(
+                stalled: FirstRunBrain.startStalled(autoStarted: false, failed: false, ownOmlx: true,
+                                                    waited: FirstRunBrain.connectGrace)) == .tryAgain
+              && FirstRunBrain.connectingDetail(setupDone: true, stalled: true).hasPrefix("Your oMLX isn't running")
+              && !FirstRunBrain.connectingDetail(setupDone: true, stalled: false).contains("isn't running"),
+              "Finished setup, oMLX off: Try again and a plain line once the grace has passed")
         check(FirstRunBrain.from(status: status(), downloads: []) == .needsDownload(model: gemma, label: "Gemma 4 E4B", sizeGb: 5.5),
               "Nothing installed: offer the download")
         guard case .downloading(_, _, let fraction, let done, let total, let left) =
@@ -458,6 +504,19 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.automationTargets == ["com.apple.mail", "com.apple.Notes"]
               && Set(FirstRunPermissions.automationTargets).isDisjoint(with: FirstRunPermissions.messagesAutomationTargets),
               "Mail & Notes' targets are unchanged and never include Messages")
+        // Asking opens the apps only for a moment: closed again unless the person was handed them.
+        check(FirstRunPermissions.quitsAfterAsking(launchedByWisp: true, isHidden: true, isActive: false),
+              "Opened by Wisp, still hidden and not in use: closed after asking")
+        check(!FirstRunPermissions.quitsAfterAsking(launchedByWisp: false, isHidden: true, isActive: false),
+              "Already open before Wisp asked: never closed")
+        check(!FirstRunPermissions.quitsAfterAsking(launchedByWisp: true, isHidden: false, isActive: false)
+              && !FirstRunPermissions.quitsAfterAsking(launchedByWisp: true, isHidden: true, isActive: true),
+              "Shown or brought forward while the prompt was up: left open")
+        check(FirstRunPermissions.keepingAnswer(.notAsked, answered: .allowed) == .allowed
+              && FirstRunPermissions.keepingAnswer(.notAsked, answered: .notAllowed) == .notAllowed
+              && FirstRunPermissions.keepingAnswer(.notAsked, answered: nil) == .notAsked
+              && FirstRunPermissions.keepingAnswer(.notAllowed, answered: .allowed) == .notAllowed,
+              "A closed app keeps the answer just given; a real read wins")
         check(FirstRunPermissions.label(.messages, .notAsked) == "Not set"
               && FirstRunPermissions.label(.messages, .allowed) == "Allowed"
               && FirstRunPermissions.label(.messages, .notAllowed) == "Denied", "Messages: Not set, Allowed, Denied")
@@ -487,6 +546,8 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .allowed, "Readable Mail folder")
         try? FileManager.default.removeItem(at: scratch)
 
+        // /resetwisp brings all of the above back to a fresh Mac (tests/WispResetChecks.swift).
+        WispResetChecks.run()
         print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access")
     }
 }

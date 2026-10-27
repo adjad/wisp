@@ -413,6 +413,15 @@ enum BackendRecoveryChecks {
         let reason = BackendManager.startFailureReason(status: 1, logTail: "Address already in use")
         dead(reason.contains("exit status 1") && reason.hasSuffix("Last log line: Address already in use"), "the reason names status and log")
         dead(!BackendManager.startFailureReason(status: 9, logTail: nil).contains("Last log line"), "no log, no log clause")
+        // service/wisp_reset.REFUSED_EXIT: an unfinished /resetwisp. Its log line is
+        // longer than lastLogLine keeps, so the way out is a fixed text.
+        let refusal = "[reset] Wisp's service is not starting: a reset is unfinished (Wisp couldn't record the "
+            + "restart pass (PermissionError), so it deleted nothing). Quit and reopen Wisp to try again; if this "
+            + "keeps happening, delete ~/.moe/.reset-pending."
+        let reset = BackendManager.startFailureReason(status: 75, logTail: BackendManager.lastLogLine(refusal))
+        dead(reset == BackendManager.resetUnfinishedReason && reset.contains("delete ~/.moe/.reset-pending")
+             && reset.count < 160, "an unfinished reset names its way out in full")
+        dead(BackendManager.resetUnfinishedStatus == 75, "the status matches wisp_reset.REFUSED_EXIT")
         print("BackendRecovery: \(deadChecks) dead-child checks passed")
     }
 }

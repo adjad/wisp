@@ -40,9 +40,13 @@ struct NotchDayView: View {
     @ObservedObject private var proactive = ProactiveActions.shared
 
     /// One hour of the lane.
-    private let hourHeight: CGFloat = 44
+    /// The lane's measurements grow with the Text size setting so block titles
+    /// and hour labels keep their room.
+    private var hourHeight: CGFloat { 44 * Theme.textScale }
     /// Tallest the lane gets before it scrolls, so the tab fits the notch.
-    private let laneLimit: CGFloat = 340
+    private var laneLimit: CGFloat { 340 * Theme.textScale }
+    /// The hour labels' column beside the lane.
+    private var hourColumn: CGFloat { 46 * Theme.textScale }
 
 
     init(model: OverlayModel, today: TodayModel) {
@@ -67,7 +71,7 @@ struct NotchDayView: View {
             if let stale = today.staleNotice {
                 // Reads keep failing: say how old the day on screen is, and hold
                 // back the buttons that would change it.
-                Text(stale).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                Text(stale).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !today.followsToday { otherDayRow }
@@ -151,7 +155,7 @@ struct NotchDayView: View {
         let shown = showAllStale ? asks : Array(asks.prefix(3))
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Old reminders").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                Text("Old reminders").font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
                 if asks.count > 1 {
@@ -160,7 +164,7 @@ struct NotchDayView: View {
                         .help("Keep every reminder listed here; Wisp won't ask about them again. Nothing changes in Reminders.")
                 }
             }
-            Text(StaleRemindersModel.explanation).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Text(StaleRemindersModel.explanation).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(shown) { ask in staleRow(ask) }
             if asks.count > 3 {
@@ -168,7 +172,7 @@ struct NotchDayView: View {
                     showAllStale.toggle()
                     model.onResize()
                 }
-                .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                .buttonStyle(.plain).font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
             }
         }
         .padding(.top, 2)
@@ -180,8 +184,8 @@ struct NotchDayView: View {
         return VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(ask.title).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
-                    Text(ask.detail).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                    Text(ask.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    Text(ask.detail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 if staleReminders.answering == ask.sourceID {
@@ -200,7 +204,7 @@ struct NotchDayView: View {
                 }
             }
             if let failure = staleReminders.failures[ask.sourceID] {
-                Text(failure).font(.system(size: 11)).foregroundStyle(Theme.bad)
+                Text(failure).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -216,11 +220,11 @@ struct NotchDayView: View {
 
     private func accessRow(_ access: SourceAccess) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: DayTimeline.sourceSymbol(access.source)).font(.system(size: 10.5))
+            Image(systemName: DayTimeline.sourceSymbol(access.source)).font(.wisp(size: 10.5))
                 .foregroundStyle(Theme.textMuted).frame(width: 15)
             VStack(alignment: .leading, spacing: 1) {
-                Text(access.headline).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                Text(access.detail).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text(access.headline).font(.wisp(size: 12.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                Text(access.detail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 6)
@@ -239,7 +243,7 @@ struct NotchDayView: View {
                                endOfDay: today.dayInterval.end.timeIntervalSince1970, clock: today.clock,
                                dayStart: today.dayInterval.start.timeIntervalSince1970,
                                calendarRead: !unread.contains { $0.source == "calendar" }))
-            .font(.system(size: 13.5)).foregroundStyle(Theme.textPrimary)
+            .font(.wisp(size: 13.5)).foregroundStyle(Theme.textPrimary)
             .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             .padding(.leading, 10)
             .overlay(alignment: .leading) { Rectangle().fill(Theme.chipStroke).frame(width: 2) }
@@ -247,7 +251,7 @@ struct NotchDayView: View {
         if !timeline.allDay.isEmpty { allDayStrip(timeline.allDay, booked: bookedTimes(plan)) }
         if let warning = warningLine(plan, unread: unread) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(warning).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                Text(warning).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 6)
                 if plan.displayWarnings.contains(where: { $0.hasPrefix("All-day calendar events may reserve this day") }) {
@@ -263,7 +267,7 @@ struct NotchDayView: View {
         }
         if let hours = afterHours(plan) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(hours).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                Text(hours).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 6)
                 NotchChrome.small("Plan tonight") {
@@ -351,11 +355,11 @@ struct NotchDayView: View {
     private func fitSection(_ rows: [DayFitRow]) -> some View {
         let shown = Array(rows.prefix(5))
         return VStack(alignment: .leading, spacing: 5) {
-            Text("STILL TO FIT").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+            Text("STILL TO FIT").font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 .accessibilityAddTraits(.isHeader)
             ForEach(shown) { row in fitRow(row) }
             if rows.count > shown.count {
-                Text("+\(rows.count - shown.count) more in the Brief").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text("+\(rows.count - shown.count) more in the Brief").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                     .padding(.leading, 24)
             }
         }
@@ -368,10 +372,10 @@ struct NotchDayView: View {
         let todo = proactiveTodo(row.todoID)
         let busy = row.todoID.map { proactive.todoBusy.contains($0) } ?? false
         return HStack(alignment: .center, spacing: 9) {
-            Image(systemName: row.symbol).font(.system(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
-            Text(row.title).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+            Image(systemName: row.symbol).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+            Text(row.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
             if !row.detail.isEmpty {
-                Text(row.detail).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                Text(row.detail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
             Spacer(minLength: 6)
             if let todo {
@@ -380,7 +384,7 @@ struct NotchDayView: View {
                 } else {
                     if todo.canAddToDay {
                         if proactive.addedToDay.contains(todo.id) {
-                            Text("ADDED ✓").font(.system(size: 9.5, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                            Text("ADDED ✓").font(.wisp(size: 9.5, design: .monospaced)).foregroundStyle(Theme.textMuted)
                         } else {
                             NotchChrome.small("Add to Day") { Task { await proactive.addToDay(todo, today: today) } }
                                 .disabled(today.busy)
@@ -422,7 +426,7 @@ struct NotchDayView: View {
     private var otherDayRow: some View {
         HStack(spacing: 8) {
             Text(today.selectedDate, format: .dateTime.weekday(.wide).month(.abbreviated).day())
-                .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                .font(.wisp(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary)
             NotchChrome.chip("Back to today", icon: "calendar", help: "Show today instead of the day picked in the planner") {
                 today.returnToToday()
                 Task { await today.refresh() }
@@ -454,11 +458,11 @@ struct NotchDayView: View {
 
     private func allDayStrip(_ titles: [String], booked: [String: String] = [:]) -> some View {
         HStack(spacing: 8) {
-            Text("All day").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+            Text("All day").font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
             ForEach(Array(titles.prefix(3).enumerated()), id: \.offset) { _, title in
                 let held = booked[Self.looseTitle(title)]
                 Text(held.map { "\(title)  ✓ \($0)" } ?? title)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.wisp(size: 12, weight: .semibold))
                     .foregroundStyle(held == nil ? Theme.textPrimary : Theme.textSecondary)
                     .lineLimit(1)
                     .padding(.horizontal, 8).padding(.vertical, 2)
@@ -466,7 +470,7 @@ struct NotchDayView: View {
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(DayInk.calendarStroke, lineWidth: 1))
             }
             if titles.count > 3 {
-                Text("+\(titles.count - 3)").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                Text("+\(titles.count - 3)").font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
             }
         }
     }
@@ -479,12 +483,12 @@ struct NotchDayView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(timeline.hours, id: \.self) { hour in
                         Text(hourLabel(hour, first: hour == timeline.from))
-                            .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                            .font(.wisp(size: 10.5, design: .monospaced)).foregroundStyle(Theme.textMuted)
                             .frame(height: hourHeight, alignment: .topLeading)
                             .offset(y: -6)
                     }
                 }
-                .frame(width: 46, alignment: .leading)
+                .frame(width: hourColumn, alignment: .leading)
                 .overlay(alignment: .topLeading) { nowLabel(timeline) }
                 GeometryReader { geo in
                     laneBody(timeline, width: geo.size.width, height: height)
@@ -520,16 +524,16 @@ struct NotchDayView: View {
         let tall: CGFloat = max(shortest, y(item.end, timeline) - top - 3)
         let wide: CGFloat = max(40, column - 4)
         let left: CGFloat = 8 + CGFloat(item.column) * column
-        return blockView(item, compact: tall < 32).frame(width: wide, height: tall).offset(x: left, y: top)
+        return blockView(item, compact: tall < 32 * Theme.textScale).frame(width: wide, height: tall).offset(x: left, y: top)
     }
 
     /// The time of now, in the hour column beside its line, as in Calendar.
     @ViewBuilder private func nowLabel(_ timeline: DayTimeline) -> some View {
         let now = today.now.timeIntervalSince1970
         if today.isShowingCurrentDay && now >= timeline.from && now <= timeline.to {
-            Text(today.clock(now)).font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+            Text(today.clock(now)).font(.wisp(size: 9.5, weight: .semibold, design: .monospaced))
                 .foregroundStyle(DayInk.now)
-                .frame(width: 46, alignment: .leading)
+                .frame(width: hourColumn, alignment: .leading)
                 .background(Theme.surface)
                 .offset(y: y(now, timeline) - 6)
                 .accessibilityHidden(true)
@@ -573,16 +577,16 @@ struct NotchDayView: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
                     if !item.source.isEmpty {
-                        Image(systemName: DayTimeline.sourceSymbol(item.source)).font(.system(size: 9.5))
+                        Image(systemName: DayTimeline.sourceSymbol(item.source)).font(.wisp(size: 9.5))
                             .foregroundStyle(Theme.textSecondary)
                     }
-                    Text(item.title).font(.system(size: 12, weight: .semibold))
+                    Text(item.title).font(.wisp(size: 12, weight: .semibold))
                         .foregroundStyle(item.style == .usual ? Theme.textSecondary : Theme.textPrimary)
                         .lineLimit(1)
                         .strikethrough(status != nil && !status!.failed)
                 }
                 if !compact {
-                    Text(detail(item)).font(.system(size: 10.5))
+                    Text(detail(item)).font(.wisp(size: 10.5))
                         .foregroundStyle(status?.failed == true ? Theme.bad : DayInk.detail(item.style)).lineLimit(1)
                 }
             }
@@ -673,6 +677,7 @@ struct NotchDayView: View {
                     } else {
                         NotchChrome.small("Done") { Task { await proactive.toggleDone(todo, today: today) } }
                             .help("Check it off")
+                            .accessibilityLabel("Check off \(todo.title)")
                     }
                 } else if let need = need(for: item), !planned(need) {
                     NotchChrome.small("Plan time") { planTime(item) }.disabled(today.busy)
@@ -742,7 +747,7 @@ struct NotchDayView: View {
             }
             Button("Ask Wisp about this") { model.askAbout(item.title, reference: need(for: item)?.reference ?? "") }
         } label: {
-            Image(systemName: "ellipsis").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.textSecondary)
+            Image(systemName: "ellipsis").font(.wisp(size: 10, weight: .bold)).foregroundStyle(Theme.textSecondary)
                 .frame(width: 20, height: 16).contentShape(Rectangle())
         }
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
@@ -863,7 +868,7 @@ struct NotchDayView: View {
                         DayInk.border(style)
                     }
                     .frame(width: 12, height: 9).clipShape(RoundedRectangle(cornerRadius: 3))
-                    Text(style.legend).font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                    Text(style.legend).font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted)
                 }
             }
         }
@@ -880,7 +885,7 @@ struct NotchDayView: View {
         HStack(spacing: 8) {
             TextField("Make time for something…", text: $model.todayTaskTitle)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
+                .font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
@@ -892,7 +897,7 @@ struct NotchDayView: View {
                     Button("\(value) min") { minutes = value }
                 }
             } label: {
-                Text("\(minutes) min").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                Text("\(minutes) min").font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
                     .padding(.horizontal, 9).padding(.vertical, 5)
                     .background(Capsule().fill(Theme.chipFill))
                     .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
@@ -949,7 +954,7 @@ struct NotchDayView: View {
                 }
                 Button("Report a problem with this plan") { today.reportProblem() }
             } label: {
-                Image(systemName: "ellipsis").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.textSecondary)
+                Image(systemName: "ellipsis").font(.wisp(size: 10, weight: .bold)).foregroundStyle(Theme.textSecondary)
                     .frame(width: 26, height: 20)
                     .background(Capsule().fill(Theme.chipFill))
                     .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
@@ -1105,7 +1110,7 @@ enum DayInk {
 /// Small controls shared by the notch's Brief and Day tabs.
 enum NotchChrome {
     static func notice(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(Theme.bad)
+        Text(text).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
     }
@@ -1113,7 +1118,7 @@ enum NotchChrome {
     static func small(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
             .buttonStyle(.plain)
-            .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+            .font(.wisp(size: 10.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
             .padding(.horizontal, 7).padding(.vertical, 2)
             .background(Capsule().fill(Color.black.opacity(0.35)))
             .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
@@ -1123,8 +1128,8 @@ enum NotchChrome {
     static func chip(_ title: String, icon: String?, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
-                if let icon { Image(systemName: icon).font(.system(size: 10)) }
-                Text(title).font(.system(size: 11.5, weight: .medium))
+                if let icon { Image(systemName: icon).font(.wisp(size: 10)) }
+                Text(title).font(.wisp(size: 11.5, weight: .medium))
             }
             .foregroundStyle(Theme.textSecondary)
             .padding(.horizontal, 10).padding(.vertical, 4)
@@ -1138,7 +1143,7 @@ enum NotchChrome {
 
     static func iconButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon).font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.textSecondary)
+            Image(systemName: icon).font(.wisp(size: 9, weight: .bold)).foregroundStyle(Theme.textSecondary)
                 .frame(width: 19, height: 19)
                 .background(Circle().fill(Theme.chipFill))
                 .overlay(Circle().stroke(Theme.chipStroke, lineWidth: 1))

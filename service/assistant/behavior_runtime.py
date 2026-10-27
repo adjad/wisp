@@ -1873,6 +1873,20 @@ def forget_all(store, home: Path | None = None) -> dict:
             _forget_done.set()
 
 
+def stop_for_reset() -> None:
+    """/resetwisp (service/wisp_reset.py): stop learning for the rest of this process
+    without deleting anything; the reset deletes the behavior files itself. Waits for
+    a pass already running, and get_runtime() builds no new runtime afterwards."""
+    global _runtime, _forgetting
+    with revocation(), _runtime_lock:
+        runtime = _runtime
+        _runtime = None
+        _forgetting = True
+    if runtime is not None:
+        runtime.invalidate_history("Wisp is being reset")
+        runtime.stop()
+
+
 def _forget_locked(store, runtime: BehaviorRuntime | None, explicit_home: Path | None) -> dict:
     home = Path(explicit_home or (runtime.home if runtime is not None else _home())).expanduser().resolve()
     from service.assistant.store import behavior_owner_id

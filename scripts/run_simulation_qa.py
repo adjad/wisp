@@ -93,6 +93,8 @@ PROFILE_TESTS = {
         "tests/test_email_scoping.py",
         "tests/test_live_corpus.py",
         "tests/test_long_email_digest.py",
+        # Voice input: the clip reaches only a local model with an audio encoder (stub client).
+        "tests/test_voice_transcribe.py",
         "tests/test_corpus_prompts.py",
         "tests/test_corpus_reasoning_export.py",
         "tests/test_gmail_source.py",
@@ -120,6 +122,7 @@ PROFILE_TESTS = {
         "tests/test_brief_needs_you.py",
         "tests/test_day_timeline_event_fields.py",
         "tests/test_mail_gists.py",
+        "tests/test_mail_memory.py",
         "tests/test_behavior_gmail_history.py",
         "tests/test_behavior_availability.py",
     },
@@ -150,6 +153,8 @@ PROFILE_TESTS = {
         "tests/test_forced_step_withholding.py",
         "tests/test_shell_boundary.py",
         "tests/test_shell_local_service_deny.py",
+        # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
+        "tests/test_wisp_reset.py",
         "tests/test_outbound_shell_gate.py",
         "tests/test_local_http_guard.py",
         "tests/test_tool_calling_invariants.py",
@@ -254,6 +259,11 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_expiry.py",
     "tests/test_behavior_auto_trial.py",
     "tests/test_brief_day_one.py",
+    # rc2: the first Brief once onboarding is answered (scheduler slots with a stubbed store
+    # and clock, and the marker endpoint through TestClient); nothing is composed or sent.
+    "tests/test_brief_onboarding.py",
+    # rc2: an unoffered web lookup on a general-knowledge question, with a scripted model.
+    "tests/test_general_knowledge_unoffered_web.py",
     # rc1 Ask backend: reply-needed reads stay read-only, the capability welcome, Gmail-only identity.
     "tests/test_router_reply_needed_reads.py",
     "tests/test_capability_welcome.py",
@@ -404,6 +414,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_brief_summary_contract.py",
     # Mail gists with a fake model and an isolated cache; nothing is read or sent.
     "tests/test_mail_gists.py",
+    # Mail memory with a stand-in app, model and hub, a temporary store and stubbed idle/power
+    # probes; no Mail, no model, no subprocess, nothing is added to Reminders.
+    "tests/test_mail_memory.py",
     # The kept Daily Summary with an isolated file and a stand-in hub; nothing is composed, read or sent.
     "tests/test_brief_latest.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
@@ -626,6 +639,8 @@ _NATIVE_PASSED = re.compile(
 _LEGACY_PROMPTS_VALIDATED = re.compile(r"\bok:\s*(?P<passed>\d+)\s+prompts validated\b")
 _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
+    "native/mail-memory-contract": "native/mail-memory-compile",
+    "native/mail-memory-brief-contract": "native/mail-memory-brief-compile",
     "native/mail-history-contract": "native/mail-history-compile",
     "native/privacy-sync-contract": "native/privacy-sync-compile",
     "native/source-sync-label-contract": "native/source-sync-label-compile",
@@ -910,6 +925,8 @@ def _dependencies() -> dict[str, str]:
 def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     module_cache = str(build_dir / "module-cache")
     mail_db = str(build_dir / "mail-db-regression")
+    mail_memory = str(build_dir / "mail-memory-regression")
+    mail_memory_brief = str(build_dir / "mail-memory-brief")
     mail_history = str(build_dir / "mail-history")
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
@@ -973,6 +990,24 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/mail-db-contract", [mail_db]),
+        (
+            "native/mail-memory-compile",
+            [
+                TRUSTED_SWIFTC, "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailMemoryReader.swift",
+                "tests/MailMemoryReaderRegression.swift", "-lsqlite3", "-o", mail_memory,
+            ],
+        ),
+        ("native/mail-memory-contract", [mail_memory]),
+        (
+            "native/mail-memory-brief-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailMemory.swift",
+                "tests/MailMemoryChecks.swift", "-o", mail_memory_brief,
+            ],
+        ),
+        ("native/mail-memory-brief-contract", [mail_memory_brief]),
         (
             "native/mail-history-compile",
             [

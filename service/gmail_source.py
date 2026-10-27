@@ -672,6 +672,35 @@ async def _ensure_meta(http, ids: list[str]) -> None:
     await asyncio.gather(*(one(i) for i in missing))
 
 
+async def tab_message_ids(days: int, tabs: tuple[str, ...] = ("promotions", "social", "forums"),
+                          limit: int = 2000) -> set[str] | None:
+    """RFC Message-IDs of inbox mail Gmail filed under `tabs` in the last `days`, across
+    every connected account. None when no account is connected or any read failed:
+    unknown, never an empty set that would read as "nothing to exclude"."""
+    accounts = connected_accounts()
+    if not accounts:
+        return None
+    query = f"newer_than:{int(days)}d {{" + " ".join(f"category:{t}" for t in tabs) + "}"
+    found: set[str] = set()
+    for account, cfg in accounts.items():
+        token = _context.set((account, dict(cfg), _epochs.get(account, 0)))
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                ids = await _list_ids(http, limit, query=query)
+                if len(ids) >= limit:
+                    return None   # more than we listed: a partial set would let the rest through
+                await _ensure_meta(http, ids)
+                for i in ids:
+                    mid = _meta.get((account, i), {}).get("message_id", "").strip()
+                    if mid:   # Mail's index keeps the angle brackets; match its form
+                        found.add(mid if mid.startswith("<") else f"<{mid}>")
+        except Exception:  # noqa: BLE001 — a partial answer would wrongly include promotions
+            return None
+        finally:
+            _context.reset(token)
+    return found
+
+
 def _lines(ids: list[str], unread_ids: set[str], account: str) -> str:
     rows = [header_line(_meta[(account, i)], account, i in unread_ids)
             for i in ids if (account, i) in _meta]
@@ -1226,15 +1255,21 @@ async def disconnect(account: str = "") -> dict:
                 _observe_history_config({})
         E.configure_external_accounts(accounts)
     erased = {email: erase_account_data(email) for email in removed}
-    for item in removed.values():
+    # Revocation is best effort: the local disconnect already succeeded. Each
+    # account says whether Google confirmed it ("revoked"), refused the token
+    # ("rejected", e.g. already revoked) or could not be reached ("offline").
+    revoked: dict[str, str] = {}
+    for email, item in removed.items():
         try:
             async with httpx.AsyncClient(timeout=5) as http:
-                await http.post("https://oauth2.googleapis.com/revoke", data={"token": item["refresh_token"]})
+                answer = await http.post("https://oauth2.googleapis.com/revoke",
+                                         data={"token": item["refresh_token"]})
+            revoked[email] = "revoked" if answer.status_code == 200 else "rejected"
         except Exception:
-            pass  # Local disconnect already succeeded.
+            revoked[email] = "offline"
     complete = all(value == "erased" or value.startswith("erased ")
                    for parts in erased.values() for value in parts.values())
-    return {"removed": sorted(removed), "erased": erased, "complete": complete}
+    return {"removed": sorted(removed), "erased": erased, "complete": complete, "revoked": revoked}
 
 
 def erase_account_data(account: str) -> dict:

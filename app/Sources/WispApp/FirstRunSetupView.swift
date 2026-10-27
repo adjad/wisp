@@ -293,7 +293,12 @@ enum FirstRunBrain: Equatable {
         }
     }
 
-    static func from(status: SetupStatus?, downloads: [SetupGuideModel.DownloadTask]) -> FirstRunBrain {
+    /// `stillLooking`: the person's own oMLX is still inside its search window
+    /// (`connectGrace`). Its server often answers before it has listed any model, so a
+    /// running oMLX with no Wisp model yet is still being looked for, not stuck. Off by
+    /// default, so the notch's setup card keeps its own reading.
+    static func from(status: SetupStatus?, downloads: [SetupGuideModel.DownloadTask],
+                     stillLooking: Bool = false) -> FirstRunBrain {
         guard let status else { return .checking }
         if status.ready {
             let model = status.roles.first(where: { $0.endpoint == "local" })?.model ?? status.models.recommended
@@ -309,6 +314,7 @@ enum FirstRunBrain: Equatable {
         case .offering(let model, let label): return .offered(model: model, label: plainLabel(label))
         case nil: break
         }
+        if stillLooking, status.usesOwnOmlx { return .startingEngine }
         // The engine's own reason first: a Mac whose macOS is too old for it also
         // falls back to external mode, and "set to use another app" would be untrue.
         if let engine = status.bundledEngine, !engine.available {
@@ -373,14 +379,47 @@ enum FirstRunBrain: Equatable {
                       free, needed)
     }
 
-    /// Connecting to the person's own oMLX offers Try again after this long even when
-    /// Wisp never got to start it by itself, so the step never spins with no button.
-    static let connectGrace: TimeInterval = 10
+    /// How long Wisp looks for the person's own oMLX before saying anything is wrong:
+    /// a start from cold, or one that lists its models late, can take a while. Past it
+    /// the step offers Try again even when Wisp never got to start oMLX by itself, so
+    /// the step never spins with no button.
+    static let connectGrace: TimeInterval = 30
 
-    /// `.startingEngine` needs a click: Wisp's own start finished without an engine,
-    /// a start failed, or the person's oMLX has been connecting past the grace period.
-    static func startStalled(autoStarted: Bool, failed: Bool, connecting: Bool, waited: TimeInterval) -> Bool {
-        autoStarted || failed || (connecting && waited >= connectGrace)
+    /// Whether the search for the person's own oMLX is still inside `connectGrace`.
+    /// `waited`: nil before the search has begun, which counts as just started.
+    static func stillLooking(waited: TimeInterval?) -> Bool {
+        waited.map { $0 < connectGrace } ?? true
+    }
+
+    /// `.startingEngine` needs a click. The built-in engine: Wisp's own start finished
+    /// without an engine, or a start failed. The person's own oMLX (`ownOmlx`): only
+    /// once the search window has passed, so an automatic start that returned early
+    /// or failed doesn't show Try again before oMLX has had its time to answer.
+    static func startStalled(autoStarted: Bool, failed: Bool, ownOmlx: Bool, waited: TimeInterval) -> Bool {
+        ownOmlx ? waited >= connectGrace : (autoStarted || failed)
+    }
+
+    /// The step-1 card's title while the engine isn't up. The person's own oMLX is
+    /// being looked for, not failing, however far into the search it is.
+    static func startingTitle(ownOmlx: Bool) -> String {
+        ownOmlx ? "Looking for your oMLX…" : "Starting Wisp's engine…"
+    }
+
+    /// What step 1 does by itself while it looks for the person's own oMLX (`connecting`:
+    /// setup is on their oMLX). The wait is always timed, so Try again appears after `connectGrace` even when
+    /// setup was finished and the window opened again (Permissions…). Only an
+    /// unfinished first run starts their oMLX by itself (FirstRunSetup.drivesModel);
+    /// after that, only a click on Try again starts it.
+    static func whileConnecting(setupDone: Bool, connecting: Bool) -> (startsOmlx: Bool, timesGrace: Bool) {
+        (connecting && FirstRunSetup.drivesModel(setupDone: setupDone), connecting)
+    }
+
+    /// The connecting card's line. Once Try again shows after setup was finished,
+    /// nothing is starting their oMLX, so it says plainly that it isn't running.
+    static func connectingDetail(setupDone: Bool, stalled: Bool) -> String {
+        setupDone && stalled
+            ? "Your oMLX isn't running. Choose Try again to start it, or open the oMLX app."
+            : "Wisp uses the oMLX app you already have, so there's nothing to download."
     }
 
     /// How long a cold start has taken, once it is long enough to be worth saying.
@@ -437,6 +476,10 @@ final class FirstRunPermissions: ObservableObject {
 
     @Published private(set) var states: [Item: State] = [:]
     @Published private(set) var asking: Item?
+    /// What the person answered the last time Wisp asked, kept for Mail & Notes and
+    /// Messages. Wisp closes the apps it opened to ask, and macOS reads a closed app
+    /// as "not asked yet", so without this the row would flip back to Not set.
+    private var answered: [Item: State] = [:]
     private var activeObserver: NSObjectProtocol?
     private var poll: Task<Void, Never>?
 
@@ -508,8 +551,13 @@ final class FirstRunPermissions: ObservableObject {
         next[.contacts] = Self.contactsState()
         next[.fullDiskAccess] = Self.fullDiskAccessState()
         next[.notifications] = await Self.notificationsState()
-        next[.mail] = await Self.automationState(ask: false)
-        next[.messages] = await Self.messagesAutomationState(ask: false)
+        let mail = await Self.automationState(ask: false)
+        let messages = await Self.messagesAutomationState(ask: false)
+        // A real read replaces the remembered answer; a closed app doesn't.
+        if Self.isDecided(mail) { answered[.mail] = nil }
+        if Self.isDecided(messages) { answered[.messages] = nil }
+        next[.mail] = Self.keepingAnswer(mail, answered: answered[.mail])
+        next[.messages] = Self.keepingAnswer(messages, answered: answered[.messages])
         states = next
     }
 
@@ -530,19 +578,26 @@ final class FirstRunPermissions: ObservableObject {
         case .notifications:
             _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
         case .mail:
-            // macOS asks about Automation only for an app that is running, so start
-            // Mail and Notes in the background first.
-            for id in Self.automationTargets { await Self.launchHidden(id) }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            // macOS can't ask about an app that isn't running, so Mail and Notes are
+            // started in the background first, and closed again once asked.
+            var launched: [NSRunningApplication] = []
+            for id in Self.automationTargets { if let app = await Self.launchHidden(id) { launched.append(app) } }
+            // Only an app Wisp just started needs a moment to come up before it can be asked.
+            if !launched.isEmpty { try? await Task.sleep(nanoseconds: 1_500_000_000) }
             NSApp.activate(ignoringOtherApps: true)
-            _ = await Self.automationState(ask: true)
+            let answer = await Self.automationState(ask: true)
+            if Self.isDecided(answer) { answered[.mail] = answer }
+            Self.quitAfterAsking(launched)
         case .messages:
             // The same for Messages, on its own target list: its answer never
             // changes the Mail & Notes row or what Mail's reader reports.
-            for id in Self.messagesAutomationTargets { await Self.launchHidden(id) }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            var launched: [NSRunningApplication] = []
+            for id in Self.messagesAutomationTargets { if let app = await Self.launchHidden(id) { launched.append(app) } }
+            if !launched.isEmpty { try? await Task.sleep(nanoseconds: 1_500_000_000) }
             NSApp.activate(ignoringOtherApps: true)
-            _ = await Self.messagesAutomationState(ask: true)
+            let answer = await Self.messagesAutomationState(ask: true)
+            if Self.isDecided(answer) { answered[.messages] = answer }
+            Self.quitAfterAsking(launched)
         case .fullDiskAccess:
             // Full Disk Access can't be asked for: open its page and let the person
             // switch Wisp on. The poll notices when they come back. Switching it on
@@ -659,12 +714,40 @@ final class FirstRunPermissions: ObservableObject {
         return State.notAsked
     }
 
-    private static func launchHidden(_ bundleID: String) async {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
+    /// Starts the app in the background, unseen, and returns it, so Wisp can close
+    /// it again. nil when it was already running (the person's own, never closed
+    /// here) or could not be started.
+    private static func launchHidden(_ bundleID: String) async -> NSRunningApplication? {
+        guard !NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bundleID }),
+              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
         let config = NSWorkspace.OpenConfiguration()
         config.activates = false
         config.hides = true
-        _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: config)
+        config.addsToRecentItems = false
+        return try? await NSWorkspace.shared.openApplication(at: url, configuration: config)
+    }
+
+    /// Whether to close an app Wisp opened just to ask: only one Wisp started itself,
+    /// that is still out of sight, and that the person didn't bring forward while the
+    /// prompt was up. Anything they opened or began using stays open.
+    nonisolated static func quitsAfterAsking(launchedByWisp: Bool, isHidden: Bool, isActive: Bool) -> Bool {
+        launchedByWisp && isHidden && !isActive
+    }
+
+    /// Closes what Wisp opened to ask, politely: the app saves and quits like any
+    /// other, and is never forced.
+    private static func quitAfterAsking(_ launched: [NSRunningApplication]) {
+        for app in launched where !app.isTerminated
+            && quitsAfterAsking(launchedByWisp: true, isHidden: app.isHidden, isActive: app.isActive) {
+            app.terminate()
+        }
+    }
+
+    /// A closed app reads as "not asked yet" whatever the person answered, so a row
+    /// that reads Not set right after being answered keeps that answer. A real read
+    /// of Allowed or Denied always wins.
+    nonisolated static func keepingAnswer(_ read: State, answered: State?) -> State {
+        read == .notAsked ? (answered ?? read) : read
     }
 }
 
@@ -685,7 +768,7 @@ struct FirstRunSetupView: View {
     @State private var progressWatch = DownloadProgressWatch()
     /// A finished download the engine still hadn't listed after 30 s.
     @State private var stuckDownload: String?
-    /// When step 1 began connecting to the person's own oMLX (FirstRunBrain.connectGrace).
+    /// When step 1 began looking for the person's own oMLX (FirstRunBrain.connectGrace).
     @State private var connectingSince: Date?
     @State private var connectGraceTick = 0
     /// The one automatic test once Wisp is ready (it also loads the model).
@@ -733,7 +816,16 @@ struct FirstRunSetupView: View {
         self.searchKeyRegistered = searchKeyRegistered
     }
 
-    private var brain: FirstRunBrain { FirstRunBrain.from(status: setup.status, downloads: setup.downloads) }
+    private var brain: FirstRunBrain {
+        FirstRunBrain.from(status: setup.status, downloads: setup.downloads, stillLooking: stillLooking)
+    }
+
+    /// The search for the person's own oMLX is inside its window (connectGraceTick
+    /// redraws at the end, so the failure copy appears on time).
+    private var stillLooking: Bool {
+        _ = connectGraceTick
+        return FirstRunBrain.stillLooking(waited: connectingSince.map { Date().timeIntervalSince($0) })
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -772,7 +864,9 @@ struct FirstRunSetupView: View {
         // start or download must not sit under the next one.
         .onChange(of: brain.stage) { _, _ in
             announce(brain)
-            if case .startingEngine = brain {} else { connectingSince = nil }
+            // The search window belongs to the whole look for their oMLX, not to one
+            // stage of it: ending it when the card changes would restart it forever.
+            if setup.status?.usesOwnOmlx != true { connectingSince = nil }
             if setup.busy == nil, setup.messageIsError {
                 setup.message = nil
                 setup.messageIsError = false
@@ -810,21 +904,25 @@ struct FirstRunSetupView: View {
     /// has arrived, and notice a finished download the engine never lists. Starting
     /// the engine is SetupGuideModel's own (autoAdvanceFirstSetup), once a session.
     private func drive(_ state: FirstRunBrain) {
+        if case .startingEngine = state {
+            // The person's own oMLX hasn't answered. Time the wait in every case, so
+            // Try again appears; start it once only during an unfinished first run.
+            let steps = FirstRunBrain.whileConnecting(setupDone: setupDone,
+                                                      connecting: setup.status?.usesOwnOmlx == true)
+            if steps.startsOmlx { setup.startExistingOmlxOnce() }
+            if steps.timesGrace, connectingSince == nil {
+                connectingSince = Date()
+                DispatchQueue.main.asyncAfter(deadline: .now() + FirstRunBrain.connectGrace + 0.1) {
+                    connectGraceTick += 1    // redraw, so `stalled` sees the time pass
+                }
+            }
+        }
         guard FirstRunSetup.drivesModel(setupDone: setupDone) else { return }
         switch state {
         case .switching(let model, _) where appliedModel != model && setup.busy == nil:
             appliedModel = model
             // Atomic: applied only if the configuration is still the one this saw.
             Task { await setup.apply(model, expectedConfiguration: setup.status?.configurationToken) }
-        case .startingEngine:
-            // The person's own oMLX hasn't answered: start it once (first run only).
-            setup.startExistingOmlxOnce()
-            if setup.status?.existingOmlx == .connecting, connectingSince == nil {
-                connectingSince = Date()
-                DispatchQueue.main.asyncAfter(deadline: .now() + FirstRunBrain.connectGrace + 0.1) {
-                    connectGraceTick += 1    // redraw, so `stalled` sees the time pass
-                }
-            }
         case .ready where !testedOnce && setup.busy == nil && setup.statusIsCurrent:
             // "Ready" only means the engine lists the model. One short question
             // proves it answers, and loads it while the person reads the rest, so
@@ -979,6 +1077,13 @@ struct FirstRunSetupView: View {
         return nil
     }
 
+    /// Still inside the search for the person's own oMLX: nothing is said to have
+    /// failed yet, including the error line of an automatic start.
+    private var lookingForOmlx: Bool {
+        guard case .startingEngine = brain else { return false }
+        return setup.status?.usesOwnOmlx == true && stillLooking
+    }
+
     /// Wisp's own step for this state stopped and needs the person's click.
     private var stalled: Bool {
         guard setup.busy == nil else { return false }
@@ -987,7 +1092,7 @@ struct FirstRunSetupView: View {
             _ = connectGraceTick
             return FirstRunBrain.startStalled(
                 autoStarted: setup.autoStartedEngine, failed: setup.messageIsError,
-                connecting: setup.status?.existingOmlx == .connecting,
+                ownOmlx: setup.status?.usesOwnOmlx == true,
                 waited: connectingSince.map { Date().timeIntervalSince($0) } ?? 0)
         case .switching(let model, _): return appliedModel == model && setup.messageIsError
         case .waitingForEngine(let model, _): return stuckDownload == model
@@ -1108,13 +1213,17 @@ struct FirstRunSetupView: View {
                 }
             }
         case .startingEngine:
-            let ownOmlx = setup.status?.existingOmlx == .connecting
-            OnboardingCard(icon: "bolt", title: ownOmlx ? "Connecting to your oMLX…" : "Starting Wisp's engine…",
-                           detail: ownOmlx ? "Wisp uses the oMLX app you already have, so there's nothing to download."
+            let ownOmlx = setup.status?.usesOwnOmlx == true
+            OnboardingCard(icon: "bolt", title: FirstRunBrain.startingTitle(ownOmlx: ownOmlx),
+                           detail: ownOmlx ? FirstRunBrain.connectingDetail(setupDone: setupDone, stalled: stalled)
                                            : "It's built into Wisp, so there's nothing else to install.") {
                 if stalled {
                     HStack(spacing: 8) {
-                        Button("Try again") { Task { await setup.startEngine() } }.buttonStyle(FirstRunButtonStyle())
+                        Button("Try again") {
+                            // A fresh look: the person's oMLX gets the whole search window again.
+                            if ownOmlx { connectingSince = nil }
+                            Task { await setup.startEngine() }
+                        }.buttonStyle(FirstRunButtonStyle())
                         if ownOmlx {
                             Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
                         }
@@ -1219,7 +1328,7 @@ struct FirstRunSetupView: View {
                 }
             }
         }
-        if setup.messageIsError, let message = setup.message {
+        if setup.messageIsError, let message = setup.message, !lookingForOmlx {
             Text(message).font(.system(size: 12)).foregroundStyle(Theme.bad).padding(.top, 6)
         } else if let note = transientNote {
             Text(note).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.top, 6)
@@ -1239,9 +1348,9 @@ struct FirstRunSetupView: View {
                           detail: "What's due, and the reminders Wisp sets for you.")
             permissionRow(.mail, icon: "envelope", title: "Mail & Notes",
                           detail: "Emails that need a reply, and your notes, while those apps are open. "
-                              + "Opens Mail and Notes in the background to ask.")
+                              + "Opens Mail and Notes for a moment to ask, then closes them.")
             permissionRow(.messages, icon: "message", title: "Messages",
-                          detail: "Sends the texts you approve in Ask. Opens Messages in the background to ask.")
+                          detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")
             permissionRow(.fullDiskAccess, icon: "internaldrive", title: "Full Disk Access",
                           detail: fullDiskAccessDetail)
             contactsRow

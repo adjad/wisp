@@ -560,8 +560,9 @@ def identity() -> str:
                  "to a server.")
     out = [intro,
            "",
-           "Open me any time with **⌥Space** or by moving the pointer to the notch. Ask me anything, "
-           "check **Brief** for your day at a glance, or **Day** for today's timeline."]
+           "Open me any time with **⌥Space** or by moving the pointer to the notch. Ask me anything "
+           "(press **⌥⇧Space** to ask out loud), check **Brief** for your day at a glance, or **Day** "
+           "for today's timeline."]
     if name:
         out += ["", f"And you're {name}: you told me in Getting to know you. Type **/about** to change it."]
     else:
@@ -658,6 +659,12 @@ def privacy() -> str:
 _HOWTO = (
     (r"open|start|launch|find|summon|shortcut|hotkey|notch",
      "**Open Wisp**: press **⌥Space** from any app, or move the pointer to the notch."),
+    (r"voice|speak|talk|dictat|microphone|\bmic\b|siri|out loud|aloud|hands.free|say it",
+     "**Ask by voice**: press **⌥⇧Space** from any app, or click the mic in Ask (or in Brief and "
+     "Day to ask about your day). Wisp sends your question when you pause and reads the answer "
+     "aloud; choose when in Settings (the gear) → **Read answers aloud**. Your voice is turned "
+     "into text by my model on this Mac; I keep no recording and it never leaves your Mac. It needs a model "
+     "that can hear, like Gemma 4 E4B."),
     (r"ask|talk|chat|use|question|type",
      "**Ask**: type your question and press Return. Type **/** to see shortcuts. "
      "**⌘N** starts a new chat; **⌘O** continues it in the Wisp window."),
@@ -667,6 +674,13 @@ _HOWTO = (
     (r"about me|know me|my name|profile|getting to know|tone|goals?|call me",
      "**Tell Wisp about you**: type **/about**, or choose **Tell Wisp About You…** from the "
      "menu bar icon. Change or erase it any time in the Wisp window's Memory → About you."),
+    (r"mail suggestion|suggestions? from (?:my )?(?:mail|email)|found in your mail|old(?:er)? (?:mail|email)|mail memory",
+     "**Mail suggestions**: when nobody is asking me anything, I read your Sent mail and Mail's "
+     "Primary, Transactions and Updates from the last 90 days, on this Mac, and find dates you "
+     "might forget. The Brief shows only the important ones (yours to keep, from a person, about "
+     "money, an account or an appointment) due within 30 days: **Add** puts one in Reminders. "
+     "I never read spam, trash, archive or Mail's Promotions. Turn it off or to Record only in "
+     "Settings → Privacy & Access → **Mail suggestions**."),
     (r"remember|memory|forget",
      "**Memory**: say \"remember that…\" and I'll keep it. Type **/memory** to see or delete "
      "what I've saved."),

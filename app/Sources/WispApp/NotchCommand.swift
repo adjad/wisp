@@ -7,7 +7,7 @@ import Foundation
 ///
 /// Pure logic, checked by tests/NotchCommandChecks.swift without the app.
 enum NotchCommand: String, CaseIterable, Equatable {
-    case today, memory, research, settings, report, window, new, about, corpus
+    case today, memory, research, settings, report, window, new, about, resetwisp, corpus
 
     var title: String { "/" + rawValue }
 
@@ -22,6 +22,7 @@ enum NotchCommand: String, CaseIterable, Equatable {
         case .report: return "Report a problem with the last reply"
         case .window: return "Continue in the Wisp window"
         case .new: return "Start a new chat"
+        case .resetwisp: return "Erase Wisp's data and start over (keeps the model)"
         }
     }
 
@@ -44,9 +45,17 @@ enum NotchCommand: String, CaseIterable, Equatable {
         guard let word = commandWord(input), !word.isEmpty else { return nil }
         let commands = available(includeCorpus: includeCorpus)
         if let exact = NotchCommand(rawValue: word), commands.contains(exact) { return exact }
-        let candidates = commands.filter { $0.rawValue.hasPrefix(word) }
+        let candidates = commands.filter { !$0.exactOnly && $0.rawValue.hasPrefix(word) }
         return candidates.count == 1 ? candidates[0] : nil
     }
+
+    /// Runs only when typed in full. /resetwisp erases Wisp's data (after its
+    /// confirmation card), so a prefix such as "/reset" never stands in for it,
+    /// and it never makes a shorter prefix ambiguous.
+    var exactOnly: Bool { self == .resetwisp }
+
+    /// Whether this input is the reset command, typed in full.
+    static func isReset(_ input: String) -> Bool { commandWord(input) == NotchCommand.resetwisp.rawValue }
 
     /// Corpus selectors contain spaces and IDs; recognize only the whole
     /// command word so a file path or ordinary prompt never enters the runner.

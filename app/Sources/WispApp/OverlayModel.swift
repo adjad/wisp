@@ -127,6 +127,12 @@ final class OverlayModel: ObservableObject {
     var onResetCorpus: () -> Void = {}
     var onOpenCorpus: () -> Void = {}
 
+    /// /resetwisp's confirmation card (ResetWisp.swift), nil when closed.
+    @Published var resetCard: ResetCardState?
+    /// Runs the reset after the Reset Wisp click (AppDelegate.performWispReset).
+    /// Returns why it stopped before erasing anything; on success Wisp relaunches.
+    var onResetWisp: (() async -> String)?
+
     @Published var input = ""
     @Published var answer = ""
     @Published var reasoning = ""
@@ -155,7 +161,7 @@ final class OverlayModel: ObservableObject {
             if oldValue == .research { releaseResearchDispatch() }
             // Any way off Ask (⌘1-3, a deep link, a notification) ends the
             // questionnaire; its answers so far are already saved.
-            if tab != .ask { leaveKnowYou() }
+            if tab != .ask { leaveKnowYou(); voice.cancel() }
             showingQuickSettings = false
             onResize()
         }
@@ -237,6 +243,13 @@ final class OverlayModel: ObservableObject {
     // about (or at the top of Ask when it isn't about a reply on screen).
     let report = ReportDraft()
     private var reportObserver: AnyCancellable?
+    /// Ask by voice: the mic in the Ask bar, the Brief/Day header mic and ⌥⇧Space.
+    let voice = VoiceInput()
+    /// Reads answers aloud (VoiceReplyMode), on this Mac.
+    let speaker = AnswerSpeaker()
+    private var voiceObservers: [AnyCancellable] = []
+    /// Questions sent from voice and not yet answered, so their answers are spoken.
+    private var voicePrompts: [String] = []
 
     init(loadDebugMode: () -> Bool = { UserDefaults.standard.bool(forKey: "wisp.debugMode") },
          saveDebugMode: @escaping (Bool) -> Void = { UserDefaults.standard.set($0, forKey: "wisp.debugMode") },
@@ -246,6 +259,15 @@ final class OverlayModel: ObservableObject {
         _debugMode = Published(initialValue: loadDebugMode())
         // Rows that show the report read it through this model, so redraw with it.
         reportObserver = report.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        voiceObservers = [
+            voice.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() },
+            speaker.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() },
+            // The listening line and a failure change the panel's height.
+            voice.$state.removeDuplicates().sink { [weak self] _ in
+                DispatchQueue.main.async { self?.onResize() }
+            },
+        ]
+        voice.onTranscript = { [weak self] text in self?.askByVoice(text) }
         startFailureObserver = NotificationCenter.default.addObserver(
             forName: .wispBackendStartFailed, object: nil, queue: .main) { [weak self] note in
             let reason = note.userInfo?["reason"] as? String ?? ""
@@ -270,6 +292,7 @@ final class OverlayModel: ObservableObject {
             if collapsed && !oldValue {
                 tabMemory.panelClosed(at: Date())
                 showingQuickSettings = false
+                voice.cancel()
             }
             onCollapsedChanged()
         }
@@ -376,6 +399,7 @@ final class OverlayModel: ObservableObject {
     // the notch bar's dot shows it is still working.
     var holdsOpen: Bool {
         pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
+            || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || knowYou != nil
             || setupCard == .open || report.isOpen || (tab == .day && todayReport?.isOpen == true)
@@ -583,6 +607,54 @@ final class OverlayModel: ObservableObject {
         }
     }
 
+    /// The mic, from any tab: Brief and Day hand over to Ask, which listens.
+    /// While an answer is being read aloud the same press stops the voice.
+    func toggleVoice() {
+        if speaker.speaking && voice.state != .listening {
+            speaker.stop()
+            return
+        }
+        if tab != .ask { leaveKnowYou(); tab = .ask }
+        showingQuickSettings = false
+        voice.toggle()
+    }
+
+    /// A spoken question arrives like a typed one. Into an empty box it is sent
+    /// at once, as Siri does; next to words already typed it is added for the
+    /// person to finish and send.
+    func askByVoice(_ text: String) {
+        let typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Voice asks, never researches: anywhere but Ask the words wait in the box.
+        guard typed.isEmpty, tab == .ask else {
+            input = typed.isEmpty ? text : typed + " " + text
+            return
+        }
+        input = text
+        voicePrompts.append(text)
+        if voicePrompts.count > 8 { voicePrompts.removeFirst() }
+        submit()
+        // A slash command or a held prompt never became an Ask turn.
+        if input == text { voicePrompts.removeAll { $0 == text } }
+    }
+
+    /// After an answer: read it aloud when the person wants that, and tell
+    /// VoiceOver either way, so a reply never arrives silently.
+    private func answered(_ text: String, question: String?, isError: Bool) {
+        var byVoice = false
+        if let question, let i = voicePrompts.firstIndex(of: question) {
+            voicePrompts.remove(at: i)
+            byVoice = true
+        }
+        if !isError, VoiceReplyMode.current.speaks(askedByVoice: byVoice) {
+            speaker.speak(text)
+        } else if NSWorkspace.shared.isVoiceOverEnabled {
+            let spoken = SpokenText.plain(text)
+            let line = (isError ? "Wisp couldn't answer: " : "Wisp: ") + spoken
+            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                                 userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        }
+    }
+
     func submit() {
         let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else {
@@ -696,6 +768,7 @@ final class OverlayModel: ObservableObject {
             return
         }
         let prompt = submission.text
+        speaker.stop()
         turns.append(Turn(role: "user", text: prompt))
         answer = ""; reasoning = ""; showReasoning = false; activity = []
         role = ""; modelAbbrev = ""; routeSource = ""; statusText = ""
@@ -767,7 +840,47 @@ final class OverlayModel: ObservableObject {
         case .window: openTabInWindow()
         case .new: newChat()
         case .about: startKnowYou()
+        case .resetwisp: openResetCard()
         }
+    }
+
+    /// /resetwisp typed in Ask: the confirmation card, never the reset itself.
+    func openResetCard() {
+        // A reset already under way keeps its card; typing the command again changes nothing.
+        guard resetCard != .running else { return }
+        if let refusal = WispReset.refusal(corpusBusy: corpusBusy, replying: !conversationSettled) {
+            showTransientNotice(refusal)
+            return
+        }
+        showingQuickSettings = false
+        tab = .ask
+        resetCard = .confirm
+        onResize()
+    }
+
+    /// The card's Reset Wisp button, and only it.
+    func confirmReset() {
+        guard resetCard == .confirm, let onResetWisp else { return }
+        // Something may have started since the card opened (a reply, a corpus run).
+        if let refusal = WispReset.refusal(corpusBusy: corpusBusy, replying: !conversationSettled) {
+            resetCard = .failed(refusal)
+            onResize()
+            return
+        }
+        resetCard = .running
+        onResize()
+        Task { [weak self] in
+            let stopped = await onResetWisp()
+            guard let self else { return }
+            self.resetCard = .failed(stopped)
+            self.onResize()
+        }
+    }
+
+    func cancelReset() {
+        guard resetCard != .running else { return }
+        resetCard = nil
+        onResize()
     }
 
     /// Quick settings' Model memory: unload the models now. Wisp reloads them on
@@ -887,6 +1000,8 @@ final class OverlayModel: ObservableObject {
 
     /// A starter question was tapped: ask it, exactly as if typed.
     func pick(_ s: String) {
+        // A starter comes from the service, not the person's typing: never the reset.
+        guard !NotchCommand.isReset(s) else { return }
         input = s
         submit()
     }
@@ -1407,6 +1522,7 @@ final class OverlayModel: ObservableObject {
                 t.errorDetail = detail.isEmpty ? nil : detail
                 applyDebugFields(to: &t)
                 turns.append(t)
+                answered(msg, question: turns.dropLast().last(where: { $0.role == "user" })?.text, isError: true)
                 answer = ""; activity = []
                 completedDispatch = true
             }
@@ -1425,6 +1541,7 @@ final class OverlayModel: ObservableObject {
                 var t = Turn(role: "assistant", text: answer, activity: activity)
                 applyDebugFields(to: &t)
                 turns.append(t)
+                answered(answer, question: turns.dropLast().last(where: { $0.role == "user" })?.text, isError: false)
                 answer = ""
             }
             activity = []
@@ -1734,6 +1851,9 @@ final class OverlayModel: ObservableObject {
     // summary/tool request current source reads immediately instead of waiting
     // for the next 1-5 minute timer.
     var onSyncAssistantSources: (([String]) -> Void)?
+    // The mail-memory queue (service/mail_memory) asks for one Mail index window
+    // or one message body at a time; the reader answers by POST (MailMemoryReader).
+    var onMailMemoryRead: (([String: Any]) -> Bool)?
 
     private func handleCalendarAction(_ ev: WispClient.Event) async -> [String: Any] {
         if ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(ev.type) {
@@ -1879,6 +1999,8 @@ final class OverlayModel: ObservableObject {
             if !dailySummaryRunning { startSyncProgress(sources: ["email"]) }
             guard let sync = onSyncEmails else { return false }
             sync()
+        case "mail_memory_read":
+            guard let read = onMailMemoryRead, read(ev.payload) else { return false }
         case "sync_assistant_sources_now":
             let sources = ev.payload["sources"] as? [String] ?? []
             if !dailySummaryRunning { startSyncProgress(sources: sources) }

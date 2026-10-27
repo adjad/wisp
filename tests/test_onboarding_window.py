@@ -40,7 +40,16 @@ def test_prompts_only_follow_a_click():
     for name, text in _sources().items():
         for match in PROMPTING.finditer(text):
             hits.setdefault(name, []).append(text.count("\n", 0, match.start()) + 1)
-    assert set(hits) == {"FirstRunSetupView.swift", "ContactsReader.swift"}, hits
+    assert set(hits) == {"FirstRunSetupView.swift", "ContactsReader.swift", "VoiceInput.swift"}, hits
+    # The microphone is asked for only by pressing the mic (or ⌥⇧Space): the one
+    # prompt is inside start(), reached only through toggle(), which only the
+    # mic button and the voice hotkey call (OverlayModel.toggleVoice).
+    voice = _sources()["VoiceInput.swift"]
+    assert len(PROMPTING.findall(_body(voice, "func start()"))) == len(PROMPTING.findall(voice)) == 1
+    voice_input = _body(voice, "final class VoiceInput")
+    assert len(re.findall(r"(?<![\w.])start\(\)", voice_input)) == 2 and "case .idle, .failed: start()" in voice
+    overlay = _sources()["OverlayModel.swift"]
+    assert overlay.count("voice.toggle()") == 1 and "voice.toggle()" in _body(overlay, "func toggleVoice()")
     setup = _sources()["FirstRunSetupView.swift"]
     request = _body(setup, "func request(_ item: Item) async")
     assert len(PROMPTING.findall(request)) == len(PROMPTING.findall(setup)), \
@@ -115,7 +124,16 @@ def test_reopened_window_leaves_the_model_alone():
     switch the model or run its test by itself."""
     setup = _sources()["FirstRunSetupView.swift"]
     drive = _body(setup, "private func drive(_ state: FirstRunBrain)")
-    assert drive.lstrip("{ \n").startswith("guard FirstRunSetup.drivesModel(setupDone: setupDone) else { return }")
+    guard = "guard FirstRunSetup.drivesModel(setupDone: setupDone) else { return }"
+    assert guard in drive
+    # Only the connect timer runs before the guard (so Try again appears after
+    # setup is finished); starting the person's oMLX is gated on drivesModel too.
+    before, after = drive.split(guard, 1)
+    assert "setup.apply(" not in before and "setup.apply(" in after
+    assert "setup.startExistingOmlxOnce()" not in after
+    assert "if steps.startsOmlx { setup.startExistingOmlxOnce() }" in before
+    gate = _body(setup, "static func whileConnecting(setupDone: Bool, connecting: Bool)")
+    assert "connecting && FirstRunSetup.drivesModel(setupDone: setupDone)" in gate
     app = _sources()["AppDelegate.swift"]
     assert "setupDone: !FirstRunSetup.isUnfinished { defaults.bool(forKey: $0) }" in app
 
@@ -163,7 +181,16 @@ def test_setup_resumes_at_its_step_after_a_quit():
     app = _sources()["AppDelegate.swift"]
     setup = _sources()["FirstRunSetupView.swift"]
     # Every step change is saved, and the window opens at the saved step.
-    assert "stepChanged: { step in UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey) }" in app
+    assert "stepChanged: { [weak self] step in" in app
+    assert "UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey)" in app
+    # The last step lets the service compose the first Brief, only while setup is unfinished
+    # and the model answers (a Brief made without it would stand as the day's).
+    hook = app[app.index("stepChanged: { [weak self] step in"):]
+    hook = hook[:hook.index("askKeyRegistered:")]
+    assert "if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) })," in hook
+    assert "self?.setupModel.status?.canAnswer == true {" in hook
+    assert "client.onboardingBriefReady()" in hook
+    assert hook.index("FirstRunSetup.stepKey") < hook.index("onboardingBriefReady")
     assert "initialStep: OnboardingStep.restored(defaults.object(forKey: FirstRunSetup.stepKey) as? Int)" in app
     on_step = setup[setup.index(".onChange(of: step)"):]
     assert "stepChanged(next)" in _body(on_step, ".onChange(of: step)")
@@ -198,16 +225,27 @@ def test_messages_has_its_own_permission_row():
     assert rows == [("calendar", "Calendar"), ("reminders", "Reminders"), ("mail", "Mail & Notes"),
                     ("messages", "Messages"), ("fullDiskAccess", "Full Disk Access"),
                     ("notifications", "Notifications")], rows
-    assert ('detail: "Sends the texts you approve in Ask. Opens Messages in the background to ask.")' in step)
+    assert ('detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")' in step)
+    mail = step[step.index("permissionRow(.mail"):step.index("permissionRow(.messages")]
+    assert "Opens Mail and Notes for a moment to ask, then closes them." in mail
     assert 'nonisolated static let automationTargets = ["com.apple.mail", "com.apple.Notes"]' in setup
     assert 'nonisolated static let messagesAutomationTargets = ["com.apple.MobileSMS"]' in setup
     request = _body(setup, "func request(_ item: Item) async")
     messages = request[request.index("case .messages:"):request.index("case .fullDiskAccess:")]
     assert "Self.messagesAutomationTargets" in messages and "Self.automationTargets" not in messages
     assert "launchHidden(id)" in messages and "messagesAutomationState(ask: true)" in messages
+    assert "Self.quitAfterAsking(launched)" in messages
+    assert "Self.quitAfterAsking(launched)" in request[request.index("case .mail:"):request.index("case .messages:")]
     refresh = _body(setup, "func refresh() async")
-    assert "next[.messages] = await Self.messagesAutomationState(ask: false)" in refresh
-    assert "next[.mail] = await Self.automationState(ask: false)" in refresh
+    assert "let messages = await Self.messagesAutomationState(ask: false)" in refresh
+    assert "let mail = await Self.automationState(ask: false)" in refresh
+    assert "next[.messages] = Self.keepingAnswer(messages, answered: answered[.messages])" in refresh
+    assert "next[.mail] = Self.keepingAnswer(mail, answered: answered[.mail])" in refresh
+    # Only a target Wisp started itself is closed again, politely.
+    launch = _body(setup, "private static func launchHidden(_ bundleID: String) async -> NSRunningApplication?")
+    assert "runningApplications.contains" in launch and "config.addsToRecentItems = false" in launch
+    quit = _body(setup, "private static func quitAfterAsking(_ launched: [NSRunningApplication])")
+    assert "app.terminate()" in quit and "forceTerminate" not in setup
     # No System Events or Accessibility in setup: those stay asked at use.
     assert "com.apple.systemevents" not in setup.lower()
     assert "AXIsProcessTrustedWithOptions" not in setup
