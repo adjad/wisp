@@ -598,12 +598,16 @@ async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypa
     assert await runner.tick(now=NOW + 2) == runner.BUSY_GAP_S
 
 
-@pytest.mark.parametrize("remote, loaded, gap", [(True, ["fast-model"], "FAILURE_GAP_S"),
-                                                 (False, [], "BUSY_GAP_S"),
-                                                 (False, ["fast-model", "other"], "BUSY_GAP_S")])
-async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, remote, loaded, gap):
-    """A remote-only profile or a model that isn't resident: no index read, no body read."""
+@pytest.mark.parametrize("remote, loaded, busy, gap", [(True, ["fast-model"], False, "FAILURE_GAP_S"),
+                                                       (False, [], False, "BUSY_GAP_S"),
+                                                       (False, ["fast-model", "other"], False, "BUSY_GAP_S"),
+                                                       (False, ["fast-model"], True, "BUSY_GAP_S")])
+async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, quiet, remote, loaded, busy, gap):
+    """A remote-only profile, a model that isn't resident, or one already answering
+    another call: no index read, no body read."""
     st = ticking
+    if busy:
+        monkeypatch.setattr(quiet, "in_flight", lambda key: 1)
     monkeypatch.setattr(runner, "_stand_down", _REAL_STAND_DOWN)
     monkeypatch.setattr(runner, "_model_key", lambda: "fast-model")
     from service.inference import remote_policy

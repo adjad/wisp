@@ -478,9 +478,17 @@ def test_an_in_flight_gist_cannot_write_its_cache_back_after_the_erase(monkeypat
 
 
 def test_the_reset_knows_every_scheduler_child():
+    """Every child whose schedule_tick the scheduler calls is stopped by the reset."""
     import importlib
-    for name in R._CHILD_TASK_MODULES:
-        assert hasattr(importlib.import_module(name), "_task"), name
+    import re
+    source = (Path(R.__file__).parent / "assistant" / "scheduler.py").read_text()
+    called = set(re.findall(r"from (service\.[\w.]+) import schedule_tick", source))
+    called |= {f"{package}.{module}" for package, module in
+               re.findall(r"from (service[\w.]*) import (\w+)(?: as \w+)?\n\s+\w+\.schedule_tick\(\)", source)}
+    known = {name for name, _attr in R._CHILD_TASKS}
+    assert called and called <= known, called - known
+    for name, attr in R._CHILD_TASKS:
+        assert hasattr(importlib.import_module(name), attr), name
 
 
 # --------------------------------------------------------------------------
