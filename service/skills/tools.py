@@ -27,6 +27,7 @@ import shlex
 import tempfile
 from pathlib import Path
 
+from service.identity import child_environment
 from service.skills import sandbox, scopes
 from service.tools.registry import REGISTRY, register
 
@@ -119,7 +120,7 @@ def _make_runner(skill_dir: Path, spec: dict):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     cwd=str(skill_dir),
-                    env={**os.environ, "WISP_SKILL_DIR": str(skill_dir)},
+                    env={**child_environment(), "WISP_SKILL_DIR": str(skill_dir)},
                 )
             except FileNotFoundError:
                 return f"(couldn't run this skill's tool — {argv[0]} isn't installed)"

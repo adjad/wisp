@@ -949,3 +949,122 @@ def test_a_recycled_engine_pid_does_not_keep_the_cache(world, monkeypatch):
     assert R._engine_running(home) is True
     monkeypatch.setattr(R, "_command_of", lambda pid: f"python serve --base-path {home / 'engine' / 'base2'}")
     assert R._engine_running(home) is False
+
+
+# --------------------------------------------------------------------------
+# Follow-up: engine trash, pinned databases, one marker definition, child envs
+# --------------------------------------------------------------------------
+
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "reset_markers.json"
+
+
+@pytest.mark.parametrize("case", json.loads(FIXTURE.read_text())["cases"], ids=lambda c: c["name"])
+def test_the_service_judges_every_shared_marker_case_like_the_app(case):
+    """N4: tests/WispResetChecks.swift runs the same cases through the app's parser."""
+    try:
+        doc = R.marker_from_json(R.parse_marker_json(case["text"].encode()))
+    except ValueError:
+        doc = R.InvalidMarker(reason="not valid JSON")
+    assert (not isinstance(doc, R.InvalidMarker)) is case["valid"], case["name"]
+
+
+def test_engine_trash_left_by_a_killed_pass_is_collected(world):
+    """N2: a pass killed after moving engine entries to the trash, before recording them."""
+    home, user = world["home"], world["user"]
+    doc = _marker(home, phase="first-pass", attempts=1, in_progress=True)
+    prefix = R.TRASH_PREFIX + doc["id"] + "-"
+    _write(home / "engine" / (prefix + "engine.log"), "request text")
+    _write(home / "engine" / "base" / (prefix + "cache") / "kv.safetensors", "prompt cache")
+    _write(home / "engine" / "base" / (R.TRASH_PREFIX + "otherreset-cache") / "x", "not this reset's")
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "erased" and doc["pending"] == [] and doc["problems"] == []
+    assert not (home / "engine" / (prefix + "engine.log")).exists()
+    assert not (home / "engine" / "base" / (prefix + "cache")).exists()
+    assert (home / "engine" / "base" / (R.TRASH_PREFIX + "otherreset-cache") / "x").exists()
+    assert (home / MODEL).read_text() == "weights"
+
+
+def test_engine_trash_that_still_will_not_delete_is_kept_pending(world, monkeypatch):
+    home, user = world["home"], world["user"]
+    doc = _marker(home, phase="first-pass", attempts=1, in_progress=True)
+    trash = R.TRASH_PREFIX + doc["id"] + "-cache"
+    _write(home / "engine" / "base" / trash / "kv.safetensors", "prompt cache")
+    real_remove = R._remove
+
+    def remove(path, device=None):
+        if path.name == trash:
+            raise PermissionError("no")
+        real_remove(path, device)
+
+    monkeypatch.setattr(R, "_remove", remove)
+    doc = R.resume_pending(home, user)
+    assert doc["pending"] == ["engine/base/" + trash] and doc["phase"] == "first-pass"
+
+
+def test_a_sidecar_that_cannot_move_keeps_its_database_beside_it(world, monkeypatch):
+    """N3: never a fresh database beside an old write-ahead log."""
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+    real_remove, real_rename = R._remove, os.rename
+
+    def remove(path, device=None):
+        if path.name == "assistant.db-wal":
+            raise PermissionError("no")
+        real_remove(path, device)
+
+    def rename(src, dst):
+        if Path(src).name == "assistant.db-wal":
+            raise PermissionError("no")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(R, "_remove", remove)
+    monkeypatch.setattr(R.os, "rename", rename)
+    doc = R.resume_pending(home, user)
+    assert (home / "assistant.db").exists() and (home / "assistant.db-wal").exists()
+    assert not any(R.display_name(p).startswith("assistant.db") for p in doc["pending"])
+    assert "Couldn't delete: assistant.db, assistant.db-wal" in doc["problems"]
+    assert not (home / "sessions.db").exists(), "other databases still go"
+
+
+def test_a_config_that_cannot_be_trimmed_says_trim(world, monkeypatch):
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+
+    def broken(root):
+        raise OSError("no")
+
+    monkeypatch.setattr(R, "_rewrite_config", broken)
+    doc = R.resume_pending(home, user)
+    assert R.CONFIG_NOT_TRIMMED in doc["problems"]
+    assert not any(p.startswith("Couldn't delete") and "config.yaml" in p for p in doc["problems"])
+    assert R.cant_delete_lines(["config.yaml", "chats"]) == ["Couldn't delete: chats", "Couldn't trim config.yaml."]
+
+
+def test_nothing_wisp_runs_inherits_the_launch_nonce(monkeypatch):
+    """N6: the shell tool, skill scripts and MCP servers all drop it."""
+    from service import identity
+    monkeypatch.setenv("WISP_LAUNCH_NONCE", "secret-nonce")
+    monkeypatch.setenv("SOMETHING_ELSE", "kept")
+    env = identity.child_environment()
+    assert "WISP_LAUNCH_NONCE" not in env and env["SOMETHING_ELSE"] == "kept"
+    root = Path(__file__).resolve().parents[1]
+    builtin = (root / "service" / "tools" / "builtin.py").read_text()
+    assert "timeout=120, cwd=str(Path.home()), env=child_environment())" in builtin
+    skills = (root / "service" / "skills" / "tools.py").read_text()
+    assert 'env={**child_environment(), "WISP_SKILL_DIR": str(skill_dir)}' in skills
+    assert "**os.environ" not in skills
+
+
+def test_the_shell_tool_child_does_not_see_the_nonce(monkeypatch):
+    from service.safety import policy
+    from service.tools import builtin
+    monkeypatch.setenv("WISP_LAUNCH_NONCE", "secret-nonce")
+    monkeypatch.setattr(policy, "decide", lambda *a, **k: type("D", (), {"tier": policy.Tier.ALLOW,
+                                                                         "shell_argv": None, "reason": ""})())
+    out = builtin.run_shell("echo nonce=${WISP_LAUNCH_NONCE:-absent}")
+    assert "nonce=absent" in str(out)
+
+
+def test_the_app_knows_the_refusal_status():
+    source = (Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp" / "BackendManager.swift").read_text()
+    assert f"static let resetUnfinishedStatus: Int32 = {R.REFUSED_EXIT}" in source
