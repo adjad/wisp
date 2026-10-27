@@ -181,6 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 markerID: marker.id, record: WispReset.readAppDone(),
                 defaultsID: UserDefaults.standard.string(forKey: WispReset.appPartDoneKey)) {
                 let problems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)
+                // The problems first: once the done id is there the part never runs again.
+                UserDefaults.standard.set(problems, forKey: WispReset.appPartProblemsKey)
                 UserDefaults.standard.set(marker.id, forKey: WispReset.appPartDoneKey)
                 WispReset.writeAppDone(WispReset.AppDone(id: marker.id, problems: problems))
                 // The model read Debug Mode before the defaults were cleared.
@@ -423,14 +425,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for _ in 0..<90 {
                 switch WispReset.readMarker() {
                 case .valid(let marker) where marker.serviceDone:
-                    let appProblems = WispReset.readAppDone()?.problems ?? []
+                    let appProblems = Self.resetAppProblems(marker)
                     // The marker first: while it says "erased" the app's part never runs
                     // again, so its record may go after it (or stay, if the marker won't).
                     let markerGone = WispReset.removeOwnedFile(WispReset.markerURL().path)
                     if markerGone, !WispReset.removeOwnedFile(WispReset.appDoneURL().path) {
                         NSLog("%@", "Wisp reset: couldn't remove the app's reset record")
                     }
-                    if markerGone { UserDefaults.standard.removeObject(forKey: WispReset.appPartDoneKey) }
+                    if markerGone {
+                        UserDefaults.standard.removeObject(forKey: WispReset.appPartDoneKey)
+                        UserDefaults.standard.removeObject(forKey: WispReset.appPartProblemsKey)
+                    }
                     if !markerGone { NSLog("%@", "Wisp reset: couldn't remove the reset marker") }
                     let notice = WispReset.launchNotice(marker: marker, appProblems: appProblems)
                     let text = markerGone ? notice : [notice, WispReset.markerStuckNotice].compactMap { $0 }
@@ -444,10 +449,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             if case .valid(let marker) = WispReset.readMarker(),
-               let notice = WispReset.launchNotice(marker: marker, appProblems: WispReset.readAppDone()?.problems ?? []) {
+               let notice = WispReset.launchNotice(marker: marker, appProblems: Self.resetAppProblems(marker)) {
                 self?.model.showTransientNotice(notice, duration: 15)
             }
         }
+    }
+
+    /// What the app's part of this reset couldn't do: from its record in ~/.moe, or
+    /// from the defaults when only they prove the part ran.
+    private static func resetAppProblems(_ marker: WispReset.Marker) -> [String] {
+        let defaults = UserDefaults.standard
+        return WispReset.appPartProblems(markerID: marker.id, record: WispReset.readAppDone(),
+                                         defaultsID: defaults.string(forKey: WispReset.appPartDoneKey),
+                                         defaultsProblems: defaults.stringArray(forKey: WispReset.appPartProblemsKey))
     }
 
     /// Opens the onboarding window at the step the person was on (or `step`), or

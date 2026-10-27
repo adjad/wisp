@@ -785,3 +785,52 @@ def test_index_merge_commits_in_chunks(tmp_path, monkeypatch):
     monkeypatch.setattr(Store, "MERGE_CHUNK", 2)
     got = st.upsert_index([_row(i) for i in range(1, 6)], extract.tier, now=1)
     assert got == {"added": 5, "skipped": 0, "seen": 5} and st.stats()["queue"] == {"pending": 5}
+
+
+def test_html_tables_and_unclosed_tags_keep_their_text():
+    head = b"From: a@x\r\nSubject: s\r\nContent-Type: text/html\r\n\r\n"
+    table = b"<table><tr><td>Rent due</td><td>Oct 31</td></tr><tr><td>Amount</td><td>$1,200</td></tr></table>"
+    body = extract.parse_raw(head + table, 0).body
+    assert "Rent due Oct 31" in body and "Amount $1,200" in body          # cells don't glue
+    assert extract.parse_raw(head + b"<head><title>x</title><body><p>Pay by Friday</p>", 0).body == "Pay by Friday"
+    assert "Pay by Friday" in extract.parse_raw(head + b"<style>p{} <p>Pay by Friday</p>", 0).body
+
+
+def test_a_huge_header_block_is_refused_fast():
+    import time
+    raw = b"From: a@x\r\nContent-Type: text/plain; " + b"a=b; " * 50_000 + b"\r\n\r\nhi"
+    start = time.perf_counter()
+    with pytest.raises(ValueError):
+        extract.parse_raw(raw, 0)
+    assert time.perf_counter() - start < 0.1
+
+
+async def test_an_unreadable_index_doesnt_spend_the_email(ticking, monkeypatch):
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5)], extract.tier, now=1)
+
+    async def body(rowid):
+        return None, "index_unreadable"
+
+    monkeypatch.setattr(runner, "read_body", body)
+    assert await runner.tick(now=NOW + 1) == runner.FAILURE_GAP_S
+    row = st.message("<m5@x>")
+    assert row["state"] == "pending" and row["attempts"] == 0
+
+
+def test_a_late_gmail_tab_list_still_retires_pending_mail(tmp_path):
+    st = Store(tmp_path / "x.db")
+    st.upsert_index([_row(1, rfc="<promo@shop>"), _row(2, rfc="<friend@x>")], extract.tier, now=1)
+    assert st.exclude({"<promo@shop>", "<gone@x>"}) == 1
+    assert st.message("<promo@shop>")["state"] == "skipped" and st.message("<friend@x>")["state"] == "pending"
+
+
+def test_rescued_html_keeps_breaks_and_drops_closed_inner_tags():
+    head = b"From: a@x\r\nSubject: s\r\nContent-Type: text/html\r\n\r\n"
+    # Breaks inside an unclosed <noscript> survive, so adjacent lines don't merge.
+    assert extract.parse_raw(head + b"<body><noscript>Enable JS<p>Pay by Friday", 0).body == "Enable JS\nPay by Friday"
+    # A closed <style> inside an unclosed <head> stays hidden; the head's own text is kept.
+    assert extract.parse_raw(head + b"<head><style>.a{}</style>Pay by Friday", 0).body == "Pay by Friday"
+    # A normally closed <script> is still dropped.
+    assert extract.parse_raw(head + b"<p>Pay</p><script>evil()</script>", 0).body == "Pay"

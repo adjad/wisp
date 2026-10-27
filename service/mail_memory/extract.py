@@ -109,32 +109,50 @@ def _text(part) -> str:
 
 
 class _Text(HTMLParser):
-    """Visible text of an HTML part, with line breaks at block ends. The standard
-    parser is linear, unlike a regex that pairs <script> with </script>."""
+    """Visible text of an HTML part, as a browser lays it out: line breaks at block
+    ends, a space between table cells, nothing between inline tags ("<b>31</b>."
+    stays "31."). The standard parser is linear, unlike a regex that pairs
+    <script> with </script>."""
     _SKIP = {"script", "style", "head", "template", "noscript"}
     _BREAK = {"br", "p", "div", "tr", "li", "table", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6",
-              "blockquote", "section", "article", "header", "footer"}
+              "blockquote", "section", "article", "header", "footer", "hr"}
+    _SPACE = {"td", "th", "img", "input", "button", "label"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.out: list[str] = []
-        self.skip = 0
+        # One buffer per open skipped tag: text kept only if that tag never closes.
+        self.held: list[list[str]] = []
+
+    def _emit(self, text: str) -> None:
+        (self.held[-1] if self.held else self.out).append(text)
 
     def handle_starttag(self, tag, attrs):
-        if tag in self._SKIP:
-            self.skip += 1
+        if tag == "body" and self.held:
+            self.held = []                 # a head left open ends where the body starts
+        elif tag in self._SKIP:
+            self.held.append([])
         elif tag in self._BREAK:
-            self.out.append("\n")
+            self._emit("\n")
+        elif tag in self._SPACE:
+            self._emit(" ")
 
     def handle_endtag(self, tag):
         if tag in self._SKIP:
-            self.skip = max(0, self.skip - 1)
+            if self.held:
+                self.held.pop()            # closed: its text was never visible
         elif tag in self._BREAK:
-            self.out.append("\n")
+            self._emit("\n")
+        elif tag in self._SPACE:
+            self._emit(" ")
 
     def handle_data(self, data):
-        if not self.skip:
-            self.out.append(data)
+        self._emit(data)
+
+    def text(self) -> str:
+        # An unclosed <style> or <noscript> would otherwise swallow the rest of the
+        # email; keep its text, as the old regex did (audit of 494a4bf3).
+        return "".join(self.out + [t for level in self.held for t in level])
 
 
 def _html_text(markup: str) -> str:
@@ -144,7 +162,7 @@ def _html_text(markup: str) -> str:
         parser.close()
     except Exception:  # noqa: BLE001 — malformed markup keeps what was read
         pass
-    return "".join(parser.out)
+    return parser.text()
 
 
 def _clean(body: str) -> str:
@@ -157,8 +175,16 @@ def _clean(body: str) -> str:
     return body.strip()[:BODY_CAP]
 
 
+HEADER_CAP = 32_768
+
+
 def parse_raw(raw: bytes, fallback_ts: float) -> Email:
-    """Headers and a cleaned plain-text body from RFC 822 bytes (an .emlx's message)."""
+    """Headers and a cleaned plain-text body from RFC 822 bytes (an .emlx's message).
+    Raises ValueError for a header block over HEADER_CAP: real mail stays far below
+    it, and the stdlib parser takes seconds on a crafted one (audit of 494a4bf3)."""
+    end = min((i for i in (raw.find(b"\r\n\r\n"), raw.find(b"\n\n")) if i >= 0), default=len(raw))
+    if end > HEADER_CAP:
+        raise ValueError("header block too large")
     msg = BytesParser(policy=policy.default).parsebytes(raw)
     plain, markup = [], []
     for part in msg.walk():
