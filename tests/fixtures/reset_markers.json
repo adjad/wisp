@@ -1,0 +1,185 @@
+{
+ "comment": "Reset markers that service/wisp_reset.py (marker_from_json) and the app (ResetWisp.swift WispReset.Marker.parse) must judge the same way. Each case is the marker file's exact text.",
+ "cases": [
+  {
+   "name": "minimal started",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\"}",
+   "valid": true
+  },
+  {
+   "name": "first-pass",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"first-pass\", \"attempts\": 0, \"in_progress\": false, \"full_pass\": false, \"pending\": [], \"engine_cache\": false, \"problems\": [], \"at\": 1}",
+   "valid": true
+  },
+  {
+   "name": "erased with trash and problems",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"attempts\": 3, \"in_progress\": false, \"full_pass\": true, \"engine_cache\": true, \"pending\": [\".reset-trash-c0ffee12-chats\", \"engine/.reset-trash-c0ffee12-engine.log\", \"engine/base/.reset-trash-c0ffee12-cache\"], \"problems\": [\"Couldn't delete: chats\"]}",
+   "valid": true
+  },
+  {
+   "name": "64-character id",
+   "text": "{\"version\": 1, \"id\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"phase\": \"started\"}",
+   "valid": true
+  },
+  {
+   "name": "unknown extra field",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\", \"later\": {\"x\": 1}}",
+   "valid": true
+  },
+  {
+   "name": "no id",
+   "text": "{\"version\": 1, \"phase\": \"erased\"}",
+   "valid": false
+  },
+  {
+   "name": "empty id",
+   "text": "{\"version\": 1, \"id\": \"\", \"phase\": \"started\"}",
+   "valid": false
+  },
+  {
+   "name": "65-character id",
+   "text": "{\"version\": 1, \"id\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"phase\": \"started\"}",
+   "valid": false
+  },
+  {
+   "name": "id with a slash",
+   "text": "{\"version\": 1, \"id\": \"../a\", \"phase\": \"started\"}",
+   "valid": false
+  },
+  {
+   "name": "non-ASCII id",
+   "text": "{\"version\": 1, \"id\": \"caf\\u00e9\", \"phase\": \"started\"}",
+   "valid": false
+  },
+  {
+   "name": "id is a number",
+   "text": "{\"version\": 1, \"id\": 12, \"phase\": \"started\"}",
+   "valid": false
+  },
+  {
+   "name": "no version",
+   "text": "{\"id\": \"c0ffee12\", \"phase\": \"started\"}",
+   "valid": false
+  },
+  {
+   "name": "version 2",
+   "text": "{\"version\": 2, \"id\": \"c0ffee12\", \"phase\": \"started\"}",
+   "valid": false
+  },
+  {
+   "name": "version true",
+   "text": "{\"version\": true, \"id\": \"c0ffee12\", \"phase\": \"started\"}",
+   "valid": false
+  },
+  {
+   "name": "version 1.0",
+   "text": "{\"version\": 1.0, \"id\": \"c0ffee12\", \"phase\": \"started\"}",
+   "valid": false
+  },
+  {
+   "name": "version string",
+   "text": "{\"version\": \"1\", \"id\": \"c0ffee12\", \"phase\": \"started\"}",
+   "valid": false
+  },
+  {
+   "name": "unknown phase",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"done\"}",
+   "valid": false
+  },
+  {
+   "name": "phase not a string",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": [\"erased\"]}",
+   "valid": false
+  },
+  {
+   "name": "attempts string",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\", \"attempts\": \"1\"}",
+   "valid": false
+  },
+  {
+   "name": "attempts negative",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\", \"attempts\": -1}",
+   "valid": false
+  },
+  {
+   "name": "attempts bool",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\", \"attempts\": true}",
+   "valid": false
+  },
+  {
+   "name": "attempts float",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\", \"attempts\": 1.5}",
+   "valid": false
+  },
+  {
+   "name": "full_pass number",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\", \"full_pass\": 1}",
+   "valid": false
+  },
+  {
+   "name": "engine_cache string",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\", \"engine_cache\": \"true\"}",
+   "valid": false
+  },
+  {
+   "name": "in_progress null",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\", \"in_progress\": null}",
+   "valid": false
+  },
+  {
+   "name": "pending not a list",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"first-pass\", \"pending\": \".reset-trash-c0ffee12-chats\"}",
+   "valid": false
+  },
+  {
+   "name": "pending a plain name",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"first-pass\", \"pending\": [\"chats\"]}",
+   "valid": false
+  },
+  {
+   "name": "pending another reset's trash",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"first-pass\", \"pending\": [\".reset-trash-other-chats\"]}",
+   "valid": false
+  },
+  {
+   "name": "pending trash in another folder",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"first-pass\", \"pending\": [\"cache/.reset-trash-c0ffee12-x\"]}",
+   "valid": false
+  },
+  {
+   "name": "pending bare prefix",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"first-pass\", \"pending\": [\".reset-trash-c0ffee12-\"]}",
+   "valid": false
+  },
+  {
+   "name": "problems not strings",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"problems\": [1]}",
+   "valid": false
+  },
+  {
+   "name": "problems a string",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"problems\": \"x\"}",
+   "valid": false
+  },
+  {
+   "name": "a list",
+   "text": "[1]",
+   "valid": false
+  },
+  {
+   "name": "empty",
+   "text": "",
+   "valid": false
+  },
+  {
+   "name": "not JSON",
+   "text": "not json",
+   "valid": false
+  },
+  {
+   "name": "NaN constant",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\", \"at\": NaN}",
+   "valid": false
+  }
+ ]
+}

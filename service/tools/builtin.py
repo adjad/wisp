@@ -176,8 +176,9 @@ def run_shell(cmd: str) -> str:
                 timeout=120, cwd=str(Path.home()), stdin=subprocess.DEVNULL,
                 env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"})
         else:
+            from service.identity import child_environment
             p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                               timeout=120, cwd=str(Path.home()))
+                               timeout=120, cwd=str(Path.home()), env=child_environment())
         out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
         return BuiltinCompletion(_clip(out.strip() or f"(exit {p.returncode}, no output)"),
                                  tool_name="run_shell", completion_code=p.returncode,
