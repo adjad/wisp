@@ -154,6 +154,12 @@ def run_capture(state, monkeypatch, mode, prompt, name, args):
     monkeypatch.setenv('WISP_MODEL_LED_ROUTING', '1' if mode == 'model-led' else '0')
     monkeypatch.setenv('WISP_PLANNER', '1' if mode == 'planner' else '0')
     monkeypatch.setenv('WISP_TYPED_REMINDERS_SHADOW_ONLY', '1' if mode == 'shadow' else '0')
+    # normal/planner/shadow name the rules path, which since 0.5.0-rc3 needs
+    # model_only off; model-led runs on the packaged default (model_only on).
+    if mode == 'model-led':
+        monkeypatch.delenv('WISP_MODEL_ONLY', raising=False)
+    else:
+        monkeypatch.setenv('WISP_MODEL_ONLY', '0')
     script = [attempt(name, args), {'content': 'Fictional clarification; no factual claim.'}]
     if mode == 'model-led':
         from service.router.model_led import registry_specs, family_for

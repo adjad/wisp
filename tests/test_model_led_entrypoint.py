@@ -153,7 +153,10 @@ def endpoint(monkeypatch, tmp_path):
 
 
 def test_explicit_rollback_keeps_baseline_and_never_allocates_owned_client(endpoint, monkeypatch):
+    # Since 0.5.0-rc3 the packaged model_only forces model-led discovery, so
+    # the full rollback is WISP_MODEL_ONLY=false as well as the routing flag.
     monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")
+    monkeypatch.setenv("WISP_MODEL_ONLY", "false")
     endpoint.request("hello", test_mode=True)
     assert len(endpoint.baseline_calls) == 1
     assert not endpoint.agent_calls and not endpoint.owned
@@ -335,11 +338,15 @@ def test_disconnect_cancels_active_turn_and_closes_owned_client(endpoint, monkey
     asyncio.run(scenario())
 
 
-def test_default_off_preserves_direct_calendar_read(endpoint, monkeypatch):
+def test_rollback_preserves_direct_calendar_read(endpoint, monkeypatch):
+    # Was test_default_off_preserves_direct_calendar_read: through rc2 the
+    # default was off. Since 0.5.0-rc3 the direct read is the rollback path
+    # (WISP_MODEL_ONLY=false); the default is pinned in the next test.
     from service.workflows import reads
     # Fixture normally suppresses direct reads so semantic gating can be isolated.
     # Restore the real compiler/executor with the entirely synthetic registry.
     monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")
+    monkeypatch.setenv("WISP_MODEL_ONLY", "false")
     # The function imported by reads was monkeypatched on the module; recover its
     # exact original code via the fixture's saved callable, not a second import.
     monkeypatch.setattr(reads, "compile_read", endpoint.original_compile_read)
@@ -348,6 +355,24 @@ def test_default_off_preserves_direct_calendar_read(endpoint, monkeypatch):
     assert not endpoint.owned and not endpoint.agent_calls and not endpoint.baseline_calls
     assert endpoint.starts == 0
     assert any(e["type"] == "done" for e in events)
+
+
+def test_default_model_only_runs_no_tool_before_the_model(endpoint, monkeypatch):
+    # 0.5.0-rc3 default (the reported "tool fires the instant a prompt lands"):
+    # with the real read compiler restored, a direct-read prompt runs nothing
+    # before the model. The model gets the original prompt and decides.
+    from service.workflows import reads
+    monkeypatch.delenv("WISP_MODEL_LED_ROUTING", raising=False)
+    monkeypatch.delenv("WISP_MODEL_ONLY", raising=False)
+    monkeypatch.setattr(reads, "compile_read", endpoint.original_compile_read)
+    events = endpoint.request("what is on my calendar this week")
+    assert endpoint.effects == [] and not endpoint.baseline_calls
+    call = endpoint.agent_calls[0]
+    assert call["model_led_discovery"] is True and call["ask_quality"] is True
+    assert not call["direct_calls"] and call["force_first_tool"] is None
+    assert call["short_circuit_tools"] == frozenset()
+    assert call["messages"][-1] == {"role": "user", "content": "what is on my calendar this week"}
+    assert next(e for e in events if e["type"] == "routed")["route_source"] == "model_led_discovery"
 
 
 def test_actual_loop_dry_run_keeps_discovery_but_never_executes_tool(endpoint, monkeypatch):

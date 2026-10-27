@@ -3264,6 +3264,11 @@ async def run_agent(
     ask_read_cache: dict = {}
     from service.model_only import narration_thinking_enabled as _ask_nt
     _ask_narration_thinking = _ask_nt() if ask_quality else True
+    # A model that writes nothing after a tool result with thinking off
+    # (models.yaml thinking_required_after_tool, Gemma 4 E4B) keeps it on for
+    # that step even if a user overlay turns model_only_narration_thinking off;
+    # a tool-free direct step does not follow a tool result and may still drop it.
+    _ask_after_tool_thinks = ask_quality and thinking_after_tool_required(model)
 
     def _ask_window(offered, stubs, scale: float) -> int:
         """This step's fit window: the Ask prompt budget (scaled down after a
@@ -3522,7 +3527,8 @@ async def run_agent(
         ask_narrating = bool(
             ask_quality and tools_answered and not (failed_tools - tools_answered)
             and not hard_failed and not forcing_first_step and not expecting_tool
-            and choice != "required" and not _ask_narration_thinking)
+            and choice != "required" and not _ask_narration_thinking
+            and not _ask_after_tool_thinks)
         # A direct (tool-free) step is a written answer too: with thinking on,
         # writing turns drifted into "Let me check…" and refusals.
         if ask_quality and ask_direct and not forcing_first_step and not _ask_narration_thinking:

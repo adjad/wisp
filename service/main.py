@@ -1555,6 +1555,48 @@ def _agent_memory_context_allowed(decision, *, cloud: bool,
     return not schedule_read
 
 
+def _managed_local_agent(client, target=None) -> bool:
+    """Whether the configured agent role runs on Wisp's own managed local
+    engine, the connection model-led routing is built and tested against.
+
+    A cloud or local-provider (e.g. LM Studio) agent binding is not, and a
+    binding that cannot be resolved is not either.
+    """
+    if target is None:
+        try:
+            target = role_target("agent")
+        except Exception:  # noqa: BLE001 - an unresolvable binding keeps the legacy route
+            return False
+    return bool(target.endpoint.managed
+                and target.endpoint.name == "local"
+                and getattr(client, "managed", False)
+                and getattr(client, "base_url", "").rstrip("/")
+                    == target.endpoint.base_url.rstrip("/"))
+
+
+def _model_only_turn(get_client) -> bool:
+    """model_only (on by default since 0.5.0-rc3) for THIS turn.
+
+    It applies only where a turn can actually be model-led: the managed local
+    engine, or a remote-only profile with remote_parity. Elsewhere (an agent
+    role bound to a cloud or local-provider endpoint, or remote-only without
+    parity) the turn keeps the full rules path, as before rc3, instead of
+    raising on every turn or skipping the typed layers without a model-led
+    replacement. Such a turn also turns model_only off for the agent loop
+    (thinking and sampling rules), in this turn's task context only.
+    """
+    if not model_only_enabled():
+        return False
+    if remote_only_profile() is not None:
+        from service.inference.remote_policy import remote_parity
+        eligible = remote_parity()
+    else:
+        eligible = _managed_local_agent(get_client())
+    if not eligible:
+        from service.model_only import disable_for_turn
+        disable_for_turn()
+    return eligible
+
 
 def _model_led_preload(prompt: str) -> list[str]:
     """Tools whose full schemas a model-led turn starts with: the lexical
@@ -1919,9 +1961,14 @@ async def agent(body: dict[str, Any]):
             # A completed multi-reminder task does not identify which item an
             # "it" correction means. End the turn before any inference or
             # planner/shadow adaptation can reopen an implicit last-item write.
-            # Test switch (service/router/model_led.model_only_enabled): the
-            # model answers every turn; no deterministic layer answers first.
-            model_only = model_only_enabled()
+            # model_only (service/model_only.model_only_enabled, on by default
+            # since 0.5.0-rc3): the model answers every turn; no deterministic
+            # layer answers first. Off for a turn that cannot be model-led
+            # (see _model_only_turn), which keeps the rules path instead.
+            # `client` is bound at startup (lifespan); without one (an
+            # in-process caller that never started the engine) no turn can be
+            # model-led, so the rules path keeps answering.
+            model_only = _model_only_turn(lambda: globals().get("client"))
             from service.tasks.engine import prepare_batch_correction_guard
             batch_guard = (prepare_batch_correction_guard(store, sid, prompt)
                            if sess and not literal_envelope and not model_only else None)
@@ -1957,11 +2004,7 @@ async def agent(body: dict[str, Any]):
                     # The pinned remote target stands in for the local agent model.
                     model_led_turn = True
                     model_led_target = proposed_target
-                elif (proposed_target.endpoint.managed
-                        and proposed_target.endpoint.name == "local"
-                        and getattr(client, "managed", False)
-                        and getattr(client, "base_url", "").rstrip("/")
-                            == proposed_target.endpoint.base_url.rstrip("/")):
+                elif _managed_local_agent(client, proposed_target):
                     model_led_turn = True
                     model_led_target = proposed_target
                 else:

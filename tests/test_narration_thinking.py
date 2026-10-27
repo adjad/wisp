@@ -298,8 +298,20 @@ def test_template_kwargs() -> None:
     # roster and it always returned {} — _template_kwargs is now just a
     # pass-through to no_thinking_kwargs, so there is nothing left to merge.
     print("\nchat_template_kwargs reflects no_thinking correctly")
-    off = loop._template_kwargs(MODEL, no_thinking=False)
-    on = loop._template_kwargs(MODEL, no_thinking=True)
+    # The rules-path policy. Since 0.5.0-rc3 model_only is on by default and
+    # states thinking ON on every step (tests/test_model_only_switch.py), so
+    # pin it off here. This file also runs as a plain script, outside conftest.
+    import os
+    saved = os.environ.get("WISP_MODEL_ONLY")
+    os.environ["WISP_MODEL_ONLY"] = "0"
+    try:
+        off = loop._template_kwargs(MODEL, no_thinking=False)
+        on = loop._template_kwargs(MODEL, no_thinking=True)
+    finally:
+        if saved is None:
+            os.environ.pop("WISP_MODEL_ONLY", None)
+        else:
+            os.environ["WISP_MODEL_ONLY"] = saved
     check("no_thinking=False sends no enable_thinking",
           "enable_thinking" not in off.get("chat_template_kwargs", {}), f"{off}")
     check("no_thinking=True sends enable_thinking=False",

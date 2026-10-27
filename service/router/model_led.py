@@ -126,6 +126,13 @@ def model_led_enabled(value: str | None) -> bool:
     ordinary prompts. Invalid overrides fail closed rather than silently
     choosing either router. This does not change an installed app or
     persisted user configuration.
+
+    Since 0.5.0-rc3 the packaged `model_only` setting (service/model_only.py)
+    is ON, and it forces model-led discovery on every eligible turn whatever
+    this variable says; WISP_MODEL_ONLY=0 (or `model_only: false` in
+    ~/.moe/config.yaml) restores the legacy router. How each Workflow20 entry
+    is covered on the model-led path is listed in the rc3 PR and
+    docs/releases/0.5.0-rc3.md.
     """
     if value is None:
         return False
