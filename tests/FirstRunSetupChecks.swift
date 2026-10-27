@@ -512,11 +512,64 @@ struct FirstRunSetupChecks {
         check(!FirstRunPermissions.quitsAfterAsking(launchedByWisp: true, isHidden: false, isActive: false)
               && !FirstRunPermissions.quitsAfterAsking(launchedByWisp: true, isHidden: true, isActive: true),
               "Shown or brought forward while the prompt was up: left open")
-        check(FirstRunPermissions.keepingAnswer(.notAsked, answered: .allowed) == .allowed
-              && FirstRunPermissions.keepingAnswer(.notAsked, answered: .notAllowed) == .notAllowed
-              && FirstRunPermissions.keepingAnswer(.notAsked, answered: nil) == .notAsked
-              && FirstRunPermissions.keepingAnswer(.notAllowed, answered: .allowed) == .notAllowed,
-              "A closed app keeps the answer just given; a real read wins")
+        // A closed Mail or Notes (procNotFound) is "can't say": it keeps the last
+        // definite answer and never reads as a removed permission.
+        let noProc = OSStatus(procNotFound)
+        check(FirstRunPermissions.automationRead([noProc, noProc]) == .unknown
+              && FirstRunPermissions.automationRead([noErr, noProc]) == .unknown
+              && FirstRunPermissions.automationRead([]) == .unknown, "A closed app can't be read")
+        check(FirstRunPermissions.automationRead([noErr, noErr]) == .granted
+              && FirstRunPermissions.automationRead([noErr]) == .granted, "Every target answering allowed is granted")
+        check(FirstRunPermissions.automationRead([noErr, OSStatus(errAEEventNotPermitted)]) == .denied
+              && FirstRunPermissions.automationRead([noProc, OSStatus(errAEEventNotPermitted)]) == .denied,
+              "A running target refusing (-1743) is denied, closed or not for the other")
+        check(FirstRunPermissions.automationRead([noErr, OSStatus(errAEEventWouldRequireUserConsent)]) == .notAsked,
+              "A running target with no answer (-1744) is not asked")
+        for stored in [FirstRunPermissions.AutomationAnswer.allowed, .denied, .reset, nil] {
+            let kept = FirstRunPermissions.resolveAutomation(.unknown, stored: stored)
+            check(kept.stored == stored, "procNotFound never changes what is remembered")
+        }
+        check(FirstRunPermissions.resolveAutomation(.unknown, stored: .allowed).state == .allowed
+              && FirstRunPermissions.resolveAutomation(.unknown, stored: .denied).state == .notAllowed
+              && FirstRunPermissions.resolveAutomation(.unknown, stored: nil).state == .notAsked
+              && FirstRunPermissions.resolveAutomation(.unknown, stored: .reset).state == .notAsked,
+              "A closed app shows the last answer, Not set when there was none")
+        check(FirstRunPermissions.resolveAutomation(.denied, stored: .allowed) == (.notAllowed, .denied),
+              "-1743 flips the remembered answer to denied")
+        check(FirstRunPermissions.resolveAutomation(.granted, stored: .denied) == (.allowed, .allowed)
+              && FirstRunPermissions.resolveAutomation(.granted, stored: nil) == (.allowed, .allowed),
+              "A successful probe flips it to granted")
+        check(FirstRunPermissions.resolveAutomation(.notAsked, stored: .allowed) == (.notAsked, .reset)
+              && FirstRunPermissions.resolveAutomation(.notAsked, stored: .reset) == (.notAsked, .reset)
+              && FirstRunPermissions.resolveAutomation(.notAsked, stored: nil) == (.notAsked, nil),
+              "A grant macOS dropped reads Not set and is remembered as reset, so the row can say why")
+        // Persisted: survives the window closing and Wisp relaunching (a fresh read of the same defaults).
+        // An in-memory store: a UserDefaults suite would leave a .plist in ~/Library/Preferences.
+        final class Answers: AutomationAnswerStore {
+            var values: [String: Any] = [:]
+            func string(forKey defaultName: String) -> String? { values[defaultName] as? String }
+            func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+            func removeObject(forKey defaultName: String) { values[defaultName] = nil }
+        }
+        let suite = Answers()
+        check(FirstRunPermissions.recordAutomation(.granted, item: .mail, defaults: suite) == .allowed, "Granted")
+        check(FirstRunPermissions.recordAutomation(.unknown, item: .mail, defaults: suite) == .allowed
+              && FirstRunPermissions.storedAutomation(.mail, defaults: suite) == .allowed,
+              "Mail closed afterwards: still Allowed, still remembered")
+        check(FirstRunPermissions.storedAutomation(.messages, defaults: suite) == nil
+              && FirstRunPermissions.recordAutomation(.unknown, item: .messages, defaults: suite) == .notAsked,
+              "Messages keeps its own answer")
+        check(FirstRunPermissions.recordAutomation(.notAsked, item: .mail, defaults: suite) == .notAsked
+              && FirstRunPermissions.storedAutomation(.mail, defaults: suite) == .reset,
+              "macOS dropping the grant is remembered as reset")
+        check(FirstRunPermissions.recordAutomation(.denied, item: .mail, defaults: suite) == .notAllowed
+              && FirstRunPermissions.storedAutomation(.mail, defaults: suite) == .denied, "Then refused")
+        let before = suite.values
+        _ = FirstRunPermissions.recordAutomation(.unknown, item: .mail, defaults: suite)
+        check(suite.values.count == before.count && suite.string(forKey: FirstRunPermissions.automationKey(.mail)) == "denied",
+              "A read that can't say (Mail closed) never writes, so a poll can't undo an answer just recorded")
+        check(FirstRunPermissions.automationKey(.mail).hasPrefix("wisp."),
+              "Remembered under wisp.*, so /resetwisp clears it with the other markers")
         check(FirstRunPermissions.label(.messages, .notAsked) == "Not set"
               && FirstRunPermissions.label(.messages, .allowed) == "Allowed"
               && FirstRunPermissions.label(.messages, .notAllowed) == "Denied", "Messages: Not set, Allowed, Denied")
