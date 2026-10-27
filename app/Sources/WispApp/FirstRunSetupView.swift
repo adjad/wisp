@@ -713,7 +713,7 @@ final class FirstRunPermissions: ObservableObject {
 
     nonisolated static func automationKey(_ item: Item) -> String { "wisp.automation.answer.\(item.rawValue)" }
 
-    nonisolated static func storedAutomation(_ item: Item, defaults: UserDefaults = .standard) -> AutomationAnswer? {
+    nonisolated static func storedAutomation(_ item: Item, defaults: AutomationAnswerStore = UserDefaults.standard) -> AutomationAnswer? {
         defaults.string(forKey: automationKey(item)).flatMap(AutomationAnswer.init(rawValue:))
     }
 
@@ -747,7 +747,7 @@ final class FirstRunPermissions: ObservableObject {
     /// Allowed only when every target is. A target that isn't running can't be
     /// asked about, so it keeps the answer remembered from the last time one could.
     nonisolated static func automationStateNow(of targets: [String], item: Item, ask: Bool,
-                                               defaults: UserDefaults = .standard) -> State {
+                                               defaults: AutomationAnswerStore = UserDefaults.standard) -> State {
         var statuses: [OSStatus] = []
         for id in targets {
             var target = AEAddressDesc()
@@ -765,16 +765,21 @@ final class FirstRunPermissions: ObservableObject {
     /// Weighs a probe against the remembered answer, remembers the result, and
     /// returns what the row shows.
     nonisolated static func recordAutomation(_ read: AutomationRead, item: Item,
-                                             defaults: UserDefaults = .standard) -> State {
-        let resolved = resolveAutomation(read, stored: storedAutomation(item, defaults: defaults))
-        if let answer = resolved.stored { defaults.set(answer.rawValue, forKey: automationKey(item)) }
-        else { defaults.removeObject(forKey: automationKey(item)) }
+                                             defaults: AutomationAnswerStore = UserDefaults.standard) -> State {
+        let stored = storedAutomation(item, defaults: defaults)
+        let resolved = resolveAutomation(read, stored: stored)
+        // Write only a change, and never on a read that can't say: the 2 s poll's
+        // stale read must not overwrite an answer request() just recorded.
+        if read != .unknown, resolved.stored != stored {
+            if let answer = resolved.stored { defaults.set(answer.rawValue, forKey: automationKey(item)) }
+            else { defaults.removeObject(forKey: automationKey(item)) }
+        }
         return resolved.state
     }
 
     /// The row's words when macOS has dropped a grant it once gave.
     static let automationResetNote =
-        "macOS asked again: it can reset this after Wisp updates. Allow it once more."
+        "macOS forgot this answer, which can happen after Wisp updates. Allow it once more."
 
     /// Starts the app in the background, unseen, and returns it, so Wisp can close
     /// it again. nil when it was already running (the person's own, never closed
@@ -1645,3 +1650,13 @@ struct FirstRunButtonStyle: ButtonStyle {
             .opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.4)
     }
 }
+
+/// What the remembered Automation answers need from UserDefaults, so their checks
+/// can run on an in-memory store instead of writing a preferences file.
+protocol AutomationAnswerStore: AnyObject {
+    func string(forKey defaultName: String) -> String?
+    func set(_ value: Any?, forKey defaultName: String)
+    func removeObject(forKey defaultName: String)
+}
+
+extension UserDefaults: AutomationAnswerStore {}

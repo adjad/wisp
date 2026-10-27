@@ -544,9 +544,14 @@ struct FirstRunSetupChecks {
               && FirstRunPermissions.resolveAutomation(.notAsked, stored: nil) == (.notAsked, nil),
               "A grant macOS dropped reads Not set and is remembered as reset, so the row can say why")
         // Persisted: survives the window closing and Wisp relaunching (a fresh read of the same defaults).
-        let suiteName = "wisp.test.automation.\(UUID().uuidString)"
-        let suite = UserDefaults(suiteName: suiteName)!
-        defer { suite.removePersistentDomain(forName: suiteName) }
+        // An in-memory store: a UserDefaults suite would leave a .plist in ~/Library/Preferences.
+        final class Answers: AutomationAnswerStore {
+            var values: [String: Any] = [:]
+            func string(forKey defaultName: String) -> String? { values[defaultName] as? String }
+            func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+            func removeObject(forKey defaultName: String) { values[defaultName] = nil }
+        }
+        let suite = Answers()
         check(FirstRunPermissions.recordAutomation(.granted, item: .mail, defaults: suite) == .allowed, "Granted")
         check(FirstRunPermissions.recordAutomation(.unknown, item: .mail, defaults: suite) == .allowed
               && FirstRunPermissions.storedAutomation(.mail, defaults: suite) == .allowed,
@@ -559,6 +564,10 @@ struct FirstRunSetupChecks {
               "macOS dropping the grant is remembered as reset")
         check(FirstRunPermissions.recordAutomation(.denied, item: .mail, defaults: suite) == .notAllowed
               && FirstRunPermissions.storedAutomation(.mail, defaults: suite) == .denied, "Then refused")
+        let before = suite.values
+        _ = FirstRunPermissions.recordAutomation(.unknown, item: .mail, defaults: suite)
+        check(suite.values.count == before.count && suite.string(forKey: FirstRunPermissions.automationKey(.mail)) == "denied",
+              "A read that can't say (Mail closed) never writes, so a poll can't undo an answer just recorded")
         check(FirstRunPermissions.automationKey(.mail).hasPrefix("wisp."),
               "Remembered under wisp.*, so /resetwisp clears it with the other markers")
         check(FirstRunPermissions.label(.messages, .notAsked) == "Not set"
