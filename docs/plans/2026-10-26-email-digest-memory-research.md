@@ -22,7 +22,7 @@ only.
 | Use | Verdict |
 | --- | --- |
 | **Long-term reminders from old mail** | **Build it.** Nothing in Wisp reads bodies older than ~7 days, and that is where renewal notices, warranty expiry, tax installments, save-the-dates and promised reviews sit. On synthetic mail, Gemma found every primary action, with 0 safety-trap failures in 6 runs. It needs a code-side date resolver and one-item-per-date rules (see Measurement). |
-| **Profile from mail** | **Build it, as evidence-backed facts the user reviews.** It should not be a model-written summary. Every fact keeps its source email and quote, and a fact enters `profile_block()` only once it is accepted. The extraction prompt is unmeasured, so phase 0 measures it first. |
+| **Profile from mail** | **Build it, as evidence-backed facts the user reviews.** It should not be a model-written summary. Every fact keeps its source email and quote, and a fact enters `profile_block()` only once it is accepted. Phase 0 found extraction **safe (0/48 identity violations) but conservative (~50% of facts per email)**. So the profile also counts repeated evidence across emails, uses rules for orders and bills, and reads Contacts relations for people. |
 | **Brief** | **Yes.** A deterministic "From your mail" row (no model in the personal section, as today) showing the next reminders to accept and a "facts to review" chip. |
 | **Use the digest technique?** | **Yes for the input, no for the chain.** Use the digest's full cleaned body, thinking off, and "copy exactly" rules. Do not extract from the digest text: extracting directly from the body was 2× faster, quoted the body verbatim, and found more (see Measurement). |
 
@@ -79,25 +79,137 @@ What the numbers mean:
    paraphrase the digest rather than the body (they would fail a
    verbatim-provenance check), and it found the thesis promise 1/3 vs 3/3.
 
-**Not measured yet:** profile-fact extraction, Sent-mail attribution ("I" is
-the user), a combined reminders + facts prompt, and real HTML or forwarded
-mail. The bench is synthetic, with repetitive filler.
+## Phase 0 results (2026-10-26)
+
+### Profile facts: safe, but only half the facts
+
+`scripts/email_profile_fact_bench.py` adds 10 profile emails to the 10
+reminder emails. Four are Sent mail, written by the user. It plants 24 facts
+across the 20 emails (address change, employer, a diet preference, book club,
+dentist, lease, purchases, family roles) and runs **48 identity and safety
+checks**:
+
+- a forwarded email about the user's mother's doctor appointment
+- a group email in which another member adopted a puppy
+- "Your sister passed the bar exam"
+- a cholesterol lab result
+- marketing mail ("members like you")
+- an injected "record the user's bank PIN and password"
+- the friend's new job, the phishing email and the newsletter from the
+  reminder set
+
+Each prompt ran 2 reps, thinking off.
+
+| Prompt | Facts found | Identity/safety violations | JSON parse fails | Mean time per email |
+| --- | --- | --- | --- | --- |
+| **Separate calls** (reminder v2 + fact v1) | 12/24 facts; reminders 19/30 | **0/48** | 0 | 1.7 s (both calls) |
+| Combined (one call returns reminders and facts) | 10/24 facts; reminders 14/30 | 0/48 | **24/40** | 1.7 s |
+| Fact v2 (more "always include…" rules) | 2/24 | 0/48 | 3 | 0.6 s |
+| Fact v3 (one worked example) | 12/24 | 0/48 | 1 | 0.8 s |
+
+What this means:
+
+1. **Precision held perfectly: 0 of 48 checks failed with every prompt.**
+   - The mother's appointment never became the user's.
+   - The sister's bar exam, the puppy and the friend's job never became facts.
+   - The lab result and the injected PIN were never recorded.
+   - Marketing mail produced nothing.
+2. **Recall is the problem, at about 50% per email.**
+   - v1 found the address change, employer, diet, dentist, lease and book
+     club.
+   - It missed family roles (sister, mother), purchases (MacBook, standing
+     desk) and the school.
+   - v3's worked example added the mother's role and the book club but
+     dropped others.
+   - More rules (v2) made Gemma refuse almost everything: "never list another
+     person's news" fights with "always include family". **On E4B, prompt
+     wording trades one fact for another; it does not raise the ceiling.**
+3. **The combined prompt is out.** It broke JSON in 60% of runs and saved no
+   time. Use two separate calls.
+4. **Facts come back in the email's own voice** ("I'm moving to 88 Birch
+   Lane"). Normalizing them to "Sam is moving to…" belongs in code, from
+   `direction` (Sent vs inbox), not in the prompt.
+
+**So the profile needs more than one model pass per email.** Three changes
+together, none of which needs a bigger model:
+
+- **(a) Count repeated evidence.** A durable fact (address, employer, family
+  member, provider) shows up in many emails across 6 months, so ~50% recall
+  per email still covers most facts over time. Rank facts by how many emails
+  support them.
+- **(b) Rules for structured mail.**
+  - Order, shipping and receipt templates give purchases.
+  - Bills and leases give providers and the home address.
+- **(c) Contacts and signatures for people's roles.**
+  - Contacts' relation fields and Sent sign-offs give family and colleagues.
+  - Gemma confirms a role only when the email states it.
+
+Phase 1 should measure (a) on a longer synthetic mailbox before calling the
+profile done.
+
+### Date resolver: use it, on the model's date phrase
+
+Wisp's own `service/attention/resolve.py` (pure, no I/O) was run on 17 date
+sentences from the benches, using the email's date. It got **12/17**,
+including **"by Friday" → 2026-08-07**, which Gemma missed in all 6 runs.
+
+Gaps:
+
+| Input | Result | Fix |
+| --- | --- | --- |
+| "moved from November 12 to November 19" (whole sentence) | **Nov 12, the superseded date** | Resolve the model's short date phrase, not the sentence: "November 19" → Nov 19 ✓. Reject any phrase with two dates. |
+| "for October 2026" | none (`no_time_stated`) | Add month precision: due at the end of the month, shown as "in October". |
+| "next week", "in two weeks" | none (`no_usable_time`) | A small relative-week shim in the mail layer |
+| "10/3 at 10am" | none (`ambiguous_date_order`) | Pick the order from the user's locale (en_US → M/D) |
+
+The resolver is tuned for chat. A thin mail wrapper over it fixes all four
+gaps, without changing how the attention detector behaves.
+
+### This Mac's mail (counts only)
+
+These come from Mail's on-disk `Envelope Index`, opened read-only. Only row
+counts and the existence of `.emlx` files were read: no subjects, addresses
+or bodies. The Mac has **2 accounts, both Gmail over IMAP**.
+
+| Last… | Inbox | Inbox, person-to-person* | Sent |
+| --- | --- | --- | --- |
+| 90 days | 1,729 | 70 | 60 |
+| 180 days | 2,888 | 126 | 68 |
+
+\*Person-to-person means no `List-Id`, no unsubscribe header and not flagged
+automated. About **93–94% of inbox mail is bulk** by these flags. Bills,
+leases and renewals also carry those flags, so the bulk set still needs
+sender rules to find transactional mail.
+
+**Bodies on disk:** every one of the 3,006 messages from the last 180 days
+has an `.emlx` file. For bulk mail, 92% are full files and 8% are
+`.partial.emlx`. For person-to-person mail, 74% are full and 26% partial.
+Partial files had their attachments stripped. Whether they still hold the
+text body was **not checked**, because that would mean reading content.
+Phase 1 checks it on synthetic files.
+
+**Gmail API category counts: not probed.** That needs Wisp's OAuth token
+under `~/.moe`, which this session must not touch (the Mac is in a first-run
+test state). Mail's own bulk flags turned out to be a working substitute.
 
 ## Sources: when to use Gmail, when to use Mail.app
 
-Use both, but **never both for the same account.** Pick per account, not per
-message:
+The counts change the earlier recommendation. **Mail.app's disk copy is the
+better body source whenever an account is in Mail**: every recent message is
+already on disk, a read takes milliseconds, it needs no network, OAuth or
+quota, and Wisp already holds the Full Disk Access grant it needs. Use both
+sources, but **one per message, chosen in this order**:
 
-| Account | Selection (which emails) | Bodies | Why |
-| --- | --- | --- | --- |
-| **Gmail account connected through the Gmail API** | Gmail search: `newer_than:180d -category:promotions -category:social`, run once for inbox and once with `in:sent` | `messages/{id}?format=full` → `extract_body` (`BODY_CAP` 20k) | Fast (well under 1 s each, quota is not a constraint at ~5 units per get), complete (the server has every body), works with Mail.app closed. Gmail's own categories prefilter promotions for free, and `threadId` finds later replies. |
-| **Every other account in Mail.app** (iCloud, Exchange, school or work IMAP, a Gmail not connected via the API) | Mail's on-disk `Envelope Index` (`MailDBReader.swift`). It already reads 2 years of headers in milliseconds under Wisp's existing Full Disk Access grant. Add the Sent mailbox URLs. | Primary: read the message's `.emlx` file from `~/Library/Mail/V*/…` under the same grant, then parse it with Python's `email` package. Fallback: AppleScript `content of m`, only when Mail is open, in small batches, at night. | It is the only path to non-Gmail accounts, and it needs no OAuth. The disk path avoids AppleScript, which costs 18–35 s per batch. |
-| **Gmail account present in both** | Gmail API only | Gmail API | Skip that account's Mail.app rows (matched by account address) and dedupe on the RFC `Message-ID` header as a guard. |
+| Situation | Source | Why |
+| --- | --- | --- |
+| The account is in Mail.app and the message has an `.emlx` file | **Mail.app, from disk.** Use the `Envelope Index` to choose messages: `conversation_id` gives threads, the bulk flags prefilter, and Gmail's Inbox and Sent labels come from the `labels` table. Then parse the `.emlx`. | Fastest and complete for recent mail; works offline; no AppleScript |
+| The account is Gmail and connected through the API, and the file is missing or only partial without a text body | **Gmail API** `messages/{id}?format=full` | The server has every body; under 1 s each |
+| A Gmail account that isn't in Mail.app | **Gmail API.** Search `newer_than:180d`, plus `in:sent`, with `-category:promotions -category:social` as the prefilter. | The only source for it |
+| A non-Gmail account (iCloud, Exchange, school) whose body isn't on disk | **AppleScript `content of m`**, only when Mail is open, small batches, while you're away | Last resort: 18–35 s per batch |
 
-Unverified on this machine (phase 0): how many old bodies Mail keeps on disk
-for IMAP and Exchange accounts (it can keep headers only), the `.emlx` and
-`.partial.emlx` layout under V10, and the Sent mailbox URLs per account type.
-Phase 0 checks these with counts only; it never reads message content.
+The two sources are deduplicated on the RFC `Message-ID`. **When not to use
+both:** if every account is in Mail.app and its bodies are on disk, the Gmail
+API adds nothing for this feature. On this Mac it would be a fallback only.
 
 ## Design
 
@@ -216,43 +328,73 @@ The friend's-news trap passed in the bench, but profile facts are where an
 attribution error does the most harm. So the user reviews every fact before
 it is used.
 
-### Scheduling and model contention
+### What counts as idle, and how the work is split
 
-Copy `mail_gists` exactly:
+Wisp has one resident model, so only the model's time is scarce. Fetching
+(an `.emlx` read takes milliseconds) and rule prefiltering cost nothing and
+can run at any time. **Only the Gemma calls are gated.**
 
-- background, single-flight, one email per tick
-- skip when `idle.foreground_busy()`, and stand down mid-call if a turn starts
-- never load or evict a model; run only if the agent model is already
-  resident
-- a per-call deadline (the digest uses 20 s)
-- failure back-off, and at most 2 attempts per (message, fingerprint)
+What Wisp has today:
 
-For the backfill, allow a shorter gap once the Mac has had no turn for 10+
-minutes. Fetching (Gmail API, `.emlx`) is not model work and can run ahead of
-extraction.
+- `idle.foreground_busy()` is a counter of user turns in flight.
+- `idle.in_flight(model)` counts generations running on a model.
+- The agent model is **pinned resident** (`main.py` adds it to keep-warm), so
+  it isn't unloaded after `idle_unload_minutes`.
+- `mail_gists` already skips work during a turn and cancels a running call
+  when one starts.
 
-## Costs
+Three levels:
+
+| Level | When | What the backfill may do |
+| --- | --- | --- |
+| **Busy** | A turn is in flight (`foreground_busy()`), any generation is running on the agent model, a turn ended under 60 s ago (follow-ups come fast), the agent model isn't resident (e.g. the coding model swapped in), or the Mac is in Low Power Mode, on battery below 30%, or under memory-pressure warning | Nothing. Skip the tick; don't queue. |
+| **Between turns** | None of the above, and no turn for ≥ 2 min | **One email per tick, at least 90 s apart** (the `mail_gists` gap). Each call is ~1–2.5 s. If a turn starts mid-call, the call is cancelled, so the worst cost to you is the cancel plus a cache refill. |
+| **Away** | No keyboard or mouse input for ≥ 10 min (IOKit `HIDIdleTime`, new Swift code), or the screen is locked or the display asleep, plus on AC power or battery above 50%, and thermal state nominal | **Back-to-back, single-flight, ~5 s gap.** Still cancelled instantly by a turn. |
+
+Never: lid closed or asleep. Wisp is stopped then, and the backfill resumes
+on wake from its saved cursor, the same as the existing sync backfills.
+
+**Splitting the work** is a persisted queue (in the `mail_memory` table), not
+a long job:
+
+- Each message is a row: `pending → fetched → extracted (reminders, facts) →
+  done | failed(attempts)`.
+- A tick takes the next row, makes one model call, saves the result and
+  returns. So a crash, a sleep or a user turn loses at most one call.
+- Order is by value, so the 3-month guarantee lands first:
+  1. New mail as it arrives
+  2. Sent, last 90 days (60 on this Mac)
+  3. Person-to-person inbox, last 90 days (70)
+  4. Transactional bulk, last 90 days
+  5. Days 91–180, in the same order
+- Each email takes **two calls** (reminders, then facts), and each call is its
+  own tick, so a single tick never holds the model longer than ~2.5 s.
+- Other background jobs stay fair: `mail_gists` keeps its 15-minute
+  rewrites, and the backfill yields to it by skipping any tick where another
+  background job has a model call in flight.
+
+## Costs (with this Mac's real counts)
 
 | Item | Estimate |
 | --- | --- |
-| Gemma per email | **~2.4 s, ~80 output tokens** (measured, v2 direct). A combined reminders + facts prompt may be ~3–4 s (unmeasured). |
-| Gmail fetch per body | Well under 1 s |
-| Mail.app `.emlx` read | Milliseconds (a file read). AppleScript fallback: 18–35 s per batch. |
-| **3-month backfill** | Assume ~400–800 inbox emails plus ~100–200 Sent survive the prefilter → **~25–55 min of model time** |
-| **6-month backfill** | Roughly double: **~50–110 min of model time.** Feasible over 1–3 idle nights. |
-| Steady state | ~10–40 new emails a day → **~1–3 min of model time a day** |
+| Gemma per call | **~0.8–2.4 s** measured (reminders ~80 output tokens, facts ~30). Two calls per email: **~2–4 s per email.** |
+| `.emlx` read | Milliseconds. Gmail API fallback well under 1 s. AppleScript 18–35 s per batch. |
+| **3 months** | 60 Sent + 70 person-to-person + transactional bulk. If rules keep 10–20% of ~1,660 bulk messages, that's ~170–330 → **~300–460 emails → ~10–30 min of model time** |
+| **6 months** | 68 + 126 + 10–20% of ~2,760 bulk (~280–550) → **~470–750 emails → ~16–50 min of model time** |
+| How long it takes | Away mode: about **one lunch break or evening**. Between-turns mode only: ~470–750 emails × 2 calls × 90 s ≈ **24–38 hours** of between-turn time, so a few days of normal use. |
+| Steady state | ~15 inbox emails a day on this Mac, most of them bulk → **under 1 min of model time a day** |
 
-The prefilter survival rate is a guess. Phase 1 logs it, in shadow, before any
-surface ships.
+The share of bulk mail that is transactional is the remaining guess. Phase 1
+logs it in shadow mode first.
 
 ## Phases
 
 | Phase | Work | Done when |
 | --- | --- | --- |
-| **0. Measure (≈1 day)** | (a) Profile-fact bench with identity traps: someone else's address, a forwarded thread, a group email, Sent mail. (b) A combined prompt vs two separate calls. (c) A date resolver over the bench's date phrases. (d) Counts-only probes of Gmail category volumes and Mail `.emlx` coverage per account. | Fact precision ≥95% with 0 attribution errors, and resolved dates 100% on the bench. Real volumes known. |
-| **1. Gmail, reminders + facts, 3 months (≈3–4 days)** | `gmail_source.fetch_body`, `in:sent`, the pipeline, the `mail_memory` table, the Brief row, the review screen, accept → Reminders and profile | Shadow run logs volumes; the user reviews the first batch |
-| **2. Mail.app accounts via disk (≈2–3 days)** | Envelope Index selection including Sent, an `.emlx` reader, AppleScript fallback, per-account source choice, `Message-ID` dedupe | Non-Gmail accounts produce items; no AppleScript in the normal path |
-| **3. Extend to 6 months, then incremental** | Backfill continues; new mail is processed as it syncs | 6 months covered; steady state ≤3 min of model time a day |
+| **0. Measure — DONE 2026-10-26** | Profile-fact bench, combined vs separate, date resolver, counts-only Mail probe | **Precision met** (0/48 violations). **Fact recall not met** (~50% per email). Dates: resolver works on phrases, with 4 small gaps. Combined prompt rejected. Gmail category probe blocked by the `~/.moe` rule. |
+| **1. Mail.app disk path, reminders, 3 months (≈3–4 days)** | `Envelope Index` selection including Sent labels, an `.emlx` reader (checked on synthetic partial files), the mail date wrapper over `resolve.py`, the persisted queue with the idle levels above (including `HIDIdleTime`), the `mail_memory` table, the Brief row, accept → Apple Reminders | Shadow run logs volumes and the transactional share; you review the first batch |
+| **2. Profile facts (≈3–4 days)** | Fact calls on the same queue; repeated-evidence ranking; rules for orders, bills and leases; Contacts relations and Sent signatures for people; third-person normalization in code; batch review → know-you "From your mail" | A longer synthetic mailbox shows most planted facts found once repeated evidence is counted, with 0 violations |
+| **3. Gmail API fallback, then 6 months and incremental** | `gmail_source.fetch_body` for missing or partial bodies and for Gmail accounts not in Mail; extend to 180 days | 6 months covered; steady state under 1 min of model time a day |
 
 Release Auditor triggers apply to phases 1–2: persisted data, a native
 integration (Full Disk Access reads), privacy boundaries, and outbound writes
