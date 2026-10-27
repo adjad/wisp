@@ -50,8 +50,9 @@ class StubClient:
 
 
 @pytest.fixture(autouse=True)
-def fresh_cache():
+def fresh_cache(monkeypatch):
     D._cache.clear()
+    monkeypatch.setattr(D, "_paused_until", 0.0)
     yield
     D._cache.clear()
 
@@ -92,7 +93,7 @@ def test_short_body_stays_verbatim_without_a_model_call():
 def test_long_body_is_digested_in_full_with_thinking_off_and_no_tools(no_thinking):
     client = StubClient()
     out = _digest(_row(), client)
-    assert out.startswith("[Digest of the full ") and "NOT verbatim" in out
+    assert out.startswith("[Wisp's digest of the ") and "NOT verbatim" in out
     assert "INC-4471" in out
     assert len(client.calls) == 1
     call = client.calls[0]
@@ -173,12 +174,13 @@ def test_same_email_is_digested_once():
     assert _digest(_row(), client) == first and len(client.calls) == 1
 
 
-def test_non_local_agent_model_gets_the_head_cut(monkeypatch):
+def test_non_local_agent_model_keeps_the_email_text_for_the_loop_cap(monkeypatch):
     def refuse():
         raise LookupError("agent model is not the local engine")
     monkeypatch.setattr(D, "_resolve", refuse)
     out = asyncio.run(D.digest_body(_row()))
-    assert "This is NOT the whole email" in out
+    assert "digest of this long email was unavailable" in out
+    assert "deadline moved to December 1" in out and len(out) > D.LONG_BODY_CHARS
 
 
 def test_resolution_errors_degrade_instead_of_failing_the_tool(monkeypatch):
@@ -187,7 +189,7 @@ def test_resolution_errors_degrade_instead_of_failing_the_tool(monkeypatch):
     def broken():
         raise EndpointConfigurationError("keychain unavailable")
     monkeypatch.setattr(D, "_resolve", broken)
-    assert "This is NOT the whole email" in asyncio.run(D.digest_body(_row()))
+    assert "digest of this long email was unavailable" in asyncio.run(D.digest_body(_row()))
 
 
 def test_lock_works_across_event_loops():
@@ -208,18 +210,17 @@ def test_lock_works_across_event_loops():
     StubClient(reply=""),
     StubClient(reply="x" * (D._MAX_DIGEST_CHARS + 1)),
 ])
-def test_failed_digest_falls_back_to_a_labelled_head_cut(client):
+def test_failed_digest_returns_the_email_text_with_a_note(client):
     out = _digest(_row(), client)
-    assert "This is NOT the whole email" in out
-    assert "a full-email digest was unavailable" in out
+    assert out.startswith("[A digest of this long email was unavailable")
+    assert "deadline moved to December 1" in out  # nothing cut here; the loop cap labels any cut
     assert "SECRET BODY" not in out
-    assert len(out) < D.LONG_BODY_CHARS + 400
 
 
 def test_timeout_falls_back_to_a_labelled_head_cut(monkeypatch):
     monkeypatch.setattr(D, "_TIMEOUT_S", 0.05)
     out = _digest(_row(), StubClient(delay=1.0))
-    assert "This is NOT the whole email" in out
+    assert "digest of this long email was unavailable" in out
 
 
 def test_waits_for_another_call_on_the_same_model_then_runs(monkeypatch):
@@ -236,7 +237,7 @@ def test_waits_for_another_call_on_the_same_model_then_runs(monkeypatch):
         _, out = await asyncio.gather(release(), D.digest_body(_row(), client=client, model=MODEL))
         return out
     out = asyncio.run(scenario())
-    assert out.startswith("[Digest of the full ")
+    assert out.startswith("[Wisp's digest of the ")
     assert len(client.calls) == 1
 
 
@@ -249,7 +250,7 @@ def test_a_model_that_stays_busy_falls_back_without_calling(monkeypatch):
         out = _digest(_row(), client)
     finally:
         idle.end(key)
-    assert client.calls == [] and "This is NOT the whole email" in out
+    assert client.calls == [] and "digest of this long email was unavailable" in out
 
 
 def test_digests_never_run_concurrently():
@@ -267,8 +268,8 @@ def test_digests_per_lookup_are_capped_newest_first():
     rows = [_row(i) for i in range(D.MAX_DIGESTS_PER_CALL + 1)]
     out = asyncio.run(D.digest_rows(rows, client=client, model=MODEL))
     assert len(client.calls) == D.MAX_DIGESTS_PER_CALL
-    assert "digested per lookup" in out[0]["body"]   # oldest
-    assert all(r["body"].startswith("[Digest") for r in out[1:])
+    assert "to make room for a long email's digest" in out[0]["body"]   # oldest
+    assert all(r["body"].startswith("[Wisp's digest") for r in out[1:])
 
 
 def test_cancellation_propagates():
@@ -292,10 +293,10 @@ def test_view_emails_returns_the_digest_and_stays_an_untrusted_read():
             patch.object(E, "_purge_raw_if_expired"), \
             patch.object(E, "_raw_emails", "synthetic fixture"), \
             patch.object(E, "_parse_raw", return_value=rows), \
-            patch.object(D, "_resolve", return_value=(client, MODEL)):
+            patch.object(D, "_resolve", return_value=(client, MODEL, None)):
         out = asyncio.run(E.view_emails_impl(count=5))
     assert "Short one." in out
-    assert "[Digest of the full " in out and "INC-4471" in out
+    assert "[Wisp's digest of the " in out and "INC-4471" in out
     assert "Subject 1" in out and "Message-ID: m1" in out
     assert len(client.calls) == 1
     assert len(out) <= 6000  # fits the model-led Ask cap whole
@@ -313,8 +314,93 @@ def test_corpus_runs_keep_the_head_cut_path():
                 patch.object(E, "_raw_emails", "synthetic fixture"), \
                 patch.object(E, "_corpus_identifier_matches", return_value=True), \
                 patch.object(E, "_parse_raw", return_value=[_row(1)]), \
-                patch.object(D, "_resolve", return_value=(client, MODEL)):
+                patch.object(D, "_resolve", return_value=(client, MODEL, None)):
             out = asyncio.run(E.view_emails_impl(query="needle-id", strict_match=True))
     finally:
         E._CORPUS_MAIL_IDENTIFIER.reset(token)
-    assert client.calls == [] and "[Digest" not in out
+    assert client.calls == [] and "digest" not in out.lower().split("message-id")[0]
+
+
+# --- Release Auditor repair (#366 at a38498df) -------------------------------
+
+def test_b1_clean_body_is_linear_on_newline_heavy_bodies():
+    import time as _t
+    for body in ("\n" * 80000 + "x", "On\n" * 40000, " \n" * 80000 + "On x wrote:"):
+        start = _t.perf_counter()
+        D.clean_body(body)
+        assert _t.perf_counter() - start < 0.2
+    start = _t.perf_counter()
+    _digest(_row(body="On " + "\n" * 80000 + "x" * 5000), StubClient())
+    assert _t.perf_counter() - start < 0.5
+
+
+def test_b2_digest_input_is_bounded_and_says_the_rest_was_not_read():
+    client = StubClient()
+    huge = _long_body() + "\n\n" + ("Newsletter filler line. " * 5000)  # > 100k chars
+    out = _digest(_row(body=huge), client)
+    prompt = client.calls[0]["messages"][0]["content"]
+    assert len(prompt) < D._MAX_INPUT_CHARS + 2500
+    assert "characters of the email (not read)" in out
+
+
+def test_b2_input_budget_follows_the_model_window():
+    client = StubClient()
+    asyncio.run(D.digest_body(_row(body=_long_body() * 4), client=client, model=MODEL,
+                              context_window=4096))
+    assert len(client.calls[0]["messages"][0]["content"]) < (4096 - D._MAX_TOKENS - 800) * 3 + 2500
+
+
+def test_n2_multi_row_result_fits_the_ask_cap_with_the_digest():
+    client = StubClient()
+    rows = [_row(i, body=f"Email {i}. " + "Medium email text. " * 150) for i in range(4)] + [_row(9)]
+    out = asyncio.run(D.digest_rows(rows, client=client, model=MODEL))
+    total = sum(len(r["body"]) + D._ROW_HEADER_CHARS for r in out)
+    assert total <= D.RESULT_BUDGET_CHARS
+    assert out[-1]["body"].startswith("[Wisp's digest")
+    assert all("look this one up on its own" in r["body"] for r in out[:-1])
+
+
+def test_n3_quoted_thread_is_kept_when_only_it_matches_the_query():
+    reply = "Sounds good, see the details below from the vendor. " * 6
+    body = reply + "\n\nOn Mon, Oct 20, 2026 Vendor <v@example.com> wrote:\n> Your PO-77812 ships Friday."
+    kept, quoted, _ = D.clean_body(body, query="PO-77812")
+    assert "PO-77812" in kept and quoted == 0
+    dropped, quoted, _ = D.clean_body(body, query="vendor")
+    assert "PO-77812" not in dropped and quoted > 0
+
+
+def test_n4_dates_and_dashless_codes_are_backfilled():
+    body = _long_body("Renewal is due Nov 30, 2026 (ref ABC12345); call before 12/15.")
+    out = _digest(_row(body=body), StubClient(reply="A renewal email."))
+    tail = out.split("Also in the email, verbatim:")[1]
+    assert "Nov 30, 2026" in tail and "ABC12345" in tail and "12/15" in tail
+
+
+def test_n5_expired_entries_are_pruned_and_raw_changes_clear_the_cache(monkeypatch):
+    D._cache_put(("old",), "x", -1)
+    assert D._cache_get(("other",)) is None and ("old",) not in D._cache
+    _digest(_row(), StubClient())
+    assert D._cache
+    with patch.object(E, "_external_accounts", {}), patch.object(E, "_swift_raw", ""), \
+            patch.object(E, "_raw_emails", "something that will change"), \
+            patch.object(E, "_persist_composed_sources"):
+        E._purge_raw_if_expired()
+    assert not D._cache
+
+
+def test_n6_a_timeout_pauses_digests_and_failures_are_cached(monkeypatch):
+    monkeypatch.setattr(D, "_TIMEOUT_S", 0.05)
+    slow = StubClient(delay=1.0)
+    _digest(_row(0), slow)
+    fast = StubClient()
+    out = _digest(_row(1), fast)   # a different email, inside the pause
+    assert fast.calls == [] and "unavailable" in out
+    again = _digest(_row(0), fast)  # the failed email again: cached, no new stall
+    assert fast.calls == [] and "unavailable" in again
+
+
+def test_n7_label_and_rules_do_not_present_the_email_as_wisp():
+    client = StubClient()
+    out = _digest(_row(), client)
+    assert "untrusted, not checked" in out
+    assert "from the email, not from Wisp" in client.calls[0]["messages"][0]["content"]
