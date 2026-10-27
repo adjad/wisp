@@ -135,7 +135,9 @@ final class VoiceInput: ObservableObject {
         case .noSpeech:
             self.recorder = nil
             recorder.stop()
-            fail("Didn't hear anything. Tap the mic and try again.")
+            fail(recorder.deviceChanged
+                 ? "Your microphone changed. Tap the mic and ask again."
+                 : "Didn't hear anything. Tap the mic and try again.")
         case .finished, .limit:
             finish()
         }
@@ -190,6 +192,10 @@ final class VoiceRecorder: @unchecked Sendable {
     private var running = false
     private var reported = false
     private var configurationObserver: NSObjectProtocol?
+    private var changed = false
+
+    /// The input device changed before anything was said (AirPods connecting).
+    var deviceChanged: Bool { lock.withLock { changed && !endpointer.heardSpeech } }
     private let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: Double(WAVFile.sampleRate),
                                        channels: 1, interleaved: true)!
 
@@ -209,19 +215,23 @@ final class VoiceRecorder: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.receive(buffer)
         }
+        // Headphones connecting or the input device changing stops the engine,
+        // and no more audio arrives: end the question with what was heard.
+        // Watched before start, so a change in the first moment isn't missed.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
+            self?.interrupted()
+        }
+        lock.withLock { running = true }
         engine.prepare()
         do {
             try engine.start()
         } catch {
+            lock.withLock { running = false }
             input.removeTap(onBus: 0)
+            if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+            configurationObserver = nil
             throw Failure(message: "Wisp couldn't start the microphone.")
-        }
-        lock.withLock { running = true }
-        // Headphones connecting or the input device changing stops the engine,
-        // and no more audio arrives: end the question with what was heard.
-        configurationObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
-            self?.interrupted()
         }
     }
 
@@ -229,6 +239,7 @@ final class VoiceRecorder: @unchecked Sendable {
         let report: (VoiceEndpointer.Outcome, (VoiceEndpointer.Outcome) -> Void)? = lock.withLock {
             guard running, !reported else { return nil }
             reported = true
+            changed = true
             return (endpointer.heardSpeech ? .finished : .noSpeech, onOutcome)
         }
         if let (outcome, send) = report { send(outcome) }

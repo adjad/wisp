@@ -31,9 +31,13 @@ Rules:
   is exactly what the model is otherwise trained to answer.
 - Bounded input: 16-bit PCM WAV only, at most `MAX_SECONDS`. Gemma 4's audio
   encoder takes 30 s; the app stops recording at 30 s.
-- Never saved: the request carries oMLX's `X-oMLX-Cache-Store: off`, so the
-  clip's prompt is kept out of the engine's prefix cache, whose SSD tier would
-  otherwise write it to disk. An engine too old for the header ignores it.
+- Wisp keeps no copy: the clip lives in this request only. Best effort at the
+  engine too: the request carries `X-oMLX-Cache-Store: off`, which oMLX 0.7.3+
+  honors by keeping the prompt out of its prefix cache (the SSD tier would
+  otherwise write the prompt's KV to disk). The bundled oMLX 0.7.0 has no such
+  header, and oMLX's memory-requeue path ignores it, so there the engine may
+  cache the prompt's KV on this Mac like any other Ask prompt. Never claim
+  more than "Wisp keeps no recording and never sends it off the Mac".
 - The transcript is the person's own words, so it is treated exactly like typed
   text once it reaches Ask; nothing here acts on it.
 """
