@@ -6,7 +6,10 @@ index and files costs nothing. Three levels (docs/plans/2026-10-26-email-digest-
 - busy:    a user's turn is in flight, a generation is running, the model was
            used by something else in the last 2 minutes, the fast model isn't
            resident, or the Mac is in Low Power Mode / on battery under 30%.
-           Nothing runs.
+           No email is read and no model call runs. Mail's index is still read
+           when it's due (it costs no model time), so the queue fills, and a
+           missing permission shows, as soon as Wisp starts; only Low Power Mode
+           or battery under 30% skips that too.
 - between: otherwise. One call per tick, at least 90 s apart.
 - away:    no keyboard or mouse for 10+ minutes, on power or battery over 50%.
            Calls run back to back, 5 s apart.
@@ -21,7 +24,13 @@ IMPORTANT rules:
 - Mode "live" (the default, the user's choice for rc2) lets the Brief show
   the important suggestions (`importance.judge`); "shadow" extracts and records
   but shows nothing; "off" stops the walk.
-- Logs carry counts only, never mail text.
+- Logs and the store's meta carry counts and reason codes only, never mail text.
+- A failed tick is never silent: the reason code is kept in meta (`last_error`,
+  `last_error_at`, cleared by the next good read) and logged at WARNING, which
+  reaches moe-backend.log (INFO does not: nothing configures the root logger, so
+  Python's last-resort handler prints WARNING and above to stderr). A reason
+  warns when it first appears or changes, and again at most once an hour while
+  it repeats; other repeats log at INFO.
 """
 from __future__ import annotations
 
@@ -32,6 +41,7 @@ import os
 import re
 import subprocess
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -53,6 +63,7 @@ AWAY_GAP_S = 5
 BUSY_GAP_S = 60
 IDLE_DONE_GAP_S = 1800
 FAILURE_GAP_S = 900
+WARN_REPEAT_S = 3600
 QUIET_AFTER_USE_S = 120
 AWAY_AFTER_S = 600
 CALL_TIMEOUT_S = 30.0
@@ -63,6 +74,8 @@ _task: asyncio.Task | None = None
 _next_at = 0.0
 _last_own_end = 0.0
 _probe: dict[str, tuple[float, object]] = {}
+_warned: tuple[str, float] | None = None       # (reason code, when it last warned)
+_REASON = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
 
 
 # --- settings ---------------------------------------------------------------------
@@ -220,6 +233,50 @@ async def _reply(msgs: list[dict]) -> str | None:
     return content
 
 
+# --- failure visibility ---------------------------------------------------------------
+
+def _code(reason: object) -> str:
+    """A reason code and nothing else: the app's error string is untrusted, so
+    anything that isn't a short token is reported as `other`."""
+    text = str(reason)[:40]
+    return text if _REASON.fullmatch(text) else "other"
+
+
+def note_failure(reason: object, *, now: float | None = None, warn: bool = True) -> None:
+    """Remember why mail memory could not read, and say so in the log. Never raises."""
+    global _warned
+    now = time.time() if now is None else now
+    code = _code(reason)
+    try:
+        st = store()
+        st.set_meta("last_error", code)
+        st.set_meta("last_error_at", str(now))
+    except Exception:  # noqa: BLE001 — bookkeeping must not break the scheduler
+        log.exception("mail memory: could not record the failure")
+    if not warn:
+        return
+    fresh = _warned is None or _warned[0] != code or now - _warned[1] >= WARN_REPEAT_S
+    if fresh:
+        _warned = (code, now)
+    log.log(logging.WARNING if fresh else logging.INFO, "mail memory: read failed (%s)", code)
+
+
+def note_ok(*, now: float | None = None) -> None:
+    """A read worked: clear the last error so a stale one never lingers. The warning
+    limit is kept: one email that keeps timing out between good reads still warns at
+    most once an hour."""
+    now = time.time() if now is None else now
+    try:
+        st = store()
+        if st.meta("last_error"):
+            st.set_meta("last_error", "")
+            st.set_meta("last_error_at", "")
+            log.info("mail memory: reads are working again")
+        st.set_meta("last_ok_at", str(now))
+    except Exception:  # noqa: BLE001
+        log.exception("mail memory: could not record the recovery")
+
+
 # --- the tick -----------------------------------------------------------------------
 
 async def _gmail_excluded() -> frozenset:
@@ -257,25 +314,35 @@ async def tick(*, now: float | None = None) -> float:
     power = await asyncio.to_thread(_cached, "power", _power)
     hid = await asyncio.to_thread(_cached, "hid", _hid_idle_s)
     lvl = level(_model_key(), hid_idle_s=hid, power=power)
+    gap = {"busy": BUSY_GAP_S, "away": AWAY_GAP_S}.get(lvl, BETWEEN_GAP_S)
+    from service.inference.remote_policy import remote_only_profile
+    if remote_only_profile() is not None:
+        return FAILURE_GAP_S                      # the walk stands down entirely
+
+    # The index first: it costs no model time, so a busy or absent model never holds
+    # it up (2026-10-27: a morning of use with Brief and proactive work kept the old
+    # order from reading even the index, so nothing queued and nothing failed).
+    on_ac, pct, low = power
+    saving = low or (not on_ac and pct is not None and pct < 30)
+    last_index = float(st.meta("last_index") or 0)
+    if not saving and now - last_index >= INDEX_EVERY_S:
+        rows, capped = await read_index(WINDOW_DAYS)
+        excluded = await _gmail_excluded()
+        merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
+        merged["gmail_tab"] = await asyncio.to_thread(st.exclude, excluded) if excluded else 0
+        st.set_meta("last_index", str(now))
+        note_ok(now=now)
+        log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
+        return gap
+
     if lvl == "busy":
         return BUSY_GAP_S
-    gap = AWAY_GAP_S if lvl == "away" else BETWEEN_GAP_S
     # Read no mail the model can't take: a body read now would only be read again.
     why_not = await _stand_down()
     if why_not == "remote_only":
         return FAILURE_GAP_S
     if why_not is not None:
         return BUSY_GAP_S
-
-    last_index = float(st.meta("last_index") or 0)
-    if now - last_index >= INDEX_EVERY_S:
-        rows, capped = await read_index(WINDOW_DAYS)
-        excluded = await _gmail_excluded()
-        merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
-        merged["gmail_tab"] = await asyncio.to_thread(st.exclude, excluded) if excluded else 0
-        st.set_meta("last_index", str(now))
-        log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
-        return gap
 
     st.expire(today.isoformat())
     row = st.next_pending(now)
@@ -287,16 +354,20 @@ async def tick(*, now: float | None = None) -> float:
         if str(exc) == "app_not_connected":
             raise
         st.fail(row["key"], str(exc), now)         # this email's read timed out
+        note_failure(exc, now=now)
         return gap
     if raw is None:
         if why in ("index_unreadable", "no_mail_index"):
+            note_failure(why, now=now)
             return FAILURE_GAP_S                  # Mail's index, not this email: try later
+        note_ok(now=now)                          # the app answered; only this email is unreadable
         if why in ("not_on_disk", "not_in_inbox_or_sent"):
             # Gone from disk, or moved to Trash, Archive or Junk since the index: never read.
             st.finish(row["key"], "skipped", why)
         else:
             st.fail(row["key"], why, now)
         return gap
+    note_ok(now=now)
     try:
         # Off the loop: a 256 KB HTML body is parsed in pure Python, which yields the GIL.
         email = await asyncio.to_thread(extract.parse_raw, raw, row["ts"])
@@ -325,11 +396,17 @@ async def tick(*, now: float | None = None) -> float:
     if items is None:
         st.fail(row["key"], "bad_json", now)
         return gap
-    kept, dropped = extract.validate(items, email, tz=tz, today=today)
-    why: dict[str, int] = {}
-    for it in kept:
-        it["important"], it["why"] = importance.judge(it, row)
-        why[it["why"]] = why.get(it["why"], 0) + 1
+    try:
+        kept, dropped = extract.validate(items, email, tz=tz, today=today)
+        why: dict[str, int] = {}
+        for it in kept:
+            it["important"], it["why"] = importance.judge(it, row)
+            why[it["why"]] = why.get(it["why"], 0) + 1
+    except Exception as exc:  # noqa: BLE001 — e.g. a date phrase the resolver can't take
+        # This email's problem only: retire it like any other failure, so it can't
+        # hold the queue (it used to escape tick() and be retried forever).
+        st.fail(row["key"], f"validate:{type(exc).__name__}", now)
+        return gap
     added = st.add_items(row["key"], kept, extract.EXTRACTOR, now)
     st.finish(row["key"], "done", f"model={len(items)} kept={len(kept)} added={added}", email.message_id)
     st.set_meta("last_tick", str(now))
@@ -343,10 +420,15 @@ async def _run() -> None:
     try:
         gap = await tick()
     except BridgeError as exc:
-        log.info("mail memory: app read failed (%s)", exc)
+        note_failure(exc)
         gap = FAILURE_GAP_S
-    except Exception:  # noqa: BLE001 — never break the scheduler; try again later
-        log.exception("mail memory tick failed")
+    except Exception as exc:  # noqa: BLE001 — never break the scheduler; try again later
+        # The type and where it was raised, never the message or a traceback: one built
+        # from mail data would land in moe-backend.log and Report a Problem bundles.
+        frames = traceback.extract_tb(exc.__traceback__)
+        where = f"{Path(frames[-1].filename).name}:{frames[-1].lineno}" if frames else "?"
+        log.error("mail memory tick failed: %s at %s", type(exc).__name__, where)
+        note_failure(f"unexpected:{type(exc).__name__}", warn=False)
         gap = FAILURE_GAP_S
     _next_at = time.time() + gap
 

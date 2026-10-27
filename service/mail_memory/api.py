@@ -69,7 +69,8 @@ def _view(row: dict) -> dict:
 async def suggestions() -> dict:
     current = runner.mode()
     st = store()
-    out = {"mode": current, "modes": list(runner.MODES), "stats": st.stats(), "suggestions": []}
+    out = {"mode": current, "modes": list(runner.MODES), "stats": st.stats(),
+           "health": st.health(), "suggestions": []}
     if current == "live":
         from service.assistant.attention_runner import current_zone
         tz = current_zone()
