@@ -366,6 +366,16 @@ def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: st
         if why and (not guard.grounded(why, source_text, allowed=allowed) or guard.output_has_pii(why)):
             why = ""
         why = guard.second_person(why or guard.clean(result.get("summary"), 200), names)
+        quote_lines = item.get("lines") or []
+        pending = item.get("pending") or []
+        if kind == "reply" and pending:
+            # A conversation that went on after an ask was answered: the draft
+            # replies to the latest lines, so the card's sentence and quote do
+            # too. Seen live: "let me know if you run out of credits" (answered)
+            # headlining a draft that replied to "prepare well".
+            quote_lines = pending
+            if not _content_words(why) & _content_words(" ".join(pending)):
+                why = "They texted again after your last reply."
         due_phrase = _due_from_source(raw.get("due", ""), survivor)
         arrival = item.get("received_ts") or now
         due_ts, fixed, has_clock = guard.resolve_due(due_phrase, arrival, tz) if due_phrase else (None, "", False)
@@ -383,7 +393,7 @@ def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: st
                     due_label=guard.due_label(due_ts, now, tz, has_clock=has_clock, fixed=fixed),
                     urgency=raw.get("urgency") if raw.get("urgency") in _URGENCY else "medium",
                     source=item["source"], account=item["account"], who=item.get("who", ""),
-                    quote=_best_quote(item.get("lines") or [], " ".join([title, result.get("asks_of_me", "")])),
+                    quote=_best_quote(quote_lines, " ".join([title, result.get("asks_of_me", "")])),
                     primary=item["id"], sources=[item["id"]] + [_extra_item(e)["id"] for e in extra],
                     fingerprints=fingerprints, item=item, result=result)
     if primary["kind"] == "reminder":

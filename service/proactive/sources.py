@@ -705,11 +705,16 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
             sender, _, body = line.partition(":")
             if body.strip():
                 quotes.append(clean(body, 300))
+        # The incoming lines since the user's own last line: what a reply card is
+        # about. An earlier ask the user already answered must not headline it.
+        last_mine = max((i for i, r in enumerate(rows) if r[2].partition(":")[0].strip() == "Me"), default=-1)
+        pending = [clean(line.partition(":")[2], 300) for _, _, line in rows[last_mine + 1:]
+                   if line.partition(":")[0].strip() != "Me" and line.partition(":")[2].strip()]
         last_in = incoming[-1]
         speaker = last_in[2].partition(":")[0].strip()
         who = label if not group else (f"{speaker} in {label}" if speaker else label)
         items.append(dict(id="messages:" + _digest(context), source="messages", account=own, raw_account="",
-                          who=who, title=label, text=text, lines=quotes, received_ts=last_in[0],
+                          who=who, title=label, text=text, lines=quotes, pending=pending, received_ts=last_in[0],
                           replied=replied, group=group, person=True, unread=unread_at.get((context, last_in[0])),
                           user_wrote=any(r[2].partition(":")[0].strip() == "Me" for r in rows),
                           handle="" if group else chat_handle(chats.get(context, set())),

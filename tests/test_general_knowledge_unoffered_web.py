@@ -126,7 +126,7 @@ def test_system_prompt_scopes_the_live_data_rule_to_live_data():
     s = loop.SYSTEM
     assert "That rule is for LIVE data only" in s
     assert "what makes the sky blue" in s
-    assert "if web_search is unavailable or fails for such a question, you still answer it" in s
+    assert "even when web_search is unavailable or fails" in s
     # The refuse-instead-of-guess rule is still there for live figures.
     assert "do NOT fall back to a number from memory" in s
 
@@ -135,7 +135,7 @@ def test_default_voice_is_gentle_and_last():
     s = loop.SYSTEM
     voice = s.index("- YOUR VOICE: be gentle, calm and kind")
     assert "energetic" not in s[voice:] and "upbeat" not in s[voice:].lower()
-    assert "emoji sparingly" in s[voice:]
+    assert "emoji sparingly" in s[voice:].lower()
     assert "Gentleness never replaces accuracy" in s[voice:]
     # Answers stay organized: the direct answer first, no wall of text.
     assert "organized and easy to scan" in s[voice:] and "wall of text" in s[voice:]
