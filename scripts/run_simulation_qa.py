@@ -577,6 +577,7 @@ _NATIVE_PASSED = re.compile(
 _LEGACY_PROMPTS_VALIDATED = re.compile(r"\bok:\s*(?P<passed>\d+)\s+prompts validated\b")
 _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
+    "native/mail-memory-contract": "native/mail-memory-compile",
     "native/mail-history-contract": "native/mail-history-compile",
     "native/privacy-sync-contract": "native/privacy-sync-compile",
     "native/source-sync-label-contract": "native/source-sync-label-compile",
@@ -861,6 +862,7 @@ def _dependencies() -> dict[str, str]:
 def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     module_cache = str(build_dir / "module-cache")
     mail_db = str(build_dir / "mail-db-regression")
+    mail_memory = str(build_dir / "mail-memory-regression")
     mail_history = str(build_dir / "mail-history")
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
@@ -920,6 +922,15 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/mail-db-contract", [mail_db]),
+        (
+            "native/mail-memory-compile",
+            [
+                TRUSTED_SWIFTC, "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailMemoryReader.swift",
+                "tests/MailMemoryReaderRegression.swift", "-lsqlite3", "-o", mail_memory,
+            ],
+        ),
+        ("native/mail-memory-contract", [mail_memory]),
         (
             "native/mail-history-compile",
             [

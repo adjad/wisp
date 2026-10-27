@@ -81,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var calendarReader: CalendarReader?
     private var remindersWriter: RemindersWriter?
     private var mailReader: MailReader?
+    private var mailMemoryReader: MailMemoryReader?
     private var messagesReader: MessagesReader?
     private var notesReader: NotesReader?
     private var contactsReader: ContactsReader?
@@ -862,6 +863,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if sources.contains("notes") { self.notesReader?.sync() }
             if sources.contains("browser_history") { self.browserHistoryReader?.sync() }
         }
+        model.onMailMemoryRead = { [weak self] payload in
+            self?.mailMemoryReader?.handle(payload) ?? false
+        }
         model.startAssistant()
         Notifications.onOpenToday = { [weak self] in self?.openTodayInNotch() }
         startNativeSourceReaders()
@@ -955,6 +959,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         nativeSourceReadersStarted = true
         calendarReader = CalendarReader()
         mailReader = MailReader()
+        mailMemoryReader = MailMemoryReader(send: MailMemoryReader.poster(
+            to: WispClient.baseURL.appendingPathComponent("assistant/sync/mail_memory")))
         messagesReader = MessagesReader()
         browserHistoryReader = BrowserHistoryReader()
         activityReader = ActivityReader()

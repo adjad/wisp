@@ -1596,6 +1596,9 @@ final class OverlayModel: ObservableObject {
     // summary/tool request current source reads immediately instead of waiting
     // for the next 1-5 minute timer.
     var onSyncAssistantSources: (([String]) -> Void)?
+    // The mail-memory queue (service/mail_memory) asks for one Mail index window
+    // or one message body at a time; the reader answers by POST (MailMemoryReader).
+    var onMailMemoryRead: (([String: Any]) -> Bool)?
 
     private func handleCalendarAction(_ ev: WispClient.Event) async -> [String: Any] {
         if ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(ev.type) {
@@ -1741,6 +1744,8 @@ final class OverlayModel: ObservableObject {
             if !dailySummaryRunning { startSyncProgress(sources: ["email"]) }
             guard let sync = onSyncEmails else { return false }
             sync()
+        case "mail_memory_read":
+            guard let read = onMailMemoryRead, read(ev.payload) else { return false }
         case "sync_assistant_sources_now":
             let sources = ev.payload["sources"] as? [String] ?? []
             if !dailySummaryRunning { startSyncProgress(sources: sources) }
