@@ -383,6 +383,23 @@ enum FirstRunBrain: Equatable {
         autoStarted || failed || (connecting && waited >= connectGrace)
     }
 
+    /// What step 1 does by itself while it connects to the person's own oMLX. The
+    /// wait is always timed, so Try again appears after `connectGrace` even when
+    /// setup was finished and the window opened again (Permissions…). Only an
+    /// unfinished first run starts their oMLX by itself (FirstRunSetup.drivesModel);
+    /// after that, only a click on Try again starts it.
+    static func whileConnecting(setupDone: Bool, connecting: Bool) -> (startsOmlx: Bool, timesGrace: Bool) {
+        (connecting && FirstRunSetup.drivesModel(setupDone: setupDone), connecting)
+    }
+
+    /// The connecting card's line. Once Try again shows after setup was finished,
+    /// nothing is starting their oMLX, so it says plainly that it isn't running.
+    static func connectingDetail(setupDone: Bool, stalled: Bool) -> String {
+        setupDone && stalled
+            ? "Your oMLX isn't running. Choose Try again to start it, or open the oMLX app."
+            : "Wisp uses the oMLX app you already have, so there's nothing to download."
+    }
+
     /// How long a cold start has taken, once it is long enough to be worth saying.
     static func waited(_ seconds: Int) -> String? {
         guard seconds >= 20 else { return nil }
@@ -810,21 +827,25 @@ struct FirstRunSetupView: View {
     /// has arrived, and notice a finished download the engine never lists. Starting
     /// the engine is SetupGuideModel's own (autoAdvanceFirstSetup), once a session.
     private func drive(_ state: FirstRunBrain) {
+        if case .startingEngine = state {
+            // The person's own oMLX hasn't answered. Time the wait in every case, so
+            // Try again appears; start it once only during an unfinished first run.
+            let steps = FirstRunBrain.whileConnecting(setupDone: setupDone,
+                                                      connecting: setup.status?.existingOmlx == .connecting)
+            if steps.startsOmlx { setup.startExistingOmlxOnce() }
+            if steps.timesGrace, connectingSince == nil {
+                connectingSince = Date()
+                DispatchQueue.main.asyncAfter(deadline: .now() + FirstRunBrain.connectGrace + 0.1) {
+                    connectGraceTick += 1    // redraw, so `stalled` sees the time pass
+                }
+            }
+        }
         guard FirstRunSetup.drivesModel(setupDone: setupDone) else { return }
         switch state {
         case .switching(let model, _) where appliedModel != model && setup.busy == nil:
             appliedModel = model
             // Atomic: applied only if the configuration is still the one this saw.
             Task { await setup.apply(model, expectedConfiguration: setup.status?.configurationToken) }
-        case .startingEngine:
-            // The person's own oMLX hasn't answered: start it once (first run only).
-            setup.startExistingOmlxOnce()
-            if setup.status?.existingOmlx == .connecting, connectingSince == nil {
-                connectingSince = Date()
-                DispatchQueue.main.asyncAfter(deadline: .now() + FirstRunBrain.connectGrace + 0.1) {
-                    connectGraceTick += 1    // redraw, so `stalled` sees the time pass
-                }
-            }
         case .ready where !testedOnce && setup.busy == nil && setup.statusIsCurrent:
             // "Ready" only means the engine lists the model. One short question
             // proves it answers, and loads it while the person reads the rest, so
@@ -1110,7 +1131,7 @@ struct FirstRunSetupView: View {
         case .startingEngine:
             let ownOmlx = setup.status?.existingOmlx == .connecting
             OnboardingCard(icon: "bolt", title: ownOmlx ? "Connecting to your oMLX…" : "Starting Wisp's engine…",
-                           detail: ownOmlx ? "Wisp uses the oMLX app you already have, so there's nothing to download."
+                           detail: ownOmlx ? FirstRunBrain.connectingDetail(setupDone: setupDone, stalled: stalled)
                                            : "It's built into Wisp, so there's nothing else to install.") {
                 if stalled {
                     HStack(spacing: 8) {
