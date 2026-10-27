@@ -21,7 +21,13 @@ IMPORTANT rules:
 - Mode "live" (the default, the user's choice for rc2) lets the Brief show
   the important suggestions (`importance.judge`); "shadow" extracts and records
   but shows nothing; "off" stops the walk.
-- Logs carry counts only, never mail text.
+- Logs and the store's meta carry counts and reason codes only, never mail text.
+- A failed tick is never silent: the reason code is kept in meta (`last_error`,
+  `last_error_at`, cleared by the next good read) and logged at WARNING, which
+  reaches moe-backend.log (INFO does not: nothing configures the root logger, so
+  Python's last-resort handler prints WARNING and above to stderr). A reason
+  warns when it first appears or changes, and again at most once an hour while
+  it repeats; other repeats log at INFO.
 """
 from __future__ import annotations
 
@@ -53,6 +59,7 @@ AWAY_GAP_S = 5
 BUSY_GAP_S = 60
 IDLE_DONE_GAP_S = 1800
 FAILURE_GAP_S = 900
+WARN_REPEAT_S = 3600
 QUIET_AFTER_USE_S = 120
 AWAY_AFTER_S = 600
 CALL_TIMEOUT_S = 30.0
@@ -63,6 +70,8 @@ _task: asyncio.Task | None = None
 _next_at = 0.0
 _last_own_end = 0.0
 _probe: dict[str, tuple[float, object]] = {}
+_warned: tuple[str, float] | None = None       # (reason code, when it last warned)
+_REASON = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
 
 
 # --- settings ---------------------------------------------------------------------
@@ -220,6 +229,50 @@ async def _reply(msgs: list[dict]) -> str | None:
     return content
 
 
+# --- failure visibility ---------------------------------------------------------------
+
+def _code(reason: object) -> str:
+    """A reason code and nothing else: the app's error string is untrusted, so
+    anything that isn't a short token is reported as `other`."""
+    text = str(reason)[:40]
+    return text if _REASON.fullmatch(text) else "other"
+
+
+def note_failure(reason: object, *, now: float | None = None, warn: bool = True) -> None:
+    """Remember why mail memory could not read, and say so in the log. Never raises."""
+    global _warned
+    now = time.time() if now is None else now
+    code = _code(reason)
+    try:
+        st = store()
+        st.set_meta("last_error", code)
+        st.set_meta("last_error_at", str(now))
+    except Exception:  # noqa: BLE001 — bookkeeping must not break the scheduler
+        log.exception("mail memory: could not record the failure")
+    if not warn:
+        return
+    fresh = _warned is None or _warned[0] != code or now - _warned[1] >= WARN_REPEAT_S
+    if fresh:
+        _warned = (code, now)
+    log.log(logging.WARNING if fresh else logging.INFO, "mail memory: read failed (%s)", code)
+
+
+def note_ok(*, now: float | None = None) -> None:
+    """A read worked: clear the last error so a stale one never lingers."""
+    global _warned
+    now = time.time() if now is None else now
+    try:
+        st = store()
+        if st.meta("last_error"):
+            st.set_meta("last_error", "")
+            st.set_meta("last_error_at", "")
+            log.info("mail memory: reads are working again")
+        st.set_meta("last_ok_at", str(now))
+    except Exception:  # noqa: BLE001
+        log.exception("mail memory: could not record the recovery")
+    _warned = None
+
+
 # --- the tick -----------------------------------------------------------------------
 
 async def _gmail_excluded() -> frozenset:
@@ -274,6 +327,7 @@ async def tick(*, now: float | None = None) -> float:
         merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
         merged["gmail_tab"] = await asyncio.to_thread(st.exclude, excluded) if excluded else 0
         st.set_meta("last_index", str(now))
+        note_ok(now=now)
         log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
         return gap
 
@@ -287,16 +341,20 @@ async def tick(*, now: float | None = None) -> float:
         if str(exc) == "app_not_connected":
             raise
         st.fail(row["key"], str(exc), now)         # this email's read timed out
+        note_failure(exc, now=now)
         return gap
     if raw is None:
         if why in ("index_unreadable", "no_mail_index"):
+            note_failure(why, now=now)
             return FAILURE_GAP_S                  # Mail's index, not this email: try later
+        note_ok(now=now)                          # the app answered; only this email is unreadable
         if why in ("not_on_disk", "not_in_inbox_or_sent"):
             # Gone from disk, or moved to Trash, Archive or Junk since the index: never read.
             st.finish(row["key"], "skipped", why)
         else:
             st.fail(row["key"], why, now)
         return gap
+    note_ok(now=now)
     try:
         # Off the loop: a 256 KB HTML body is parsed in pure Python, which yields the GIL.
         email = await asyncio.to_thread(extract.parse_raw, raw, row["ts"])
@@ -343,10 +401,11 @@ async def _run() -> None:
     try:
         gap = await tick()
     except BridgeError as exc:
-        log.info("mail memory: app read failed (%s)", exc)
+        note_failure(exc)
         gap = FAILURE_GAP_S
-    except Exception:  # noqa: BLE001 — never break the scheduler; try again later
-        log.exception("mail memory tick failed")
+    except Exception as exc:  # noqa: BLE001 — never break the scheduler; try again later
+        log.exception("mail memory tick failed")      # already ERROR-level, so only record it
+        note_failure(f"unexpected:{type(exc).__name__}", warn=False)
         gap = FAILURE_GAP_S
     _next_at = time.time() + gap
 
