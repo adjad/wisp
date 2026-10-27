@@ -269,6 +269,19 @@ struct FirstRunSetupChecks {
         check(FirstRunBrain.startStalled(autoStarted: true, failed: false, connecting: false, waited: 0)
               && FirstRunBrain.startStalled(autoStarted: false, failed: true, connecting: false, waited: 0),
               "An automatic start that left nothing running, or a failure, offers Try again")
+        // S1: setup finished, reopened from Permissions…, the person's oMLX off. The wait is
+        // still timed so Try again appears and says oMLX isn't running; Wisp never starts it.
+        let reopened = FirstRunBrain.whileConnecting(setupDone: true, connecting: true)
+        check(!reopened.startsOmlx && reopened.timesGrace, "Finished setup: Try again after the grace, no automatic start")
+        check(FirstRunBrain.whileConnecting(setupDone: false, connecting: true) == (true, true)
+              && FirstRunBrain.whileConnecting(setupDone: false, connecting: false) == (false, false),
+              "Only an unfinished first run starts the person's oMLX by itself")
+        check(FirstRunBrain.from(status: status(bundled: false, running: false), downloads: []).footer(
+                stalled: FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: true,
+                                                    waited: FirstRunBrain.connectGrace)) == .tryAgain
+              && FirstRunBrain.connectingDetail(setupDone: true, stalled: true).hasPrefix("Your oMLX isn't running")
+              && !FirstRunBrain.connectingDetail(setupDone: true, stalled: false).contains("isn't running"),
+              "Finished setup, oMLX off: Try again and a plain line once the grace has passed")
         check(FirstRunBrain.from(status: status(), downloads: []) == .needsDownload(model: gemma, label: "Gemma 4 E4B", sizeGb: 5.5),
               "Nothing installed: offer the download")
         guard case .downloading(_, _, let fraction, let done, let total, let left) =
