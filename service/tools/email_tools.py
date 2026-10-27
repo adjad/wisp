@@ -1405,12 +1405,12 @@ def _norm_mid(value: str) -> str:
 
 
 def _rfc_mid(row: dict) -> str:
-    """The row's RFC Message-ID, or "" when it carries a reader-local token.
+    """The row's Message-ID, or "" when it is only a numeric reader-local token.
 
     Mail's SQLite reader stores an opaque numeric hash in that column; it can
     never equal (or contradict) a Gmail ``id@host`` Message-ID."""
     value = _norm_mid(row.get("message_id", ""))
-    return value if "@" in value else ""
+    return "" if value.lstrip("-").isdigit() else value
 
 
 def _normalized_address(value: str) -> str:
@@ -1641,25 +1641,27 @@ def _collapse_cross_source(rows: list[dict]) -> list[dict]:
 
 
 def _drop_linked_duplicates(rows: list[dict], excluded: frozenset) -> list[dict]:
-    """Rows outside the linked accounts that a linked account already shows."""
-    shown_mids: set[str] = set()
-    shown_times: dict[tuple, list[float]] = {}
+    """Rows outside the linked accounts that a linked account already shows.
+
+    Same sender address and subject, and either the same Message-ID or a close
+    timestamp (without contradicting Message-IDs). A shared Message-ID alone is
+    not enough: one message sent to two addresses is two different mailboxes."""
+    shown: dict[tuple, list[tuple[float, str]]] = {}
     for row in rows:
-        if _account_group(row["account"], row.get("account_id", "")) not in excluded:
-            continue
-        if _rfc_mid(row):
-            shown_mids.add(_rfc_mid(row))
-        if row.get("sender_address"):
-            shown_times.setdefault((row["sender_address"], _subject_key(row.get("subject", ""))),
-                                   []).append(row["ts"])
+        if _account_group(row["account"], row.get("account_id", "")) in excluded and row.get("sender_address"):
+            shown.setdefault((row["sender_address"], _subject_key(row.get("subject", ""))),
+                             []).append((row["ts"], _rfc_mid(row)))
     kept = []
     for row in rows:
         if _account_group(row["account"], row.get("account_id", "")) in excluded:
             continue
-        times = shown_times.get((row.get("sender_address", ""), _subject_key(row.get("subject", ""))), ())
-        if (_rfc_mid(row) and _rfc_mid(row) in shown_mids) or (
-                row.get("sender_address") and
-                any(abs(t - row["ts"]) <= _CROSS_GROUP_WINDOW_SECONDS for t in times)):
+        mid = _rfc_mid(row)
+        if row.get("sender_address") and any(
+                (mid and mid == other_mid) or (
+                    abs(ts - row["ts"]) <= _CROSS_GROUP_WINDOW_SECONDS
+                    and not (mid and other_mid and mid != other_mid))
+                for ts, other_mid in shown.get(
+                    (row["sender_address"], _subject_key(row.get("subject", ""))), ())):
             continue
         kept.append(row)
     return kept
