@@ -125,18 +125,22 @@ def _power() -> tuple[bool, int | None, bool]:
     return "AC Power" in batt or pct is None, int(pct.group(1)) if pct else None, low
 
 
-def level(model_key: str, *, hid_idle_s=None, power=None, now: float | None = None) -> str:
-    """busy, between or away (see the module docstring)."""
+_UNSET = object()
+
+
+def level(model_key: str, *, hid_idle_s=_UNSET, power=_UNSET, now: float | None = None) -> str:
+    """busy, between or away (see the module docstring). Pass the probes in from a
+    worker thread; left unset they are read here (tests and callers off the loop)."""
     if idle.foreground_busy() or idle.in_flight(model_key) > 0:
         return "busy"
     now = time.monotonic() if now is None else now
     last = idle.last_used(model_key)
     if last is not None and last > _last_own_end + 1 and now - last < QUIET_AFTER_USE_S:
         return "busy"
-    on_ac, pct, low = power if power is not None else _cached("power", _power)
+    on_ac, pct, low = _cached("power", _power) if power is _UNSET else power
     if low or (not on_ac and pct is not None and pct < 30):
         return "busy"
-    seconds = hid_idle_s if hid_idle_s is not None else _cached("hid", _hid_idle_s)
+    seconds = _cached("hid", _hid_idle_s) if hid_idle_s is _UNSET else hid_idle_s
     if seconds is not None and seconds >= AWAY_AFTER_S and (on_ac or (pct or 0) > 50):
         return "away"
     return "between"
@@ -208,7 +212,10 @@ async def tick(*, now: float | None = None) -> float:
     if tz is None:
         return FAILURE_GAP_S
     today = datetime.fromtimestamp(now, ZoneInfo(tz)).date()
-    lvl = level(_model_key())
+    # ioreg and pmset run off the event loop: a slow probe must never stall a turn.
+    power = await asyncio.to_thread(_cached, "power", _power)
+    hid = await asyncio.to_thread(_cached, "hid", _hid_idle_s)
+    lvl = level(_model_key(), hid_idle_s=hid, power=power)
     if lvl == "busy":
         return BUSY_GAP_S
     gap = AWAY_GAP_S if lvl == "away" else BETWEEN_GAP_S
