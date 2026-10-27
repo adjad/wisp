@@ -1025,7 +1025,25 @@ async def test_a_good_index_read_clears_the_error(failing, monkeypatch, caplog):
     _index_fails(monkeypatch, "no_mail_index")
     st.set_meta("last_index", "0")
     await runner._run()
-    assert len(_warnings(caplog)) == 2           # recovered, so the next failure is news again
+    assert len(_warnings(caplog)) == 1           # the same reason within the hour: INFO, even after a recovery
+    assert st.health()["last_error"] == "no_mail_index"
+
+
+async def test_an_email_that_keeps_timing_out_between_good_reads_warns_once_an_hour(failing, monkeypatch, caplog):
+    st = failing
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5, ts=3.0), _row(6, ts=2.0), _row(7, ts=1.0)], extract.tier, now=1)
+    answers = iter([bridge.BridgeError("body_timeout"), (None, "not_on_disk"), bridge.BridgeError("body_timeout")])
+
+    async def body(rowid):
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(runner, "read_body", body)
+    for i in range(3):
+        await runner.tick(now=NOW + 1 + i)
+    assert len(_warnings(caplog)) == 1
 
 
 async def test_an_unreadable_index_on_a_body_read_is_recorded(failing, monkeypatch, caplog):
@@ -1054,6 +1072,9 @@ async def test_an_unexpected_error_is_recorded_by_type_only(failing, monkeypatch
     await runner._run()
     assert failing.health()["last_error"] == "unexpected:KeyError"
     assert "dana@example.com" not in str(failing.health())
+    logged = [r for r in caplog.records if r.name == "wisp.mail_memory"]
+    assert any("KeyError at test_mail_memory.py:" in r.getMessage() for r in logged)
+    assert not any("dana@example.com" in r.getMessage() or r.exc_info for r in logged)
 
 
 async def test_failure_records_carry_a_reason_code_never_mail_text(failing, monkeypatch, caplog):

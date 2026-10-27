@@ -40,6 +40,7 @@ import os
 import re
 import subprocess
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -260,8 +261,9 @@ def note_failure(reason: object, *, now: float | None = None, warn: bool = True)
 
 
 def note_ok(*, now: float | None = None) -> None:
-    """A read worked: clear the last error so a stale one never lingers."""
-    global _warned
+    """A read worked: clear the last error so a stale one never lingers. The warning
+    limit is kept: one email that keeps timing out between good reads still warns at
+    most once an hour."""
     now = time.time() if now is None else now
     try:
         st = store()
@@ -272,7 +274,6 @@ def note_ok(*, now: float | None = None) -> None:
         st.set_meta("last_ok_at", str(now))
     except Exception:  # noqa: BLE001
         log.exception("mail memory: could not record the recovery")
-    _warned = None
 
 
 # --- the tick -----------------------------------------------------------------------
@@ -413,7 +414,11 @@ async def _run() -> None:
         note_failure(exc)
         gap = FAILURE_GAP_S
     except Exception as exc:  # noqa: BLE001 — never break the scheduler; try again later
-        log.exception("mail memory tick failed")      # already ERROR-level, so only record it
+        # The type and where it was raised, never the message or a traceback: one built
+        # from mail data would land in moe-backend.log and Report a Problem bundles.
+        frames = traceback.extract_tb(exc.__traceback__)
+        where = f"{Path(frames[-1].filename).name}:{frames[-1].lineno}" if frames else "?"
+        log.error("mail memory tick failed: %s at %s", type(exc).__name__, where)
         note_failure(f"unexpected:{type(exc).__name__}", warn=False)
         gap = FAILURE_GAP_S
     _next_at = time.time() + gap
