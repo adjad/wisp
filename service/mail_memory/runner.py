@@ -6,7 +6,10 @@ index and files costs nothing. Three levels (docs/plans/2026-10-26-email-digest-
 - busy:    a user's turn is in flight, a generation is running, the model was
            used by something else in the last 2 minutes, the fast model isn't
            resident, or the Mac is in Low Power Mode / on battery under 30%.
-           Nothing runs.
+           No email is read and no model call runs. Mail's index is still read
+           when it's due (it costs no model time), so the queue fills, and a
+           missing permission shows, as soon as Wisp starts; only Low Power Mode
+           or battery under 30% skips that too.
 - between: otherwise. One call per tick, at least 90 s apart.
 - away:    no keyboard or mouse for 10+ minutes, on power or battery over 50%.
            Calls run back to back, 5 s apart.
@@ -38,6 +41,7 @@ import os
 import re
 import subprocess
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -258,8 +262,9 @@ def note_failure(reason: object, *, now: float | None = None, warn: bool = True)
 
 
 def note_ok(*, now: float | None = None) -> None:
-    """A read worked: clear the last error so a stale one never lingers."""
-    global _warned
+    """A read worked: clear the last error so a stale one never lingers. The warning
+    limit is kept: one email that keeps timing out between good reads still warns at
+    most once an hour."""
     now = time.time() if now is None else now
     try:
         st = store()
@@ -270,7 +275,6 @@ def note_ok(*, now: float | None = None) -> None:
         st.set_meta("last_ok_at", str(now))
     except Exception:  # noqa: BLE001
         log.exception("mail memory: could not record the recovery")
-    _warned = None
 
 
 # --- the tick -----------------------------------------------------------------------
@@ -310,18 +314,18 @@ async def tick(*, now: float | None = None) -> float:
     power = await asyncio.to_thread(_cached, "power", _power)
     hid = await asyncio.to_thread(_cached, "hid", _hid_idle_s)
     lvl = level(_model_key(), hid_idle_s=hid, power=power)
-    if lvl == "busy":
-        return BUSY_GAP_S
-    gap = AWAY_GAP_S if lvl == "away" else BETWEEN_GAP_S
-    # Read no mail the model can't take: a body read now would only be read again.
-    why_not = await _stand_down()
-    if why_not == "remote_only":
-        return FAILURE_GAP_S
-    if why_not is not None:
-        return BUSY_GAP_S
+    gap = {"busy": BUSY_GAP_S, "away": AWAY_GAP_S}.get(lvl, BETWEEN_GAP_S)
+    from service.inference.remote_policy import remote_only_profile
+    if remote_only_profile() is not None:
+        return FAILURE_GAP_S                      # the walk stands down entirely
 
+    # The index first: it costs no model time, so a busy or absent model never holds
+    # it up (2026-10-27: a morning of use with Brief and proactive work kept the old
+    # order from reading even the index, so nothing queued and nothing failed).
+    on_ac, pct, low = power
+    saving = low or (not on_ac and pct is not None and pct < 30)
     last_index = float(st.meta("last_index") or 0)
-    if now - last_index >= INDEX_EVERY_S:
+    if not saving and now - last_index >= INDEX_EVERY_S:
         rows, capped = await read_index(WINDOW_DAYS)
         excluded = await _gmail_excluded()
         merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
@@ -330,6 +334,15 @@ async def tick(*, now: float | None = None) -> float:
         note_ok(now=now)
         log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
         return gap
+
+    if lvl == "busy":
+        return BUSY_GAP_S
+    # Read no mail the model can't take: a body read now would only be read again.
+    why_not = await _stand_down()
+    if why_not == "remote_only":
+        return FAILURE_GAP_S
+    if why_not is not None:
+        return BUSY_GAP_S
 
     st.expire(today.isoformat())
     row = st.next_pending(now)
@@ -383,11 +396,17 @@ async def tick(*, now: float | None = None) -> float:
     if items is None:
         st.fail(row["key"], "bad_json", now)
         return gap
-    kept, dropped = extract.validate(items, email, tz=tz, today=today)
-    why: dict[str, int] = {}
-    for it in kept:
-        it["important"], it["why"] = importance.judge(it, row)
-        why[it["why"]] = why.get(it["why"], 0) + 1
+    try:
+        kept, dropped = extract.validate(items, email, tz=tz, today=today)
+        why: dict[str, int] = {}
+        for it in kept:
+            it["important"], it["why"] = importance.judge(it, row)
+            why[it["why"]] = why.get(it["why"], 0) + 1
+    except Exception as exc:  # noqa: BLE001 — e.g. a date phrase the resolver can't take
+        # This email's problem only: retire it like any other failure, so it can't
+        # hold the queue (it used to escape tick() and be retried forever).
+        st.fail(row["key"], f"validate:{type(exc).__name__}", now)
+        return gap
     added = st.add_items(row["key"], kept, extract.EXTRACTOR, now)
     st.finish(row["key"], "done", f"model={len(items)} kept={len(kept)} added={added}", email.message_id)
     st.set_meta("last_tick", str(now))
@@ -404,7 +423,11 @@ async def _run() -> None:
         note_failure(exc)
         gap = FAILURE_GAP_S
     except Exception as exc:  # noqa: BLE001 — never break the scheduler; try again later
-        log.exception("mail memory tick failed")      # already ERROR-level, so only record it
+        # The type and where it was raised, never the message or a traceback: one built
+        # from mail data would land in moe-backend.log and Report a Problem bundles.
+        frames = traceback.extract_tb(exc.__traceback__)
+        where = f"{Path(frames[-1].filename).name}:{frames[-1].lineno}" if frames else "?"
+        log.error("mail memory tick failed: %s at %s", type(exc).__name__, where)
         note_failure(f"unexpected:{type(exc).__name__}", warn=False)
         gap = FAILURE_GAP_S
     _next_at = time.time() + gap
