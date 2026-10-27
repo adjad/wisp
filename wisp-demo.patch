@@ -1,0 +1,917 @@
+diff --git a/demo/README.md b/demo/README.md
+new file mode 100644
+index 0000000..5bb6d62
+--- /dev/null
++++ b/demo/README.md
+@@ -0,0 +1,79 @@
++# Proactive demo: your data + synthetic data
++
++Shows Wisp's proactive features in the real Mac app. Your own Calendar, Reminders, Mail and Messages stay
++exactly as they are; synthetic items are added **only inside Wisp's own store**, are hidden outside demo
++mode, and `clear` removes them. Nothing is written to Apple Calendar, Reminders, Mail, Messages or Notes.
++
++## What the audience sees
++
++| Moment | What happens |
++| --- | --- |
++| Synthetic schedule appears beside yours | Today view and the notch chip: a meeting in ~45 min, a reminder due in ~3 min, an exam in 2 days, assignments |
++| Lead-time reminders | Native notifications at T-30m / T-10m, no model involved |
++| Daily brief | Deterministic summary; human mail separated from automated senders |
++| **Caught for you** (new) | `drop` delivers "Mom: Meet me in the Quad at 6PM". It is not on your calendar, so Wisp adds it, notifies you, and says what it added. Heads-ups follow at 30 and 10 minutes before |
++| What it stays quiet about | `drop --preset promo`, `scam`, `known`: promotions, scam shapes and things already on file produce no alert |
++
++## One-time setup on your Mac (about 15 minutes)
++
++The new code is backend code, so the app must be rebuilt once.
++
++```sh
++cd ~/Desktop/MOE_Project            # your checkout
++git apply /path/to/wisp-demo.patch  # the patch that came with this folder
++python3 -m venv .venv && .venv/bin/pip install -r requirements-runtime.txt   # skip if .venv exists
++./scripts/wisp-build all --allow-dirty   # builds a candidate under dist/; installs nothing
++```
++
++`--allow-dirty` is required because the patch is uncommitted. The build does not touch `/Applications`; run the
++candidate straight from `dist/` (below). macOS may ask for Calendar, Contacts, Automation or Full Disk Access
++again for a rebuilt app: grant them once, **before** the demo.
++
++## Before each demo
++
++```sh
++PY=.venv/bin/python
++$PY demo/wisp_demo.py preflight     # lists your REAL items for the next 48 h that will be on screen
++# quit Wisp from the menu bar, then:
++$PY demo/wisp_demo.py setup         # resets and adds the synthetic schedule (run while Wisp is quit)
++$PY demo/wisp_demo.py launch --app dist/<candidate>/Wisp.app
++```
++
++Leave that Terminal window open. Wait ~1 minute for the first sync (the brief and alerts hold back until
++Messages has synced). Then, on cue:
++
++```sh
++$PY demo/wisp_demo.py drop                   # the "Quad at 6PM" text (2 h ahead); alert within ~30 s
++$PY demo/wisp_demo.py drop --preset promo    # silent
++$PY demo/wisp_demo.py drop --preset scam     # silent
++$PY demo/wisp_demo.py drop --preset known    # silent: already on the calendar
++$PY demo/wisp_demo.py drop --minutes 300     # push the stated time further out
++$PY demo/wisp_demo.py status
++```
++
++`drop` prints what it expects ("ALERT" or "silent, and why") before the app reacts.
++
++## After
++
++```sh
++# quit Wisp, then
++$PY demo/wisp_demo.py clear      # removes every synthetic row and the overlay; your data is untouched
++```
++
++Open Wisp normally afterwards (no flags): it behaves exactly as before.
++
++## Know before you present
++
++- **Your real data is on screen.** `preflight` shows the calendar/reminder items. Mail and Messages appear in the
++  brief and chat too. Rehearse with screen sharing off; for a fully synthetic run, export
++  `WISP_HOME=$HOME/.wisp-demo` before `setup` and `launch` (a separate, empty Wisp; permissions and models
++  still come from your Mac).
++- **Real texts can trigger it too.** In demo mode, a real incoming text that states a time within 24 h and is
++  not on your calendar will also raise an alert and add a Wisp commitment (max 3 alerts a day).
++- **Rules are strict on purpose.** It needs an explicit am/pm (or a 24-hour time), only "today / tonight /
++  tomorrow" or no day, a plan word (meet, dinner, class...), and no question or hedge. Anything ambiguous is silent.
++- **Wisp's schedule, not Apple Reminders.** The alert says "Added to Wisp's schedule" because that is what
++  happened. Nothing is mirrored into the Reminders app.
++- **Chat needs oMLX and a model** running as usual. The proactive features above do not.
++- **A rebuilt app has not been run by the developer of this change** (it was written on a Linux machine).
++  Do a full rehearsal, and record a screen capture as a fallback.
+diff --git a/demo/wisp_demo.py b/demo/wisp_demo.py
+new file mode 100644
+index 0000000..ec1af74
+--- /dev/null
++++ b/demo/wisp_demo.py
+@@ -0,0 +1,195 @@
++#!/usr/bin/env python3
++"""Proactive-features demo: your real Wisp data plus clearly synthetic data.
++
++Nothing here writes to Calendar, Reminders, Mail, Messages or Notes. Synthetic
++data lives only inside Wisp's own store, tagged so it is hidden unless the app is
++launched in demo mode and removable in one command:
++
++  * commitments   -> ~/.moe/assistant.db, source="wisp_seed" (visible only when the
++                     backend runs with WISP_QA_SEED=1)
++  * texts         -> ~/.moe/demo/messages.json (an overlay the attention detector
++                     reads next to your real Messages; the Messages cache is untouched)
++
++Commands (run with the repo's Python, e.g. .venv/bin/python demo/wisp_demo.py ...):
++
++  preflight   what REAL items would show on screen in the next 48 hours
++  setup       reset, then add the synthetic schedule
++  launch      start Wisp.app in demo mode (quit Wisp first; --app PATH for a rebuilt app)
++  drop        deliver a synthetic text on cue (default: Mom, "Meet me in the Quad at 6PM")
++  status      what is currently added
++  clear       remove everything this tool added (your own data is never touched)
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import plistlib
++import subprocess
++import sys
++import time
++import urllib.request
++from datetime import datetime, timedelta
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent.parent
++sys.path.insert(0, str(ROOT))
++# The dry runs below should see the synthetic rows, exactly as the demo-mode backend does.
++os.environ["WISP_QA_SEED"] = "1"
++
++from service.assistant.store import QA_SEED_SOURCE, assistant_store  # noqa: E402
++from service.assistant import attention_demo  # noqa: E402
++from service.attention import detectors  # noqa: E402
++from service.paths import MOE_DIR  # noqa: E402
++from tests.fixtures import persona  # noqa: E402
++
++APP = Path("/Applications/Wisp.app")
++
++
++def _fmt_clock(ts: float) -> str:
++    d = datetime.fromtimestamp(ts)
++    hour = d.hour % 12 or 12
++    return f"{hour}{'' if d.minute == 0 else f':{d.minute:02d}'}{'AM' if d.hour < 12 else 'PM'}"
++
++
++def _next_half_hour(ts: float) -> float:
++    d = datetime.fromtimestamp(ts).replace(second=0, microsecond=0)
++    d += timedelta(minutes=30 - d.minute % 30)
++    return d.timestamp()
++
++
++def _real_rows(horizon_h: float = 48) -> list[dict]:
++    now = time.time()
++    with assistant_store._lock:
++        rows = assistant_store._db.execute(
++            "SELECT title, kind, source, when_ts FROM commitments WHERE status='active' AND source <> ? "
++            "AND when_ts >= ? AND when_ts <= ? ORDER BY when_ts", (QA_SEED_SOURCE, now - 300, now + horizon_h * 3600)
++        ).fetchall()
++    return [dict(r) for r in rows]
++
++
++def cmd_preflight(_: argparse.Namespace) -> None:
++    rows = _real_rows()
++    print(f"Wisp data dir: {MOE_DIR}")
++    print(f"\nYour REAL commitments in the next 48 h ({len(rows)}). They will appear next to the demo ones:")
++    for r in rows:
++        print(f"  {datetime.fromtimestamp(r['when_ts']):%a %H:%M}  [{r['source']}]  {r['title']}")
++    if not rows:
++        print("  (none)")
++    print("\nAlso visible in a real-data demo, and not listed here: your real Mail and Messages in the daily")
++    print("brief and chat. In demo mode, a REAL incoming text that states a time within 24 h and is not on")
++    print("your calendar will ALSO trigger an alert and add a commitment. Review before you share your screen.")
++    print("For a fully synthetic run, start with WISP_HOME pointing at an empty folder instead.")
++
++
++def cmd_setup(_: argparse.Namespace) -> None:
++    cmd_clear(_, quiet=True)
++    n = assistant_store.sync_source(QA_SEED_SOURCE, persona.commitment_rows(time.time()))
++    print(f"added {n} synthetic commitments (source={QA_SEED_SOURCE!r}); they are hidden outside demo mode")
++    print("next: quit Wisp, run `launch`, then use `drop` during the demo")
++
++
++def cmd_clear(_: argparse.Namespace, quiet: bool = False) -> None:
++    with assistant_store._lock:
++        ids = [r["id"] for r in assistant_store._db.execute(
++            "SELECT id FROM commitments WHERE source=?", (QA_SEED_SOURCE,)).fetchall()]
++        for cid in ids:
++            assistant_store._db.execute("DELETE FROM notify_log WHERE commitment_id=?", (cid,))
++        assistant_store._db.execute("DELETE FROM commitments WHERE source=?", (QA_SEED_SOURCE,))
++        dropped = 0
++        for row in assistant_store._db.execute(
++                "SELECT id, kind, payload, dedupe_key FROM assistant_events WHERE state='pending'").fetchall():
++            try:
++                cid = json.loads(row["payload"]).get("commitment_id")
++            except ValueError:
++                cid = None
++            if cid in ids or (row["dedupe_key"] or "").startswith(attention_demo.KEY_PREFIX):
++                assistant_store._db.execute("DELETE FROM assistant_events WHERE id=?", (row["id"],))
++                dropped += 1
++        # Finished alerts must go too, or a repeat rehearsal would be silenced by their dedupe keys.
++        assistant_store._db.execute("DELETE FROM assistant_events WHERE dedupe_key LIKE ?",
++                                    (attention_demo.KEY_PREFIX + "%",))
++        assistant_store._db.commit()
++    overlay = attention_demo.clear_overlay()
++    if not quiet:
++        print(f"removed {len(ids)} synthetic commitments, {dropped} pending events, "
++              f"overlay messages: {'yes' if overlay else 'none'}")
++
++
++def cmd_status(_: argparse.Namespace) -> None:
++    with assistant_store._lock:
++        n = assistant_store._db.execute("SELECT COUNT(*) FROM commitments WHERE source=?",
++                                        (QA_SEED_SOURCE,)).fetchone()[0]
++    overlay = attention_demo.load_overlay()
++    print(f"synthetic commitments: {n}")
++    print(f"overlay messages:      {len(overlay)} ({attention_demo.overlay_path()})")
++    try:
++        with urllib.request.urlopen("http://127.0.0.1:8765/mode", timeout=2) as r:
++            print(f"backend on :8765:      reachable (HTTP {r.status})")
++    except Exception as exc:  # noqa: BLE001
++        print(f"backend on :8765:      not reachable ({type(exc).__name__}); launch Wisp in demo mode")
++    print("demo flags in THIS shell: "
++          f"WISP_ATTENTION_DEMO={os.environ.get('WISP_ATTENTION_DEMO', 'unset')} "
++          "(`launch` sets both flags for the app itself)")
++
++
++PRESETS = {
++    "quad": ("Mom", lambda t: f"Meet me in the Quad at {t}", "ALERT: stated, soon, not on file"),
++    "dinner": ("Priya", lambda t: f"Dinner at {t}, I booked a table", "ALERT: stated, soon, not on file"),
++    "known": ("Priya", lambda t: f"Dinner with Priya at {t}",
++              "silent: already on your calendar (drop adds a matching synthetic event first)"),
++    "promo": ("SHOP", lambda t: "50% OFF today only! Reply STOP to opt out", "silent: promotional"),
++    "scam": ("Parcel", lambda t: f"Your package is on hold. Verify your address at https://parcel.example/v by {t}",
++             "silent: scam shape"),
++}
++
++
++def cmd_drop(a: argparse.Namespace) -> None:
++    sender, make, _expect = PRESETS[a.preset]
++    sender = a.sender or sender
++    when = _next_half_hour(time.time() + a.minutes * 60)
++    text = a.text or make(_fmt_clock(when))
++    if a.preset == "known" and not a.text:
++        assistant_store.add_manual("Dinner with Priya", when, kind="event", source=QA_SEED_SOURCE)
++    row = attention_demo.add_overlay_message(sender, text)
++    item = [i for i in attention_demo.load_overlay() if i.id == attention_demo.OVERLAY_ID_PREFIX + row["id"]]
++    hits = detectors.detect(item, now=time.time(), commitments=assistant_store.active_future(time.time(), 3))
++    print(f'delivered: {sender}: "{text}"')
++    print("expected: " + (f"ALERT within ~30 s ({_fmt_clock(hits[0].when_ts)} added to Wisp's schedule)"
++                          if hits else "no alert (" + (PRESETS[a.preset][2] if not a.text else "by the rules") + ")"))
++
++
++def cmd_launch(a: argparse.Namespace) -> None:
++    app = Path(a.app).expanduser()
++    if subprocess.run(["pgrep", "-x", "Wisp"], capture_output=True).returncode == 0:
++        sys.exit("Wisp is already running. Quit it first (menu bar icon -> Quit), then run launch again.")
++    if not (app / "Contents" / "Info.plist").exists():
++        sys.exit(f"no Wisp.app at {app}; pass --app PATH (e.g. the one built under dist/)")
++    info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
++    exe = app / "Contents" / "MacOS" / info["CFBundleExecutable"]
++    env = {**os.environ, "WISP_QA_SEED": "1", "WISP_ATTENTION_DEMO": "1"}
++    print(f"launching {exe} in demo mode (leave this Terminal window open)")
++    os.execve(str(exe), [str(exe)], env)
++
++
++def main() -> None:
++    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    sub = ap.add_subparsers(dest="cmd", required=True)
++    for name, fn in (("preflight", cmd_preflight), ("setup", cmd_setup),
++                     ("status", cmd_status), ("clear", cmd_clear)):
++        sub.add_parser(name).set_defaults(fn=fn)
++    launch = sub.add_parser("launch")
++    launch.add_argument("--app", default=str(APP), help="Wisp.app to run (default /Applications/Wisp.app)")
++    launch.set_defaults(fn=cmd_launch)
++    drop = sub.add_parser("drop")
++    drop.add_argument("--preset", choices=sorted(PRESETS), default="quad")
++    drop.add_argument("--sender")
++    drop.add_argument("--text")
++    drop.add_argument("--minutes", type=int, default=120, help="how far ahead the stated time is (default 120)")
++    drop.set_defaults(fn=cmd_drop)
++    args = ap.parse_args()
++    args.fn(args)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/service/assistant/attention_demo.py b/service/assistant/attention_demo.py
+new file mode 100644
+index 0000000..8efbe7b
+--- /dev/null
++++ b/service/assistant/attention_demo.py
+@@ -0,0 +1,166 @@
++"""Runtime for ``uncaptured_commitment``: read messages, detect, add, alert.
++
++Lives beside the store it writes; the pure detector is ``service.attention.detectors``
++(the Slice 0 package may not import ``service.assistant``).
++
++Off unless ``WISP_ATTENTION_DEMO=1``. When on, each scheduler tick runs the pure
++detector over (a) the current-launch Messages feed and (b) an optional local
++overlay of synthetic messages, and for every hit it:
++
++1. adds a commitment to Wisp's own store (never Apple Reminders or Calendar), and
++2. publishes a ``reminder``-shaped hub event, so the existing app notification
++   path shows it ("Mom: Meet me in the Quad at 6PM" / "Not on your calendar...").
++
++Overlay messages live in ``<WISP_HOME>/demo/messages.json``. They are never written
++into the Messages cache (the Swift reader replaces that wholesale), and the
++commitments they produce use the QA seed source, so they are hidden unless
++``WISP_QA_SEED=1`` and ``wisp_demo.py clear`` removes them.
++
++Quiet by default: at most ``DAILY_CAP`` alerts per local day, one per message.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import time
++from datetime import datetime
++from pathlib import Path
++
++from service.attention.corpus import Item
++from service.attention.detectors import REASON, Candidate, detect
++from service.paths import MOE_DIR
++
++DAILY_CAP = 3
++LIVE_WINDOW_S = 12 * 3600
++KEY_PREFIX = "attention:"
++OVERLAY_ID_PREFIX = "demo:"
++
++
++def enabled() -> bool:
++    return os.environ.get("WISP_ATTENTION_DEMO") == "1"
++
++
++def overlay_path() -> Path:
++    return MOE_DIR / "demo" / "messages.json"
++
++
++# --- overlay (synthetic messages) -------------------------------------------
++
++def load_overlay(path: Path | None = None) -> list[Item]:
++    path = path or overlay_path()
++    try:
++        rows = json.loads(path.read_text("utf-8"))
++    except (OSError, ValueError):
++        return []
++    items: list[Item] = []
++    for row in rows if isinstance(rows, list) else []:
++        try:
++            items.append(Item(id=OVERLAY_ID_PREFIX + str(row["id"]), source="messages",
++                              ts=float(row["ts"]), direction=str(row.get("direction", "incoming")),
++                              sender=str(row["sender"]), conversation=str(row.get("conversation", row["sender"])),
++                              text=str(row["text"])))
++        except (KeyError, TypeError, ValueError):
++            continue
++    return items
++
++
++def add_overlay_message(sender: str, text: str, *, ts: float | None = None,
++                        direction: str = "incoming", path: Path | None = None) -> dict:
++    path = path or overlay_path()
++    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
++    try:
++        rows = json.loads(path.read_text("utf-8"))
++    except (OSError, ValueError):
++        rows = []
++    row = {"id": f"{int(time.time() * 1000)}-{len(rows)}", "sender": sender, "conversation": sender,
++           "direction": direction, "text": text, "ts": ts if ts is not None else time.time()}
++    rows.append(row)
++    tmp = path.with_suffix(".tmp")
++    tmp.write_text(json.dumps(rows, indent=2), "utf-8")
++    os.chmod(tmp, 0o600)
++    tmp.replace(path)
++    return row
++
++
++def clear_overlay(path: Path | None = None) -> bool:
++    path = path or overlay_path()
++    try:
++        path.unlink()
++        return True
++    except OSError:
++        return False
++
++
++# --- live feed --------------------------------------------------------------
++
++def live_items(now: float) -> list[Item]:
++    """Recent incoming Messages from the current launch. A restored cache never counts."""
++    try:
++        from service.tools.imessage_tools import structured_messages_snapshot
++        snap = structured_messages_snapshot()
++    except Exception:  # noqa: BLE001 — the feed is optional
++        return []
++    if snap.get("state") != "ready":
++        return []
++    items: list[Item] = []
++    for r in snap.get("records", []):
++        try:
++            ts = float(r["timestamp"])
++            if now - ts > LIVE_WINDOW_S or r.get("direction") != "incoming":
++                continue
++            items.append(Item(id="msg:" + str(r["identity"]), source="messages", ts=ts,
++                              direction="incoming", sender=str(r["sender"]),
++                              conversation=str(r.get("conversation") or r["sender"]), text=str(r["text"])))
++        except (KeyError, TypeError, ValueError):
++            continue
++    return items
++
++
++# --- tick -------------------------------------------------------------------
++
++def _key(item_id: str) -> str:
++    return KEY_PREFIX + hashlib.sha256(item_id.encode()).hexdigest()[:24]
++
++
++def _sent_today(store, now: float) -> int:
++    midnight = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
++    with store._lock:
++        return store._db.execute(
++            "SELECT COUNT(*) FROM assistant_events WHERE dedupe_key LIKE ? AND created_at >= ?",
++            (KEY_PREFIX + "%", midnight)).fetchone()[0]
++
++
++def _headline(c: Candidate, limit: int = 90) -> str:
++    text = f"{c.sender}: {c.quote}"
++    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
++
++
++async def tick(store, hub, *, now: float | None = None, items: list[Item] | None = None) -> list[dict]:
++    from service.assistant.reminders import _humanize
++    from service.assistant.store import MANUAL_SOURCE, QA_SEED_SOURCE
++
++    now = now if now is not None else time.time()
++    pool = items if items is not None else live_items(now) + load_overlay()
++    if not pool:
++        return []
++    published: list[dict] = []
++    budget = DAILY_CAP - _sent_today(store, now)
++    for cand in detect(pool, now=now, commitments=store.active_future(now, horizon_days=3)):
++        if budget <= 0:
++            break
++        key = _key(cand.item_id)
++        if store.event_by_key(key):
++            continue
++        source = QA_SEED_SOURCE if cand.item_id.startswith(OVERLAY_ID_PREFIX) else MANUAL_SOURCE
++        context = "Not on your calendar or reminders. Added to Wisp's schedule."
++        row = store.add_manual(cand.quote, cand.when_ts, kind="event", context=context, source=source)
++        event = await hub.publish({
++            "type": "reminder", "commitment_id": row["id"], "kind": "event",
++            "title": _headline(cand), "context": context, "when_ts": cand.when_ts,
++            "stage": "caught", "when_label": _humanize(cand.when_ts - now),
++            "reason": REASON, "quote": cand.quote, "sender": cand.sender, "why": cand.rule,
++        }, dedupe_key=key)
++        published.append(event)
++        budget -= 1
++    return published
+diff --git a/service/assistant/scheduler.py b/service/assistant/scheduler.py
+index 80370ed..6bf1121 100644
+--- a/service/assistant/scheduler.py
++++ b/service/assistant/scheduler.py
+@@ -93,6 +93,14 @@ async def run() -> None:
+                 await hub.publish(note)
+         except Exception:  # noqa: BLE001
+             pass
++        # Proactive attention (off unless WISP_ATTENTION_DEMO=1): a text that states
++        # something coming up soon which is not on file becomes a commitment + alert.
++        try:
++            from service.assistant import attention_demo as attention_runtime
++            if attention_runtime.enabled():
++                await attention_runtime.tick(assistant_store, hub)
++        except Exception:  # noqa: BLE001 — never break the loop
++            pass
+         # once-daily brief at the configured hour (8am or 8pm), or first tick
+         # after if Wisp wasn't running at that moment.
+         # The brief itself is now a deterministic render (no generation — see
+diff --git a/service/assistant/store.py b/service/assistant/store.py
+index 35342b4..0c5588c 100644
+--- a/service/assistant/store.py
++++ b/service/assistant/store.py
+@@ -1433,7 +1433,7 @@ class AssistantStore:
+                 "total": state["total"], "stored": state["stored"]}
+ 
+     def add_manual(self, title: str, when_ts: float, kind: str = "reminder",
+-                   context: str | None = None) -> dict:
++                   context: str | None = None, *, source: str = MANUAL_SOURCE) -> dict:
+         cid = uuid.uuid4().hex
+         now = time.time()
+         with self._lock:
+@@ -1441,7 +1441,7 @@ class AssistantStore:
+                 "INSERT INTO commitments (id, source, source_id, kind, title, context, "
+                 "when_ts, status, confidence, created_at, updated_at) "
+                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+-                (cid, "manual", cid, kind, title, context, when_ts, "active", 1.0, now, now))
++                (cid, source, cid, kind, title, context, when_ts, "active", 1.0, now, now))
+             self._db.commit()
+         return self.get(cid)
+ 
+diff --git a/service/attention/detectors.py b/service/attention/detectors.py
+new file mode 100644
+index 0000000..ca34cef
+--- /dev/null
++++ b/service/attention/detectors.py
+@@ -0,0 +1,171 @@
++"""Rule-based detector for the one notifying reason code: ``uncaptured_commitment``.
++
++A person texts something that is coming up soon ("Meet me in the Quad at 6PM"),
++it is in neither Calendar nor Reminders, and it is not promotional. Pure code, no
++model, no I/O: callers pass messages, the clock and the commitments on file.
++
++Fail closed. Anything ambiguous (no am/pm, a question, a hedge, two competing
++times, a weekday name, a promo/scam shape, an unresolvable sender) yields no
++candidate rather than a confident alert. Every candidate carries a verbatim quote
++that is a substring of the message, located by code.
++
++The dates it resolves are deliberately narrow: a clock time with an explicit
++meridiem (or a 24-hour time past 12), optionally with "today"/"tonight"/"tomorrow".
++With no day word, the next occurrence of that time after the message arrived.
++"""
++from __future__ import annotations
++
++import re
++from dataclasses import dataclass
++from datetime import datetime, timedelta
++
++from service.attention.corpus import Item
++
++REASON = "uncaptured_commitment"
++HORIZON_S = 24 * 3600          # "soon"
++KNOWN_NEAR_S = 15 * 60         # a commitment this close is the same thing
++KNOWN_RELATED_S = 60 * 60      # ...or this close when it shares a content word
++
++_AMPM = re.compile(r"(?<![\w:])(?P<h>1[0-2]|0?[1-9])(?::(?P<m>[0-5]\d))?\s*(?P<ap>[ap])\.?m\.?(?![a-z])", re.I)
++_H24 = re.compile(r"(?<![\w:])(?P<h>1[3-9]|2[0-3]|0\d):(?P<m>[0-5]\d)(?![\w:])")
++_NOON = re.compile(r"\bnoon\b", re.I)
++_TOMORROW = re.compile(r"\b(?:tomorrow|tmrw|tmr)\b", re.I)
++_TODAY = re.compile(r"\b(?:today|tonight|this\s+(?:morning|afternoon|evening))\b", re.I)
++# A day we do not resolve (weekday, month/day, "next week"): never guess.
++_OTHER_DAY = re.compile(
++    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tues?|wed|thurs?|fri|sat|sun)\b"
++    r"|\bnext\s+(?:week|weekend|month|year)\b"
++    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b"
++    r"|\b\d{1,2}/\d{1,2}\b", re.I)
++_HEDGE = re.compile(
++    r"\?|\b(?:maybe|perhaps|probably|possibly|might|could\s+we|can\s+we|should\s+we|"
++    r"if\s+(?:you|we|i|it)|tentative|tbd|tbc|or\s+so|around|about|approx\w*|roughly|"
++    r"cancel(?:l?ed)?|resched\w*|moved|postponed|not\s+going|can'?t\s+make\s+it)\b", re.I)
++# What makes a time a plan rather than a passing mention.
++_PLAN = re.compile(
++    r"\b(?:meet|meeting|see\s+you|pick\s*(?:you\s*)?up|drop\s*(?:you\s*)?off|dinner|lunch|"
++    r"breakfast|brunch|coffee|drinks|class|lecture|exam|quiz|interview|appointment|flight|"
++    r"reservation|come\s+over|come\s+by|call\s+me|game|practice|rehearsal|party|"
++    r"be\s+there|be\s+at|show\s+up|leaving|leave|there|at\s+the)\b", re.I)
++_PROMO = re.compile(
++    r"https?://|www\.|\b\d{1,3}\s?%\s*off\b|\breply\s+stop\b|\bopt\s*out\b|\bunsubscribe\b|"
++    r"\bfree\b|\bwinner\b|\bcongratulations\b|\bact\s+now\b|\blimited\s+time\b|\bverify\b|"
++    r"\bclick\b|\bgift\s+card\b|\bclaim\b|\bpromo\w*|\bcoupon\b|\bsale\b|\bdiscount\b|"
++    r"\byour\s+(?:package|account|order|parcel)\b|\bdelivery\b|\bpassword\b|\bone[- ]time\s+code\b|"
++    r"\bverification\s+code\b", re.I)
++_STOP = {"the", "and", "with", "for", "you", "your", "that", "this", "have", "will", "from",
++         "meet", "call", "see", "at", "in", "me", "to", "be", "a", "an", "of", "on", "pm", "am"}
++
++
++@dataclass(frozen=True)
++class Candidate:
++    reason: str
++    item_id: str
++    sender: str
++    conversation: str
++    when_ts: float
++    quote: str          # verbatim substring of the message text
++    text: str
++    rule: str           # which rule fired, for the "why" line
++
++
++def is_promo_or_scam(sender: str, text: str) -> bool:
++    s = (sender or "").strip()
++    if _PROMO.search(text or ""):
++        return True
++    # Short codes and alphanumeric sender IDs ("SHOP", "48921") are businesses, not people.
++    if re.fullmatch(r"\+?\d{3,7}", s):
++        return True
++    return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9\-]{2,10}", s)) and not s.isdigit() and s == s.upper()
++
++
++def _clock(text: str) -> tuple[int, int, re.Match] | None:
++    """The single unambiguous clock time in ``text``; None if none or competing."""
++    found: list[tuple[int, int, re.Match]] = []
++    for m in _AMPM.finditer(text):
++        hour = int(m["h"]) % 12 + (12 if m["ap"].lower() == "p" else 0)
++        found.append((hour, int(m["m"] or 0), m))
++    for m in _H24.finditer(text):
++        found.append((int(m["h"]), int(m["m"]), m))
++    for m in _NOON.finditer(text):
++        found.append((12, 0, m))
++    if len({(h, mi) for h, mi, _ in found}) != 1:
++        return None
++    return found[0]
++
++
++def _sentence(text: str, match: re.Match) -> str:
++    """The sentence holding the time, as an exact substring of ``text``."""
++    start = max((text.rfind(c, 0, match.start()) for c in ".!?\n"), default=-1) + 1
++    # "6 p.m." swallows its closing period into the match; that period still ends the sentence.
++    after = match.end() - 1 if match[0].endswith(".") else match.end()
++    ends = [i for i in (text.find(c, after) for c in ".!?\n") if i != -1]
++    end = min(ends) if ends else len(text)
++    return text[start:end].strip()
++
++
++def resolve_when(text: str, sent_at: float) -> tuple[float, re.Match] | None:
++    """Resolve the stated time to an epoch, or None when it is not unambiguous."""
++    if _HEDGE.search(text) or _OTHER_DAY.search(text):
++        return None
++    clock = _clock(text)
++    if clock is None:
++        return None
++    hour, minute, match = clock
++    if _TOMORROW.search(text) and _TODAY.search(text):
++        return None
++    base = datetime.fromtimestamp(sent_at)
++    day = base.date() + timedelta(days=1 if _TOMORROW.search(text) else 0)
++    when = datetime(day.year, day.month, day.day, hour, minute)
++    if not _TOMORROW.search(text) and not _TODAY.search(text) and when <= base:
++        when += timedelta(days=1)       # no day word: the next time it is that time
++    elif when <= base:
++        return None                     # "today at 9am" sent at 10am is not a future plan
++    return when.timestamp(), match
++
++
++def _words(text: str) -> set[str]:
++    return {w for w in re.findall(r"[a-z]{4,}", (text or "").lower()) if w not in _STOP}
++
++
++def already_on_file(when_ts: float, text: str, commitments: list[dict]) -> bool:
++    mine = _words(text)
++    for c in commitments:
++        w = c.get("when_ts")
++        if w is None or c.get("status", "active") != "active":
++            continue
++        gap = abs(float(w) - when_ts)
++        if gap <= KNOWN_NEAR_S or (gap <= KNOWN_RELATED_S and mine & _words(c.get("title", ""))):
++            return True
++    return False
++
++
++def detect(items: list[Item], *, now: float, commitments: list[dict],
++           horizon_s: float = HORIZON_S) -> list[Candidate]:
++    """Candidates for ``items`` (oldest first). ``commitments`` is what is on file."""
++    out: list[Candidate] = []
++    seen: list[tuple[float, str]] = []
++    for item in sorted(items, key=lambda i: i.ts):
++        text = item.text or ""
++        if item.direction != "incoming" or not text.strip() or not item.sender.strip():
++            continue
++        if is_promo_or_scam(item.sender, text) or not _PLAN.search(text):
++            continue
++        resolved = resolve_when(text, item.ts)
++        if resolved is None:
++            continue
++        when_ts, match = resolved
++        if not (now <= when_ts <= now + horizon_s):
++            continue
++        quote = _sentence(text, match)
++        if not quote or quote not in text:
++            continue                    # grounded or absent
++        if already_on_file(when_ts, text, commitments):
++            continue
++        # The same plan restated in a thread is one alert.
++        if any(abs(when_ts - w) < 60 and item.conversation == c for w, c in seen):
++            continue
++        seen.append((when_ts, item.conversation))
++        out.append(Candidate(REASON, item.id, item.sender, item.conversation, when_ts, quote, text,
++                             "stated a time that is coming up and is not on your calendar or reminders"))
++    return out
+diff --git a/tests/test_attention_detector.py b/tests/test_attention_detector.py
+new file mode 100644
+index 0000000..79e83dd
+--- /dev/null
++++ b/tests/test_attention_detector.py
+@@ -0,0 +1,235 @@
++"""uncaptured_commitment: detector rules and the runtime tick. Synthetic data only."""
++import asyncio
++import json
++from datetime import datetime, timedelta
++
++import pytest
++
++from service.attention import detectors
++from service.assistant import attention_demo as runtime
++from service.attention.corpus import Item
++
++# A fixed local "now": 2026-10-10 15:00. Messages arrive a minute earlier.
++NOW = datetime(2026, 10, 10, 15, 0).timestamp()
++
++
++def msg(text, *, sender="Mom", direction="incoming", ts=NOW - 60, id="m1", conv=None):
++    return Item(id=id, source="messages", ts=ts, direction=direction, sender=sender,
++                conversation=conv or sender, text=text)
++
++
++def run(items, commitments=()):
++    return detectors.detect(items, now=NOW, commitments=list(commitments))
++
++
++def at(hour, minute=0, day=0):
++    d = datetime(2026, 10, 10) + timedelta(days=day)
++    return d.replace(hour=hour, minute=minute).timestamp()
++
++
++# ------------------------------------------------------------------ positives
++
++def test_catches_the_headline_case_and_quotes_it_verbatim():
++    [c] = run([msg("Meet me in the Quad at 6PM")])
++    assert c.reason == "uncaptured_commitment"
++    assert c.when_ts == at(18)
++    assert c.quote == "Meet me in the Quad at 6PM" and c.quote in c.text
++    assert c.sender == "Mom"
++
++
++def test_quote_is_the_sentence_with_the_time():
++    [c] = run([msg("Hey! Dinner at 7:30pm. Bring the blue folder")])
++    assert c.quote == "Dinner at 7:30pm" and c.when_ts == at(19, 30)
++
++
++def test_tomorrow_and_24_hour_forms():
++    [c] = run([msg("lunch tomorrow at 12pm", ts=NOW - 60)])
++    assert c.when_ts == at(12, day=1)
++    [c] = run([msg("see you at 16:30")])
++    assert c.when_ts == at(16, 30)
++
++
++def test_bare_time_that_already_passed_today_means_tomorrow():
++    # 9am is behind us, so the next 9am is tomorrow: 18 h away, inside the horizon.
++    [c] = run([msg("class at 9am")])
++    assert c.when_ts == at(9, day=1)
++
++
++# ------------------------------------------------------------------ negatives
++
++@pytest.mark.parametrize("text", [
++    "Dinner at 7:30?",                         # a question is not a plan
++    "meet me at 7",                            # no am/pm: ambiguous
++    "maybe lunch at 12pm",                     # hedge
++    "meet at 6pm or 7pm",                      # competing times
++    "coffee on Friday at 5pm",                 # a day we do not resolve
++    "dinner 12/11 at 6pm",                     # a date we do not resolve
++    "meet me next week at 6pm",
++    "lol",
++    "   ",
++    "thanks, I'll be there",                   # no time at all
++    "the market closes at 6pm",                # a time, but no plan cue
++])
++def test_does_not_alert(text):
++    assert run([msg(text)]) == []
++
++
++@pytest.mark.parametrize("sender,text", [
++    ("SHOP", "50% OFF today only! meet at 6pm in store"),
++    ("Parcel", "Your package is on hold. Verify at https://x.example dinner 6pm"),
++    ("48921", "lunch deal at 12pm"),                      # short code
++    ("PROMOS", "come over at 6pm"),                       # business sender id
++    ("Mom", "Call me at 6pm https://example.test/win"),   # link
++])
++def test_promo_and_scam_never_alert(sender, text):
++    assert run([msg(text, sender=sender)]) == []
++
++
++def test_outgoing_messages_are_not_candidates():
++    assert run([msg("I'll meet you at 6pm", direction="outgoing")]) == []
++
++
++def test_not_soon_and_already_past_are_dropped():
++    assert run([msg("dinner tomorrow at 11pm")]) == []                  # 32 h out
++    assert run([msg("meet me today at 1pm", ts=NOW - 3600)]) == []     # already past
++    assert run([msg("meet at 6pm", ts=NOW - 3 * 86400)]) == []          # stale message
++
++
++def test_restating_the_same_plan_is_one_alert():
++    items = [msg("meet me at 6pm", id="a", ts=NOW - 300), msg("Quad at 6pm, dinner after", id="b")]
++    assert len(run(items)) == 1
++
++
++# ------------------------------------------------------------------ on file
++
++def test_known_commitment_suppresses_the_alert():
++    on_file = [{"title": "Quad pickup", "when_ts": at(18, 5), "status": "active"}]
++    assert run([msg("Meet me in the Quad at 6PM")], on_file) == []
++
++
++def test_related_title_within_an_hour_suppresses_but_unrelated_does_not():
++    related = [{"title": "Dinner with Mom", "when_ts": at(18, 45), "status": "active"}]
++    unrelated = [{"title": "Dentist", "when_ts": at(18, 45), "status": "active"}]
++    assert run([msg("Dinner with Mom at 6pm")], related) == []
++    assert len(run([msg("Dinner with Mom at 6pm")], unrelated)) == 1
++
++
++def test_inactive_commitment_does_not_suppress():
++    done = [{"title": "Quad", "when_ts": at(18), "status": "done"}]
++    assert len(run([msg("Meet me in the Quad at 6PM")], done)) == 1
++
++
++# ------------------------------------------------------------------ runtime
++
++class FakeHub:
++    def __init__(self):
++        self.events = []
++
++    async def publish(self, event, *, dedupe_key=None, **_):
++        self.events.append((event, dedupe_key))
++        return event
++
++
++@pytest.fixture
++def store(tmp_path):
++    from service.assistant.store import AssistantStore
++    return AssistantStore(tmp_path / "assistant.db")
++
++
++def tick(store, hub, items, now=NOW):
++    return asyncio.run(runtime.tick(store, hub, now=now, items=items))
++
++
++def test_tick_adds_a_commitment_and_publishes_one_reminder_shaped_alert(store):
++    hub = FakeHub()
++    [event] = tick(store, hub, [msg("Meet me in the Quad at 6PM", id="demo:1")])
++    assert event["type"] == "reminder" and event["stage"] == "caught"
++    assert event["title"] == "Mom: Meet me in the Quad at 6PM"
++    assert event["when_ts"] == at(18) and event["when_label"] == "in 3h"
++    assert event["reason"] == "uncaptured_commitment" and event["quote"] == "Meet me in the Quad at 6PM"
++    # the app's reminder handler needs these non-empty
++    assert all(event[k] for k in ("title", "commitment_id", "stage"))
++    row = store.get(event["commitment_id"])
++    assert row["kind"] == "event" and row["when_ts"] == at(18)
++    assert row["source"] == "wisp_seed"        # overlay-derived: hidden without WISP_QA_SEED, clearable
++
++
++def test_live_message_is_stored_as_manual(store):
++    [event] = tick(store, FakeHub(), [msg("Meet me in the Quad at 6PM", id="msg:abc")])
++    assert store.get(event["commitment_id"])["source"] == "manual"
++
++
++class RealishHub(FakeHub):
++    """Persists like the real hub, so the dedupe key is honoured."""
++
++    def __init__(self, store):
++        super().__init__()
++        self.store = store
++
++    async def publish(self, event, *, dedupe_key=None, **_):
++        self.store.enqueue_event(event, dedupe_key=dedupe_key)
++        return await super().publish(event, dedupe_key=dedupe_key)
++
++
++def test_tick_is_idempotent(store):
++    hub = RealishHub(store)
++    items = [msg("Meet me in the Quad at 6PM", id="demo:1")]
++    assert len(tick(store, hub, items)) == 1
++    assert tick(store, hub, items) == []
++    assert len(hub.events) == 1
++
++
++def test_the_new_commitment_makes_the_message_known(store, monkeypatch):
++    monkeypatch.setenv("WISP_QA_SEED", "1")      # overlay commitments are seed rows
++    hub = FakeHub()                              # no persisted key: only "known" can stop it
++    items = [msg("Meet me in the Quad at 6PM", id="demo:1")]
++    assert len(tick(store, hub, items)) == 1
++    assert tick(store, hub, items) == []
++
++
++def test_dedupe_key_blocks_a_repeat_even_if_the_commitment_is_deleted(store):
++    hub = RealishHub(store)
++    items = [msg("Meet me in the Quad at 6PM", id="demo:1")]
++    [event] = tick(store, hub, items)
++    store.delete(event["commitment_id"])
++    assert tick(store, hub, items) == []
++
++
++def test_daily_cap(store):
++    hub = RealishHub(store)
++    hours = [16, 18, 20, 22]
++    items = [msg(f"dinner at {h - 12}pm", id=f"demo:{h}", conv=f"c{h}", ts=NOW - 60 + h) for h in hours]
++    # spaced more than an hour apart, with distinct conversations
++    assert len(tick(store, hub, items)) == runtime.DAILY_CAP
++
++
++def test_overlay_round_trip(tmp_path):
++    path = tmp_path / "demo" / "messages.json"
++    assert runtime.load_overlay(path) == []
++    row = runtime.add_overlay_message("Mom", "Meet me in the Quad at 6PM", ts=NOW - 5, path=path)
++    [item] = runtime.load_overlay(path)
++    assert item.id == "demo:" + row["id"] and item.sender == "Mom" and item.ts == NOW - 5
++    assert oct(path.stat().st_mode & 0o777) == "0o600"
++    path.write_text("not json")
++    assert runtime.load_overlay(path) == []
++    assert runtime.clear_overlay(path) is True and runtime.clear_overlay(path) is False
++
++
++def test_disabled_by_default(monkeypatch):
++    monkeypatch.delenv("WISP_ATTENTION_DEMO", raising=False)
++    assert runtime.enabled() is False
++    monkeypatch.setenv("WISP_ATTENTION_DEMO", "1")
++    assert runtime.enabled() is True
++
++
++def test_slice0_fixture_messages_behave(tmp_path):
++    """The Slice 0 fixtures: Mom's Quad text alerts; promo, scam, 'lol' and 'Exam is Friday' do not."""
++    from pathlib import Path
++    from service.attention import corpus
++    items, _ = corpus.parse_messages(
++        (Path(__file__).resolve().parents[1] / "test_fixtures" / "attention" / "messages.txt").read_text())
++    shifted = [Item(i.id, i.source, NOW - 60 - n, i.direction, i.sender, i.conversation, i.text)
++               for n, i in enumerate(items)]
++    hits = detectors.detect(shifted, now=NOW, commitments=[])
++    assert [h.quote for h in hits] == ["Meet me in the Quad at 6PM"]
++    json.dumps([h.__dict__ for h in hits])

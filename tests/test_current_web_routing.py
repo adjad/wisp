@@ -2116,5 +2116,16 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(forbidden & set(d.tool_subset or ()))
             self.assertTrue(forbidden <= d.forbidden_tools)
 
+    async def test_personal_should_questions_never_web_search(self) -> None:
+        """"What should I do today" is the user's own agenda, not public information."""
+        for prompt in ("what should I be doing today", "what should I do today",
+                       "what do I need to do today", "what ought I to do today"):
+            with patch("service.router.router.role_to_model", return_value="Huihui-Ornith-test"):
+                decision = await route(prompt)
+            self.assertNotIn(("web_search", {"query": prompt}), decision.direct_calls or [], prompt)
+            self.assertNotEqual(decision.tool_subset, ["web_search"], prompt)
+        # A genuinely external subject still searches.
+        await self.assert_direct_ling_search("what is the president doing today")
+
 if __name__ == "__main__":
     unittest.main()

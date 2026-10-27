@@ -137,6 +137,12 @@ async def _ensure_sources(sources: Iterable[str], timeout_seconds: float = 2.5) 
     # local-only snapshot until the next five-minute timer. Completion of this
     # retry requires a NEW header push; the existing ready flag is not enough.
     from service.tools import email_tools as email
+    if "email" in wanted:
+        try:   # direct Gmail read: fresh mail with Mail.app closed
+            from service import gmail_source
+            await gmail_source.refresh_if_stale()
+        except Exception:  # noqa: BLE001 — falls back to the Mail path
+            pass
     refresh_local = "email" in wanted and bool(email.email_freshness_warning())
     email_generation = email._headers_sync_generation
     # A ready flag describes the previous native snapshot, not the state of

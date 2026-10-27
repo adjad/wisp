@@ -1,0 +1,650 @@
+{"ev": "authority_load", "ms": 1293.6474171001464, "t": 1790989321.573729}
+{"ev": "authority_load", "ms": 1243.4522919356823, "t": 1790989321.622684}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1952.505375025794, "status": 200, "t": 1790989322.330822}
+{"ev": "authority_load", "ms": 1074.1538340225816, "t": 1790989323.062562}
+{"ev": "oMLX_http", "method": "GET", "path": "/health", "ms_to_headers": 1839.4540001172572, "status": 200, "t": 1790989323.8267882}
+{"ev": "authority_load", "ms": 1826.181000098586, "t": 1790989325.106844}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2703.703749924898, "status": 200, "t": 1790989325.9834828}
+{"ev": "authority_load", "ms": 2484.2014592140913, "t": 1790989326.313161}
+{"ev": "authority_load", "ms": 1212.2795421164483, "t": 1790989326.5466309}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 2999.4574170559645, "err": "ModelLoadError", "t": 1790989326.827703}
+{"ev": "authority_load", "ms": 2246.5387501288205, "t": 1790989326.8440251}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1513.9503341633826, "err": "ModelLoadError", "t": 1790989326.847498}
+{"ev": "authority_load", "ms": 1161.899667000398, "t": 1790989327.768901}
+{"ev": "oMLX_http", "method": "GET", "path": "/health", "ms_to_headers": 1876.9574170000851, "status": 200, "t": 1790989328.478915}
+{"ev": "authority_load", "ms": 1231.355041032657, "t": 1790989329.711872}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1987.2152500320226, "status": 200, "t": 1790989330.4671848}
+{"ev": "authority_load", "ms": 1228.4121660050005, "t": 1790989331.079199}
+{"ev": "authority_load", "ms": 1147.7590000722557, "t": 1790989331.6168902}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1955.0534170120955, "status": 200, "t": 1790989331.805058}
+{"ev": "oMLX_http", "method": "POST", "path": "/v1/chat/completions", "ms_to_headers": 2161.5883340127766, "status": 200, "t": 1790989332.630059}
+{"ev": "authority_load", "ms": 1156.2797089572996, "t": 1790989335.966878}
+{"ev": "authority_load", "ms": 1277.2750000003725, "t": 1790989336.266069}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1879.5381248928607, "status": 200, "t": 1790989336.6890502}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2099.4233752135187, "status": 200, "t": 1790989337.08754}
+{"ev": "authority_load", "ms": 1367.3035830724984, "t": 1790989337.2371998}
+{"ev": "authority_load", "ms": 1162.7829170320183, "t": 1790989339.0362291}
+{"ev": "oMLX_http", "method": "GET", "path": "/health", "ms_to_headers": 1862.60641599074, "status": 200, "t": 1790989339.735156}
+{"ev": "authority_load", "ms": 1203.7777078803629, "t": 1790989340.896209}
+{"ev": "authority_load", "ms": 1178.012666059658, "t": 1790989340.914656}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1907.8663329128176, "status": 200, "t": 1790989341.599635}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1885.353249963373, "status": 200, "t": 1790989341.6214652}
+{"ev": "authority_load", "ms": 1098.9065838512033, "t": 1790989342.722069}
+{"ev": "oMLX_http", "method": "POST", "path": "/v1/chat/completions", "ms_to_headers": 2104.514583013952, "status": 200, "t": 1790989343.7270882}
+{"ev": "authority_load", "ms": 1055.407416075468, "t": 1790989345.700792}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1762.9840839654207, "status": 200, "t": 1790989346.407667}
+{"ev": "authority_load", "ms": 1193.0270830634981, "t": 1790989347.285006}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2089.6654170937836, "status": 200, "t": 1790989348.181002}
+{"ev": "authority_load", "ms": 1547.4107079207897, "t": 1790989348.5890439}
+{"ev": "authority_load", "ms": 1329.0498750284314, "t": 1790989348.711652}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2104.0774590801448, "status": 200, "t": 1790989349.4857962}
+{"ev": "authority_load", "ms": 1297.8199578355998, "t": 1790989350.343643}
+{"ev": "authority_load", "ms": 1195.2789172064513, "t": 1790989350.606962}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1945.2432089019567, "status": 200, "t": 1790989351.355985}
+{"ev": "oMLX_http", "method": "GET", "path": "/health", "ms_to_headers": 2343.5012500267476, "status": 200, "t": 1790989351.388407}
+{"ev": "authority_load", "ms": 1426.322750048712, "t": 1790989351.489034}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2232.4542079586536, "status": 200, "t": 1790989352.290636}
+{"ev": "authority_load", "ms": 1318.8868339639157, "t": 1790989352.709109}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2044.4632079452276, "status": 200, "t": 1790989353.434026}
+{"ev": "authority_load", "ms": 1078.2983750104904, "t": 1790989354.514206}
+{"ev": "authority_load", "ms": 1064.1219581011683, "t": 1790989355.423444}
+{"ev": "oMLX_http", "method": "POST", "path": "/v1/chat/completions", "ms_to_headers": 2087.8453329205513, "status": 200, "t": 1790989355.523104}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1797.9239579290152, "status": 200, "t": 1790989356.15656}
+{"ev": "authority_load", "ms": 1102.4547079578042, "t": 1790989358.2974122}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1827.3494171444327, "status": 200, "t": 1790989359.021204}
+{"ev": "authority_load", "ms": 1098.7218332011253, "t": 1790989360.259777}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1799.890167079866, "status": 200, "t": 1790989360.959959}
+{"ev": "authority_load", "ms": 1071.61712506786, "t": 1790989363.098081}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1779.022082919255, "status": 200, "t": 1790989363.803988}
+{"ev": "authority_load", "ms": 1079.8218750860542, "t": 1790989365.043276}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1812.3577910009772, "status": 200, "t": 1790989365.774594}
+{"ev": "authority_load", "ms": 1089.2095419112593, "t": 1790989369.869847}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1820.3581250272691, "status": 200, "t": 1790989370.599342}
+{"ev": "authority_load", "ms": 1706.300541991368, "t": 1790989371.515872}
+{"ev": "authority_load", "ms": 1857.4460409581661, "t": 1790989371.888269}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 2229.662667028606, "err": "ModelLoadError", "t": 1790989372.0385659}
+{"ev": "authority_load", "ms": 1059.8532501608133, "t": 1790989373.0950558}
+{"ev": "oMLX_http", "method": "GET", "path": "/health", "ms_to_headers": 1758.898250060156, "status": 200, "t": 1790989373.7929778}
+{"ev": "authority_load", "ms": 1207.5161249376833, "t": 1790989374.810472}
+{"ev": "authority_load", "ms": 1208.3545830100775, "t": 1790989375.0028942}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2107.616459019482, "status": 200, "t": 1790989375.709855}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1922.4075831007212, "status": 200, "t": 1790989375.716373}
+{"ev": "authority_load", "ms": 1061.4371669944376, "t": 1790989376.779718}
+{"ev": "oMLX_http", "method": "POST", "path": "/v1/chat/completions", "ms_to_headers": 2065.4127921443433, "status": 200, "t": 1790989377.783159}
+{"ev": "authority_load", "ms": 1325.8616658858955, "t": 1790989380.041576}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2226.827791891992, "status": 200, "t": 1790989380.940614}
+{"ev": "authority_load", "ms": 1557.8139999415725, "t": 1790989381.0483258}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2277.3749579209834, "status": 200, "t": 1790989381.7668889}
+{"ev": "authority_load", "ms": 1217.4444170668721, "t": 1790989385.161694}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1967.2280419617891, "status": 200, "t": 1790989385.910719}
+{"ev": "authority_load", "ms": 3783.9797080960125, "t": 1790989386.154907}
+{"ev": "authority_load", "ms": 3785.1627920754254, "t": 1790989386.1560361}
+{"ev": "authority_load", "ms": 3782.0263339672238, "t": 1790989386.1571488}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 4302.434915909544, "err": "ModelLoadError", "t": 1790989386.6689742}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 4308.672041865066, "err": "ModelLoadError", "t": 1790989386.675623}
+{"ev": "authority_load", "ms": 2683.1066668964922, "t": 1790989387.060548}
+{"ev": "oMLX_http", "method": "GET", "path": "/health", "ms_to_headers": 3397.449624957517, "status": 200, "t": 1790989387.773202}
+{"ev": "authority_load", "ms": 1154.7912920359522, "t": 1790989388.929601}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1877.5375420227647, "status": 200, "t": 1790989389.6517582}
+{"ev": "authority_load", "ms": 1118.459166958928, "t": 1790989390.0325482}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1870.0086660683155, "status": 200, "t": 1790989390.783464}
+{"ev": "authority_load", "ms": 1153.114166809246, "t": 1790989390.806968}
+{"ev": "oMLX_http", "method": "POST", "path": "/v1/chat/completions", "ms_to_headers": 2170.276500051841, "status": 200, "t": 1790989391.8235269}
+{"ev": "authority_load", "ms": 1093.5152089223266, "t": 1790989394.8843808}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1793.0136248469353, "status": 200, "t": 1790989395.5818791}
+{"ev": "authority_load", "ms": 1655.8479578234255, "t": 1790989397.331029}
+{"ev": "authority_load", "ms": 1825.7747921161354, "t": 1790989397.955862}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 2465.9298341721296, "err": "ModelLoadError", "t": 1790989398.140152}
+{"ev": "authority_load", "ms": 1121.400750009343, "t": 1790989399.2550771}
+{"ev": "authority_load", "ms": 1154.0945421438664, "t": 1790989399.73998}
+{"ev": "oMLX_http", "method": "GET", "path": "/health", "ms_to_headers": 1828.791999956593, "status": 200, "t": 1790989399.961457}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1861.4240000024438, "status": 200, "t": 1790989400.4465559}
+{"ev": "authority_load", "ms": 1082.2024999652058, "t": 1790989401.04538}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1795.378667069599, "status": 200, "t": 1790989401.7579892}
+{"ev": "authority_load", "ms": 1073.206250090152, "t": 1790989402.833583}
+{"ev": "oMLX_http", "method": "POST", "path": "/v1/chat/completions", "ms_to_headers": 2087.7794581465423, "status": 200, "t": 1790989403.847571}
+{"ev": "authority_load", "ms": 1180.6001251097769, "t": 1790989404.630558}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2336.7752078920603, "status": 200, "t": 1790989405.785996}
+{"ev": "authority_load", "ms": 1071.2863327935338, "t": 1790989408.223236}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1654.1277908254415, "err": "ModelLoadError", "t": 1790989408.804169}
+{"ev": "authority_load", "ms": 1220.6600001081824, "t": 1790989410.0093591}
+{"ev": "authority_load", "ms": 1225.7555001415312, "t": 1790989410.00943}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1989.5332499872893, "status": 200, "t": 1790989410.777635}
+{"ev": "oMLX_http", "method": "GET", "path": "/health", "ms_to_headers": 1995.665583992377, "status": 200, "t": 1790989410.7785869}
+{"ev": "authority_load", "ms": 1133.5053339134902, "t": 1790989411.913632}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1867.2231661621481, "status": 200, "t": 1790989412.646771}
+{"ev": "authority_load", "ms": 1152.6375841349363, "t": 1790989412.92187}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1868.405875051394, "status": 200, "t": 1790989413.636884}
+{"ev": "authority_load", "ms": 1068.3988749515265, "t": 1790989413.717298}
+{"ev": "oMLX_http", "method": "POST", "path": "/v1/chat/completions", "ms_to_headers": 2110.619083046913, "status": 200, "t": 1790989414.758894}
+{"ev": "authority_load", "ms": 1163.1624998990446, "t": 1790989414.943669}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1986.5200000349432, "status": 200, "t": 1790989415.766356}
+{"ev": "authority_load", "ms": 1096.073583001271, "t": 1790989417.77474}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1870.3553748782724, "status": 200, "t": 1790989418.547395}
+{"ev": "authority_load", "ms": 1178.469458129257, "t": 1790989418.989245}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1906.1301248148084, "status": 200, "t": 1790989419.7159429}
+{"ev": "authority_load", "ms": 1187.300750054419, "t": 1790989419.957451}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1479.2501251213253, "err": "ModelLoadError", "t": 1790989420.248662}
+{"ev": "authority_load", "ms": 1207.7788750175387, "t": 1790989424.4605}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1517.318540951237, "err": "ModelLoadError", "t": 1790989424.769272}
+{"ev": "authority_load", "ms": 1193.7840420287102, "t": 1790989428.964714}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1935.7487082015723, "status": 200, "t": 1790989429.705934}
+{"ev": "authority_load", "ms": 1118.93937503919, "t": 1790989433.8275058}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1814.8537077941, "status": 200, "t": 1790989434.52269}
+{"ev": "authority_load", "ms": 1079.9999171867967, "t": 1790989438.605836}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1779.3572500813752, "status": 200, "t": 1790989439.304518}
+{"ev": "authority_load", "ms": 1128.0799580272287, "t": 1790989443.437772}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1876.355583081022, "status": 200, "t": 1790989444.184713}
+{"ev": "authority_load", "ms": 1133.21491680108, "t": 1790989444.772314}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1709.3928752001375, "err": "ModelLoadError", "t": 1790989445.347546}
+{"ev": "authority_load", "ms": 1044.4377090316266, "t": 1790989448.232953}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1737.6997920218855, "status": 200, "t": 1790989448.9253051}
+{"ev": "authority_load", "ms": 1121.7327499762177, "t": 1790989453.052563}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1840.223167091608, "status": 200, "t": 1790989453.7699578}
+{"ev": "authority_load", "ms": 1103.6853331606835, "t": 1790989457.88026}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1800.6696249358356, "status": 200, "t": 1790989458.575635}
+{"ev": "authority_load", "ms": 1150.3728749230504, "t": 1790989462.732308}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1443.961292039603, "err": "ModelLoadError", "t": 1790989463.024541}
+{"ev": "authority_load", "ms": 1093.5224171262234, "t": 1790989467.306873}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1820.4049170017242, "status": 200, "t": 1790989468.0330722}
+{"ev": "authority_load", "ms": 1143.7524578068405, "t": 1790989472.184893}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1866.2525420077145, "status": 200, "t": 1790989472.905321}
+{"ev": "authority_load", "ms": 1493.417042074725, "t": 1790989476.8452852}
+{"ev": "authority_load", "ms": 1679.021375020966, "t": 1790989477.5885172}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2378.9012499619275, "status": 200, "t": 1790989477.730068}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2479.643207974732, "status": 200, "t": 1790989478.388244}
+{"ev": "authority_load", "ms": 1132.1517080068588, "t": 1790989478.8639581}
+{"ev": "oMLX_http", "method": "POST", "path": "/v1/models/Ling-3.0-tiny-oQ6e/unload", "ms_to_headers": 2578.4160839393735, "status": 200, "t": 1790989480.309725}
+{"ev": "authority_load", "ms": 1106.4896250609308, "t": 1790989482.499613}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2624.6127909980714, "status": 200, "t": 1790989484.0169752}
+{"ev": "authority_load", "ms": 1113.3183338679373, "t": 1790989488.1415849}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1810.6948749627918, "status": 200, "t": 1790989488.8342772}
+{"ev": "authority_load", "ms": 1123.5724999569356, "t": 1790989492.963019}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1704.2003329843283, "err": "ModelLoadError", "t": 1790989493.541846}
+{"ev": "authority_load", "ms": 1178.215041058138, "t": 1790989501.980764}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1890.1102908421308, "status": 200, "t": 1790989502.6920378}
+{"ev": "authority_load", "ms": 1170.2726669609547, "t": 1790989506.8679721}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1902.5071249343455, "status": 200, "t": 1790989507.598441}
+{"ev": "authority_load", "ms": 1705.388667061925, "t": 1790989512.020131}
+{"ev": "authority_load", "ms": 1840.1202920358628, "t": 1790989512.442095}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2533.5295000113547, "status": 200, "t": 1790989512.845782}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2555.8500420302153, "status": 200, "t": 1790989513.156994}
+{"ev": "authority_load", "ms": 1107.346500037238, "t": 1790989517.268676}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1964.0002499800175, "status": 200, "t": 1790989518.124267}
+{"ev": "authority_load", "ms": 1081.844000145793, "t": 1790989522.2140548}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1792.2229999676347, "status": 200, "t": 1790989522.922422}
+{"ev": "authority_load", "ms": 1120.1577920001, "t": 1790989527.051152}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1826.3621248770505, "status": 200, "t": 1790989527.754865}
+{"ev": "authority_load", "ms": 1131.36679190211, "t": 1790989531.891989}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1831.9989589508623, "status": 200, "t": 1790989532.5906801}
+{"ev": "authority_load", "ms": 1070.583667140454, "t": 1790989536.668721}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1765.8743341453373, "status": 200, "t": 1790989537.361384}
+{"ev": "authority_load", "ms": 1079.657332971692, "t": 1790989541.44822}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1763.0629998166114, "status": 200, "t": 1790989542.129877}
+{"ev": "authority_load", "ms": 1095.7293750252575, "t": 1790989543.9458392}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1806.2509999144822, "status": 200, "t": 1790989544.65473}
+{"ev": "authority_load", "ms": 1062.6075000036508, "t": 1790989546.197706}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1770.8079169970006, "status": 200, "t": 1790989546.904418}
+{"ev": "authority_load", "ms": 1077.1676250733435, "t": 1790989550.986389}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1783.4818330593407, "status": 200, "t": 1790989551.691246}
+{"ev": "authority_load", "ms": 1128.5355410072953, "t": 1790989555.825665}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1851.914457976818, "status": 200, "t": 1790989556.546945}
+{"ev": "authority_load", "ms": 1179.4475831557065, "t": 1790989560.733124}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1866.1917918361723, "status": 200, "t": 1790989561.4182699}
+{"ev": "authority_load", "ms": 1163.622375112027, "t": 1790989565.585622}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1899.1213750559837, "status": 200, "t": 1790989566.319944}
+{"ev": "authority_load", "ms": 1204.3990411330014, "t": 1790989570.526816}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1803.172083105892, "err": "ModelLoadError", "t": 1790989571.12494}
+{"ev": "authority_load", "ms": 1735.9924579504877, "t": 1790989575.8641431}
+{"ev": "authority_load", "ms": 1869.1766250412911, "t": 1790989576.527526}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2559.75762498565, "status": 200, "t": 1790989576.687134}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 2457.19120814465, "err": "ModelLoadError", "t": 1790989577.114555}
+{"ev": "authority_load", "ms": 1066.7275830637664, "t": 1790989580.756555}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1798.8030829001218, "status": 200, "t": 1790989581.487925}
+{"ev": "authority_load", "ms": 1081.7389581352472, "t": 1790989585.572095}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1766.5645838715136, "status": 200, "t": 1790989586.256216}
+{"ev": "authority_load", "ms": 1051.858832826838, "t": 1790989590.311797}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1753.9699578192085, "status": 200, "t": 1790989591.013199}
+{"ev": "authority_load", "ms": 1205.0771669019014, "t": 1790989595.221865}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1928.6920411977917, "status": 200, "t": 1790989595.944812}
+{"ev": "authority_load", "ms": 1283.754917094484, "t": 1790989600.231345}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2039.3917500041425, "status": 200, "t": 1790989600.986229}
+{"ev": "authority_load", "ms": 1293.9223749563098, "t": 1790989605.286635}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2064.057999989018, "status": 200, "t": 1790989606.055299}
+{"ev": "authority_load", "ms": 1114.3535829614848, "t": 1790989608.235167}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1867.4671249464154, "status": 200, "t": 1790989608.985916}
+{"ev": "authority_load", "ms": 1186.1012082081288, "t": 1790989610.244425}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1915.791125036776, "status": 200, "t": 1790989610.973438}
+{"ev": "authority_load", "ms": 1088.7322090566158, "t": 1790989615.068225}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1831.7064580041915, "status": 200, "t": 1790989615.8091671}
+{"ev": "authority_load", "ms": 1111.3419581670314, "t": 1790989619.928538}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1799.3284999392927, "status": 200, "t": 1790989620.614801}
+{"ev": "authority_load", "ms": 1094.832707894966, "t": 1790989624.715084}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1788.2578750140965, "status": 200, "t": 1790989625.4066079}
+{"ev": "authority_load", "ms": 1071.591709041968, "t": 1790989629.4827929}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1758.0665000714362, "status": 200, "t": 1790989630.168193}
+{"ev": "authority_load", "ms": 1108.0563750583678, "t": 1790989634.281483}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1813.0032080225646, "status": 200, "t": 1790989634.984923}
+{"ev": "authority_load", "ms": 1125.0843331217766, "t": 1790989639.115315}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1909.0805409941822, "status": 200, "t": 1790989639.897593}
+{"ev": "authority_load", "ms": 1275.1982500776649, "t": 1790989640.2631302}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1966.4142078254372, "status": 200, "t": 1790989640.953384}
+{"ev": "authority_load", "ms": 1117.4695421941578, "t": 1790989644.0206048}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1826.054458040744, "status": 200, "t": 1790989644.727684}
+{"ev": "authority_load", "ms": 1106.453875079751, "t": 1790989648.839243}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1813.7888330966234, "status": 200, "t": 1790989649.545046}
+{"ev": "authority_load", "ms": 1077.8909588698298, "t": 1790989653.91233}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2053.492415929213, "status": 200, "t": 1790989654.6018538}
+{"ev": "authority_load", "ms": 1067.4236249178648, "t": 1790989658.6745448}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1752.2935839369893, "status": 200, "t": 1790989659.3576598}
+{"ev": "authority_load", "ms": 1134.3002920038998, "t": 1790989663.497344}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1834.8954999819398, "status": 200, "t": 1790989664.1962051}
+{"ev": "authority_load", "ms": 1052.9242500197142, "t": 1790989668.256499}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1734.1497919987887, "status": 200, "t": 1790989668.935806}
+{"ev": "authority_load", "ms": 1096.3613339699805, "t": 1790989672.054053}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1847.0294999424368, "status": 200, "t": 1790989672.8029099}
+{"ev": "authority_load", "ms": 1169.8550409637392, "t": 1790989673.1091788}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1453.2250419724733, "err": "ModelLoadError", "t": 1790989673.391753}
+{"ev": "authority_load", "ms": 1085.4289999697357, "t": 1790989677.484006}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1781.747833127156, "status": 200, "t": 1790989678.178406}
+{"ev": "authority_load", "ms": 1072.4653340876102, "t": 1790989682.2575989}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1939.6826669108123, "status": 200, "t": 1790989683.123195}
+{"ev": "authority_load", "ms": 1152.847042074427, "t": 1790989687.282979}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1864.0806670300663, "status": 200, "t": 1790989687.99227}
+{"ev": "authority_load", "ms": 1206.460541812703, "t": 1790989692.205446}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1948.3192497864366, "status": 200, "t": 1790989692.945311}
+{"ev": "authority_load", "ms": 1186.634583864361, "t": 1790989697.136758}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1898.5306250397116, "status": 200, "t": 1790989697.8472981}
+{"ev": "authority_load", "ms": 1082.514415960759, "t": 1790989701.935692}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1785.8983750920743, "status": 200, "t": 1790989702.637701}
+{"ev": "authority_load", "ms": 1182.9982500057667, "t": 1790989703.98911}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1864.3391251098365, "status": 200, "t": 1790989704.669049}
+{"ev": "authority_load", "ms": 1095.477499999106, "t": 1790989706.738163}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1765.2066249866039, "status": 200, "t": 1790989707.406643}
+{"ev": "authority_load", "ms": 1182.3148750700057, "t": 1790989711.598677}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1508.3135000895709, "err": "ModelLoadError", "t": 1790989711.9216409}
+{"ev": "authority_load", "ms": 1952.4008750449866, "t": 1790989718.454991}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 2339.3541250843555, "err": "ModelLoadError", "t": 1790989718.840172}
+{"ev": "authority_load", "ms": 1326.6004580073059, "t": 1790989723.175199}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2110.8824589755386, "status": 200, "t": 1790989723.956864}
+{"ev": "authority_load", "ms": 1277.3490839172155, "t": 1790989728.2387369}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2076.4341249596328, "status": 200, "t": 1790989729.036511}
+{"ev": "authority_load", "ms": 1302.152874879539, "t": 1790989733.3432372}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2078.68174999021, "status": 200, "t": 1790989734.118443}
+{"ev": "authority_load", "ms": 1193.3805830776691, "t": 1790989735.866139}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1983.4952920209616, "status": 200, "t": 1790989736.654857}
+{"ev": "authority_load", "ms": 1205.9270001482219, "t": 1790989738.329996}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1973.0864998418838, "status": 200, "t": 1790989739.095792}
+{"ev": "authority_load", "ms": 1531.9267918821424, "t": 1790989743.632146}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2355.471458984539, "status": 200, "t": 1790989744.454892}
+{"ev": "authority_load", "ms": 1422.5986250676215, "t": 1790989752.83265}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2256.3196250703186, "status": 200, "t": 1790989753.664426}
+{"ev": "authority_load", "ms": 1235.7841250486672, "t": 1790989757.9047291}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2034.8312081769109, "status": 200, "t": 1790989758.702531}
+{"ev": "authority_load", "ms": 1431.5122910775244, "t": 1790989763.139601}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2249.8504579998553, "status": 200, "t": 1790989763.956287}
+{"ev": "authority_load", "ms": 2007.6705829706043, "t": 1790989768.667265}
+{"ev": "authority_load", "ms": 2214.547000126913, "t": 1790989769.176196}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 3025.4043331369758, "status": 200, "t": 1790989769.6836312}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 3104.2097921017557, "status": 200, "t": 1790989770.064043}
+{"ev": "authority_load", "ms": 1230.6620830204338, "t": 1790989774.3014379}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2086.479250108823, "status": 200, "t": 1790989775.1555572}
+{"ev": "authority_load", "ms": 1370.411624899134, "t": 1790989779.530551}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2212.613167008385, "status": 200, "t": 1790989780.371679}
+{"ev": "authority_load", "ms": 1477.7164170518517, "t": 1790989785.627977}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 2188.753084046766, "err": "ModelLoadError", "t": 1790989786.338119}
+{"ev": "authority_load", "ms": 1474.7705839108676, "t": 1790989790.8177369}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2362.3414589092135, "status": 200, "t": 1790989791.70359}
+{"ev": "authority_load", "ms": 1201.7948341090232, "t": 1790989795.9110231}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1908.8876661844552, "status": 200, "t": 1790989796.616728}
+{"ev": "authority_load", "ms": 2042.8527081385255, "t": 1790989801.6645849}
+{"ev": "authority_load", "ms": 2061.0764999873936, "t": 1790989801.748178}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2791.989083169028, "status": 200, "t": 1790989802.4122298}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2784.056874923408, "status": 200, "t": 1790989802.470111}
+{"ev": "authority_load", "ms": 1171.2776250205934, "t": 1790989806.590678}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1908.2891249563545, "status": 200, "t": 1790989807.326227}
+{"ev": "authority_load", "ms": 2147.6622079499066, "t": 1790989812.4824588}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 3490.334125002846, "status": 200, "t": 1790989813.8228369}
+{"ev": "authority_load", "ms": 1352.983791846782, "t": 1790989821.225923}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2280.5527090094984, "status": 200, "t": 1790989822.151454}
+{"ev": "authority_load", "ms": 2185.9494170639664, "t": 1790989827.345613}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 3440.3885409701616, "status": 200, "t": 1790989828.5975318}
+{"ev": "authority_load", "ms": 2465.4050830285996, "t": 1790989834.0712981}
+{"ev": "authority_load", "ms": 3006.5802501048893, "t": 1790989835.479191}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 3933.131583034992, "status": 200, "t": 1790989835.536953}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 4162.080041831359, "status": 200, "t": 1790989836.63335}
+{"ev": "authority_load", "ms": 1463.1617499981076, "t": 1790989838.0989609}
+{"ev": "oMLX_http", "method": "POST", "path": "/v1/models/Ling-3.0-tiny-oQ6e/unload", "ms_to_headers": 3079.7332499641925, "status": 200, "t": 1790989839.7147892}
+{"ev": "authority_load", "ms": 1317.8208749741316, "t": 1790989839.859564}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2040.656000142917, "status": 200, "t": 1790989840.5810702}
+{"ev": "authority_load", "ms": 1176.1832919437438, "t": 1790989844.761785}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1890.997292008251, "status": 200, "t": 1790989845.475861}
+{"ev": "authority_load", "ms": 1166.1458751186728, "t": 1790989849.645341}
+{"ev": "authority_load", "ms": 1403.147832956165, "t": 1790989858.921776}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2153.923082863912, "status": 200, "t": 1790989859.671791}
+{"ev": "authority_load", "ms": 1167.6807499025017, "t": 1790989863.8453052}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1922.908915905282, "status": 200, "t": 1790989864.599259}
+{"ev": "authority_load", "ms": 1207.7994591090828, "t": 1790989868.8099399}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1915.74695892632, "status": 200, "t": 1790989869.5171049}
+{"ev": "authority_load", "ms": 1064.5789590198547, "t": 1790989870.783257}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1750.8789170533419, "status": 200, "t": 1790989871.468246}
+{"ev": "authority_load", "ms": 1118.9195420593023, "t": 1790989873.640619}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1840.2304169721901, "status": 200, "t": 1790989874.360681}
+{"ev": "authority_load", "ms": 1132.8172499779612, "t": 1790989878.4967759}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1860.1242080330849, "status": 200, "t": 1790989879.223231}
+{"ev": "authority_load", "ms": 1110.9853750094771, "t": 1790989883.3397398}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1812.8037499263883, "status": 200, "t": 1790989884.0401769}
+{"ev": "authority_load", "ms": 1057.9558748286217, "t": 1790989888.103422}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1746.1624168790877, "status": 200, "t": 1790989888.7898}
+{"ev": "authority_load", "ms": 1146.7233749572188, "t": 1790989892.940568}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1845.3860408626497, "status": 200, "t": 1790989893.6382039}
+{"ev": "authority_load", "ms": 1067.7863331511617, "t": 1790989897.712357}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1759.039374999702, "status": 200, "t": 1790989898.401558}
+{"ev": "authority_load", "ms": 2053.718750132248, "t": 1790989903.524951}
+{"ev": "authority_load", "ms": 2117.6561668980867, "t": 1790989903.525988}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 2742.474416969344, "err": "ModelLoadError", "t": 1790989904.148337}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 2678.524874849245, "err": "ModelLoadError", "t": 1790989904.148848}
+{"ev": "authority_load", "ms": 1132.3565419297665, "t": 1790989908.285783}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1842.490707989782, "status": 200, "t": 1790989908.994404}
+{"ev": "authority_load", "ms": 1204.0805839933455, "t": 1790989913.204837}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1906.2062921002507, "status": 200, "t": 1790989913.90492}
+{"ev": "authority_load", "ms": 1181.5385408699512, "t": 1790989918.089868}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1890.0709999725223, "status": 200, "t": 1790989918.7977128}
+{"ev": "authority_load", "ms": 1159.311458002776, "t": 1790989922.961482}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1454.2599581182003, "err": "ModelLoadError", "t": 1790989923.255287}
+{"ev": "authority_load", "ms": 1204.533209092915, "t": 1790989927.462531}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1907.6851659920067, "status": 200, "t": 1790989928.164719}
+{"ev": "authority_load", "ms": 1168.4891250915825, "t": 1790989932.336788}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1877.4243341758847, "status": 200, "t": 1790989933.045003}
+{"ev": "authority_load", "ms": 1079.3677079491317, "t": 1790989935.2320051}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1809.021667111665, "status": 200, "t": 1790989935.960135}
+{"ev": "authority_load", "ms": 1071.8022079672664, "t": 1790989937.120543}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1771.0514578502625, "status": 200, "t": 1790989937.8190908}
+{"ev": "authority_load", "ms": 1064.192624995485, "t": 1790989941.888633}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1772.408707998693, "status": 200, "t": 1790989942.595113}
+{"ev": "authority_load", "ms": 1226.405791938305, "t": 1790989946.8239338}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1986.8979579769075, "status": 200, "t": 1790989947.583731}
+{"ev": "authority_load", "ms": 1096.3729999493808, "t": 1790989951.6842701}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1802.820875076577, "status": 200, "t": 1790989952.389156}
+{"ev": "authority_load", "ms": 1083.2875408232212, "t": 1790989956.477053}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1787.711540935561, "status": 200, "t": 1790989957.1802309}
+{"ev": "authority_load", "ms": 1105.6210410315543, "t": 1790989961.29181}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1814.5823751110584, "status": 200, "t": 1790989961.999208}
+{"ev": "authority_load", "ms": 1154.215499991551, "t": 1790989966.157977}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1988.3472498040646, "status": 200, "t": 1790989966.990964}
+{"ev": "authority_load", "ms": 1376.0362081229687, "t": 1790989967.3395462}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2089.3579579424113, "status": 200, "t": 1790989968.051925}
+{"ev": "authority_load", "ms": 1114.7997078951448, "t": 1790989971.110709}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1841.1160418763757, "status": 200, "t": 1790989971.8353012}
+{"ev": "authority_load", "ms": 1150.0340842176229, "t": 1790989975.993071}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1455.1723338663578, "err": "ModelLoadError", "t": 1790989976.2962902}
+{"ev": "authority_load", "ms": 1153.045249870047, "t": 1790989980.4563148}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1903.2927500084043, "status": 200, "t": 1790989981.2045782}
+{"ev": "authority_load", "ms": 1162.7165828831494, "t": 1790989985.3729641}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1892.5676250364631, "status": 200, "t": 1790989986.1016178}
+{"ev": "authority_load", "ms": 1116.4707499556243, "t": 1790989990.223851}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1819.603041978553, "status": 200, "t": 1790989990.925745}
+{"ev": "authority_load", "ms": 1090.2982919942588, "t": 1790989995.021525}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1785.661166999489, "status": 200, "t": 1790989995.715571}
+{"ev": "authority_load", "ms": 1456.264875130728, "t": 1790989999.512206}
+{"ev": "authority_load", "ms": 1530.7077078614384, "t": 1790990000.249968}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2262.579208938405, "status": 200, "t": 1790990000.31694}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2234.021332813427, "status": 200, "t": 1790990000.952443}
+{"ev": "authority_load", "ms": 1066.4048329927027, "t": 1790990005.026168}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1761.2403340172023, "status": 200, "t": 1790990005.719272}
+{"ev": "authority_load", "ms": 1056.993333157152, "t": 1790990009.781814}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1753.7372920196503, "status": 200, "t": 1790990010.4764009}
+{"ev": "authority_load", "ms": 1095.2328331768513, "t": 1790990014.5777311}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1807.6112081762403, "status": 200, "t": 1790990015.288485}
+{"ev": "authority_load", "ms": 1079.4837910216302, "t": 1790990019.375663}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1804.6314588282257, "status": 200, "t": 1790990020.098832}
+{"ev": "authority_load", "ms": 1127.5735418312252, "t": 1790990024.23182}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1854.8054590355605, "status": 200, "t": 1790990024.957814}
+{"ev": "authority_load", "ms": 1255.1579170394689, "t": 1790990029.219855}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1974.7145420406014, "status": 200, "t": 1790990029.93758}
+{"ev": "authority_load", "ms": 1091.629915870726, "t": 1790990031.4161081}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1793.2908330112696, "status": 200, "t": 1790990032.1154618}
+{"ev": "authority_load", "ms": 1149.5729160960764, "t": 1790990034.0914738}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1846.5495419222862, "status": 200, "t": 1790990034.7871292}
+{"ev": "authority_load", "ms": 1106.2872500624508, "t": 1790990038.898002}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1813.7280829250813, "status": 200, "t": 1790990039.604257}
+{"ev": "authority_load", "ms": 1063.7408751063049, "t": 1790990043.672572}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1762.8226671367884, "status": 200, "t": 1790990044.3703492}
+{"ev": "authority_load", "ms": 1106.2488330062479, "t": 1790990048.482781}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1826.762749813497, "status": 200, "t": 1790990049.201328}
+{"ev": "authority_load", "ms": 1088.6675419751555, "t": 1790990053.295747}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1794.3510841578245, "status": 200, "t": 1790990053.9994292}
+{"ev": "authority_load", "ms": 1102.513707941398, "t": 1790990058.1059258}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1687.6228330656886, "err": "ModelLoadError", "t": 1790990058.689709}
+{"ev": "authority_load", "ms": 1625.5904999561608, "t": 1790990063.31989}
+{"ev": "authority_load", "ms": 1846.4934590738267, "t": 1790990063.998529}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2471.636666916311, "status": 200, "t": 1790990064.164716}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 2469.5356669835746, "err": "ModelLoadError", "t": 1790990064.615344}
+{"ev": "authority_load", "ms": 1150.2364999614656, "t": 1790990068.3191779}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1897.97024987638, "status": 200, "t": 1790990069.065772}
+{"ev": "authority_load", "ms": 1198.4722919296473, "t": 1790990073.269797}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1908.294500084594, "status": 200, "t": 1790990073.977689}
+{"ev": "authority_load", "ms": 1141.3685830775648, "t": 1790990078.124299}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1847.193832974881, "status": 200, "t": 1790990078.8290088}
+{"ev": "authority_load", "ms": 1061.5799580700696, "t": 1790990082.895962}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1762.657375074923, "status": 200, "t": 1790990083.5954509}
+{"ev": "authority_load", "ms": 1134.5290830358863, "t": 1790990087.735785}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1842.2968748491257, "status": 200, "t": 1790990088.442255}
+{"ev": "authority_load", "ms": 1162.6509157940745, "t": 1790990092.608646}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1899.1031250916421, "status": 200, "t": 1790990093.343947}
+{"ev": "authority_load", "ms": 1161.6329590324312, "t": 1790990095.781423}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1752.7362499386072, "err": "ModelLoadError", "t": 1790990096.370826}
+{"ev": "authority_load", "ms": 1114.9877081625164, "t": 1790990097.463201}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1831.0553750488907, "status": 200, "t": 1790990098.178396}
+{"ev": "authority_load", "ms": 1103.5779581870884, "t": 1790990102.2880828}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1854.1357079520822, "status": 200, "t": 1790990103.036902}
+{"ev": "authority_load", "ms": 1106.5687499940395, "t": 1790990107.149764}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1829.9222078640014, "status": 200, "t": 1790990107.871393}
+{"ev": "authority_load", "ms": 1184.7645831294358, "t": 1790990112.062826}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1922.7273329161108, "status": 200, "t": 1790990112.798657}
+{"ev": "authority_load", "ms": 1125.9546249639243, "t": 1790990116.9307342}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1856.29479191266, "status": 200, "t": 1790990117.659211}
+{"ev": "authority_load", "ms": 1193.0303329136223, "t": 1790990121.857285}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1921.5513749513775, "status": 200, "t": 1790990122.584032}
+{"ev": "authority_load", "ms": 1344.9032078497112, "t": 1790990126.93424}
+{"ev": "authority_load", "ms": 1517.5490418914706, "t": 1790990127.890537}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2530.6081660091877, "status": 200, "t": 1790990128.118221}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2265.8504170831293, "status": 200, "t": 1790990128.637959}
+{"ev": "authority_load", "ms": 1088.3063750807196, "t": 1790990132.213601}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1807.4721249286085, "status": 200, "t": 1790990132.9316459}
+{"ev": "authority_load", "ms": 1138.141042087227, "t": 1790990137.076237}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1847.8317079134285, "status": 200, "t": 1790990137.784191}
+{"ev": "authority_load", "ms": 1095.6002499442548, "t": 1790990141.886472}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1802.5609580799937, "status": 200, "t": 1790990142.59121}
+{"ev": "authority_load", "ms": 1126.5225419774652, "t": 1790990146.7205892}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1847.961583873257, "status": 200, "t": 1790990147.4412959}
+{"ev": "authority_load", "ms": 1077.85191712901, "t": 1790990151.5259898}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1781.7648330237716, "status": 200, "t": 1790990152.2277381}
+{"ev": "authority_load", "ms": 1139.404916903004, "t": 1790990156.3733408}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1885.9532501082867, "status": 200, "t": 1790990157.1183228}
+{"ev": "authority_load", "ms": 1092.5185838714242, "t": 1790990159.736459}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1814.2911249306053, "status": 200, "t": 1790990160.4562209}
+{"ev": "authority_load", "ms": 1124.9501248821616, "t": 1790990161.249117}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1878.5253330133855, "status": 200, "t": 1790990162.001842}
+{"ev": "authority_load", "ms": 1140.9304160624743, "t": 1790990166.1493819}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1882.644958095625, "status": 200, "t": 1790990166.8889549}
+{"ev": "authority_load", "ms": 1167.6110001280904, "t": 1790990171.061898}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1893.3157918509096, "status": 200, "t": 1790990171.78628}
+{"ev": "authority_load", "ms": 1181.8294590339065, "t": 1790990175.972629}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1931.8875838071108, "status": 200, "t": 1790990176.721508}
+{"ev": "authority_load", "ms": 1137.8257919568568, "t": 1790990180.866118}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1752.6502090040594, "err": "ModelLoadError", "t": 1790990181.479549}
+{"ev": "authority_load", "ms": 1224.0040830802172, "t": 1790990185.709049}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1535.1732079870999, "err": "ModelLoadError", "t": 1790990186.018441}
+{"ev": "authority_load", "ms": 1206.3402910716832, "t": 1790990190.2284942}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1964.963834034279, "status": 200, "t": 1790990190.9859579}
+{"ev": "authority_load", "ms": 1134.078250033781, "t": 1790990191.5931132}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1845.1552919577807, "status": 200, "t": 1790990192.303336}
+{"ev": "authority_load", "ms": 1135.3667078074068, "t": 1790990195.1266859}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1859.8268751520663, "status": 200, "t": 1790990195.850223}
+{"ev": "authority_load", "ms": 1097.4682921078056, "t": 1790990199.95342}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1821.358208078891, "status": 200, "t": 1790990200.6757052}
+{"ev": "authority_load", "ms": 1078.9837501943111, "t": 1790990204.761146}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1796.6717910021544, "status": 200, "t": 1790990205.477377}
+{"ev": "authority_load", "ms": 1130.9180001262575, "t": 1790990209.6114419}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1844.4505000952631, "status": 200, "t": 1790990210.324028}
+{"ev": "authority_load", "ms": 1098.2222089078277, "t": 1790990214.425892}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1812.0369580574334, "status": 200, "t": 1790990215.138728}
+{"ev": "authority_load", "ms": 1140.7857909798622, "t": 1790990219.285045}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1864.0194160398096, "status": 200, "t": 1790990220.006964}
+{"ev": "authority_load", "ms": 1325.6506249308586, "t": 1790990223.63274}
+{"ev": "authority_load", "ms": 1518.5665409080684, "t": 1790990224.5289931}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2231.186458840966, "status": 200, "t": 1790990224.53711}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2280.7699171826243, "status": 200, "t": 1790990225.290352}
+{"ev": "authority_load", "ms": 1124.3963751476258, "t": 1790990229.420754}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1853.2999579329044, "status": 200, "t": 1790990230.147848}
+{"ev": "authority_load", "ms": 1150.4745420534164, "t": 1790990234.3016589}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1894.7075828909874, "status": 200, "t": 1790990235.045126}
+{"ev": "authority_load", "ms": 1173.5882079228759, "t": 1790990239.225109}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1489.899415988475, "err": "ModelLoadError", "t": 1790990239.539941}
+{"ev": "authority_load", "ms": 1215.058249887079, "t": 1790990243.75777}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1527.9959158506244, "err": "ModelLoadError", "t": 1790990244.069528}
+{"ev": "authority_load", "ms": 1236.56624997966, "t": 1790990248.313104}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2047.1429580356926, "status": 200, "t": 1790990249.1216052}
+{"ev": "authority_load", "ms": 1161.320541985333, "t": 1790990253.286359}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1895.085124997422, "status": 200, "t": 1790990254.019388}
+{"ev": "authority_load", "ms": 1131.060583051294, "t": 1790990255.67277}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1857.215124880895, "status": 200, "t": 1790990256.397407}
+{"ev": "authority_load", "ms": 1161.1257088370621, "t": 1790990258.183915}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1891.3758751004934, "status": 200, "t": 1790990258.913405}
+{"ev": "authority_load", "ms": 1088.4699581656605, "t": 1790990263.0075562}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1808.2370420452207, "status": 200, "t": 1790990263.7261472}
+{"ev": "authority_load", "ms": 1111.2954579293728, "t": 1790990267.84238}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1705.7807079982013, "err": "ModelLoadError", "t": 1790990268.43518}
+{"ev": "authority_load", "ms": 1114.3788329791278, "t": 1790990272.5555992}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1825.5162499845028, "status": 200, "t": 1790990273.265153}
+{"ev": "authority_load", "ms": 1114.2156249843538, "t": 1790990277.385105}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1701.8903749994934, "err": "ModelLoadError", "t": 1790990277.971193}
+{"ev": "authority_load", "ms": 1119.5680419914424, "t": 1790990282.0941389}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1856.3756251242012, "status": 200, "t": 1790990282.83006}
+{"ev": "authority_load", "ms": 1543.7827501446009, "t": 1790990287.378478}
+{"ev": "authority_load", "ms": 1773.290750104934, "t": 1790990288.174412}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2439.592291833833, "status": 200, "t": 1790990288.273014}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2502.5212499313056, "status": 200, "t": 1790990288.902648}
+{"ev": "authority_load", "ms": 1186.959374928847, "t": 1790990292.469032}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1915.3476669453084, "status": 200, "t": 1790990293.195572}
+{"ev": "authority_load", "ms": 1187.150166835636, "t": 1790990297.386542}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1904.8705419991165, "status": 200, "t": 1790990298.103308}
+{"ev": "authority_load", "ms": 1156.84362500906, "t": 1790990302.2642932}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1929.8913751263171, "status": 200, "t": 1790990303.03618}
+{"ev": "authority_load", "ms": 1082.3376250918955, "t": 1790990307.12355}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1799.5892078615725, "status": 200, "t": 1790990307.839705}
+{"ev": "authority_load", "ms": 1111.1608329229057, "t": 1790990311.958231}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1832.6916669029742, "status": 200, "t": 1790990312.677821}
+{"ev": "authority_load", "ms": 1131.5684169530869, "t": 1790990316.814881}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1853.2323748804629, "status": 200, "t": 1790990317.535369}
+{"ev": "authority_load", "ms": 1095.891334116459, "t": 1790990320.002729}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1820.1694590970874, "status": 200, "t": 1790990320.725614}
+{"ev": "authority_load", "ms": 1109.1047918889672, "t": 1790990321.6480482}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1825.4025841597468, "status": 200, "t": 1790990322.363435}
+{"ev": "authority_load", "ms": 1146.511040860787, "t": 1790990326.514388}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1889.4154999870807, "status": 200, "t": 1790990327.2560189}
+{"ev": "authority_load", "ms": 1128.6879170220345, "t": 1790990331.390472}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1871.0531250108033, "status": 200, "t": 1790990332.131545}
+{"ev": "authority_load", "ms": 1153.6912908777595, "t": 1790990336.29002}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1951.6767081804574, "status": 200, "t": 1790990337.086686}
+{"ev": "authority_load", "ms": 1211.312958970666, "t": 1790990341.30832}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1937.3442500364035, "status": 200, "t": 1790990342.033503}
+{"ev": "authority_load", "ms": 1194.0045829396695, "t": 1790990346.233016}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1907.1279580239207, "status": 200, "t": 1790990346.944247}
+{"ev": "authority_load", "ms": 1253.2626250758767, "t": 1790990351.2027268}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2047.5319579709321, "status": 200, "t": 1790990351.99578}
+{"ev": "authority_load", "ms": 1403.7757921032608, "t": 1790990352.1331809}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2174.3939579464495, "status": 200, "t": 1790990352.90282}
+{"ev": "authority_load", "ms": 1093.4083750471473, "t": 1790990356.09213}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1822.012583957985, "status": 200, "t": 1790990356.820058}
+{"ev": "authority_load", "ms": 1120.7840419374406, "t": 1790990360.94528}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1426.479207817465, "err": "ModelLoadError", "t": 1790990361.249726}
+{"ev": "authority_load", "ms": 1111.889332998544, "t": 1790990365.366847}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1855.8427919633687, "status": 200, "t": 1790990366.1091578}
+{"ev": "authority_load", "ms": 1115.1446669828147, "t": 1790990370.229095}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2016.541542019695, "status": 200, "t": 1790990371.128972}
+{"ev": "authority_load", "ms": 1074.1591250989586, "t": 1790990375.210046}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1807.0387088228017, "status": 200, "t": 1790990375.9412181}
+{"ev": "authority_load", "ms": 1124.5232080109417, "t": 1790990380.071307}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1861.278709024191, "status": 200, "t": 1790990380.806666}
+{"ev": "authority_load", "ms": 1171.4872501324862, "t": 1790990384.0792608}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1953.1825410667807, "status": 200, "t": 1790990384.859632}
+{"ev": "authority_load", "ms": 1334.1294170822948, "t": 1790990385.1782951}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2066.944875055924, "status": 200, "t": 1790990385.9102561}
+{"ev": "authority_load", "ms": 1153.1285420060158, "t": 1790990390.0688572}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1871.438458096236, "status": 200, "t": 1790990390.7856362}
+{"ev": "authority_load", "ms": 1148.2886669691652, "t": 1790990394.9400132}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1869.769874960184, "status": 200, "t": 1790990395.660383}
+{"ev": "authority_load", "ms": 1090.170041890815, "t": 1790990399.754528}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2065.9311660565436, "status": 200, "t": 1790990400.7293}
+{"ev": "authority_load", "ms": 1117.725957883522, "t": 1790990404.851854}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1832.9127910546958, "status": 200, "t": 1790990405.5654678}
+{"ev": "authority_load", "ms": 1119.7548329364508, "t": 1790990409.692148}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1834.1613749507815, "status": 200, "t": 1790990410.404384}
+{"ev": "authority_load", "ms": 1137.821292039007, "t": 1790990414.547324}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1923.2187080197036, "status": 200, "t": 1790990415.3313448}
+{"ev": "authority_load", "ms": 1341.4508749265224, "t": 1790990416.204569}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2074.5063750073314, "status": 200, "t": 1790990416.9364538}
+{"ev": "authority_load", "ms": 1123.6116250511259, "t": 1790990419.4605079}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1869.9987079016864, "status": 200, "t": 1790990420.2056918}
+{"ev": "authority_load", "ms": 1139.8558339569718, "t": 1790990424.349164}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1881.3942910637707, "status": 200, "t": 1790990425.089525}
+{"ev": "authority_load", "ms": 1239.5866659935564, "t": 1790990429.331956}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2102.5275830179453, "status": 200, "t": 1790990430.194217}
+{"ev": "authority_load", "ms": 1208.8565831072628, "t": 1790990434.4083478}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1978.3081670757383, "status": 200, "t": 1790990435.176204}
+{"ev": "authority_load", "ms": 1247.855416033417, "t": 1790990439.428019}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1582.789999898523, "err": "ModelLoadError", "t": 1790990439.761687}
+{"ev": "authority_load", "ms": 1233.758541988209, "t": 1790990444.0017002}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1959.9894999992102, "status": 200, "t": 1790990444.725781}
+{"ev": "authority_load", "ms": 1333.0935831181705, "t": 1790990448.2748952}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2184.328833129257, "status": 200, "t": 1790990449.123905}
+{"ev": "authority_load", "ms": 1527.8357088100165, "t": 1790990449.257251}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2250.5816670600325, "status": 200, "t": 1790990449.9791622}
+{"ev": "authority_load", "ms": 1106.591833056882, "t": 1790990454.088976}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1843.3946669101715, "status": 200, "t": 1790990454.824703}
+{"ev": "authority_load", "ms": 1121.979125076905, "t": 1790990458.953142}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1848.0390841141343, "status": 200, "t": 1790990459.677345}
+{"ev": "authority_load", "ms": 1081.286249915138, "t": 1790990463.764547}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1803.6237498745322, "status": 200, "t": 1790990464.485284}
+{"ev": "authority_load", "ms": 1127.913875039667, "t": 1790990468.6178792}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1847.9705420322716, "status": 200, "t": 1790990469.336469}
+{"ev": "authority_load", "ms": 1118.2070830836892, "t": 1790990473.462922}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1843.0697920266539, "status": 200, "t": 1790990474.186116}
+{"ev": "authority_load", "ms": 1111.1333339940757, "t": 1790990478.301918}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1847.0742909703404, "status": 200, "t": 1790990479.036271}
+{"ev": "authority_load", "ms": 1169.7693329770118, "t": 1790990480.296073}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1881.5513330046088, "status": 200, "t": 1790990481.007141}
+{"ev": "authority_load", "ms": 1100.1611661631614, "t": 1790990483.1404831}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1835.1484169252217, "status": 200, "t": 1790990483.874604}
+{"ev": "authority_load", "ms": 1112.200666917488, "t": 1790990487.993684}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1849.7502079699188, "status": 200, "t": 1790990488.729274}
+{"ev": "authority_load", "ms": 1156.4282078761607, "t": 1790990492.888182}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1912.022874923423, "status": 200, "t": 1790990493.6430988}
+{"ev": "authority_load", "ms": 1111.3705409225076, "t": 1790990497.761076}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1844.5954590570182, "status": 200, "t": 1790990498.492775}
+{"ev": "authority_load", "ms": 1201.368749840185, "t": 1790990502.699306}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1950.609999941662, "status": 200, "t": 1790990503.4470332}
+{"ev": "authority_load", "ms": 1209.0394999831915, "t": 1790990507.662252}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1931.7464160267264, "status": 200, "t": 1790990508.383362}
+{"ev": "authority_load", "ms": 1749.7158751357347, "t": 1790990512.760422}
+{"ev": "authority_load", "ms": 1874.5889579877257, "t": 1790990513.262013}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2598.721417132765, "status": 200, "t": 1790990513.608423}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 2609.322125092149, "status": 200, "t": 1790990513.995918}
+{"ev": "authority_load", "ms": 1075.9417079389095, "t": 1790990518.0771441}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1794.1948340740055, "status": 200, "t": 1790990518.793826}
+{"ev": "authority_load", "ms": 1124.913667095825, "t": 1790990523.1283479}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1872.8934158571064, "status": 200, "t": 1790990523.875485}
+{"ev": "authority_load", "ms": 1104.0885839611292, "t": 1790990527.985367}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1827.5696670170873, "status": 200, "t": 1790990528.707218}
+{"ev": "authority_load", "ms": 1089.5277499221265, "t": 1790990532.801632}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1815.7666251063347, "status": 200, "t": 1790990533.52651}
+{"ev": "authority_load", "ms": 1101.7397500108927, "t": 1790990537.632923}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1695.472750114277, "err": "ModelLoadError", "t": 1790990538.2250712}
+{"ev": "authority_load", "ms": 1089.0122500713915, "t": 1790990542.31885}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1819.224583916366, "status": 200, "t": 1790990543.04757}
+{"ev": "authority_load", "ms": 1084.2379999812692, "t": 1790990544.696815}
+{"ev": "oMLX_http_err", "path": "/v1/models/status", "ms": 1381.9649161305279, "err": "ModelLoadError", "t": 1790990544.993036}
+{"ev": "authority_load", "ms": 1097.8840838652104, "t": 1790990547.151478}
+{"ev": "oMLX_http", "method": "GET", "path": "/v1/models/status", "ms_to_headers": 1825.4908749368042, "status": 200, "t": 1790990547.877666}

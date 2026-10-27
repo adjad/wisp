@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wisp Session Hub</title>
+<style>
+:root{
+  --bg:#0c0f14; --panel:#131821; --panel2:#181e2a; --line:#242c3b; --text:#e6eaf2; --mute:#8b95a8;
+  --accent:#7aa2ff; --run:#5ee0a0; --warn:#ffb86b; --bad:#ff7a85; --done:#6b7488; --review:#c19bff;
+}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(1200px 600px at 80% -10%,#1a2340 0,transparent 60%),var(--bg);color:var(--text);
+  font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,sans-serif;height:100vh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line);backdrop-filter:blur(10px)}
+h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.2px}
+.sub{color:var(--mute);font-size:12px}
+.grow{flex:1}
+input,textarea,select,button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+button{cursor:pointer} button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);color:#0a1020;border-color:var(--accent);font-weight:600}
+button:disabled{opacity:.45;cursor:not-allowed}
+main{flex:1;display:flex;min-height:0}
+nav{width:210px;border-right:1px solid var(--line);padding:14px;overflow:auto;flex:none}
+nav h3{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--mute);margin:14px 0 6px}
+nav .item{display:flex;justify-content:space-between;padding:5px 8px;border-radius:7px;cursor:pointer;color:var(--mute)}
+nav .item:hover{background:var(--panel)} nav .item.on{background:var(--panel2);color:var(--text)}
+nav .n{font-variant-numeric:tabular-nums}
+#board{flex:1;display:grid;grid-template-columns:repeat(3,minmax(240px,1fr));gap:12px;padding:16px;overflow:auto;min-width:0}
+.col{display:flex;flex-direction:column;min-height:0}
+.col h2{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--mute);margin:0 0 8px;display:flex;gap:8px;align-items:center}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.cards{display:flex;flex-direction:column;gap:8px;overflow:auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;cursor:pointer;transition:.15s}
+.card:hover{border-color:var(--accent);transform:translateY(-1px)}
+.card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.card .t{font-weight:600;margin-bottom:4px}
+.card .goal{color:var(--mute);font-size:12.5px;margin-bottom:6px}
+.card .bl{color:var(--warn);font-size:12.5px;margin-bottom:6px}
+.card .now{font-size:13px;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.card .now b{color:var(--accent);font-weight:600;margin-right:4px}
+.card .o{color:var(--mute);font-size:12.5px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:11px;color:var(--mute)}
+.chip{padding:1px 7px;border-radius:99px;border:1px solid var(--line);white-space:nowrap}
+.chip.bad{color:var(--bad);border-color:#5a2a30} .chip.warn{color:var(--warn);border-color:#5a4426}
+.chip.ok{color:var(--run);border-color:#1f4a37} .chip.rev{color:var(--review);border-color:#43336b}
+.pulse{animation:p 1.6s infinite} @keyframes p{50%{opacity:.35}}
+aside{width:0;overflow:hidden;border-left:1px solid var(--line);background:var(--panel);flex:none;transition:width .2s}
+aside.open{width:min(520px,45vw);overflow:auto}
+.pad{padding:18px;width:min(520px,45vw)}
+.pad h2{margin:0 0 4px;font-size:17px}
+.sec{margin-top:18px}
+.sec h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--mute)}
+.blk{border:1px solid #5a4426;background:#2a2113;border-radius:9px;padding:8px 10px;margin-bottom:6px;font-size:13px}
+.blk.ci,.blk.errors,.blk.stuck,.blk.conflict{border-color:#5a2a30;background:#2a1519}
+.turn{border-left:2px solid var(--line);padding:0 0 14px 12px;margin-left:4px;position:relative}
+.turn:before{content:"";position:absolute;left:-5px;top:4px;width:8px;height:8px;border-radius:50%;background:var(--accent)}
+.turn.err:before{background:var(--bad)}
+.turn .p{font-weight:600} .turn .r{color:var(--mute);margin-top:3px;white-space:pre-wrap}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+textarea{width:100%;min-height:84px;resize:vertical}
+pre{white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:220px;overflow:auto;font-size:12px}
+a{color:var(--accent);text-decoration:none}
+.empty{color:var(--mute);font-size:12px;padding:8px}
+@media (max-width:900px){nav{display:none}#board{grid-template-columns:1fr}aside.open{position:fixed;inset:0;width:100%}.pad{width:100%}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Wisp Session Hub</h1><span class="sub" id="summary"></span>
+  <span class="grow"></span>
+  <input id="q" placeholder="Search chats…" style="width:220px">
+  <span class="sub"><span class="dot pulse" id="live" style="background:var(--run)"></span> <span id="upd"></span></span>
+</header>
+<main>
+  <nav id="nav"></nav>
+  <section id="board"></section>
+  <aside id="detail"></aside>
+</main>
+<script>
+const TOKEN="__TOKEN__";
+const COLS=[["attention","Needs your attention","var(--warn)"],["working","Working on","var(--run)"],["recent","Recently completed","var(--done)"]];
+const WINDOWS={"12h":43200,"24h":86400,"48h":172800,"7d":604800};
+let S=[],sel=null,ws="All",pollJob=null,win=localStorage.getItem("hubWin")||"48h";
+const bucket=s=>{
+  if(s.state==="attention")return"attention";
+  if(s.state==="running"||s.state==="in_review")return"working";
+  if((s.state==="done"||s.state==="idle")&&Date.now()/1000-s.lastActivity<WINDOWS[win])return"recent";
+  return null};
+const $=s=>document.querySelector(s);
+const md=t=>String(t??"").replace(/\[([^\]]+)\]\([^)]*\)/g,"$1").replace(/[*`#>|]|^[-\s:]+$/gm," ").replace(/\s+/g," ").trim();
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const api=(p,o={})=>fetch(p,{...o,headers:{"X-Hub-Token":TOKEN,"Content-Type":"application/json"}}).then(r=>r.json());
+const ago=t=>{const s=Date.now()/1000-t;if(s<90)return"just now";if(s<3600)return Math.round(s/60)+"m ago";if(s<86400)return Math.round(s/3600)+"h ago";return Math.round(s/86400)+"d ago"};
+
+async function load(){
+  const d=await api("/api/sessions"); S=d.sessions; render();
+  if(sel) openDetail(sel,true);
+  $("#upd").textContent="live · "+new Date().toLocaleTimeString();$("#live").style.background="var(--run)";
+}
+function visible(){
+  const q=$("#q").value.toLowerCase();
+  return S.filter(s=>(ws==="All"||s.workstream===ws)&&(!q||(s.title+s.lastOutcome+s.note+s.workstream).toLowerCase().includes(q)));
+}
+function render(){
+  const v=visible();
+  const wsCount={};S.forEach(s=>wsCount[s.workstream]=(wsCount[s.workstream]||0)+1);
+  $("#nav").innerHTML=`<h3>Workstreams</h3>`+[["All",S.length],...Object.entries(wsCount).sort((a,b)=>b[1]-a[1])]
+    .map(([k,n])=>`<div class="item ${k===ws?"on":""}" data-ws="${esc(k)}"><span>${esc(k)}</span><span class="n">${n}</span></div>`).join("");
+  document.querySelectorAll("#nav .item").forEach(e=>e.onclick=()=>{ws=e.dataset.ws;render()});
+  const att=S.filter(s=>bucket(s)==="attention").length,run=S.filter(s=>bucket(s)==="working").length;
+  $("#summary").textContent=`${run} in progress · ${att} need you`;
+  const hidden=v.filter(s=>!bucket(s)).length;
+  $("#board").innerHTML=COLS.map(([k,label,color])=>{
+    const items=v.filter(s=>bucket(s)===k);
+    if(k==="recent")items.sort((a,b)=>b.lastActivity-a.lastActivity);
+    return `<div class="col"><h2><span class="dot ${k==="working"?"pulse":""}" style="background:${color}"></span>${label} <span class="sub">${items.length}</span>
+      ${k==="recent"?`<select id="win" style="margin-left:auto;padding:1px 6px">${Object.keys(WINDOWS).map(w=>`<option ${w===win?"selected":""}>${w}</option>`).join("")}</select>`:""}</h2>
+      <div class="cards">${items.map(card).join("")||'<div class="empty">Nothing here</div>'}
+      ${k==="recent"&&hidden?`<div class="empty">${hidden} older chats hidden</div>`:""}</div></div>`}).join("");
+  const w=$("#win");if(w)w.onchange=e=>{win=e.target.value;localStorage.setItem("hubWin",win);render()};
+  document.querySelectorAll(".card").forEach(e=>e.onclick=()=>openDetail(e.dataset.id));
+}
+function prChip(p){
+  if(!p)return"";const st=p.state||"PR";
+  const c=st==="MERGED"?"ok":st==="OPEN"?"rev":"";
+  return `<span class="chip ${c}">#${p.number} ${esc(st.toLowerCase())}${p.failing&&p.failing.length?" · CI ✗":p.pending?" · CI …":""}</span>`;
+}
+function card(s){
+  const lp=s.prs.length?s.prs.reduce((a,b)=>a.number>b.number?a:b):null;
+  const verb={attention:"Waiting on you",working:"Now",recent:"Result"}[bucket(s)]||"Now";
+  return `<div class="card ${s.id===sel?"sel":""}" data-id="${s.id}">
+   <div class="t">${s.pinned?"📌 ":""}${esc(s.title)}</div>
+   <div class="goal">${esc(md(s.goal))}</div>
+   ${s.blockers.length?`<div class="bl">⚠ ${esc(md(s.blockers[0].text))}</div>`:""}
+   <div class="now"><b>${verb}</b> ${esc(md(s.now)||"No activity recorded")}</div>
+   <div class="meta">${prChip(lp)}<span class="chip">${esc(s.workstream)}</span><span class="chip">${ago(s.lastActivity)}</span>
+     ${s.summarySource==="ai"?'<span class="chip" title="Summarized by Claude">✦</span>':""}</div></div>`;
+}
+async function openDetail(id,quiet){
+  sel=id; const d=await api("/api/session/"+id); if(d.error)return;
+  const a=$("#detail"); a.classList.add("open");
+  if(quiet&&document.activeElement&&a.contains(document.activeElement))return; // don't clobber typing
+  const wsOpts=[...new Set([...S.map(s=>s.workstream),d.workstream])].sort();
+  a.innerHTML=`<div class="pad">
+   <div class="row"><h2 style="flex:1">${esc(d.title)}</h2><button onclick="closeDetail()">✕</button></div>
+   <div class="sub">${esc(d.model||"")} · ${d.turnCount} turns · ${d.toolCalls} tool calls · ${esc(d.branch||d.cwd.split("/").pop())} · ${ago(d.lastActivity)}</div>
+   <div class="goal" style="margin-top:6px;color:var(--mute)">${esc(md(d.goal))}</div>
+   <div style="margin-top:6px"><b style="color:var(--accent)">Now</b> ${esc(md(d.now))}</div>
+   <div class="row" style="margin-top:8px"><a href="${esc(d.link)}">Open in Claude app ↗</a>
+     ${d.prs.map(p=>`<a href="${esc(p.url)}" target="_blank">PR #${p.number}</a>${prChip(p)}`).join("")}</div>
+   ${d.blockers.length?`<div class="sec"><h4>Blockers</h4>${d.blockers.map(b=>`<div class="blk ${b.kind}">${esc(b.text)}</div>`).join("")}</div>`:""}
+   <div class="sec"><h4>Steer</h4>
+     ${d.running?`<div class="blk">This chat is mid-turn. Steering is disabled to avoid forking its transcript. <a href="${esc(d.link)}">Steer in the app</a>.</div>`:""}
+     <textarea id="msg" placeholder="Tell this chat what to do next. It resumes with its full context."></textarea>
+     <div class="row" style="margin-top:6px"><select id="mode">
+        <option value="acceptEdits">Accept edits</option><option value="plan">Plan only</option>
+        <option value="default">Ask permission</option><option value="bypassPermissions">Bypass (${esc(d.permissionMode==="bypassPermissions"?"this chat's mode":"use with care")})</option></select>
+       <button class="primary" id="send" ${d.running?"disabled":""}>Send</button><span class="sub" id="sendst"></span></div>
+     ${(d.jobs||[]).map(j=>`<div class="sec"><div class="sub">${esc(j.status)} · “${esc(j.message.slice(0,80))}”</div>${j.output?`<pre>${esc(j.output)}</pre>`:""}</div>`).join("")}
+   </div>
+   <div class="sec"><h4>Organize</h4>
+     <div class="row"><select id="wsel">${wsOpts.map(w=>`<option ${w===d.workstream?"selected":""}>${esc(w)}</option>`).join("")}</select>
+      <input id="newws" placeholder="or new workstream" style="width:150px">
+      <button id="pin">${d.pinned?"Unpin":"Pin"}</button><button id="done">${d.state==="done"?"Reopen":"Mark done"}</button></div>
+     <textarea id="note" style="min-height:52px;margin-top:6px" placeholder="Private note (e.g. waiting on Intel box, revisit after demo)">${esc(d.note)}</textarea></div>
+   <div class="sec"><h4>What's happened</h4>${d.turns.map(t=>`<div class="turn ${t.errors>2?"err":""}">
+      <div class="sub">${new Date(t.ts*1000).toLocaleString()} · ${t.tools} tools${t.edits?` · ${t.edits} edits`:""}${t.errors?` · ${t.errors} errors`:""}</div>
+      <div class="p">${esc(t.prompt.slice(0,240))}</div><div class="r">${esc(md(t.outcome).slice(0,420))}</div></div>`).join("")||'<div class="empty">No transcript found.</div>'}</div>
+  </div>`;
+  const org=b=>api("/api/session/"+id+"/organize",{method:"POST",body:JSON.stringify(b)}).then(()=>load());
+  $("#wsel").onchange=e=>org({workstream:e.target.value});
+  $("#newws").onkeydown=e=>{if(e.key==="Enter"&&e.target.value.trim())org({workstream:e.target.value.trim()})};
+  $("#pin").onclick=()=>org({pinned:!d.pinned});
+  $("#done").onclick=()=>org({done:d.state!=="done"});
+  $("#note").onblur=e=>{if(e.target.value!==d.note)org({note:e.target.value})};
+  $("#send").onclick=async()=>{
+    const message=$("#msg").value.trim();if(!message)return;
+    $("#send").disabled=true;$("#sendst").textContent="Sending…";
+    const r=await api("/api/session/"+id+"/steer",{method:"POST",body:JSON.stringify({message,mode:$("#mode").value})});
+    if(r.error){
+      $("#sendst").innerHTML=esc(r.error)+(r.cliDown?` <button id="cp">Copy message</button> <a href="${esc(d.link)}">Open chat</a>`:"");
+      if(r.cliDown)$("#cp").onclick=()=>navigator.clipboard.writeText(message);
+      $("#send").disabled=false;return}
+    $("#sendst").textContent="Sent. The chat is working on it…";$("#msg").value="";
+    clearInterval(pollJob);pollJob=setInterval(async()=>{
+      const j=await api("/api/job/"+r.job);
+      if(j.status!=="running"){clearInterval(pollJob);load()}
+    },3000);
+  };
+}
+function closeDetail(){sel=null;$("#detail").classList.remove("open");render()}
+$("#q").oninput=render;
+const tick=()=>load().catch(()=>{$("#live").style.background="var(--bad)";$("#upd").textContent="disconnected, retrying…"});
+tick();setInterval(tick,3000);
+</script>
+</body>
+</html>

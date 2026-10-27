@@ -1897,7 +1897,12 @@ _COMPOSE_RE = re.compile(
     # leading "email …" is the verb, whereas the noun sense ("email from X",
     # "emails yesterday") doesn't start the sentence. \b keeps plural "emails"
     # out, which is what makes that distinction hold.
-    r"^(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:e-?mail|text|message|dm)\s+\w|"
+    # A bare report noun is not a recipient: "email summary" / "text summary"
+    # name the thing to read (an inbox or messages digest). Read as an
+    # imperative they forced a send route, and the model fabricated a "weekly
+    # summary" to Mom's phone number (debug export 2026-10-22).
+    r"^(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:e-?mail|text|message|dm)\s+"
+    r"(?!(?:summary|summaries|digest|recap|overview|report)s?\s*[.?!]?\s*$)\w|"
     r"\bemail\s+(?:my\s+|the\s+|to\s+)?(?:professor|prof|teacher|boss|mom|dad|"
     r"friend|colleague|him|her|them|everyone|someone|back)\b|"
     # "text/email/message <anyone> back" — "back" is the reliable tell (an
