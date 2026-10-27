@@ -592,8 +592,13 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
         native_rows = native_email_accounts()
         native_rows = [{"account": r["name"], "account_id": r["id"]} for r in native_rows]
     selected = _resolve_account_groups(account, native_rows)[0] if account else None
+    # The account-less half of a per-account summary leaves out the linked
+    # accounts, and so must its status lines: each is stated by its own section.
+    excluded = _EXCLUDED_ACCOUNT_GROUPS.get() if not account else frozenset()
     for address, item in _external_accounts.items():
         if selected is not None and _account_group(address, address) not in selected:
+            continue
+        if _account_group(address, address) in excluded:
             continue
         stamp = _source_receipt(item.get(part + "_at"))
         error = str(item.get(part + "_error") or "")
@@ -608,6 +613,8 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
     for row in native_rows:
         label, native_id = row["account"], row["account_id"]
         if not label or selected is not None and _account_group(label, native_id) not in selected:
+            continue
+        if _account_group(label, native_id) in excluded:
             continue
         if any(_covered_source(label, native_id, address, item) for address, item in provided):
             continue
@@ -1392,6 +1399,20 @@ def _parse_pipe_lines(text: str) -> list[tuple[float, str, str, str, bool | None
     return out
 
 
+def _norm_mid(value: str) -> str:
+    """Message-ID in comparable form: Gmail reports ``<id@host>``, Mail ``id@host``."""
+    return (value or "").strip().strip("<>").strip().casefold()
+
+
+def _rfc_mid(row: dict) -> str:
+    """The row's RFC Message-ID, or "" when it carries a reader-local token.
+
+    Mail's SQLite reader stores an opaque numeric hash in that column; it can
+    never equal (or contradict) a Gmail ``id@host`` Message-ID."""
+    value = _norm_mid(row.get("message_id", ""))
+    return value if "@" in value else ""
+
+
 def _normalized_address(value: str) -> str:
     address = parseaddr(value or "")[1].strip().casefold()
     return address if "@" in address and not any(c.isspace() for c in address) else ""
@@ -1439,7 +1460,7 @@ def _parse_header_records(text: str, *, snapshot: str = "") -> list[dict]:
         account_key = record["account_id"] or record["account"].casefold()
         keys = []
         if account_key and record["message_id"]:
-            keys.append(("message", account_key, record["message_id"].casefold()))
+            keys.append(("message", account_key, _norm_mid(record["message_id"])))
         if account_key and record["native_id"]:
             keys.append(("native", account_key, record["native_id"].casefold()))
         if not keys and line.startswith("H2\x01"):
@@ -1469,7 +1490,7 @@ def _unique_records(rows: list[dict]) -> list[dict]:
         identities = []
         if account and row.get("message_id"):
             identities.append(("message", _account_group(row["account"], row["account_id"]),
-                               row["message_id"].casefold()))
+                               _norm_mid(row["message_id"])))
         if account and row.get("native_id"):
             identities.append(("native", account, row["native_id"].casefold()))
         if not identities:
@@ -1495,10 +1516,10 @@ def _unique_records(rows: list[dict]) -> list[dict]:
         return row.get("native_id", "").split(":", 1)[0]
 
     def mid(row: dict) -> str:
-        return (row.get("message_id") or "").casefold()
+        return _norm_mid(row.get("message_id") or "")
 
     def ids_conflict(a: dict, b: dict) -> bool:
-        return bool(mid(a) and mid(b) and mid(a) != mid(b))
+        return bool(_rfc_mid(a) and _rfc_mid(b) and _rfc_mid(a) != _rfc_mid(b))
 
     recent = [row for row in result if row.get("_snapshot") == "recent"]
     # Indexed once, so pairing is linear in the rows, not recent x history
@@ -1551,8 +1572,97 @@ def _unique_records(rows: list[dict]) -> list[dict]:
                     other["_cross_source_uncertain"] = True
                     row["_cross_source_uncertain"] = True
         paired.append(row)
-    result = paired
-    return result
+    return _collapse_cross_source(paired)
+
+
+# Gmail's internalDate and Mail's date-received are the same moment read from
+# two clocks; allow a little skew, no more.
+_CROSS_SOURCE_WINDOW_SECONDS = 120.0
+# The same message filed under a Mail account that is really a linked Google
+# account (labelled "Google", not by address) is compared across groups.
+_CROSS_GROUP_WINDOW_SECONDS = 300.0
+
+
+def _subject_key(subject: str) -> str:
+    return " ".join((subject or "").split()).casefold()
+
+
+def _source_kind(row: dict) -> str:
+    """Which reader produced the row: Mail's native IDs carry a ``mail:`` /
+    ``db:`` style prefix, Gmail's are bare; rows with none (legacy) are unknown."""
+    native = row.get("native_id", "")
+    if not native:
+        return ""
+    return "mail" if ":" in native else "gmail"
+
+
+def _collapse_cross_source(rows: list[dict]) -> list[dict]:
+    """Fold the same message delivered by two sources (Gmail API and Mail.app).
+
+    The exact keys in _unique_records need a shared Message-ID or native ID, and
+    the two readers share neither (Gmail's id is bracketed, Mail's SQLite
+    column is an opaque hash). Fall back to the visible header: same account,
+    same sender address, same subject, within two minutes, from DIFFERENT
+    readers and without contradicting RFC Message-IDs. Rows from one reader are
+    never merged here, so two genuine same-subject messages from one source
+    stay separate. Pairing is one-to-one."""
+    buckets: dict[tuple, list[int]] = {}
+    for index, row in enumerate(rows):
+        address = row.get("sender_address", "")
+        if address:
+            key = (_account_group(row["account"], row.get("account_id", "")),
+                   address, _subject_key(row.get("subject", "")))
+            buckets.setdefault(key, []).append(index)
+    drop: set[int] = set()
+    for indexes in buckets.values():
+        if len(indexes) < 2:
+            continue
+        # Current read state wins over a historical copy; then known read state.
+        order = sorted(indexes, key=lambda i: (rows[i].get("_snapshot") != "recent",
+                                               rows[i].get("unread") is None, -rows[i]["ts"]))
+        kept: list[int] = []
+        partnered: set[int] = set()
+        for index in order:
+            row = rows[index]
+            partner = next((k for k in kept
+                            if k not in partnered
+                            and _source_kind(rows[k]) and _source_kind(row)
+                            and _source_kind(rows[k]) != _source_kind(row)
+                            and abs(rows[k]["ts"] - row["ts"]) <= _CROSS_SOURCE_WINDOW_SECONDS
+                            and not (_rfc_mid(rows[k]) and _rfc_mid(row)
+                                     and _rfc_mid(rows[k]) != _rfc_mid(row))), None)
+            if partner is None:
+                kept.append(index)
+                continue
+            partnered.add(partner)
+            drop.add(index)
+            rows[partner]["_cross_source_matched"] = True
+    return [row for index, row in enumerate(rows) if index not in drop]
+
+
+def _drop_linked_duplicates(rows: list[dict], excluded: frozenset) -> list[dict]:
+    """Rows outside the linked accounts that a linked account already shows."""
+    shown_mids: set[str] = set()
+    shown_times: dict[tuple, list[float]] = {}
+    for row in rows:
+        if _account_group(row["account"], row.get("account_id", "")) not in excluded:
+            continue
+        if _rfc_mid(row):
+            shown_mids.add(_rfc_mid(row))
+        if row.get("sender_address"):
+            shown_times.setdefault((row["sender_address"], _subject_key(row.get("subject", ""))),
+                                   []).append(row["ts"])
+    kept = []
+    for row in rows:
+        if _account_group(row["account"], row.get("account_id", "")) in excluded:
+            continue
+        times = shown_times.get((row.get("sender_address", ""), _subject_key(row.get("subject", ""))), ())
+        if (_rfc_mid(row) and _rfc_mid(row) in shown_mids) or (
+                row.get("sender_address") and
+                any(abs(t - row["ts"]) <= _CROSS_GROUP_WINDOW_SECONDS for t in times)):
+            continue
+        kept.append(row)
+    return kept
 
 
 def header_scan_coverage(rows: list[dict], *, raw_headers: str | None = None,
@@ -1867,8 +1977,7 @@ def _filter_account(rows: list, account: str | None) -> list:
 def _filter_account_records(rows: list[dict], account: str | None) -> list[dict]:
     if not account:
         excluded = _EXCLUDED_ACCOUNT_GROUPS.get()
-        return [r for r in rows if _account_group(r["account"], r.get("account_id", ""))
-                not in excluded] if excluded else rows
+        return _drop_linked_duplicates(rows, excluded) if excluded else rows
     keys, _ = _resolve_account_groups(account, rows)
     return [r for r in rows if len(keys) == 1 and _account_group(r["account"], r.get("account_id", "")) in keys]
 
@@ -3009,11 +3118,23 @@ async def summarize_emails(day: str | None = None, count: int = 20,
         token = _EXCLUDED_ACCOUNT_GROUPS.set(frozenset(linked.values()))
         try:
             body = await _summarize_one(day, count, None, period, unread)
+            # Status of the non-linked sources, for the case the section is
+            # dropped below (the lines would otherwise vanish with it).
+            status = "\n".join(dict.fromkeys(filter(None, (
+                email_freshness_warning(), _history_warning()))))
         finally:
             _EXCLUDED_ACCOUNT_GROUPS.reset(token)
-        sections.insert(0, f"## Your accounts\n{body}")
+        # What is left once the linked accounts' own mail is set aside. When a
+        # linked account's Mail copy sits under another label (a Mail account
+        # called "Google"), everything is a duplicate and nothing is left: one
+        # digest per account, not a combined digest on top of them.
+        lead = ""
+        if "Inbox digest" in body:
+            sections.insert(0, f"## Your accounts\n{body}")
+        else:
+            lead = status + "\n\n" if status else ""
         return ("Summarized per account; keep the account headings in your answer.\n\n"
-                + "\n\n".join(sections))
+                + lead + "\n\n".join(sections))
     return await _summarize_one(day, count, account, period, unread)
 
 
