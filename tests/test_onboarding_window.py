@@ -183,10 +183,12 @@ def test_setup_resumes_at_its_step_after_a_quit():
     # Every step change is saved, and the window opens at the saved step.
     assert "stepChanged: { [weak self] step in" in app
     assert "UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey)" in app
-    # The last step lets the service compose the first Brief, only while setup is unfinished.
+    # The last step lets the service compose the first Brief, only while setup is unfinished
+    # and the model answers (a Brief made without it would stand as the day's).
     hook = app[app.index("stepChanged: { [weak self] step in"):]
     hook = hook[:hook.index("askKeyRegistered:")]
-    assert "if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {" in hook
+    assert "if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) })," in hook
+    assert "self?.setupModel.status?.canAnswer == true {" in hook
     assert "client.onboardingBriefReady()" in hook
     assert hook.index("FirstRunSetup.stepKey") < hook.index("onboardingBriefReady")
     assert "initialStep: OnboardingStep.restored(defaults.object(forKey: FirstRunSetup.stepKey) as? Int)" in app

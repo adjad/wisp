@@ -688,3 +688,19 @@ def test_a_why_about_the_latest_lines_is_kept(store):
     card = next(c for c in snap(store)["cards"] if c["action"]["method"] == "text_reply")
     assert "talk tomorrow" in card["why"] and card["sources"][0]["quote"] == "yes! let's talk tmrw"
 
+
+def test_a_never_answered_text_keeps_its_own_sentence(store):
+    """Audit: with no line from the user, nothing came "after your last reply"."""
+    rows = [(NOW - 600, "Mom", "Mom: u free fri? need a hand w the move", GUID_MOM)]
+    items = sources.text_items(rows, now=NOW, own=ME)
+    assert items[0]["pending"] == []
+    model = Model(triage_reply=lambda m: {"title": "Moving help", "summary": "Mom asked if you are free Friday.",
+                                          "junk": False, "sensitive": False, "asks_of_me": "Help Mom move Friday"},
+                  judge_reply=lambda m: {"summary": "", "items": [
+                      {"title": "Reply to Mom", "action": "reply", "why": "Mom is waiting on your answer.",
+                       "due": "", "sources": ["S1"], "urgency": "high"}]})
+    run(store, model, items)
+    card = next(c for c in snap(store)["cards"] if c["action"]["method"] == "text_reply")
+    assert "after your last reply" not in card["body"] and "after your last reply" not in card["why"]
+    assert card["sources"][0]["quote"] == "u free fri? need a hand w the move"
+

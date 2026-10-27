@@ -1219,7 +1219,11 @@ struct FirstRunSetupView: View {
                                            : "It's built into Wisp, so there's nothing else to install.") {
                 if stalled {
                     HStack(spacing: 8) {
-                        Button("Try again") { Task { await setup.startEngine() } }.buttonStyle(FirstRunButtonStyle())
+                        Button("Try again") {
+                            // A fresh look: the person's oMLX gets the whole search window again.
+                            if ownOmlx { connectingSince = nil }
+                            Task { await setup.startEngine() }
+                        }.buttonStyle(FirstRunButtonStyle())
                         if ownOmlx {
                             Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
                         }

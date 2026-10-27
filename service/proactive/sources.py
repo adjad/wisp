@@ -707,9 +707,12 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
                 quotes.append(clean(body, 300))
         # The incoming lines since the user's own last line: what a reply card is
         # about. An earlier ask the user already answered must not headline it.
+        # Empty when the user hasn't written in this window: then every line is
+        # still waiting, and nothing was "after your last reply".
         last_mine = max((i for i, r in enumerate(rows) if r[2].partition(":")[0].strip() == "Me"), default=-1)
         pending = [clean(line.partition(":")[2], 300) for _, _, line in rows[last_mine + 1:]
-                   if line.partition(":")[0].strip() != "Me" and line.partition(":")[2].strip()]
+                   if line.partition(":")[0].strip() != "Me" and line.partition(":")[2].strip()] \
+            if last_mine >= 0 else []
         last_in = incoming[-1]
         speaker = last_in[2].partition(":")[0].strip()
         who = label if not group else (f"{speaker} in {label}" if speaker else label)

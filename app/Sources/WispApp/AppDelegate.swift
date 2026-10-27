@@ -524,8 +524,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey)
                 // The last step means the permissions and About you are answered, so the
                 // first Brief can be composed now instead of at its hour. Only during
-                // setup: Permissions… opened later never gets here.
-                if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {
+                // setup (Permissions… opened later never gets here), and only once the
+                // model answers: a Brief made without it would stand as the day's.
+                if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }),
+                   self?.setupModel.status?.canAnswer == true {
                     Task { await self?.client.onboardingBriefReady() }
                 }
             },
