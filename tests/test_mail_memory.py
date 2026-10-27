@@ -459,6 +459,8 @@ def ticking(tmp_path, monkeypatch, quiet):
     async def ready():
         return None
     monkeypatch.setattr(runner, "_stand_down", ready)
+    from service.inference import remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)   # never the live config
 
     async def no_gmail():
         return frozenset()
@@ -592,6 +594,41 @@ async def test_reply_stands_down_for_remote_only_and_a_busy_model(monkeypatch, q
     assert await runner._reply([{"role": "user", "content": "x"}]) is None
 
 
+@pytest.mark.parametrize("where", ["validate", "judge"])
+async def test_an_email_whose_dates_cannot_be_resolved_is_retired(ticking, monkeypatch, where):
+    """A model date phrase like "Pick up at 28" made the resolver raise ValueError,
+    which escaped tick() and left the email pending forever. Now it fails like any
+    other email: retried once, then retired, and the queue moves on."""
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5, mid="<lease-1@harbor.example>", ts=2.0), _row(6, ts=1.0)], extract.tier, now=1)
+
+    async def body(rowid):
+        return RAW, ""
+
+    async def reply(msgs):
+        return '{"items": [{"what": "Pick up", "date_phrase": "at 28", "evidence": "Pick up at 28", "suspicious": false}]}'
+
+    def boom(*a, **k):
+        raise ValueError("hour must be in 0..23")
+
+    monkeypatch.setattr(runner, "read_body", body)
+    monkeypatch.setattr(runner, "_reply", reply)
+    monkeypatch.setattr(extract if where == "validate" else runner.importance,
+                        "validate" if where == "validate" else "judge", boom)
+    if where == "judge":
+        monkeypatch.setattr(extract, "validate", lambda items, email, **k: ([dict(items[0])], {}))
+    key = st.message("<lease-1@harbor.example>")["key"]
+    now = NOW + 1
+    for _ in range(store_mod.MAX_ATTEMPTS):
+        assert await runner.tick(now=now) == runner.BETWEEN_GAP_S
+        now += store_mod.RETRY_S + 1
+    row = st.message("<lease-1@harbor.example>")
+    assert row["key"] == key and row["state"] == "failed" and row["note"] == "validate:ValueError"
+    nxt = st.next_pending(now)
+    assert nxt is not None and nxt["key"] == st.message("<m6@x>")["key"]   # the queue moves on
+
+
 async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypatch, quiet):
     st = ticking
     st.set_meta("last_index", str(NOW))
@@ -611,7 +648,8 @@ async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypa
                                                  (False, [], "BUSY_GAP_S"),
                                                  (False, ["fast-model", "other"], "BUSY_GAP_S")])
 async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, remote, loaded, gap):
-    """A remote-only profile or a model that isn't resident: no index read, no body read."""
+    """A remote-only profile: no index read, no body read. A model that isn't resident:
+    the index is still read (it costs no model time), but no email."""
     st = ticking
     monkeypatch.setattr(runner, "_stand_down", _REAL_STAND_DOWN)
     monkeypatch.setattr(runner, "_model_key", lambda: "fast-model")
@@ -636,13 +674,65 @@ async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, re
     async def never(*a):
         raise AssertionError("read mail the model can't take")
 
-    monkeypatch.setattr(runner, "read_index", never)
+    indexed = []
+
+    async def index(days):
+        indexed.append(days)
+        return [], False
+
+    monkeypatch.setattr(runner, "read_index", never if remote else index)
     monkeypatch.setattr(runner, "read_body", never)
-    assert await runner.tick(now=NOW + 1) == getattr(runner, gap)
+    first = await runner.tick(now=NOW + 1)
+    if remote:
+        assert first == runner.FAILURE_GAP_S
+    else:
+        assert indexed == [runner.WINDOW_DAYS] and st.meta("last_index")
     st.set_meta("last_index", str(NOW))
     st.upsert_index([_row(5)], extract.tier, now=1)
     assert await runner.tick(now=NOW + 2) == getattr(runner, gap)
     assert st.message("<m5@x>")["attempts"] == 0
+
+
+@pytest.mark.parametrize("busy_by", ["turn", "recent_use"])
+async def test_a_busy_model_never_holds_up_the_index(ticking, monkeypatch, quiet, busy_by):
+    """2026-10-27: Brief and proactive work kept the model in use all morning, and the
+    index waited with it, so nothing queued. The index now goes first; email waits."""
+    st = ticking
+    if busy_by == "turn":
+        monkeypatch.setattr(quiet, "foreground_busy", lambda: True)
+    elif busy_by == "recent_use":
+        monkeypatch.setattr(quiet, "last_used", lambda key: time.monotonic())
+    assert runner.level("m") == "busy"
+
+    async def index(days):
+        return [_row(5)], False
+
+    async def never(*a):
+        raise AssertionError("read an email while the model was busy")
+
+    monkeypatch.setattr(runner, "read_index", index)
+    monkeypatch.setattr(runner, "read_body", never)
+    monkeypatch.setattr(runner, "_reply", never)
+    assert await runner.tick(now=NOW + 1) == runner.BUSY_GAP_S
+    assert st.stats()["queue"] == {"pending": 1} and st.meta("last_index")
+    assert await runner.tick(now=NOW + 2) == runner.BUSY_GAP_S          # due no more: email waits
+    assert st.message("<m5@x>")["attempts"] == 0
+
+
+@pytest.mark.parametrize("power", [(False, 20, False), (True, None, True)])
+async def test_low_power_skips_even_the_index(ticking, monkeypatch, power):
+    """Low Power Mode or battery under 30%: nothing runs, the index (and its Gmail
+    tab lookup) included."""
+    monkeypatch.setattr(runner, "_power", lambda: power)
+
+    async def never(*a):
+        raise AssertionError("ran while saving power")
+
+    monkeypatch.setattr(runner, "read_index", never)
+    monkeypatch.setattr(runner, "_gmail_excluded", never)
+    monkeypatch.setattr(runner, "read_body", never)
+    assert await runner.tick(now=NOW + 1) == runner.BUSY_GAP_S
+    assert not ticking.meta("last_index")
 
 
 async def test_stand_down_says_why(monkeypatch, quiet):
@@ -992,7 +1082,25 @@ async def test_a_good_index_read_clears_the_error(failing, monkeypatch, caplog):
     _index_fails(monkeypatch, "no_mail_index")
     st.set_meta("last_index", "0")
     await runner._run()
-    assert len(_warnings(caplog)) == 2           # recovered, so the next failure is news again
+    assert len(_warnings(caplog)) == 1           # the same reason within the hour: INFO, even after a recovery
+    assert st.health()["last_error"] == "no_mail_index"
+
+
+async def test_an_email_that_keeps_timing_out_between_good_reads_warns_once_an_hour(failing, monkeypatch, caplog):
+    st = failing
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5, ts=3.0), _row(6, ts=2.0), _row(7, ts=1.0)], extract.tier, now=1)
+    answers = iter([bridge.BridgeError("body_timeout"), (None, "not_on_disk"), bridge.BridgeError("body_timeout")])
+
+    async def body(rowid):
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(runner, "read_body", body)
+    for i in range(3):
+        await runner.tick(now=NOW + 1 + i)
+    assert len(_warnings(caplog)) == 1
 
 
 async def test_an_unreadable_index_on_a_body_read_is_recorded(failing, monkeypatch, caplog):
@@ -1021,6 +1129,9 @@ async def test_an_unexpected_error_is_recorded_by_type_only(failing, monkeypatch
     await runner._run()
     assert failing.health()["last_error"] == "unexpected:KeyError"
     assert "dana@example.com" not in str(failing.health())
+    logged = [r for r in caplog.records if r.name == "wisp.mail_memory"]
+    assert any("KeyError at test_mail_memory.py:" in r.getMessage() for r in logged)
+    assert not any("dana@example.com" in r.getMessage() or r.exc_info for r in logged)
 
 
 async def test_failure_records_carry_a_reason_code_never_mail_text(failing, monkeypatch, caplog):
