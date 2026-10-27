@@ -740,3 +740,9 @@ def test_wiring():
     assert 'case "mail_memory_read":' in overlay
     assert 'appendingPathComponent("assistant/sync/mail_memory")' in delegate
     assert "tests/MailMemoryReaderRegression.swift" in gate
+
+
+def test_about_explains_mail_suggestions():
+    from service import wisp_about
+    got = wisp_about.howto("how do I turn off mail suggestions")
+    assert got.startswith("- **Mail suggestions**") and "Privacy & Access" in got and "promotions" in got

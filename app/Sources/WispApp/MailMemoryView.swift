@@ -38,11 +38,11 @@ struct MailMemorySection: View {
     @ViewBuilder private var content: some View {
         if memory.mode == "live", !memory.suggestions.isEmpty || memory.confirmation != nil {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Found in your mail").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                Text("Found in your mail").font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
                     .accessibilityAddTraits(.isHeader)
                 ForEach(memory.suggestions.prefix(3)) { item in row(item) }
                 if let confirmation = memory.confirmation {
-                    Text(confirmation).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Text(confirmation).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                 }
             }
             .padding(.top, 2)
@@ -55,8 +55,8 @@ struct MailMemorySection: View {
         return VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(item.what).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(2)
-                    Text("\(item.dueLabel()) · \(item.detail)").font(.system(size: 11))
+                    Text(item.what).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(2)
+                    Text("\(item.dueLabel()) · \(item.detail)").font(.wisp(size: 11))
                         .foregroundStyle(Theme.textMuted).lineLimit(1)
                 }
                 .accessibilityElement(children: .combine)
@@ -81,7 +81,7 @@ struct MailMemorySection: View {
                 }
             }
             if let failure = memory.failures[item.id] {
-                Text(failure).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text(failure).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

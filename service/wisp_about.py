@@ -674,6 +674,13 @@ _HOWTO = (
     (r"about me|know me|my name|profile|getting to know|tone|goals?|call me",
      "**Tell Wisp about you**: type **/about**, or choose **Tell Wisp About You…** from the "
      "menu bar icon. Change or erase it any time in the Wisp window's Memory → About you."),
+    (r"mail suggestion|suggestions? from (?:my )?(?:mail|email)|found in your mail|old(?:er)? (?:mail|email)|mail memory",
+     "**Mail suggestions**: when nobody is asking me anything, I read your Sent mail and Mail's "
+     "Primary, Transactions and Updates from the last 90 days, on this Mac, and find dates you "
+     "might forget. The Brief shows only the important ones (yours to keep, from a person, about "
+     "money, an account or an appointment) due within 30 days: **Add** puts one in Reminders. "
+     "I never read spam, trash, archive or promotions. Turn it off or to Record only in "
+     "Settings → Privacy & Access → **Mail suggestions**."),
     (r"remember|memory|forget",
      "**Memory**: say \"remember that…\" and I'll keep it. Type **/memory** to see or delete "
      "what I've saved."),
