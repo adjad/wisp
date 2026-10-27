@@ -434,7 +434,8 @@ async def lifespan(app: FastAPI):
             from service.memory.api import worker as memory_worker
             started_tasks.append(asyncio.create_task(memory_worker.run(client)))
     # /resetwisp stops these before it deletes anything (service/wisp_reset.py).
-    app.state.wisp_background_tasks = started_tasks
+    if app is not None:    # tests drive lifespan(None)
+        app.state.wisp_background_tasks = started_tasks
     recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
@@ -444,7 +445,8 @@ async def lifespan(app: FastAPI):
         bridge_link = browser_bridge_host.start_from_environment(assistant_store)
     except Exception:  # noqa: BLE001 — an optional bridge never blocks startup
         pass
-    app.state.wisp_bridge_link = bridge_link    # /resetwisp stops it too
+    if app is not None:
+        app.state.wisp_bridge_link = bridge_link    # /resetwisp stops it too
     try:
         yield
     finally:
