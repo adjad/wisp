@@ -271,6 +271,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_capability_welcome.py",
     "tests/test_wisp_self_questions.py",
     "tests/test_email_gmail_only_and_dedup.py",
+    # rc2 duplicated email summaries: synthetic Gmail + Mail rows, two linked accounts; no live source.
+    "tests/test_email_summary_dedupe.py",
     # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
     "tests/test_needs_you_clear.py",
     # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
