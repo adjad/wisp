@@ -552,6 +552,76 @@ async def test_a_moved_rowid_refreshes_the_index_instead(ticking, monkeypatch):
     assert st.meta("last_index") == "0" and st.message("<m5@x>")["state"] == "pending"
 
 
+async def test_an_app_read_failure_is_printed_and_shown_until_a_good_index(ticking, monkeypatch, capsys):
+    st = ticking
+    monkeypatch.setattr(runner, "_last_standdown", "")
+
+    async def broken(days):
+        raise bridge.BridgeError("unsupported_schema")
+
+    monkeypatch.setattr(runner, "read_index", broken)
+    await runner._run()
+    await runner._run()
+    out = capsys.readouterr().out
+    assert out.count("[mail_memory] failed: unsupported_schema") == 1        # once per new reason
+    stats = st.stats()
+    assert stats["last_error"] == "unsupported_schema" and float(stats["last_error_at"]) > 0
+
+    async def index(days):
+        return [_row(5)], False
+
+    monkeypatch.setattr(runner, "read_index", index)
+    assert await runner.tick(now=NOW) == runner.BETWEEN_GAP_S
+    assert "[mail_memory] indexed 1 emails: 1 queued" in capsys.readouterr().out
+    assert st.stats()["last_error"] is None and st.stats()["last_error_at"] is None
+
+
+async def test_a_crash_is_recorded_with_its_type(ticking, monkeypatch, capsys):
+    async def broken(days):
+        raise KeyError("x")
+
+    monkeypatch.setattr(runner, "read_index", broken)
+    await runner._run()
+    assert ticking.stats()["last_error"] == "crashed:KeyError"
+    assert "Traceback" in capsys.readouterr().err
+
+
+async def test_mail_index_trouble_while_reading_a_body_is_recorded(ticking, monkeypatch):
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5)], extract.tier, now=1)
+
+    async def body(rowid):
+        return None, "no_mail_index"
+
+    monkeypatch.setattr(runner, "read_body", body)
+    assert await runner.tick(now=NOW + 1) == runner.FAILURE_GAP_S
+    assert st.stats()["last_error"] == "no_mail_index" and st.message("<m5@x>")["attempts"] == 0
+
+
+def test_stand_downs_print_once_per_reason(monkeypatch, capsys, quiet):
+    from service.assistant.hub import hub
+    monkeypatch.setattr(runner, "_last_standdown", "")
+    monkeypatch.setattr(runner, "_next_at", 0.0)
+    monkeypatch.setattr(runner, "_task", None)
+    monkeypatch.setattr(runner, "mode", lambda: "live")
+    monkeypatch.setattr(runner, "_other_background_work", lambda: False)
+    monkeypatch.setattr(type(hub), "has_subscribers", property(lambda self: False))
+    runner.schedule_tick()
+    runner.schedule_tick()
+    monkeypatch.setattr(quiet, "foreground_busy", lambda: True)
+    runner.schedule_tick()
+    out = capsys.readouterr().out.splitlines()
+    assert out == ["[mail_memory] standing down: the app isn't connected to the event stream",
+                   "[mail_memory] standing down: a turn is in progress"]
+
+
+def test_busy_levels_say_why(quiet):
+    assert runner.level_why("m", hid_idle_s=5, power=(False, 20, False)) == ("busy", "the battery is under 30%")
+    assert runner.level_why("m", hid_idle_s=5, power=(True, None, True)) == ("busy", "Low Power Mode is on")
+    assert runner.level_why("m", hid_idle_s=5, power=(True, 90, False)) == ("between", "")
+
+
 async def test_reply_stands_down_for_remote_only_and_a_busy_model(monkeypatch, quiet):
     from service.inference import remote_policy
     monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())

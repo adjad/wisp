@@ -30,6 +30,32 @@ struct MailSuggestion: Identifiable, Equatable {
         return (mode, items)
     }
 
+    /// Why the service couldn't read Mail last time, in the person's words, or nil when
+    /// the last index or email read went through. The code comes from `stats.last_error`.
+    static func readError(_ reply: [String: Any]?) -> String? {
+        guard let stats = reply?["stats"] as? [String: Any], let code = stats["last_error"] as? String,
+              !code.isEmpty else { return nil }
+        let retry = "Wisp tries again in 15 minutes."
+        switch code {
+        case "no_mail_index":
+            return "Couldn't read Mail: Wisp can't see Mail's data. Turn on Full Disk Access for Wisp in "
+                + "System Settings → Privacy & Security, and open Mail once. \(retry)"
+        case "unreadable", "index_unreadable":
+            return "Couldn't read Mail: its index wouldn't open. Check Full Disk Access for Wisp. \(retry)"
+        case "unsupported_schema":
+            return "Couldn't read Mail: this version of Mail stores mail in a way Wisp can't read yet."
+        case "app_not_connected":
+            return "Couldn't read Mail: the Wisp app wasn't connected to its service. \(retry)"
+        case "index_timeout", "body_timeout":
+            return "Couldn't read Mail: it took too long to answer. \(retry)"
+        default:
+            if code.hasPrefix("crashed:") {
+                return "Couldn't read Mail: something went wrong (\(code.dropFirst(8))). \(retry)"
+            }
+            return "Couldn't read Mail (\(code)). \(retry)"
+        }
+    }
+
     static func day(_ iso: String) -> DateComponents? {
         let parts = iso.split(separator: "-").compactMap { Int($0) }
         guard parts.count == 3, (1...12).contains(parts[1]), (1...31).contains(parts[2]) else { return nil }
@@ -98,6 +124,8 @@ final class MailMemoryModel: ObservableObject {
     @Published private(set) var known = false
     @Published private(set) var modeChanging = false
     @Published private(set) var modeStatus: String?
+    /// Why the last read of Mail failed, for Settings; nil once one works.
+    @Published private(set) var readError: String?
     @Published private(set) var answering: Int?
     @Published private(set) var failures: [Int: String] = [:]
     /// What the last Add did, said once under the list ("Added to Reminders.").
@@ -131,9 +159,11 @@ final class MailMemoryModel: ObservableObject {
         request.timeoutInterval = 15
         guard let (data, response) = try? await transport(request),
               (response as? HTTPURLResponse)?.statusCode == 200,
-              let parsed = MailSuggestion.parse((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])
+              let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let parsed = MailSuggestion.parse(reply)
         else { return }
         mode = parsed.mode
+        readError = MailSuggestion.readError(reply)
         known = true
         suggestions = parsed.mode == "live" ? parsed.items : []
         failures = failures.filter { id, _ in suggestions.contains { $0.id == id } }

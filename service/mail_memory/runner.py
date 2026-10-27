@@ -21,17 +21,20 @@ IMPORTANT rules:
 - Mode "live" (the default, the user's choice for rc2) lets the Brief show
   the important suggestions (`importance.judge`); "shadow" extracts and records
   but shows nothing; "off" stops the walk.
-- Logs carry counts only, never mail text.
+- It reports like mail_gists: "[mail_memory] ..." lines on stdout (the backend
+  log), counts and reasons only, never mail text. A stand-down prints once per
+  new reason. The last failure is kept in the store (`last_error`), shown in
+  the endpoint's stats and in Settings, and cleared by the next good index.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 import re
 import subprocess
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -42,7 +45,6 @@ from service.mail_memory.bridge import BridgeError, read_body, read_index
 from service.mail_memory.store import store
 from service.paths import MOE_DIR
 
-log = logging.getLogger("wisp.mail_memory")
 
 MODES = ("off", "shadow", "live")
 SETTINGS_PATH = MOE_DIR / "mail_memory" / "settings.json"
@@ -62,7 +64,34 @@ _PROBE_TTL_S = 30.0
 _task: asyncio.Task | None = None
 _next_at = 0.0
 _last_own_end = 0.0
+_last_standdown = ""
 _probe: dict[str, tuple[float, object]] = {}
+
+
+# --- reporting ------------------------------------------------------------------
+
+def _say(message: str) -> None:
+    print(f"[mail_memory] {message}", flush=True)
+
+
+def _stood_down(reason: str) -> None:
+    """One log line when a tick stands down for a new reason."""
+    global _last_standdown
+    if reason != _last_standdown:
+        _last_standdown = reason
+        _say(f"standing down: {reason}")
+
+
+def _failed(code: str, now: float | None = None) -> None:
+    """Record why the walk can't go on, for Settings: the app's reader code
+    (app_not_connected, index_timeout, no_mail_index, unsupported_schema, ...)
+    or crashed:<ExceptionType>."""
+    now = time.time() if now is None else now
+    st = store()
+    if st.meta("last_error") != code:
+        _say(f"failed: {code}; trying again in {FAILURE_GAP_S // 60} min")
+    st.set_meta("last_error", code[:80])
+    st.set_meta("last_error_at", str(now))
 
 
 # --- settings ---------------------------------------------------------------------
@@ -135,19 +164,28 @@ _UNSET = object()
 def level(model_key: str, *, hid_idle_s=_UNSET, power=_UNSET, now: float | None = None) -> str:
     """busy, between or away (see the module docstring). Pass the probes in from a
     worker thread; left unset they are read here (tests and callers off the loop)."""
-    if idle.foreground_busy() or idle.in_flight(model_key) > 0:
-        return "busy"
+    return level_why(model_key, hid_idle_s=hid_idle_s, power=power, now=now)[0]
+
+
+def level_why(model_key: str, *, hid_idle_s=_UNSET, power=_UNSET, now: float | None = None) -> tuple[str, str]:
+    """(level, why it is busy). `why` is empty unless the level is busy."""
+    if idle.foreground_busy():
+        return "busy", "a turn is in progress"
+    if idle.in_flight(model_key) > 0:
+        return "busy", "another call is on the model"
     now = time.monotonic() if now is None else now
     last = idle.last_used(model_key)
     if last is not None and last > _last_own_end + 1 and now - last < QUIET_AFTER_USE_S:
-        return "busy"
+        return "busy", "the model was used in the last 2 minutes"
     on_ac, pct, low = _cached("power", _power) if power is _UNSET else power
-    if low or (not on_ac and pct is not None and pct < 30):
-        return "busy"
+    if low:
+        return "busy", "Low Power Mode is on"
+    if not on_ac and pct is not None and pct < 30:
+        return "busy", "the battery is under 30%"
     seconds = _cached("hid", _hid_idle_s) if hid_idle_s is _UNSET else hid_idle_s
     if seconds is not None and seconds >= AWAY_AFTER_S and (on_ac or (pct or 0) > 50):
-        return "away"
-    return "between"
+        return "away", ""
+    return "between", ""
 
 
 # --- the model call -----------------------------------------------------------------
@@ -164,6 +202,7 @@ async def _reply(msgs: list[dict]) -> str | None:
     global _last_own_end
     from service.inference.remote_policy import remote_only_profile
     if remote_only_profile() is not None:
+        _stood_down("a remote-only profile is on")
         return None
     from service.assistant.brief import _c
     from service.config import role_to_model, thinking_kwargs
@@ -175,7 +214,14 @@ async def _reply(msgs: list[dict]) -> str | None:
     except Exception:  # noqa: BLE001
         warm = set()
     key = _model_key()
-    if model not in loaded or loaded - warm - {model} or not _model_free(key):
+    if model not in loaded:
+        _stood_down(f"the fast model ({model}) isn't loaded; loaded: {sorted(loaded) or 'nothing'}")
+        return None
+    if loaded - warm - {model}:
+        _stood_down(f"another model is resident: {sorted(loaded - warm - {model})}")
+        return None
+    if not _model_free(key):
+        _stood_down("another call is on the model")
         return None
     # Sampling is left to the engine's profile for this model: the 2026-10-26 bench
     # measured these prompts at the production profile, not at temperature 0.
@@ -187,6 +233,7 @@ async def _reply(msgs: list[dict]) -> str | None:
             # Ours counts as one; anything more is a turn or another background caller.
             if idle.foreground_busy() or idle.in_flight(key) > 1:
                 request.cancel()
+                _stood_down("a turn started during the call")
                 return None
             if time.monotonic() >= deadline:
                 request.cancel()
@@ -237,13 +284,15 @@ async def tick(*, now: float | None = None) -> float:
     from service.assistant.attention_runner import current_zone
     tz = current_zone()
     if tz is None:
+        _stood_down("the time zone isn't known yet")
         return FAILURE_GAP_S
     today = datetime.fromtimestamp(now, ZoneInfo(tz)).date()
     # ioreg and pmset run off the event loop: a slow probe must never stall a turn.
     power = await asyncio.to_thread(_cached, "power", _power)
     hid = await asyncio.to_thread(_cached, "hid", _hid_idle_s)
-    lvl = level(_model_key(), hid_idle_s=hid, power=power)
+    lvl, why_busy = level_why(_model_key(), hid_idle_s=hid, power=power)
     if lvl == "busy":
+        _stood_down(why_busy)
         return BUSY_GAP_S
     gap = AWAY_GAP_S if lvl == "away" else BETWEEN_GAP_S
 
@@ -254,7 +303,10 @@ async def tick(*, now: float | None = None) -> float:
         merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
         merged["gmail_tab"] = await asyncio.to_thread(st.exclude, excluded) if excluded else 0
         st.set_meta("last_index", str(now))
-        log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
+        st.set_meta("last_error", "")
+        _say(f"indexed {merged['seen']} emails: {merged['added']} queued, {merged['skipped']} skipped, "
+             f"{merged['gmail_tab']} in Gmail's other tabs; capped={capped}; Gmail tab list "
+             f"{'known' if excluded else 'unknown or empty'}")
         return gap
 
     st.expire(today.isoformat())
@@ -267,26 +319,30 @@ async def tick(*, now: float | None = None) -> float:
         if str(exc) == "app_not_connected":
             raise
         st.fail(row["key"], str(exc), now)         # this email's read timed out
+        _say(f"couldn't read one email: {exc}")
         return gap
     if raw is None:
         if why in ("index_unreadable", "no_mail_index"):
-            return FAILURE_GAP_S                  # Mail's index, not this email: try later
+            _failed(why, now)                     # Mail's index, not this email: try later
+            return FAILURE_GAP_S
         if why in ("not_on_disk", "not_in_inbox_or_sent"):
             # Gone from disk, or moved to Trash, Archive or Junk since the index: never read.
             st.finish(row["key"], "skipped", why)
         else:
             st.fail(row["key"], why, now)
+            _say(f"couldn't read one email: {why}")
         return gap
     try:
         # Off the loop: a 256 KB HTML body is parsed in pure Python, which yields the GIL.
         email = await asyncio.to_thread(extract.parse_raw, raw, row["ts"])
     except Exception as exc:  # noqa: BLE001 — a malformed message is this email's problem only
         st.fail(row["key"], f"parse:{type(exc).__name__}", now)
+        _say(f"couldn't parse one email: {type(exc).__name__}")
         return gap
     if row.get("rfc_message_id") and email.message_id and email.message_id != row["rfc_message_id"]:
         # Mail rebuilt its index since the last refresh: this ROWID is another email now.
         st.set_meta("last_index", "0")
-        log.info("mail memory: index moved under us; refreshing")
+        _say("Mail renumbered its index; refreshing it first")
         return gap
     if len(email.body) < 20:
         st.finish(row["key"], "skipped", "empty_body", email.message_id)
@@ -298,12 +354,14 @@ async def tick(*, now: float | None = None) -> float:
         reply = await _reply(msgs)
     except (TimeoutError, ValueError, KeyError, IndexError, TypeError) as exc:
         st.fail(row["key"], f"model:{type(exc).__name__}", now)   # truncated, empty or slow
+        _say(f"the model call failed for one email: {type(exc).__name__}")
         return gap
     if reply is None:
         return BUSY_GAP_S
     items = extract.parse_reply(reply)
     if items is None:
         st.fail(row["key"], "bad_json", now)
+        _say("the model's reply for one email wasn't valid JSON")
         return gap
     kept, dropped = extract.validate(items, email, tz=tz, today=today)
     why: dict[str, int] = {}
@@ -313,8 +371,9 @@ async def tick(*, now: float | None = None) -> float:
     added = st.add_items(row["key"], kept, extract.EXTRACTOR, now)
     st.finish(row["key"], "done", f"model={len(items)} kept={len(kept)} added={added}", email.message_id)
     st.set_meta("last_tick", str(now))
-    log.info("mail memory tick: tier=%s box=%s model_items=%d kept=%d added=%d dropped=%s why=%s level=%s",
-             row["tier"], row["box"], len(items), len(kept), added, dropped, why, lvl)
+    st.set_meta("last_error", "")
+    _say(f"read one email (tier {row['tier']}, {row['box']}): model found {len(items)}, kept {len(kept)}, "
+         f"added {added}, dropped {dropped or {}}, shown/held {why or {}}; level {lvl}")
     return gap
 
 
@@ -323,10 +382,11 @@ async def _run() -> None:
     try:
         gap = await tick()
     except BridgeError as exc:
-        log.info("mail memory: app read failed (%s)", exc)
+        _failed(str(exc))
         gap = FAILURE_GAP_S
-    except Exception:  # noqa: BLE001 — never break the scheduler; try again later
-        log.exception("mail memory tick failed")
+    except Exception as exc:  # noqa: BLE001 — never break the scheduler; try again later
+        traceback.print_exc()
+        _failed(f"crashed:{type(exc).__name__}")
         gap = FAILURE_GAP_S
     _next_at = time.time() + gap
 
@@ -352,9 +412,19 @@ def schedule_tick() -> None:
     global _task
     if _task is not None and not _task.done():
         return
-    if time.time() < _next_at or mode() == "off" or idle.foreground_busy() or _other_background_work():
+    if time.time() < _next_at:
+        return
+    if mode() == "off":
+        _stood_down("turned off in Settings")
+        return
+    if idle.foreground_busy():
+        _stood_down("a turn is in progress")
+        return
+    if _other_background_work():
+        _stood_down("the Brief's gists or the proactive engine is using the model")
         return
     from service.assistant.hub import hub
     if not hub.has_subscribers:
+        _stood_down("the app isn't connected to the event stream")
         return
     _task = asyncio.create_task(_run())

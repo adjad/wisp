@@ -73,6 +73,25 @@ enum MailMemoryChecks {
         await model.refresh()
         check(model.suggestions.map(\.id) == [1, 2], "a failed read keeps what was shown")
 
+        // Why Mail couldn't be read, for Settings.
+        check(model.readError == nil, "no error recorded, none shown")
+        replies = [(200, ["mode": "live", "suggestions": [], "stats": ["last_error": "no_mail_index"]])]
+        await model.refresh()
+        check(model.readError?.contains("Full Disk Access") == true, "no index points at Full Disk Access: \(model.readError ?? "nil")")
+        replies = [(200, ["mode": "live", "suggestions": [], "stats": ["last_error": NSNull()]])]
+        await model.refresh()
+        check(model.readError == nil, "a later good read clears it")
+        check(MailSuggestion.readError(["stats": ["last_error": "crashed:KeyError"]])
+              == "Couldn't read Mail: something went wrong (KeyError). Wisp tries again in 15 minutes.", "a crash names its type")
+        check(MailSuggestion.readError(["stats": ["last_error": "unsupported_schema"]])?.contains("can't read yet") == true,
+              "an unknown Mail format says so")
+        check(MailSuggestion.readError(["stats": ["last_error": "index_timeout"]])?.contains("too long") == true, "timeout")
+        check(MailSuggestion.readError(["stats": ["last_error": "weird"]]) == "Couldn't read Mail (weird). Wisp tries again in 15 minutes.",
+              "an unknown code is shown as is")
+        check(MailSuggestion.readError(["stats": ["last_error": ""]]) == nil && MailSuggestion.readError(nil) == nil, "empty is no error")
+        replies = [(200, ["mode": "live", "suggestions": [row(1, "Give notice"), row(2, "Pay tax")]])]
+        await model.refresh()
+
         check(MailSuggestion.confirmation(["decision": "accepted", "where": "wisp_only"], what: "Pay tax")
               == "Saved “Pay tax” in Wisp; Apple Reminders didn't take it.", "a Wisp-only reminder never claims Reminders")
         check(MailSuggestion.confirmation(["decision": "already_on_file"], what: "Pay tax")

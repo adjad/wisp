@@ -259,7 +259,9 @@ class Store:
         why = {r["why"] or "unjudged": r["n"] for r in self._db.execute(
             "SELECT why, COUNT(*) n FROM items GROUP BY why")}
         return {"queue": queue, "items": items, "suspicious": suspicious, "why": why,
-                "last_index": self.meta("last_index"), "last_tick": self.meta("last_tick")}
+                "last_index": self.meta("last_index"), "last_tick": self.meta("last_tick"),
+                "last_error": self.meta("last_error") or None,
+                "last_error_at": self.meta("last_error_at") if self.meta("last_error") else None}
 
 
 _store: Store | None = None
