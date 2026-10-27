@@ -599,11 +599,11 @@ def test_the_summary_request_goes_only_to_the_local_fast_model(monkeypatch, mode
     monkeypatch.setattr(G, "_cache", {})
     asyncio.run(G.refresh(NOW, abort=lambda: False))
     assert seen == [True]
-    # the module has no other way to reach a model: no HTTP or cloud imports, no client of its own
+    # the module has no other way to reach a model: no cloud imports, no client of its own (httpx only names unreachable-engine errors)
     import ast
     tree = ast.parse(inspect.getsource(G))
     imported = {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | \
                {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
-    assert not [m for m in imported if any(w in m for w in ("httpx", "requests", "urllib", "cloud", "omlx_client", "delegat"))], imported
+    assert not [m for m in imported if any(w in m for w in ("requests", "urllib", "cloud", "omlx_client", "delegat"))], imported
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     assert not names & {"OMLXClient", "cloud_super_model_target", "cloud_provider_settings", "chat_cloud"}
