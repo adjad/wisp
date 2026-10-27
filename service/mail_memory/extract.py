@@ -33,6 +33,8 @@ BODY_CAP = 20_000
 MAX_ITEMS = 6
 WHAT_MAX = 120
 STALE_DAYS = 7
+MIN_QUOTE = 8
+_LINKISH = re.compile(r"https?://|www\.|\b[\w-]+\.(?:com|net|org|io|co|ly|me|app|link)\b|@\w", re.I)
 
 _QUOTED = re.compile(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>.*)$")
 _FOOTER = re.compile(r"(?im)^\s*(?:unsubscribe|manage (?:your )?(?:email )?(?:preferences|notifications)|"
@@ -195,6 +197,13 @@ def validate(items: list[dict], email: Email, *, tz: str, today: date,
         evidence = " ".join(str(it.get("evidence") or "").split())
         if not what or not evidence:
             drop("empty")
+            continue
+        if _LINKISH.search(what):
+            # The title becomes a Reminder the user (and later Wisp) reads: no links or addresses.
+            drop("link_in_title")
+            continue
+        if len(evidence) < MIN_QUOTE or len(phrase) < 3:
+            drop("quote_too_short")       # a one-word quote is "in the email" by accident
             continue
         if _norm(evidence).strip(" .…") not in body:
             drop("quote_not_in_email")

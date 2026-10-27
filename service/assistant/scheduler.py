@@ -243,7 +243,8 @@ async def run() -> None:
         except Exception:  # noqa: BLE001 — a missing gist falls back to a plain sentence
             pass
         # Mail memory (service/mail_memory): walks 90 days of mail one email per tick,
-        # only while nobody is waiting, for long-term reminders. Shadow by default.
+        # only while nobody is waiting, for long-term reminders; the Brief shows the
+        # important ones (importance.py).
         try:
             from service.mail_memory import runner as mail_memory
             mail_memory.schedule_tick()

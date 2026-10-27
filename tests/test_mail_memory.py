@@ -113,6 +113,18 @@ def test_validate_keeps_only_verbatim_items():
     assert dropped == {"date_not_in_email": 1, "quote_not_in_email": 1}
 
 
+def test_validate_refuses_links_and_tiny_quotes():
+    email = extract.parse_raw(RAW, 0)
+    base = {"date_phrase": "no later than July 2, 2027", "evidence": "Written notice must reach us no later than July 2, 2027"}
+    kept, dropped = extract.validate([
+        {**base, "what": "Visit harbor-pay.com to renew"},
+        {**base, "what": "Email notice@harbor.example"},
+        {**base, "what": "Give notice", "evidence": "notice"},
+        {**base, "what": "Give notice", "date_phrase": "J"},
+    ], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert kept == [] and dropped == {"link_in_title": 2, "quote_too_short": 2}
+
+
 def test_validate_drops_long_past():
     email = extract.parse_raw(RAW.replace(b"no later than July 2, 2027", b"by June 1"), 0)
     kept, dropped = extract.validate(
@@ -249,9 +261,10 @@ def test_importance_bar():
     assert _judge("Reply to Dana", "can you confirm by Nov 20?", category=0) == (True, "person")
     assert _judge("Pay the water bill", "$42.10 due Nov 20", bulk=True, category=2) == (True, "money")
     assert _judge("Renew passport", "your passport expires Nov 20", bulk=True, category=2) == (True, "account")
-    assert _judge("Dentist appointment", "appointment on Nov 20", bulk=True, category=1) == (True, "deadline")
+    assert _judge("Dentist appointment", "appointment on Nov 20", bulk=True, category=1) == (True, "appointment")
+    assert _judge("Return the form", "the form is due Nov 20", bulk=True, category=1) == (True, "deadline")
     # Held: newsletter deadlines, sales, nothing concrete, anything suspicious.
-    assert _judge("Register for the webinar", "registration closes Nov 20", bulk=True, category=2) == (
+    assert _judge("Register for the webinar", "registration deadline Nov 20", bulk=True, category=2) == (
         False, "held:newsletter_deadline")
     assert _judge("Use the code", "offer ends Nov 20", bulk=True, category=2, subject="Fall sale: 30% off") == (
         False, "held:promotional")
@@ -260,6 +273,42 @@ def test_importance_bar():
         False, "held:suspicious")
     # A person writing in a bulk-flagged thread is judged as automated mail.
     assert _judge("Lunch", "lunch Nov 20?", bulk=True, category=-1) == (False, "held:no_signal")
+
+
+@pytest.mark.parametrize("what,evidence,kw,want", [
+    # Noise the first bar let through (audit, 2026-10-26).
+    ("Use the discount", "$20 off, ends Nov 20", {"subject": "Flash sale"}, "held:promotional"),
+    ("Claim it", "save $20, offer ends Nov 20", {}, "held:promotional"),
+    ("Read the policy", "our privacy policy changes Nov 20", {}, "held:no_signal"),
+    ("Log in", "log in to see what's new by Nov 20", {}, "held:no_signal"),
+    ("Workshop", "work-life balance workshop Nov 20", {}, "held:no_signal"),
+    ("Webinar", "tax tips webinar Nov 20", {}, "held:no_signal"),
+    ("Pay it forward", "pay it forward day is Nov 20", {}, "held:no_signal"),
+    ("Visa card", "a Visa card for travelers, Nov 20", {}, "held:no_signal"),
+    # Important mail the first bar held back.
+    ("Jury duty", "your jury summons for Nov 20", {}, "appointment"),
+    ("Permission slip", "return the permission slip by Nov 20", {}, "appointment"),
+    ("Doctor", "your appointment on Nov 20 at 3 pm", {}, "appointment"),
+    ("Flight", "check-in opens Nov 20", {}, "appointment"),
+    ("Library book", "your book is overdue as of Nov 20", {}, "appointment"),
+    ("File taxes", "file your return by Nov 20", {}, "money"),
+    ("Water bill", "your bill of $42.10 is due Nov 20", {}, "money"),
+    ("Renew licence", "your driver's license expires Nov 20", {}, "account"),
+    ("Trial", "your free trial ends Nov 20", {}, "account"),
+    ("Password", "your password expires Nov 20", {}, "account"),
+])
+def test_importance_on_automated_mail(what, evidence, kw, want):
+    important, why = _judge(what, evidence, bulk=True, category=2, **kw)
+    assert why == want and important == (not want.startswith("held:"))
+
+
+def test_importance_people_and_no_reply_senders():
+    from service.mail_memory import importance
+    person = {"box": "inbox", "bulk": False, "category": 0, "subject": "Yard sale Saturday!", "sender": "dana@x.example"}
+    item = {"what": "Yard sale", "evidence": "yard sale on Nov 20", "date_phrase": "Nov 20", "precision": "day"}
+    assert importance.judge(item, person) == (True, "person")              # a friend's "sale" is not a promo
+    robot = {**person, "sender": "no-reply@shop.example", "subject": "Hello"}
+    assert importance.judge(item, robot) == (False, "held:promotional")
 
 
 def test_store_adds_new_columns_to_an_older_file(tmp_path):
@@ -442,7 +491,7 @@ async def test_tick_indexes_then_extracts(ticking, monkeypatch):
 async def test_tick_stands_down_without_spending_the_row(ticking, monkeypatch):
     st = ticking
     st.set_meta("last_index", str(NOW))
-    st.upsert_index([_row(5)], extract.tier, now=1)
+    st.upsert_index([_row(5, mid="<lease-1@harbor.example>")], extract.tier, now=1)
 
     async def body(rowid):
         return RAW, ""
@@ -453,7 +502,79 @@ async def test_tick_stands_down_without_spending_the_row(ticking, monkeypatch):
     monkeypatch.setattr(runner, "read_body", body)
     monkeypatch.setattr(runner, "_reply", reply)
     assert await runner.tick(now=NOW + 1) == runner.BUSY_GAP_S
-    assert st.message("<m5@x>")["state"] == "pending" and st.message("<m5@x>")["attempts"] == 0
+    row = st.message("<lease-1@harbor.example>")
+    assert row["state"] == "pending" and row["attempts"] == 0
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("slow"), ValueError("reply did not complete (length)")])
+async def test_a_failing_email_is_retired_not_retried_forever(ticking, monkeypatch, failure):
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5, mid="<lease-1@harbor.example>", ts=2.0), _row(6, ts=1.0)], extract.tier, now=1)
+
+    async def body(rowid):
+        return RAW, ""
+
+    async def reply(msgs):
+        raise failure
+
+    monkeypatch.setattr(runner, "read_body", body)
+    monkeypatch.setattr(runner, "_reply", reply)
+    assert await runner.tick(now=NOW + 1) == runner.BETWEEN_GAP_S
+    assert await runner.tick(now=NOW + 2 + store_mod.RETRY_S) == runner.BETWEEN_GAP_S
+    assert st.message("<lease-1@harbor.example>")["state"] == "failed"
+    assert st.next_pending(now=NOW + 3 + 2 * store_mod.RETRY_S)["rowid"] == 6      # the queue moves on
+
+
+async def test_a_body_timeout_is_charged_to_that_email(ticking, monkeypatch):
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5)], extract.tier, now=1)
+
+    async def body(rowid):
+        raise bridge.BridgeError("body_timeout")
+
+    monkeypatch.setattr(runner, "read_body", body)
+    assert await runner.tick(now=NOW + 1) == runner.BETWEEN_GAP_S
+    assert st.message("<m5@x>")["attempts"] == 1
+
+
+async def test_a_moved_rowid_refreshes_the_index_instead(ticking, monkeypatch):
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5)], extract.tier, now=1)             # expects <m5@x>, Mail now has the lease there
+
+    async def body(rowid):
+        return RAW, ""
+
+    monkeypatch.setattr(runner, "read_body", body)
+    assert await runner.tick(now=NOW + 1) == runner.BETWEEN_GAP_S
+    assert st.meta("last_index") == "0" and st.message("<m5@x>")["state"] == "pending"
+
+
+async def test_reply_stands_down_for_remote_only_and_a_busy_model(monkeypatch, quiet):
+    from service.inference import remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
+    assert await runner._reply([{"role": "user", "content": "x"}]) is None   # never sends mail off the Mac
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)
+
+    class Client:
+        async def loaded_models(self):
+            return ["fast-model"]
+
+        def keep_warm(self):
+            return []
+
+        async def chat(self, *a, **k):
+            raise AssertionError("must not call the model")
+
+    from service.assistant import brief
+    from service import config
+    monkeypatch.setattr(brief, "_c", lambda: Client())
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast-model")
+    monkeypatch.setattr(runner, "_model_key", lambda: "fast-model")
+    monkeypatch.setattr(quiet, "in_flight", lambda key: 1)                  # another caller is on the model
+    assert await runner._reply([{"role": "user", "content": "x"}]) is None
 
 
 async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypatch, quiet):
@@ -539,6 +660,53 @@ def test_live_accept_dismiss_and_guards(client, monkeypatch):
     assert calls == [("Send the Q4 forecast", shown[0]["due"], True)]
     assert client.post("/assistant/mail_memory/accept", json={"id": 1}).status_code == 404   # once
     assert client.post("/assistant/mail_memory/dismiss", json={"id": 1}).status_code == 404
+
+
+def test_accept_runs_once_and_a_failed_add_hands_it_back(client, monkeypatch):
+    from service.assistant import outbox
+    from service import safety
+    from service.tools import assistant_tools
+
+    async def connected(*a, **k):
+        return True
+
+    monkeypatch.setattr(outbox, "app_connected", connected)
+    monkeypatch.setattr(safety, "read_only", lambda: False)
+    monkeypatch.setattr(api, "_on_file", lambda row, tz: False)
+    st = api.store()
+    assert st.claim(1)                                          # an Add is already running
+    assert client.post("/assistant/mail_memory/accept", json={"id": 1}).status_code == 409
+    assert client.post("/assistant/mail_memory/dismiss", json={"id": 1}).status_code == 404
+    st.release(1)
+
+    async def refused(title, when_iso, kind="reminder", all_day=False):
+        return "(Reminders refused it.)"
+
+    monkeypatch.setattr(assistant_tools, "add_reminder", refused)
+    assert client.post("/assistant/mail_memory/accept", json={"id": 1}).status_code == 502
+    assert st.item(1)["state"] == "new"                         # still offered
+
+
+def test_live_with_no_time_zone_shows_nothing(client, monkeypatch):
+    from service.assistant import attention_runner
+    monkeypatch.setattr(attention_runner, "current_zone", lambda: None)
+    got = client.get("/assistant/mail_memory")
+    assert got.status_code == 200 and got.json()["suggestions"] == []
+
+
+async def test_gmail_tab_ids_refuse_a_truncated_listing(monkeypatch):
+    from service import gmail_source as G
+    monkeypatch.setattr(G, "connected_accounts", lambda: {"a@x": {}})
+
+    async def full(http, limit, *, query=""):
+        return [str(i) for i in range(limit)]
+
+    async def ensure_meta(http, ids):
+        return None
+
+    monkeypatch.setattr(G, "_list_ids", full)
+    monkeypatch.setattr(G, "_ensure_meta", ensure_meta)
+    assert await G.tab_message_ids(90, limit=5) is None
 
 
 def test_sync_accepts_only_waiting_requests(client):

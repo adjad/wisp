@@ -197,13 +197,26 @@ class Store:
             "JOIN messages m ON m.key=i.key WHERE i.id=?", (item_id,)).fetchone()
         return dict(row) if row else None
 
-    def decide(self, item_id: int, state: str, reminder: str = "") -> bool:
-        """new -> accepted | dismissed, once. False when it was already decided."""
-        assert state in ("accepted", "dismissed")
+    def decide(self, item_id: int, state: str, reminder: str = "", *, from_state: str = "new") -> bool:
+        """new (or a claimed `accepting`) -> accepted | dismissed, once. False when
+        it was already decided or claimed by someone else."""
+        assert state in ("accepted", "dismissed") and from_state in ("new", "accepting")
         with self._lock:
-            cur = self._db.execute("UPDATE items SET state=?, decided=?, reminder=? WHERE id=? AND state='new'",
-                                   (state, time.time(), reminder[:200], item_id))
+            cur = self._db.execute("UPDATE items SET state=?, decided=?, reminder=? WHERE id=? AND state=?",
+                                   (state, time.time(), reminder[:200], item_id, from_state))
         return cur.rowcount == 1
+
+    def claim(self, item_id: int) -> bool:
+        """new -> accepting, atomically, so one Add runs per suggestion even on a
+        double click; a dismiss can't land while it runs."""
+        with self._lock:
+            return self._db.execute("UPDATE items SET state='accepting' WHERE id=? AND state='new'",
+                                    (item_id,)).rowcount == 1
+
+    def release(self, item_id: int) -> None:
+        """An Add that failed before writing anything hands the suggestion back."""
+        with self._lock:
+            self._db.execute("UPDATE items SET state='new' WHERE id=? AND state='accepting'", (item_id,))
 
     def expire(self, today: str) -> int:
         """Suggestions whose day has passed are never offered."""

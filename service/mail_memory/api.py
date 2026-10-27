@@ -71,7 +71,10 @@ async def suggestions() -> dict:
     st = store()
     out = {"mode": current, "modes": list(runner.MODES), "stats": st.stats(), "suggestions": []}
     if current == "live":
-        tz = _zone()
+        from service.assistant.attention_runner import current_zone
+        tz = current_zone()
+        if tz is None:          # no time zone yet: nothing is due "today", so show nothing
+            return out
         today = _today(tz)
         st.expire(today.isoformat())
         rows = st.suggestions(today.isoformat(), horizon=(today + timedelta(days=HORIZON_DAYS)).isoformat())
@@ -104,6 +107,8 @@ async def accept(body: Pick) -> dict:
     st = store()
     row = st.item(body.id)
     tz = _zone()
+    if row is not None and row["state"] == "accepting":
+        raise HTTPException(409, "That suggestion is already being added.")
     if row is None or row["state"] != "new" or row["suspicious"] or not row["important"]:
         raise HTTPException(404, "That suggestion is no longer open.")
     if row["due"] < _today(tz).isoformat():
@@ -111,16 +116,23 @@ async def accept(body: Pick) -> dict:
     from service.assistant import outbox
     if not await outbox.app_connected():
         raise HTTPException(503, "Wisp's app isn't connected; nothing was added.")
-    if _on_file(row, tz):
-        st.decide(body.id, "dismissed", "already on file")
-        await _changed()
-        return {"ok": True, "id": body.id, "decision": "already_on_file"}
-    from service.tools.assistant_tools import add_reminder
-    result = await add_reminder(row["what"], row["due"], all_day=True)
+    if not st.claim(body.id):
+        raise HTTPException(409, "That suggestion is already being added.")
+    try:
+        if _on_file(row, tz):
+            st.decide(body.id, "dismissed", "already on file", from_state="accepting")
+            await _changed()
+            return {"ok": True, "id": body.id, "decision": "already_on_file"}
+        from service.tools.assistant_tools import add_reminder
+        result = await add_reminder(row["what"], row["due"], all_day=True)
+    except BaseException:
+        st.release(body.id)
+        raise
     if not result.startswith("Reminder set:"):
+        st.release(body.id)
         raise HTTPException(502, result.strip("()")[:200])
     where = "apple_reminders" if "in Apple Reminders" in result else "wisp_only"
-    st.decide(body.id, "accepted", where)
+    st.decide(body.id, "accepted", where, from_state="accepting")
     await _changed()
     return {"ok": True, "id": body.id, "decision": "accepted", "where": where, "at": time.time()}
 

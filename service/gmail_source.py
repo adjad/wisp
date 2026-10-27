@@ -364,6 +364,8 @@ async def tab_message_ids(days: int, tabs: tuple[str, ...] = ("promotions", "soc
         try:
             async with httpx.AsyncClient(timeout=10) as http:
                 ids = await _list_ids(http, limit, query=query)
+                if len(ids) >= limit:
+                    return None   # more than we listed: a partial set would let the rest through
                 await _ensure_meta(http, ids)
                 for i in ids:
                     mid = _meta.get((account, i), {}).get("message_id", "").strip()
