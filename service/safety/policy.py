@@ -839,14 +839,16 @@ def _credential_roots() -> list[Path]:
              home / ".config" / "gh", home / ".config" / "gcloud", home / "Library" / "Keychains"]
     for moe in dict.fromkeys((MOE_DIR, home / ".moe")):
         roots += [moe / "gmail.json", moe / "mcp.json", moe / "google_workspace",
-                  moe / "grants.json"]
+                  moe / "grants.json",
+                  # /resetwisp's commit marker: its presence erases Wisp's data at the next start.
+                  moe / ".reset-pending"]
     return roots
 
 
 _SHELL_SECRET = [
     r"(?<![\w-])\.(?:ssh|aws|gnupg|netrc)(?![\w-])",
     r"\.config/(?:gh|gcloud)\b", r"\bkeychains?\b", r"\bsecurity\s+(?:find|dump|export)-",
-    r"\b(?:gmail|mcp|grants)\.json\b", r"\bgoogle_workspace\b",
+    r"\b(?:gmail|mcp|grants)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
 ]
 
 

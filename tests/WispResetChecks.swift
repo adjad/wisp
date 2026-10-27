@@ -124,21 +124,61 @@ enum WispResetChecks {
     }
 
     static func serviceReplies() {
-        let erased = WispReset.ServiceReply.parse(status: 200, body: [
-            "ok": false, "problems": [["part": "google_revoke", "detail": "Couldn't reach Google."]]])
-        check(erased.kind == .erased && erased.problems == ["Couldn't reach Google."], "200 erased, with problems")
-        check(WispReset.ServiceReply.parse(status: 503, body: ["detail": WispReset.sealedDetail]).kind == .erased,
-              "a sealed service was already erased")
-        check(WispReset.ServiceReply.parse(status: 503, body: ["detail": "Credential recovery"]).kind == .refused,
-              "any other 503 erased nothing")
-        for status in [403, 409, 415, 422, 500] {
-            check(WispReset.ServiceReply.parse(status: status, body: ["detail": "No."]).kind == .refused,
-                  "\(status) erased nothing")
+        typealias R = WispReset.ServiceReply
+        let erased = R.parse(status: 200, body: ["committed": true, "erased": true, "problems": [[String: Any]]()])
+        check(erased.kind == .erased && erased.relaunches, "200 committed and erased relaunches")
+        let unfinished = R.parse(status: 200, body: ["committed": true, "erased": false,
+                                                     "detail": "Google was signed out, but its files were not deleted."])
+        check(unfinished.kind == .committed && unfinished.relaunches,
+              "committed but unfinished still relaunches: the next start finishes it")
+        check(R.parse(status: 503, body: ["detail": WispReset.erasedDetail]).kind == .erased,
+              "only the distinct 'Wisp was reset.' 503 means the service's part is done")
+        for other in ["Wisp is resetting.", "Credential recovery", ""] {
+            let reply = R.parse(status: 503, body: ["detail": other])
+            check(!reply.relaunches && reply.kind == .unknown, "503 '\(other)' is not a finished reset")
         }
-        check(WispReset.ServiceReply.parse(status: nil, body: nil).kind == .noAnswer, "no answer erased nothing")
+        for status in [403, 409, 415, 422] {
+            let reply = R.parse(status: status, body: ["detail": "No."])
+            check(reply.kind == .refused && !reply.relaunches && reply.detail.hasSuffix("Nothing was reset."),
+                  "\(status) refused before anything ran")
+        }
+        let notWritable = R.parse(status: 500, body: ["detail": "Couldn't start the reset (Wisp's folder isn't writable). Nothing was reset."])
+        check(notWritable.kind == .refused, "the service's own pre-commit refusal")
+        for unknown in [R.parse(status: 500, body: nil), R.parse(status: nil, body: nil),
+                        R.parse(status: 200, body: ["ok": true])] {
+            check(unknown.kind == .unknown && !unknown.relaunches && !unknown.detail.contains("Nothing was reset"),
+                  "no answer, a crash or an uncommitted 200 never claims nothing was reset")
+        }
         check(WispReset.refusal(corpusBusy: true, replying: false) != nil, "not during a corpus run")
         check(WispReset.refusal(corpusBusy: false, replying: true) != nil, "not while Wisp is answering")
         check(WispReset.refusal(corpusBusy: false, replying: false) == nil, "otherwise the card opens")
+
+        // The marker the service writes, and the notice the relaunch shows.
+        typealias M = WispReset.Marker
+        check(M.parse(Data(#"{"version":1,"phase":"erased","problems":["Couldn't reach Google."]}"#.utf8))
+              == M(phase: "erased", problems: ["Couldn't reach Google."]), "an erased marker")
+        for odd in [nil, Data(), Data("{".utf8), Data(#"{"phase":"done"}"#.utf8)] as [Data?] {
+            check(!M.parse(odd).serviceDone, "an unreadable marker means the reset isn't finished")
+        }
+        check(WispReset.launchNotice(marker: M(phase: "erased", problems: []), appProblems: []) == nil,
+              "a clean reset says nothing")
+        check(WispReset.launchNotice(marker: M(phase: "erased", problems: ["A."]), appProblems: ["B."])
+              == "Wisp was reset, but: A. B.", "problems from both parts are said once")
+        check(WispReset.launchNotice(marker: M(phase: "started", problems: []), appProblems: [])?
+              .contains("tries again at the next launch") == true, "an unfinished reset says it will finish")
+        check(WispReset.markerURL(home: "/Users/someone").path == "/Users/someone/.moe/.reset-pending",
+              "the marker lives in ~/.moe")
+
+        // Wisp's own app files outside ~/.moe, and only for Wisp's own bundle.
+        check(WispReset.appFiles(home: "/Users/someone", bundleID: WispReset.bundleID) == [
+            "/Users/someone/Library/Caches/com.wisp.assistant",
+            "/Users/someone/Library/HTTPStorages/com.wisp.assistant",
+            "/Users/someone/Library/Application Support/Wisp/battery_history.json"], "the app's caches")
+        check(WispReset.appFiles(home: "/Users/someone", bundleID: nil).isEmpty
+              && WispReset.appFiles(home: "/Users/someone", bundleID: "com.apple.Terminal").isEmpty,
+              "never another bundle's files")
+        check(WispReset.route == "assistant/reset_wisp" && WispReset.confirmPhrase == "reset wisp",
+              "the route and phrase match service/wisp_reset.py")
     }
 
     static func source(_ path: String) -> String {
@@ -156,26 +196,40 @@ enum WispResetChecks {
         let after = card.components(separatedBy: destructive)[1].prefix(200)
         check(!after.contains("keyboardShortcut"), "Reset Wisp has no keyboard shortcut")
         check(!card.contains(".defaultAction") && !card.contains(".return"), "Return never confirms the card")
+        check(card.contains("WispReset.clearDefaults(UserDefaults.standard, domain: bundleID)"),
+              "the launch step clears Wisp's defaults domain")
+        check(card.contains("WispReset.tccArguments(bundleID: bundleID)")
+              && card.components(separatedBy: "Process()").count == 2
+              && card.components(separatedBy: "URL(fileURLWithPath: WispReset.tccutil)").count == 2,
+              "tccutil runs only with WispReset's Wisp-only arguments")
+        check(card.contains("removeAllDeliveredNotifications()"), "delivered notifications go")
 
         let model = source("app/Sources/WispApp/OverlayModel.swift")
         check(model.contains("case .resetwisp: openResetCard()"), "/resetwisp opens the card, nothing more")
         check(model.contains("guard resetCard == .confirm, let onResetWisp else { return }"),
               "the reset runs only from an open confirmation")
+        check(model.contains("guard resetCard != .running else { return }"), "a running reset keeps its card")
         check(model.contains("guard !NotchCommand.isReset(s) else { return }"), "a starter can never open the card")
 
-        let appSources = ["AppDelegate.swift", "OverlayModel.swift", "OverlayView.swift", "ResetWisp.swift",
-                          "WispClient.swift", "QuickSettingsView.swift", "NotchCommand.swift"]
-            .map { (name: $0, text: source("app/Sources/WispApp/" + $0)) }
-        for (name, text) in appSources where name != "ResetWisp.swift" {
-            check(!text.contains("confirmReset()") || name == "OverlayModel.swift",
+        for name in ["AppDelegate.swift", "OverlayView.swift", "WispClient.swift", "QuickSettingsView.swift",
+                     "NotchCommand.swift"] {
+            check(!source("app/Sources/WispApp/" + name).contains("confirmReset()"),
                   "only the card calls confirmReset (\(name))")
         }
         let delegate = source("app/Sources/WispApp/AppDelegate.swift")
-        check(delegate.contains("WispReset.clearDefaults(defaults, domain: Bundle.main.bundleIdentifier)"),
-              "the reset clears Wisp's defaults domain")
-        check(delegate.contains("WispReset.tccArguments(bundleID: Bundle.main.bundleIdentifier)")
-              && delegate.components(separatedBy: "tccutil").count == 2,
-              "tccutil runs only with WispReset's Wisp-only arguments")
+        check(!delegate.contains("tccutil") && !delegate.contains("clearDefaults"),
+              "the delegate resets nothing itself; the marker-guarded launch step does")
+        check(delegate.contains("let resetPending = FileManager.default.fileExists(atPath: WispReset.markerURL().path)")
+              && delegate.contains("resetProblems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)"),
+              "a launch with the marker runs the app's part before reading settings")
+        let launchStart = delegate.components(separatedBy: "    private func launch() {")[1]
+        check(launchStart.range(of: "WispResetLaunch.run")!.lowerBound
+              < launchStart.range(of: "FirstRunSetup.shouldShow")!.lowerBound,
+              "the defaults are cleared before setup decides whether to show")
+        check(delegate.contains("if marker.serviceDone {\n                    try? FileManager.default.removeItem(at: url)"),
+              "the marker is removed last, only once the service's part is done")
+        check(delegate.contains("guard reply.relaunches else { return reply.detail }"),
+              "only a committed reset quits and relaunches")
         check(delegate.contains("return await self.performWispReset()")
               && delegate.components(separatedBy: "performWispReset()").count == 3,
               "the reset is reached only from the card's callback")

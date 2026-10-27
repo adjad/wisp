@@ -165,6 +165,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func launch() {
         launched = true
+        // A committed /resetwisp (its marker is on disk): this app's part runs before
+        // any setting is read, so this launch is a first run (WispReset).
+        let resetPending = FileManager.default.fileExists(atPath: WispReset.markerURL().path)
+        if resetPending {
+            resetProblems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)
+        }
         // Whoever was shutting down is gone now.
         UserDefaults.standard.removeObject(forKey: Self.shuttingDownPIDKey)
         // Port 8000 belongs to oMLX and is deliberately NOT policed here: it used to be
@@ -376,10 +382,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Wisp starts in the notch. The Wisp window opens only when asked for:
         // the Dock icon, the menu bar, or a hand-off from the notch.
         if firstRun { openFirstRunSetup() } else { showNotchTipOnce() }
-        // What a /resetwisp just before this launch could not remove, said once.
-        if let notice = defaults.string(forKey: WispReset.noticeKey) {
-            defaults.removeObject(forKey: WispReset.noticeKey)
-            model.showTransientNotice(notice, duration: 15)
+        if resetPending { finishPendingReset() }
+    }
+
+    /// What this app's part of a reset couldn't do, for the notice.
+    private var resetProblems: [String] = []
+
+    /// The last step of a reset: once the service says its part is done (it erases
+    /// at start, before any store opens), remove the marker and say what didn't
+    /// work, if anything. A service that couldn't finish leaves the marker, and
+    /// the next launch runs the reset's last steps again.
+    private func finishPendingReset() {
+        Task { [weak self] in
+            let url = WispReset.markerURL()
+            for _ in 0..<90 {
+                let marker = WispReset.Marker.parse(try? Data(contentsOf: url))
+                if marker.serviceDone {
+                    try? FileManager.default.removeItem(at: url)
+                    if let notice = WispReset.launchNotice(marker: marker, appProblems: self?.resetProblems ?? []) {
+                        self?.model.showTransientNotice(notice, duration: 15)
+                    }
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+            let marker = WispReset.Marker.parse(try? Data(contentsOf: url))
+            if let notice = WispReset.launchNotice(marker: marker, appProblems: self?.resetProblems ?? []) {
+                self?.model.showTransientNotice(notice, duration: 15)
+            }
         }
     }
 
@@ -1537,52 +1567,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// /resetwisp, after the person clicked Reset Wisp on its card. Returns why it
-    /// stopped before anything was erased; once the service has erased Wisp's data
-    /// it always finishes (defaults, privacy grants, relaunch) and never returns,
-    /// so no launch ever sees half a reset.
+    /// stopped. Once the service has committed the reset (its marker is on disk)
+    /// this never returns: Wisp stops the engine and the service and relaunches,
+    /// and that launch finishes the reset (WispReset), so no launch ever sees half
+    /// a reset. A reset whose answer was lost is finished by the next launch too.
     func performWispReset() async -> String {
         guard launched, !shutdownStarted else { return "Wisp is quitting." }
         guard !backend.portConflict else {
             return "Another program holds Wisp's port, so nothing was reset."
         }
-        // 1. Wisp's own activity. The service stops its schedulers and syncs itself
-        // and, once it starts deleting, refuses every other request (ResetGate).
+        // Wisp's own activity. The service seals itself, cancels its requests and
+        // stops its schedulers and syncs.
         todayModel.stopBackgroundRefresh()
-        // 2. The service: Google sign-out, learned routines, every file but the model.
         let (status, body) = await client.resetWisp()
         let reply = WispReset.ServiceReply.parse(status: status, body: body)
-        guard reply.kind == .erased else { return reply.detail }
+        guard reply.relaunches else { return reply.detail }
+        NSLog("%@", "Wisp reset: service committed (\(reply.kind == .erased ? "erased" : "unfinished")); relaunching")
         noteTerminating()
         shutdownStarted = true
-        let providerKeys = WispResetKeychain.removeProviderKeys()
-        try? BrowserBridgeCredentials.removeAll()
-        // The engine and the service stop as on quit; the model files stay.
+        // The engine and the service stop as on quit; the model files stay. The next
+        // service start erases the engine's prompt cache, now that it is stopped.
         await client.shutdownOMLX()
         await BrowserBridgeActivation.shared.shutdown()
         await backend.stopAndWait()
-        // 3. This app's defaults: every first-run marker goes, so setup starts at step 1.
-        let defaults = UserDefaults.standard
-        WispReset.clearDefaults(defaults, domain: Bundle.main.bundleIdentifier)
-        if !reply.problems.isEmpty {
-            defaults.set("Wisp was reset, but: " + reply.problems.joined(separator: " "), forKey: WispReset.noticeKey)
-        }
-        defaults.synchronize()
-        // 4. Wisp's own macOS privacy grants, for its own bundle id only.
-        var privacyReset = false
-        if let arguments = WispReset.tccArguments(bundleID: Bundle.main.bundleIdentifier) {
-            let tcc = Process()
-            tcc.executableURL = URL(fileURLWithPath: WispReset.tccutil)
-            tcc.arguments = arguments
-            tcc.standardOutput = FileHandle.nullDevice
-            tcc.standardError = FileHandle.nullDevice
-            if (try? tcc.run()) != nil {
-                tcc.waitUntilExit()
-                privacyReset = tcc.terminationStatus == 0
-            }
-        }
-        NSLog("%@", WispReset.logLine(removedEntries: body?["removed"] as? Int ?? 0, providerKeys: providerKeys,
-                                       problems: reply.problems.count, privacyReset: privacyReset))
-        // 5. Open again once this process is gone, straight into first-run setup.
+        // Open again once this process is gone; that launch finishes the reset.
         if let arguments = WispReset.relaunchArguments(pid: ProcessInfo.processInfo.processIdentifier,
                                                         app: Bundle.main.bundleURL) {
             let relaunch = Process()
@@ -1590,8 +1598,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             relaunch.arguments = arguments
             try? relaunch.run()
         }
-        // Not NSApp.terminate: the quit path writes defaults back (noteTerminating,
-        // window frames) after they were cleared.
+        // Not NSApp.terminate: nothing this process still writes matters, and the
+        // relaunched Wisp clears the defaults before reading any.
         exit(0)
     }
 

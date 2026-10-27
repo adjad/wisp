@@ -7,8 +7,11 @@ touches the real ~/.moe, Google, the Keychain, TCC or a live service.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -96,6 +99,8 @@ def world(tmp_path):
     _write(home / "engine" / "home" / "state.json", "{}")
     _write(home / "engine" / "memory_guard.json", "{}")
     _write(home / "engine" / "engine.log", "request text")
+    _write(home / "engine" / "base" / "cache" / "kv-0001.safetensors", "prompt cache")
+    _write(home / "engine" / "base" / "logs" / "server.log", "request text")
     _write(home / "provisioning" / "endpoints.json", "{}")
     for name in (".credential-generation", ".helper-transaction.json", "omlx-runtime-authorization.json",
                  ".provisioning.lock", ".config.lock", ".engine-mode.lock"):
@@ -116,7 +121,9 @@ def test_reset_removes_exactly_the_delete_list_and_keeps_the_model(world):
     # The model, the engine's settings and key, and its credential plumbing survive.
     assert (home / MODEL).read_text() == "weights"
     for kept in ("engine/base/settings.json", "engine/base/model_settings.json", "engine/home/state.json",
-                 "engine/memory_guard.json", "provisioning/endpoints.json"):
+                 "engine/memory_guard.json", "provisioning/endpoints.json",
+                 # The running engine's prompt cache waits for the stopped engine (resume_pending).
+                 "engine/base/cache/kv-0001.safetensors", "engine/base/logs/server.log"):
         assert (home / kept).exists(), kept
     assert not (home / "engine" / "engine.log").exists()
     # Links were removed as links; what they pointed at outside is untouched.
@@ -136,8 +143,10 @@ def test_config_keeps_only_the_engine_and_model_choice(world):
 
 
 def test_the_keep_list_is_explicit():
-    assert R.KEEP_ENTRIES == frozenset(KEPT)
+    assert R.KEEP_ENTRIES == frozenset(KEPT | {R.MARKER})
+    assert R.MARKER == ".reset-pending"
     assert R.ENGINE_DELETE == frozenset({"engine.log"})
+    assert R.ENGINE_CACHES == ("base/cache", "base/logs")
     assert R.trimmed_config(None) == {} and R.trimmed_config(["x"]) == {}
 
 
@@ -154,10 +163,10 @@ def test_a_database_waits_for_its_write_ahead_log(world, monkeypatch):
     home = world["home"]
     real_remove = R._remove
 
-    def remove(path):
+    def remove(path, device=None):
         if path.name == "assistant.db-wal":
             raise PermissionError("held")
-        real_remove(path)
+        real_remove(path, device)
 
     monkeypatch.setattr(R, "_remove", remove)
     result = R.erase_home(home, world["user"])
@@ -279,36 +288,38 @@ def _post(app, body, client=("127.0.0.1", 50123)):
     return asyncio.run(go())
 
 
-def test_the_app_flow_stops_work_then_disconnects_then_seals_then_erases(world, monkeypatch):
+def _flow(world, monkeypatch, erase=None):
+    """The route on a scratch home, with Google and background work stubbed."""
     import service.paths
     monkeypatch.setattr(R, "state", R._State())
     monkeypatch.setattr(R, "caller_is_parent_app", lambda client, server: True)
     monkeypatch.setattr(service.paths, "MOE_DIR", world["home"])
     monkeypatch.setenv("HOME", str(world["user"]))
     order = []
+    marker = lambda: R.read_marker(world["home"])  # noqa: E731
 
     async def stop(app, problems):
+        assert R.state.sealed and marker()["phase"] == "started", "sealed and committed before any work stops"
         order.append("stop")
 
     async def google(problems):
+        assert marker()["phase"] == "started", "the marker is on disk before anything destructive"
         order.append("google")
-        problems.append({"part": "google_revoke", "detail": "offline"})
+        problems.append({"part": "google_revoke", "detail": "Couldn't reach Google to revoke 1 sign-in."})
         return 2
-
-    async def learned(problems):
-        order.append("learned")
 
     real_erase = R.erase_home
 
-    def erase(home, user_home):
-        assert R.state.sealed, "nothing else may run while files go"
+    def erase_step(home, user_home, **kwargs):
+        assert R.state.sealed and not R.state.erased
         order.append("erase")
-        return real_erase(home, user_home)
+        if erase is not None:
+            return erase(home, user_home)
+        return real_erase(home, user_home, **kwargs)
 
     monkeypatch.setattr(R, "_stop_background", stop)
     monkeypatch.setattr(R, "_disconnect_google", google)
-    monkeypatch.setattr(R, "_forget_learned", learned)
-    monkeypatch.setattr(R, "erase_home", erase)
+    monkeypatch.setattr(R, "erase_home", erase_step)
     app = _app()
     app.add_middleware(R.ResetGate)
 
@@ -320,21 +331,194 @@ def test_the_app_flow_stops_work_then_disconnects_then_seals_then_erases(world, 
     def other():
         return {"ok": True}
 
+    return app, order
+
+
+def test_the_app_flow_seals_commits_stops_disconnects_then_erases(world, monkeypatch):
+    app, order = _flow(world, monkeypatch)
     assert _post(app, {"confirm": True}).status_code == 422
-    assert order == []
+    assert order == [] and R.read_marker(world["home"]) is None and not R.state.sealed
     reply = _post(app, {"confirm": R.CONFIRM_PHRASE})
     assert reply.status_code == 200, reply.text
     data = reply.json()
-    assert order == ["stop", "google", "learned", "erase"]
-    assert data["ok"] is False and data["google_accounts"] == 2
-    assert [p["part"] for p in data["problems"]] == ["google_revoke"]
-    assert set(data["kept"]) == KEPT
-    assert {p.name for p in world["home"].iterdir()} == KEPT
-    # Sealed: only "are you up" and the engine stop get through; a second reset is refused.
+    assert order == ["stop", "google", "erase"]
+    assert data["committed"] is True and data["erased"] is True and data["ok"] is False
+    assert data["google_accounts"] == 2 and [p["part"] for p in data["problems"]] == ["google_revoke"]
+    assert set(data["kept"]) == KEPT | {R.MARKER}
+    assert {p.name for p in world["home"].iterdir()} == KEPT | {R.MARKER}
+    # The service's part is done; the relaunched app removes the marker last.
+    assert R.read_marker(world["home"]) | {"at": 0} == {
+        "version": 1, "phase": "erased", "at": 0, "problems": ["Couldn't reach Google to revoke 1 sign-in."]}
+    assert R.state.erased and not R.state.running
+    # Sealed: "are you up" and the engine stop get through; everything else hears
+    # the distinct "Wisp was reset.", and so does a second reset.
     client = TestClient(app)
     assert client.get("/health").status_code == 200
-    assert client.get("/assistant/next").status_code == 503
-    assert _post(app, {"confirm": R.CONFIRM_PHRASE}).status_code == 503
+    other = client.get("/assistant/next")
+    assert other.status_code == 503 and other.json()["detail"] == R.ERASED
+    again = _post(app, {"confirm": R.CONFIRM_PHRASE})
+    assert again.status_code == 503 and again.json()["detail"] == R.ERASED
+
+
+def test_a_failed_erase_is_reported_and_never_claimed_finished(world, monkeypatch):
+    def broken(home, user_home):
+        raise PermissionError("disk said no")
+
+    app, order = _flow(world, monkeypatch, erase=broken)
+    reply = _post(app, {"confirm": R.CONFIRM_PHRASE})
+    assert reply.status_code == 200
+    data = reply.json()
+    assert data["committed"] is True and data["erased"] is False
+    assert "Google was signed out, but its files were not deleted" in data["detail"]
+    assert "Nothing was reset" not in json.dumps(data)
+    # Not running, not erased: other requests hear "resetting", never "reset",
+    # the marker still says the service's part is unfinished, and a retry runs again.
+    assert not R.state.running and not R.state.erased and R.state.sealed
+    assert R.read_marker(world["home"])["phase"] == "started"
+    other = TestClient(app).get("/assistant/next")
+    assert other.status_code == 503 and other.json()["detail"] == R.RESETTING
+    assert (world["home"] / "assistant.db").exists()
+    order.clear()
+    monkeypatch.setattr(R, "_disconnect_google", lambda problems: asyncio.sleep(0, result=0))
+    reply = _post(app, {"confirm": R.CONFIRM_PHRASE})
+    assert reply.json()["erased"] is False and order == ["stop", "erase"]
+
+
+def test_the_marker_is_written_before_anything_destructive_and_a_failure_to_write_refuses(world, monkeypatch):
+    app, order = _flow(world, monkeypatch)
+
+    def no_disk(home, phase, problems):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(R, "write_marker", no_disk)
+    reply = _post(app, {"confirm": R.CONFIRM_PHRASE})
+    assert reply.status_code == 500 and reply.json()["detail"].endswith("Nothing was reset.")
+    assert order == [] and not R.state.sealed and not R.state.running
+    assert (world["home"] / "assistant.db").exists()
+
+
+def test_background_that_will_not_stop_is_reported(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(R, "STOP_TIMEOUT", 0.05)
+
+    async def stubborn():
+        while True:
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                continue
+
+    async def go():
+        task = asyncio.create_task(stubborn())
+        await asyncio.sleep(0)
+        app = SimpleNamespace(state=SimpleNamespace(wisp_background_tasks=[task], wisp_bridge_link=None))
+        problems = []
+        from service.assistant import behavior_runtime
+        monkeypatch.setattr(behavior_runtime, "stop_for_reset", lambda: None)
+        await R._stop_background(app, problems)
+        task.cancel()
+        return problems, task
+
+    loop = asyncio.new_event_loop()
+    try:
+        problems, task = loop.run_until_complete(go())
+    finally:
+        for pending in asyncio.all_tasks(loop):
+            pending.cancel()
+        loop.close()
+    assert any(p["part"] == "background" and "didn't stop in time" in p["detail"] for p in problems)
+
+
+# --------------------------------------------------------------------------
+# An interrupted reset is finished by the next service start
+# --------------------------------------------------------------------------
+
+def test_the_next_start_finishes_a_committed_reset(world):
+    home, user = world["home"], world["user"]
+    R.write_marker(home, "started", ["Couldn't reach Google to revoke 1 sign-in."])
+    result = R.resume_pending(home, user)
+    assert result is not None and result["failed"] == []
+    assert {p.name for p in home.iterdir()} == KEPT | {R.MARKER}
+    assert (home / MODEL).read_text() == "weights"
+    # The engine is stopped, so its prompt cache and logs go too.
+    assert not (home / "engine" / "base" / "cache").exists()
+    assert not (home / "engine" / "base" / "logs").exists()
+    assert (home / "engine" / "base" / "settings.json").exists()
+    marker = R.read_marker(home)
+    assert marker["phase"] == "erased" and marker["problems"] == ["Couldn't reach Google to revoke 1 sign-in."]
+    assert (world["outside"] / "precious.txt").read_text() == "not Wisp's"
+
+
+def test_a_running_engine_keeps_its_cache_until_it_stops(world):
+    home, user = world["home"], world["user"]
+    (home / "engine" / "engine.pid").write_text(str(os.getpid()))
+    R.write_marker(home, "started", [])
+    R.resume_pending(home, user)
+    assert (home / "engine" / "base" / "cache" / "kv-0001.safetensors").exists()
+    assert not (home / "assistant.db").exists()
+
+
+def test_without_a_marker_the_start_touches_nothing(world):
+    before = sorted(p.name for p in world["home"].iterdir())
+    assert R.resume_pending(world["home"], world["user"]) is None
+    assert sorted(p.name for p in world["home"].iterdir()) == before
+
+
+def test_a_resume_that_fails_stays_pending(world, monkeypatch):
+    home, user = world["home"], world["user"]
+    R.write_marker(home, "started", [])
+    real_remove = R._remove
+
+    def remove(path, device=None):
+        if path.name == "sessions.db":
+            raise PermissionError("held")
+        real_remove(path, device)
+
+    monkeypatch.setattr(R, "_remove", remove)
+    R.resume_pending(home, user)
+    marker = R.read_marker(home)
+    assert marker["phase"] == "started" and marker["problems"] == ["Couldn't delete: sessions.db"]
+    monkeypatch.setattr(R, "_remove", real_remove)
+    R.resume_pending(home, user)
+    assert R.read_marker(home)["phase"] == "erased"
+    assert R.read_marker(home)["problems"] == []
+
+
+def test_a_marker_outside_wisps_home_never_erases(tmp_path, world):
+    sandbox = tmp_path / "sandbox"
+    _write(sandbox / "assistant.db")
+    R.write_marker(sandbox, "started", [])
+    assert R.resume_pending(sandbox, world["user"]) is None
+    assert (sandbox / "assistant.db").exists()
+
+
+def test_importing_the_service_finishes_the_reset_before_any_store_opens(world):
+    """The hook in service/__init__.py runs on the first import of anything in the
+    service, in a fresh interpreter, before any store module is imported."""
+    home, user = world["home"], world["user"]
+    R.write_marker(home, "started", [])
+    root = Path(__file__).resolve().parents[1]
+    probe = ("import sys, service; "
+             "print(sorted(m for m in sys.modules if m.startswith('service.assistant') or m == 'service.memory'))")
+    env = {"HOME": str(user), "WISP_HOME": str(home), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
+    done = subprocess.run([sys.executable, "-c", probe], cwd=root, env=env, capture_output=True, text=True,
+                          timeout=120)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip().splitlines()[-1] == "[]", "no store module was imported first"
+    assert {p.name for p in home.iterdir()} == KEPT | {R.MARKER}
+    assert R.read_marker(home)["phase"] == "erased"
+
+
+def test_odd_markers_read_as_unfinished(world):
+    home = world["home"]
+    (home / R.MARKER).write_text("not json")
+    assert R.read_marker(home)["phase"] == "started"
+    (home / R.MARKER).write_text(json.dumps({"phase": "done"}))
+    assert R.read_marker(home)["phase"] == "started"
+    (home / R.MARKER).unlink()
+    (home / R.MARKER).symlink_to(world["outside"] / "precious.txt")
+    assert R.read_marker(home)["phase"] == "started"
+    assert (world["outside"] / "precious.txt").read_text() == "not Wisp's"
 
 
 def test_a_refused_home_deletes_nothing(world, monkeypatch, tmp_path):
@@ -364,6 +548,11 @@ def test_the_model_and_agent_cannot_reach_it():
                     "http://127.0.0.1:8765/assistant/reset_wisp -d '{\"confirm\": \"reset wisp\"}'",
                     "curl localhost:8765//assistant//reset_wisp"):
         assert policy.local_send_endpoint_hit(command)
+    # Percent-encoded, the way uvicorn would decode it, is refused too.
+    assert policy.local_send_endpoint_hit("curl -X POST http://127.0.0.1:8765/assistant/%72eset_wisp")
+    # Writing the commit marker always asks first: a shell command or a file tool naming it.
+    assert policy.shell_secret_hit({"cmd": "touch ~/.moe/.reset-pending"})
+    assert any(str(root).endswith(".reset-pending") for root in policy._credential_roots())
     # Mounted on the real app (and gated there): a native call that is not the
     # parent app reaches the route and is refused by it, not by a missing route.
     reply = TestClient(service.main.app).post(R.ROUTE, json={"confirm": R.CONFIRM_PHRASE})

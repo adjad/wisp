@@ -779,6 +779,8 @@ final class OverlayModel: ObservableObject {
 
     /// /resetwisp typed in Ask: the confirmation card, never the reset itself.
     func openResetCard() {
+        // A reset already under way keeps its card; typing the command again changes nothing.
+        guard resetCard != .running else { return }
         if let refusal = WispReset.refusal(corpusBusy: corpusBusy, replying: !conversationSettled) {
             showTransientNotice(refusal)
             return
@@ -792,6 +794,12 @@ final class OverlayModel: ObservableObject {
     /// The card's Reset Wisp button, and only it.
     func confirmReset() {
         guard resetCard == .confirm, let onResetWisp else { return }
+        // Something may have started since the card opened (a reply, a corpus run).
+        if let refusal = WispReset.refusal(corpusBusy: corpusBusy, replying: !conversationSettled) {
+            resetCard = .failed(refusal)
+            onResize()
+            return
+        }
         resetCard = .running
         onResize()
         Task { [weak self] in

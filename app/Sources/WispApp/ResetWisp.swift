@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import SwiftUI
+import UserNotifications
 
 /// /resetwisp: erase everything Wisp holds except the model, so the next launch
 /// is a true first run (the onboarding window at step 1, Model).
@@ -11,22 +12,32 @@ import SwiftUI
 /// route admits only this app (service/wisp_reset.py), and a starter or other
 /// programmatic prompt can't open the card (OverlayModel.pick).
 ///
-/// Order (AppDelegate.performWispReset): Wisp's own activity stops; the service
-/// disconnects Google and deletes its data; Wisp's provider keys leave the
-/// Keychain; the engine and service stop as on quit; this app's defaults domain
-/// is cleared; its macOS privacy grants are reset; Wisp relaunches.
+/// Order (AppDelegate.performWispReset, then finishPendingReset at the next launch):
+/// 1. The service seals itself and commits the reset by writing ~/.moe/.reset-pending
+///    before anything destructive; it stops its work, signs out of Google and
+///    deletes its data. From the commit on, the reset always finishes.
+/// 2. This app stops the engine and the service as on quit and relaunches.
+/// 3. The next service start sees the marker and erases again (and the engine's
+///    prompt cache, now that the engine is stopped).
+/// 4. The relaunched app sees the marker before reading any setting, clears its
+///    defaults domain, its provider keys, its privacy grants, its notifications and
+///    caches (WispResetLaunch.run), and opens setup at step 1.
+/// 5. It removes the marker last, once the service says its part is done.
+/// A reset cut short anywhere after step 1 (a crash, a quit, a timeout) is finished
+/// the same way by the next launch, so no launch is left with half a reset.
 enum WispReset {
     /// The only bundle whose defaults and privacy grants a reset touches.
     static let bundleID = "com.wisp.assistant"
-    /// The service route, and the phrase it requires (service/wisp_reset.py).
-    static let route = "assistant/reset_wisp"
-    static let confirmPhrase = "reset wisp"
-    /// A sealed service answers everything else with this (wisp_reset.ResetGate):
-    /// a reset already erased it, so the rest of the reset may go ahead.
-    static let sealedDetail = "Wisp is resetting."
-    /// Set after the defaults are cleared, only when something couldn't be
-    /// removed; the relaunched Wisp shows it once and deletes it.
-    static let noticeKey = "wisp.reset.notice"
+    /// The service route, and the phrase it requires (kept in WispClient).
+    static var route: String { WispClient.resetRoute }
+    static var confirmPhrase: String { WispClient.resetConfirmPhrase }
+    /// The only 503 that means "the service already did its part" (wisp_reset.ERASED).
+    static let erasedDetail = "Wisp was reset."
+    /// The commit marker in Wisp's home (wisp_reset.MARKER).
+    static let markerName = ".reset-pending"
+    static func markerURL(home: String = NSHomeDirectory()) -> URL {
+        URL(fileURLWithPath: home).appendingPathComponent(".moe").appendingPathComponent(markerName)
+    }
 
     static let deletes = [
         "Google: every connected account is signed out (revoked with Google when online) and Wisp's tokens are deleted",
@@ -38,7 +49,7 @@ enum WispReset {
     ]
     static let keeps = [
         "The model and Wisp's engine, so nothing downloads again",
-        "Everything outside Wisp, including your own oMLX app",
+        "Everything outside Wisp: your own oMLX app and its cache, copies on a Mac mini or Air node, and the iPhone app's cache",
     ]
     static let internetAccountsNote =
         "Your accounts in System Settings ▸ Internet Accounts, Mail, Calendar, Notes and Messages are not touched. Wisp only loses its access to them."
@@ -103,30 +114,80 @@ enum WispReset {
             && digest.unicodeScalars.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
     }
 
-    /// What the service answered, in the words the card shows.
+    /// What the service answered.
     struct ServiceReply: Equatable {
-        enum Kind: Equatable { case erased, refused, noAnswer }
+        enum Kind: Equatable {
+            /// Committed and the service's files are gone: relaunch.
+            case erased
+            /// Committed (the marker is on disk) but not finished: relaunch, and the
+            /// next start finishes it.
+            case committed
+            /// Refused before anything destructive ran.
+            case refused
+            /// No answer: whether it started is unknown.
+            case unknown
+        }
         let kind: Kind
-        let problems: [String]
         let detail: String
 
+        /// Reset steps go ahead (quit and relaunch) only for these.
+        var relaunches: Bool { kind == .erased || kind == .committed }
+
+        static let unknownDetail = "Wisp didn't confirm the reset, so it may have started. Quit and reopen "
+            + "Wisp: a reset that started finishes then."
+
         static func parse(status: Int?, body: [String: Any]?) -> ServiceReply {
-            guard let status else {
-                return ServiceReply(kind: .noAnswer, problems: [], detail:
-                    "Wisp's service didn't answer, so nothing was reset. Try /resetwisp again.")
-            }
+            guard let status else { return ServiceReply(kind: .unknown, detail: unknownDetail) }
             let detail = body?["detail"] as? String ?? ""
-            if status == 200 {
-                let problems = (body?["problems"] as? [[String: Any]] ?? []).compactMap { $0["detail"] as? String }
-                return ServiceReply(kind: .erased, problems: problems, detail: "")
+            if status == 200, body?["committed"] as? Bool == true {
+                return ServiceReply(kind: body?["erased"] as? Bool == true ? .erased : .committed, detail: detail)
             }
-            if status == 503 && detail == sealedDetail {
-                // An earlier attempt erased the service and lost its answer.
-                return ServiceReply(kind: .erased, problems: [], detail: "")
+            // An earlier attempt erased the service and lost its answer.
+            if status == 503 && detail == erasedDetail { return ServiceReply(kind: .erased, detail: "") }
+            // The service refuses before its commit with a 4xx, or says so itself.
+            if (400..<500).contains(status) || detail.hasSuffix("Nothing was reset.") {
+                let said = detail.isEmpty ? "Wisp's service refused the reset (\(status))." : detail
+                return ServiceReply(kind: .refused, detail: said.hasSuffix("Nothing was reset.") ? said
+                                    : said + " Nothing was reset.")
             }
-            return ServiceReply(kind: .refused, problems: [], detail: detail.isEmpty
-                ? "Wisp's service refused the reset (\(status)). Nothing was reset." : detail + " Nothing was reset.")
+            return ServiceReply(kind: .unknown, detail: unknownDetail)
         }
+    }
+
+    /// The marker's contents, as the service wrote them (wisp_reset.write_marker).
+    struct Marker: Equatable {
+        /// "started" until the service's part is done, then "erased".
+        let phase: String
+        let problems: [String]
+        var serviceDone: Bool { phase == "erased" }
+
+        /// Unreadable or odd still means a reset started.
+        static func parse(_ data: Data?) -> Marker {
+            guard let data, let doc = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let phase = doc["phase"] as? String, ["started", "erased"].contains(phase) else {
+                return Marker(phase: "started", problems: [])
+            }
+            return Marker(phase: phase, problems: (doc["problems"] as? [Any] ?? []).compactMap { $0 as? String })
+        }
+    }
+
+    /// The notice the relaunched Wisp shows once, or nil when all went well.
+    static func launchNotice(marker: Marker, appProblems: [String]) -> String? {
+        let problems = marker.problems + appProblems
+        if !marker.serviceDone {
+            return "Wisp couldn't finish deleting its data and tries again at the next launch."
+                + (problems.isEmpty ? "" : " " + problems.joined(separator: " "))
+        }
+        return problems.isEmpty ? nil : "Wisp was reset, but: " + problems.joined(separator: " ")
+    }
+
+    /// Wisp's own app files outside ~/.moe that a reset removes: its URL cache and
+    /// cookies, and the battery graph. Only for Wisp's own bundle id.
+    static func appFiles(home: String, bundleID: String?) -> [String] {
+        guard bundleID == Self.bundleID else { return [] }
+        return ["Library/Caches/\(Self.bundleID)", "Library/HTTPStorages/\(Self.bundleID)",
+                "Library/Application Support/Wisp/battery_history.json"]
+            .map { (home as NSString).appendingPathComponent($0) }
     }
 
     /// Why the card can't open now, or nil.
@@ -136,11 +197,6 @@ enum WispReset {
         return nil
     }
 
-    /// The short record written to the console: counts and parts, nothing personal.
-    static func logLine(removedEntries: Int, providerKeys: Int, problems: Int, privacyReset: Bool) -> String {
-        "Wisp reset: service removed \(removedEntries) entries, \(providerKeys) provider keys, "
-            + "privacy reset \(privacyReset ? "ran" : "skipped"), \(problems) problems"
-    }
 }
 
 /// What clearDefaults needs from UserDefaults, so its checks can run on an
@@ -154,6 +210,52 @@ protocol WispDefaultsStore: AnyObject {
 }
 
 extension UserDefaults: WispDefaultsStore {}
+
+/// The app's part of a committed reset, run first thing at launch while the marker
+/// is on disk (AppDelegate.launch), before any setting is read. Every step is
+/// idempotent, so a launch cut short just runs them again.
+enum WispResetLaunch {
+    /// Returns sentences for the notice about what didn't work, if anything.
+    static func run(bundleID: String?) -> [String] {
+        var problems: [String] = []
+        // Every first-run marker goes, so setup opens at step 1.
+        WispReset.clearDefaults(UserDefaults.standard, domain: bundleID)
+        _ = WispResetKeychain.removeProviderKeys()
+        try? BrowserBridgeCredentials.removeAll()
+        // Wisp's own macOS privacy grants, for its own bundle id only.
+        if let arguments = WispReset.tccArguments(bundleID: bundleID) {
+            let tcc = Process()
+            tcc.executableURL = URL(fileURLWithPath: WispReset.tccutil)
+            tcc.arguments = arguments
+            tcc.standardOutput = FileHandle.nullDevice
+            tcc.standardError = FileHandle.nullDevice
+            if (try? tcc.run()) != nil {
+                tcc.waitUntilExit()
+                if tcc.terminationStatus != 0 {
+                    problems.append("macOS didn't reset Wisp's permissions; remove Wisp under System Settings ▸ Privacy & Security to start them over.")
+                }
+            } else {
+                problems.append("macOS didn't reset Wisp's permissions; remove Wisp under System Settings ▸ Privacy & Security to start them over.")
+            }
+        }
+        if bundleID != nil {
+            // Wisp's own notifications: delivered ones and any still scheduled.
+            let center = UNUserNotificationCenter.current()
+            center.removeAllDeliveredNotifications()
+            center.removeAllPendingNotificationRequests()
+        }
+        for path in WispReset.appFiles(home: NSHomeDirectory(), bundleID: bundleID) {
+            // removeItem deletes a link itself, never what it points at.
+            if (try? FileManager.default.attributesOfItem(atPath: path)) != nil {
+                do { try FileManager.default.removeItem(atPath: path) } catch {
+                    problems.append("Couldn't delete \((path as NSString).lastPathComponent).")
+                }
+            }
+        }
+        NSLog("%@", "Wisp reset: app part done at launch, \(problems.count) problems")
+        return problems
+    }
+}
 
 /// Keychain items that are Wisp's own and go in a reset: cloud/provider keys only.
 enum WispResetKeychain {

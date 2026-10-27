@@ -435,6 +435,7 @@ async def lifespan(app: FastAPI):
         bridge_link = browser_bridge_host.start_from_environment(assistant_store)
     except Exception:  # noqa: BLE001 — an optional bridge never blocks startup
         pass
+    app.state.wisp_bridge_link = bridge_link    # /resetwisp stops it too
     try:
         yield
     finally:
