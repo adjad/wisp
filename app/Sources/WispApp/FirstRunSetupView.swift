@@ -476,10 +476,10 @@ final class FirstRunPermissions: ObservableObject {
 
     @Published private(set) var states: [Item: State] = [:]
     @Published private(set) var asking: Item?
-    /// What the person answered the last time Wisp asked, kept for Mail & Notes and
-    /// Messages. Wisp closes the apps it opened to ask, and macOS reads a closed app
-    /// as "not asked yet", so without this the row would flip back to Not set.
-    private var answered: [Item: State] = [:]
+    /// Mail & Notes or Messages whose grant macOS has dropped since it was last
+    /// Allowed (an update that changed how Wisp is signed does this once), so the
+    /// row can say why it asks again instead of looking random.
+    @Published private(set) var resetItems: Set<Item> = []
     private var activeObserver: NSObjectProtocol?
     private var poll: Task<Void, Never>?
 
@@ -551,13 +551,11 @@ final class FirstRunPermissions: ObservableObject {
         next[.contacts] = Self.contactsState()
         next[.fullDiskAccess] = Self.fullDiskAccessState()
         next[.notifications] = await Self.notificationsState()
-        let mail = await Self.automationState(ask: false)
-        let messages = await Self.messagesAutomationState(ask: false)
-        // A real read replaces the remembered answer; a closed app doesn't.
-        if Self.isDecided(mail) { answered[.mail] = nil }
-        if Self.isDecided(messages) { answered[.messages] = nil }
-        next[.mail] = Self.keepingAnswer(mail, answered: answered[.mail])
-        next[.messages] = Self.keepingAnswer(messages, answered: answered[.messages])
+        // Remembered across closes and relaunches (see resolveAutomation): a closed
+        // Mail or Notes can't be asked about, and that is not a removed grant.
+        next[.mail] = await Self.automationState(ask: false)
+        next[.messages] = await Self.messagesAutomationState(ask: false)
+        resetItems = Set([Item.mail, .messages].filter { Self.storedAutomation($0) == .reset })
         states = next
     }
 
@@ -585,8 +583,7 @@ final class FirstRunPermissions: ObservableObject {
             // Only an app Wisp just started needs a moment to come up before it can be asked.
             if !launched.isEmpty { try? await Task.sleep(nanoseconds: 1_500_000_000) }
             NSApp.activate(ignoringOtherApps: true)
-            let answer = await Self.automationState(ask: true)
-            if Self.isDecided(answer) { answered[.mail] = answer }
+            _ = await Self.automationState(ask: true)
             Self.quitAfterAsking(launched)
         case .messages:
             // The same for Messages, on its own target list: its answer never
@@ -595,8 +592,7 @@ final class FirstRunPermissions: ObservableObject {
             for id in Self.messagesAutomationTargets { if let app = await Self.launchHidden(id) { launched.append(app) } }
             if !launched.isEmpty { try? await Task.sleep(nanoseconds: 1_500_000_000) }
             NSApp.activate(ignoringOtherApps: true)
-            let answer = await Self.messagesAutomationState(ask: true)
-            if Self.isDecided(answer) { answered[.messages] = answer }
+            _ = await Self.messagesAutomationState(ask: true)
             Self.quitAfterAsking(launched)
         case .fullDiskAccess:
             // Full Disk Access can't be asked for: open its page and let the person
@@ -676,14 +672,14 @@ final class FirstRunPermissions: ObservableObject {
     nonisolated static let automationTargets = ["com.apple.mail", "com.apple.Notes"]
 
     /// Allowed only when both Mail and Notes are. A target that isn't running can't
-    /// be asked about, which reads as not asked yet.
+    /// be asked about (procNotFound), which keeps the last answer macOS gave.
     private static func automationState(ask: Bool) async -> State {
         await Task.detached { automationStateNow(ask: ask) }.value
     }
 
     /// The same answer, on the calling thread (quick unless `ask` shows a prompt).
     nonisolated static func automationStateNow(ask: Bool) -> State {
-        automationStateNow(of: automationTargets, ask: ask)
+        automationStateNow(of: automationTargets, item: .mail, ask: ask)
     }
 
     /// Messages, which OutboundSender scripts to send a text. Kept apart from
@@ -692,27 +688,93 @@ final class FirstRunPermissions: ObservableObject {
     nonisolated static let messagesAutomationTargets = ["com.apple.MobileSMS"]
 
     private static func messagesAutomationState(ask: Bool) async -> State {
-        await Task.detached { automationStateNow(of: messagesAutomationTargets, ask: ask) }.value
+        await Task.detached {
+            automationStateNow(of: messagesAutomationTargets, item: .messages, ask: ask)
+        }.value
     }
 
-    /// Allowed only when every target is; a target that isn't running can't be
-    /// asked about, which reads as not asked yet.
-    nonisolated static func automationStateNow(of targets: [String], ask: Bool) -> State {
-        var states: [OSStatus] = []
+    /// What one probe of the targets found, before the last answer is weighed in.
+    enum AutomationRead: Equatable {
+        /// Every target answered "allowed".
+        case granted
+        /// A target running and refused (errAEEventNotPermitted, -1743).
+        case denied
+        /// A target running and macOS holds no answer (errAEEventWouldRequireUserConsent,
+        /// -1744): never asked, or the grant was reset.
+        case notAsked
+        /// macOS can't say: a target isn't running (procNotFound, -600), or anything else.
+        case unknown
+    }
+
+    /// What the last definite probe found, kept in UserDefaults so a closed app, a
+    /// closed window or a relaunch can't turn it into "Not set". `reset` is a grant
+    /// macOS has since dropped (only a real -1744 from a running app says so).
+    enum AutomationAnswer: String, Equatable { case allowed, denied, reset }
+
+    nonisolated static func automationKey(_ item: Item) -> String { "wisp.automation.answer.\(item.rawValue)" }
+
+    nonisolated static func storedAutomation(_ item: Item, defaults: UserDefaults = .standard) -> AutomationAnswer? {
+        defaults.string(forKey: automationKey(item)).flatMap(AutomationAnswer.init(rawValue:))
+    }
+
+    /// Pure: the OSStatus of each target's probe, as one read. A refusal or a missing
+    /// answer from any running target outranks one that can't be reached.
+    nonisolated static func automationRead(_ statuses: [OSStatus]) -> AutomationRead {
+        if statuses.contains(OSStatus(errAEEventNotPermitted)) { return .denied }
+        if statuses.contains(OSStatus(errAEEventWouldRequireUserConsent)) { return .notAsked }
+        if !statuses.isEmpty && statuses.allSatisfy({ $0 == noErr }) { return .granted }
+        return .unknown
+    }
+
+    /// Pure: what the row shows and what is remembered. Only a probe that got a
+    /// definite answer from a running app changes the remembered one; "can't say"
+    /// (an app that is closed) never reads as a removed permission.
+    nonisolated static func resolveAutomation(_ read: AutomationRead, stored: AutomationAnswer?)
+        -> (state: State, stored: AutomationAnswer?) {
+        switch read {
+        case .granted: return (.allowed, .allowed)
+        case .denied: return (.notAllowed, .denied)
+        case .notAsked: return (.notAsked, stored == .allowed || stored == .reset ? .reset : nil)
+        case .unknown:
+            switch stored {
+            case .allowed: return (.allowed, stored)
+            case .denied: return (.notAllowed, stored)
+            case .reset, nil: return (.notAsked, stored)
+            }
+        }
+    }
+
+    /// Allowed only when every target is. A target that isn't running can't be
+    /// asked about, so it keeps the answer remembered from the last time one could.
+    nonisolated static func automationStateNow(of targets: [String], item: Item, ask: Bool,
+                                               defaults: UserDefaults = .standard) -> State {
+        var statuses: [OSStatus] = []
         for id in targets {
             var target = AEAddressDesc()
             let created = id.withCString { pointer in
                 AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
             }
-            guard created == noErr else { states.append(OSStatus(procNotFound)); continue }
-            states.append(AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
-                                                                AEEventID(typeWildCard), ask))
+            guard created == noErr else { statuses.append(OSStatus(procNotFound)); continue }
+            statuses.append(AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
+                                                                  AEEventID(typeWildCard), ask))
             AEDisposeDesc(&target)
         }
-        if states.allSatisfy({ $0 == noErr }) { return State.allowed }
-        if states.contains(OSStatus(errAEEventNotPermitted)) { return State.notAllowed }
-        return State.notAsked
+        return recordAutomation(automationRead(statuses), item: item, defaults: defaults)
     }
+
+    /// Weighs a probe against the remembered answer, remembers the result, and
+    /// returns what the row shows.
+    nonisolated static func recordAutomation(_ read: AutomationRead, item: Item,
+                                             defaults: UserDefaults = .standard) -> State {
+        let resolved = resolveAutomation(read, stored: storedAutomation(item, defaults: defaults))
+        if let answer = resolved.stored { defaults.set(answer.rawValue, forKey: automationKey(item)) }
+        else { defaults.removeObject(forKey: automationKey(item)) }
+        return resolved.state
+    }
+
+    /// The row's words when macOS has dropped a grant it once gave.
+    static let automationResetNote =
+        "macOS asked again: it can reset this after Wisp updates. Allow it once more."
 
     /// Starts the app in the background, unseen, and returns it, so Wisp can close
     /// it again. nil when it was already running (the person's own, never closed
@@ -741,13 +803,6 @@ final class FirstRunPermissions: ObservableObject {
             && quitsAfterAsking(launchedByWisp: true, isHidden: app.isHidden, isActive: app.isActive) {
             app.terminate()
         }
-    }
-
-    /// A closed app reads as "not asked yet" whatever the person answered, so a row
-    /// that reads Not set right after being answered keeps that answer. A real read
-    /// of Allowed or Denied always wins.
-    nonisolated static func keepingAnswer(_ read: State, answered: State?) -> State {
-        read == .notAsked ? (answered ?? read) : read
     }
 }
 
@@ -1394,6 +1449,7 @@ struct FirstRunSetupView: View {
     private func permissionRow(_ item: FirstRunPermissions.Item, icon: String, title: String, detail: String) -> some View {
         let state = permissions.state(item)
         let label = FirstRunPermissions.label(item, state)
+        let detail = permissions.resetItems.contains(item) ? detail + " " + FirstRunPermissions.automationResetNote : detail
         return OnboardingCard(icon: icon, title: title, detail: detail) {
             HStack(spacing: 8) {
                 switch state {
