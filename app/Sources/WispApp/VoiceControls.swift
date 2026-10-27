@@ -36,7 +36,7 @@ struct VoiceMicButton: View {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: icon)
-                        .font(.system(size: 17, weight: .medium))
+                        .font(.wisp(size: 17, weight: .medium))
                         .foregroundStyle(voice.state == .listening ? Theme.textPrimary : Theme.textSecondary)
                 }
             }
@@ -71,9 +71,9 @@ struct VoiceStatusLine: View {
     var body: some View {
         if let failure = voice.failure {
             HStack(spacing: 8) {
-                Image(systemName: "mic.slash").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                Image(systemName: "mic.slash").font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
                     .accessibilityHidden(true)
-                Text(failure).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                Text(failure).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 if voice.needsMicrophoneAccess {
@@ -84,7 +84,7 @@ struct VoiceStatusLine: View {
             .padding(.top, 6)
         } else if voice.state == .listening {
             Text("Ask your question. Wisp sends it when you pause; tap the stop button to send now. Esc cancels.")
-                .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                 .padding(.top, 6)
         }
     }

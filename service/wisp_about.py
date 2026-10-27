@@ -560,8 +560,9 @@ def identity() -> str:
                  "to a server.")
     out = [intro,
            "",
-           "Open me any time with **⌥Space** or by moving the pointer to the notch. Ask me anything, "
-           "check **Brief** for your day at a glance, or **Day** for today's timeline."]
+           "Open me any time with **⌥Space** or by moving the pointer to the notch. Ask me anything "
+           "(press **⌥⇧Space** to ask out loud), check **Brief** for your day at a glance, or **Day** "
+           "for today's timeline."]
     if name:
         out += ["", f"And you're {name}: you told me in Getting to know you. Type **/about** to change it."]
     else:
@@ -658,6 +659,12 @@ def privacy() -> str:
 _HOWTO = (
     (r"open|start|launch|find|summon|shortcut|hotkey|notch",
      "**Open Wisp**: press **⌥Space** from any app, or move the pointer to the notch."),
+    (r"voice|speak|talk|dictat|microphone|\bmic\b|siri|out loud|aloud|hands.free|say it",
+     "**Ask by voice**: press **⌥⇧Space** from any app, or click the mic in Ask (or in Brief and "
+     "Day to ask about your day). Wisp sends your question when you pause and reads the answer "
+     "aloud; choose when in Settings (the gear) → **Read answers aloud**. Your voice is turned "
+     "into text by my model on this Mac and is never saved or sent anywhere. It needs a model "
+     "that can hear, like Gemma 4 E4B."),
     (r"ask|talk|chat|use|question|type",
      "**Ask**: type your question and press Return. Type **/** to see shortcuts. "
      "**⌘N** starts a new chat; **⌘O** continues it in the Wisp window."),

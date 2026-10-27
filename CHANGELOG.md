@@ -4,6 +4,10 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Ask by voice.** Press **⌥⇧Space** from any app, or click the mic in Ask (or in Brief and Day to ask about your day), and say your question. Wisp listens until you pause (at most 30 seconds), and the words appear in Ask and send like typed text. Your Ask model hears the clip on this Mac and turns it into text: Gemma 4 E4B, the default, does this in about a second. Nothing is saved, and the clip is never sent anywhere. A model that can't hear (one with no audio encoder, or a cloud model) is refused before any audio is sent, so a made-up transcript never becomes your question. The microphone permission is asked for the first time you press the mic, never before.
+- **Answers read aloud.** Answers to spoken questions are read with your Mac's own voice (System Settings ▸ Accessibility ▸ Spoken Content). **Read answers aloud** in the notch's settings can switch this to every answer or to never. The mic button stops the voice. VoiceOver now announces every answer and error in the notch.
+
 ### Changed
 - **Versions renumbered down by 1.0.** Wisp is not yet a finished product, so every release is now 0.x (1.4.0 became 0.4.0, 1.3.3 became 0.3.3, and so on). Release tags and GitHub releases were renamed to match, and the old v0.1.0 is now v0.0.0-initial. The next release is 0.5.0.
 
