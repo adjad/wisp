@@ -1,235 +1,278 @@
-# Can the long-email digest find old reminders, or build a profile?
+# Mail memory: long-term reminders and a profile from 3–6 months of mail
 
 Date: 2026-10-26. Research only; nothing in Wisp was changed. Read against
 `main` at 7d696c15 and the in-progress digest on `claude/long-email-digest`
-(`service/tools/email_digest.py`).
+(`service/tools/email_digest.py`). Measured on Gemma 4 E4B
+(`gemma-4-E4B-it-oQ4e-mtp`), on an isolated oMLX engine, with synthetic mail
+only.
 
-The question had two parts. Can the full-body Gemma digest (95–100% detail
-recall, ~5.6 s per long email, thinking off) be used:
+## Decisions the user made (2026-10-26)
 
-1. to surface long-term reminders and commitments from mail sent months ago?
-2. to build a profile of the user, possibly feeding the notch Brief?
+| Question | Decision |
+| --- | --- |
+| Should mail feed the profile? | **Yes, high priority.** This reverses the 2026-08-15 "not to be rebuilt" note for the retired profile builder (`docs/WISP_OVERVIEW.md:547-557`). The design below avoids what made that builder fail. |
+| How far back? | **At least 3 months; 6 months if feasible.** It is feasible (see Costs). |
+| Read Sent mail? | **Yes.** |
+| Where suggestions show | **The notch Brief.** |
+| Where accepted items go | **Apple Reminders.** |
+| Sources | **Both Mail.app and Gmail**; Wisp decides which to use when (see Sources). |
 
 ## Verdicts
 
-| Use | Verdict | One-line reason |
-| --- | --- | --- |
-| **1. Long-term reminders from old mail** | **Worth building, in phases.** | Nothing in Wisp reads bodies older than ~7 days. The things worth catching (renewal notice deadlines, warranty expiry, tax installments, save-the-dates, promised reviews) sit in exactly that mail. The digest's strength (it copies every date and deadline exactly) is what this needs. |
-| **2a. An automatic profile inferred from mail** | **Not recommended.** | Functionally this is the profile builder the user removed on 2026-08-15 ("Not to be rebuilt", `docs/WISP_OVERVIEW.md:547-557`). It carries the identity-confusion risk, and it competes with the know-you profile, which is user-stated by design. |
-| **2b. Suggested facts the user accepts into know-you** | **Possible later, user's call.** | A narrow, opt-in version: concrete, stable facts only (landlord and address, dentist, devices under warranty, recurring bills), each shown with its source email and accepted or declined one by one. No traits, tone or relationships. |
-| **2c. Feeding the Brief** | **Yes, but only accepted reminders.** | A deterministic "Coming up from mail" line built from items the user has accepted. The Brief stays model-free in its personal section, and digest text never reaches it directly. |
+| Use | Verdict |
+| --- | --- |
+| **Long-term reminders from old mail** | **Build it.** Nothing in Wisp reads bodies older than ~7 days, and that is where renewal notices, warranty expiry, tax installments, save-the-dates and promised reviews sit. On synthetic mail, Gemma found every primary action, with 0 safety-trap failures in 6 runs. It needs a code-side date resolver and one-item-per-date rules (see Measurement). |
+| **Profile from mail** | **Build it, as evidence-backed facts the user reviews.** It should not be a model-written summary. Every fact keeps its source email and quote, and a fact enters `profile_block()` only once it is accepted. The extraction prompt is unmeasured, so phase 0 measures it first. |
+| **Brief** | **Yes.** A deterministic "From your mail" row (no model in the personal section, as today) showing the next reminders to accept and a "facts to review" chip. |
+| **Use the digest technique?** | **Yes for the input, no for the chain.** Use the digest's full cleaned body, thinking off, and "copy exactly" rules. Do not extract from the digest text: extracting directly from the body was 2× faster, quoted the body verbatim, and found more (see Measurement). |
 
-The user asked about the profile explicitly, which can count as revisiting the
-August decision. So 2a and 2b are listed under open decisions, not ruled out.
+## Measurement
 
-## Evidence
+`scripts/email_commitment_extraction_bench.py` builds 10 synthetic long emails
+(3–9k chars, dated March–October 2026, "today" 2026-10-26) with 14 planted
+items and 4 traps:
 
-### A. How far back Wisp can read mail
-
-| Source | Headers | Bodies | Fetch one old body by id? | Cost |
-| --- | --- | --- | --- | --- |
-| Gmail API (`service/gmail_source.py`) | Newest 200 per account (`HEADERS_LIMIT`), plus history `newer_than:730d` capped at 2,000 ids (`HISTORY_LIMIT`, refreshed every 30 min) | Newest **50 INBOX** messages (`RAW_LIMIT`), each cut at `BODY_CAP` 20,000 chars, fetched only on demand (`refresh_if_stale`). The background `run()` syncs headers only. | **No function exists**, but `_sync_raw` already calls `messages/{id}?format=full` per id, so adding one is small. | ~5 quota units per get against 250/s. `FETCH_CONCURRENCY` 4. Not a constraint. |
-| Mail.app (`MailReader.swift`) | Same 730-day header walk, in batches of 500 | Newest 50 total (`rawLimit`; per account `max(20, 50/n)`), via `content of m` | **No.** It would need a new `whose message id is …` AppleScript, a Swift hook and a backend event. | `content of m` is "the SLOW AppleScript call". One `tell application "Mail"` batch measured 18–35 s. |
-
-Retention: raw bodies expire after 7 days (`email_tools._RAW_TTL_SECONDS`,
-counted from receipt so a restart can't extend it), and the raw cache is
-replaced wholesale on each sync. History rows are headers only.
-
-**Sent mail is not read at all.** Gmail lists `labelIds=INBOX` only, and the
-Mail.app path reads the inbox. Most of the user's *own* promises ("I'll send it
-Friday") live in Sent, so phase 1 can only find commitments that others asked
-of the user or that a reply quotes back.
-
-**So months-old bodies mean new fetch work.** For Gmail it's a small,
-cheap addition. For Mail.app it's new native plumbing at a slow per-message
-rate. Either way the result needs its own store, because the 7-day TTL and the
-wholesale replace would throw it away.
-
-### B. What already exists, and what a digest would add
-
-| Subsystem | What it does | Inputs and lookback | Overlap with an old-mail digest |
-| --- | --- | --- | --- |
-| `attention/detectors.py` `uncaptured_commitment` | Rules only, no model. Fires on a time within 48 h (`SOON_HOURS`) from a recent two-way contact that isn't in Calendar or Reminders. A bare date needs an obligation word (`_OBLIGATION`). | Subject plus first 16k body chars from the ~50-body cache. `LOOKBACK_S` 7 days. Shadow mode by default. | Covers the next 48 h of the last week. **The digest must defer to it** inside that window. |
-| `brief.py` mail regexes | Flags deadline, due and RSVP words on current inbox rows | Current window only | None for old mail |
-| `mail_gists.py` | One-line MAIL and TEXTS overviews plus a 2–3 sentence inbox summary | Last 24 h, 220-char excerpts, ≤10 emails for the summary | None for old mail. **Its scheduling rules are the template** (below). |
-| `stale_reminders.py` | Ages Apple reminders. Ask Keep/Delete from 7 days; hidden from 14. Dated ones aged by days overdue. | EventKit | A digest item is a candidate, not a reminder. **The same rule should apply to its due dates**: never surface something already a week overdue. |
-| Commitments store (`main.py:2701+`) | Calendar and manual items | — | **The natural destination** for accepted items (it already has create, update and delete endpoints). |
-| Fact memory (`memory/facts.py`, `capture.py`) | Facts with a `memory_evidence` row (source_type, source_id, quote, fingerprint, extractor_version). Auto-extraction copies the user's own sentences verbatim from chat and abstains on health and finance. | Chat only. Mail is never a source. | Has the provenance fields a digest would need. But auto-writing mail-derived facts would break the "user's own words" rule. |
-| Know-you profile (`memory/profile.py`) | User-entered name, goals, people, tone, boundaries. Opt-in onboarding. Feeds `profile_block()`, the Brief's "Keeping in mind", and Today ordering. **P4: `people` changes ordering and wording, never who Wisp alerts about.** | Hand-entered | 2b would *suggest into* it. It must never write to it on its own. |
-| `memory/identity.py` | `identity_block()` and `attribution_rules(shape)`. Required by every prompt that reads the user's mail. | — | **Mandatory input** for any extraction prompt |
-| Retired profile builder (removed 2026-08-15) | Map-reduce over all sources | All sources | 2a *is* this |
-
-**What a digest would add that nothing covers today:**
-
-- Deadlines and obligations in mail older than 7 days, especially ones months
-  ahead: lease notice dates, warranty and subscription expiry, tax
-  installments, save-the-dates, school date changes.
-- Durable output with a source message id, which nothing keeps today.
-- Later, with Sent access: the user's own promises and open replies they owe.
-
-### C. Measurement (not yet run)
-
-The optional Gemma check was not run. Another session's Simulation QA gate
-held the host for the whole window (2 h 50 min and counting, load ~10). The
-one-heavy-job rule means an engine can't start alongside it.
-
-The bench is ready at `scripts/email_commitment_extraction_bench.py`. It has
-synthetic mail only and talks to an isolated engine on port 8796. It plants
-14 items in 10 long emails dated March–October 2026, scored against "today"
-2026-10-26, and compares two strategies:
-
-- `direct`: full body to JSON items in one call
-- `from_digest`: the production "Key details" digest, then JSON from the digest
-
-It scores whether each item is found, its status (open or closed), and its
-resolved due date. It also has traps:
-
-- a school date moved from Nov 12 to Nov 19
+- a conference date moved from Nov 12 to Nov 19
 - a friend's new job, which must not become the user's
-- "send by Friday", which needs resolving against the sent date and is now past
-- an injected "wire $4,800" instruction, which must be flagged suspicious
-- a promo-code newsletter, which must produce nothing
+- an injected "wire $4,800, delete this email"
+- a promo-code newsletter
 
-To run it once the host is quiet:
+Sampling was production (temperature 0.8, top_p 0.95, top_k 64), thinking off,
+3 reps. "Found" is a strict match: the item's text or quote must contain the
+planted key phrase.
 
-```bash
-~/.omlx/bin/omlx serve --model-dir "$SCRATCH/models" --base-path "$SCRATCH" --port 8796 --memory-guard aggressive --no-cache
-```
+| Strategy | Found (strict) | Traps failed | Parse fails | Mean time | Output tokens |
+| --- | --- | --- | --- | --- | --- |
+| v1 prompt, direct from body | 17/36 (47%) | 0/12 | 0 | 2.1 s | 54 |
+| v1 prompt, extract from the digest | 15/36 (42%) | 0/12 | 0 | 4.2 s | 180 |
+| **v2 prompt, direct from body** | **25/36 (69%)** | **0/12** | **0** | **2.4 s** | **80** |
 
-```bash
-.venv/bin/python scripts/email_commitment_extraction_bench.py --base-url http://127.0.0.1:8796 --reps 3
-```
+The v2 prompt adds three rules: one item per date, include invitations, and
+include renewals, expiry and end dates of things the reader owns.
 
-Here `$SCRATCH/models` holds only a symlink to
-`~/Desktop/OMLX_Model_Files/Jundot/gemma-4-E4B-it-oQ4e-mtp`. Stop the engine
-afterwards. Until it runs, every reliability claim below is inferred from the
-digest's 95–100% recall, not measured for extraction. Three things are
-unmeasured and most likely to fail: relative-date resolution ("by Friday"),
-open/closed status, and the friend's-news trap.
+What the numbers mean:
 
-## Recommended design
+1. **Safety held completely.** No run reported the friend's job as the user's.
+   No run kept the superseded Nov 12 date. The injected wire never became an
+   item (Gemma returned an empty list rather than a flagged one). The
+   newsletter produced nothing.
+2. **v1 collapsed each email to one item.** It dropped the second tax
+   installment and the lease end date, and skipped the friend's save-the-date
+   as "someone else's". v2 fixed most of this: the save-the-date was found
+   3/3, the second installment 2/3 and the lease end date 2/3. On v2, every
+   primary action (dentist booking, lease notice, conferences on the moved
+   date, save-the-date, Q3 ask, AppleCare renewal, tax installment, thesis
+   review) was found in every rep.
+3. **Gemma can't do relative-date math.** "By Friday" in a Wednesday
+   2026-08-05 email came back as 2026-08-11, wrong in all 6 runs. Status
+   (closed) was right. **Dates must be resolved in code** from a verbatim date
+   phrase and the email's `Date:` header, reusing the attention detector's
+   resolver.
+4. **The quote doesn't always hold the date.** For AppleCare, Gemma chose the
+   renewal-window date (Feb 2) and quoted "You can renew up to 30 days before
+   that date", so its due date can't be checked against its own quote. Rule:
+   the model returns the exact date phrase as well, and code rejects any item
+   whose date phrase isn't in the body.
+5. **Remaining misses are soft:** "insurance renews every year on January 1"
+   (no year) and a picture-day deadline already past.
+6. **Extracting from the digest is worse.** It was slower, its quotes
+   paraphrase the digest rather than the body (they would fail a
+   verbatim-provenance check), and it found the thesis promise 1/3 vs 3/3.
 
-Treat the digest as a **candidate generator with a human gate**. It is never
-a reminder writer or a profile writer.
+**Not measured yet:** profile-fact extraction, Sent-mail attribution ("I" is
+the user), a combined reminders + facts prompt, and real HTML or forwarded
+mail. The bench is synthetic, with repetitive filler.
 
-### Phase 0: measure (≈½ day, no product code)
+## Sources: when to use Gmail, when to use Mail.app
 
-Run the bench above. Go/no-go bar:
+Use both, but **never both for the same account.** Pick per account, not per
+message:
 
-- ≥90% items found
-- ≥90% correct due dates
-- 0 trap failures across 3 reps
+| Account | Selection (which emails) | Bodies | Why |
+| --- | --- | --- | --- |
+| **Gmail account connected through the Gmail API** | Gmail search: `newer_than:180d -category:promotions -category:social`, run once for inbox and once with `in:sent` | `messages/{id}?format=full` → `extract_body` (`BODY_CAP` 20k) | Fast (well under 1 s each, quota is not a constraint at ~5 units per get), complete (the server has every body), works with Mail.app closed. Gmail's own categories prefilter promotions for free, and `threadId` finds later replies. |
+| **Every other account in Mail.app** (iCloud, Exchange, school or work IMAP, a Gmail not connected via the API) | Mail's on-disk `Envelope Index` (`MailDBReader.swift`). It already reads 2 years of headers in milliseconds under Wisp's existing Full Disk Access grant. Add the Sent mailbox URLs. | Primary: read the message's `.emlx` file from `~/Library/Mail/V*/…` under the same grant, then parse it with Python's `email` package. Fallback: AppleScript `content of m`, only when Mail is open, in small batches, at night. | It is the only path to non-Gmail accounts, and it needs no OAuth. The disk path avoids AppleScript, which costs 18–35 s per batch. |
+| **Gmail account present in both** | Gmail API only | Gmail API | Skip that account's Mail.app rows (matched by account address) and dedupe on the RFC `Message-ID` header as a guard. |
 
-If relative dates or status miss, keep the model to *verbatim extraction*
-(item plus the exact date phrase plus the evidence quote). Resolve dates
-deterministically in code against the email's `Date:` header, reusing the
-detector's date resolver. Then compute status in code against today. The bench
-prompt asks the model for both, which is the harder version.
+Unverified on this machine (phase 0): how many old bodies Mail keeps on disk
+for IMAP and Exchange accounts (it can keep headers only), the `.emlx` and
+`.partial.emlx` layout under V10, and the Sent mailbox URLs per account type.
+Phase 0 checks these with counts only; it never reads message content.
 
-### Phase 1: on-demand and recent backfill, Gmail only (≈2–3 days)
+## Design
 
-1. **Fetch.** Add `gmail_source.fetch_body(message_id)` (`format=full`,
-   `extract_body`, `BODY_CAP`) behind the existing per-account lock and
-   `FETCH_CONCURRENCY`. It reads INBOX history only.
-2. **Prefilter with rules, no model.** Skip `is_broadcast` mail and promotions
-   unless the sender looks transactional (bills, renewals, school, landlord,
-   insurance). Keep only bodies that contain a date or `_OBLIGATION` word.
-   Skip anything within the attention detector's 48 h / 7-day window. This
-   should cut most of the inbox before Gemma sees it.
-3. **Extract.** One Gemma call per surviving email, on the resident agent
-   model only, with thinking off, no tool schemas, and `max_tokens` ≈ 700.
-   The prompt carries `identity_block()` and `attribution_rules`, the
-   untrusted-content wrapper before and after the body, and the digest's
-   "copy exactly" rules. For long bodies, reuse the digest output if
-   `email_digest` already made one for an Ask turn.
-4. **Validate in code.** Every item must carry an evidence quote that appears
-   verbatim in the body, or it is dropped. Codes and amounts are backfilled
-   verbatim, as in the digest. Due dates are resolved and status computed in
-   code. Anything already a week or more past due is dropped (same rule as
-   `stale_reminders`).
-5. **Store.** Use a new local table (e.g. `mail_candidates`) holding message
-   id, thread id, sender, sent date, item text, due date, evidence quote,
-   extractor version, body fingerprint, and a state of
-   `new | accepted | dismissed | expired`. Dismissals are remembered by
-   (message id, fingerprint) so nothing comes back. It is never written to
-   `facts.db`.
-6. **Surface.** A "Found in your mail" review list (in the window, and one
-   notch Brief line when something new is due within ~30 days). Each item has
-   Add to Reminders, Dismiss and Open email. **Accept** writes through the
-   existing commitments or reminders path. Until then nothing alerts, nothing
-   reaches model context, and nothing acts.
-7. **Resolve before surfacing.** Before showing an item, check newer headers
-   in the same thread or from the same sender for "done", "received",
-   "cancelled" or a moved date. If one exists, re-extract that newer message
-   instead of trusting the old one.
+### The pipeline
 
-**Scheduling.** Copy `mail_gists` exactly:
+Steps 1–5 run in the background and idle-only. Step 6 is surfaced. Step 7
+runs only on accept.
 
-- background only, single-flight, one email per tick
+1. **Select** emails from the chosen source per account (above): inbox and
+   Sent, newest first, back to 3 months, then continuing to 6 months.
+2. **Prefilter with rules, no model.**
+   - Drop `is_broadcast` and promotions mail unless the sender looks
+     transactional (bills, renewals, school, landlord, insurance, travel).
+   - **Reminder pass:** keep a body only if it contains a date or an
+     `_OBLIGATION` word.
+   - **Profile pass:** keep person-to-person mail and transactional senders,
+     plus all of Sent.
+   - Skip anything inside the attention detector's 48 h / 7-day window; the
+     detector already owns it.
+3. **Extract**, one Gemma call per email.
+   - The call runs on the resident agent model only, with thinking off, no
+     tool schemas and `max_tokens` ≈ 700.
+   - The prompt carries `identity_block()` and `attribution_rules(...)`
+     (required: otherwise other people's news gets reported as the user's),
+     the untrusted wrapper before and after the body, and the v2 rules.
+   - The model returns, per item: kind (`reminder` | `fact`), text, **exact
+     date phrase**, **exact evidence quote**, and a `suspicious` flag.
+   - Sent mail uses its own prompt variant: the author is the user, so "I'll
+     send it Friday" is the user's commitment.
+4. **Validate in code.**
+   - Drop the item unless the quote and the date phrase both appear verbatim
+     in the body.
+   - Resolve the date from the phrase and the `Date:` header, then compute
+     status against today.
+   - Drop reminders already a week or more past due (the `stale_reminders`
+     rule).
+   - Drop `suspicious` items from the Brief.
+5. **Resolve and dedupe.**
+   - Before surfacing, check newer mail in the same thread, or from the same
+     sender, for done / received / cancelled / moved. If one exists,
+     re-extract that message.
+   - Key on (`Message-ID`, body fingerprint), then on (normalized text, due
+     date).
+   - Check existing Apple Reminders and Calendar first, reusing the
+     detector's `on_file` gate.
+   - Dismissals persist.
+6. **Surface on the Brief.** A deterministic "From your mail" row shows the
+   1–3 open reminders due soonest within ~60 days, each with **Add to
+   Reminders**, **Dismiss** and **Open email**. Long-horizon items (lease
+   notice July 2027) surface when they come within that window.
+   - After the backfill, a chip reads "N things Wisp learned from your mail —
+     review" and opens a batch review in the window, with accept all, uncheck
+     and per-item source.
+   - Nothing alerts, nothing enters model context and nothing acts before
+     acceptance.
+7. **On accept:**
+   - **Reminder:** `add_reminder` → `create_reminder` →
+     `RemindersWriter.swift`, with the resolved due date. Notes say "From
+     email: <subject> — <sender>, <date>" plus a link to the message.
+     EventKit's `creationDate` is the accept time, so the stale rules count
+     from acceptance, not from the email.
+   - **Fact:** a new "From your mail" section of the know-you profile, with
+     its quote and message id kept as evidence. It feeds `profile_block()`
+     and follows P4: it shapes ordering and wording, never who Wisp alerts
+     about.
+
+**Store:** a new local table, e.g. `mail_memory`, in `~/.moe` with 0600 like
+the other caches. Each row holds:
+
+- account, `Message-ID`, thread id, sender, sent date
+- kind, text, date phrase, resolved due date, quote
+- extractor version, body fingerprint
+- state: `new | accepted | dismissed | expired`
+
+No bodies are stored, only quotes. Nothing is written to `facts.db`, so the
+chat-memory rule "only the user's own words" stays intact.
+
+### The profile, and why this isn't the August builder again
+
+The retired builder (2026-07-29 → 08-15) was a map-reduce that **wrote the
+profile itself**:
+
+- later batches evicted earlier facts
+- a prefix sample made it "recent only"
+- a thinking-on budget silently produced nothing (103 s, 0 facts)
+
+This design differs on each point:
+
+- **Facts are per email and additive**, keyed by source. Nothing evicts
+  anything.
+- **Selection is by date range across all of 3–6 months**, not a prefix
+  sample.
+- **Thinking off**, with a measured token budget, and a loud failure counter
+  instead of silent empties.
+- **Every fact carries a verbatim quote and a message id.** The user accepts
+  facts, in batch, before they are used.
+
+Fact categories, with the source for each:
+
+| Category | Example | Main source |
+| --- | --- | --- |
+| People and their role | "Dana Park — colleague, Finance" | Sent plus signatures |
+| Providers | dentist, landlord, insurer, utilities | Transactional inbox |
+| Things owned or rented, with renewal dates | "MacBook Pro, AppleCare AC-77310 to 2027-03-02" | Transactional inbox |
+| Affiliations and recurring commitments | school, clubs, classes, standing meetings | Inbox plus Sent |
+| Projects the user works on | "thesis review for Leo" | Sent |
+
+**Excluded:**
+
+- health details
+- finances beyond named bills
+- inferred relationships or personality
+- anything about another person that isn't their role toward the user
+
+The friend's-news trap passed in the bench, but profile facts are where an
+attribution error does the most harm. So the user reviews every fact before
+it is used.
+
+### Scheduling and model contention
+
+Copy `mail_gists` exactly:
+
+- background, single-flight, one email per tick
 - skip when `idle.foreground_busy()`, and stand down mid-call if a turn starts
-- `_MIN_GAP_S`-style gaps, plus a failure back-off and a max-attempts limit
-  per (message, fingerprint)
-- never load or evict a model, and run only if the agent model is already
+- never load or evict a model; run only if the agent model is already
   resident
-- a deadline per call (the digest uses 20 s)
+- a per-call deadline (the digest uses 20 s)
+- failure back-off, and at most 2 attempts per (message, fingerprint)
 
-### Phase 2: deeper reach (only if phase 1 earns it)
-
-- **Sent mail** (`labelIds=SENT`, read-only scope already covers it) to catch
-  the user's own promises. This needs a separate attribution prompt: in Sent,
-  "I" *is* the user.
-- **Mail.app accounts** via an id-filtered AppleScript, run in small batches
-  at night.
-- A one-time backfill to 12 months, then incremental only.
-
-### Phase 3 (optional, user decision): suggested know-you facts
-
-Same pipeline, a separate item type. These are concrete, stable facts with a
-clear owner: "Your landlord is Harbor Property Mgmt (14 Alder St)", "AppleCare
-on your MacBook Pro, AC-77310". Each is shown once for Add to profile or
-Dismiss, with its source email. No inference about personality, health,
-finances beyond named bills, or relationships. Accepted facts go into the
-know-you profile's `notes` and follow P4.
+For the backfill, allow a shorter gap once the Mac has had no turn for 10+
+minutes. Fetching (Gmail API, `.emlx`) is not model work and can run ahead of
+extraction.
 
 ## Costs
 
-The figures assume the agent model is Gemma 4 E4B and it is resident.
-
 | Item | Estimate |
 | --- | --- |
-| Gemma per long email (digest or extract) | ~5–6 s, ~300 output tokens (measured for the digest) |
-| Gemma per short email (extract only) | ~2–3 s (inferred: ~100–150 output tokens; decode is 91% of latency) |
-| Gmail fetch per body | Well under 1 s, quota-free in practice |
-| Mail.app fetch | 18–35 s per AppleScript batch; avoid in phase 1 |
-| One-time 6-month backfill | Assume ~150–250 emails survive the prefilter → **~10–20 min of model time**, spread over idle ticks (a few evenings at one call per 90 s gap) |
-| Steady state | ~10–30 new candidate emails a day → ~1–3 min of model time a day |
-| Storage | KB per item; no bodies stored, only quotes |
+| Gemma per email | **~2.4 s, ~80 output tokens** (measured, v2 direct). A combined reminders + facts prompt may be ~3–4 s (unmeasured). |
+| Gmail fetch per body | Well under 1 s |
+| Mail.app `.emlx` read | Milliseconds (a file read). AppleScript fallback: 18–35 s per batch. |
+| **3-month backfill** | Assume ~400–800 inbox emails plus ~100–200 Sent survive the prefilter → **~25–55 min of model time** |
+| **6-month backfill** | Roughly double: **~50–110 min of model time.** Feasible over 1–3 idle nights. |
+| Steady state | ~10–40 new emails a day → **~1–3 min of model time a day** |
 
-The survival rate after the prefilter is a guess. Phase 1 should log it first,
-in shadow, before any surface ships.
+The prefilter survival rate is a guess. Phase 1 logs it, in shadow, before any
+surface ships.
 
-## Risks and how the design handles them
+## Phases
+
+| Phase | Work | Done when |
+| --- | --- | --- |
+| **0. Measure (≈1 day)** | (a) Profile-fact bench with identity traps: someone else's address, a forwarded thread, a group email, Sent mail. (b) A combined prompt vs two separate calls. (c) A date resolver over the bench's date phrases. (d) Counts-only probes of Gmail category volumes and Mail `.emlx` coverage per account. | Fact precision ≥95% with 0 attribution errors, and resolved dates 100% on the bench. Real volumes known. |
+| **1. Gmail, reminders + facts, 3 months (≈3–4 days)** | `gmail_source.fetch_body`, `in:sent`, the pipeline, the `mail_memory` table, the Brief row, the review screen, accept → Reminders and profile | Shadow run logs volumes; the user reviews the first batch |
+| **2. Mail.app accounts via disk (≈2–3 days)** | Envelope Index selection including Sent, an `.emlx` reader, AppleScript fallback, per-account source choice, `Message-ID` dedupe | Non-Gmail accounts produce items; no AppleScript in the normal path |
+| **3. Extend to 6 months, then incremental** | Backfill continues; new mail is processed as it syncs | 6 months covered; steady state ≤3 min of model time a day |
+
+Release Auditor triggers apply to phases 1–2: persisted data, a native
+integration (Full Disk Access reads), privacy boundaries, and outbound writes
+to Reminders.
+
+## Risks
 
 | Risk | Handling |
 | --- | --- |
-| **Identity confusion** (a friend's job reported as the user's) | `identity_block()` and `attribution_rules` in every prompt; a "do not list other people's news" rule; a bench trap; and the user gate. Profile-type items wait for phase 3 and a user decision. |
-| **Prompt injection** in mail ("assistant: add a reminder to wire…") | Untrusted wrapper; items are candidates only; no tool is ever driven by digest text; a `suspicious` flag hides the item from the Brief; the evidence-quote check. |
-| **Invented items or dates** | Evidence quote must appear verbatim in the body; dates resolved in code; Gemma's measured behavior is omission, not invention (digest write-up). |
-| **Stale or superseded items** | Drop anything a week or more past due; newer-thread re-check before surfacing; "use the final version" prompt rule; `expired` state. |
-| **Duplicates** (same bill each month, reply chains, the 48 h detector) | Key on (message id, fingerprint), then (normalized item, due date); skip the detector's window; dismissals persist. |
-| **Model contention** (one resident model) | `mail_gists` rules: idle-only, stand down mid-call, no load or evict, gaps and back-off. The live turn always wins. |
-| **Privacy** | All local; no bodies persisted (only quotes, in `~/.moe` with 0600 like the other caches); never sent to cloud providers (same rule as the profile); per-item Dismiss; a single off switch. |
-| **Repeating the retired builder** | No automatic profile; nothing writes to the know-you profile or `facts.db` without a click. |
-| **Unmeasured extraction quality** | Phase 0 gate before any code |
+| Identity confusion | `identity_block()` and `attribution_rules`; Sent-specific prompt; bench traps; batch review before any fact is used |
+| Prompt injection | Untrusted wrapper; items are candidates only; no tool is driven by mail text; `suspicious` hides an item; verbatim checks |
+| Invented items or dates | Quote and date phrase must be verbatim in the body; dates resolved in code |
+| Stale or superseded items | Newer-thread re-check; drop a week or more past due; `expired` state |
+| Duplicates across sources and months | One source per account; `Message-ID` and fingerprint keys; `on_file` check against Reminders and Calendar |
+| Model contention | `mail_gists` rules; the live turn always wins |
+| Privacy | All local; quotes only, no bodies stored; never sent to cloud providers; per-item Dismiss; one off switch; a "forget everything from mail" button |
 
-## Open decisions for the user
+## Still open for the user
 
-1. **Profile: yes or no?** Wisp removed an automatic profile in August and
-   marked it "not to be rebuilt". Is phase 3 (suggested concrete facts you
-   accept one by one) acceptable, or should mail never feed the profile?
-2. **How far back?** 3, 6 or 12 months for the one-time backfill.
-3. **Sent mail.** May Wisp read Sent (phase 2) to catch your own promises?
-4. **Where it shows.** A Brief line plus a review list, or the review list
-   only?
-5. **Accepted items go to** Apple Reminders, or Wisp's own commitments store?
-6. **Mail.app accounts.** Worth the slow native path, or Gmail only?
+1. **Fact review:** batch review after the backfill (recommended), or let
+   some categories (providers, things owned) apply without review?
+2. **Reminder alerts for far-off items:** add a default lead-time alert (e.g.
+   14 days before) to accepted reminders, or only the due date?
