@@ -1,0 +1,281 @@
+"""The background tick that walks 90 days of mail, one email per tick, only when idle.
+
+Wisp has one resident model, so only the model's time is gated; reading Mail's
+index and files costs nothing. Three levels (docs/plans/2026-10-26-email-digest-memory-research.md):
+
+- busy:    a user's turn is in flight, a generation is running, the model was
+           used by something else in the last 2 minutes, the fast model isn't
+           resident, or the Mac is in Low Power Mode / on battery under 30%.
+           Nothing runs.
+- between: otherwise. One call per tick, at least 90 s apart.
+- away:    no keyboard or mouse for 10+ minutes, on power or battery over 50%.
+           Calls run back to back, 5 s apart.
+
+IMPORTANT rules:
+- Never loads or evicts a model. The fast role is local by construction
+  (`role_target`), so mail never reaches a cloud model.
+- A user's turn wins: the call is cancelled the moment one starts.
+- Mode "shadow" (the default) extracts and records but shows nothing; "live"
+  lets the Brief show suggestions; "off" stops the walk.
+- Logs carry counts only, never mail text.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+import subprocess
+import time
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from service import idle
+from service.mail_memory import extract
+from service.mail_memory.bridge import BridgeError, read_body, read_index
+from service.mail_memory.store import store
+from service.paths import MOE_DIR
+
+log = logging.getLogger("wisp.mail_memory")
+
+MODES = ("off", "shadow", "live")
+SETTINGS_PATH = MOE_DIR / "mail_memory" / "settings.json"
+WINDOW_DAYS = 90
+INDEX_EVERY_S = 6 * 3600
+BETWEEN_GAP_S = 90
+AWAY_GAP_S = 5
+BUSY_GAP_S = 60
+IDLE_DONE_GAP_S = 1800
+FAILURE_GAP_S = 900
+QUIET_AFTER_USE_S = 120
+AWAY_AFTER_S = 600
+CALL_TIMEOUT_S = 30.0
+MAX_TOKENS = 700
+_PROBE_TTL_S = 30.0
+
+_task: asyncio.Task | None = None
+_next_at = 0.0
+_last_own_end = 0.0
+_probe: dict[str, tuple[float, object]] = {}
+
+
+# --- settings ---------------------------------------------------------------------
+
+def mode(path: Path | None = None) -> str:
+    path = SETTINGS_PATH if path is None else path
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "shadow"
+    except Exception:  # noqa: BLE001 — unreadable: the user's choice is unknown, so stop
+        return "off"
+    value = data.get("mode") if isinstance(data, dict) else None
+    return value if value in MODES else "off"
+
+
+def set_mode(value: str, path: Path | None = None) -> str:
+    if value not in MODES:
+        raise ValueError(f"mode must be one of {MODES}")
+    path = SETTINGS_PATH if path is None else path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"mode": value}, f)
+    tmp.replace(path)
+    return value
+
+
+# --- idle levels ------------------------------------------------------------------
+
+def _cached(name: str, fn):
+    now = time.monotonic()
+    hit = _probe.get(name)
+    if hit and now - hit[0] < _PROBE_TTL_S:
+        return hit[1]
+    value = fn()
+    _probe[name] = (now, value)
+    return value
+
+
+def _hid_idle_s() -> float | None:
+    """Seconds since the last keyboard or mouse input (IOHIDSystem; needs no permission)."""
+    try:
+        out = subprocess.run(["ioreg", "-c", "IOHIDSystem", "-d", "4"], capture_output=True,
+                             text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', out)
+    return int(m.group(1)) / 1e9 if m else None
+
+
+def _power() -> tuple[bool, int | None, bool]:
+    """(on AC power, battery percent or None, Low Power Mode on)."""
+    try:
+        batt = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=3).stdout
+        general = subprocess.run(["pmset", "-g"], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return True, None, False
+    pct = re.search(r"(\d{1,3})%", batt)
+    low = re.search(r"\blowpowermode\s+1\b", general) is not None
+    return "AC Power" in batt or pct is None, int(pct.group(1)) if pct else None, low
+
+
+def level(model_key: str, *, hid_idle_s=None, power=None, now: float | None = None) -> str:
+    """busy, between or away (see the module docstring)."""
+    if idle.foreground_busy() or idle.in_flight(model_key) > 0:
+        return "busy"
+    now = time.monotonic() if now is None else now
+    last = idle.last_used(model_key)
+    if last is not None and last > _last_own_end + 1 and now - last < QUIET_AFTER_USE_S:
+        return "busy"
+    on_ac, pct, low = power if power is not None else _cached("power", _power)
+    if low or (not on_ac and pct is not None and pct < 30):
+        return "busy"
+    seconds = hid_idle_s if hid_idle_s is not None else _cached("hid", _hid_idle_s)
+    if seconds is not None and seconds >= AWAY_AFTER_S and (on_ac or (pct or 0) > 50):
+        return "away"
+    return "between"
+
+
+# --- the model call -----------------------------------------------------------------
+
+async def _reply(msgs: list[dict]) -> str | None:
+    """The fast model's reply, or None to stand down (not resident, something else
+    resident, or a turn started). Mirrors mail_gists._resident_reply."""
+    global _last_own_end
+    from service.assistant.brief import _c
+    from service.config import role_to_model, thinking_kwargs
+    model = role_to_model("fast")
+    client = _c()
+    loaded = set(await client.loaded_models())
+    try:
+        warm = set(client.keep_warm())
+    except Exception:  # noqa: BLE001
+        warm = set()
+    if model not in loaded or loaded - warm - {model} or idle.foreground_busy():
+        return None
+    # Sampling is left to the engine's profile for this model: the 2026-10-26 bench
+    # measured these prompts at the production profile, not at temperature 0.
+    request = asyncio.ensure_future(client.chat(model, msgs, max_tokens=MAX_TOKENS,
+                                                **thinking_kwargs(model, on=False)))
+    deadline = time.monotonic() + CALL_TIMEOUT_S
+    try:
+        while not request.done():
+            if idle.foreground_busy():
+                request.cancel()
+                return None
+            if time.monotonic() >= deadline:
+                request.cancel()
+                raise TimeoutError("mail memory call took too long")
+            await asyncio.wait({request}, timeout=0.5)
+        response = request.result()
+    finally:
+        if not request.done():
+            request.cancel()
+        _last_own_end = time.monotonic()
+    choice = response["choices"][0]
+    if choice.get("finish_reason") != "stop":
+        raise ValueError(f"reply did not complete ({choice.get('finish_reason')})")
+    content = (choice.get("message") or {}).get("content")
+    if not isinstance(content, str):
+        raise ValueError("reply had no text")
+    return content
+
+
+# --- the tick -----------------------------------------------------------------------
+
+def _model_key() -> str:
+    from service.assistant.brief import _c
+    from service.config import role_to_model
+    model = role_to_model("fast")
+    try:
+        return _c().activity_key(model)
+    except Exception:  # noqa: BLE001
+        return model
+
+
+async def tick(*, now: float | None = None) -> float:
+    """One unit of work. Returns the seconds until the next tick may run."""
+    now = time.time() if now is None else now
+    st = store()
+    from service.assistant.attention_runner import current_zone
+    tz = current_zone()
+    if tz is None:
+        return FAILURE_GAP_S
+    today = datetime.fromtimestamp(now, ZoneInfo(tz)).date()
+    lvl = level(_model_key())
+    if lvl == "busy":
+        return BUSY_GAP_S
+    gap = AWAY_GAP_S if lvl == "away" else BETWEEN_GAP_S
+
+    last_index = float(st.meta("last_index") or 0)
+    if now - last_index >= INDEX_EVERY_S:
+        rows, capped = await read_index(WINDOW_DAYS)
+        merged = st.upsert_index(rows, extract.tier, now)
+        st.set_meta("last_index", str(now))
+        log.info("mail memory index: %s capped=%s", merged, capped)
+        return gap
+
+    st.expire(today.isoformat())
+    row = st.next_pending(now)
+    if row is None:
+        return IDLE_DONE_GAP_S
+    raw, why = await read_body(row["rowid"])
+    if raw is None:
+        if why == "not_on_disk":
+            st.finish(row["key"], "skipped", why)
+        else:
+            st.fail(row["key"], why, now)
+        return gap
+    email = extract.parse_raw(raw, row["ts"])
+    if len(email.body) < 20:
+        st.finish(row["key"], "skipped", "empty_body", email.message_id)
+        return gap
+    from service.memory.identity import identity_prompt_block
+    msgs = extract.messages(email, sent_by_user=row["box"] == "sent",
+                            identity=identity_prompt_block(messages=False), today=today)
+    reply = await _reply(msgs)
+    if reply is None:
+        return BUSY_GAP_S
+    items = extract.parse_reply(reply)
+    if items is None:
+        st.fail(row["key"], "bad_json", now)
+        return gap
+    kept, dropped = extract.validate(items, email, tz=tz, today=today)
+    added = st.add_items(row["key"], kept, extract.EXTRACTOR, now)
+    st.finish(row["key"], "done", f"model={len(items)} kept={len(kept)} added={added}", email.message_id)
+    st.set_meta("last_tick", str(now))
+    log.info("mail memory tick: tier=%s box=%s model_items=%d kept=%d added=%d dropped=%s level=%s",
+             row["tier"], row["box"], len(items), len(kept), added, dropped, lvl)
+    return gap
+
+
+async def _run() -> None:
+    global _next_at
+    try:
+        gap = await tick()
+    except BridgeError as exc:
+        log.info("mail memory: app read failed (%s)", exc)
+        gap = FAILURE_GAP_S
+    except Exception:  # noqa: BLE001 — never break the scheduler; try again later
+        log.exception("mail memory tick failed")
+        gap = FAILURE_GAP_S
+    _next_at = time.time() + gap
+
+
+def schedule_tick() -> None:
+    """Called from the assistant scheduler every 30 s; starts at most one tick."""
+    global _task
+    if _task is not None and not _task.done():
+        return
+    if time.time() < _next_at or mode() == "off" or idle.foreground_busy():
+        return
+    from service.assistant.hub import hub
+    if not hub.has_subscribers:
+        return
+    _task = asyncio.create_task(_run())

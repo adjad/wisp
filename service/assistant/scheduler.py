@@ -242,6 +242,13 @@ async def run() -> None:
             mail_gists.schedule_tick()
         except Exception:  # noqa: BLE001 — a missing gist falls back to a plain sentence
             pass
+        # Mail memory (service/mail_memory): walks 90 days of mail one email per tick,
+        # only while nobody is waiting, for long-term reminders. Shadow by default.
+        try:
+            from service.mail_memory import runner as mail_memory
+            mail_memory.schedule_tick()
+        except Exception:  # noqa: BLE001 — never break the scheduler loop
+            pass
         # The chief-of-staff loop (service/assistant/checkin.py): carry
         # unfinished tasks onto today each morning, and in the evening ask how
         # the day went, once, when the app is listening. No model, no sends.

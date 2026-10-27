@@ -117,6 +117,7 @@ PROFILE_TESTS = {
         "tests/test_brief_needs_you.py",
         "tests/test_day_timeline_event_fields.py",
         "tests/test_mail_gists.py",
+        "tests/test_mail_memory.py",
         "tests/test_behavior_gmail_history.py",
         "tests/test_behavior_availability.py",
     },
@@ -357,6 +358,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_brief_summary_contract.py",
     # Mail gists with a fake model and an isolated cache; nothing is read or sent.
     "tests/test_mail_gists.py",
+    # Mail memory with a stand-in app, model and hub, a temporary store and stubbed idle/power
+    # probes; no Mail, no model, no subprocess, nothing is added to Reminders.
+    "tests/test_mail_memory.py",
     # The kept Daily Summary with an isolated file and a stand-in hub; nothing is composed, read or sent.
     "tests/test_brief_latest.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
