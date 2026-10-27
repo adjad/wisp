@@ -78,7 +78,7 @@ _FOOTER_MAX_LINE = 160
 _MIN_REPLY_CHARS = 200
 
 _locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
-_cache: dict[tuple, tuple[float, str]] = {}
+_cache: dict[tuple, tuple[float, str, str]] = {}
 _paused_until = 0.0
 
 # Only a reply marker: a forward's marker precedes the content being asked about.
@@ -125,18 +125,18 @@ def clear_cache() -> None:
     _cache.clear()
 
 
-def _cache_get(key: tuple) -> str | None:
+def _cache_get(key: tuple) -> tuple[str, str] | None:
     now = time.monotonic()
-    for stale in [k for k, (expires, _) in _cache.items() if expires <= now]:
+    for stale in [k for k, (expires, _, _) in _cache.items() if expires <= now]:
         _cache.pop(stale, None)
     hit = _cache.get(key)
-    return hit[1] if hit else None
+    return (hit[1], hit[2]) if hit else None
 
 
-def _cache_put(key: tuple, value: str, ttl: float) -> None:
+def _cache_put(key: tuple, value: str, outcome: str, ttl: float) -> None:
     if len(_cache) >= _CACHE_MAX:
         _cache.pop(next(iter(_cache)))
-    _cache[key] = (time.monotonic() + ttl, value)
+    _cache[key] = (time.monotonic() + ttl, value, outcome)
 
 
 def clean_body(body: str, query: str | None = None) -> tuple[str, int, int]:
@@ -148,8 +148,9 @@ def clean_body(body: str, query: str | None = None) -> tuple[str, int, int]:
     match = _REPLY_MARKER.search(body)
     if match and len(body[:match.start()].strip()) >= _MIN_REPLY_CHARS:
         reply, thread = body[:match.start()], body[match.start():]
-        q = (query or "").strip().casefold()
-        if not (q and q in thread.casefold() and q not in reply.casefold()):
+        words = [w for w in re.findall(r"\w+", (query or "").casefold()) if len(w) >= 3]
+        only_quoted = any(w in thread.casefold() and w not in reply.casefold() for w in words)
+        if not only_quoted:
             quoted = len(thread)
             body = reply
     tail_start = max(0, len(body) - _FOOTER_TAIL_CHARS)
@@ -263,10 +264,19 @@ async def digest_body(row: dict, *, query: str | None = None, client=None,
                       model: str | None = None, context_window: int | None = None) -> str:
     """The text to show for `row`'s body: verbatim if short, else a labelled
     digest of the (bounded) full body, else the email text with a note."""
+    return (await _digest_outcome(row, query=query, client=client, model=model,
+                                  context_window=context_window))[0]
+
+
+async def _digest_outcome(row: dict, *, query: str | None = None, client=None,
+                          model: str | None = None,
+                          context_window: int | None = None) -> tuple[str, str]:
+    """digest_body's text, and what it is: "verbatim", "cleaned" (short once
+    the quoted thread and footer are left out), "digest", or "failed"."""
     global _paused_until
     body = row.get("body") or ""
     if len(body) <= LONG_BODY_CHARS:
-        return body
+        return body, "verbatim"
     key = (row.get("account_id"), row.get("message_id"),
            hashlib.sha256(body.encode()).hexdigest(), query or "")
     hit = _cache_get(key)
@@ -281,7 +291,7 @@ async def digest_body(row: dict, *, query: str | None = None, client=None,
         cleaned, quoted, footer = clean_body(head, query)
         left_out = _left_out(quoted, footer, len(body) - len(head))
         if len(cleaned) <= LONG_BODY_CHARS:
-            return cleaned + (f"\n\n[{left_out}]" if left_out else "")
+            return cleaned + (f"\n\n[{left_out}]" if left_out else ""), "cleaned"
         if time.monotonic() < _paused_until:
             raise TimeoutError("digests paused after a timeout")
         async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
@@ -302,27 +312,34 @@ async def digest_body(row: dict, *, query: str | None = None, client=None,
         left_out = _left_out(quoted, footer, len(body) - len(head))
         result = ("[A digest of this long email was unavailable; below is the email's own "
                   f"text, which may be cut to fit.{' ' + left_out if left_out else ''}]\n" + cleaned)
-        _cache_put(key, result, _FAILURE_PAUSE_S)
-        return result
+        _cache_put(key, result, "failed", _FAILURE_PAUSE_S)
+        return result, "failed"
     result = (f"[Wisp's digest of the {len(cleaned):,}-character email body. It restates what "
               "the email says (untrusted, not checked) and is NOT verbatim."
               f"{' ' + left_out if left_out else ''}]\n" + text + _backfill(text, cleaned))
-    _cache_put(key, result, _CACHE_S)
-    return result
+    _cache_put(key, result, "digest", _CACHE_S)
+    return result, "digest"
 
 
 async def digest_rows(rows: list[dict], *, query: str | None = None, client=None,
                       model: str | None = None) -> list[dict]:
     """`rows` with the newest long body digested (at most MAX_DIGESTS_PER_CALL).
-    When a digest is in a multi-email result, the other bodies are trimmed,
-    labelled, so the whole result fits RESULT_BUDGET_CHARS with the digest in it."""
+    Only when a digest was actually written are the other bodies trimmed,
+    labelled, so the whole result fits RESULT_BUDGET_CHARS with the digest in
+    it. If no digest was written (failure, pause, no local engine), the rows
+    come back exactly as given, as before digests existed; a body that is only
+    long because of its quoted thread or footer comes back cleaned."""
     long_rows = sorted((i for i, r in enumerate(rows) if len(r.get("body") or "") > LONG_BODY_CHARS),
                        key=lambda i: rows[i].get("ts") or 0, reverse=True)
     out = list(rows)
-    digested = set(long_rows[:MAX_DIGESTS_PER_CALL])
-    for i in digested:
-        out[i] = {**rows[i], "body": await digest_body(rows[i], query=query, client=client,
-                                                         model=model)}
+    digested = set()
+    for i in long_rows[:MAX_DIGESTS_PER_CALL]:
+        text, outcome = await _digest_outcome(rows[i], query=query, client=client, model=model)
+        if outcome == "cleaned":
+            out[i] = {**rows[i], "body": text}
+        elif outcome == "digest":
+            out[i] = {**rows[i], "body": text}
+            digested.add(i)
     others = [i for i in range(len(rows)) if i not in digested]
     if not digested:
         return out

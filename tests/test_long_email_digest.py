@@ -377,7 +377,7 @@ def test_n4_dates_and_dashless_codes_are_backfilled():
 
 
 def test_n5_expired_entries_are_pruned_and_raw_changes_clear_the_cache(monkeypatch):
-    D._cache_put(("old",), "x", -1)
+    D._cache_put(("old",), "x", "digest", -1)
     assert D._cache_get(("other",)) is None and ("old",) not in D._cache
     _digest(_row(), StubClient())
     assert D._cache
@@ -404,3 +404,56 @@ def test_n7_label_and_rules_do_not_present_the_email_as_wisp():
     out = _digest(_row(), client)
     assert "untrusted, not checked" in out
     assert "from the email, not from Wisp" in client.calls[0]["messages"][0]["content"]
+
+
+
+# --- Re-review B3 (#366 at 6d627a58): no trimming unless a digest was written --
+
+def _multi_rows():
+    others = [_row(i, body=f"Email {i}. " + "Ordinary email text that matters. " * 50) for i in range(3)]
+    return others + [_row(9, body=_long_body() * 4)]
+
+
+@pytest.mark.parametrize("scenario", ["no_local_engine", "timeout", "paused"])
+def test_b3_failed_digest_leaves_every_row_as_before(monkeypatch, scenario):
+    rows = _multi_rows()
+    client = StubClient()
+    if scenario == "no_local_engine":
+        def refuse():
+            raise LookupError("agent model is not the local engine")
+        monkeypatch.setattr(D, "_resolve", refuse)
+        out = asyncio.run(D.digest_rows(rows, query=None))
+    elif scenario == "timeout":
+        monkeypatch.setattr(D, "_TIMEOUT_S", 0.05)
+        out = asyncio.run(D.digest_rows(rows, client=StubClient(delay=1.0), model=MODEL))
+    else:
+        monkeypatch.setattr(D, "_paused_until", D.time.monotonic() + 60)
+        out = asyncio.run(D.digest_rows(rows, client=client, model=MODEL))
+        assert client.calls == []
+    assert out == rows
+
+
+def test_b3_a_cached_failure_also_leaves_rows_as_before(monkeypatch):
+    monkeypatch.setattr(D, "_TIMEOUT_S", 0.05)
+    rows = _multi_rows()
+    asyncio.run(D.digest_rows(rows, client=StubClient(delay=1.0), model=MODEL))
+    monkeypatch.setattr(D, "_paused_until", 0.0)
+    again = StubClient()
+    assert asyncio.run(D.digest_rows(rows, client=again, model=MODEL)) == rows
+    assert again.calls == []  # the failure is cached; no second stall
+
+
+def test_b3_a_body_long_only_from_its_quoted_thread_does_not_trim_others():
+    reply = "Yes, Thursday works for the walkthrough. " * 6
+    quoted = reply + "\n\nOn Mon, Oct 20, 2026 Ana <a@example.com> wrote:\n" + "> old\n" * 2000
+    rows = _multi_rows()[:3] + [_row(9, body=quoted)]
+    out = asyncio.run(D.digest_rows(rows, client=StubClient(), model=MODEL))
+    assert out[:3] == rows[:3]
+    assert out[3]["body"].startswith("Yes, Thursday works")
+
+
+def test_n3_quote_keeping_matches_query_words():
+    reply = "Sounds good, see the details below from the vendor. " * 6
+    body = reply + "\n\nOn Mon, Oct 20, 2026 Vendor <v@example.com> wrote:\n> Your shipment arrives Friday."
+    kept, quoted, _ = D.clean_body(body, query="when does the shipment arrive")
+    assert "shipment arrives Friday" in kept and quoted == 0
