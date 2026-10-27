@@ -24,6 +24,9 @@ struct OverlayView: View {
     // rebuilds the panel's content once. Cheap: both are rare, deliberate.
     @AppStorage(Theme.textSizeKey) private var textSize: Double = 1.0
     @State private var contrastTick = 0
+    // The notification also fires for Reduce Motion and Reduce Transparency;
+    // only a real Increase Contrast change rebuilds (it resets child views' state).
+    @State private var increasedContrast = Theme.increaseContrast
     // Replies whose Details the person toggled away from the default (open in
     // Debug Mode, closed otherwise).
     @State private var detailsToggled: Set<UUID> = []
@@ -44,6 +47,8 @@ struct OverlayView: View {
         .onAppear { breathe = true }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(
             for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)) { _ in
+            guard Theme.increaseContrast != increasedContrast else { return }
+            increasedContrast = Theme.increaseContrast
             contrastTick &+= 1
         }
         // The rebuilt content is laid out fresh, so its height-change observer

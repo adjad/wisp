@@ -107,6 +107,8 @@ def test_the_clip_reaches_the_model_as_audio_and_comes_back_as_words(checkpoint)
     # A transcript, not an answer: no thinking, no sampling, no tools.
     assert call["chat_template_kwargs"] == {"enable_thinking": False}
     assert call["temperature"] == 0 and "tools" not in call
+    # Kept out of the engine's prefix cache, whose SSD tier writes to disk.
+    assert call["engine_headers"] == {"X-oMLX-Cache-Store": "off"}
 
 
 @pytest.mark.parametrize("audio,weights,model_type", [
@@ -265,3 +267,36 @@ def test_the_gate_closes_at_once_when_nothing_is_handed_on(checkpoint, reply, mo
     with pytest.raises(ValueError):          # a bad clip never opens it
         run(V.transcribe("", client=client, model=MODEL))
     assert not idle.foreground_busy()
+
+
+def test_a_cut_short_format_chunk_is_a_bad_clip_not_a_crash():
+    data = bytearray(wav(1.0))
+    truncated = bytes(data[:30])              # fmt chunk declares 16 bytes, has 10
+    with pytest.raises(ValueError):
+        V.wav_seconds(truncated)
+    with pytest.raises(ValueError):
+        V.decode_clip(b64(truncated))
+
+
+def test_capability_follows_the_checkpoint_on_disk(checkpoint, tmp_path):
+    """A re-quantized checkpoint is read again; a no is never remembered."""
+    path = checkpoint()
+    assert V.checkpoint_has_audio(path)
+    import os
+    index = os.path.join(path, "model.safetensors.index.json")
+    with open(index, "w") as f:                # replaced in place, audio tower dropped
+        json.dump({"weight_map": {"model.language_model.layers.0.w": "a", "padding": "longer"}}, f)
+    assert not V.checkpoint_has_audio(path)
+    missing = str(tmp_path / "still-downloading")
+    assert not V.checkpoint_has_audio(missing)
+    os.makedirs(missing)
+    with open(os.path.join(missing, "config.json"), "w") as f:
+        json.dump({"audio_config": {"x": 1}}, f)
+    with open(os.path.join(missing, "model.safetensors.index.json"), "w") as f:
+        json.dump({"weight_map": {"model.audio_tower.0.w": "a"}}, f)
+    assert V.checkpoint_has_audio(missing)    # finished downloading: now it can hear
+    short = tmp_path / "single-file"
+    short.mkdir()
+    (short / "config.json").write_text(json.dumps({"audio_config": {"x": 1}}))
+    (short / "model.safetensors").write_bytes(b"\x01")   # cut short: no audio, no crash
+    assert V.checkpoint_has_audio(str(short)) is False
