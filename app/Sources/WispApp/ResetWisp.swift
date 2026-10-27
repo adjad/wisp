@@ -181,7 +181,8 @@ enum WispReset {
         /// engine_cache and in_progress booleans, pending this reset's trash paths,
         /// problems strings.
         static func parse(_ data: Data) -> Marker? {
-            guard let doc = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            guard StrictJSON.acceptable(data),
+                  let doc = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let version = doc["version"], isInteger(version), (version as? NSNumber)?.intValue == 1,
                   let phase = doc["phase"] as? String,
                   ["started", "first-pass", "erased"].contains(where: { $0.unicodeScalars.elementsEqual(phase.unicodeScalars) }),
@@ -190,7 +191,9 @@ enum WispReset {
                 return nil
             }
             if let attempts = doc["attempts"] {
-                guard isInteger(attempts), let n = attempts as? NSNumber, n.int64Value >= 0 else { return nil }
+                guard isInteger(attempts), let n = attempts as? NSNumber, (0...Int64(maxAttempts)).contains(n.int64Value) else {
+                    return nil
+                }
             }
             for key in ["full_pass", "engine_cache", "in_progress"] {
                 if let value = doc[key], !isBool(value) { return nil }
@@ -322,6 +325,20 @@ enum WispReset {
     /// right after they are cleared), so a record that couldn't be written in ~/.moe
     /// never makes the next launch clear the defaults and reset permissions again.
     static let appPartDoneKey = "wisp.reset.appPartDone"
+    /// The app part's problems beside it, so a tccutil failure is still said when
+    /// only the defaults prove the part ran.
+    static let appPartProblemsKey = "wisp.reset.appPartProblems"
+    /// wisp_reset.MAX_ATTEMPTS: a marker counting more passes is not one Wisp wrote.
+    static let maxAttempts = 3
+
+    /// The app part's problems for this marker: from its record in ~/.moe, else
+    /// from the defaults fallback, else none.
+    static func appPartProblems(markerID: String, record: AppDone?, defaultsID: String?,
+                                defaultsProblems: [String]?) -> [String] {
+        if let record, record.id == markerID { return record.problems }
+        if defaultsID == markerID { return defaultsProblems ?? [] }
+        return []
+    }
 
     /// Whether the app's part already ran for this marker.
     static func appPartRan(markerID: String, record: AppDone?, defaultsID: String?) -> Bool {
@@ -508,6 +525,131 @@ struct ResetWispCard: View {
                 Text("• " + row).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+}
+
+/// The rules wisp_reset.parse_marker_json adds to plain JSON, checked on the raw
+/// bytes before JSONSerialization (which allows what the service refuses): UTF-8
+/// only, no key twice in one object, no lone surrogate escape. Literals are only
+/// numbers, true, false and null characters, so NaN, Infinity or a byte-order mark
+/// fail here as they do in the service.
+enum StrictJSON {
+    static func acceptable(_ data: Data) -> Bool {
+        var scanner = Scan(bytes: Array(data))
+        guard scanner.value() else { return false }
+        scanner.space()
+        return scanner.index == scanner.bytes.count
+    }
+
+    private struct Scan {
+        let bytes: [UInt8]
+        var index = 0
+
+        private func at(_ char: Unicode.Scalar) -> Bool {
+            index < bytes.count && bytes[index] == UInt8(ascii: char)
+        }
+
+        mutating func space() {
+            while index < bytes.count, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[index]) { index += 1 }
+        }
+
+        mutating func value() -> Bool {
+            space()
+            guard index < bytes.count else { return false }
+            if at("{") { return object() }
+            if at("[") { return array() }
+            if at("\"") { return string() != nil }
+            let start = index
+            let literal = Set("0123456789+-.eEtrufalsn".utf8)
+            while index < bytes.count, literal.contains(bytes[index]) { index += 1 }
+            return index > start
+        }
+
+        mutating func object() -> Bool {
+            index += 1
+            var keys = Set<[UInt16]>()
+            space()
+            if at("}") { index += 1; return true }
+            while true {
+                space()
+                guard at("\""), let key = string(), keys.insert(key).inserted else { return false }
+                space()
+                guard at(":") else { return false }
+                index += 1
+                guard value() else { return false }
+                space()
+                if at(",") { index += 1; continue }
+                if at("}") { index += 1; return true }
+                return false
+            }
+        }
+
+        mutating func array() -> Bool {
+            index += 1
+            space()
+            if at("]") { index += 1; return true }
+            while true {
+                guard value() else { return false }
+                space()
+                if at(",") { index += 1; continue }
+                if at("]") { index += 1; return true }
+                return false
+            }
+        }
+
+        /// The string's UTF-16 units, nil when malformed or holding a lone surrogate.
+        mutating func string() -> [UInt16]? {
+            index += 1
+            var units: [UInt16] = []
+            var run: [UInt8] = []
+            func flush() {
+                units += Array(String(decoding: run, as: UTF8.self).utf16)
+                run.removeAll()
+            }
+            while index < bytes.count {
+                let byte = bytes[index]
+                if byte == UInt8(ascii: "\"") {
+                    index += 1
+                    flush()
+                    return Self.paired(units) ? units : nil
+                }
+                guard byte == UInt8(ascii: "\\") else { run.append(byte); index += 1; continue }
+                flush()
+                guard index + 1 < bytes.count else { return nil }
+                let escape = bytes[index + 1]
+                if escape == UInt8(ascii: "u") {
+                    guard index + 6 <= bytes.count else { return nil }
+                    let hex = bytes[(index + 2)..<(index + 6)]
+                    guard hex.allSatisfy({ Character(Unicode.Scalar($0)).isHexDigit && $0 < 0x80 }),
+                          let unit = UInt16(String(decoding: hex, as: UTF8.self), radix: 16) else { return nil }
+                    units.append(unit)
+                    index += 6
+                    continue
+                }
+                let simple: [UInt8: UInt16] = [0x22: 0x22, 0x5C: 0x5C, 0x2F: 0x2F, 0x62: 0x08, 0x66: 0x0C,
+                                               0x6E: 0x0A, 0x72: 0x0D, 0x74: 0x09]
+                guard let unit = simple[escape] else { return nil }
+                units.append(unit)
+                index += 2
+            }
+            return nil
+        }
+
+        /// Every high surrogate followed by a low one, and no low one alone.
+        static func paired(_ units: [UInt16]) -> Bool {
+            var position = 0
+            while position < units.count {
+                let unit = units[position]
+                if (0xD800...0xDBFF).contains(unit) {
+                    guard position + 1 < units.count, (0xDC00...0xDFFF).contains(units[position + 1]) else { return false }
+                    position += 2
+                    continue
+                }
+                if (0xDC00...0xDFFF).contains(unit) { return false }
+                position += 1
+            }
+            return true
         }
     }
 }

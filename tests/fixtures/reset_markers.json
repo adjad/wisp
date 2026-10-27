@@ -1,5 +1,5 @@
 {
- "comment": "Reset markers that service/wisp_reset.py (marker_from_json) and the app (ResetWisp.swift WispReset.Marker.parse) must judge the same way. Each case is the marker file's exact text.",
+ "comment": "Reset markers that service/wisp_reset.py (marker_from_json) and the app (ResetWisp.swift WispReset.Marker.parse) must judge the same way. Each case is the marker file's exact text. A byte-order mark can't be carried here (Foundation drops it when decoding a string); both sides check it on raw bytes instead.",
  "cases": [
   {
    "name": "minimal started",
@@ -179,6 +179,71 @@
   {
    "name": "NaN constant",
    "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"started\", \"at\": NaN}",
+   "valid": false
+  },
+  {
+   "name": "attempts at the cap",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"attempts\": 3}",
+   "valid": true
+  },
+  {
+   "name": "attempts over the cap",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"attempts\": 4}",
+   "valid": false
+  },
+  {
+   "name": "duplicate id key",
+   "text": "{\"version\": 1, \"id\": \"aa\", \"id\": \"bb\", \"phase\": \"erased\"}",
+   "valid": false
+  },
+  {
+   "name": "duplicate phase, same value",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"phase\": \"erased\"}",
+   "valid": false
+  },
+  {
+   "name": "duplicate key in an extra field",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"later\": {\"x\": 1, \"x\": 2}}",
+   "valid": false
+  },
+  {
+   "name": "same key in two objects",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"later\": [{\"x\": 1}, {\"x\": 2}]}",
+   "valid": true
+  },
+  {
+   "name": "lone high surrogate in problems",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"problems\": [\"\\ud800\"]}",
+   "valid": false
+  },
+  {
+   "name": "lone low surrogate in problems",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"problems\": [\"a\\udc00b\"]}",
+   "valid": false
+  },
+  {
+   "name": "lone surrogate in a key",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"\\ud83d\": 1}",
+   "valid": false
+  },
+  {
+   "name": "surrogate pair in problems",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"problems\": [\"\\ud83d\\ude00\"]}",
+   "valid": true
+  },
+  {
+   "name": "escaped backslash before u",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"problems\": [\"\\\\ud800\"]}",
+   "valid": true
+  },
+  {
+   "name": "raw non-ASCII problem",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"problems\": [\"Couldn\u2019t delete: caf\u00e9\"]}",
+   "valid": true
+  },
+  {
+   "name": "Infinity",
+   "text": "{\"version\": 1, \"id\": \"c0ffee12\", \"phase\": \"erased\", \"at\": Infinity}",
    "valid": false
   }
  ]

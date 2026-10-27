@@ -578,9 +578,31 @@ def _no_constant(name: str):
     raise ValueError(f"{name} is not JSON")
 
 
+def _no_duplicates(pairs: list) -> dict:
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
+def _has_lone_surrogate(value: Any) -> bool:
+    if isinstance(value, str):
+        return any(0xD800 <= ord(c) <= 0xDFFF for c in value)
+    if isinstance(value, dict):
+        return any(_has_lone_surrogate(k) or _has_lone_surrogate(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(_has_lone_surrogate(v) for v in value)
+    return False
+
+
 def parse_marker_json(data: bytes) -> Any:
-    """Strict JSON, as the app's JSONSerialization reads it: NaN and Infinity are refused."""
-    return json.loads(data, parse_constant=_no_constant)
+    """Strict JSON, read exactly as the app reads it (ResetWisp.swift
+    StrictJSON): UTF-8 only, and NaN and Infinity, a key twice in one object, a
+    lone surrogate escape and a byte-order mark are all refused."""
+    doc = json.loads(data.decode("utf-8"), parse_constant=_no_constant, object_pairs_hook=_no_duplicates)
+    if _has_lone_surrogate(doc):
+        raise ValueError("lone surrogate")
+    return doc
 
 
 def marker_from_json(doc: Any) -> dict:
@@ -589,7 +611,7 @@ def marker_from_json(doc: Any) -> dict:
     holds the cases both sides check), so the two never disagree on a marker.
 
     version is the integer 1, phase one of PHASES, id 1-64 ASCII letters and
-    digits; when present, attempts is a non-negative integer, full_pass,
+    digits; when present, attempts is an integer from 0 to MAX_ATTEMPTS, full_pass,
     engine_cache and in_progress are booleans, pending lists this reset's trash
     paths and problems lists strings."""
     checks = (isinstance(doc, dict) and type(doc.get("version")) is int and doc["version"] == 1
@@ -598,7 +620,7 @@ def marker_from_json(doc: Any) -> dict:
         doc = {**new_marker(), **doc}
         checks = (isinstance(doc["id"], str) and 0 < len(doc["id"]) <= 64
                   and doc["id"].isascii() and doc["id"].isalnum()
-                  and type(doc["attempts"]) is int and doc["attempts"] >= 0
+                  and type(doc["attempts"]) is int and 0 <= doc["attempts"] <= MAX_ATTEMPTS
                   and type(doc["full_pass"]) is bool and type(doc["engine_cache"]) is bool
                   and type(doc["in_progress"]) is bool
                   and isinstance(doc["pending"], list) and all(trash_path_ok(n, doc["id"]) for n in doc["pending"])
@@ -747,7 +769,10 @@ def resume_pending(home: Path | None = None, user_home: Path | None = None) -> d
                     note(GOOGLE_NOT_REVOKED)
                 engine_stopped = not _engine_running(root)
                 if doc["full_pass"]:
-                    sweep = retry_trash(root, user_home, doc["pending"], doc["id"])
+                    # Also this reset's engine trash a killed cache-only pass moved but
+                    # never recorded: it holds prompt-derived state.
+                    unrecorded = ["engine/" + p for p in _engine_trash(root, root.lstat().st_dev, doc["id"])]
+                    sweep = retry_trash(root, user_home, sorted(set(doc["pending"]) | set(unrecorded)), doc["id"])
                     doc["pending"] = sweep["pending"]
                     if not doc["engine_cache"] and engine_stopped:
                         # The engine was running at the first pass; its cache is only a cache.
