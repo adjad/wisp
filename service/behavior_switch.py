@@ -71,7 +71,8 @@ def phraser_enabled() -> bool:
     the configured server, so it is OFF unless ``WISP_BEHAVIOR_PHRASER=1``."""
     raw = os.environ.get("WISP_BEHAVIOR_PHRASER")
     if remote_active():
-        return raw == "1"
+        from service.inference.remote_policy import remote_parity
+        return raw == "1" or (raw != "0" and remote_parity())
     return raw != "0"
 
 

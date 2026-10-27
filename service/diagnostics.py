@@ -42,9 +42,12 @@ _KIND_PATTERN = re.compile(rb'"kind": "([a-z_]{1,32})"')
 _labels = {"agent", "today", "daily_brief", "source_sync", "native",
            "started", "completed", "failed", "cancelled", "routed", "tool_call",
            "tool_result", "confirm", "approved", "denied", "error", "done",
-           "sources", "plan", "requested", "result", "waiting", "unavailable", "unknown"}
+           "sources", "plan", "requested", "result", "waiting", "unavailable", "unknown",
+           "model_step"}
+# model_step counts are timings and sizes only (agent/loop._run_step), never text.
 _counts = {"tasks", "blocks", "unscheduled", "warnings", "revision", "calendar_ready",
-           "reminders_ready", "ok", "events_dropped", "elapsed_ms"}
+           "reminders_ready", "ok", "events_dropped", "elapsed_ms",
+           "model_ms", "ttft_ms", "output_chars", "tools_offered", "prefix_reset", "empty"}
 
 
 def _directory(root):

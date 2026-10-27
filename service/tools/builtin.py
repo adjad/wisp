@@ -525,7 +525,7 @@ def list_dir(path: str, recursive: bool = False, max_depth: int = 3) -> str:
 
 @register(
     "write_file",
-    "Write text to a file, creating or overwriting it. Requires confirmation.",
+    "Write text to a file, creating or overwriting it.",
     {"type": "object",
      "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
      "required": ["path", "content"]},

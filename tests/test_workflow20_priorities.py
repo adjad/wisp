@@ -766,3 +766,23 @@ def test_registered_partial_identity_receipt_is_immutable_and_never_body_evidenc
         inventory.failed_account_ids += ('injected',)
     assert M.raw_email_snapshot() is None
     assert M.prepare_publication_witness(inventory) is None
+
+
+def test_long_newsletter_body_does_not_crowd_out_other_mail():
+    # Debug export 2026-10-26: one 1.5k-char newsletter filled the whole mail
+    # budget, so 1 of 50 cached emails was shown across two accounts.
+    footer = "You are receiving this email because you opted in.  Unsubscribe.\n" * 30
+    rows = [mail(footer, mid="promo", account="Home", ts=STAMP - 60)]
+    rows += [mail(f"Can you confirm slot {i}?", mid=f"ask{i}", account=("Work", "Home")[i % 2],
+                  ts=STAMP - 3600 * (i + 1)) for i in range(8)]
+    publish_mail(*rows)
+    email = dispatch(include_calendar=False, include_reminders=False, include_messages=False,
+                     include_notes=False)["sources"]["email"]
+    records = {row["message_id"]: row for row in email["records"]}
+    assert email["matching"] == 9 and email["shown"] == 9 and email["omitted"] == 0
+    assert {row["account_label"] for row in records.values()} == {"Work", "Home"}
+    promo = records["promo"]
+    assert promo["body_truncated"] is True and promo["body_chars"] == len(footer.strip())
+    assert len(promo["body"]) <= T._EMAIL_BODY_CHARS + 1 and promo["body"].endswith("…")
+    assert records["ask3"]["body"] == "Can you confirm slot 3?" and "body_truncated" not in records["ask3"]
+    assert records["ask3"]["unread"] is True

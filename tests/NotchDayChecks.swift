@@ -84,7 +84,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     let midnight = window([DayBlockInput(id: "show", title: "Show", start: at(21.5), end: at(22.5), kind: "calendar")], now: at(23.5))
     check(midnight.from == at(21) && midnight.to == dayEnd && midnight.items.first?.past == true,
           "near midnight: two hours back, ending at midnight: \(clock(midnight.from))–\(clock(midnight.to))")
-    check(timeline.allDay == ["PA 2 [CSE-20-04]"], "the all-day strip drops junk titles")
+    check(timeline.allDay == ["PA 2 [CSE-20-04]"], "the all-day strip drops placeholder words")
 
     // What lands on it, and how it is drawn.
     check(!ids.contains("block:standup"), "a finished event is left off")
@@ -173,7 +173,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
 
     // Planner warnings in plain words.
     check(DayTimeline.plainWarning("Calendar is not current. Flexible tasks are waiting for a successful sync.")
-          == "Your calendar hasn't synced yet, so I'm waiting before placing tasks.", "calendar sync warning")
+          == "Wisp is still reading your calendar, so I'm waiting before placing tasks.", "calendar sync warning")
     check(DayTimeline.plainWarning("Tentative · You're usually at the gym") == nil, "the hatch already says tentative")
     check(DayTimeline.plainWarning("Suggested time · duration is an estimate") == nil, "the dash already says suggested")
     check(DayTimeline.plainWarning("Overlaps Club") == "Overlaps Club.", "overlap warning")
@@ -254,6 +254,27 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.needsYouList([NeedsYouInput(kind: "due", text: "nothing")], more: 4, clock: clock) == nil,
           "junk-only selected items do not create a needs-you section")
 
+    // Each row's actions: Clear for any row the service fingerprinted, Mark done
+    // only for a reminder it can complete; an older service's rows offer nothing.
+    let actionable = DayTimeline.needsYouList([
+        NeedsYouInput(id: "reminders:r", kind: "overdue", text: "Wisp verification timed 2113", due: dayStart - 5 * hour,
+                      fingerprint: "f1", canComplete: true),
+        NeedsYouInput(id: "email:m", kind: "mail", text: "“Lab feedback” from Dr. Patel", fingerprint: "f2"),
+        NeedsYouInput(id: "wisp:t", kind: "plan", text: "Finish slides", fingerprint: "f3"),
+        NeedsYouInput(id: "reminders:old", kind: "due", text: "No fingerprint", due: at(20), canComplete: true),
+        NeedsYouInput(kind: "text", text: "a text from Mom", fingerprint: "f5"),
+    ], more: 0, clock: clock)
+    check(actionable?.rows.map(\.actions) == [[.clear, .markDone], [.clear], [.clear], [], []],
+          "row actions: \(actionable?.rows.map(\.actions) ?? [])")
+    check(actionable?.rows.first?.fingerprint == "f1" && actionable?.rows.first?.dismissalKey == "reminders:r#f1",
+          "a row keeps the service's fingerprint for Clear")
+    check(NeedsYouRowAction.clear.path == "clear" && NeedsYouRowAction.markDone.path == "done",
+          "the two service paths")
+    check(NeedsYouRowAction.clear.accessibilityLabel("Pay rent") == "Clear “Pay rent” from Needs you"
+          && NeedsYouRowAction.markDone.accessibilityLabel("Pay rent") == "Mark “Pay rent” done in Reminders",
+          "each action names its row for VoiceOver")
+    check(NeedsYouRowAction.clear.help("x").contains("stays in Reminders"), "Clear says it never touches the reminder")
+
     // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!
     let light = DayLoad.assess(events: [], allDay: ["PA 2 [CSE-20-04]"], from: now, dayStart: dayStart, isToday: true, zone: utc)
@@ -273,7 +294,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     let unsynced = DayTimeline.briefLines(calendar: nil, calendarUnsynced: true, mail: (ready: false, needing: mailOf(["x"])),
                                           texts: (ready: false, needing: []), soon: .unknown)
     check(unsynced.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"] && unsynced.allSatisfy(\.muted)
-          && unsynced.map(\.text) == ["Calendar hasn't synced yet", "Mail hasn't been checked yet",
+          && unsynced.map(\.text) == ["Reading your calendar…", "Mail hasn't been checked yet",
                                       "Messages haven't been checked yet", "The week ahead hasn't loaded yet"],
           "unread sources keep the four rows, dim: \(unsynced.map(\.text))")
     let noAccess = DayTimeline.briefLines(calendar: light, mail: nil, texts: (ready: false, needing: []), textsNeedAccess: true,
@@ -348,6 +369,8 @@ func dayChecks(_ check: (Bool, String) -> Void) {
 
     briefSummaryChecks(check, dayStart: dayStart, now: now)
 
+    dayTodoChecks(check, dayStart: dayStart, now: now, clock: clock, dayClock: dayClock)
+
     // How busy the calendar is: one verdict for the CAL line and the lede.
     func event(_ title: String, _ start: Double, _ end: Double?) -> DayLoad.Event {
         DayLoad.Event(title: title, start: at(start), end: end.map(at))
@@ -407,4 +430,190 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           && WispClock.hour(0, locale: WispClock.fixedLocale) == "12 AM", "hour labels follow the locale")
     check(WispClock.time(at(15.5), zone: utc, locale: gb) == "15:30" && WispClock.time(at(15.5), zone: utc, locale: WispClock.fixedLocale) == "3:30 PM",
           "clock times follow the locale")
+}
+
+/// To-dos from the proactive engine on the Day tab: timed ones on the hour
+/// lane, untimed ones in "Still to fit", each once and with its source.
+func dayTodoChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Double,
+                   clock: (Double) -> String, dayClock: (Double) -> String) {
+    let hour = 3600.0
+    let dayEnd = dayStart + 24 * hour
+    func at(_ h: Double) -> Double { dayStart + h * hour }
+    let blocks = [
+        DayBlockInput(id: "lecture", title: "CSE 101 lecture", start: at(14), end: at(15.25), kind: "calendar"),
+        DayBlockInput(id: "club", title: "Startup club", start: at(18), end: at(19), kind: "calendar"),
+    ]
+    let needs = [DayNeedInput(id: "pa2", title: "PA 2", source: "reminders", due: at(23.5))]
+    let todos = [
+        DayTodoInput(id: "priya", title: "Call Priya", source: "messages", who: "Priya", due: at(16.25), kind: "call"),
+        DayTodoInput(id: "tj", title: "Go to Trader Joe's", source: "reminders", due: at(17.5), kind: "errand"),
+        DayTodoInput(id: "lecture", title: "CSE 101 lecture", source: "calendar", due: at(14), kind: "event"),
+        DayTodoInput(id: "dana", title: "Reply to Dana", source: "mail", who: "Dana Lee", due: nil, dueLabel: "This week"),
+        DayTodoInput(id: "mom", title: "Call Mom", source: "messages", who: "Mom", due: at(24), dueLabel: "Tomorrow"),
+        DayTodoInput(id: "late", title: "Return the form", source: "mail", due: at(10)),
+        DayTodoInput(id: "done", title: "Pay rent", source: "reminders", due: at(16), done: true),
+        DayTodoInput(id: "dup", title: "pa 2!", source: "reminders", due: at(20)),
+        DayTodoInput(id: "dateonly", title: "Pick up package", source: "notes", due: dayStart, dueLabel: ""),
+        DayTodoInput(id: "eod", title: "Submit timesheet", source: "mail", due: dayEnd - 30, dueLabel: "Today"),
+        DayTodoInput(id: "old", title: "Renew library book", source: "reminders", due: dayStart - 30 * hour),
+        DayTodoInput(id: "junk", title: "n/a", source: "notes"),
+    ]
+    let timeline = DayTimeline.build(blocks: blocks, allDay: [], needs: needs, caught: [], now: now,
+                                     dayStart: dayStart, dayEnd: dayEnd, workStart: at(9), workEnd: at(18),
+                                     isToday: true, clock: clock, dayClock: dayClock, todos: todos)
+    func item(_ id: String) -> DayItem? { timeline.items.first { $0.id == "todo:" + id } }
+
+    let priya = item("priya")
+    check(priya?.style == .todo && priya?.start == at(16.25) && priya?.end == at(16.75),
+          "a call happens at its time, for half an hour: \(String(describing: priya))")
+    check(priya?.source == "messages" && priya?.todoID == "priya" && priya?.detail == "At 16:15 · Texts · Priya",
+          "the block keeps its source and says when and from whom: \(priya?.detail ?? "")")
+    let tj = item("tj")
+    check(tj?.style == .todo && tj?.end == at(17.5) && tj?.start == at(17) && tj?.detail == "Due 17:30 · Reminders",
+          "an errand is due by its time, so its block ends there: \(String(describing: tj))")
+    check(item("lecture") == nil && timeline.items.filter { $0.title == "CSE 101 lecture" }.count == 1,
+          "a calendar to-do is the calendar block, drawn once")
+    check(item("dana") == nil && item("mom") == nil, "undated and tomorrow's to-dos stay off today's clock")
+    let late = item("late")
+    check(late?.style == .overdue && late?.start == now && late?.detail.hasPrefix("Overdue since 10:00") == true,
+          "a to-do due earlier today and not done sits at now as overdue: \(late?.detail ?? "")")
+    check(item("done") == nil, "a done to-do leaves the clock")
+    check(item("dup") == nil, "a to-do a reminder already draws is not drawn twice")
+    check(item("dateonly") == nil && item("eod") == nil, "midnight and end-of-day times are date-only, not times")
+    check(item("junk") == nil, "placeholder titles never draw")
+    check(timeline.styles.contains(.todo) && DayStyle.todo.legend == "To-do", "the legend names to-dos")
+    check(timeline.to >= at(19), "the lane still reaches the last block")
+
+    // Not today: a to-do still draws at its time, without an overdue.
+    let other = DayTimeline.build(blocks: [], allDay: [], needs: [], caught: [], now: now, dayStart: dayStart,
+                                  dayEnd: dayEnd, workStart: at(9), workEnd: at(18), isToday: false,
+                                  clock: clock, dayClock: dayClock, todos: [todos[5]])
+    check(other.items.first?.style == .todo && other.items.first?.start == at(9.5),
+          "on another day, a to-do due at 10 is drawn by 10, not as overdue")
+    // No to-dos: the build is what it was.
+    let none = DayTimeline.build(blocks: blocks, allDay: [], needs: needs, caught: [], now: now, dayStart: dayStart,
+                                 dayEnd: dayEnd, workStart: at(9), workEnd: at(18), isToday: true,
+                                 clock: clock, dayClock: dayClock)
+    check(!none.items.contains { $0.style == .todo }, "without to-dos nothing new is drawn")
+
+    // Still to fit: the planner's leftovers, then to-dos with no time today.
+    let fit = DayTimeline.stillToFit(
+        todos: todos, unscheduled: [(id: "t1", title: "Essay outline", reason: "Needs 45 min; the largest gap is 30 min"),
+                                    (id: "t2", title: "nothing", reason: "")],
+        blocks: blocks, needs: needs, now: now, dayStart: dayStart, dayEnd: dayEnd, isToday: true, dayClock: dayClock)
+    check(fit.map(\.id) == ["task:t1", "todo:dana", "todo:dateonly", "todo:eod", "todo:old"],
+          "still to fit, in order: \(fit.map(\.id))")
+    check(fit[0].symbol == "clock" && fit[0].todoID == nil && fit[0].detail.hasPrefix("No long enough gap"),
+          "a planner task says why it didn't fit: \(fit[0].detail)")
+    check(fit[1].symbol == "envelope" && fit[1].detail == "Dana Lee · This week" && fit[1].todoID == "dana",
+          "an undated to-do shows its source, who and when: \(fit[1].detail)")
+    check(fit[2].symbol == "note.text" && fit[2].detail == "Today", "a date-only to-do today reads Today: \(fit[2].detail)")
+    check(fit[4].symbol == "checklist" && fit[4].detail.hasPrefix("Overdue since earlier"),
+          "an earlier day's to-do is overdue: \(fit[4].detail)")
+    check(!fit.contains { ["todo:mom", "todo:priya", "todo:lecture", "todo:done", "todo:dup", "todo:junk"].contains($0.id) },
+          "tomorrow's, timed, calendar, done, duplicate and placeholder to-dos aren't still to fit")
+    let elsewhere = DayTimeline.stillToFit(todos: todos, unscheduled: [], blocks: [], now: now, dayStart: dayStart,
+                                           dayEnd: dayEnd, isToday: false, dayClock: dayClock)
+    check(!elsewhere.contains { $0.id == "todo:old" }, "another day shows no overdue to-dos")
+
+    // Sources and kinds.
+    check(DayTimeline.sourceSymbol("mail") == "envelope" && DayTimeline.sourceSymbol("messages") == "message"
+          && DayTimeline.sourceSymbol("calendar") == "calendar" && DayTimeline.sourceSymbol("reminders") == "checklist"
+          && DayTimeline.sourceSymbol("notes") == "note.text" && DayTimeline.sourceSymbol("other") == "circle.dashed",
+          "one SF Symbol per source")
+    check(DayTimeline.happensAtTime("Meeting") && !DayTimeline.happensAtTime("errand"), "which kinds start at their time")
+    check(DayTimeline.todoKey("Go to Trader Joe's!") == DayTimeline.todoKey("go to trader joes"), "titles compare loosely")
+    check(DayTimeline.isTimed(at(9), dayStart: dayStart, dayEnd: dayEnd) && !DayTimeline.isTimed(dayStart, dayStart: dayStart, dayEnd: dayEnd)
+          && !DayTimeline.isTimed(dayEnd - 59, dayStart: dayStart, dayEnd: dayEnd), "timed versus date-only")
+    firstDayChecks(check, dayStart: dayStart, dayEnd: dayEnd, now: now, clock: clock, dayClock: dayClock)
+}
+
+/// A new user's first Brief and Day: unreadable sources say so with the setting
+/// that fixes it, letterless calendar titles stay, a day-one backlog never
+/// leads, and the planner's after-hours and all-day reasons read plainly.
+func firstDayChecks(_ check: (Bool, String) -> Void, dayStart: Double, dayEnd: Double, now: Double,
+                    clock: (Double) -> String, dayClock: (Double) -> String) {
+    let hour = 3600.0
+    func at(_ h: Double) -> Double { dayStart + h * hour }
+    func build(_ blocks: [DayBlockInput], needs: [DayNeedInput] = [], allDay: [String] = []) -> DayTimeline {
+        DayTimeline.build(blocks: blocks, allDay: allDay, needs: needs, caught: [], now: now, dayStart: dayStart,
+                          dayEnd: dayEnd, workStart: at(9), workEnd: at(18), isToday: true, clock: clock, dayClock: dayClock)
+    }
+
+    // Calendar events are real whatever they're called; Wisp's own blocks can be placeholders.
+    let titled = build([DayBlockInput(id: "one", title: "1:1", start: at(14), end: at(14.5), kind: "calendar"),
+                        DayBlockInput(id: "emoji", title: "☕️", start: at(15), end: at(15.5), kind: "calendar"),
+                        DayBlockInput(id: "blank", title: "  ", start: at(16), end: at(16.5), kind: "manual"),
+                        DayBlockInput(id: "task:j", title: "nothing", start: at(17), end: at(17.5), kind: "task", taskID: "j"),
+                        DayBlockInput(id: "word", title: "n/a", start: at(17.5), end: at(18), kind: "calendar")],
+                       allDay: ["🎂", ""])
+    check(titled.items.map(\.title) == ["1:1", "☕️", "(untitled)"],
+          "letterless calendar titles stay, blank reads (untitled), placeholder words go: \(titled.items.map(\.title))")
+    check(titled.allDay == ["🎂", "(untitled)"], "all-day calendar titles are never dropped")
+    let load = DayLoad.assess(events: [.init(title: "1:1", start: at(14), end: at(14.5))], allDay: [], from: now,
+                              dayStart: dayStart, isToday: true, zone: TimeZone(identifier: "UTC")!)
+    check(load.meetings == 1 && load.summary.contains("1:1"), "DayLoad counts a \"1:1\": \(load.summary)")
+
+    // A day-one overdue backlog: three on the lane at most, the rest as one block.
+    let backlog = (0..<6).map { DayNeedInput(id: "o\($0)", title: "Old thing \($0)", source: "reminders", due: dayStart - Double($0 + 1) * 86400) }
+    let crowded = build([], needs: backlog)
+    let overdue = crowded.items.filter { $0.style == .overdue }
+    check(overdue.count == DayTimeline.maxOverdueShown, "at most three overdue blocks: \(overdue.map(\.title))")
+    check(overdue.contains { $0.id == "need:overdue-more" && $0.title == "4 more overdue" }, "the rest as one block: \(overdue.map(\.title))")
+    check(DayTimeline.blurb(crowded, needs: backlog, isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart)
+            .hasPrefix("Six overdue reminders to look at"),
+          "a backlog is counted, never \"the main thing today\": \(DayTimeline.blurb(crowded, needs: backlog, isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart))")
+    let mixed = backlog + [DayNeedInput(id: "t", title: "Essay", source: "reminders", due: at(20))]
+    check(DayTimeline.blurb(build([], needs: mixed), needs: mixed, isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart)
+            .hasPrefix("Essay is the main thing today."), "what's due today leads, not the oldest overdue")
+
+    // An unread calendar: never "Nothing is planned".
+    let empty = build([])
+    check(DayTimeline.blurb(empty, needs: [], isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart, calendarRead: false)
+            == "Wisp can't see your calendar yet, so this may not be your whole day.", "an unread calendar is named")
+    check(DayTimeline.blurb(empty, needs: [], isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart)
+            == "Nothing is planned for the rest of today.", "a read, empty calendar is an honest all-clear")
+
+    // The lede gives an all-clear only for what was read.
+    check(DayTimeline.lede(weekday: "Monday", isToday: true, load: nil, dueToday: [], overdue: [], next: nil,
+                           unread: ["calendar", "reminders"]) == "It's Monday. Wisp can't see your calendar and reminders yet.",
+          "the lede names unread sources")
+    check(DayTimeline.lede(weekday: "Monday", isToday: true, load: .free, dueToday: [], overdue: [], next: nil)
+            == "A free Monday. Nothing needs you right now.", "the all-clear stays when everything was read")
+
+    // Which source, and the one setting that fixes it.
+    let calendarOff = SourceAccess(source: "calendar", ready: false, state: "unavailable", blocked: "calendar_access")
+    check(!calendarOff.readable && calendarOff.headline == "Wisp can't see your calendar yet", "a blocked calendar's line")
+    check(calendarOff.fix == BriefDetail.calendarsAccess && calendarOff.fix?.url.hasSuffix("Privacy_Calendars") == true,
+          "Calendar opens Privacy > Calendars")
+    check(SourceAccess(source: "reminders", ready: false, blocked: "reminders_access").fix?.url.hasSuffix("Privacy_Reminders") == true,
+          "Reminders opens Privacy > Reminders")
+    check(SourceAccess(source: "messages", ready: false, blocked: "full_disk_access").fix == BriefDetail.fullDiskAccess,
+          "Messages opens Full Disk Access")
+    check(SourceAccess(source: "email", ready: false, blocked: "mail_automation").fix?.url.hasSuffix("Privacy_Automation") == true,
+          "Mail automation opens Automation")
+    check(SourceAccess(source: "email", ready: false, blocked: "mail_not_configured").headline == "No Mail accounts on this Mac"
+          && SourceAccess(source: "email", ready: false, blocked: "mail_not_configured").fix == BriefDetail.internetAccounts,
+          "no Mail account says so, with Internet Accounts")
+    let reading = SourceAccess(source: "calendar", ready: false, state: "syncing")
+    check(reading.state == .syncing && reading.headline == "Reading your calendar…" && reading.fix == nil,
+          "a read in progress has no setting to open")
+    check(SourceAccess(source: "calendar", ready: false).state == .unavailable, "not ready and silent is never an all-clear")
+    check(SourceAccess(source: "calendar", ready: true, state: "unavailable", blocked: "calendar_access").readable,
+          "ready wins")
+    check(SourceAccess(source: "calendar", ready: false, blocked: "calendar_access", reason: "Calendar access is off for Wisp.").detail
+            == "Calendar access is off for Wisp.", "the service's sentence is the detail")
+    check(SourceAccess.cantSee(["email", "messages", "calendar"]) == "Wisp can't see your mail, texts and calendar yet.",
+          "unread sources in one sentence")
+    let cal = DayTimeline.briefLines(calendar: nil, calendarAccess: calendarOff, mail: nil, texts: nil,
+                                     mailAccess: SourceAccess(source: "email", ready: false, blocked: "mail_closed"), soon: .unknown)
+    check(cal[0].text == "Wisp can't see your calendar yet" && cal[0].muted, "the CAL row says why: \(cal[0].text)")
+    check(cal[1].text == "Wisp reads Mail while Mail is open", "the MAIL row says why: \(cal[1].text)")
+
+    // Planner reasons in plain words; no "Pin one" on the notch.
+    check(DayTimeline.plainReason("It's after your working hours") == "it's after your working hours", "after hours")
+    check(DayTimeline.plainWarning("All-day calendar events may reserve this day. Flexible tasks stay unscheduled; choose to plan the day anyway or pin a task.")?
+            .contains("Pin") == false, "the all-day warning never asks the notch user to pin")
+    check(DayTimeline.afterHoursLine(start: 540, end: 1080) == "It's after your working hours (9 AM–6 PM), so nothing new is placed today.",
+          "after-hours line names the hours")
 }

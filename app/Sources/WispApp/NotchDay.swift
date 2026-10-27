@@ -26,6 +26,8 @@ enum DayStyle: Int, CaseIterable, Comparable {
     case needsYou
     /// Past due: red, near now.
     case overdue
+    /// A to-do Wisp found in your mail, texts, notes or reminders, at its time.
+    case todo
 
     static func < (a: DayStyle, b: DayStyle) -> Bool { a.rawValue < b.rawValue }
 
@@ -38,6 +40,7 @@ enum DayStyle: Int, CaseIterable, Comparable {
         case .caught: return "Caught in texts"
         case .needsYou: return "Needs you"
         case .overdue: return "Overdue"
+        case .todo: return "To-do"
         }
     }
 }
@@ -78,6 +81,30 @@ struct NeedsYouInput: Equatable {
     var text: String
     var due: Double? = nil
     var allDay = false
+    /// What the row said, as the service fingerprinted it; Clear sends it back.
+    var fingerprint: String? = nil
+    /// A dated reminder the service can complete (daily_workspace.needs_you).
+    var canComplete = false
+}
+
+/// What a Needs you row offers behind its ×. Clear only hides the row from
+/// Needs you (service/assistant/needs_you_api.py); the reminder itself stays.
+/// Mark done completes a reminder through the verified native path.
+enum NeedsYouRowAction: String, Equatable, CaseIterable {
+    case clear, markDone
+
+    var title: String { self == .clear ? "Clear" : "Mark done" }
+    /// Said while the service works on it.
+    var progress: String { self == .clear ? "Clearing…" : "Marking done…" }
+    /// The service path under /assistant/needs_you/<id>/.
+    var path: String { self == .clear ? "clear" : "done" }
+    func accessibilityLabel(_ text: String) -> String {
+        self == .clear ? "Clear \u{201C}\(text)\u{201D} from Needs you" : "Mark \u{201C}\(text)\u{201D} done in Reminders"
+    }
+    func help(_ text: String) -> String {
+        self == .clear ? "Hide this from Needs you. It stays in Reminders, and comes back if it changes."
+            : "Complete this reminder in Reminders"
+    }
 }
 
 /// One scannable row in the Brief's structured Needs you section.
@@ -86,12 +113,65 @@ struct NeedsYouRow: Equatable, Identifiable {
     let label: String?
     let text: String
     let overdue: Bool
+    var fingerprint: String? = nil
+    var canComplete = false
+    /// Where its answers go: <route>/<id>/clear|done. The Brief's Needs you
+    /// rows by default; the proactive Brief's to-dos and threads have their own.
+    var route = NeedsYouRow.needsYouRoute
+
+    static let needsYouRoute = "assistant/needs_you"
+    static let todoRoute = "assistant/proactive/todos"
+    static let threadRoute = "assistant/proactive/threads"
+
+    /// Clear for any row the service identified; Mark done for a reminder too.
+    /// A row with no service id or fingerprint (an older service) offers nothing.
+    var actions: [NeedsYouRowAction] {
+        guard let fingerprint, !fingerprint.isEmpty, !id.hasPrefix("needs-you-") else { return [] }
+        return canComplete ? [.clear, .markDone] : [.clear]
+    }
+
+    /// The tooltip for one action on this row: a thread's Clear marks nothing read.
+    func help(_ action: NeedsYouRowAction) -> String {
+        action == .clear && route == NeedsYouRow.threadRoute
+            ? "Hide this from the Brief. Nothing is marked read; a new message brings it back."
+            : action.help(text)
+    }
+
+    /// What a Clear hides: this id while it still says the same thing.
+    var dismissalKey: String { id + "#" + (fingerprint ?? "") }
 }
 
 /// The items selected by the service plus its count of additional items.
 struct NeedsYouList: Equatable {
     let rows: [NeedsYouRow]
     let more: Int
+}
+
+/// One to-do from the proactive engine (`workspace.proactive.todos`), as the
+/// Day tab hands it over.
+struct DayTodoInput: Equatable {
+    var id: String
+    var title: String
+    /// "mail", "messages", "calendar", "reminders" or "notes".
+    var source: String
+    var who: String = ""
+    var due: Double? = nil
+    var dueLabel: String = ""
+    /// The engine's kind; "event", "meeting", "call" and "plan" happen at their time.
+    var kind: String = ""
+    var done = false
+}
+
+/// One row of the Day tab's "Still to fit": a task the planner couldn't place,
+/// or a to-do with no time today.
+struct DayFitRow: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    /// An SF Symbol for where it came from.
+    let symbol: String
+    /// Set for a to-do, so the row can check it off or add it to the day.
+    var todoID: String? = nil
 }
 
 /// One "Caught for you" record from the attention runner.
@@ -126,6 +206,9 @@ struct DayItem: Identifiable, Equatable {
     var kind: String = ""
     /// For a grouped review suggestion: the items one Keep plans together.
     var members: [DayMember] = []
+    /// For a to-do: its id and where it came from ("mail", "messages", …).
+    var todoID: String? = nil
+    var source: String = ""
     /// Over before now, on today: drawn dim, inside the lane's two hours back.
     var past = false
 
@@ -164,7 +247,8 @@ struct DayTimeline: Equatable {
     ///   - clock: formats a time ("3:30 PM"); `dayClock` formats one on another day ("Fri 5 PM").
     static func build(blocks: [DayBlockInput], allDay: [String], needs: [DayNeedInput], caught: [DayCaughtInput],
                       now: Double, dayStart: Double, dayEnd: Double, workStart: Double, workEnd: Double,
-                      isToday: Bool, clock: (Double) -> String, dayClock: (Double) -> String) -> DayTimeline {
+                      isToday: Bool, clock: (Double) -> String, dayClock: (Double) -> String,
+                      todos: [DayTodoInput] = []) -> DayTimeline {
         // On today, two hours back so what just happened stays in view, dim.
         let earliest = isToday
             ? max(dayStart, floorHour(min(max(now, dayStart), dayEnd - hour), dayStart: dayStart) - 2 * hour) : dayStart
@@ -172,7 +256,11 @@ struct DayTimeline: Equatable {
 
         for block in blocks {
             let end = block.end.flatMap { $0 > block.start ? $0 : nil } ?? block.start + 30 * 60
-            guard end > earliest, block.start < dayEnd, !isJunk(block.title) else { continue }
+            // A calendar event is real whatever it's called ("1:1", an emoji, no
+            // title at all); only a placeholder word ("nothing", "n/a") is left off.
+            let fromCalendar = block.kind == "calendar" || block.kind == "manual"
+            guard end > earliest, block.start < dayEnd,
+                  fromCalendar ? !isPlaceholderEvent(block.title) : !isJunk(block.title) else { continue }
             let minutes = Int(((end - block.start) / 60).rounded())
             let style: DayStyle
             let detail: String
@@ -195,7 +283,7 @@ struct DayTimeline: Equatable {
                 style = block.taskID == nil ? .calendar : .task
                 detail = style == .task ? "Your plan · \(duration(minutes))" : clock(block.start) + " – " + clock(end)
             }
-            items.append(DayItem(id: "block:" + block.id, title: block.title, detail: detail,
+            items.append(DayItem(id: "block:" + block.id, title: fromCalendar ? eventTitle(block.title) : block.title, detail: detail,
                                  start: block.start, end: end, style: style, blockID: block.id,
                                  taskID: block.taskID, patternID: block.patternID,
                                  evidenceID: block.evidenceID, kind: block.kind, members: block.members))
@@ -216,6 +304,20 @@ struct DayTimeline: Equatable {
             }
         }
 
+        // A first day can bring a long overdue backlog. Stacked at "now" they
+        // draw as unreadable slivers, so the lane shows the three most recent
+        // and one block for the rest.
+        let overdueNeeds = items.indices.filter { items[$0].style == .overdue && items[$0].needID != nil }
+        if overdueNeeds.count > maxOverdueShown {
+            let start = max(earliest, now)
+            let rest = overdueNeeds.count - (maxOverdueShown - 1)
+            let keep = Set(overdueNeeds.prefix(maxOverdueShown - 1))
+            items = items.indices.filter { !overdueNeeds.contains($0) || keep.contains($0) }.map { items[$0] }
+            items.append(DayItem(id: "need:overdue-more", title: "\(rest) more overdue",
+                                 detail: "Older reminders · open Reminders to see them",
+                                 start: start, end: start + 30 * 60, style: .overdue, source: "reminders"))
+        }
+
         // A plan Wisp already added to Reminders comes back as a reminder; draw it once.
         let reminderTitles = Set(needs.map { $0.title.lowercased() })
         for record in caught where !isJunk(record.title) && (record.state == "shadow" || record.state == "created")
@@ -224,6 +326,29 @@ struct DayTimeline: Equatable {
             let detail = record.state == "created" ? "Caught in texts · added to Reminders" : "Caught in texts · not on your calendar"
             items.append(DayItem(id: "caught:" + record.id, title: record.title, detail: detail,
                                  start: when, end: when + hour, style: .caught, caughtID: record.id))
+        }
+
+        // To-dos with a time today go on the clock, once: not calendar events
+        // (already blocks), not what's done, nor one a block or reminder already draws.
+        let drawn = Set(blocks.map { todoKey($0.title) } + needs.map { todoKey($0.title) })
+        for todo in todos where !todo.done && todo.source != "calendar" && !isJunk(todo.title)
+            && !drawn.contains(todoKey(todo.title)) {
+            guard let due = todo.due, isTimed(due, dayStart: dayStart, dayEnd: dayEnd) else { continue }
+            let from = [sourceName(todo.source), todo.who].filter { !$0.isEmpty }.joined(separator: " · ")
+            if isToday && due < now {
+                let start = max(earliest, now)
+                items.append(DayItem(id: "todo:" + todo.id, title: todo.title,
+                                     detail: "Overdue since " + clock(due) + (from.isEmpty ? "" : " · " + from),
+                                     start: start, end: start + 30 * 60, style: .overdue, todoID: todo.id, source: todo.source))
+            } else if due > earliest {
+                let atTime = happensAtTime(todo.kind)
+                let start = atTime ? due : max(earliest, due - 30 * 60)
+                let end = atTime ? due + 30 * 60 : max(due, start + 15 * 60)
+                let when = (atTime ? "At " : "Due ") + clock(due)
+                items.append(DayItem(id: "todo:" + todo.id, title: todo.title,
+                                     detail: [when, from].filter { !$0.isEmpty }.joined(separator: " · "),
+                                     start: start, end: end, style: .todo, todoID: todo.id, source: todo.source))
+            }
         }
 
         let latest = items.map(\.end).max() ?? earliest
@@ -242,7 +367,106 @@ struct DayTimeline: Equatable {
             items[index].past = isToday && items[index].end <= now
         }
         items = items.filter { $0.end > $0.start }
-        return DayTimeline(from: from, to: to, items: arrange(items), allDay: allDay.filter { !isJunk($0) })
+        return DayTimeline(from: from, to: to, items: arrange(items),
+                           allDay: allDay.filter { !isPlaceholderEvent($0) }.map(eventTitle))
+    }
+
+    /// The most overdue reminders the lane draws one by one.
+    static let maxOverdueShown = 3
+
+    /// A calendar entry that is only a placeholder word ("nothing", "n/a", "tbd").
+    /// Unlike isJunk, a title with no letters ("1:1", an emoji) or no title at
+    /// all is a real event.
+    static func isPlaceholderEvent(_ title: String) -> Bool {
+        let word = title.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)).lowercased()
+        return !word.isEmpty && word != "untitled" && junkTitles.contains(word)
+    }
+
+    /// A calendar event's title as shown: "(untitled)" when blank.
+    static func eventTitle(_ title: String) -> String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(untitled)" : title
+    }
+
+    // MARK: To-dos
+
+    /// A to-do's due time names a moment on this day, not just the day: date-only
+    /// to-dos come as midnight or the day's last minute.
+    static func isTimed(_ due: Double, dayStart: Double, dayEnd: Double) -> Bool {
+        due > dayStart && due < dayEnd - 60
+    }
+
+    /// Kinds that happen at their time (start there) rather than being due by it.
+    static func happensAtTime(_ kind: String) -> Bool {
+        ["event", "meeting", "call", "plan", "appointment"].contains(kind.lowercased())
+    }
+
+    /// One spelling for comparing titles: lowercased letters and digits only.
+    static func todoKey(_ title: String) -> String {
+        String(title.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+    }
+
+    /// The SF Symbol for a to-do's or summary's source.
+    static func sourceSymbol(_ source: String) -> String {
+        switch source.lowercased() {
+        case "mail", "email": return "envelope"
+        case "messages", "text", "texts": return "message"
+        case "calendar": return "calendar"
+        case "reminders": return "checklist"
+        case "notes": return "note.text"
+        case "wisp", "plan": return "clock"
+        default: return "circle.dashed"
+        }
+    }
+
+    /// Where a to-do came from, in a word.
+    static func sourceName(_ source: String) -> String {
+        switch source.lowercased() {
+        case "mail", "email": return "Mail"
+        case "messages", "text", "texts": return "Texts"
+        case "calendar": return "Calendar"
+        case "reminders": return "Reminders"
+        case "notes": return "Notes"
+        default: return ""
+        }
+    }
+
+    /// The Day tab's "Still to fit": tasks the planner couldn't place, then
+    /// to-dos with no time today (undated, dated today without a time, or past
+    /// due from an earlier day), each once. Calendar events, done to-dos and
+    /// to-dos for a later day are left out; so is anything already on the day.
+    static func stillToFit(todos: [DayTodoInput], unscheduled: [(id: String, title: String, reason: String)],
+                           blocks: [DayBlockInput], needs: [DayNeedInput] = [], now: Double, dayStart: Double,
+                           dayEnd: Double, isToday: Bool, dayClock: (Double) -> String) -> [DayFitRow] {
+        var rows: [DayFitRow] = []
+        // A reminder the lane already draws as Needs you isn't still to fit.
+        var seen = Set(blocks.map { todoKey($0.title) }
+                       + needs.filter { $0.due.map { $0 >= dayStart && $0 < dayEnd } ?? false }.map { todoKey($0.title) })
+        for task in unscheduled where !isJunk(task.title) && !seen.contains(todoKey(task.title)) {
+            seen.insert(todoKey(task.title))
+            rows.append(DayFitRow(id: "task:" + task.id, title: task.title, detail: plainReason(task.reason).capitalizedFirst,
+                                  symbol: sourceSymbol("wisp")))
+        }
+        for todo in todos where !todo.done && todo.source != "calendar" && !isJunk(todo.title)
+            && !seen.contains(todoKey(todo.title)) {
+            var due = ""
+            if let at = todo.due {
+                if isTimed(at, dayStart: dayStart, dayEnd: dayEnd) { continue }   // on the clock
+                if at >= dayEnd { continue }                                         // a later day's
+                if at < dayStart {
+                    guard isToday else { continue }
+                    due = "Overdue since " + dayClock(at)
+                } else {
+                    due = todo.dueLabel.isEmpty ? (isToday ? "Today" : "That day") : todo.dueLabel
+                }
+            } else {
+                due = todo.dueLabel
+            }
+            seen.insert(todoKey(todo.title))
+            rows.append(DayFitRow(id: "todo:" + todo.id, title: todo.title,
+                                  detail: [todo.who, due].filter { !$0.isEmpty }.joined(separator: " · "),
+                                  symbol: sourceSymbol(todo.source), todoID: todo.id))
+        }
+        return rows
     }
 
     /// The shortest time a block is drawn as: the lane never draws one under 22
@@ -329,7 +553,7 @@ struct DayTimeline: Equatable {
         let w = warning.trimmingCharacters(in: .whitespaces)
         if w.isEmpty || w.hasPrefix("Tentative") || w.hasPrefix("Suggested time") { return nil }
         if w.hasPrefix("Calendar is not current") {
-            return "Your calendar hasn't synced yet, so I'm waiting before placing tasks."
+            return "Wisp is still reading your calendar, so I'm waiting before placing tasks."
         }
         if w.hasPrefix("Older calendar events have unknown end times") {
             return "A few earlier events have no end time, so these times are rough."
@@ -338,7 +562,7 @@ struct DayTimeline: Equatable {
             return "Some events have no end time, so I'm waiting before placing tasks."
         }
         if w.hasPrefix("All-day calendar events may reserve this day") {
-            return "An all-day event may fill today, so I haven't placed tasks. Pin one to choose its time."
+            return "An all-day event looks like time away, so I haven't placed your tasks."
         }
         if w.hasPrefix("Reminders are not current") {
             return "Reminders haven't synced, so a deadline could be missing."
@@ -353,10 +577,22 @@ struct DayTimeline: Equatable {
         return w
     }
 
+    /// "It's after your working hours (9 AM–6 PM)."
+    static func afterHoursLine(start: Int, end: Int, locale: Locale = WispClock.fixedLocale) -> String {
+        func label(_ minute: Int) -> String {
+            let hour = minute / 60, rest = minute % 60
+            if WispClock.uses24Hour(locale) { return String(format: "%02d:%02d", hour % 24, rest) }
+            let shown = hour % 12 == 0 ? 12 : hour % 12
+            return (rest == 0 ? "\(shown)" : String(format: "%d:%02d", shown, rest)) + (hour % 24 < 12 ? " AM" : " PM")
+        }
+        return "It's after your working hours (\(label(start))–\(label(end))), so nothing new is placed today."
+    }
+
     /// Why a task couldn't be placed, in plain words.
     static func plainReason(_ reason: String) -> String {
-        if reason.hasPrefix("All-day event needs") { return "an all-day event is on, so pick its time" }
-        if reason.hasPrefix("Waiting for a current calendar") { return "waiting for your calendar to sync" }
+        if reason.hasPrefix("All-day event needs") { return "an all-day event looks like time away" }
+        if reason.hasPrefix("It's after your working hours") { return "it's after your working hours" }
+        if reason.hasPrefix("Waiting for a current calendar") { return "waiting until Wisp can read your calendar" }
         if reason.hasPrefix("Needs "), let gap = reason.range(of: "is ")?.upperBound {
             let largest = reason[gap...].split(separator: " ").first.map(String.init) ?? ""
             return "no long enough gap" + (largest.isEmpty ? "" : " (the longest free stretch is \(largest) min)")
@@ -383,15 +619,27 @@ struct DayTimeline: Equatable {
     /// The Day tab's blurb, at most two short sentences and a tail: what's up
     /// today and why the day is laid out the way it is.
     static func blurb(_ timeline: DayTimeline, needs: [DayNeedInput], isToday: Bool, endOfDay: Double,
-                      clock: (Double) -> String) -> String {
+                      clock: (Double) -> String, dayStart: Double? = nil, calendarRead: Bool = true) -> String {
         // What's already over doesn't shape the rest of the day.
         let items = timeline.items.filter { !$0.past }
-        let dueToday = needs.filter { n in
+        let start = dayStart ?? endOfDay - 86400
+        let open = needs.filter { n in
             n.source != "calendar" && !isJunk(n.title) && (n.due.map { $0 <= endOfDay } ?? false)
         }
+        // What's due today leads; a backlog from earlier days is counted, never
+        // called "the main thing".
+        let dueToday = open.filter { ($0.due ?? 0) >= start }
+        let backlog = open.count - dueToday.count
         let suggestions = items.filter { $0.style == .suggested }
         let usual = items.filter { $0.style == .usual }
+        let events = items.filter { $0.style == .calendar || $0.style == .task }
         var first: String
+        if !calendarRead && events.isEmpty && dueToday.isEmpty && suggestions.isEmpty {
+            // Not "nothing is planned": Wisp hasn't seen the calendar.
+            first = "Wisp can't see your calendar yet, so this may not be your whole day."
+            if backlog > 0 { first += " \(count(backlog).capitalizedFirst) overdue reminder\(backlog == 1 ? "" : "s") to look at." }
+            return first
+        }
         if let main = dueToday.first {
             let forMain = suggestions.filter { $0.evidenceID == main.id }.count
             first = "\(main.title) is the main thing \(isToday ? "today" : "that day")."
@@ -405,10 +653,12 @@ struct DayTimeline: Equatable {
             } else if !suggestions.isEmpty {
                 first += " I've suggested time for \(list(suggestions.map(\.title)))."
             }
+        } else if backlog > 0 {
+            first = "\(count(backlog).capitalizedFirst) overdue reminder\(backlog == 1 ? "" : "s") to look at"
+                + (events.isEmpty ? "." : ", and \(count(events.count)) thing\(events.count == 1 ? "" : "s") on the clock.")
         } else if !suggestions.isEmpty {
             first = "Nothing is due. I've suggested \(count(suggestions.count)) block\(suggestions.count == 1 ? "" : "s") around your calendar."
         } else {
-            let events = items.filter { $0.style == .calendar || $0.style == .task }
             first = events.isEmpty
                 ? (isToday ? "Nothing is planned for the rest of today." : "Nothing is planned that day.")
                 : "\(count(events.count).capitalizedFirst) thing\(events.count == 1 ? "" : "s") on the clock\(isToday ? " for the rest of today" : ""), nothing else planned."
@@ -428,7 +678,8 @@ struct DayTimeline: Equatable {
     /// email or text, a plan task), so the lede never says nothing does.
     static func lede(weekday: String, isToday: Bool, load: DayLoad.Verdict?, dueToday: [String], overdue: [String],
                      next: (title: String, time: String)?, othersNeedYou: Bool = false,
-                     openingOverride: String? = nil, dueReference: String? = nil) -> String {
+                     openingOverride: String? = nil, dueReference: String? = nil,
+                     unread: [String] = [], uncheckedMail: UncheckedMail = UncheckedMail()) -> String {
         var parts: [String] = []
         let due = dueToday.filter { !isJunk($0) }
         let late = overdue.filter { !isJunk($0) }
@@ -444,6 +695,8 @@ struct DayTimeline: Equatable {
         if parts.isEmpty {
             if let next { return opening + " Next up: \(next.title) at \(next.time)." }
             if othersNeedYou { return opening }
+            // An all-clear only from sources Wisp has read.
+            if !unread.isEmpty { return opening + " " + SourceAccess.cantSee(unread, uncheckedMail: uncheckedMail) }
             return opening + (isToday ? " Nothing needs you right now." : " Nothing needs you that day.")
         }
         return opening + " " + parts.joined(separator: ", and ").capitalizedFirst + "."
@@ -489,13 +742,15 @@ struct DayTimeline: Equatable {
                 } else {
                     label = "DUE"
                 }
+            case "alert": label = "ALERT"
             case "plan": label = "PLAN"
             case "mail": label = "MAIL"
             case "text": label = "TEXT"
             default: label = nil
             }
             return NeedsYouRow(id: item.id ?? "needs-you-\(index)", label: label,
-                               text: item.text, overdue: item.kind == "overdue")
+                               text: item.text, overdue: item.kind == "overdue" || item.kind == "alert",
+                               fingerprint: item.fingerprint, canComplete: item.canComplete)
         }
         return NeedsYouList(rows: rows, more: max(0, more))
     }
@@ -533,18 +788,20 @@ struct DayTimeline: Equatable {
 
     /// Always four rows, CAL, MAIL, TEXTS and SOON, so the Brief keeps its shape.
     /// A source Wisp can't read yet shows a dim row saying so instead of disappearing.
-    static func briefLines(calendar: DayLoad?, calendarUnsynced: Bool = false,
+    static func briefLines(calendar: DayLoad?, calendarUnsynced: Bool = false, calendarAccess: SourceAccess? = nil,
                            mail: (ready: Bool, needing: [BriefNeed])?,
                            texts: (ready: Bool, needing: [BriefNeed])?,
                            textsNeedAccess: Bool = false,
+                           mailAccess: SourceAccess? = nil, textsAccess: SourceAccess? = nil,
                            mailOverview: String? = nil, textsOverview: String? = nil,
                            soon: Soon) -> [BriefLine] {
         var lines: [BriefLine] = []
         if let calendar {
             lines.append(BriefLine(tag: "CAL", text: calendar.summary, trailing: calendar.next ?? "", source: .calendar))
         } else {
-            lines.append(BriefLine(tag: "CAL", text: calendarUnsynced ? "Calendar hasn't synced yet" : "Nothing on your calendar",
-                                   trailing: "", source: .calendar, muted: calendarUnsynced))
+            let unread = calendarAccess.flatMap { $0.readable ? nil : $0 }
+            lines.append(BriefLine(tag: "CAL", text: unread?.headline ?? (calendarUnsynced ? "Reading your calendar…" : "Nothing on your calendar"),
+                                   trailing: "", source: .calendar, muted: calendarUnsynced || unread != nil))
         }
         // No coverage entry means the workspace couldn't be read: unknown, not off.
         if let mail, mail.ready, let mailOverview {
@@ -563,7 +820,8 @@ struct DayTimeline: Equatable {
                 : promos > 0 ? "+\(promos) promo\(promos == 1 ? "" : "s")" : ""
             lines.append(BriefLine(tag: "MAIL", text: text, trailing: trailing, source: .mail))
         } else {
-            lines.append(BriefLine(tag: "MAIL", text: "Mail hasn't been checked yet", trailing: "", source: .mail, muted: true))
+            let why = mailAccess.flatMap { $0.readable ? nil : $0.headline } ?? "Mail hasn't been checked yet"
+            lines.append(BriefLine(tag: "MAIL", text: why, trailing: "", source: .mail, muted: true))
         }
         if textsNeedAccess {
             // Not "haven't been checked yet": Wisp can't read them until the user grants access.
@@ -577,7 +835,8 @@ struct DayTimeline: Equatable {
             lines.append(BriefLine(tag: "TEXTS", text: BriefTexts.row(BriefTexts.waiting(texts.needing)), trailing: "",
                                    source: .messages))
         } else {
-            lines.append(BriefLine(tag: "TEXTS", text: "Messages haven't been checked yet", trailing: "", source: .messages, muted: true))
+            let why = textsAccess.flatMap { $0.readable ? nil : $0.headline } ?? "Messages haven't been checked yet"
+            lines.append(BriefLine(tag: "TEXTS", text: why, trailing: "", source: .messages, muted: true))
         }
         switch soon {
         case let .item(title, when, source) where !isJunk(title):
@@ -691,8 +950,10 @@ struct DayLoad: Equatable {
         // An event with no end, or an end before its start, counts as an hour and reads "about".
         func end(_ e: Event) -> Double { e.end.flatMap { $0 > e.start ? $0 : nil } ?? e.start + assumedLength }
         func guessed(_ e: Event) -> Bool { e.end.map { $0 <= e.start } ?? true }
-        let left = events.filter { !DayTimeline.isJunk($0.title) && end($0) > from }.sorted { $0.start < $1.start }
-        let allDayTitles = allDay.filter { !DayTimeline.isJunk($0) }
+        let left = events.filter { !DayTimeline.isPlaceholderEvent($0.title) && end($0) > from }
+            .map { Event(title: DayTimeline.eventTitle($0.title), start: $0.start, end: $0.end) }
+            .sorted { $0.start < $1.start }
+        let allDayTitles = allDay.filter { !DayTimeline.isPlaceholderEvent($0) }.map(DayTimeline.eventTitle)
         let uncertain = left.contains(where: guessed)
 
         let lo = max(from, windowStart)
@@ -828,6 +1089,203 @@ struct DayLoad: Equatable {
         let x = bare(a, zone: zone), y = bare(b, zone: zone)
         return x.pm == y.pm ? x.text + "–" + y.text + (y.pm ? " PM" : " AM")
             : clock(a, zone: zone, locale: locale) + "–" + clock(b, zone: zone, locale: locale)
+    }
+}
+
+/// Whether Wisp could read one of the day's sources, and the one thing that
+/// fixes it when it couldn't. The Brief and Day say "Wisp can't see your
+/// calendar yet" with that setting, never a bare "nothing" when the real reason
+/// is that a source can't be read.
+///
+/// From the plan's `sources` (Calendar, Reminders: service/assistant/today.py
+/// source_access) or the workspace's `source_coverage` (every source).
+struct SourceAccess: Equatable {
+    enum State: String, Equatable { case ready, syncing, unavailable }
+
+    /// "calendar", "reminders", "email", "messages" or "notes".
+    let source: String
+    let state: State
+    /// What the person must grant, when the service knows: "calendar_access",
+    /// "reminders_access", "full_disk_access", "mail_automation",
+    /// "mail_not_configured", "no_accounts", "mail_closed", "notes_closed".
+    var blocked: String? = nil
+    /// The service's one sentence about it, when it sent one.
+    var reason: String = ""
+
+    /// Connected Google accounts Wisp couldn't check (blocked "google_mail").
+    var unchecked = UncheckedMail()
+
+    var readable: Bool { state == .ready }
+
+    /// - Parameters:
+    ///   - ready: the service's readiness flag.
+    ///   - state: its "syncing" or "unavailable", when it sent one; a source
+    ///     that isn't ready and says nothing more is treated as unavailable, so
+    ///     it can never read as an all-clear.
+    init(source: String, ready: Bool, state: String? = nil, blocked: String? = nil, reason: String? = nil) {
+        self.source = source
+        self.state = ready ? .ready : (state == "syncing" ? .syncing : .unavailable)
+        self.blocked = blocked.flatMap { $0.isEmpty ? nil : $0 }
+        self.reason = ready ? "" : (reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// How the source is named in a sentence: "calendar", "reminders", "mail", "texts", "notes".
+    static func noun(_ source: String) -> String {
+        switch source {
+        case "calendar": return "calendar"
+        case "reminders": return "reminders"
+        case "email", "mail": return "mail"
+        case "messages", "texts": return "texts"
+        case "notes": return "notes"
+        default: return source
+        }
+    }
+
+    var noun: String { Self.noun(source) }
+
+    /// Mail as the Brief shows it, by one rule everywhere (TodayPlan.access,
+    /// ProactiveState.unreadSources): fully read only when no connected Google
+    /// account was left unchecked (`unreadBy`, the service's mail_unread_by)
+    /// and either Mail.app's row is ready or a Google account read it
+    /// (`readBy`, mail_read_by). One account unchecked: partly read, so not
+    /// readable, and its headline names the account.
+    static func mail(_ row: SourceAccess, readBy: [String], unchecked: UncheckedMail) -> SourceAccess {
+        if !unchecked.isEmpty {
+            var partly = SourceAccess(source: "email", ready: false, state: "unavailable", blocked: "google_mail",
+                                      reason: unchecked.detail)
+            partly.unchecked = unchecked
+            return partly
+        }
+        if !row.readable && !readBy.isEmpty { return SourceAccess(source: "email", ready: true) }
+        return row
+    }
+
+    /// The top line for unread sources, naming Google accounts Wisp couldn't
+    /// check when mail is only partly read.
+    static func cantSee(_ sources: [String], uncheckedMail: UncheckedMail) -> String {
+        guard !uncheckedMail.isEmpty, sources.contains("email") else { return cantSee(sources) }
+        let others = cantSee(sources.filter { $0 != "email" })
+        return (others.isEmpty ? "" : others + " ") + uncheckedMail.sentence
+    }
+
+    /// The short line a row shows.
+    var headline: String {
+        switch state {
+        case .ready: return ""
+        case .syncing: return "Reading your \(noun)…"
+        case .unavailable:
+            switch blocked {
+            case "mail_not_configured", "no_accounts": return "No Mail accounts on this Mac"
+            case "mail_closed": return "Wisp reads Mail while Mail is open"
+            case "notes_closed": return "Wisp reads Notes while Notes is open"
+            case "google_mail": return unchecked.headline
+            case .some: return "Wisp can't see your \(noun) yet"
+            case .none: return "Wisp couldn't read your \(noun) just now"
+            }
+        }
+    }
+
+    /// The sentence under it: the service's reason, else what to do.
+    var detail: String {
+        if !reason.isEmpty { return reason }
+        switch state {
+        case .ready: return ""
+        case .syncing: return "This takes a few seconds after Wisp starts."
+        case .unavailable:
+            switch blocked {
+            case "calendar_access": return "Turn on Calendars for Wisp in System Settings > Privacy & Security."
+            case "reminders_access": return "Turn on Reminders for Wisp in System Settings > Privacy & Security."
+            case "full_disk_access": return "Wisp needs Full Disk Access to read this when the app is closed."
+            case "mail_automation": return "Allow Wisp to control Mail in System Settings > Privacy & Security > Automation."
+            case "mail_not_configured", "no_accounts": return "Add an account in System Settings > Internet Accounts."
+            case "mail_closed": return "Open Mail, or give Wisp Full Disk Access to read it when Mail is closed."
+            case "notes_closed": return "Open Notes, or give Wisp Full Disk Access to read it when Notes is closed."
+            default: return "Wisp will try again in a minute."
+            }
+        }
+    }
+
+    /// The setting that fixes it, as a link; nil when there's nothing to open.
+    var fix: BriefDetail.Action? {
+        guard state == .unavailable else { return nil }
+        return Self.fix(for: blocked)
+    }
+
+    static func fix(for blocked: String?) -> BriefDetail.Action? {
+        switch blocked {
+        case "calendar_access": return BriefDetail.calendarsAccess
+        case "reminders_access": return BriefDetail.remindersAccess
+        case "full_disk_access", "mail_closed", "notes_closed": return BriefDetail.fullDiskAccess
+        case "mail_automation": return BriefDetail.automationAccess
+        case "mail_not_configured", "no_accounts": return BriefDetail.internetAccounts
+        default: return nil
+        }
+    }
+
+    /// "Wisp can't see your calendar and reminders yet."
+    static func cantSee(_ sources: [String]) -> String {
+        var nouns: [String] = []
+        for source in sources where !nouns.contains(noun(source)) { nouns.append(noun(source)) }
+        let joined: String
+        switch nouns.count {
+        case 0: return ""
+        case 1: joined = nouns[0]
+        case 2: joined = nouns[0] + " and " + nouns[1]
+        default: joined = nouns.dropLast().joined(separator: ", ") + " and " + nouns[nouns.count - 1]
+        }
+        return "Wisp can't see your \(joined) yet."
+    }
+}
+
+/// Connected Google accounts whose mail Wisp couldn't check, by why
+/// (the service's mail_unread_by and mail_unread_reasons). "reconnect" only
+/// when the person has to act on the sign-in; anything else is a check Wisp
+/// hasn't finished (a sync restored at launch, or one running late). Either
+/// way mail is only partly read, never an all-clear.
+struct UncheckedMail: Equatable {
+    var reconnect: [String] = []
+    var syncing: [String] = []
+
+    init(reconnect: [String] = [], syncing: [String] = []) {
+        self.reconnect = reconnect
+        self.syncing = syncing
+    }
+
+    init(unreadBy: [String], reasons: [String: String]) {
+        reconnect = unreadBy.filter { reasons[$0] == "reconnect" }
+        syncing = unreadBy.filter { reasons[$0] != "reconnect" }
+    }
+
+    var isEmpty: Bool { reconnect.isEmpty && syncing.isEmpty }
+
+    /// The row's short line.
+    var headline: String {
+        reconnect.isEmpty ? "Wisp hasn't finished checking \(Self.list(syncing)) yet" : "Couldn't check " + Self.list(reconnect)
+    }
+
+    /// The sentence under it.
+    var detail: String {
+        guard !reconnect.isEmpty else { return "Wisp will show that mail once it has checked." }
+        let fix = "Reconnect \(reconnect.count == 1 ? "it" : "them") in Wisp's Settings > Google so Wisp can read that mail."
+        return syncing.isEmpty ? fix : fix + " Wisp hasn't finished checking \(Self.list(syncing)) yet."
+    }
+
+    /// The top line's words for it.
+    var sentence: String {
+        var parts: [String] = []
+        if !reconnect.isEmpty { parts.append("Wisp couldn't check \(Self.list(reconnect)). Reconnect in Settings.") }
+        if !syncing.isEmpty { parts.append("Wisp hasn't finished checking \(Self.list(syncing)) yet.") }
+        return parts.joined(separator: " ")
+    }
+
+    /// "work@gmail.com", "a@x.com and b@y.com", "a, b and c".
+    static func list(_ accounts: [String]) -> String {
+        switch accounts.count {
+        case 0: return "an account"
+        case 1: return accounts[0]
+        case 2: return accounts[0] + " and " + accounts[1]
+        default: return accounts.dropLast().joined(separator: ", ") + " and " + accounts[accounts.count - 1]
+        }
     }
 }
 

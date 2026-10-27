@@ -544,7 +544,7 @@ final class WispClient {
     func runAgent(prompt: String, image: String?, sessionId: String = "",
                   debug: Bool = false,
                   testMode: Bool = false,
-                  corpusCaseID: String? = nil, corpusToken: String? = nil,
+                  corpusCaseID: String? = nil, corpusToken: String? = nil, corpusNormal: Bool = false,
                   onEvent: @escaping @Sendable (Event) -> Void) async {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent(corpusCaseID == nil ? "agent" : "corpus/run"))
         req.httpMethod = "POST"
@@ -561,7 +561,9 @@ final class WispClient {
         if testMode { body["test_mode"] = true }
         if !testMode && !sessionId.isEmpty { body["session_id"] = sessionId }
         if let image { body["image"] = image }
-        if let corpusCaseID { body = ["case_id": corpusCaseID, "token": corpusToken ?? ""] }
+        if let corpusCaseID {
+            body = ["case_id": corpusCaseID, "token": corpusToken ?? "", "mode": corpusNormal ? "normal" : "bounded"]
+        }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         // The request goes out at most twice, and the second time only when the
         // server provably never ran the turn (AgentSend.retryable): no
@@ -674,11 +676,13 @@ final class WispClient {
         _ = try? await URLSession.shared.data(for: req)
     }
 
-    // Stop the oMLX engine entirely (frees its ~2GB baseline). Used on quit.
+    // Stop the oMLX engine entirely: its models and its ~2GB baseline. Used on quit.
+    // The wait is longer than the backend's own bound on the stop, so the engine is
+    // gone before the backend is; an engine left running would keep its models loaded.
     func shutdownOMLX() async {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("shutdown_omlx"))
         req.httpMethod = "POST"
-        req.timeoutInterval = 5
+        req.timeoutInterval = 10
         _ = try? await URLSession.shared.data(for: req)
     }
 

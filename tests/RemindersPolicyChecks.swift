@@ -174,5 +174,30 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         check(diagnostics["syncing"] as? Bool == false, "diagnostics syncing")
         check((diagnostics["reason"] as? String)?.isEmpty == false, "diagnostics reason")
         check(diagnostics["snapshot_started_at"] as? Double == 5, "diagnostics snapshot")
+
+        // reason_kind is what the Brief keys its Settings button on: present
+        // with every reason, absent while a prompt is a real wait.
+        check(diagnostics["reason_kind"] as? String == "reminders_access", "diagnostics reason_kind")
+        for status in [A.Status.deniedOrRestricted, .notDetermined] {
+            let blocked = A.report(status: status, requestOutstanding: false, lastRequestAt: 1000, now: 1001)
+            check(blocked.reasonKind == "reminders_access" && blocked.reason != nil, "every reason has its kind")
+        }
+        let waiting = A.diagnostics(for: A.report(status: .notDetermined, requestOutstanding: false,
+                                                  lastRequestAt: nil, now: 1000), snapshotStartedAt: 5)
+        check(waiting["reason_kind"] == nil, "a real wait has no reason_kind")
+        let granted = A.diagnostics(for: A.report(status: .authorized, requestOutstanding: false,
+                                                  lastRequestAt: 1000, now: 1001), snapshotStartedAt: 5)
+        check(granted["reason_kind"] == nil && granted["reason"] == nil, "authorized has neither")
+        // Re-asks after a finished, undecided request back off and stop; only
+        // the first ask brings Wisp forward.
+        check(A.reaskDue(requestsMade: 1, lastRequestAt: 0, now: A.reaskDelays[0]), "first re-ask")
+        check(!A.reaskDue(requestsMade: 2, lastRequestAt: 0, now: A.reaskDelays[0]), "second re-ask waits longer")
+        check(A.reaskDue(requestsMade: 3, lastRequestAt: 0, now: A.reaskDelays[2]), "third re-ask")
+        check(!A.reaskDue(requestsMade: 4, lastRequestAt: 0, now: 1e9), "no fourth re-ask this launch")
+        check(!A.reaskDue(requestsMade: 0, lastRequestAt: 0, now: 1e9), "nothing to re-ask before a first ask")
+        check(A.shouldActivate(requestsMade: 0) && !A.shouldActivate(requestsMade: 1), "only the first ask activates")
+        check(A.report(status: .deniedOrRestricted, requestOutstanding: false, lastRequestAt: nil, now: 1)
+              .reason == "Reminders access is turned off for Wisp. Turn it on in "
+                + "System Settings > Privacy & Security > Reminders.", "Reminders copy is unchanged")
     }
 }

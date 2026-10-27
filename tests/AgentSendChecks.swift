@@ -98,6 +98,50 @@ enum AgentSendChecks {
         r = await run([.stream([], end: nil)])
         check(r.requests == 1 && r.events.first?.str("message") == "The assistant didn't respond.", "an empty 200 stream")
 
+        // A turn that failed only because the model isn't ready is not an error.
+        check(AskNotReady.classify(code: "setup_needed", message: "") == .setup, "setup_needed opens setup")
+        check(AskNotReady.classify(code: "model_loading", message: "") == .starting, "model_loading waits")
+        check(AskNotReady.classify(code: "engine_starting", message: "") == .starting, "engine_starting waits")
+        check(AskNotReady.classify(code: "", message: "Wisp's model isn't downloaded yet. Finish setup from the menu bar.") == .setup,
+              "the not-downloaded message opens setup")
+        check(AskNotReady.classify(code: "", message: "The local AI engine isn't running. Wisp is trying to restart it — try again in a few seconds.") == .starting,
+              "the restarting-engine message waits")
+        check(AskNotReady.classify(code: "", message: "The bundled AI engine did not become ready") == .starting,
+              "an engine that isn't ready yet waits")
+        check(AskNotReady.classify(code: "", message: "That request took too long and timed out.") == nil,
+              "a real failure stays an error")
+        check(AskNotReady.setup.notice(willRetry: false).contains("Finish setup")
+              && AskNotReady.starting.notice(willRetry: true).contains("again in a few seconds")
+              && !AskNotReady.starting.notice(willRetry: false).lowercased().contains("error"),
+              "the notices say plainly what happens next")
+
+        // Ask's starter questions work on a fresh install with nothing allowed.
+        check(AskStarters.prompts(unreadable: []) == ["What can you do?", "What's on my calendar today?",
+                                                      "Any emails I need to reply to?", "Is my data private?"],
+              "four starters when Calendar and Mail can be read")
+        let none = AskStarters.prompts(unreadable: ["calendar", "email"])
+        check(none == ["What can you do?", "Is my data private?", "How do I use Wisp?"],
+              "nothing that needs a denied source: \(none)")
+        check(!AskStarters.prompts(unreadable: ["email"]).contains("Any emails I need to reply to?")
+              && AskStarters.prompts(unreadable: ["email"]).count == 4, "a denied Mail swaps its starter out")
+        check(AskStarters.unreadable(states: ["calendar": "unavailable", "email": "syncing", "notes": "disabled"])
+              == ["calendar", "notes"], "unavailable and turned-off sources are unreadable; syncing is not")
+        check(AskStarters.prompts(unreadable: []).allSatisfy { !$0.lowercased().contains("organize") && !$0.contains("/corpus") },
+              "no dead or developer starters")
+
+        // "Try another": the starters not yet asked in this chat.
+        let all = AskStarters.prompts(unreadable: [])
+        check(AskStarters.remaining(all, askedTexts: []) == all, "nothing asked: every starter remains")
+        check(AskStarters.remaining(all, askedTexts: ["What can you do?"]) == Array(all.dropFirst()),
+              "an asked starter drops out, order kept")
+        check(AskStarters.remaining(all, askedTexts: ["  what CAN you do?\n", "unrelated question"]) == Array(all.dropFirst()),
+              "matching ignores case and whitespace; other questions change nothing")
+        check(AskStarters.remaining(all, askedTexts: all).isEmpty, "every starter asked: none remain")
+        check(AskStarters.remaining([], askedTexts: ["x"]).isEmpty, "no starters: none remain")
+        check(Set(AskStarters.chatWindow).isSuperset(of: ["What can you do?", "Is my data private?"])
+              && AskStarters.remaining(AskStarters.chatWindow, askedTexts: ["Is my data private?"]).count
+                  == AskStarters.chatWindow.count - 1, "the chat window's starters shrink the same way")
+
         print("AgentSend: \(passed) checks passed")
     }
 }

@@ -15,7 +15,14 @@ final class ScriptedBackend: ChatBackend {
     var deleted: [String] = []
     var runs: [(prompt: String, session: String)] = []
     var liveCases: [AssistantTaskCorpusCase] = []
+    var savedExport: (markdown: String, csv: String)?
     var liveRuns: [String] = []
+    var normalRuns: [String] = []
+    var promptsCommands: [CorpusPromptsCommand] = []
+    /// Answers in turn; the last one repeats.
+    var promptsStatuses: [CorpusPromptsStatus] = []
+    var promptResults: [CorpusPromptsResult] = []
+    var promptsExport: (markdown: String, csv: String)?
     var caseDelayMs: UInt64 = 0
     var liveDelayMs: UInt64 = 0
     var draftSends = 0
@@ -61,7 +68,16 @@ final class ScriptedBackend: ChatBackend {
         if caseDelayMs > 0 { try? await Task.sleep(nanoseconds: caseDelayMs * 1_000_000) }
         return liveCases // deliberately return even after cancellation
     }
-    func runLiveCorpusCase(id: String, token: String, onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
+    func savedCorpusExport() async throws -> (markdown: String, csv: String)? { savedExport }
+    func corpusPrompts(_ command: CorpusPromptsCommand) async throws -> CorpusPromptsStatus {
+        promptsCommands.append(command)
+        return promptsStatuses.count > 1 ? promptsStatuses.removeFirst() : promptsStatuses[0]
+    }
+    func corpusPromptsResults(limit: Int) async throws -> [CorpusPromptsResult] { promptResults }
+    func corpusPromptsExport() async throws -> (markdown: String, csv: String)? { promptsExport }
+    func runLiveCorpusCase(id: String, token: String, normal: Bool,
+                           onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
+        if normal { normalRuns.append(id) }
         liveRuns.append(id)
         if liveDelayMs > 0 { try? await Task.sleep(nanoseconds: liveDelayMs * 1_000_000) }
         for event in script(id) { onEvent(event) }
@@ -139,6 +155,181 @@ struct ChatStoreChecks {
             check(reply.tools.first?.result.contains("source quotation") == true, "real source output stays inspectable")
             check(conversation.sessionId.isEmpty, "corpus does not reuse a saved session")
             check(conversation.messages.last!.text.contains("1/1"), "summary counts verified model completions")
+        }
+        // /corpus export: parsing, help, and the files it writes.
+        do {
+            if case .export? = try! AssistantTaskCorpusCommand.resolve("/corpus export") {
+                check(true, "/corpus export resolves to export")
+            } else { check(false, "/corpus export must resolve to export") }
+            check((try? AssistantTaskCorpusCommand.resolve("/corpus export now")) == nil, "export takes no arguments")
+            check(AssistantTaskCorpusCommand.helpText.contains("/corpus export"), "help lists /corpus export")
+            check(AssistantTaskCorpusCommand.CommandError.usage.errorDescription?.contains("export") == true,
+                  "the usage line names export")
+            let backend = ScriptedBackend()
+            let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"messages","difficulty":"basic","target":"Example Person","token":"t1","conversation":[{"role":"user","content":"Read my recent messages with Example Person."}],"setup":"local","expected":{"tools":["view_messages"],"behavior":["Verify the source quote."]},"risk":"read_only"}"#.utf8)
+            backend.liveCases = [try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)]
+            backend.script = { _ in [
+                ev("corpus_model", ["model": "agent-local", "started": 1, "completed": 1]),
+                ev("tool_call", ["id": "read1", "name": "view_messages", "decision": "allow"]),
+                ev("tool_result", ["id": "read1", "result": "Example Person: source quotation"]),
+                ev("text", ["text": "Line one\nLine two, \"quoted\""]), ev("done")
+            ] }
+            let store = ChatStore(backend: backend)
+            // TMPDIR, not FileManager's temporaryDirectory: Foundation ignores TMPDIR, and
+            // the runner's per-gate directory is the one place a fixture may write.
+            let scratch = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory(),
+                              isDirectory: true).appendingPathComponent("corpus-export-\(UUID().uuidString)")
+            store.exportDirectory = { scratch }
+            do {
+                _ = try await store.exportCorpus()
+                check(false, "an export with no run must fail")
+            } catch {
+                check(error.localizedDescription.contains("no corpus run"), "no run to export says so")
+            }
+            check(store.corpusMarkdown(store.latestCorpusConversation) == nil, "nothing to copy without a run")
+            store.submit("/corpus smoke")
+            await settle(500)
+            let files = try! await store.exportCorpus(now: Date(timeIntervalSince1970: 0))
+            check(!files.saved && files.markdown.deletingLastPathComponent().path == scratch.path
+                    && files.markdown.lastPathComponent.hasPrefix("wisp-corpus-") && files.markdown.pathExtension == "md"
+                    && files.csv.deletingPathExtension().lastPathComponent == files.markdown.deletingPathExtension().lastPathComponent,
+                  "an unsaved run exports from the screen as a .md and .csv pair")
+            let markdown = (try? String(contentsOf: files.markdown, encoding: .utf8)) ?? ""
+            check(markdown.contains("## LIVE-001 · messages · done")
+                    && markdown.contains("**Prompt:** Read my recent messages with Example Person.")
+                    && markdown.contains("- `view_messages`") && markdown.contains("  > Example Person: source quotation")
+                    && markdown.contains("> Line one\n> Line two") && markdown.contains("inference verified"),
+                  "the Markdown has a section per case: prompt, tools, answer, status")
+            let csv = (try? String(contentsOf: files.csv, encoding: .utf8)) ?? ""
+            check(csv.hasPrefix(CorpusExport.csvColumns.joined(separator: ",") + "\r\n")
+                    && csv.contains("\"Line one\nLine two, \"\"quoted\"\"\""), "the CSV quotes commas, quotes and line breaks")
+            check(store.corpusMarkdown(store.latestCorpusConversation)?.contains("LIVE-001") == true,
+                  "Copy results uses the run on screen")
+            backend.savedExport = ("# saved run", "case_id\r\n")
+            let saved = try! await store.exportCorpus(now: Date(timeIntervalSince1970: 60))
+            check(saved.saved && (try? String(contentsOf: saved.markdown, encoding: .utf8)) == "# saved run",
+                  "a saved run is preferred over the screen")
+            let notch = NotchCorpusController(store: store)
+            notch.submit("/corpus export")
+            await settle(200)
+            check(notch.isPresented && notch.exported?.saved == true && notch.notice.isEmpty
+                    && backend.liveRuns == ["LIVE-001"], "the notch's /corpus export writes the files and runs nothing")
+            try? FileManager.default.removeItem(at: scratch)
+        }
+        // /corpus prompts …: the user's own prompts file, run by the service.
+        do {
+            func prompts(_ text: String) -> CorpusPromptsCommand? {
+                if case .prompts(let command)? = try? AssistantTaskCorpusCommand.resolve(text) { return command }
+                return nil
+            }
+            check(prompts("/corpus prompts") == .status && prompts("/corpus prompts status") == .status,
+                  "/corpus prompts alone shows progress")
+            check(prompts("/corpus prompts batch-3") == .start("batch-3") && prompts("/corpus prompts all") == .start("all")
+                    && prompts("/corpus prompts 17") == .start("17") && prompts("/corpus prompts P-17") == .start("p-17")
+                    && prompts("/corpus prompts section 4") == .start("section 4"), "prompts selectors")
+            check(prompts("/corpus prompts resume") == .resume && prompts("/corpus prompts stop") == .stop
+                    && prompts("/corpus prompts export") == .export
+                    && prompts("/corpus prompts retry-failed") == .retryFailed, "prompts verbs")
+            check(prompts("/corpus prompts import ~/Desktop/my prompts.md") == .importFile("~/Desktop/my prompts.md")
+                    && prompts("/corpus prompts import \"/tmp/a b.md\"") == .importFile("/tmp/a b.md"),
+                  "import keeps the whole path, spaces and all")
+            for bad in ["/corpus prompts go", "/corpus prompts section x", "/corpus prompts import", "/corpus prompts batch-1 now"] {
+                do {
+                    _ = try AssistantTaskCorpusCommand.resolve(bad)
+                    check(false, "\(bad) must be refused")
+                } catch {
+                    check(error.localizedDescription.contains("/corpus prompts import"), "\(bad) explains the prompts commands")
+                }
+            }
+            check(AssistantTaskCorpusCommand.helpText.contains("/corpus prompts import <path>")
+                    && AssistantTaskCorpusCommand.helpText.contains("8–15 hours")
+                    && AssistantTaskCorpusCommand.helpText.contains("batches of 100"), "help sets expectations for 1,000 prompts")
+            check(CorpusPromptsStatus.eta(nil) == nil && CorpusPromptsStatus.eta(90) == "about 2 min"
+                    && CorpusPromptsStatus.eta(3600) == "about 1 h" && CorpusPromptsStatus.eta(7_800) == "about 2 h 10 min",
+                  "ETA reads in minutes and hours")
+            func status(_ json: String) -> CorpusPromptsStatus {
+                try! JSONDecoder().decode(CorpusPromptsStatus.self, from: Data(json.utf8))
+            }
+            let imported = #"{"sha256":"abc","cases":6,"imported_at":"x","sections":[{"number":1,"title":"Reading","count":3}]}"#
+            let running = status(#"{"imported":\#(imported),"run":{"run_id":"prompts-1","selector":"batch-1","status":"running","started_at":"x","error":"","total":100,"completed":40,"ok":30,"declined":8,"errors":2,"remaining":60,"eta_s":1800,"waiting_for_idle":false,"current":{"case_id":"P-41","section":"3. Mail","tag":"W","prompt":"Email Example Person","turns":2,"turn":1,"elapsed_s":4.2}}}"#)
+            let finished = status(#"{"imported":\#(imported),"run":{"run_id":"prompts-1","selector":"batch-1","status":"finished","started_at":"x","error":"","total":100,"completed":100,"ok":80,"declined":15,"errors":5,"remaining":0,"eta_s":null,"waiting_for_idle":false,"current":null}}"#)
+            check(running.summary.contains("40/100 done · 30 OK · 8 declined · 2 failed · Running · about 30 min left")
+                    && running.summary.contains("Now: P-41 (3. Mail) Email Example Person"), "the summary reads as progress")
+            let retrying = status(#"{"imported":null,"run":{"run_id":"r","selector":"all","status":"running","started_at":"x","error":"","total":10,"completed":10,"ok":7,"declined":1,"errors":2,"retrying":2,"remaining":2,"eta_s":60,"waiting_for_idle":false,"current":null}}"#)
+            check(retrying.run?.statusLabel == "Retrying 2 failed", "a retry says how many failed cases it is running again")
+            check(status(#"{"imported":null,"run":null}"#).summary.contains("/corpus prompts import"),
+                  "without a file, the summary says how to import one")
+            let result = try! JSONDecoder().decode(CorpusPromptsResult.self, from: Data(#"{"case_id":"P-3","category":"1. Reading","tag":"R","status":"done","prompt":"A → B","answer":"b","model":"ling","latency_s":12.5,"error":"","confirmations":[{"tool":"send_email","reason":"r"}],"turns":[{"prompt":"A","answer":"a"},{"prompt":"B","answer":"b"}]}"#.utf8))
+            check(result.exchanges.map(\.prompt) == ["A", "B"] && result.outcome == "would ask to confirm send_email",
+                  "a multi-turn result shows each turn, and its declined confirmation")
+            let backend = ScriptedBackend()
+            backend.promptsStatuses = [running, running, finished]
+            backend.promptResults = [result]
+            backend.promptsExport = ("# prompts run", "case_id\r\n")
+            let store = ChatStore(backend: backend)
+            let scratch = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory(),
+                              isDirectory: true).appendingPathComponent("prompts-export-\(UUID().uuidString)")
+            store.exportDirectory = { scratch }
+            let notch = NotchCorpusController(store: store)
+            notch.pollInterval = 20_000_000
+            notch.submit("/corpus prompts batch-1")
+            await settle(400)
+            check(backend.promptsCommands.first == .start("batch-1") && backend.liveRuns.isEmpty && backend.runs.isEmpty,
+                  "the notch asks the service to start the job and runs nothing itself")
+            check(notch.isPresented && notch.prompts?.run?.status == "finished" && notch.promptResults == [result]
+                    && !notch.busy, "it follows progress until the job finishes, with the full answers")
+            check(backend.promptsCommands.dropFirst().allSatisfy { $0 == .status }, "following only reads status")
+            notch.submit("/corpus prompts export")
+            await settle(200)
+            check(notch.exported?.markdown.lastPathComponent.hasPrefix("wisp-prompts-") == true
+                    && (try? String(contentsOf: notch.exported!.markdown, encoding: .utf8)) == "# prompts run",
+                  "export writes the prompts run to Downloads")
+            backend.promptsStatuses = [finished]
+            store.submit("/corpus prompts stop")
+            await settle(200)
+            check(backend.promptsCommands.last == .stop
+                    && store.selected?.messages.last?.text.contains("100/100 done · 80 OK · 15 declined · 5 failed · Finished") == true,
+                  "the window sends the command and shows the progress as text")
+            try? FileManager.default.removeItem(at: scratch)
+        }
+        // /corpus … normal: the same cases through the ordinary Ask path.
+        do {
+            if case .liveNormal(let selector)? = try! AssistantTaskCorpusCommand.resolve("/corpus batch-2 normal") {
+                check(selector == "batch-2", "/corpus batch-2 normal keeps its selector")
+            } else { check(false, "/corpus batch-2 normal must resolve to normal mode") }
+            if case .live? = try! AssistantTaskCorpusCommand.resolve("/corpus all") {
+                check(true, "the bounded mode stays the default")
+            } else { check(false, "/corpus all must stay bounded") }
+            check((try? AssistantTaskCorpusCommand.resolve("/corpus all loud")) == nil, "only normal is a mode word")
+            check(AssistantTaskCorpusCommand.helpText.contains("/corpus all normal")
+                    && AssistantTaskCorpusCommand.helpText.contains("would ask to confirm"),
+                  "help explains normal mode and its declined confirmations")
+            let backend = ScriptedBackend()
+            let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"messages","difficulty":"basic","target":"Example Person","token":"t1","conversation":[{"role":"user","content":"Read my recent messages with Example Person."}],"setup":"local","expected":{"tools":["view_messages"],"behavior":["Verify the source quote."]},"risk":"read_only"}"#.utf8)
+            backend.liveCases = [try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)]
+            backend.script = { _ in [
+                ev("routed", ["model": "ling", "role": "agent", "needs_tools": true]),
+                ev("corpus_session", ["id": "abc"]),
+                ev("tool_call", ["id": "w", "name": "add_reminder", "decision": "confirm"]),
+                ev("corpus_declined", ["id": "w", "tool": "add_reminder", "reason": "review run"]),
+                ev("tool_result", ["id": "w", "result": "User denied add_reminder."]),
+                ev("text", ["text": "The full answer, as Wisp says it."]), ev("done")
+            ] }
+            let store = ChatStore(backend: backend)
+            store.submit("/corpus smoke normal")
+            await settle(500)
+            let run = store.selected!
+            let reply = run.messages.first { $0.corpusEvaluation != nil }!
+            check(backend.normalRuns == ["LIVE-001"] && backend.runs.isEmpty, "normal mode asks the service for the ordinary path")
+            check(reply.corpusEvaluation?.normalMode == true && reply.corpusEvaluation?.completed == true,
+                  "the case card knows its mode")
+            check(run.sessionId.isEmpty && reply.approval == nil, "no session is adopted and no card is offered")
+            check(run.messages.last?.text.contains("Normal-mode corpus finished: 1/1") == true, "the summary counts answered cases")
+            let exported = CorpusExport.cases(from: run.messages)
+            check(exported.first?.mode == "normal" && exported.first?.answer == "The full answer, as Wisp says it."
+                    && exported.first?.verified == false, "the export carries the mode and the full answer")
+            check(CorpusExport.markdown(exported, title: run.title).contains("**Mode:** normal")
+                    && CorpusExport.csv(exported).contains("normal,LIVE-001"), "Markdown and CSV both name the mode")
         }
         // The notch shares guarded execution and pins its own conversation.
         do {

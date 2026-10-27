@@ -9,9 +9,13 @@
 # per-action confirmation.
 read_only: false
 
-# full_access: every action auto-runs with NO confirmation prompt. Overrides
-# read_only. The assistant can open/quit apps, write/delete files, and run
-# mutating shell commands without asking.
+# full_access: most actions auto-run with NO confirmation prompt. Overrides
+# read_only. The assistant can open/quit apps, write files, and run mutating
+# shell commands without asking. Some things still ask every time: sending
+# mail or messages, calendar changes, installing a tool, permanent deletes,
+# AppleScript, shell commands that can send data off the Mac or drive another
+# app (curl uploads, osascript, nc, ssh...), keys and saved sign-ins, and MCP
+# tools named for sending, deleting, creating, updating or sharing.
 full_access: true
 
 # disable_safety_floor: when true, even catastrophic commands (rm -rf /, sudo,

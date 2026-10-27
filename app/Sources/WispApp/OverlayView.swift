@@ -21,19 +21,25 @@ struct OverlayView: View {
     // Replies whose Details the person toggled away from the default (open in
     // Debug Mode, closed otherwise).
     @State private var detailsToggled: Set<UUID> = []
-    // Live display layout: notch on MacBooks (physical or virtual), floating
-    // capsule on monitors. Refreshes when displays change.
+    // Live display layout: notch on notched MacBooks, nothing drawn on other
+    // built-in displays (the menu-bar icon stands in), floating capsule on
+    // monitors. Refreshes when displays change.
     @ObservedObject private var display = DisplayGeometry.shared
 
     var body: some View {
         Group {
-            if model.collapsed { notchBar } else { expandedPanel }
+            if model.collapsed {
+                if layout.barIsVisible { notchBar } else { hiddenBar }
+            } else {
+                expandedPanel
+            }
         }
         .onAppear { breathe = true }
         .onChange(of: model.collapsed) { _, isCollapsed in
             if !isCollapsed {
                 if !model.tab.showsDay { focused = true }
                 model.refreshRecentChats()
+                model.refreshStarters()
             }
         }
         // Switching to Ask or Research (including Ask Wisp from Brief or Day) puts the cursor in the field.
@@ -136,8 +142,15 @@ struct OverlayView: View {
         .onExitCommand { model.requestCollapse() }
     }
 
-    // Collapsed: a black bar that wraps the notch (physical or virtual) on a
-    // MacBook; on a monitor, a small capsule under the menu bar. Hover to open.
+    // Collapsed on a built-in display without a notch: nothing at all. Its status
+    // is on the menu-bar icon (AppDelegate.updateMenuBarStatus).
+    private var hiddenBar: some View {
+        Color.clear.frame(width: layout.barSize.width, height: layout.barSize.height)
+            .accessibilityHidden(true)
+    }
+
+    // Collapsed: a black bar that wraps the notch on a notched MacBook; on a
+    // monitor, a small capsule under the menu bar. Hover to open.
     private var notchBar: some View {
         ZStack(alignment: .bottom) {
             Theme.surface
@@ -201,7 +214,8 @@ struct OverlayView: View {
         if let notice = model.transientNotice {
             Text(notice)
                 .font(.system(size: 11))
-                .foregroundStyle(Theme.bad)
+                .foregroundStyle(model.transientNoticeIsInfo ? Theme.textSecondary : Theme.bad)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 8)
         }
@@ -216,11 +230,7 @@ struct OverlayView: View {
         Divider().overlay(Theme.hairline).padding(.vertical, 10)
     }
 
-    // Due today or overdue, once the day has loaded. Undated items wait in the Brief.
-    private var todayCount: Int {
-        guard todayModel.isShowingCurrentDay, let plan = todayModel.currentPlan else { return 0 }
-        return DayTimeline.badgeCount(plan.dayNeeds, endOfDay: todayModel.dayInterval.end.timeIntervalSince1970)
-    }
+    private var todayCount: Int { todayModel.dueBadgeCount }
 
     private var tabStrip: some View {
         HStack(spacing: 2) {
@@ -445,10 +455,15 @@ struct OverlayView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Theme.textMuted)
             }
-            Button(action: pickImage) {
-                Image(systemName: "paperclip").font(.system(size: 16)).foregroundStyle(Theme.textSecondary)
+            // Wisp has no vision model in this release, so an attached image
+            // can't be looked at; the paperclip is a Debug Mode tool only.
+            if model.debugMode {
+                Button(action: pickImage) {
+                    Image(systemName: "paperclip").font(.system(size: 16)).foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain).help("Attach an image (Debug Mode: Wisp can't look at images yet)")
+                .accessibilityLabel("Attach an image")
             }
-            .buttonStyle(.plain).help("Attach an image").accessibilityLabel("Attach an image")
             Button(action: { model.submit() }) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 22))
@@ -468,6 +483,7 @@ struct OverlayView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(model.turns) { turn in turnView(turn) }
                         liveTurn
+                        if model.offersTryAnother { tryAnotherRow }
                         Color.clear.frame(height: 1).id("bottom")
                     }
                 }
@@ -529,6 +545,15 @@ struct OverlayView: View {
                     Text(verbatim: turn.text).textSelection(.enabled)
                 } else {
                     MarkdownView(text: turn.text)
+                }
+                if turn.isError && turn.activity.isEmpty && model.conversationSettled
+                    && turn.id == model.turns.last?.id {
+                    // Nothing ran, so sending the same question again is safe.
+                    Button("Try again") { model.tryAgain(turn) }
+                        .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                        .padding(.horizontal, 12).padding(.vertical, 4)
+                        .background(Capsule().fill(Theme.chipFill))
+                        .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                 }
                 let hasDetails = !debugHeadline(for: turn).isEmpty || !(turn.routeReason ?? "").isEmpty
                 let showDetails = hasDetails && (model.debugMode != detailsToggled.contains(turn.id))
@@ -657,18 +682,48 @@ struct OverlayView: View {
         }
     }
 
+    // Starter questions a fresh install can answer, two to a row so four fit
+    // the panel's width.
     private var suggestionsRow: some View {
-        HStack(spacing: 10) {
-            ForEach(model.suggestions.prefix(3), id: \.self) { s in
-                Button(s) {
-                    model.pick(s)
-                    if s == "Research a topic" { focused = true }
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                  alignment: .leading, spacing: 8) {
+            ForEach(model.suggestions, id: \.self) { s in
+                Button { model.pick(s) } label: {
+                    Text(s).lineLimit(1).truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(Theme.chipFill))
+                        .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                        .contentShape(Capsule())
                 }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Capsule().fill(Theme.chipFill))
-                    .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                .buttonStyle(.plain)
+                .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                .help("Ask \u{201C}\(s)\u{201D}")
+            }
+        }
+    }
+
+    // A light row of the starters not yet asked in this chat, under the last reply.
+    // Buttons here are not focusable, so Return and the Ask field keep the keyboard.
+    private var tryAnotherRow: some View {
+        HStack(spacing: 8) {
+            Text("Try another").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                .fixedSize()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(model.remainingSuggestions, id: \.self) { s in
+                        Button { model.pick(s) } label: {
+                            Text(s).lineLimit(1).fixedSize()
+                                .padding(.horizontal, 10).padding(.vertical, 4)
+                                .background(Capsule().fill(Theme.chipFill))
+                                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain).focusable(false)
+                        .font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                        .help("Ask \u{201C}\(s)\u{201D}")
+                    }
+                }
             }
         }
     }
@@ -807,17 +862,23 @@ struct OverlayView: View {
     private var statusRow: some View {
         HStack(spacing: 6) {
             Circle().fill(model.serviceDown ? Theme.bad : statusColor).frame(width: 5, height: 5)
-            if model.serviceStarting {
-                Text("Starting Wisp…").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
-            } else if model.serviceDown {
-                Text("Wisp service isn't running").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
-                Button("Retry") { model.onRetryService() }
+            if model.serviceDown {
+                Text("Wisp's service isn't running").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                Button("Retry") { model.retryService() }
                     .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textPrimary)
                     .padding(.horizontal, 8).padding(.vertical, 2)
                     .background(Capsule().fill(Theme.chipFill))
                     .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                     .accessibilityLabel("Retry starting the Wisp service")
-            } else if !model.modelAbbrev.isEmpty {
+            } else if model.serviceStarting {
+                Text("Starting Wisp…").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+            } else if model.setupCard == .later {
+                // Set aside, and Wisp still can't answer: one tap back to it.
+                Button("Finish setup") { model.setupCard = .open }
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                    .help("Wisp needs its AI model before it can answer")
+            } else if model.debugMode && !model.modelAbbrev.isEmpty {
+                // Model and route are details for Debug Mode, not a first-time user.
                 if !model.routeLabel.isEmpty {
                     Text(model.routeLabel).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
                     Image(systemName: "arrow.right").font(.system(size: 8, weight: .bold))
@@ -828,7 +889,7 @@ struct OverlayView: View {
                     Text("· \(model.tokPerSec) tok/s").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
                 }
             } else {
-                Text("Running locally").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                Text("Ready").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
             }
             Spacer()
             Text("⌥ Space").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
@@ -844,11 +905,16 @@ struct OverlayView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Wisp's service isn't running").font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
-            Text("Nothing you ask will be answered until it starts. Retry, or send a report if it keeps happening.")
+            Text("Wisp can't answer until it starts. Press Retry. If it keeps happening, send a report.")
                 .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let failure = model.serviceStartFailure {
+                Text(failure).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
             HStack(spacing: 8) {
-                Button("Retry") { model.onRetryService() }
+                Button("Retry") { model.retryService() }
                     .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(.black)
                     .padding(.horizontal, 14).padding(.vertical, 5)
                     .background(Capsule().fill(.white))
@@ -944,5 +1010,15 @@ struct SourceSyncTip: View {
         }
         .font(.system(size: 11))
         .foregroundStyle(Theme.textMuted)
+    }
+}
+
+extension TodayModel {
+    /// Due today or overdue, once the day has loaded. Undated items wait in the
+    /// Brief. Shown on the collapsed bar, or on the menu-bar icon when no bar is
+    /// drawn.
+    var dueBadgeCount: Int {
+        guard isShowingCurrentDay, let plan = currentPlan else { return 0 }
+        return DayTimeline.badgeCount(plan.dayNeeds, endOfDay: dayInterval.end.timeIntervalSince1970)
     }
 }

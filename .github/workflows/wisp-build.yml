@@ -30,6 +30,11 @@ jobs:
   # the same exact head, and the required "Verified macOS artifact" check below
   # passes only when both pass for that head. Neither job hands files to the
   # other; each checks out and bootstraps independently.
+  # Every upload in the PR jobs, and the diagnostics in full, only keeps copies
+  # for people to download: continue-on-error, so a full artifact quota can't
+  # turn a gate that passed red. In full, the candidate, mini and ACL report
+  # uploads stay strict: they are the retained evidence for main and tags
+  # (releases still rebuild from source).
   preview:
     name: Preview build (PR)
     if: github.event_name == 'pull_request'
@@ -65,17 +70,23 @@ jobs:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 build-support/isolated_acl_fixture.py --ephemeral-macos --expected-sha "$CANDIDATE_SHA" --output .wisp-build/run-acl-fixture
       - name: Upload isolated ACL qualification report
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: wisp-acl-qualification-${{ github.event.pull_request.head.sha || github.sha }}
           path: .wisp-build/run-acl-fixture/qualification.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
       # Same Swift build, assembly, structure/native validation, ad-hoc signing
       # and relocated-backend smoke as `all`. Simulation QA runs in its own job;
       # the artifact is marked preview and every release command refuses it.
       - name: Build, sign and smoke-test preview from source
+        # The only secret in this job: the built-in Google OAuth client, read
+        # once by the build driver and written into the bundle (never logged).
+        # Empty for fork pull requests, which then build without one.
+        env:
+          WISP_GOOGLE_OAUTH_CLIENT: ${{ secrets.WISP_GOOGLE_OAUTH_CLIENT }}
         run: ./scripts/wisp-build preview --strict-toolchain --fetch-engine --output dist/preview
       - name: Verify synthetic publisher signatures and provisioning transactions
         run: |
@@ -87,13 +98,15 @@ jobs:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 build-support/mini_artifact.py --source-sha "$CANDIDATE_SHA" --output dist/mini
       - name: Upload verified mini artifact
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: wisp-mini-${{ github.event.pull_request.head.sha || github.sha }}
           path: dist/mini/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
       - name: Upload preview build
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wisp-preview-${{ github.event.pull_request.head.sha || github.sha }}
@@ -103,8 +116,9 @@ jobs:
             dist/preview/*.md
             dist/preview/SHA256SUMS
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 3
       - name: Upload preview diagnostics
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -152,6 +166,7 @@ jobs:
       - name: Run sandboxed Simulation QA and contract gates
         run: ./scripts/wisp-build test --strict-toolchain
       - name: Upload Simulation QA diagnostics
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -200,6 +215,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Build and verify from source
+        env:
+          WISP_GOOGLE_OAUTH_CLIENT: ${{ secrets.WISP_GOOGLE_OAUTH_CLIENT }}
         run: ./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate
       - name: Verify synthetic publisher signatures and provisioning transactions
         run: |
@@ -229,6 +246,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload diagnostics
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -297,6 +315,8 @@ jobs:
       # Rebuild without an untrusted artifact handoff or restored dependency cache.
       # Credentials are exposed only to the explicit external release step.
       - name: Rebuild approved source with strict validation
+        env:
+          WISP_GOOGLE_OAUTH_CLIENT: ${{ secrets.WISP_GOOGLE_OAUTH_CLIENT }}
         run: ./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate
       - name: Sign, notarize, verify and publish
         env:
@@ -346,6 +366,8 @@ jobs:
           persist-credentials: false
       # Rebuild and verify the exact tagged source with no artifact handoff or cache.
       - name: Rebuild ad-hoc source with strict validation
+        env:
+          WISP_GOOGLE_OAUTH_CLIENT: ${{ secrets.WISP_GOOGLE_OAUTH_CLIENT }}
         run: ./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate
       - name: Publish verified ad-hoc assets
         env:

@@ -95,6 +95,10 @@ _history_at: float = 0.0
 # "from yesterday" worked seconds later once the sync landed.
 _email_available: bool | None = None
 _email_reason: str = ""
+# The MailReader's reason_kind ("mail_automation", "mail_not_configured", …), or
+# "". mail_not_configured arrives with available=True: the script ran, but this
+# Mac has no Mail accounts, so a "ready" inbox is not one Wisp could read.
+_email_reason_kind: str = ""
 # Reserved for a reader explicitly reporting work in flight. A successful
 # local-index read is NOT still syncing, regardless of its modification time.
 _email_sync_pending: bool = False
@@ -490,11 +494,17 @@ _swift_identity = _restored_native("identity", "\n".join(
     e for e in _identity_emails if e.casefold() not in _external_accounts)).splitlines()
 
 
+def email_reason_kind() -> str:
+    """The MailReader's last reason_kind, or ""."""
+    return _email_reason_kind
+
+
 @mutating
 def set_email_availability(available: bool, reason: str = "",
-                           syncing: bool = False, read_source: str = "") -> None:
-    """Record whether the Swift MailReader's last sync could read the inbox."""
-    global _email_available, _email_reason, _email_sync_pending, _email_read_source
+                           syncing: bool = False, read_source: str = "", reason_kind: str = "") -> None:
+    """Record whether the Swift MailReader's last sync could read the inbox,
+    and the reader's reason_kind when it named one."""
+    global _email_available, _email_reason, _email_sync_pending, _email_read_source, _email_reason_kind
     global _native_headers_at, _native_source
     with _raw_snapshot_lock:
         changed = _email_available is not available or _raw_availability.token() is None
@@ -502,6 +512,8 @@ def set_email_availability(available: bool, reason: str = "",
             _raw_availability.withdraw()
         _email_available = available
         _email_reason = reason
+        kind = str(reason_kind or "").strip()
+        _email_reason_kind = kind if re.fullmatch(r"[a-z_]{1,40}", kind) else ""
         _email_sync_pending = syncing and available
         _email_read_source = read_source if read_source in {"local_index", "mail_app"} else ""
         if available and not syncing:
@@ -523,11 +535,17 @@ def _no_inbox_message() -> str:
     if _email_available is False and _external_fresh():
         return "No emails found."
     if _email_available is False:
-        reason = _email_reason or "Mail Automation access isn't granted"
+        # The readers' reasons are whole sentences: no doubled period inside ours.
+        reason = (_email_reason or "Mail Automation access isn't granted").strip().rstrip(".")
         guidance = ("Grant Wisp access in System Settings ▸ Privacy & Security ▸ Automation ▸ Wisp ▸ Mail, then try again."
-                    if "automation" in reason.casefold() else "Open Mail and let it refresh, then try again.")
+                    if "automation" in reason.casefold() or _email_reason_kind == "mail_automation"
+                    else "Open Mail and let it refresh, then try again.")
         return (f"I couldn’t refresh Mail: {reason}. No usable cached emails are available, "
                 f"so I couldn’t verify your inbox. {guidance}")
+    if _email_available is True and _email_reason_kind == "mail_not_configured" and not _external_accounts:
+        return ((_email_reason.strip() or "There are no Mail accounts on this Mac.")
+                + ("" if _email_reason.strip().endswith((".", "!", "?")) or not _email_reason.strip() else ".")
+                + " Add one in System Settings ▸ Internet Accounts, or connect Google in Wisp's Settings.")
     if _email_available is True:
         # Local read completion cannot prove that the server inbox is empty.
         if email_freshness_warning():
@@ -626,9 +644,27 @@ def _range_history(start: float, end: float) -> list[dict]:
     # per account rather than once per history row.
     complete = {_account_group(address, address) for address in _external_accounts
                 if external_recent_complete(address)}
-    return [row for row in _parse_header_records(_history, snapshot="history")
+    return [row for row in _history_records()
             if start <= row["ts"] < end and
             _account_group(row["account"], row.get("account_id", "")) not in complete]
+
+
+# The parsed form of the last `_history` string seen. History is a large,
+# rarely-changing cache and every ranged summary re-parsed all of it. Keyed by
+# the string object itself, so any new history (always a new string) misses.
+_HISTORY_PARSE: tuple[str | None, list[dict]] = (None, [])
+
+
+def _history_records() -> list[dict]:
+    global _HISTORY_PARSE
+    text = _history
+    cached_text, cached = _HISTORY_PARSE
+    if cached_text is not text:
+        cached = _parse_header_records(text, snapshot="history")
+        _HISTORY_PARSE = (text, cached)
+    # Copies: _unique_records marks rows it pairs, and that must not leak
+    # into the next read.
+    return [dict(row) for row in cached]
 
 
 def _history_warning(account: str | None = None) -> str:
@@ -1218,6 +1254,9 @@ def _purge_raw_if_expired(*, persist: bool = True) -> None:
         stamps.extend(receipt(item.get("raw_at")) for item in _external_accounts.values()
                       if item.get("raw") is not None)
         _raw_emails_at = max(stamps, default=0.0)
+        if changed:
+            from service.tools.email_digest import clear_cache
+            clear_cache()  # digests of mail that expired or was unlinked
         if changed and persist:
             _persist_composed_sources(purge=False)
 
@@ -1455,26 +1494,47 @@ def _unique_records(rows: list[dict]) -> list[dict]:
     def producer(row: dict) -> str:
         return row.get("native_id", "").split(":", 1)[0]
 
+    def mid(row: dict) -> str:
+        return (row.get("message_id") or "").casefold()
+
+    def ids_conflict(a: dict, b: dict) -> bool:
+        return bool(mid(a) and mid(b) and mid(a) != mid(b))
+
     recent = [row for row in result if row.get("_snapshot") == "recent"]
+    # Indexed once, so pairing is linear in the rows, not recent x history
+    # (a long first sync made every summary quadratic). Each list keeps
+    # `recent` order, so "first match" is the same row the old scan found.
+    by_mid: dict[tuple, list[int]] = {}
+    by_fp: dict[tuple, list[int]] = {}
+    label_mid: dict[tuple, list[int]] = {}
+    label_fp: dict[tuple, list[int]] = {}
+    for index, other in enumerate(recent):
+        label, account_id = other["account"].casefold(), other.get("account_id", "")
+        if mid(other):
+            by_mid.setdefault((label, account_id, mid(other)), []).append(index)
+            label_mid.setdefault((label, mid(other)), []).append(index)
+        by_fp.setdefault((label, account_id, fingerprint(other)), []).append(index)
+        label_fp.setdefault((label, fingerprint(other)), []).append(index)
     matched: set[int] = set()
     paired = []
     for row in result:
         if row.get("_snapshot") == "history":
             row_account = row.get("account_id", "")
-            candidates = [(index, other) for index, other in enumerate(recent)
-                          if index not in matched
-                          and other["account"].casefold() == row["account"].casefold()
-                          and row_account and other.get("account_id") == row_account
-                          and (producer(other) != producer(row) or
-                               not producer(other) or not producer(row))]
-            partner = next((index for index, other in candidates
-                            if other.get("message_id") and row.get("message_id")
-                            and other["message_id"].casefold() == row["message_id"].casefold()), None)
-            if partner is None:
-                partner = next((index for index, other in candidates
-                                if fingerprint(other) == fingerprint(row)
-                                and not (other.get("message_id") and row.get("message_id")
-                                         and other["message_id"].casefold() != row["message_id"].casefold())), None)
+            label = row["account"].casefold()
+
+            def candidate(index: int) -> bool:
+                other = recent[index]
+                return (index not in matched
+                        and (producer(other) != producer(row)
+                             or not producer(other) or not producer(row)))
+            partner = None
+            if row_account:
+                if mid(row):
+                    partner = next((i for i in by_mid.get((label, row_account, mid(row)), ())
+                                    if candidate(i)), None)
+                if partner is None:
+                    partner = next((i for i in by_fp.get((label, row_account, fingerprint(row)), ())
+                                    if candidate(i) and not ids_conflict(recent[i], row)), None)
             if partner is not None:
                 matched.add(partner)
                 recent[partner]["_cross_source_matched"] = True
@@ -1482,14 +1542,12 @@ def _unique_records(rows: list[dict]) -> list[dict]:
             # The same display label can name multiple linked accounts, and
             # Mail.app/SQLite account IDs need not share a namespace. Keep both
             # possible copies when account identity cannot be proved.
-            for other in recent:
-                if (other["account"].casefold() == row["account"].casefold()
-                        and other.get("account_id") != row_account
-                        and ((other.get("message_id") and row.get("message_id")
-                              and other["message_id"].casefold() == row["message_id"].casefold())
-                             or (fingerprint(other) == fingerprint(row)
-                                 and not (other.get("message_id") and row.get("message_id")
-                                          and other["message_id"].casefold() != row["message_id"].casefold())))):
+            possible = set(label_mid.get((label, mid(row)), ())) if mid(row) else set()
+            possible.update(i for i in label_fp.get((label, fingerprint(row)), ())
+                            if not ids_conflict(recent[i], row))
+            for index in possible:
+                other = recent[index]
+                if other.get("account_id") != row_account:
                     other["_cross_source_uncertain"] = True
                     row["_cross_source_uncertain"] = True
         paired.append(row)
@@ -1787,16 +1845,30 @@ def _resolve_account_groups(account: str, extra: list[dict] | None = None) -> tu
     return exact_id or exact_label or partial, groups
 
 
+# Groups to leave out of an account-less read: the "Your accounts" section of
+# a labeled summary must not repeat mail that has its own linked-account section.
+_EXCLUDED_ACCOUNT_GROUPS: ContextVar[frozenset] = ContextVar("excluded_account_groups",
+                                                            default=frozenset())
+
+
+def _linked_account_groups() -> dict[str, tuple[str, str]]:
+    """Gmail-linked address -> the account group its mail is filed under."""
+    return {address: _account_group(address, address) for address in _external_accounts}
+
+
 def _filter_account(rows: list, account: str | None) -> list:
     if not account:
-        return rows
+        excluded = _EXCLUDED_ACCOUNT_GROUPS.get()
+        return [r for r in rows if _account_group(r[1], "") not in excluded] if excluded else rows
     keys, _ = _resolve_account_groups(account, [{"account": r[1], "account_id": ""} for r in rows])
     return [r for r in rows if len(keys) == 1 and _account_group(r[1], "") in keys]
 
 
 def _filter_account_records(rows: list[dict], account: str | None) -> list[dict]:
     if not account:
-        return rows
+        excluded = _EXCLUDED_ACCOUNT_GROUPS.get()
+        return [r for r in rows if _account_group(r["account"], r.get("account_id", ""))
+                not in excluded] if excluded else rows
     keys, _ = _resolve_account_groups(account, rows)
     return [r for r in rows if len(keys) == 1 and _account_group(r["account"], r.get("account_id", "")) in keys]
 
@@ -1868,7 +1940,8 @@ def _raw_account_scope(rows: list[dict], account: str | None) -> tuple[list[dict
 
 
 def _email_body_block(row: dict) -> str:
-    """Render verbatim evidence with its account and message identities."""
+    """Render a body (verbatim, or a labelled digest of a long one) with its
+    account and message identities."""
     when = datetime.fromtimestamp(row["ts"]).strftime("%a %b %-d, %Y %-I:%M %p")
     account = f"Account: {row['account']}\n" if row.get("account") else ""
     native_id = f"Account-ID: {row['account_id']}\n" if row.get("account_id") else ""
@@ -2141,8 +2214,104 @@ def _digest_body_evidence(rows: list[dict]) -> list[dict]:
     return enriched if raw_email_snapshot(expected_generation=snapshot.generation) is snapshot else clean
 
 
+# Mail about the reader's own account that must never be lost among
+# notifications: an exposed secret, a vulnerability alert, a new sign-in, a
+# login change, a breach, a failed payment, a locked account, a 2FA change.
+# Subject and sender only (never the body), and never from a marketing or
+# newsletter sender, nor a promo that merely mentions security.
+_CRITICAL_MAIL = (
+    ("exposed_secret", re.compile(
+        r"\b(?:secrets?|credentials?|tokens?|api[ _-]?keys?|access keys?|private keys?|passwords?)\b"
+        r"[^.!?]{0,40}\b(?:detected|exposed|leaked|found|compromised|published)\b|"
+        r"\b(?:exposed|leaked|detected)\s+(?:\w+\s+){0,2}(?:secrets?|credentials?|tokens?|api[ _-]?keys?|passwords?)\b",
+        re.I)),
+    ("security_advisory", re.compile(
+        r"\bdependabot (?:security )?alerts?\b|\bsecurity (?:advisory|advisories|vulnerabilit(?:y|ies))\b|"
+        r"\bvulnerabilit(?:y|ies) (?:alerts?|found|detected)\b|\bcritical vulnerabilit(?:y|ies)\b", re.I)),
+    ("new_sign_in", re.compile(
+        r"\b(?:new|unusual|suspicious|unrecogni[sz]ed) (?:sign[- ]?in|log[- ]?in|device sign[- ]?in)\b|"
+        r"\b(?:sign[- ]?in|log[- ]?in) (?:attempt|alert)\b|"
+        r"\bsomeone (?:tried to |may have )?(?:sign(?:ed)?|log(?:ged)?)[- ]?in\b|\bwas this you\b", re.I)),
+    ("security_alert", re.compile(r"^\s*(?:critical )?security alert\b", re.I)),
+    ("login_change", re.compile(
+        r"\bpassword (?:(?:was|has been) )?(?:reset|changed)\b(?! (?:link|instructions))|"
+        r"\b(?:didn['’]?t|did not) request\b[^.!?]{0,40}\bpassword\b|"
+        r"\bpassword\b[^.!?]{0,40}\b(?:didn['’]?t|did not) request\b", re.I)),
+    ("breach", re.compile(
+        r"\bdata breach\b|\bsecurity (?:incident|breach)\b|"
+        r"\b(?:account|data|information) (?:was |has been |may have been )?(?:compromised|exposed in)\b", re.I)),
+    ("payment_failed", re.compile(
+        r"\bpayment (?:has |was )?(?:failed|declined|unsuccessful|could not be processed)\b|"
+        r"\b(?:card|transaction|charge) (?:was |has been )?declined\b|\bunable to process (?:your )?payment\b",
+        re.I)),
+    ("account_locked", re.compile(
+        r"\baccount (?:(?:has been|was|is|will be) )?(?:suspended|locked|disabled|deactivated|restricted)\b", re.I)),
+    ("two_factor", re.compile(
+        r"\b(?:two[- ]factor|2fa|two[- ]step|2-step|multi[- ]factor|mfa)\b[^.!?]{0,30}"
+        r"\b(?:disabled|turned off|removed|changed|reset)\b", re.I)),
+)
+# A promo or event that names a security product is not an alert on the account.
+_CRITICAL_PROMO = re.compile(
+    r"\b(?:webinar|workshop|hackathon|summit|conference|meetup|register|join us|is starting|starts|"
+    r"launch(?:es|ing|ed)?|announcing|introducing|new feature|try (?:it|now|free)|free trial|"
+    r"learn (?:how|more)|course|ebook|guide to|tips|best practices|% off|upgrade to|now available)\b", re.I)
+_CRITICAL_PHRASE = {
+    "exposed_secret": "flagged a possible exposed secret{where}",
+    "security_advisory": "sent a security vulnerability alert{where}",
+    "new_sign_in": "reported a new sign-in to your account",
+    "security_alert": "sent a security alert about your account",
+    "login_change": "reported a change to your account's sign-in details",
+    "breach": "reported a data breach",
+    "payment_failed": "reported a failed payment",
+    "account_locked": "reported your account is locked or suspended",
+    "two_factor": "reported a change to two-factor sign-in",
+}
+_REPO_PREFIX = re.compile(r"^\s*\[([A-Za-z0-9][\w.-]{0,38}/[\w.-]{1,60})\]")
+_SAFE_ORG = re.compile(r"[A-Za-z][A-Za-z .&'-]{0,29}")
+
+
+def critical_account_mail(row: dict) -> str | None:
+    """The kind of critical account alert this email is, or None. Headers only."""
+    subject = str(row.get("subject") or "")
+    sender = str(row.get("sender") or "")
+    identity = f"{sender} {row.get('sender_address', '') or ''}"
+    if (_NEWSLETTER_RE.search(identity) or _MARKETING_SUBJECT.search(subject) or _CRITICAL_PROMO.search(subject)
+            or is_broadcast(row)):
+        return None
+    domain = str(row.get("sender_address", "") or "").lower().rpartition("@")[2]
+    if _SOCIAL_RE.search(domain) or _SOCIAL_RE.search(sender):
+        # A social network's mail quotes other people's posts: only words
+        # outside a framed post title are about the reader's own account.
+        subject = _social_account_security_subject(subject)
+    for kind, pattern in _CRITICAL_MAIL:
+        if pattern.search(subject):
+            return kind
+    return None
+
+
+def critical_mail_title(row: dict, kind: str | None = None) -> str:
+    """A fixed, safe headline for a critical alert: the sender's organisation,
+    the alert's class and (for a repository alert) the repository, never the
+    subject's other words, a code, a token or a link."""
+    kind = kind or critical_account_mail(row)
+    if kind not in _CRITICAL_PHRASE:
+        return ""
+    sender = re.sub(r"\s*<[^>]*>?", "", str(row.get("sender") or "")).strip().strip('"\'')
+    org = sender if _SAFE_ORG.fullmatch(sender or "") else ""
+    if not org:
+        address = str(row.get("sender_address") or "") or (re.findall(r"<([^>]+)>", str(row.get("sender") or "")) or [""])[0]
+        host = address.rpartition("@")[2].split(".")
+        org = host[-2].capitalize() if len(host) >= 2 and re.fullmatch(r"[a-z]{2,20}", host[-2].lower()) else "A service"
+    repo = _REPO_PREFIX.match(str(row.get("subject") or ""))
+    where = f" in {repo.group(1)}" if repo and kind == "exposed_secret" else \
+        f" for {repo.group(1)}" if repo and kind == "security_advisory" else ""
+    return f"{org} {_CRITICAL_PHRASE[kind].format(where=where)} — review"
+
+
 def digest_category(row: dict) -> str:
     """Classify headers, using body evidence only from a current matched record."""
+    if critical_account_mail(row):
+        return "attention"
     if "body" in row and row.get("_current_list_footer") is not True:
         row = _digest_body_evidence([row])[0]
     subject = row.get("subject", "") or ""
@@ -2816,6 +2985,40 @@ async def summarize_emails(day: str | None = None, count: int = 20,
         return _no_inbox_message()
     if account and (msg := _unknown_account_message(account)):
         return msg
+    linked = _linked_account_groups()
+    if not account and linked and not native_email_accounts():
+        # Gmail only, no Mail.app inbox. There is no "your accounts" mail to
+        # set apart, and that section was always empty: the first linked
+        # account is the user's own inbox (identity already counts linked
+        # addresses as theirs). Only further linked accounts get headings.
+        own, *others = linked
+        if not others:
+            return await _summarize_one(day, count, None, period, unread)
+        sections = [f"## {address}\n{await _summarize_one(day, count, address, period, unread)}"
+                    for address in (own, *others)]
+        return ("Summarized per account; keep the account headings in your answer.\n\n"
+                + "\n\n".join(sections))
+    if not account and linked:
+        # A linked Google account (a guest's, or one not in Mail.app) is
+        # someone else's inbox as far as "my email" goes: answer per account,
+        # labeled, so its mail is never blended into the user's own.
+        sections = []
+        for address in linked:
+            body = await _summarize_one(day, count, address, period, unread)
+            sections.append(f"## {address}\n{body}")
+        token = _EXCLUDED_ACCOUNT_GROUPS.set(frozenset(linked.values()))
+        try:
+            body = await _summarize_one(day, count, None, period, unread)
+        finally:
+            _EXCLUDED_ACCOUNT_GROUPS.reset(token)
+        sections.insert(0, f"## Your accounts\n{body}")
+        return ("Summarized per account; keep the account headings in your answer.\n\n"
+                + "\n\n".join(sections))
+    return await _summarize_one(day, count, account, period, unread)
+
+
+async def _summarize_one(day: str | None, count: int, account: str | None,
+                         period: str | None, unread: bool) -> str:
     # `period` first: it's the more specific request, and a model that supplies
     # both ("this month", day="today") means the range.
     # Unread is an additional filter; it must never discard a named range.
@@ -2971,6 +3174,11 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
             f"{omitted} older {'email was' if omitted == 1 else 'emails were'} omitted "
             f"by count={limit}.\n\n"
         )
+    # A long body is digested in full rather than cut at the head by the
+    # tool-result cap (service/tools/email_digest.py).
+    from service.tools.email_digest import digest_rows
+    if corpus_identifier is None:
+        rows = await digest_rows(rows, query=query)
     blocks = [_email_body_block(r) for r in rows]
     return note + coverage + "\n\n---\n\n".join(blocks)
 
@@ -2982,7 +3190,9 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     "summary. Use this instead of summarize_emails when the user needs a "
     "specific detail FROM an email: an order number, a confirmation code, an "
     "address, a pickup/delivery time, party details, exact wording to quote "
-    "back, etc. Pass `query` to search sender/recipient/subject/body for a "
+    "back, etc. A very long email comes back as a labelled, non-verbatim digest "
+    "that lists its details and repeats the numbers, codes, dates and times it "
+    "finds word for word. Pass `query` to search sender/recipient/subject/body for a "
     "keyword (e.g. a person's name, 'order', 'birthday'); pass `period` for a "
     "date RANGE ('this month', 'last week') or `day` for one specific day; "
     "pass `account` if the user asks about a SPECIFIC linked email account and "

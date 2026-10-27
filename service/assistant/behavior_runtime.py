@@ -69,6 +69,10 @@ BEHAVIOR_CONTEXT = "Added by Wisp from your routine"
 HOLD_PREFIX = "Tentative: "
 
 TICK_S = 30.0
+# A new install offers routine actions (tap to add) instead of performing them,
+# until the user has tapped Useful or Undo once, or this long after first launch.
+AUTO_ACTION_TRIAL_S = 3 * 86400
+_ENGAGED_KEY = "auto_actions_engaged"
 INGEST_EVERY_S = 300.0
 MINE_EVERY_S = 1800.0
 NUDGE_EVERY_S = 60.0
@@ -88,6 +92,53 @@ ASK_LIMIT = 500
 def enabled() -> bool:
     from service.behavior_switch import enabled as flag_enabled
     return flag_enabled()
+
+
+GOOGLE_CALENDAR_PREFIX = "gcal:"
+
+
+def purge_google_calendar_rows(behavior_store, prefix: str) -> int:
+    """Remove observations (events and their cancel:/move: lifecycle rows) and
+    snapshot entries for Google Calendar source ids starting with `prefix`.
+    Removing them from the snapshot too means the next diff cannot report
+    them as cancelled."""
+    if not prefix.startswith(GOOGLE_CALENDAR_PREFIX):
+        raise ValueError("Only Google Calendar rows can be purged this way")
+    ids = ["cal:" + prefix, "cancel:cal:" + prefix, "move:cal:" + prefix]
+    conn = behavior_store._conn
+    with behavior_store._lock, conn:
+        before = conn.total_changes
+        conn.execute("DELETE FROM observations WHERE substr(source_id,1,?)=? OR substr(id,1,?)=? "
+                     "OR substr(id,1,?)=? OR substr(id,1,?)=?",
+                     (len(prefix), prefix, *(x for i in ids for x in (len(i), i))))
+        removed = conn.total_changes - before
+    snap = behavior_store.get_snapshot("calendar")
+    if snap is not None:
+        items = [it for it in snap["items"] if not str(it.get("source_id") or "").startswith(prefix)
+                 and not str(it.get("id") or "").startswith(ids[0])]
+        if len(items) != len(snap["items"]):
+            behavior_store.put_snapshot("calendar", taken_at=snap["taken_at"], window_start=snap["window_start"],
+                                        window_end=snap["window_end"], items=items)
+    return removed
+
+
+def erase_google_calendar_account(account: str, home: Path | None = None) -> int:
+    """Disconnect & erase: drop everything learned from one Google account's
+    calendar, whether learning is on (live runtime) or off (file on disk)."""
+    prefix = f"{GOOGLE_CALENDAR_PREFIX}{account.strip().lower()}:"
+    with _runtime_lock:
+        runtime = _runtime
+    if runtime is not None and runtime._local_engine is not None:
+        return runtime.purge_google_calendar(prefix)
+    path = Path(home or _home()) / ENGINE_DB
+    if not path.exists():
+        return 0
+    from service.behavior.store import Store
+    behavior_store = Store(path)
+    try:
+        return purge_google_calendar_rows(behavior_store, prefix)
+    finally:
+        behavior_store.close()
 
 
 def _home() -> Path:
@@ -909,8 +960,12 @@ class BehaviorRuntime:
                 # done/dismissed rows were marked inside Wisp but still exist in
                 # Apple Calendar: only an upstream disappearance is a cancellation.
                 "WHERE c.source='calendar' AND c.status IN ('active','done','dismissed') "
+                # Google Calendar rows (google_calendar_source) belong to a linked
+                # Google account, possibly a guest's: never learned from.
+                "AND (c.source_id IS NULL OR substr(c.source_id,1,?)<>?) "
                 "AND c.when_ts >= ? AND c.when_ts < ? "
-                "ORDER BY c.when_ts", (start, end)).fetchall()
+                "ORDER BY c.when_ts", (len(GOOGLE_CALENDAR_PREFIX), GOOGLE_CALENDAR_PREFIX,
+                                       start, end)).fetchall()
         return [dict(r) for r in rows]
 
     def calendar_observations(self, rows: list[dict]) -> list:
@@ -938,6 +993,9 @@ class BehaviorRuntime:
         if not sync.get("available") or not _finite(last_sync):
             return False   # no completed read yet: an empty set is not "everything cancelled"
         start, end = now - HISTORY_S, now + AHEAD_S
+        # Google rows learned before they were excluded: drop them (and their
+        # snapshot entries) first, so leaving the feed is not read as cancellations.
+        self.purge_google_calendar(GOOGLE_CALENDAR_PREFIX)
         rows = self._calendar_rows(store, start, end)
         observations = self.calendar_observations(rows)
         result = self.call("observe_snapshot", "calendar", observations,
@@ -950,6 +1008,15 @@ class BehaviorRuntime:
                       "complete", float(last_sync))
         stamps["cal_sync"] = last_sync
         return any(int(result.get(k) or 0) for k in ("upserted", "cancelled", "moved"))
+
+    def purge_google_calendar(self, prefix: str) -> int:
+        """Delete learned rows whose calendar source_id starts with `prefix`."""
+        engine = self.local_engine()
+        store, lock = getattr(engine, "_store", None), getattr(engine, "_lock", None)
+        if store is None or lock is None:
+            return 0   # an injected engine without a local store (tests, remote)
+        with lock:
+            return purge_google_calendar_rows(store, prefix)
 
     def _behavior_ids(self) -> set[str]:
         with self._db_lock:
@@ -1020,10 +1087,13 @@ class BehaviorRuntime:
     def _ingest_asks(self, now: float) -> bool:
         from service.behavior.types import Observation
         sessions = self._session_db_fn()
+        # A corpus test chat's prompts are not the user's asks.
+        not_corpus = getattr(sessions, "not_corpus_sql", None)
+        not_corpus = not_corpus() if not_corpus else "1"
         with sessions._lock:
             rows = sessions._db.execute(
                 "SELECT session_id, idx, content, created_at FROM turns WHERE role='user' "
-                "AND created_at >= ? ORDER BY created_at DESC LIMIT ?",
+                f"AND created_at >= ? AND {not_corpus} ORDER BY created_at DESC LIMIT ?",
                 (now - HISTORY_S, ASK_LIMIT)).fetchall()
         obs = [Observation(id=f"ask:{r['session_id']}:{r['idx']}", kind="wisp_ask",
                            ts=float(r["created_at"]), subject=topic_of(r["content"] or ""),
@@ -1116,9 +1186,12 @@ class BehaviorRuntime:
         canonical = Nudge.from_dict(json.loads(payload))
         actions = []
         namespace = str(self.home.resolve())+":"+canonical.id
+        held = self.auto_actions_held(store, now)
         for idx,action in enumerate(canonical.actions):
             if not action.auto or action.type not in {"add_reminder","add_hold"}:
                 continue
+            if held and not any(row["idx"]==idx for row in prior):
+                continue   # offered with "auto": false; a tap adds it
             if self.policy_block(action) is not None:
                 continue
             params = action.params
@@ -1131,7 +1204,10 @@ class BehaviorRuntime:
                 title = HOLD_PREFIX+title
             cid = "behavior_"+hashlib.sha256((namespace+":"+str(idx)).encode()).hexdigest()[:32]
             notes = " ".join(str(params.get("notes") or "").split())[:300]
-            context = BEHAVIOR_CONTEXT+(" — "+notes if notes else "")+" ["+cid+"]"
+            # The commitment id is its identity; it never goes into text the user reads.
+            # Rows written before this keep their " [behavior_…]" suffix (see
+            # AssistantStore.prepare_nudge_write, which accepts both forms).
+            context = BEHAVIOR_CONTEXT+(" — "+notes if notes else "")
             end = params.get("end_ts")
             actions.append(dict(idx=idx,type=action.type,id=cid,title=title,when_ts=float(when),kind=kind,
                 context=context,end_ts=float(end) if kind=="event" and _finite(end) and end>when else None))
@@ -1144,6 +1220,25 @@ class BehaviorRuntime:
         prepared = _PreparedDelivery(self,store,nudge.id,payload,witness,plan,ledger,float(now),_delivery_issuer)
         self._prepared_deliveries.add(prepared)
         return prepared
+
+    def auto_actions_held(self, store, now: float) -> bool:
+        """Whether automatic routine actions are still only offered.
+
+        A new install learns from a few days of history at most, so its first
+        guesses go to the user as suggestions. Automatic adds start once the
+        user has marked any nudge Useful (tapping an offered action does that)
+        or used Undo, or AUTO_ACTION_TRIAL_S after first launch. An install that
+        predates the first-launch marker never waits."""
+        with self._db_lock:
+            engaged = self._db.execute("SELECT 1 FROM kv WHERE key=?", (_ENGAGED_KEY,)).fetchone() or self._db.execute(
+                "SELECT 1 FROM nudges WHERE verdict IN ('useful','undo') LIMIT 1").fetchone()
+        if engaged is not None:
+            return False
+        try:
+            first = store.first_launch_at()
+        except Exception:  # noqa: BLE001 — unknown history: offer, never act
+            return True
+        return first is not None and now - first < AUTO_ACTION_TRIAL_S
 
     def _commit_delivery(self, store, hub, prepared, loop):
         """One explicit synchronous logical publication; no await or live callbacks."""
@@ -1491,6 +1586,9 @@ class BehaviorRuntime:
             self.call("feedback", Feedback(nudge_id=nudge_id, verdict=verdict, ts=self.clock()))
             with self._db_lock, self._db:
                 self._db.execute("UPDATE nudges SET verdict=? WHERE id=?", (verdict, nudge_id))
+                if verdict in {"useful", "undo"}:
+                    # Kept apart from the per-nudge verdict, which a later answer overwrites.
+                    self._db.execute("INSERT OR IGNORE INTO kv VALUES (?,?)", (_ENGAGED_KEY, "1"))
             self.retire_event(store, nudge_id)
 
     def undo(self, store, nudge_id: str) -> list[dict]:

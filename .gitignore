@@ -41,3 +41,8 @@ docs/routing_stress/results/
 
 # Per-user Claude Code settings, never shared
 .claude/settings.local.json
+
+# Built-in Google OAuth client: generated into the app bundle at build time
+# from WISP_GOOGLE_OAUTH_CLIENT (build-support/pipeline.py). The repo is
+# public; never commit it.
+service/google_oauth_client.json

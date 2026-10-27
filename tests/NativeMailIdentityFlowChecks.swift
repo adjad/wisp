@@ -9,6 +9,9 @@ struct AccountTarget { let id: String; let label: String }
 enum Enumeration: Equatable { case accounts([String: String]), unavailable, duplicateLabels }
 enum AccountLabelCache { static func learn(accounts: [String: String]) {} }
 enum WispClient { static let baseURL = URL(string: "http://127.0.0.1:8765")! }
+enum Permissions {
+    // WISP_NATIVE_PERMISSIONS
+}
 struct RecordedTask { let perform: () -> Void; func resume() { perform() } }
 final class URLSession {
     static let shared = URLSession()
@@ -49,6 +52,7 @@ final class FakeDB {
     let which: String
     init(_ which: String) { self.which = which }
     func readHeadersAndHistory() -> (String, String)? { which == "closed_failed_index" ? nil : ("", "") }
+    func closedReadFailure() -> (kind: String, reason: String) { ("full_disk_access", "synthetic closed-read reason") }
 }
 final class Reader {
     let which: String
@@ -103,6 +107,9 @@ final class Reader {
     func incompleteMarker(account: AccountTarget?, reason: String) -> String { "synthetic incomplete marker" }
     func mergeHeaderChunks(_ chunks: [String]) -> String { chunks.joined(separator: "\n") }
     func markHeadersCompleted() {}
+    // Every scenario that reaches the closed-read failure has Mail closed.
+    func mailAppOpen() -> Bool { false }
+    static func automationDecided(_ bundleID: String) -> Bool { true }
 
     // WISP_NATIVE_READER_METHODS
 }
@@ -144,6 +151,22 @@ final class Reader {
                 let payload = legacy["body"] as! [String: Any]
                 let diagnostic = payload["diagnostics"] as! [String: Any]
                 precondition(diagnostic["available"] as! Bool == (which == "closed_before_identity"))
+            }
+            // Why Mail can't be read travels as reason_kind, the key the Brief's
+            // button uses; a transient failure carries a reason and no kind.
+            let diagnostics = session.requests.compactMap {
+                ($0["body"] as? [String: Any])?["diagnostics"] as? [String: Any] }
+            let kinds = diagnostics.compactMap { $0["reason_kind"] as? String }
+            switch which {
+            case "closed_failed_index": precondition(kinds == ["full_disk_access"])
+            case "failed":
+                precondition(kinds == ["mail_automation"] && diagnostics.last?["available"] as? Bool == false)
+            case "empty", "closed_empty":
+                precondition(kinds == ["mail_not_configured"] && diagnostics.last?["available"] as? Bool == true)
+            case "closed_during_header":
+                precondition(kinds.isEmpty && diagnostics.last?["available"] as? Bool == false)
+            case "success", "partial", "closed_index": precondition(kinds.isEmpty)
+            default: break
             }
             results.append(["case": which, "requests": session.requests, "events": reader.events])
         }

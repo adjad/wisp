@@ -13,6 +13,7 @@ swiftc ${swiftc_nested_sandbox_flags[@]+"${swiftc_nested_sandbox_flags[@]}"} -pa
     "$project_root/app/Sources/WispApp/Theme.swift" \
     "$project_root/app/Sources/WispApp/TodayView.swift" \
     "$project_root/app/Sources/WispApp/DailyWorkspaceView.swift" \
+    "$project_root/app/Sources/WispApp/ProactiveModels.swift" \
     "$project_root/app/Sources/WispApp/CaughtForYou.swift" \
     "$project_root/app/Sources/WispApp/NotchDay.swift" \
     "$project_root/app/Sources/WispApp/BriefSummary.swift" \

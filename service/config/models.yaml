@@ -25,15 +25,17 @@ roles:
   # Every text role is the same resident model — no swap, no cold load, and no
   # routing decision that hinges on which model a request lands on.
   #
-  # Conservative Ling 4-bit fallback for fresh installs. Guided setup recommends
-  # the hardware-appropriate Ling build; selecting it updates the text roles.
-  # Existing user overrides are still deep-merged over these code defaults.
-  fast:       "Ling-3.0-tiny-oQ4e"
-  router:     "Ling-3.0-tiny-oQ4e"
-  coding:     "Ling-3.0-tiny-oQ4e"
-  reasoning:  "Ling-3.0-tiny-oQ4e"
-  agent:      "Ling-3.0-tiny-oQ4e"
-  general:    "Ling-3.0-tiny-oQ4e"
+  # Gemma 4 E4B (with its MTP head) for fresh installs: the setup guide's
+  # default download on every Mac, so a new user's roles already name the model
+  # they just fetched. Its sampling lives in the engine's per-model settings,
+  # seeded by service/engine/profiles.py. Existing user overrides are still
+  # deep-merged over these code defaults.
+  fast:       "gemma-4-E4B-it-oQ4e-mtp"
+  router:     "gemma-4-E4B-it-oQ4e-mtp"
+  coding:     "gemma-4-E4B-it-oQ4e-mtp"
+  reasoning:  "gemma-4-E4B-it-oQ4e-mtp"
+  agent:      "gemma-4-E4B-it-oQ4e-mtp"
+  general:    "gemma-4-E4B-it-oQ4e-mtp"
   # Smart Search's T2 retrieval tier (320MB, 1024-dim). NOT a chat model — it's
   # served by oMLX's /v1/embeddings, which rejects LLMs on that endpoint. It is
   # lazy and no longer participates in tool routing.
@@ -76,6 +78,8 @@ tool_retrieval:
 # which is silent. A single-sample version of that test produced an alternating
 # pattern that was pure noise and briefly made oQ3e look best — use reps.
 tool_capable:
+  # Gemma 4 E4B MTP: clean tool calls with thinking on and off (2026-10-24).
+  - "gemma-4-E4B-it-oQ4e-mtp"
   - "LFM2.5-2.6B-MLX-6bit"
   - "Ling-3.0-tiny-oQ6e"
   - "Ling-3.0-tiny-oQ4e"
@@ -97,6 +101,10 @@ tool_capable:
 # summarize_emails/summarize_messages call while A1 skips it, which is a
 # straight unfairness in any head-to-head timing.
 no_thinking_capable:
+  # Gemma 4 E4B MTP, 2026-10-24: thinking-off summaries are fine (no tool
+  # messages on that path). NOT safe after a tool result: see
+  # thinking_required_after_tool below.
+  - "gemma-4-E4B-it-oQ4e-mtp"
   - "Agents-A1-4B-oQe6"
   - "Ling-3.0-tiny-oQ6e"
   # oQ4e verified 2026-08-18 the way this comment requires: the enable_thinking
@@ -104,6 +112,16 @@ no_thinking_capable:
   # Omitting it here would silently reinstate a chain of thought on every
   # summarize_emails/summarize_messages call.
   - "Ling-3.0-tiny-oQ4e"
+
+# Models that return ZERO tokens when asked to write with thinking off after
+# a `role: tool` message. Measured 2026-10-24 on Gemma 4 E4B MTP: the step
+# after a tool result came back with completion_tokens 0 whenever
+# `enable_thinking: false` was sent, so every tool-using Ask answer was empty.
+# The agent loop's narration step (config.thinking_after_tool_required)
+# states thinking ON for these models instead of OFF. Summary paths, which
+# carry no tool messages, still use no_thinking_capable above.
+thinking_required_after_tool:
+  - "gemma-4-E4B-it-oQ4e-mtp"
 
 # Models whose think block Wisp states EXPLICITLY on every request, both
 # `enable_thinking: true` and `false`, instead of omitting the kwarg to mean
@@ -149,3 +167,13 @@ idle_unload_minutes: 5
 # Set it before turning on guided grammar, not after — and note that oMLX
 # auto-applies a thinking_budget to grammar-constrained requests when a parser
 # IS set, which force-closes <think> and can leak the monologue into content.
+
+# Test switch: when true, the model answers every /agent turn and typed tasks,
+# delivery workflows, router reads/direct calls and verbatim tool
+# short-circuits are skipped. Safety policy and confirmations still apply.
+# WISP_MODEL_ONLY=1/0 overrides it; ~/.moe/config.yaml can set it too.
+model_only: false
+
+# Gemma 4 E4B returns zero tokens when it narrates after a tool result with
+# thinking off, so model-only narration steps keep thinking on.
+model_only_narration_thinking: true

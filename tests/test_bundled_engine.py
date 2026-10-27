@@ -197,7 +197,8 @@ def test_key_and_settings_persistence() -> None:
         again = EngineManager(layout)
         check("restart keeps the key", again.api_key == first.api_key)
         doc = json.loads(layout.settings_path.read_text())
-        check("fresh settings do not set a vendor memory profile", "memory" not in doc)
+        check("fresh settings start the memory guard on aggressive",
+              doc.get("memory") == {"memory_guard_tier": "aggressive"})
         memory = {"memory_guard_tier": "balanced", "prefill_memory_guard": True,
                   "max_process_memory": "70%", "max_model_memory": "60%"}
         doc["memory"] = memory
@@ -461,9 +462,38 @@ def test_quit_keeps_the_engine_stopped() -> None:
             m.stop()
 
 
+def test_quit_kills_an_engine_that_ignores_sigterm() -> None:
+    # A busy engine can sit on SIGTERM. Quitting gives it a bounded grace, then kills it:
+    # the app stops the backend soon after, and an engine still running then keeps the
+    # model's memory after Wisp has gone.
+    with tempfile.TemporaryDirectory() as t:
+        layout = EngineLayout(root=Path(t) / "engine", data_dir=Path(t) / "data")
+        ready = Path(t) / "ready"
+        stubborn = [sys.executable, "-c",
+                    "import pathlib, signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                    f"pathlib.Path({str(ready)!r}).touch(); time.sleep(60)"]
+        m = EngineManager(layout, port=free_port(), api_key=KEY, launcher=stubborn)
+        try:
+            m.start()
+            proc = m._proc
+            for _ in range(100):
+                if ready.exists():
+                    break
+                time.sleep(0.05)
+            check("stubborn engine up", ready.exists() and proc.poll() is None)
+            began = time.monotonic()
+            m.close(grace=0.5)
+            check("close returns within its bound", time.monotonic() - began < 3)
+            check("an engine that ignores SIGTERM is killed", proc.poll() is not None)
+            check("its pid file is gone", not layout.pid_path.exists())
+        finally:
+            m.stop()
+
+
 def main() -> int:
     plain = (test_builders, test_refusals, test_prepare_permissions, test_key_and_settings_persistence)
-    live = (test_lifecycle, test_quit_keeps_the_engine_stopped, test_busy_port, test_reaps_orphan, test_reap_only_the_launched_engine,
+    live = (test_lifecycle, test_quit_keeps_the_engine_stopped, test_quit_kills_an_engine_that_ignores_sigterm,
+            test_busy_port, test_reaps_orphan, test_reap_only_the_launched_engine,
             test_audit_followups)
     for fn in plain:
         run_or_skip(fn, False)

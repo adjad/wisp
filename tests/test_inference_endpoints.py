@@ -208,6 +208,129 @@ def test_remote_lifecycle_never_restarts_local(monkeypatch):
     asyncio.run(run())
 
 
+def _quit_cli(tmp_path, status: int = 0):
+    """A stand-in omlx-cli that records its arguments (sh builtins only)."""
+    cli, seen = tmp_path / "omlx-cli", tmp_path / "args"
+    cli.write_text(f'#!/bin/sh\necho "$@" > "{seen}"\nexit {status}\n')
+    cli.chmod(0o755)
+    return cli, seen
+
+
+def test_quit_unloads_the_users_omlx_then_waits_for_the_stop(monkeypatch, tmp_path):
+    # Quitting used to fire `omlx-cli stop` and answer at once. The app then stopped the
+    # backend and exited, and a stop still starting up never ran: oMLX kept running.
+    from service import main
+    order = []
+
+    class Local:
+        managed = True
+
+        async def loaded_models(self):
+            order.append("status")
+            return ["a", "b"]
+
+        async def unload(self, model):
+            order.append(f"unload {model}")
+
+    cli, seen = _quit_cli(tmp_path)
+    monkeypatch.setattr(main, "client", Local(), raising=False)
+    monkeypatch.setattr(main, "is_bundled", lambda: False)
+    monkeypatch.setattr(main, "OMLX_CLI", str(cli))
+    monkeypatch.setattr(main, "_quitting", False)
+    assert asyncio.run(main.shutdown_omlx()) == {"stopped": True, "unloaded": ["a", "b"]}
+    assert order == ["status", "unload a", "unload b"]
+    assert seen.read_text().split() == ["stop", "--timeout", "5"]
+
+
+def test_after_quit_a_late_model_call_does_not_restart_omlx(monkeypatch):
+    from service import main
+    cli = AsyncMock(return_value=True)
+
+    async def down(seconds):
+        return False
+
+    monkeypatch.setattr(main, "client", type("Local", (), {"managed": True})(), raising=False)
+    monkeypatch.setattr(main, "is_bundled", lambda: False)
+    monkeypatch.setattr(main, "_await_omlx", down)
+    monkeypatch.setattr(main, "_omlx_cli", cli)
+    monkeypatch.setattr(main, "_quitting", True)
+    monkeypatch.setattr(main, "require_local_models_disabled", lambda *a: None, raising=False)
+    with pytest.raises(ModelLoadError):
+        asyncio.run(main.ensure_omlx())
+    cli.assert_not_called()
+
+
+def test_one_refused_unload_does_not_keep_the_rest_loaded(monkeypatch, tmp_path):
+    from service import main
+
+    class Local:
+        managed = True
+
+        async def loaded_models(self):
+            return ["pinned", "b"]
+
+        async def unload(self, model):
+            if model == "pinned":
+                raise RuntimeError("busy")
+
+    cli, _ = _quit_cli(tmp_path)
+    monkeypatch.setattr(main, "client", Local(), raising=False)
+    monkeypatch.setattr(main, "is_bundled", lambda: False)
+    monkeypatch.setattr(main, "OMLX_CLI", str(cli))
+    monkeypatch.setattr(main, "_quitting", False)
+    assert asyncio.run(main.shutdown_omlx()) == {"stopped": True, "unloaded": ["b"]}
+
+
+def test_quit_still_stops_when_the_engine_does_not_answer(monkeypatch, tmp_path):
+    from service import main
+
+    class Hung:
+        managed = True
+
+        async def loaded_models(self):
+            await asyncio.sleep(60)
+
+    cli, seen = _quit_cli(tmp_path, status=1)
+    monkeypatch.setattr(main, "client", Hung(), raising=False)
+    monkeypatch.setattr(main, "is_bundled", lambda: False)
+    monkeypatch.setattr(main, "OMLX_CLI", str(cli))
+    monkeypatch.setattr(main, "_QUIT_UNLOAD_SECONDS", 0.05)
+    monkeypatch.setattr(main, "_quitting", False)
+    assert asyncio.run(main.shutdown_omlx()) == {"stopped": False, "unloaded": []}
+    assert seen.read_text().split()[0] == "stop"
+    monkeypatch.setattr(main, "OMLX_CLI", str(tmp_path / "missing"))
+    assert asyncio.run(main.shutdown_omlx()) == {"stopped": False, "unloaded": []}
+
+
+def test_quit_bounds_the_bundled_stop(monkeypatch):
+    import importlib
+    from service import main
+    # The module the endpoint will import, even if another test dropped it from sys.modules.
+    runtime = importlib.import_module("service.engine.runtime")
+    seen = []
+    monkeypatch.setattr(main, "client", type("Local", (), {"managed": True})(), raising=False)
+    monkeypatch.setattr(main, "is_bundled", lambda: True)
+    monkeypatch.setattr(runtime, "stop_if_running", lambda **kw: seen.append(kw) or True)
+    monkeypatch.setattr(main, "_quitting", False)
+    assert asyncio.run(main.shutdown_omlx()) == {"stopped": True}
+    assert seen == [{"final": True, "grace": main._QUIT_STOP_SECONDS}]
+
+
+def test_the_app_waits_longer_than_the_quit_stop_takes():
+    # If the app stops waiting first, it stops the backend while the engine is still
+    # leaving, and an engine that has not left by then keeps its models loaded.
+    import re
+    from pathlib import Path
+    from service import main
+    swift = (Path(__file__).resolve().parent.parent / "app/Sources/WispApp/WispClient.swift").read_text()
+    body = swift[swift.index("func shutdownOMLX"):]
+    body = body[:body.index("\n    }\n")]
+    wait = float(re.search(r"timeoutInterval = (\d+(?:\.\d+)?)", body).group(1))
+    bundled = main._QUIT_STOP_SECONDS + 1            # SIGTERM grace, then SIGKILL
+    external = main._QUIT_UNLOAD_SECONDS + main._QUIT_STOP_SECONDS + 1
+    assert wait > max(bundled, external)
+
+
 def test_remote_context_preserves_runtime_system(configured):
     async def run():
         c = OMLXClient(target=role_target("coding"))

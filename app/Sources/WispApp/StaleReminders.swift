@@ -99,6 +99,20 @@ final class StaleRemindersModel: ObservableObject {
 
     func keep(_ ask: StaleReminderAsk) async { await answer(ask, action: "keep") }
 
+    /// Keep every reminder asked about, one at a time; stops at the first
+    /// failure, which stays on its row. Keeping never changes Reminders.
+    func keepAll() async {
+        guard answering == nil else { return }
+        for ask in asks {
+            await answer(ask, action: "keep")
+            if failures[ask.sourceID] != nil { return }
+        }
+    }
+
+    /// The section's one line about the rule, said once and never as a count of
+    /// what it hides.
+    static let explanation = "Wisp leaves reminders over a week old out of your day unless you keep them."
+
     func delete(_ ask: StaleReminderAsk) async {
         guard !deleteBlocked.contains(ask.sourceID) else { return }
         await answer(ask, action: "delete")

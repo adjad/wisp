@@ -4,9 +4,11 @@ import SQLite3
 // Reads Mail headers/history straight from Mail's own on-disk index
 // (~/Library/Mail/V*/MailData/Envelope Index) instead of scripting Mail.app —
 // so the 5-min header sync and 2-year history backfill never have to launch
-// Mail just to answer "what's in my inbox". Same Full Disk Access grant
-// BrowserHistoryReader/MessagesReader already use for their direct-SQLite
-// reads (Permissions.swift requests it once at first launch).
+// Mail just to answer "what's in my inbox". It needs Full Disk Access, the
+// same grant MessagesReader and BrowserHistoryReader use for their direct
+// SQLite reads. macOS has no prompt for it: the person turns it on in System
+// Settings (first-run setup's Full Disk Access row opens that page). Without
+// it this reader returns nil, and closedReadFailure() says why.
 //
 // Two roles. For recent HEADERS it is a fallback: MailReader's AppleScript
 // path stays primary whenever Mail is open (it also resolves account display
@@ -23,10 +25,66 @@ import SQLite3
 // this wrong and every header silently sorts as decades off.
 final class MailDBReader {
     private let indexPath: String?
+    private let mailDirectory: String
 
     // An explicit path lets regression tests exercise SQLite with fixtures,
     // without touching the user's Mail database. Production discovers it.
-    init(indexPath: String? = nil) { self.indexPath = indexPath }
+    // `mailDirectory` is ~/Library/Mail unless a test supplies a fixture folder.
+    init(indexPath: String? = nil, mailDirectory: String? = nil) {
+        self.indexPath = indexPath
+        self.mailDirectory = mailDirectory
+            ?? (NSHomeDirectory() as NSString).appendingPathComponent("Library/Mail")
+    }
+
+    /// Why Mail can't be read while it is closed, for MailReader's diagnostics.
+    /// Called only after the index read failed. `kind` is the `reason_kind`
+    /// the Brief keys its button on ("" when no setting would help).
+    func closedReadFailure() -> (kind: String, reason: String) {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: mailDirectory, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+        var listErrno: Int32 = 0
+        var hasIndex = false
+        if exists {
+            if let dir = opendir(mailDirectory) {
+                closedir(dir)
+                let entries = (try? FileManager.default.contentsOfDirectory(atPath: mailDirectory)) ?? []
+                hasIndex = entries.contains { entry in
+                    entry.hasPrefix("V") && FileManager.default.fileExists(
+                        atPath: "\(mailDirectory)/\(entry)/MailData/Envelope Index")
+                }
+            } else {
+                listErrno = errno
+            }
+        }
+        return Self.closedReadFailure(mailDirectoryExists: exists, listErrno: listErrno, hasIndex: hasIndex)
+    }
+
+    /// The rule behind closedReadFailure(), from what the file system said.
+    ///
+    /// - IMPORTANT: Full Disk Access only when macOS refused the folder (EPERM,
+    ///   its privacy denial), the same rule as MessagesReadFailure. Any other
+    ///   error keeps a plain reason, so nobody is sent to the wrong setting.
+    /// - No ~/Library/Mail, or no Envelope Index in any V* folder: Mail has no
+    ///   account set up yet.
+    /// - Index present but unreadable (locked, damaged): nothing to grant.
+    static func closedReadFailure(mailDirectoryExists: Bool, listErrno: Int32,
+                                  hasIndex: Bool) -> (kind: String, reason: String) {
+        guard mailDirectoryExists else { return notConfigured }
+        if listErrno == EPERM {
+            return (kind: "full_disk_access",
+                    reason: "Wisp reads Mail while Mail is open. Open Mail, or give Wisp Full Disk Access "
+                        + "to read it when Mail is closed.")
+        }
+        if listErrno != 0 {
+            return (kind: "", reason: "Wisp couldn't open Mail's folder. Open Mail, and Wisp will read it from there.")
+        }
+        guard hasIndex else { return notConfigured }
+        return (kind: "", reason: "Mail's saved index couldn't be read just now. Open Mail, and Wisp will read it from there.")
+    }
+
+    private static let notConfigured = (kind: "mail_not_configured",
+        reason: "Mail isn't set up on this Mac yet. Add an account in Mail, and Wisp will read it from there.")
 
     // Matches MailReader's own constants so the two paths produce
     // comparably-scoped output regardless of which one answers a given tick.
@@ -43,7 +101,7 @@ final class MailDBReader {
     private let historyCap = 12000
 
     private func envelopeIndexPath() -> String? {
-        let mailDir = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Mail")
+        let mailDir = mailDirectory
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: mailDir) else { return nil }
         // Highest "V<N>" wins — that's always the current format version;
         // stale V<N-1> directories can linger after a macOS upgrade.

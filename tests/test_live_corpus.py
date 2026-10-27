@@ -8,6 +8,24 @@ from service import corpus
 from service.tools.registry import REGISTRY, Tool
 
 
+@pytest.fixture(autouse=True)
+def saved_runs(tmp_path, monkeypatch):
+    """Every case a test streams is saved under tmp_path, never ~/.moe."""
+    directory = tmp_path / "corpus-runs"
+    monkeypatch.setattr(corpus, "RUNS_DIR", directory)
+    monkeypatch.setattr(corpus, "_run_state", {"id": "", "last": 0.0})
+    return directory
+
+
+@pytest.fixture(autouse=True)
+def chats(tmp_path, monkeypatch):
+    """Cases are saved as chats in a scratch sessions.db, never ~/.moe."""
+    from service.memory.store import SessionStore
+    store = SessionStore(tmp_path / "sessions.db")
+    monkeypatch.setattr(corpus, "_session_store", lambda: store)
+    return store
+
+
 def example(category="messages", target="Example Person"):
     return {"category": category, "target": target}
 
@@ -288,13 +306,14 @@ def test_reconciled_notch_restores_empty_input_before_corpus_dispatch():
     submit = source.split("    func submit() {", 1)[1].split("    func canStartCorpusCommand()", 1)[0]
     restore = submit.index("if let back = setAside.restore()")
     resume = submit.index("submissionState.resume()")
-    corpus = submit.index("if NotchCommand.isCorpusRequest(prompt)")
-    slash = submit.index("if let command = NotchCommand.match(prompt)")
+    # The corpus command is a Debug Mode tool, so it only starts in Debug Mode.
+    corpus = submit.index("if debugMode, NotchCommand.isCorpusRequest(prompt)")
+    slash = submit.index("if let command = NotchCommand.match(prompt")
     assert restore < resume < corpus < slash
     assert "researchMode = back.researchMode" in submit[:corpus]
     assert "syncQueue(); start(next)" in submit[:corpus]
     assert "else if !corpusBusy, let next = submissionState.resume()" in submit[:corpus]
-    assert "return\n        }\n        cancelAttachmentRead()\n        if NotchCommand.isCorpusRequest" in submit
+    assert "return\n        }\n        cancelAttachmentRead()\n        if debugMode, NotchCommand.isCorpusRequest" in submit
     dispatch = source.split("    private func start(_ dispatch: PromptDispatch)", 1)[1].split("        let prompt = submission.text", 1)[0]
     assert dispatch.index("guard case .prompt") < dispatch.index("onHideCorpus()") < dispatch.index("stopSyncProgress()")
 
@@ -643,3 +662,376 @@ def test_corpus_mail_reader_discloses_count_coverage(corpus_mail_reader):
         result = asyncio.run(email.view_emails_impl(query="alice@example.invalid", strict_match=True, count=3))
     assert "returned 3 of 4" in result and "count=3" in result
     assert "FIXTURE-0" not in result and all(f"FIXTURE-{i}" in result for i in range(1, 4))
+
+
+def stream_fake_case(monkeypatch, events, fail=None):
+    profile = {"contacts": ["Example Person"], "mail_queries": []}
+    monkeypatch.setattr(corpus, "load_profile", lambda: profile)
+    case = corpus.live_cases(profile)[0]
+    async def fake_run(case, emit):
+        for event in events:
+            await emit(event)
+        if fail:
+            raise fail
+    monkeypatch.setattr(corpus, "run_case", fake_run)
+    async def collect():
+        response = await corpus.run({"case_id": case["id"], "token": case["token"]})
+        return [json.loads(frame.removeprefix("data: ")) async for frame in response.body_iterator]
+    return case, asyncio.run(collect())
+
+
+FAKE_EVENTS = [
+    {"type": "routed", "model": "local-test", "role": "agent", "route_source": "corpus_live_model"},
+    {"type": "corpus_model", "completed": 0, "started": 1},
+    {"type": "tool_call", "id": "c1", "name": "lookup_contact", "args": {"name": "Example Person"}},
+    {"type": "tool_result", "id": "c1", "result": "Example Person: synthetic" + "x" * 5000},
+    {"type": "clear_answer"},
+    {"type": "text", "text": "Example Person is in your contacts."},
+    {"type": "corpus_model", "completed": 1, "started": 1},
+    {"type": "done"},
+]
+
+
+def test_finished_case_is_saved_once_owner_only(monkeypatch, saved_runs):
+    case, events = stream_fake_case(monkeypatch, FAKE_EVENTS)
+    assert events[-1]["type"] == "done"
+    files = list(saved_runs.glob("*.jsonl"))
+    assert len(files) == 1
+    assert saved_runs.stat().st_mode & 0o777 == 0o700
+    assert files[0].stat().st_mode & 0o777 == 0o600
+    lines = [json.loads(text) for text in files[0].read_text().splitlines()]
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["case_id"] == case["id"] and line["category"] == case["category"]
+    assert line["prompt"] == case["conversation"][-1]["content"]
+    assert (line["model"], line["role"], line["route_source"]) == ("local-test", "agent", "corpus_live_model")
+    assert line["tools"] == [{"id": "c1", "name": "lookup_contact", "args": {"name": "Example Person"},
+                              "result": ("Example Person: synthetic" + "x" * 5000)[:corpus.RESULT_EXCERPT]}]
+    assert line["answer"] == "Example Person is in your contacts."
+    assert line["status"] == "done" and line["error"] == ""
+    assert line["inference_verified"] is True and line["model_calls"] == 1
+    assert isinstance(line["latency_s"], float) and line["run_id"] and files[0].stem == line["date"]
+
+
+def test_failed_case_saves_the_safe_error(monkeypatch, saved_runs):
+    _, events = stream_fake_case(monkeypatch, FAKE_EVENTS[:4], fail=RuntimeError("secret provider body"))
+    assert events[-1]["type"] == "error"
+    line = json.loads(next(saved_runs.glob("*.jsonl")).read_text())
+    assert line["status"] == "error" and line["error"] == events[-1]["message"]
+    assert "secret provider body" not in json.dumps(line)
+    assert line["inference_verified"] is False
+
+
+def test_save_failure_never_breaks_the_stream(monkeypatch, tmp_path, caplog):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("file")
+    monkeypatch.setattr(corpus, "RUNS_DIR", blocker / "corpus-runs")
+    with caplog.at_level("WARNING", logger="service.corpus"):
+        _, events = stream_fake_case(monkeypatch, FAKE_EVENTS)
+    assert events[-1]["type"] == "done"
+    assert sum(e["type"] == "done" for e in events) == 1
+    assert "was not saved" in caplog.text
+
+
+def test_cases_close_together_share_a_run_and_a_gap_starts_another():
+    first = corpus.current_run_id(now=1000.0)
+    assert corpus.current_run_id(now=1000.0 + corpus.RUN_GAP_S - 1) == first
+    assert corpus.current_run_id(now=1000.0 + 3 * corpus.RUN_GAP_S) != first
+
+
+def test_runs_list_and_export_the_latest_run(saved_runs):
+    def line(run, case, started, **extra):
+        return {"run_id": run, "date": "2026-10-23", "started_at": started, "case_id": case,
+                "category": "messages", "prompt": f"What did {case} say?", "model": "local-test", "role": "agent",
+                "route_source": "corpus_live_model", "tools": [], "answer": "", "status": "done", "error": "",
+                "latency_s": 1.5, "model_calls": 1, "inference_verified": True, **extra}
+    corpus.persist(line("run-a", "LIVE-001", "2026-10-23T09:00:00-07:00"))
+    corpus.persist(line("run-b", "LIVE-001", "2026-10-23T10:00:00-07:00",
+                        tools=[{"id": "c1", "name": "view_messages", "args": {"conversation": "Mom", "count": 5},
+                                "result": "line one\nline two"}],
+                        answer="Mom asked about dinner.\n\nShe said 7, \"maybe\"."))
+    corpus.persist(line("run-b", "LIVE-002", "2026-10-23T10:00:05-07:00", status="error",
+                        error="Live corpus case could not finish (TimeoutError).", inference_verified=False))
+    (saved_runs / "2026-10-23.jsonl").open("a").write("not json\n")
+    runs = corpus.runs()["runs"]
+    assert [(r["run_id"], r["cases"], r["done"], r["errors"], r["verified"]) for r in runs] == [
+        ("run-b", 2, 1, 1, 1), ("run-a", 1, 1, 0, 1)]
+    markdown = corpus.export_md("2026-10-23").body.decode()
+    assert markdown.startswith("# Wisp corpus run run-b")
+    assert "2 cases · 1 done · 1 errors · 1 with verified inference" in markdown
+    assert "## LIVE-001 · messages · done" in markdown and "## LIVE-002 · messages · error" in markdown
+    assert "**Prompt:** What did LIVE-001 say?" in markdown
+    assert '- `view_messages` {"conversation": "Mom", "count": 5}' in markdown
+    assert "  > line one line two" in markdown
+    assert "> Mom asked about dinner.\n>\n> She said 7" in markdown
+    assert "**Error:** Live corpus case could not finish (TimeoutError)." in markdown
+    assert "run-a" not in markdown
+    assert "# Wisp corpus run run-a" in corpus.export_md("2026-10-23", run_id="run-a").body.decode()
+    import csv as csv_module, io
+    rows = list(csv_module.reader(io.StringIO(corpus.export_csv_route("2026-10-23").body.decode())))
+    assert rows[0] == corpus.CSV_COLUMNS
+    column = {name: i for i, name in enumerate(corpus.CSV_COLUMNS)}
+    assert [row[column["case_id"]] for row in rows[1:]] == ["LIVE-001", "LIVE-002"]
+    assert rows[1][column["tools"]] == "view_messages"
+    assert rows[1][column["answer"]] == 'Mom asked about dinner.\n\nShe said 7, "maybe".'
+    from fastapi import HTTPException
+    for date, run_id in (("2026-10-24", None), ("../etc", None), ("2026-10-23", "../x"), ("2026-10-23", "missing")):
+        with pytest.raises(HTTPException):
+            corpus.export_md(date, run_id=run_id)
+
+
+def test_bounded_case_is_saved_as_a_titled_chat(monkeypatch, chats, saved_runs):
+    case, events = stream_fake_case(monkeypatch, FAKE_EVENTS)
+    listed = chats.list_chats()
+    assert len(listed) == 1
+    title = f"Corpus · {case['id']} · {case['conversation'][-1]['content']}"
+    assert listed[0]["title"] == (title if len(title) <= 60 else title[:59].rstrip() + "\u2026")
+    turns = chats.display_turns_from(listed[0]["id"], 0)
+    assert [(t["role"], t["content"]) for t in turns] == [
+        ("user", case["conversation"][-1]["content"]), ("assistant", "Example Person is in your contacts.")]
+    line = json.loads(next(saved_runs.glob("*.jsonl")).read_text())
+    assert line["session_id"] == listed[0]["id"] and line["mode"] == "bounded"
+    assert not any(e["type"] == "session" for e in events)
+
+
+def test_normal_mode_uses_the_agent_path_and_declines_every_change(monkeypatch, chats, saved_runs):
+    import sys
+    from types import SimpleNamespace
+    from service.agent.approver import InteractiveApprover
+    from service.safety import policy
+    from service.safety.policy import Tier
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    # Precondition: under full access this write would run without asking.
+    assert policy.decide("assistant_write", {"title": "x"}, "add_reminder").tier is Tier.ALLOW
+    profile = {"contacts": ["Example Person"], "mail_queries": []}
+    monkeypatch.setattr(corpus, "load_profile", lambda: profile)
+    case = corpus.live_cases(profile)[0]
+    answer = "Here is what I found.\n\n" + "A long, real answer. " * 60 + "\nI would ask before adding that reminder."
+    seen = {}
+
+    async def agent(body):
+        seen["body"] = body
+        sid = body.get("session_id") or chats.create_session()
+
+        async def frames():
+            yield f"data: {json.dumps({'type': 'session', 'id': sid})}\n\n"
+            yield 'data: {"type": "routed", "model": "ling", "role": "agent", "route_source": "router"}\n\n'
+            decision = policy.decide("assistant_write", {"title": "x"}, "add_reminder")
+            seen["tier"] = decision.tier
+            emitted = []
+            async def collect(event):
+                emitted.append(event)
+            approved = await InteractiveApprover(collect).confirm(
+                {"id": "c1", "tool": "add_reminder", "reason": decision.reason, "args": {"title": "x"}})
+            seen["approved"] = approved
+            yield f"data: {json.dumps({'type': 'tool_call', 'id': 'c1', 'name': 'add_reminder', 'args': {'title': 'x'}})}\n\n"
+            for event in emitted:
+                yield f"data: {json.dumps(event)}\n\n"
+            yield f"data: {json.dumps({'type': 'tool_result', 'id': 'c1', 'result': 'User denied add_reminder.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'text', 'text': answer})}\n\n"
+            yield 'data: {"type": "done"}\n\n'
+            # /agent saves the turn after `done`; the runner must still be reading.
+            chats.add_turn(sid, "user", body["prompt"])
+            chats.add_turn(sid, "assistant", answer, tool_digest="add_reminder")
+            seen["saved"] = True
+        return SimpleNamespace(body_iterator=frames())
+
+    monkeypatch.setitem(sys.modules, "service.main", SimpleNamespace(agent=agent))
+    monkeypatch.setattr(corpus, "run_case", lambda *a: pytest.fail("bounded runner used in normal mode"))
+
+    async def collect():
+        response = await corpus.run({"case_id": case["id"], "token": case["token"], "mode": "normal"})
+        return [json.loads(frame.removeprefix("data: ")) async for frame in response.body_iterator]
+    events = asyncio.run(collect())
+    # Wisp's own session, made and titled by the runner before any turn is saved.
+    assert seen["body"] == {"prompt": case["conversation"][-1]["content"], "debug": False,
+                            "session_id": seen["body"]["session_id"]}
+    assert chats.is_corpus_session(seen["body"]["session_id"])
+    assert seen["tier"] is Tier.CONFIRM and seen["approved"] is False and seen["saved"]
+    assert not any(e["type"] in ("session", "confirm") for e in events)
+    assert any(e["type"] == "corpus_declined" and e["tool"] == "add_reminder" for e in events)
+    assert events[-1]["type"] == "done" and sum(e["type"] == "done" for e in events) == 1
+    # The scope ends with the case: the user's own turns are untouched.
+    assert policy.decide("assistant_write", {"title": "x"}, "add_reminder").tier is Tier.ALLOW
+    line = json.loads(next(saved_runs.glob("*.jsonl")).read_text())
+    assert line["mode"] == "normal" and line["status"] == "done" and line["answer"] == answer
+    assert line["confirmations"] == [{"tool": "add_reminder", "reason": seen_reason(policy)}]
+    assert line["inference_verified"] is None
+    listed = chats.list_chats()
+    assert [c["id"] for c in listed] == [line["session_id"]]
+    assert listed[0]["title"].startswith(f"Corpus · {case['id']} · ")
+    assert [t["content"] for t in chats.display_turns_from(line["session_id"], 0)] == [
+        case["conversation"][-1]["content"], answer]
+    markdown = corpus.export_md(line["date"]).body.decode()
+    assert "**Mode:** normal" in markdown and "inference not tracked" in markdown
+    assert "- Would ask to confirm `add_reminder`:" in markdown and "(declined)" in markdown
+    assert "\n".join("> " + row if row else ">" for row in answer.splitlines()) in markdown
+    import csv as csv_module, io
+    rows = list(csv_module.reader(io.StringIO(corpus.export_csv_route(line["date"]).body.decode())))
+    column = {name: i for i, name in enumerate(corpus.CSV_COLUMNS)}
+    assert rows[1][column["answer"]] == answer and rows[1][column["mode"]] == "normal"
+    assert rows[1][column["would_confirm"]] == "add_reminder"
+    assert rows[1][column["session_id"]] == line["session_id"]
+
+
+def seen_reason(policy):
+    return "review run: Wisp would ask before add_reminder"
+
+
+def test_unknown_mode_is_refused(monkeypatch):
+    from fastapi import HTTPException
+    profile = {"contacts": ["Example Person"], "mail_queries": []}
+    monkeypatch.setattr(corpus, "load_profile", lambda: profile)
+    case = corpus.live_cases(profile)[0]
+    with pytest.raises(HTTPException):
+        asyncio.run(corpus.run({"case_id": case["id"], "token": case["token"], "mode": "unbounded"}))
+
+
+def test_a_corpus_chat_stays_out_of_memory_behaviour_and_search(monkeypatch, chats, saved_runs):
+    """A test prompt is not something the user said: no memory extraction job,
+    no wisp_ask observation, no conversation search or recall hit."""
+    from types import SimpleNamespace
+    from service.assistant.behavior_runtime import BehaviorRuntime
+    from service.memory.queue import MemoryQueue
+
+    class NoFacts:
+        def suppressed_source(self, *a): return False
+        def suppressed_text(self, *a): return False
+
+    def jobs(sid=None):
+        with chats._lock:
+            return chats._db.execute("SELECT session_id FROM memory_jobs" + (" WHERE session_id=?" if sid else ""),
+                                     (sid,) if sid else ()).fetchall()
+
+    case, _ = stream_fake_case(monkeypatch, FAKE_EVENTS)
+    prompt = case["conversation"][-1]["content"]
+    corpus_sid = chats.list_chats()[0]["id"]
+    assert chats.is_corpus_session(corpus_sid) and jobs(corpus_sid) == []
+    # The user's own chat with the same words is still remembered and found.
+    own = chats.create_session()
+    chats.add_turn(own, "user", prompt)
+    assert not chats.is_corpus_session(own) and len(jobs(own)) == 1
+    queue = MemoryQueue(chats)
+    found = queue.search(prompt, NoFacts(), 15)
+    assert found and {r["session_id"] for r in found} == {own}
+    assert queue.source_context(corpus_sid, 0, NoFacts()) is None
+    # A job queued for a corpus chat later (the trigger fires on every user
+    # turn) is never claimed, and startup recovery removes it.
+    chats.add_turn(corpus_sid, "user", "I prefer tea.")
+    assert len(jobs(corpus_sid)) == 1
+    claimed = queue.next()
+    assert claimed["session_id"] == own
+    assert queue.next() is None and not queue.has_ready()
+    queue.recover()
+    assert jobs(corpus_sid) == [] and len(jobs(own)) == 1
+    assert queue.pilot() == 0
+    observed = []
+    fake = SimpleNamespace(_session_db_fn=lambda: chats,
+                           call=lambda name, obs: observed.extend(obs) or True)
+    import time
+    assert BehaviorRuntime._ingest_asks(fake, time.time() + 1)
+    assert {o.id.split(":")[1] for o in observed} == {own}
+
+
+def test_review_scope_policy_matrix_under_full_access_and_a_standing_grant(monkeypatch):
+    """The real decide(): under full access AND an "always allow" grant for
+    every tool, a review run asks before anything that is not a trusted read."""
+    from service.safety import grants, policy
+    from service.safety.policy import Tier, review_scope
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(grants, "check", lambda tool, args: "allow")
+    changes = [("email_send", "send_email", {"to": "person@example.com", "body": "hi"}),
+               ("fs_delete", "delete_file", {"path": "/Users/example/Documents/old.txt"}),
+               ("calendar_write", "add_event", {"title": "x"}),
+               ("shell", "run_shell", {"cmd": "echo hi"}),
+               ("app_control", "open_app", {"name": "Notes"}),
+               ("mcp_action", "mcp__server__do", {}),
+               ("mcp_read", "mcp__server__list", {}),
+               ("assistant_write", "add_reminder", {"title": "x"}),
+               ("fs_write", "write_file", {"path": "/Users/example/Documents/a.txt", "content": "x"})]
+    reads = [("fs_read", "read_file", {"path": "/Users/example/Documents/a.txt"}),
+             ("assistant_read", "get_upcoming", {}), ("compute", "calculate", {"expr": "1+1"})]
+    outside = {tool: policy.decide(c, a, tool).tier for c, tool, a in changes}
+    # Precondition: most of these would run unasked for this user.
+    assert sum(t is Tier.ALLOW for t in outside.values()) >= 5, outside
+    with review_scope():
+        for category, tool, args in changes:
+            decision = policy.decide(category, args, tool)
+            assert decision.tier is Tier.CONFIRM, (category, decision)
+        for category, tool, args in reads:
+            assert policy.decide(category, args, tool).tier is Tier.ALLOW, category
+    assert {tool: policy.decide(c, a, tool).tier for c, tool, a in changes} == outside
+
+
+def test_the_real_approver_declines_in_a_review_run_without_a_card():
+    from service.agent.approver import InteractiveApprover
+    from service.safety.policy import review_scope
+    emitted = []
+
+    async def emit(event):
+        emitted.append(event)
+
+    async def ask():
+        approver = InteractiveApprover(emit, timeout=0.5, request_id="r1")
+        with review_scope():
+            return await approver.confirm({"id": "a1", "tool": "send_email", "reason": "sends",
+                                           "args": {"to": "person@example.com"}, "preview": "x" * 900})
+    assert asyncio.run(ask()) is False
+    assert [e["type"] for e in emitted] == ["corpus_declined"]
+    assert emitted[0]["tool"] == "send_email" and emitted[0]["request_id"] == "r1"
+    assert len(emitted[0]["preview"]) == 400
+
+
+def test_review_scope_does_not_reach_a_concurrent_turn(monkeypatch):
+    """The user's own turn, running while a review case runs, keeps its access."""
+    from service.safety import policy
+    from service.safety.policy import Tier, review_only, review_scope
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+
+    async def main():
+        started, reviewing = asyncio.Event(), asyncio.Event()
+
+        async def users_turn():
+            started.set()
+            await reviewing.wait()
+            return review_only(), policy.decide("assistant_write", {"title": "x"}, "add_reminder").tier
+
+        async def review_case():
+            with review_scope():
+                # A task the review case starts inherits the scope.
+                inner = asyncio.create_task(asyncio.sleep(0, result=review_only()))
+                await started.wait()
+                reviewing.set()
+                await asyncio.sleep(0)
+                return await inner, policy.decide("assistant_write", {"title": "x"}, "add_reminder").tier
+
+        user = asyncio.create_task(users_turn())
+        review = asyncio.create_task(review_case())
+        return await user, await review
+    (user_scoped, user_tier), (inner_scoped, review_tier) = asyncio.run(main())
+    assert user_scoped is False and user_tier is Tier.ALLOW
+    assert inner_scoped is True and review_tier is Tier.CONFIRM
+
+
+def test_normal_mode_waits_for_the_users_turn_then_refuses(monkeypatch, chats, saved_runs):
+    import sys
+    from types import SimpleNamespace
+    from service import idle
+    profile = {"contacts": ["Example Person"], "mail_queries": []}
+    monkeypatch.setattr(corpus, "load_profile", lambda: profile)
+    monkeypatch.setattr(corpus, "BUSY_WAIT_S", 0.6)
+    monkeypatch.setattr(idle, "foreground_busy", lambda: True)
+    monkeypatch.setitem(sys.modules, "service.main",
+                        SimpleNamespace(agent=lambda body: pytest.fail("started under the user's turn")))
+    case = corpus.live_cases(profile)[0]
+
+    async def collect():
+        response = await corpus.run({"case_id": case["id"], "token": case["token"], "mode": "normal"})
+        return [json.loads(frame.removeprefix("data: ")) async for frame in response.body_iterator]
+    events = asyncio.run(collect())
+    assert events[-1] == {"type": "error", "message": corpus.BUSY_MESSAGE}
+    line = json.loads(next(saved_runs.glob("*.jsonl")).read_text())
+    assert line["status"] == "error" and line["error"] == corpus.BUSY_MESSAGE
