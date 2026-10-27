@@ -173,17 +173,61 @@ enum WispReset {
         let problems: [String]
         var serviceDone: Bool { phase == "erased" }
 
-        /// Nil unless it is a marker Wisp wrote: version 1, a known phase, an id.
+        /// Nil unless it is a marker Wisp wrote, by exactly the service's rules
+        /// (wisp_reset.marker_from_json; tests/fixtures/reset_markers.json holds the
+        /// cases both sides check), so a marker the service ignores is ignored here
+        /// too: version the integer 1, a known phase, an id of 1-64 ASCII letters and
+        /// digits; when present, attempts a non-negative integer, full_pass,
+        /// engine_cache and in_progress booleans, pending this reset's trash paths,
+        /// problems strings.
         static func parse(_ data: Data) -> Marker? {
             guard let doc = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  doc["version"] as? Int == 1,
-                  let phase = doc["phase"] as? String, ["started", "first-pass", "erased"].contains(phase),
-                  let id = doc["id"] as? String, !id.isEmpty, id.count <= 64,
+                  let version = doc["version"], isInteger(version), (version as? NSNumber)?.intValue == 1,
+                  let phase = doc["phase"] as? String,
+                  ["started", "first-pass", "erased"].contains(where: { $0.unicodeScalars.elementsEqual(phase.unicodeScalars) }),
+                  let id = doc["id"] as? String, (1...64).contains(id.unicodeScalars.count),
                   id.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) && $0.isASCII }) else {
                 return nil
             }
-            return Marker(id: id, phase: phase,
-                          problems: (doc["problems"] as? [Any] ?? []).compactMap { $0 as? String })
+            if let attempts = doc["attempts"] {
+                guard isInteger(attempts), let n = attempts as? NSNumber, n.int64Value >= 0 else { return nil }
+            }
+            for key in ["full_pass", "engine_cache", "in_progress"] {
+                if let value = doc[key], !isBool(value) { return nil }
+            }
+            if let pending = doc["pending"] {
+                guard let list = pending as? [Any],
+                      list.allSatisfy({ ($0 as? String).map { trashPathOK($0, id: id) } ?? false }) else { return nil }
+            }
+            var problems: [String] = []
+            if let listed = doc["problems"] {
+                guard let list = listed as? [Any], list.allSatisfy({ $0 is String }) else { return nil }
+                problems = list.compactMap { $0 as? String }
+            }
+            return Marker(id: id, phase: phase, problems: problems)
+        }
+
+        static func isBool(_ value: Any) -> Bool {
+            guard let number = value as? NSNumber, !(value is String) else { return false }
+            return CFGetTypeID(number) == CFBooleanGetTypeID()
+        }
+
+        static func isInteger(_ value: Any) -> Bool {
+            guard let number = value as? NSNumber, !(value is String), !isBool(value) else { return false }
+            return !CFNumberIsFloatType(number as CFNumber)
+        }
+
+        /// wisp_reset.trash_path_ok: this reset's trash, at the top of ~/.moe or in
+        /// engine/ or engine/base/, and nothing else.
+        static func trashPathOK(_ path: String, id: String) -> Bool {
+            let scalars = Array(path.unicodeScalars)
+            let slash = scalars.lastIndex(of: "/")
+            let folder = String(String.UnicodeScalarView(slash.map { scalars[..<$0] } ?? []))
+            let name = Array(slash.map { scalars[($0 + 1)...] } ?? scalars[...])
+            let prefix = Array(".reset-trash-\(id)-".unicodeScalars)
+            let folders = ["", "engine", "engine/base"]
+            return folders.contains(where: { $0.unicodeScalars.elementsEqual(folder.unicodeScalars) })
+                && name.count > prefix.count && Array(name.prefix(prefix.count)) == prefix
         }
     }
 
@@ -269,6 +313,21 @@ enum WispReset {
         }
     }
 
+    /// What Wisp says when its reset could not finish. It may not be temporary (a
+    /// marker that can't be written refuses every start), so it gives the way out.
+    static let unfinishedNotice = "Wisp couldn't finish its reset. Quit and reopen Wisp; if it keeps failing, "
+        + "delete ~/.moe/.reset-pending (Wisp then starts with what wasn't deleted)."
+
+    /// The app's part ran for this marker id: also kept in the app's defaults (set
+    /// right after they are cleared), so a record that couldn't be written in ~/.moe
+    /// never makes the next launch clear the defaults and reset permissions again.
+    static let appPartDoneKey = "wisp.reset.appPartDone"
+
+    /// Whether the app's part already ran for this marker.
+    static func appPartRan(markerID: String, record: AppDone?, defaultsID: String?) -> Bool {
+        record?.id == markerID || defaultsID == markerID
+    }
+
     static let markerStuckNotice = "Wisp couldn't remove its reset marker (~/.moe/.reset-pending); "
         + "delete it to stop this message."
 
@@ -276,8 +335,7 @@ enum WispReset {
     static func launchNotice(marker: Marker, appProblems: [String]) -> String? {
         let problems = marker.problems + appProblems
         if !marker.serviceDone {
-            return "Wisp couldn't finish deleting its data and tries again at the next launch."
-                + (problems.isEmpty ? "" : " " + problems.joined(separator: " "))
+            return unfinishedNotice + (problems.isEmpty ? "" : " " + problems.joined(separator: " "))
         }
         return problems.isEmpty ? nil : "Wisp was reset, but: " + problems.joined(separator: " ")
     }
