@@ -192,6 +192,40 @@ Phase 1 checks it on synthetic files.
 under `~/.moe`, which this session must not touch (the Mac is in a first-run
 test state). Mail's own bulk flags turned out to be a working substitute.
 
+### Which mail is read: Primary, Transactions and Updates only (user, 2026-10-26)
+
+The user asked that the reader skip spam and promotions, on Mail.app and on
+Gmail alike. Implemented in aed20914:
+
+- **Spam, trash and archived mail are never read.** The index lists Inbox
+  and Sent only (Gmail's Inbox and Sent labels for Gmail-over-IMAP).
+- **Mail.app categories.** Mail files each message under exactly one category,
+  stored in the `Envelope Index` (`message_global_data.model_category`: 0
+  Primary, 1 Transactions, 2 Updates, 3 Promotions). So Primary does not
+  overlap with Transactions or Updates. The queue reads Sent first, then
+  Primary, Transactions and Updates. Promotions are never read.
+- **Gmail tabs.** For an account connected through the Gmail API, mail Gmail
+  filed under Promotions, Social or Forums is dropped too, matched on the RFC
+  `Message-ID` (Mail stores all 21,886 of them with angle brackets; Gmail's
+  side is normalized to match). If that lookup fails or no account is
+  connected, Mail's category decides.
+- **No category recorded** (older mail, other accounts): person-to-person
+  mail counts as Primary, bulk mail with a transactional subject as
+  Transactions, a sales subject is skipped, and other bulk counts as Updates.
+- Your own Sent mail is always read.
+
+This Mac, inbox, last 90 days (counts only):
+
+| Category | Emails | Read? |
+| --- | --- | --- |
+| Primary | 233 | yes |
+| Transactions | 49 | yes |
+| Updates | 777 | yes |
+| Promotions | 672 | no |
+
+Updates is the large one: newsletters and notifications. It is what makes the
+3-month walk bigger than the earlier estimate (see Costs).
+
 ## Sources: when to use Gmail, when to use Mail.app
 
 The counts change the earlier recommendation. **Mail.app's disk copy is the
@@ -380,6 +414,7 @@ a long job:
 | Gemma per call | **~0.8–2.4 s** measured (reminders ~80 output tokens, facts ~30). Two calls per email: **~2–4 s per email.** |
 | `.emlx` read | Milliseconds. Gmail API fallback well under 1 s. AppleScript 18–35 s per batch. |
 | **3 months** | 60 Sent + 70 person-to-person + transactional bulk. If rules keep 10–20% of ~1,660 bulk messages, that's ~170–330 → **~300–460 emails → ~10–30 min of model time** |
+| **3 months, with the category rule** | 60 Sent + 233 Primary + 49 Transactions + 777 Updates ≈ **1,120 emails**. Phase 1 makes one reminders call per email (~1–2.5 s) → **~20–45 min of model time** |
 | **6 months** | 68 + 126 + 10–20% of ~2,760 bulk (~280–550) → **~470–750 emails → ~16–50 min of model time** |
 | How long it takes | Away mode: about **one lunch break or evening**. Between-turns mode only: ~470–750 emails × 2 calls × 90 s ≈ **24–38 hours** of between-turn time, so a few days of normal use. |
 | Steady state | ~15 inbox emails a day on this Mac, most of them bulk → **under 1 min of model time a day** |
