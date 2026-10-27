@@ -15,8 +15,9 @@ IMPORTANT rules:
 - Never loads or evicts a model. The fast role is local by construction
   (`role_target`), so mail never reaches a cloud model.
 - A user's turn wins: the call is cancelled the moment one starts.
-- Mode "shadow" (the default) extracts and records but shows nothing; "live"
-  lets the Brief show suggestions; "off" stops the walk.
+- Mode "live" (the default, the user's choice for rc2) lets the Brief show
+  the important suggestions (`importance.judge`); "shadow" extracts and records
+  but shows nothing; "off" stops the walk.
 - Logs carry counts only, never mail text.
 """
 from __future__ import annotations
@@ -33,7 +34,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from service import idle
-from service.mail_memory import extract
+from service.mail_memory import extract, importance
 from service.mail_memory.bridge import BridgeError, read_body, read_index
 from service.mail_memory.store import store
 from service.paths import MOE_DIR
@@ -68,7 +69,7 @@ def mode(path: Path | None = None) -> str:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return "shadow"
+        return "live"
     except Exception:  # noqa: BLE001 — unreadable: the user's choice is unknown, so stop
         return "off"
     value = data.get("mode") if isinstance(data, dict) else None
@@ -267,11 +268,15 @@ async def tick(*, now: float | None = None) -> float:
         st.fail(row["key"], "bad_json", now)
         return gap
     kept, dropped = extract.validate(items, email, tz=tz, today=today)
+    why: dict[str, int] = {}
+    for it in kept:
+        it["important"], it["why"] = importance.judge(it, row)
+        why[it["why"]] = why.get(it["why"], 0) + 1
     added = st.add_items(row["key"], kept, extract.EXTRACTOR, now)
     st.finish(row["key"], "done", f"model={len(items)} kept={len(kept)} added={added}", email.message_id)
     st.set_meta("last_tick", str(now))
-    log.info("mail memory tick: tier=%s box=%s model_items=%d kept=%d added=%d dropped=%s level=%s",
-             row["tier"], row["box"], len(items), len(kept), added, dropped, lvl)
+    log.info("mail memory tick: tier=%s box=%s model_items=%d kept=%d added=%d dropped=%s why=%s level=%s",
+             row["tier"], row["box"], len(items), len(kept), added, dropped, why, lvl)
     return gap
 
 

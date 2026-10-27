@@ -10,6 +10,8 @@ IMPORTANT rules:
   index (new ROWIDs) refreshes the ROWID instead of queueing the mail twice.
 - Dismissed and accepted suggestions are never offered again, even if the same
   email is extracted again.
+- Only important suggestions reach the Brief (`importance.judge`); the rest are
+  kept with the reason they were held back, for tuning.
 - The file is created 0600 in a 0700 directory, like Wisp's other caches.
 """
 from __future__ import annotations
@@ -43,9 +45,17 @@ _SCHEMA = (
          due TEXT NOT NULL, precision TEXT NOT NULL, evidence TEXT NOT NULL,
          suspicious INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'new',
          created REAL NOT NULL, decided REAL, reminder TEXT NOT NULL DEFAULT '',
-         extractor TEXT NOT NULL, UNIQUE(key, what, due))""",
+         extractor TEXT NOT NULL, important INTEGER NOT NULL DEFAULT 0, why TEXT NOT NULL DEFAULT '',
+         UNIQUE(key, what, due))""",
     "CREATE INDEX IF NOT EXISTS items_open ON items(state, due)",
     "CREATE TABLE IF NOT EXISTS meta(name TEXT PRIMARY KEY, value TEXT NOT NULL)",
+)
+# Columns added after the first schema, for files made by earlier builds of this branch.
+_ADDED = (
+    ("messages", "rfc_message_id", "TEXT NOT NULL DEFAULT ''"),
+    ("messages", "category", "INTEGER NOT NULL DEFAULT -1"),
+    ("items", "important", "INTEGER NOT NULL DEFAULT 0"),
+    ("items", "why", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -72,6 +82,10 @@ class Store:
         with self._lock:
             for statement in _SCHEMA:
                 self._db.execute(statement)
+            for table, column, kind in _ADDED:
+                have = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
+                if column not in have:
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
     # --- meta -----------------------------------------------------------------------
 
@@ -160,18 +174,20 @@ class Store:
             for it in items:
                 cur = self._db.execute(
                     "INSERT OR IGNORE INTO items(key,what,date_phrase,due,precision,evidence,suspicious,"
-                    "state,created,extractor) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "state,created,extractor,important,why) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (key, it["what"], it["date_phrase"], it["due"], it["precision"], it["evidence"],
-                     int(bool(it.get("suspicious"))), "new", now, extractor))
+                     int(bool(it.get("suspicious"))), "new", now, extractor,
+                     int(bool(it.get("important"))), str(it.get("why") or "")[:40]))
                 added += cur.rowcount
         return added
 
     def suggestions(self, today: str, *, horizon: str, limit: int = 3) -> list[dict]:
-        """Open, unsuspicious suggestions due from `today` through `horizon` (ISO
-        dates), soonest first, joined with their email's sender and subject."""
+        """Open, important, unsuspicious suggestions due from `today` through `horizon`
+        (ISO dates), soonest first, joined with their email's sender and subject."""
         rows = self._db.execute(
             "SELECT i.*, m.sender, m.sender_name, m.subject, m.ts, m.box, m.rfc_message_id FROM items i "
-            "JOIN messages m ON m.key=i.key WHERE i.state='new' AND i.suspicious=0 AND i.due>=? AND i.due<=? "
+            "JOIN messages m ON m.key=i.key WHERE i.state='new' AND i.suspicious=0 AND i.important=1 "
+            "AND i.due>=? AND i.due<=? "
             "ORDER BY i.due, i.id LIMIT ?", (today, horizon, limit)).fetchall()
         return [dict(r) for r in rows]
 
@@ -201,7 +217,9 @@ class Store:
         items = {r["state"]: r["n"] for r in self._db.execute(
             "SELECT state, COUNT(*) n FROM items GROUP BY state")}
         suspicious = self._db.execute("SELECT COUNT(*) FROM items WHERE suspicious=1").fetchone()[0]
-        return {"queue": queue, "items": items, "suspicious": suspicious,
+        why = {r["why"] or "unjudged": r["n"] for r in self._db.execute(
+            "SELECT why, COUNT(*) n FROM items GROUP BY why")}
+        return {"queue": queue, "items": items, "suspicious": suspicious, "why": why,
                 "last_index": self.meta("last_index"), "last_tick": self.meta("last_tick")}
 
 

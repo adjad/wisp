@@ -7,7 +7,8 @@ IMPORTANT rules:
   refuses when the app isn't connected, and checks Reminders and Calendar for
   the same thing on the same day first. It writes through `add_reminder`, the
   verified create path, so nothing new reaches the native writer.
-- In shadow mode the Brief gets no suggestions, only counts.
+- The Brief gets only important suggestions due within `importance.SHOW_DAYS`;
+  in shadow mode it gets none, only counts.
 """
 from __future__ import annotations
 
@@ -18,11 +19,11 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
-from service.mail_memory import bridge, runner
+from service.mail_memory import bridge, importance, runner
 from service.mail_memory.store import store
 
 router = APIRouter()
-HORIZON_DAYS = 60
+HORIZON_DAYS = importance.SHOW_DAYS
 
 
 def _native_only(request: Request) -> None:
@@ -103,7 +104,7 @@ async def accept(body: Pick) -> dict:
     st = store()
     row = st.item(body.id)
     tz = _zone()
-    if row is None or row["state"] != "new" or row["suspicious"]:
+    if row is None or row["state"] != "new" or row["suspicious"] or not row["important"]:
         raise HTTPException(404, "That suggestion is no longer open.")
     if row["due"] < _today(tz).isoformat():
         raise HTTPException(409, "That date has passed; nothing was added.")

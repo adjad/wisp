@@ -221,15 +221,60 @@ def test_items_once_and_decisions_stick(tmp_path):
     st = Store(tmp_path / "i.db")
     st.upsert_index([_row(1)], extract.tier, now=1)
     item = {"what": "Pay tax", "date_phrase": "Dec 10", "due": "2026-12-10", "precision": "day",
-            "evidence": "due Dec 10"}
+            "evidence": "due Dec 10", "important": True, "why": "money"}
     assert st.add_items("<m1@x>", [item, item], "v1") == 1
     assert st.add_items("<m1@x>", [{**item, "what": "Phish", "suspicious": True}], "v1") == 1
+    assert st.add_items("<m1@x>", [{**item, "what": "Webinar", "important": False,
+                                    "why": "held:newsletter_deadline"}], "v1") == 1
     shown = st.suggestions("2026-10-26", horizon="2026-12-31")
-    assert [s["what"] for s in shown] == ["Pay tax"]           # suspicious never shown
+    assert [s["what"] for s in shown] == ["Pay tax"]           # suspicious and held items never shown
+    assert st.stats()["why"] == {"money": 2, "held:newsletter_deadline": 1}
     assert st.decide(shown[0]["id"], "dismissed") and not st.decide(shown[0]["id"], "accepted")
     assert st.add_items("<m1@x>", [item], "v1") == 0           # a re-extraction can't bring it back
     assert st.suggestions("2026-10-26", horizon="2026-12-31") == []
 
+
+
+def _judge(what, evidence, *, box="inbox", bulk=False, category=-1, subject="Hello", precision="day",
+           suspicious=False):
+    from service.mail_memory import importance
+    return importance.judge({"what": what, "evidence": evidence, "date_phrase": "Nov 20", "precision": precision,
+                             "suspicious": suspicious},
+                            {"box": box, "bulk": bulk, "category": category, "subject": subject, "sender": "x@y"})
+
+
+def test_importance_bar():
+    # Shown: your own promise, a real person, money, an account or document, a booking.
+    assert _judge("Send the forecast", "I'll send it Nov 20", box="sent", bulk=True) == (True, "yours")
+    assert _judge("Reply to Dana", "can you confirm by Nov 20?", category=0) == (True, "person")
+    assert _judge("Pay the water bill", "$42.10 due Nov 20", bulk=True, category=2) == (True, "money")
+    assert _judge("Renew passport", "your passport expires Nov 20", bulk=True, category=2) == (True, "account")
+    assert _judge("Dentist appointment", "appointment on Nov 20", bulk=True, category=1) == (True, "deadline")
+    # Held: newsletter deadlines, sales, nothing concrete, anything suspicious.
+    assert _judge("Register for the webinar", "registration closes Nov 20", bulk=True, category=2) == (
+        False, "held:newsletter_deadline")
+    assert _judge("Use the code", "offer ends Nov 20", bulk=True, category=2, subject="Fall sale: 30% off") == (
+        False, "held:promotional")
+    assert _judge("Read the update", "new features Nov 20", bulk=True, category=2) == (False, "held:no_signal")
+    assert _judge("Reply to Dana", "can you confirm by Nov 20?", category=0, suspicious=True) == (
+        False, "held:suspicious")
+    # A person writing in a bulk-flagged thread is judged as automated mail.
+    assert _judge("Lunch", "lunch Nov 20?", bulk=True, category=-1) == (False, "held:no_signal")
+
+
+def test_store_adds_new_columns_to_an_older_file(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, key TEXT NOT NULL, what TEXT NOT NULL, "
+               "date_phrase TEXT NOT NULL, due TEXT NOT NULL, precision TEXT NOT NULL, evidence TEXT NOT NULL, "
+               "suspicious INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'new', created REAL NOT NULL, "
+               "decided REAL, reminder TEXT NOT NULL DEFAULT '', extractor TEXT NOT NULL, UNIQUE(key, what, due))")
+    db.commit()
+    db.close()
+    st = Store(path)
+    cols = {r["name"] for r in st._db.execute("PRAGMA table_info(items)")}
+    assert {"important", "why"} <= cols
 
 def test_expire(tmp_path):
     st = Store(tmp_path / "e.db")
@@ -326,11 +371,11 @@ def test_levels(quiet, monkeypatch):
     assert runner.level("m", hid_idle_s=900, power=ac) == "busy"
 
 
-def test_mode_defaults_to_shadow_and_corrupt_means_off(tmp_path):
+def test_mode_defaults_to_live_and_corrupt_means_off(tmp_path):
     path = tmp_path / "s" / "settings.json"
-    assert runner.mode(path) == "shadow"
-    runner.set_mode("live", path)
-    assert runner.mode(path) == "live" and stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert runner.mode(path) == "live"                         # the user's choice for rc2
+    runner.set_mode("shadow", path)
+    assert runner.mode(path) == "shadow" and stat.S_IMODE(os.stat(path).st_mode) == 0o600
     path.write_text("{not json")
     assert runner.mode(path) == "off"
     with pytest.raises(ValueError):
@@ -389,6 +434,7 @@ async def test_tick_indexes_then_extracts(ticking, monkeypatch):
     assert st.message("<lease-1@harbor.example>")["state"] == "done"
     shown = st.suggestions("2026-10-26", horizon="2027-12-31")
     assert [(s["due"], s["what"]) for s in shown] == [("2027-07-02", "Give notice if not renewing")]
+    assert shown[0]["important"] == 1 and shown[0]["why"] == "person"    # a landlord writing, not a list
     assert "The user is Sam." in seen["msgs"][0]["content"]
     assert await runner.tick(now=now + 2) == runner.IDLE_DONE_GAP_S
 
@@ -446,7 +492,8 @@ def client(ticking, monkeypatch, tmp_path):
     from zoneinfo import ZoneInfo
     due = (datetime.now(ZoneInfo(TZ)).date() + timedelta(days=10)).isoformat()
     st.add_items("<m5@x>", [{"what": "Send the Q4 forecast", "date_phrase": "by November 20",
-                             "due": due, "precision": "day", "evidence": "by November 20"}], "v1")
+                             "due": due, "precision": "day", "evidence": "by November 20",
+                             "important": True, "why": "yours"}], "v1")
     return TestClient(app)
 
 
@@ -454,6 +501,7 @@ J = {"content-type": "application/json"}
 
 
 def test_shadow_shows_nothing(client):
+    assert client.put("/assistant/mail_memory/settings", json={"mode": "shadow"}).json()["mode"] == "shadow"
     got = client.get("/assistant/mail_memory").json()
     assert got["mode"] == "shadow" and got["suggestions"] == [] and got["stats"]["items"] == {"new": 1}
     assert client.post("/assistant/mail_memory/accept", json={"id": 1}).status_code == 409
