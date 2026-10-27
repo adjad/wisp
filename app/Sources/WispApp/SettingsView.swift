@@ -1466,6 +1466,7 @@ struct SettingsView: View {
                                     }
                                     .pickerStyle(.menu)
                                     .labelsHidden()
+                                    .redrawsOnAppearanceChange()
                                     .frame(width: 190)
                                 }
                             }
@@ -1543,6 +1544,7 @@ struct SettingsView: View {
                                                 Text(model).tag(model)
                                             }
                                         }
+                                        .redrawsOnAppearanceChange()
                                         .frame(width: 260)
                                     }
                                 }
@@ -1683,7 +1685,7 @@ struct SettingsView: View {
                                             Text(preset.label).tag(preset.id)
                                         }
                                     }
-                                    .labelsHidden().frame(width: 210)
+                                    .labelsHidden().redrawsOnAppearanceChange().frame(width: 210)
                                 }
 
                                 LabeledContent("HTTPS endpoint") {

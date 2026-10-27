@@ -366,6 +366,7 @@ struct GoogleSettingsPane: View {
                         Text(account.name).tag(account.id)
                     }
                 }
+                .redrawsOnAppearanceChange()
                 Text("Select the same account if Mail uses a name such as “Google”. This keeps its older Mail copy from appearing twice. It applies to the next Connect.")
                     .font(.caption2).foregroundStyle(.secondary)
             }

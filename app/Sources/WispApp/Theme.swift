@@ -96,6 +96,18 @@ extension EnvironmentValues {
     }
 }
 
+/// A pop-up Picker keeps the title colour of the appearance it was built in, so
+/// switching the Mac from dark to light left white titles on light buttons.
+/// Rebuilding it when the colour scheme changes redraws the title.
+private struct RedrawsOnAppearanceChange: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    func body(content: Content) -> some View { content.id(colorScheme) }
+}
+
+extension View {
+    func redrawsOnAppearanceChange() -> some View { modifier(RedrawsOnAppearanceChange()) }
+}
+
 extension Font {
     /// `.system(size:weight:design:)` multiplied by the user's Text size scale.
     static func wisp(size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> Font {

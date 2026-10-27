@@ -1,6 +1,7 @@
 #if WISP_SETTINGS_QA
 import AppKit
 import Foundation
+import SwiftUI
 import Vision
 
 @MainActor
@@ -58,7 +59,9 @@ enum SettingsQADriver {
     /// The Wisp window's Settings section (SettingsHomeView) beside the standalone
     /// render: Models and Models › Setup, light and dark, at the narrowest column
     /// the Wisp window allows (its 820 pt minimum less the 268 pt sidebar). The
-    /// guide's own requests are all refused (NotchQASetup).
+    /// guide's own requests are all refused (NotchQASetup). Each render is built in
+    /// its appearance; models-switched-light is the Models pane after a live switch
+    /// from dark, where pop-up Pickers once kept white titles.
     private static func saveEmbeddedRenders(loader: SettingsLoader) async throws {
         let defaults = SettingsQAEnvironment.defaults
         let root = SettingsHomeView(loader: loader, setup: NotchQASetup.model(NotchQASetup.status()),
@@ -71,14 +74,15 @@ enum SettingsQADriver {
         host.titleVisibility = .hidden
         host.titlebarAppearsTransparent = true
         host.isReleasedWhenClosed = false
-        host.contentView = NSHostingView(rootView: root)
         host.makeKeyAndOrderFront(nil)
         defer { host.close() }
-        for (name, subpane) in [("models", "assignments"), ("setup", "setup")] {
+        for (name, subpane) in [("models", "assignments"), ("setup", "setup"), ("models-switched", "assignments")] {
             defaults.set("models", forKey: SettingsView.paneKey)
             defaults.set(subpane, forKey: SettingsView.modelsPaneKey)
-            for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+            for (suffix, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", NSAppearance.Name.aqua)] {
                 host.appearance = NSAppearance(named: appearance)
+                let switchedLive = name == "models-switched" && suffix == "light"
+                if !switchedLive { host.contentView = NSHostingView(rootView: root) }
                 try await Task.sleep(nanoseconds: 700_000_000)
                 guard let view = host.contentView,
                       let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
@@ -267,8 +271,10 @@ enum SettingsQADriver {
         let text = try visibleText(in: screenshot)
         try require(text.localizedCaseInsensitiveContains("Assignment unknown"),
                     "Assignment unknown is missing from rendered Settings window: \(text.prefix(300))")
+        // The compact engine row (since ab148d3f): Open engine dashboard sits in the
+        // closed Change engine menu, so the menu's own title is what renders.
         try require(text.localizedCaseInsensitiveContains("Built-in engine")
-                    && text.localizedCaseInsensitiveContains("Open engine dashboard")
+                    && text.localizedCaseInsensitiveContains("Change engine")
                     && text.localizedCaseInsensitiveContains("both use memory"),
                     "Engine section is missing from rendered Settings window: \(text.prefix(300))")
         try await saveEmbeddedRenders(loader: loader)
