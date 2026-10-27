@@ -208,6 +208,7 @@ async def run(args) -> None:
                 max_tokens=900, chat_template_kwargs={"enable_thinking": False})
             cases = [("head-cut", resp["choices"][0]["message"].get("content") or "",
                       time.monotonic() - t)]
+            D._cache.clear()  # measure the model, not the repeat-lookup cache
             t = time.monotonic()
             cases.append(("digest", await D.digest_body(row, client=client, model=args.model),
                           time.monotonic() - t))
