@@ -396,7 +396,7 @@ struct OverlayView: View {
                 }
                 Divider()
                 Button("New chat") { model.newChat() }
-                Button("All chats in the Wisp window") { WispRouter.shared.open(.chat(sessionId: nil)) }
+                Button("All chats in the Wisp window") { WispRouter.shared.open(.chatList) }
             } label: {
                 HStack(spacing: 4) {
                     Text(model.chatTitle).lineLimit(1).truncationMode(.tail)

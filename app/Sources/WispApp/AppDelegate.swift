@@ -779,6 +779,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch route {
         case .chat(let sessionId):
             if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
+        case .chatList:
+            wispWindow.showChats()
         case .today(let focus):
             wispWindow.showToday(tab: focus.tab)
         case .research:
@@ -1248,7 +1250,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onOpenCorpus = { [weak self] in
             guard let self else { return }
             self.notchCorpus.selectInWindow()
-            self.wispWindow.show()
+            // Chats even if the window is open on Settings or Today: the run was just selected there.
+            self.wispWindow.showChats()
         }
         model.onResetWisp = { [weak self] in
             guard let self else { return "Wisp is quitting." }

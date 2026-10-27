@@ -56,8 +56,27 @@ def test_every_way_into_settings_lands_in_the_wisp_window():
 
 
 def test_a_visible_window_is_not_reset_to_chats():
-    show = _body(_read("WispWindow.swift"), "func show() {")
-    assert show.index("guard !isOpen else { present(); return }") < show.index("navigation.section = .chats")
+    window = _read("WispWindow.swift")
+    show = _body(window, "func show() {")
+    assert show.index("guard !isOpen else { present(); return }") < show.index("showChats()")
+    assert "navigation.section = .chats" in _body(window, "func showChats() {")
+
+
+def test_notch_hand_offs_to_chats_switch_an_open_window_to_chats():
+    # The corpus ⤢ / ⌘O / /window selects the run in the window's store, and the chat
+    # menu's "All chats" asks for the list: both must land on Chats even when the
+    # window is open on Settings. The Dock, ⌘1 and the menu keep .chat(nil), which
+    # brings an open window forward as it is.
+    app = _read("AppDelegate.swift")
+    corpus = _body(app, "model.onOpenCorpus = { [weak self] in")
+    assert "self.wispWindow.showChats()" in corpus and "wispWindow.show()" not in corpus
+    route = _body(app, "private func open(_ route: WispRoute)")
+    assert "case .chatList:\n            wispWindow.showChats()" in route
+    assert 'Button("All chats in the Wisp window") { WispRouter.shared.open(.chatList) }' in _read("OverlayView.swift")
+    # The notch Ask ⤢ passes the session id (empty for a new chat), never nil, so it
+    # goes through show(sessionId:), which always selects Chats.
+    assert "var onOpenChat: ((_ sessionId: String) -> Void)?" in _read("OverlayModel.swift")
+    assert "navigation.section = .chats" in _body(_read("WispWindow.swift"), "func show(sessionId: String) {")
 
 
 def test_setup_guide_opens_as_settings_models_setup():

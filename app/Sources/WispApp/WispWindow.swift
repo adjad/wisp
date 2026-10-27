@@ -39,6 +39,12 @@ final class WispWindowController {
     /// never moves someone off Settings, Today or a chat they were in.
     func show() {
         guard !isOpen else { present(); return }
+        showChats()
+    }
+
+    /// Open the window on Chats whatever it was showing: the notch's "All chats"
+    /// and its corpus hand-off, which select a conversation first and need it seen.
+    func showChats() {
         navigation.section = .chats
         present()
         if store.selected == nil { store.newChat() }

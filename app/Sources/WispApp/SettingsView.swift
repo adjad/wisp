@@ -1330,7 +1330,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Settings").font(.system(size: 22, weight: .medium)).foregroundStyle(ChatTheme.text)
                 Text("Models, Google, activity, privacy and access.")
-                    .font(.system(size: 13)).foregroundStyle(ChatTheme.text3)
+                    .font(.system(size: 13)).foregroundStyle(ChatTheme.text2)
             }
             Picker("Settings", selection: $selectedPane) {
                 ForEach(panes) { pane in Text(pane.title).tag(pane.id) }
