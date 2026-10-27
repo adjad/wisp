@@ -679,7 +679,7 @@ _HOWTO = (
      "Primary, Transactions and Updates from the last 90 days, on this Mac, and find dates you "
      "might forget. The Brief shows only the important ones (yours to keep, from a person, about "
      "money, an account or an appointment) due within 30 days: **Add** puts one in Reminders. "
-     "I never read spam, trash, archive or promotions. Turn it off or to Record only in "
+     "I never read spam, trash, archive or Mail's Promotions. Turn it off or to Record only in "
      "Settings → Privacy & Access → **Mail suggestions**."),
     (r"remember|memory|forget",
      "**Memory**: say \"remember that…\" and I'll keep it. Type **/memory** to see or delete "

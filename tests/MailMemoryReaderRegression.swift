@@ -187,7 +187,7 @@ enum MailMemoryReaderRegression {
             let raw = (replies[0]["raw_b64"] as? String).flatMap { Data(base64Encoded: $0) }
             check(replies[0]["request_id"] as? String == "abcdefghijklmnop0" && replies[0]["ok"] as? Bool == true
                   && raw.map { String(decoding: $0, as: UTF8.self).contains("July 2, 2027") } == true, "body reply")
-            check(replies[1]["ok"] as? Bool == false && replies[1]["error"] as? String == "not_on_disk", "missing body reply")
+            check(replies[1]["ok"] as? Bool == false && replies[1]["error"] as? String == "not_in_inbox_or_sent", "an unknown rowid is refused")
         }
 
         // A stale cache: a moved file and a new file both rebuild the map once and retry.
@@ -197,12 +197,20 @@ enum MailMemoryReaderRegression {
         try FileManager.default.createDirectory(atPath: moved, withIntermediateDirectories: true)
         try FileManager.default.moveItem(atPath: "\(box)/11.partial.emlx", toPath: "\(moved)/11.partial.emlx")
         check(body(stale, "stalecache-000002", 11)["ok"] as? Bool == true, "a moved file is found after a rebuild")
-        try emlx("\(box)/12.emlx", "Subject: New\r\n\r\nArrived later.")
-        check(body(stale, "stalecache-000003", 12)["ok"] as? Bool == true, "a new file is found after a rebuild")
+        try emlx("\(box)/20.emlx", "Subject: New\r\n\r\nArrived later.")
+        check(body(stale, "stalecache-000003", 20)["ok"] as? Bool == true, "a new file is found after a rebuild")
         let limited = makeReader(root, rebuildInterval: 3600)
-        check(body(limited, "stalecache-000004", 10)["ok"] as? Bool == true, "limited reader reads")
-        try emlx("\(box)/13.emlx", "Subject: Newer\r\n\r\nToo soon.")
-        check(body(limited, "stalecache-000005", 13)["error"] as? String == "not_on_disk", "rebuilds are rate limited")
+        check(body(limited, "stalecache-000004", 11)["ok"] as? Bool == true, "limited reader reads")
+        try FileManager.default.moveItem(atPath: "\(moved)/11.partial.emlx", toPath: "\(box)/11.partial.emlx")
+        check(body(limited, "stalecache-000005", 11)["error"] as? String == "unreadable", "rebuilds are rate limited")
+
+        // Only mail in Inbox or Sent right now: Junk, an archived message, and a "Consent"
+        // folder are refused even when their files are on disk.
+        for (n, rowid) in [12, 23, 24].enumerated() {
+            try emlx("\(box)/\(rowid).emlx", "Subject: Not yours to read\r\n\r\nx")
+            check(body(stale, "notinboxorsent-00\(n)", rowid)["error"] as? String == "not_in_inbox_or_sent",
+                  "rowid \(rowid) refused")
+        }
 
         // Schema tolerance: optional columns fall back; missing core tables are unsupported_schema.
         func makeDB(_ name: String, _ sql: String) -> String {

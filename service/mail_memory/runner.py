@@ -268,13 +268,15 @@ async def tick(*, now: float | None = None) -> float:
         st.fail(row["key"], str(exc), now)         # this email's read timed out
         return gap
     if raw is None:
-        if why == "not_on_disk":
+        if why in ("not_on_disk", "not_in_inbox_or_sent"):
+            # Gone from disk, or moved to Trash, Archive or Junk since the index: never read.
             st.finish(row["key"], "skipped", why)
         else:
             st.fail(row["key"], why, now)
         return gap
     try:
-        email = extract.parse_raw(raw, row["ts"])
+        # Off the loop: a 256 KB HTML body is parsed in pure Python, which yields the GIL.
+        email = await asyncio.to_thread(extract.parse_raw, raw, row["ts"])
     except Exception as exc:  # noqa: BLE001 — a malformed message is this email's problem only
         st.fail(row["key"], f"parse:{type(exc).__name__}", now)
         return gap

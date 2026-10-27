@@ -745,4 +745,43 @@ def test_wiring():
 def test_about_explains_mail_suggestions():
     from service import wisp_about
     got = wisp_about.howto("how do I turn off mail suggestions")
-    assert got.startswith("- **Mail suggestions**") and "Privacy & Access" in got and "promotions" in got
+    assert got.startswith("- **Mail suggestions**") and "Privacy & Access" in got and "Promotions" in got
+
+
+@pytest.mark.parametrize("filler", [b"\n" * 250_000, b" \n" * 125_000, b"<td> </td>\n" * 20_000,
+                                    b"<script>x" * 25_000, b"> \n" * 80_000])
+def test_parsing_is_linear_on_whitespace_heavy_mail(filler):
+    # Audit of bc5db6d8: ^\s* backtracked over blank-line runs; 60k newlines froze the loop ~59 s.
+    import time
+    kind = b"html" if filler.startswith(b"<") else b"plain"
+    raw = (b"From: a@x\r\nSubject: s\r\nMessage-ID: <a@x>\r\nContent-Type: text/" + kind + b"\r\n\r\n"
+           + b"Pay by Friday\n" + filler)
+    start = time.perf_counter()
+    email = extract.parse_raw(raw, 0)
+    assert time.perf_counter() - start < 1.0 and "Pay by Friday" in email.body
+
+
+def test_html_bodies_keep_text_and_drop_scripts():
+    raw = (b"From: a@x\r\nSubject: s\r\nContent-Type: text/html\r\n\r\n<html><head><style>p{}</style></head>"
+           b"<body><p>Your lease ends on <b>August 31</b>.</p><script>evil()</script><div>Reply&nbsp;by July 2</div>")
+    assert extract.parse_raw(raw, 0).body == "Your lease ends on August 31.\n\nReply by July 2"
+
+
+async def test_mail_moved_out_of_inbox_is_skipped(ticking, monkeypatch):
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5)], extract.tier, now=1)
+
+    async def body(rowid):
+        return None, "not_in_inbox_or_sent"
+
+    monkeypatch.setattr(runner, "read_body", body)
+    assert await runner.tick(now=NOW + 1) == runner.BETWEEN_GAP_S
+    assert st.message("<m5@x>")["state"] == "skipped"
+
+
+def test_index_merge_commits_in_chunks(tmp_path, monkeypatch):
+    st = Store(tmp_path / "c.db")
+    monkeypatch.setattr(Store, "MERGE_CHUNK", 2)
+    got = st.upsert_index([_row(i) for i in range(1, 6)], extract.tier, now=1)
+    assert got == {"added": 5, "skipped": 0, "seen": 5} and st.stats()["queue"] == {"pending": 5}

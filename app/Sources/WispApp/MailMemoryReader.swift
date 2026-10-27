@@ -93,6 +93,15 @@ final class MailMemoryReader {
                 return ["ok": false, "error": IndexFailure.unreadable.rawValue]
             }
         }
+        // Only a message that is in Inbox or Sent right now: one moved to Trash, Junk or
+        // Archive since the index, or a ROWID Mail reused, is never read.
+        guard let path = MailMemoryReader.envelopeIndexPath(mailRoot) else {
+            return ["ok": false, "error": "no_mail_index"]
+        }
+        guard let (member, _) = try? MailMemoryReader.indexRows(dbPath: path, since: 0, only: request.rowid),
+              !member.isEmpty else {
+            return ["ok": false, "error": "not_in_inbox_or_sent"]
+        }
         // A rowid missing from the map, or a cached path that no longer reads, rebuilds
         // the map once (at most one rebuild per `rebuildInterval`) and retries.
         var rebuilt = false
@@ -180,7 +189,8 @@ final class MailMemoryReader {
     /// membership is the mailbox OR a label. A message in both counts as sent.
     /// Optional columns are probed and fall back to 0 or ''. Missing core tables throw
     /// `.unsupportedSchema`, anything else unreadable throws `.unreadable`.
-    static func indexRows(dbPath: String, since: Double) throws -> ([[String: Any]], Bool) {
+    /// `only` limits the read to one message (the body check), whatever its age.
+    static func indexRows(dbPath: String, since: Double, only: Int64? = nil) throws -> ([[String: Any]], Bool) {
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             sqlite3_close(db)
@@ -256,7 +266,7 @@ final class MailMemoryReader {
         \(globalJoin)
         \(subjectJoin)
         \(addressJoin)
-        WHERE \(notDeleted) AND m.date_received > \(since)
+        WHERE \(notDeleted) AND m.date_received > \(since)\(only.map { " AND m.ROWID = \($0)" } ?? "")
         GROUP BY m.ROWID
         ORDER BY m.date_received DESC
         LIMIT \(maxIndexRows + 1)

@@ -78,6 +78,14 @@ struct MailSuggestion: Identifiable, Equatable {
         if let detail, !detail.isEmpty, [403, 409, 502, 503].contains(status) { return detail }
         return status == 404 ? "That suggestion is no longer open." : "Couldn't add it. Try again."
     }
+
+    /// What an Add did, from the service's reply. "Added to Reminders" only when Apple
+    /// Reminders took it; a Wisp-only reminder says so.
+    static func confirmation(_ body: [String: Any]?, what: String) -> String {
+        if body?["decision"] as? String == "already_on_file" { return "“\(what)” is already in Reminders or Calendar." }
+        if body?["where"] as? String == "wisp_only" { return "Saved “\(what)” in Wisp; Apple Reminders didn't take it." }
+        return "Added “\(what)” to Reminders."
+    }
 }
 
 /// The Brief's mail suggestions. Reads and answers through its own transport so
@@ -177,9 +185,7 @@ final class MailMemoryModel: ObservableObject {
             let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             if status == 200 {
                 if action == "accept" {
-                    confirm(body?["decision"] as? String == "already_on_file"
-                        ? "“\(item.what)” is already in Reminders or Calendar."
-                        : "Added “\(item.what)” to Reminders.")
+                    confirm(MailSuggestion.confirmation(body, what: item.what))
                 }
                 suggestions.removeAll { $0.id == item.id }
                 await refresh()

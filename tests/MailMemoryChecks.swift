@@ -73,7 +73,11 @@ enum MailMemoryChecks {
         await model.refresh()
         check(model.suggestions.map(\.id) == [1, 2], "a failed read keeps what was shown")
 
-        replies = [(200, ["ok": true, "decision": "accepted"]),
+        check(MailSuggestion.confirmation(["decision": "accepted", "where": "wisp_only"], what: "Pay tax")
+              == "Saved “Pay tax” in Wisp; Apple Reminders didn't take it.", "a Wisp-only reminder never claims Reminders")
+        check(MailSuggestion.confirmation(["decision": "already_on_file"], what: "Pay tax")
+              == "“Pay tax” is already in Reminders or Calendar.", "already on file")
+        replies = [(200, ["ok": true, "decision": "accepted", "where": "apple_reminders"]),
                    (200, ["mode": "live", "suggestions": [row(2, "Pay tax")]])]
         await model.accept(model.suggestions[0])
         let post = requests[requests.count - 2]

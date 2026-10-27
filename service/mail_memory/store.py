@@ -106,6 +106,18 @@ class Store:
         their state; only their ROWID and metadata are refreshed."""
         now = time.time() if now is None else now
         added = skipped = 0
+        # Committed in chunks, so Accept and Dismiss on the loop never wait behind a
+        # 6,000-row merge running in a worker thread.
+        for start in range(0, len(rows), self.MERGE_CHUNK):
+            a, s = self._merge(rows[start:start + self.MERGE_CHUNK], tier_of, now)
+            added += a
+            skipped += s
+        return {"added": added, "skipped": skipped, "seen": len(rows)}
+
+    MERGE_CHUNK = 250
+
+    def _merge(self, rows: list[dict], tier_of, now: float) -> tuple[int, int]:
+        added = skipped = 0
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
@@ -136,7 +148,7 @@ class Store:
             except BaseException:
                 self._db.execute("ROLLBACK")
                 raise
-        return {"added": added, "skipped": skipped, "seen": len(rows)}
+        return added, skipped
 
     def next_pending(self, now: float | None = None) -> dict | None:
         now = time.time() if now is None else now

@@ -17,7 +17,6 @@ IMPORTANT rules:
 """
 from __future__ import annotations
 
-import html
 import json
 import re
 from dataclasses import dataclass
@@ -25,6 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 from email import policy
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 
 from service.mail_memory.dates import resolve_due
 
@@ -33,12 +33,19 @@ BODY_CAP = 20_000
 MAX_ITEMS = 6
 WHAT_MAX = 120
 STALE_DAYS = 7
+TEXT_CAP = 4 * BODY_CAP
 MIN_QUOTE = 8
 _LINKISH = re.compile(r"https?://|www\.|\b[\w-]+\.(?:com|net|org|io|co|ly|me|app|link)\b|@\w", re.I)
 
-_QUOTED = re.compile(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>.*)$")
-_FOOTER = re.compile(r"(?im)^\s*(?:unsubscribe|manage (?:your )?(?:email )?(?:preferences|notifications)|"
+# Every pattern here is linear in the body: a line start matches only spaces and
+# tabs ([ \t]*, never \s*, which also eats newlines and backtracks quadratically
+# over a run of blank lines; audit of bc5db6d8), and runs of whitespace are
+# collapsed before the splits.
+_QUOTED = re.compile(r"(?im)^[ \t]*(?:On [^\n]{1,300}wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>[^\n]*)$")
+_FOOTER = re.compile(r"(?im)^[ \t]*(?:unsubscribe|manage (?:your )?(?:email )?(?:preferences|notifications)|"
                      r"you(?:'re| are) receiving this)\b")
+_SPACES = re.compile(r"[ \t\f\v\u00a0\u200b]+")
+_BLANKS = re.compile(r"\n(?: ?\n)+")
 # Bulk mail that is still worth reading: bills, renewals, bookings, school, health admin.
 _TRANSACTIONAL = re.compile(
     r"\b(?:bill|invoice|statement|payment|due|renew(?:al|s)?|expir\w*|lease|rent|appointment|"
@@ -101,6 +108,55 @@ def _text(part) -> str:
         return payload.decode("utf-8", "replace")
 
 
+class _Text(HTMLParser):
+    """Visible text of an HTML part, with line breaks at block ends. The standard
+    parser is linear, unlike a regex that pairs <script> with </script>."""
+    _SKIP = {"script", "style", "head", "template", "noscript"}
+    _BREAK = {"br", "p", "div", "tr", "li", "table", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6",
+              "blockquote", "section", "article", "header", "footer"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out: list[str] = []
+        self.skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self.skip += 1
+        elif tag in self._BREAK:
+            self.out.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP:
+            self.skip = max(0, self.skip - 1)
+        elif tag in self._BREAK:
+            self.out.append("\n")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(data)
+
+
+def _html_text(markup: str) -> str:
+    parser = _Text()
+    try:
+        parser.feed(markup[:TEXT_CAP * 4])
+        parser.close()
+    except Exception:  # noqa: BLE001 — malformed markup keeps what was read
+        pass
+    return "".join(parser.out)
+
+
+def _clean(body: str) -> str:
+    """Collapse whitespace, then cut quoted history and footers. Linear time."""
+    body = body.replace("\r\n", "\n").replace("\r", "\n")[:TEXT_CAP * 2]
+    body = _SPACES.sub(" ", body)
+    body = _BLANKS.sub("\n\n", body)[:TEXT_CAP]
+    body = _QUOTED.split(body, maxsplit=1)[0]
+    body = _FOOTER.split(body, maxsplit=1)[0]
+    return body.strip()[:BODY_CAP]
+
+
 def parse_raw(raw: bytes, fallback_ts: float) -> Email:
     """Headers and a cleaned plain-text body from RFC 822 bytes (an .emlx's message)."""
     msg = BytesParser(policy=policy.default).parsebytes(raw)
@@ -113,16 +169,7 @@ def parse_raw(raw: bytes, fallback_ts: float) -> Email:
             plain.append(_text(part))
         elif kind == "text/html":
             markup.append(_text(part))
-    if plain:
-        body = "\n".join(plain)
-    else:
-        body = re.sub(r"(?is)<(script|style).*?</\1>", " ", "\n".join(markup))
-        body = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>|</li>", "\n", body)
-        body = html.unescape(re.sub(r"(?s)<[^>]+>", " ", body))
-    body = _QUOTED.split(body, maxsplit=1)[0]
-    body = _FOOTER.split(body, maxsplit=1)[0]
-    body = re.sub(r"[ \t ]+", " ", body)
-    body = re.sub(r"\n\s*\n+", "\n\n", body).strip()[:BODY_CAP]
+    body = _clean("\n".join(plain) if plain else _html_text("\n".join(markup)))
     try:
         sent = parsedate_to_datetime(str(msg.get("Date", "")))
         if sent.tzinfo is None:
