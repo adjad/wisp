@@ -378,8 +378,8 @@ def draft_scope_line(name: str) -> str:
 
 @register(
     "create_tool",
-    "Build a NEW tool for a capability you don't already have, using the "
-    "on-device coding model — entirely local, nothing leaves the machine. Use "
+    "Build a NEW tool for a capability you don't already have, using Wisp's "
+    "coding model; the tool then runs on this Mac. Use "
     "this when a request needs something no existing tool covers (check your "
     "tool list first) AND the user would plausibly want it again; for a "
     "one-off calculation just use run_shell instead. Describe the tool "

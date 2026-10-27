@@ -306,13 +306,14 @@ def test_reconciled_notch_restores_empty_input_before_corpus_dispatch():
     submit = source.split("    func submit() {", 1)[1].split("    func canStartCorpusCommand()", 1)[0]
     restore = submit.index("if let back = setAside.restore()")
     resume = submit.index("submissionState.resume()")
-    corpus = submit.index("if NotchCommand.isCorpusRequest(prompt)")
-    slash = submit.index("if let command = NotchCommand.match(prompt)")
+    # The corpus command is a Debug Mode tool, so it only starts in Debug Mode.
+    corpus = submit.index("if debugMode, NotchCommand.isCorpusRequest(prompt)")
+    slash = submit.index("if let command = NotchCommand.match(prompt")
     assert restore < resume < corpus < slash
     assert "researchMode = back.researchMode" in submit[:corpus]
     assert "syncQueue(); start(next)" in submit[:corpus]
     assert "else if !corpusBusy, let next = submissionState.resume()" in submit[:corpus]
-    assert "return\n        }\n        cancelAttachmentRead()\n        if NotchCommand.isCorpusRequest" in submit
+    assert "return\n        }\n        cancelAttachmentRead()\n        if debugMode, NotchCommand.isCorpusRequest" in submit
     dispatch = source.split("    private func start(_ dispatch: PromptDispatch)", 1)[1].split("        let prompt = submission.text", 1)[0]
     assert dispatch.index("guard case .prompt") < dispatch.index("onHideCorpus()") < dispatch.index("stopSyncProgress()")
 

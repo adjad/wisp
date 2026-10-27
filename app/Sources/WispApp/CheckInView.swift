@@ -145,6 +145,8 @@ struct CheckInCard: Equatable {
     var tomorrowDay = ""
     var events: [CheckInEvent] = []
     var goalPulse: GoalPulse?
+    /// No evening check-in was ever sent or answered before: the card says once what it is for.
+    var first = false
 
     init() {}
     init?(json: [String: Any]) {
@@ -159,6 +161,23 @@ struct CheckInCard: Equatable {
         tomorrowDay = tomorrow["day"] as? String ?? ""
         events = (tomorrow["events"] as? [[String: Any]] ?? []).enumerated().compactMap { CheckInEvent($1, index: $0) }
         goalPulse = GoalPulse(json["goal_pulse"])
+        first = json["first"] as? Bool ?? false
+    }
+
+    /// The line beside "Evening check-in": how the day went, or nothing when
+    /// nothing was planned (never "Nothing was planned today" on day one).
+    var headline: String {
+        guard planned > 0 else { return "" }
+        return "You planned \(planned) thing\(planned == 1 ? "" : "s") today" + (done > 0 ? ", \(done) done." : ".")
+    }
+
+    /// Said once, on the first check-in ever.
+    static let firstExplanation = "Each evening Wisp asks how the day went and what to change tomorrow. One tap each."
+
+    /// The card's last line once every task has an answer.
+    var settledFooter: String {
+        planned > 0 ? "That's the day. Anything you moved is on tomorrow's plan."
+            : "Keep leaves an event as it is."
     }
 
     /// The card asks only in the evening, only once, and only when there is
@@ -451,10 +470,16 @@ struct CheckInSection: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 6) {
                     Text("Evening check-in").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
-                    Text(headline).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    if !model.card.headline.isEmpty {
+                        Text(model.card.headline).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    }
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
+                if model.card.first {
+                    Text(CheckInCard.firstExplanation).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let moving, model.card.tasksSettled {
                     CheckInMovePanel(model: model, event: moving,
                                      day: model.card.tomorrowDay.isEmpty ? day : model.card.tomorrowDay,
@@ -508,14 +533,6 @@ struct CheckInSection: View {
         }
     }
 
-    private var headline: String {
-        let card = model.card
-        if card.planned == 0 { return "Nothing was planned today." }
-        var text = "You planned \(card.planned) thing\(card.planned == 1 ? "" : "s") today"
-        if card.done > 0 { text += ", \(card.done) done" }
-        return text + "."
-    }
-
     private var eventsLine: String {
         let count = model.card.events.count
         return "Tomorrow has \(count) event\(count == 1 ? "" : "s"). Anything to move?"
@@ -523,7 +540,7 @@ struct CheckInSection: View {
 
     private var footerLine: String {
         if model.hasCardCancelActivity { return "A cancel is under way. Undo is on its row." }
-        return model.card.tasksSettled ? "That's the day. Carried tasks are on tomorrow's plan."
+        return model.card.tasksSettled ? model.card.settledFooter
             : "One tap each. Tomorrow carries it; Drop forgets it."
     }
 

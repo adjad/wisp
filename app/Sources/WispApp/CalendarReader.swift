@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import EventKit
 
@@ -18,19 +19,17 @@ final class CalendarReader {
     private var timer: Timer?
     private var historyTask: Task<Void, Never>?
 
-    private static let examWords = ["exam", "midterm", "final", "quiz", "test"]
-    private static let assignWords = ["due", "assignment", "homework", "hw",
-                                      "problem set", "pset", "lab", "project",
-                                      "essay", "paper", "submission", "deadline"]
+    // The same rules as Reminders (RemindersWriter.Access.passive): it never
+    // asks macOS for access, and an unanswered permission is a reason with a
+    // next step, never "syncing" forever.
+    private typealias Access = RemindersWriter.Access
 
-    // Request access, then sync — and keep a repeating timer regardless of the
-    // initial grant result, so a permission granted AFTER launch (or a flaky
-    // first callback) is picked up within a minute instead of needing a
-    // restart. sync() itself no-ops (but reports diagnostics) when unauthorized.
+    // Sync now (which never asks for access: Access.passive), then
+    // keep a repeating timer regardless of the result, so a permission granted
+    // AFTER launch is picked up within a minute instead of needing a restart.
+    // sync() itself no-ops (but reports diagnostics) when unauthorized.
     func start() {
-        requestAccess { [weak self] _ in
-            DispatchQueue.main.async { self?.sync() }
-        }
+        DispatchQueue.main.async { [weak self] in self?.sync() }
         // Beat the backend-startup race: the Python backend may not be listening
         // yet when the app launches, so the earliest sync POSTs fail silently.
         // Retry on a short ramp until it lands, then settle into a 60s cadence.
@@ -46,34 +45,26 @@ final class CalendarReader {
         }
     }
 
-    func requestAccess(_ done: @escaping (Bool) -> Void) {
-        if #available(macOS 14.0, *) {
-            store.requestFullAccessToEvents { granted, _ in done(granted) }
-        } else {
-            store.requestAccess(to: .event) { granted, _ in done(granted) }
-        }
-    }
-
     var isAuthorized: Bool {
         let s = EKEventStore.authorizationStatus(for: .event)
         if #available(macOS 14.0, *) { return s == .fullAccess }
         return s == .authorized
     }
 
-    private func classify(_ title: String) -> String {
-        let t = title.lowercased()
-        if Self.examWords.contains(where: t.contains) { return "exam" }
-        if Self.assignWords.contains(where: t.contains) { return "assignment" }
-        return "event"
-    }
-
     func sync() {
+        // The permission-request state is main-thread state, and a backend
+        // refresh request can arrive on another queue.
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.sync() }
+            return
+        }
         let snapshotStartedAt = Date().timeIntervalSince1970
         guard isAuthorized else {
-            post(events: [], diagnostics: ["authorized": false,
-                                           "snapshot_started_at": snapshotStartedAt,
-                                           "syncing": EKEventStore.authorizationStatus(for: .event) == .notDetermined,
-                                           "status": EKEventStore.authorizationStatus(for: .event).rawValue])
+            let raw = EKEventStore.authorizationStatus(for: .event)
+            let report = Access.passive(status: Access.status(of: raw), source: .calendar)
+            var diagnostics = Access.diagnostics(for: report, snapshotStartedAt: snapshotStartedAt)
+            diagnostics["status"] = raw.rawValue
+            post(events: [], diagnostics: diagnostics)
             return
         }
         startHistoryScan()
@@ -89,11 +80,13 @@ final class CalendarReader {
         let cals = store.calendars(for: .event)
         let pred = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         let events = store.events(matching: pred)
+        // Declined and cancelled events are not on the person's day.
+        let kept = events.filter(Self.keeps)
 
-        let payload: [[String: Any]] = events.compactMap { ev in
+        let payload: [[String: Any]] = kept.compactMap { ev in
             guard let sd = ev.startDate else { return nil }
             let title = ev.title ?? "(untitled)"
-            let base = classify(title)
+            let base = CalendarEventPolicy.classify(title)
             let kind = (!ev.isAllDay && base == "event") ? "meeting" : base
             // NOTE: EventKit gives every occurrence of a RECURRING event the
             // SAME eventIdentifier. We keep source_id as the raw identifier
@@ -148,6 +141,7 @@ final class CalendarReader {
             "calendar_count": cals.count,
             "calendars": cals.map { $0.title },
             "events_found": events.count,
+            "events_declined_or_cancelled": events.count - kept.count,
             "event_ids": payload.map { "\($0["title"] ?? "") | \($0["source_id"] ?? "")" },
         ])
     }
@@ -180,6 +174,9 @@ final class CalendarReader {
                         guard let id = ev.eventIdentifier, !id.isEmpty,
                               let first = ev.startDate, let last = ev.endDate else { return (nil,"invalid_record") }
                         guard first.timeIntervalSince1970 < end && last.timeIntervalSince1970 > start else { continue }
+                        // A declined or cancelled event didn't happen to the person;
+                        // learning from it would teach habits they don't have.
+                        guard Self.keeps(ev) else { continue }
                         guard let row = Self.historyEventRow(id: id, title: ev.title ?? "(untitled)",
                             start: first.timeIntervalSince1970, end: last.timeIntervalSince1970,
                             allDay: ev.isAllDay, calendar: ev.calendar?.title ?? "") else { return (nil,"invalid_record") }
@@ -195,6 +192,16 @@ final class CalendarReader {
                 await Task.yield()
             }
         }
+    }
+
+    /// CalendarEventPolicy.include for one EventKit event.
+    static func keeps(_ ev: EKEvent) -> Bool {
+        CalendarEventPolicy.include(
+            cancelled: ev.status == .canceled,
+            attendees: (ev.attendees ?? []).map {
+                CalendarEventPolicy.Attendee(isCurrentUser: $0.isCurrentUser,
+                                             declined: $0.participantStatus == .declined)
+            })
     }
 
     static func historyEventRow(id: String, title: String, start: Double, end: Double,
@@ -400,5 +407,59 @@ final class CalendarReader {
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["events": events,
                                                                     "diagnostics": diagnostics])
         URLSession.shared.dataTask(with: req).resume()
+    }
+}
+
+/// Which Calendar events Wisp keeps, and what kind each one is. Pure rules,
+/// kept apart from EventKit so tests/CalendarReaderChecks.swift can check them
+/// without Calendar access or an event store.
+///
+/// Rules:
+/// - IMPORTANT: an event the person declined, or one the organizer cancelled,
+///   is not on their day. It is dropped, never announced or planned around.
+/// - IMPORTANT: kinds match whole words only. Matching inside words made
+///   "Latest", "Contest", "Ashwin" and "Southwest" read as exams and
+///   assignments, and each one raised a deadline notification. The word
+///   lists themselves are the long-standing ones; only the matching changed.
+enum CalendarEventPolicy {
+    /// Words that make an event an exam.
+    static let examWords: Set<String> = ["exam", "exams", "midterm", "midterms", "final", "finals",
+                                         "quiz", "quizzes", "test", "tests"]
+    /// Words that make an event an assignment.
+    static let assignmentWords: Set<String> = ["assignment", "assignments", "homework", "hw", "due",
+                                               "deadline", "deadlines", "project", "projects", "paper",
+                                               "papers", "essay", "essays", "submission", "submissions",
+                                               "lab", "labs", "pset", "psets"]
+    /// Two-word phrases that make an event an assignment.
+    static let assignmentPhrases: [(String, String)] = [("problem", "set"), ("problem", "sets")]
+
+    /// "exam", "assignment" or "event". A word may carry a trailing number
+    /// ("HW3", "Quiz2"), which still counts as that word.
+    static func classify(_ title: String) -> String {
+        let words = title.lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map { word -> String in
+                var stem = Substring(word)
+                while let last = stem.last, last.isNumber { stem = stem.dropLast() }
+                return stem.isEmpty ? String(word) : String(stem)
+            }
+        if words.contains(where: examWords.contains) { return "exam" }
+        if words.contains(where: assignmentWords.contains) { return "assignment" }
+        let pairs = zip(words, words.dropFirst())
+        if pairs.contains(where: { pair in assignmentPhrases.contains { $0 == pair } }) { return "assignment" }
+        return "event"
+    }
+
+    /// One attendee as EventKit reports it, reduced to what the rule needs.
+    struct Attendee {
+        let isCurrentUser: Bool
+        let declined: Bool
+    }
+
+    /// Whether an event belongs on the person's calendar feed: not cancelled,
+    /// and not declined by them.
+    static func include(cancelled: Bool, attendees: [Attendee]) -> Bool {
+        guard !cancelled else { return false }
+        return !attendees.contains { $0.isCurrentUser && $0.declined }
     }
 }

@@ -633,8 +633,10 @@ def native_identity_flows(tmp_path_factory):
     transport = transport[transport.index("enum MailHistoryTransport {"):transport.index("/// Serializes local")]
     fixture = (root / "tests/NativeMailIdentityFlowChecks.swift").read_text()
     capture_order = source[source.index("private final class MailIdentityCaptureOrder {"):source.index("// Reads recent Mail.app inbox headers.")]
+    permissions = (root / "app/Sources/WispApp/Permissions.swift").read_text()
+    unasked = permissions[permissions.index("    static func unaskedAutomation("):permissions.index("    // MARK: Grant More Access")]
     fixture = fixture.replace("// WISP_NATIVE_CAPTURE_ORDER", capture_order).replace("// WISP_NATIVE_TRANSPORT", transport).replace(
-        "// WISP_NATIVE_READER_METHODS", flow + posts)
+        "// WISP_NATIVE_READER_METHODS", flow + posts).replace("// WISP_NATIVE_PERMISSIONS", unasked)
     generated = scratch / "IdentityFlow.swift"
     generated.write_text(fixture)
     executable = scratch / "identity-flow"
@@ -734,7 +736,9 @@ def native_observer_flows(tmp_path_factory):
     source = (root / "app/Sources/WispApp/MailReader.swift").read_text()
     history = (root / "app/Sources/WispApp/MailHistoryMerge.swift").read_text()
     labels = (root / "app/Sources/WispApp/MailDBReader.swift").read_text()
+    permissions = (root / "app/Sources/WispApp/Permissions.swift").read_text()
     pieces = {
+        "// WISP_OBSERVER_PERMISSIONS": permissions[permissions.index("    static func unaskedAutomation("):permissions.index("    // MARK: Grant More Access")],
         "// WISP_OBSERVER_PURE_HISTORY": history,
         "// WISP_OBSERVER_CAPTURE_ORDER": source[source.index("private final class MailIdentityCaptureOrder {"):source.index("// Reads recent Mail.app inbox headers.")],
         "// WISP_OBSERVER_SCAN_BOOKKEEPING": source[source.index("    private func claimScan("):source.index("    // MARK: - Helpers")],

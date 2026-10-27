@@ -55,7 +55,11 @@ _NEVER_GRANTABLE = {"send_email", "send_message", "create_tool",
                     # same reasoning as the outbound-send tools above: a
                     # one-time approval of "cancel this event" is not the
                     # user agreeing to every future cancel_event call.
-                    "cancel_event", "add_calendar_event"}
+                    "cancel_event", "add_calendar_event",
+                    # AppleScript drives other apps (one line sends an
+                    # iMessage) and runs shell commands; policy confirms it
+                    # every time (ALWAYS_CONFIRM_TOOLS).
+                    "run_applescript"}
 
 # Tools that absorbed several single-purpose tools in the 100-tool
 # consolidation: (argument that selects the behaviour, its default, the
@@ -299,14 +303,19 @@ def is_grantable(tool: str, args: dict | None = None) -> bool:
     """Whether an "always allow" is permitted for this exact call.
 
     Tool-level for the outbound/authoring set, but ARGUMENT-level for shell:
-    `run_shell` as such is perfectly grantable — the vast majority of commands
-    are ordinary — while an irreversible bulk delete never is, whatever tool
-    carries it. Checking the name alone would have let one "always allow" on a
-    harmless `ls` silently pre-approve every future `rm -rf`.
+    `run_shell` as such is grantable for a single plain program, while an
+    irreversible bulk delete never is, whatever tool carries it. Checking the
+    name alone would have let one "always allow" on a harmless `ls` silently
+    pre-approve every future `rm -rf`. A run_shell grant is scoped to the first
+    word, so interpreters and launchers (`python3`, `osascript`, `curl`, `env`),
+    compound commands (`ls && …`) and anything that can send data off the Mac
+    are never grantable either: see policy.shell_grant_problem.
     """
     if not _may_hold_allow(tool):
         return False
-    from service.safety.policy import is_destructive_shell
+    from service.safety.policy import is_destructive_shell, shell_grant_problem
+    if tool == "run_shell":
+        return shell_grant_problem(args or {}) is None
     return not is_destructive_shell(str((args or {}).get("cmd", "")))
 
 

@@ -25,6 +25,9 @@ final class ContactsReader {
     private let enabled: () -> Bool
     private let authorization: () -> CNAuthorizationStatus
     private let snapshot: (() throws -> Snapshot)?
+    // Whether asking macOS for Contacts would be worth it yet. Names are for
+    // Messages, so Wisp asks once Messages can be read, not at launch.
+    private let mayAsk: () -> Bool
     private var timer: Timer?
     private var permissionTimer: Timer?
     private var observers: [NSObjectProtocol] = []
@@ -37,8 +40,10 @@ final class ContactsReader {
          },
          authorization: @escaping () -> CNAuthorizationStatus = {
              CNContactStore.authorizationStatus(for: .contacts)
-         }, snapshot: (() throws -> Snapshot)? = nil) {
+         }, snapshot: (() throws -> Snapshot)? = nil,
+         mayAsk: @escaping () -> Bool = { true }) {
         self.channel = channel
+        self.mayAsk = mayAsk
         self.enabled = enabled
         self.authorization = authorization
         self.snapshot = snapshot
@@ -65,6 +70,11 @@ final class ContactsReader {
 
     private static func canRead(_ status: CNAuthorizationStatus) -> Bool {
         status == .authorized
+    }
+
+    /// Ask only while macOS has no answer and asking is worth it now.
+    static func shouldRequest(_ status: CNAuthorizationStatus, mayAsk: Bool) -> Bool {
+        status == .notDetermined && mayAsk
     }
 
     func start() {
@@ -100,6 +110,9 @@ final class ContactsReader {
             if self.lastAuthorization == .notDetermined {
                 // Clear old persisted recipients before prompting for access.
                 self.postClear(revision: revision)
+                // Not yet worth a prompt: a later sync (focus, the 6 h timer, a
+                // backend refresh) asks once it is.
+                guard Self.shouldRequest(.notDetermined, mayAsk: self.mayAsk()) else { return }
                 self.store.requestAccess(for: .contacts) { [weak self] _, _ in
                     // Recheck TCC instead of trusting a now-stale callback.
                     if let self, self.authorization() != .notDetermined { self.sync() }

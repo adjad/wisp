@@ -113,10 +113,19 @@ def test_missing_end_is_visible_and_blocks_flexible():
     assert p["provisional"] and p["unscheduled"]
 
 
-def test_all_day_requires_explicit_time_choice():
+def test_all_day_time_away_requires_explicit_time_choice():
     lo, hi = day_bounds(DAY, ZONE)
-    p = plan(commitments=[event(start=lo, end=hi, all_day=True)])
+    p = plan(commitments=[event(start=lo, end=hi, all_day=True, title="Vacation in Tahoe")])
     assert len(p["all_day"]) == 1 and not p["blocks"] and p["unscheduled"]
+
+
+def test_all_day_marker_events_do_not_stop_planning():
+    lo, hi = day_bounds(DAY, ZONE)
+    for title in ("Week 4 Reading: Functions [CSE-20-04]", "Worksheet 3 [STAT-5-02]", "Mom's birthday"):
+        p = plan(commitments=[event(start=lo, end=hi, all_day=True, title=title)])
+        assert len(p["all_day"]) == 1, title
+        assert not any("All-day" in w for w in p["warnings"]), title
+        assert not any(u.get("code") == "all_day" for u in p["unscheduled"]), title
 
 
 def test_overnight_overlap_and_exclusive_end(store):

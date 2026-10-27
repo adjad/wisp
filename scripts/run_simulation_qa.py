@@ -92,7 +92,11 @@ PROFILE_TESTS = {
         "tests/test_email_digest_presentation.py",
         "tests/test_email_scoping.py",
         "tests/test_live_corpus.py",
+        "tests/test_long_email_digest.py",
+        # Voice input: the clip reaches only a local model with an audio encoder (stub client).
+        "tests/test_voice_transcribe.py",
         "tests/test_corpus_prompts.py",
+        "tests/test_corpus_reasoning_export.py",
         "tests/test_gmail_source.py",
         "tests/test_google_workspace.py",
         "tests/test_linked_documents.py",
@@ -100,6 +104,7 @@ PROFILE_TESTS = {
         "tests/test_message_attribution.py",
         "tests/test_message_content.py",
         "tests/test_message_digest.py",
+        "tests/test_message_reason_memo.py",
         "tests/test_multi_source_fallback.py",
         "tests/test_privacy_sync.py",
         "tests/test_reply_bridge_simulation.py",
@@ -117,6 +122,7 @@ PROFILE_TESTS = {
         "tests/test_brief_needs_you.py",
         "tests/test_day_timeline_event_fields.py",
         "tests/test_mail_gists.py",
+        "tests/test_mail_memory.py",
         "tests/test_behavior_gmail_history.py",
         "tests/test_behavior_availability.py",
     },
@@ -146,6 +152,11 @@ PROFILE_TESTS = {
         "tests/test_execution_contract_loop.py",
         "tests/test_forced_step_withholding.py",
         "tests/test_shell_boundary.py",
+        "tests/test_shell_local_service_deny.py",
+        # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
+        "tests/test_wisp_reset.py",
+        "tests/test_outbound_shell_gate.py",
+        "tests/test_local_http_guard.py",
         "tests/test_tool_calling_invariants.py",
         "tests/test_tool_outcomes.py",
         "tests/test_tool_test_mode.py",
@@ -154,6 +165,9 @@ PROFILE_TESTS = {
     "tests/test_cloud_provider_settings.py",
     "tests/test_local_provider_settings.py",
     "tests/test_setup_guide.py",
+    # Fresh-install model detection over fake model folders and fake /v1/models answers.
+    "tests/test_setup_existing_omlx.py",
+    "tests/test_onboarding_window.py",
     "tests/test_super_model_routing.py",
         "tests/test_inference_endpoints.py",
         "tests/test_inference_providers.py",
@@ -239,6 +253,24 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # rc1 Brief and Day honesty: no all-clear for an unread source, per-source blocked reasons.
+    "tests/test_first_day_honesty.py",
+    # rc1 reminders: expiry and supersede, the first-launch auto-action hold, the day-one Daily Summary.
+    "tests/test_reminder_expiry.py",
+    "tests/test_behavior_auto_trial.py",
+    "tests/test_brief_day_one.py",
+    # rc2: the first Brief once onboarding is answered (scheduler slots with a stubbed store
+    # and clock, and the marker endpoint through TestClient); nothing is composed or sent.
+    "tests/test_brief_onboarding.py",
+    # rc2: an unoffered web lookup on a general-knowledge question, with a scripted model.
+    "tests/test_general_knowledge_unoffered_web.py",
+    # rc1 Ask backend: reply-needed reads stay read-only, the capability welcome, Gmail-only identity.
+    "tests/test_router_reply_needed_reads.py",
+    "tests/test_capability_welcome.py",
+    "tests/test_wisp_self_questions.py",
+    "tests/test_email_gmail_only_and_dedup.py",
+    # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
+    "tests/test_needs_you_clear.py",
     # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
     "tests/test_messages_read_failure.py",
     # Real ASGI modes over disposable pending owners and fully inert capabilities.
@@ -253,8 +285,6 @@ ADDITIONAL_FULL_TESTS = {
     # Toolbench matchers/scorer/report on hand-built trajectories and fake-world
     # tools called directly; temp WISP_HOME, no model, network or tool execution.
     "tests/test_toolbench.py",
-    # Frozen synthetic data and temporary stub runners; no model or network.
-    "tests/test_mellum_r2_source_contracts.py",
     # Planner eval --dry-run in a temp HOME/WISP_HOME: builds menus, no model, oMLX or tool execution.
     "tests/test_eval_planner_dry_run.py",
     # Inert bounded attestation store; supplied facts and manual interleavings only.
@@ -264,6 +294,28 @@ ADDITIONAL_FULL_TESTS = {
     # Fake streaming client in test mode over a tmp_path journal; audit stubbed,
     # no memory/identity context, model, network or tool execution.
     "tests/test_model_step_trace.py",
+    # Pure switch parsing over monkeypatched env/config; no model, store or network.
+    "tests/test_model_only_switch.py",
+    # Proactive Brief engine, critical-mail, email-reply and Google/remote-inference
+    # contracts: fake model clients over a scratch WISP_HOME; no native reader,
+    # live model, network or send.
+    "tests/test_critical_mail.py",
+    "tests/test_email_reply_api.py",
+    "tests/test_google_calendar_source.py",
+    "tests/test_mcp_large_tool_list.py",
+    "tests/test_model_only_quality.py",
+    "tests/test_proactive_accounts.py",
+    "tests/test_proactive_auto_add.py",
+    "tests/test_proactive_clear.py",
+    "tests/test_proactive_handled.py",
+    "tests/test_proactive_deadlines.py",
+    "tests/test_proactive_engine.py",
+    "tests/test_proactive_idle_refresh.py",
+    "tests/test_proactive_mail_recall.py",
+    "tests/test_proactive_past_week.py",
+    "tests/test_proactive_quality.py",
+    "tests/test_remote_model_only.py",
+    "tests/test_workspace_accounts.py",
     "tests/test_wisp_cowork.py",
     # Bounded public-manifest JS fixtures only; no DOM, browser or network access.
     "tests/browser_dom/test_page_extractor.py",
@@ -323,6 +375,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_bundled_attribution.py",
     "tests/test_bundled_engine_api.py",
     "tests/test_engine_downloads.py",
+    # Per-model engine settings seeded into a temp model_settings.json; no engine runs.
+    "tests/test_engine_profiles.py",
+    "tests/test_engine_memory_guard.py",
     "tests/test_bundled_engine.py",
     "tests/test_bundled_engine_mode.py",
     # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.
@@ -359,6 +414,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_brief_summary_contract.py",
     # Mail gists with a fake model and an isolated cache; nothing is read or sent.
     "tests/test_mail_gists.py",
+    # Mail memory with a stand-in app, model and hub, a temporary store and stubbed idle/power
+    # probes; no Mail, no model, no subprocess, nothing is added to Reminders.
+    "tests/test_mail_memory.py",
     # The kept Daily Summary with an isolated file and a stand-in hub; nothing is composed, read or sent.
     "tests/test_brief_latest.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
@@ -544,6 +602,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_snapshot.py",
     "tests/test_workflow20_travel.py",
     "tests/test_workflow20_weather.py",
+    # Answer edge trimming and the plain-language weather reply; pure text.
+    "tests/test_answer_polish.py",
     "tests/workflow20/test_contract.py",
     # Demo home swap over a scratch home and a throwaway defaults domain; never
     # ~/.moe. Skips where defaults(1) cannot write (the sandboxed gate).
@@ -582,6 +642,8 @@ _NATIVE_PASSED = re.compile(
 _LEGACY_PROMPTS_VALIDATED = re.compile(r"\bok:\s*(?P<passed>\d+)\s+prompts validated\b")
 _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
+    "native/mail-memory-contract": "native/mail-memory-compile",
+    "native/mail-memory-brief-contract": "native/mail-memory-brief-compile",
     "native/mail-history-contract": "native/mail-history-compile",
     "native/privacy-sync-contract": "native/privacy-sync-compile",
     "native/source-sync-label-contract": "native/source-sync-label-compile",
@@ -866,6 +928,8 @@ def _dependencies() -> dict[str, str]:
 def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     module_cache = str(build_dir / "module-cache")
     mail_db = str(build_dir / "mail-db-regression")
+    mail_memory = str(build_dir / "mail-memory-regression")
+    mail_memory_brief = str(build_dir / "mail-memory-brief")
     mail_history = str(build_dir / "mail-history")
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
@@ -917,6 +981,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             [TRUSTED_BASH, "scripts/test_display_geometry.sh"],
         ),
         (
+            "native/first-run-setup-contract",
+            [TRUSTED_BASH, "scripts/test_first_run_setup.sh"],
+        ),
+        (
             "native/mail-db-compile",
             [
                 TRUSTED_SWIFTC, "-module-cache-path", module_cache,
@@ -925,6 +993,24 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/mail-db-contract", [mail_db]),
+        (
+            "native/mail-memory-compile",
+            [
+                TRUSTED_SWIFTC, "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailMemoryReader.swift",
+                "tests/MailMemoryReaderRegression.swift", "-lsqlite3", "-o", mail_memory,
+            ],
+        ),
+        ("native/mail-memory-contract", [mail_memory]),
+        (
+            "native/mail-memory-brief-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailMemory.swift",
+                "tests/MailMemoryChecks.swift", "-o", mail_memory_brief,
+            ],
+        ),
+        ("native/mail-memory-brief-contract", [mail_memory_brief]),
         (
             "native/mail-history-compile",
             [
@@ -995,9 +1081,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 "app/Sources/WispApp/BriefSummary.swift",
                 "app/Sources/WispApp/QuickSettingsText.swift",
                 "app/Sources/WispApp/StaleReminders.swift",
+                "app/Sources/WispApp/NeedsYouActions.swift",
                 "tests/NotchTabChecks.swift", "tests/NotchDayChecks.swift",
                 "tests/BriefSummaryChecks.swift", "tests/QuickSettingsChecks.swift",
-                "tests/StaleReminderChecks.swift", "-o", notch_tab,
+                "tests/StaleReminderChecks.swift", "tests/NeedsYouActionChecks.swift", "-o", notch_tab,
             ],
         ),
         ("native/notch-tab-contract", [notch_tab]),

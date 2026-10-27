@@ -336,6 +336,16 @@ final class WispClient {
         return BriefTimes.parse(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    // POST /assistant/onboarding/brief_ready. First-run onboarding reached its last
+    // step, so the service may compose the first Brief now. Fire-and-forget: the
+    // service records it once, and a failure only means the Brief waits for its hour.
+    func onboardingBriefReady() async {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/onboarding/brief_ready"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        _ = try? await URLSession.shared.data(for: req)
+    }
+
     // --- behavior engine (service/behavior) ---------------------------------
     // Learned routines, predictions and nudges. Nudges themselves arrive as
     // `nudge` events on the assistant stream; these calls answer them.
@@ -676,15 +686,62 @@ final class WispClient {
         _ = try? await URLSession.shared.data(for: req)
     }
 
-    // Stop the oMLX engine entirely (frees its ~2GB baseline). Used on quit.
+    /// /resetwisp's service route and the phrase it requires (service/wisp_reset.py).
+    /// Here rather than in ResetWisp.swift, so the gates that compile this file alone
+    /// (build-support/simulation.py, scripts/run_simulation_qa.py) need nothing else.
+    static let resetRoute = "assistant/reset_wisp"
+    static let resetConfirmPhrase = "reset wisp"
+
+    /// POST /assistant/reset_wisp: the HTTP status and body, or a nil status when
+    /// the service didn't answer. Only after the person's Reset Wisp click
+    /// (AppDelegate.performWispReset).
+    func resetWisp() async -> (status: Int?, body: [String: Any]?) {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent(Self.resetRoute))
+        req.httpMethod = "POST"
+        // Longer than the service's own bounds: stop work, sign out of Google, delete.
+        req.timeoutInterval = 180
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["confirm": Self.resetConfirmPhrase])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse else { return (nil, nil) }
+        return (http.statusCode, (try? JSONSerialization.jsonObject(with: data)) as? [String: Any])
+    }
+
+    // Stop the oMLX engine entirely: its models and its ~2GB baseline. Used on quit.
+    // The wait is longer than the backend's own bound on the stop, so the engine is
+    // gone before the backend is; an engine left running would keep its models loaded.
     func shutdownOMLX() async {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("shutdown_omlx"))
         req.httpMethod = "POST"
-        req.timeoutInterval = 5
+        req.timeoutInterval = 10
         _ = try? await URLSession.shared.data(for: req)
     }
 
     // GET /mode -> current safety mode flags.
+    enum TranscriptResult { case success(String), failure(String) }
+
+    /// POST /voice/transcribe: the words in a spoken WAV clip, heard by the Ask
+    /// model on this Mac. A failure carries the service's own plain sentence.
+    func transcribe(wav: Data) async -> TranscriptResult {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("voice/transcribe"))
+        req.httpMethod = "POST"
+        // A cold model load plus the wait for a busy model, with room to spare.
+        req.timeoutInterval = 60
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["audio": wav.base64EncodedString()])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse else {
+            return .failure("Wisp's service isn't answering. Try again in a moment.")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if http.statusCode == 200, let text = object?["text"] as? String {
+            return .success(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if http.statusCode == 404 { return .failure("This copy of Wisp's service can't take voice yet. Restart Wisp.") }
+        if let detail = object?["detail"] as? String, !detail.isEmpty { return .failure(detail) }
+        return .failure("Wisp couldn't make out that recording. Try again, or type your question.")
+    }
+
     /// The service's Full access flag (GET /mode), or nil when it can't be read.
     /// An unreadable flag is unknown, never "off": Wisp may still be acting
     /// without asking.

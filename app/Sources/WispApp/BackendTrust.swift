@@ -162,6 +162,8 @@ extension Notification.Name {
     /// Posted (once per change) when the app starts refusing the program on the backend
     /// port. `userInfo["message"]` is the plain-language explanation.
     static let wispBackendRefused = Notification.Name("wisp.backendRefused")
+    /// Settings changed a launch-time choice (Cloud inference ▸ Everything); restart the backend.
+    static let wispRestartBackend = Notification.Name("wisp.restartBackend")
 }
 
 /// Which port is enforced. Set synchronously at launch (a lock, not an actor) so no
@@ -252,10 +254,18 @@ actor BackendTrustGate {
         return decide(current, answer)
     }
 
+    /// How long the per-request identity check waits for the backend's answer.
+    static let identityTimeout: TimeInterval = 6
+
     static func fetchIdentity(port: Int) async -> BackendTrust.IdentityResult {
         guard let url = URL(string: "http://127.0.0.1:\(port)/identity") else { return .failed }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 1.5
+        // Generous: every request waits on this answer, and a busy backend (a
+        // Brief read, a sync) can take over a second to reach it. At 1.5 s the
+        // check timed out ~200 times a day, failing the request it guarded with
+        // "Wisp's service isn't running yet." while the service was up. A port
+        // with nothing on it still fails at once (refused), never after this wait.
+        request.timeoutInterval = identityTimeout
         request.cachePolicy = .reloadIgnoringLocalCacheData
         // This request IS the verification, so it must not wait on itself.
         let marked = (request as NSURLRequest).mutableCopy() as! NSMutableURLRequest

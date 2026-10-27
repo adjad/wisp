@@ -17,10 +17,11 @@ struct DisplayGeometryChecks {
                               safeAreaTop: top, auxLeftWidth: side, auxRightWidth: side, isBuiltIn: true)
     }
 
-    /// A built-in display with no notch (M1 Air, 13" Pro): 24 pt menu bar.
-    static func notchless(_ w: CGFloat, _ h: CGFloat) -> DisplayMetrics {
+    /// A built-in display with no notch (M1 Air, 13" Pro, iMac): 24 pt menu bar,
+    /// or none reported while the menu bar auto-hides.
+    static func notchless(_ w: CGFloat, _ h: CGFloat, menuBar: CGFloat = 24) -> DisplayMetrics {
         DisplayMetrics(frame: CGRect(x: 0, y: 0, width: w, height: h),
-                       visibleFrame: CGRect(x: 0, y: 0, width: w, height: h - 24), isBuiltIn: true)
+                       visibleFrame: CGRect(x: 0, y: 0, width: w, height: h - menuBar), isBuiltIn: true)
     }
 
     static func monitor(_ w: CGFloat, _ h: CGFloat, origin: CGPoint = .zero) -> DisplayMetrics {
@@ -28,10 +29,10 @@ struct DisplayGeometryChecks {
                        visibleFrame: CGRect(x: origin.x, y: origin.y, width: w, height: h - 24), isBuiltIn: false)
     }
 
-    static func checkLayout(_ name: String, _ d: DisplayMetrics, style: SurfaceLayout.Style, virtual: Bool = false) {
-        let l = SurfaceLayout.make(for: d)
+    static func checkLayout(_ name: String, _ d: DisplayMetrics, style: SurfaceLayout.Style,
+                            forcing: SurfaceLayout.Style? = nil) {
+        let l = SurfaceLayout.make(for: d, forcing: forcing)
         check(l.style == style, "\(name): style")
-        check(l.isVirtualNotch == virtual, "\(name): virtual flag")
         // The bar is centred on its display and touches the top of its anchor area.
         check(abs(l.barFrame.midX - l.usableFrame.midX) <= 1, "\(name): bar centred")
         check(l.barFrame.maxY <= l.usableFrame.maxY + 0.5, "\(name): bar inside the display")
@@ -41,8 +42,12 @@ struct DisplayGeometryChecks {
         // notch's bottom strip; on a monitor it is the bar plus a margin.
         check(l.hoverZone.width > l.barFrame.width, "\(name): zone is wider than the bar")
         check(l.hoverZone.minX < l.barFrame.minX && l.hoverZone.maxX > l.barFrame.maxX, "\(name): zone reaches past both sides")
+        check(l.barIsVisible == (style != .menuBar) && l.statusInMenuBar == (style == .menuBar),
+              "\(name): only the menu-bar style hides the bar and moves its status to the icon")
         if style == .notch {
             hoverZoneChecks(name, l, d)
+        } else if style == .menuBar {
+            edgeZoneChecks(name, l, d)
         } else {
             check(l.hoverZone.contains(l.barFrame), "\(name): zone contains the capsule")
             check(l.hoverZone.height > l.barFrame.height, "\(name): zone is forgiving")
@@ -57,6 +62,7 @@ struct DisplayGeometryChecks {
                 check(abs(f.maxY - d.frame.maxY) < 0.5, "\(name): panel hangs from the top edge")
             } else {
                 check(f.maxY < d.visibleFrame.maxY, "\(name): floating card sits below the menu bar")
+                check(f.maxY <= d.frame.maxY - 24, "\(name): card clears even an auto-hidden menu bar")
             }
         }
         check(l.expandedFrame(contentHeight: 4000).height <= d.frame.height - SurfaceLayout.screenMargin, "\(name): tall content clamped")
@@ -73,23 +79,50 @@ struct DisplayGeometryChecks {
         checkLayout("Air 15.3", notched(1710, 1107), style: .notch)
         checkLayout("Air 13.6 larger text", notched(1280, 832), style: .notch)
 
-        // Notchless MacBooks (M1 Air, 13" Pro): same notch, drawn virtually.
-        checkLayout("M1 Air", notchless(1440, 900), style: .notch, virtual: true)
-        checkLayout("M1 Air more space", notchless(1680, 1050), style: .notch, virtual: true)
-        checkLayout("13in Pro", notchless(1280, 800), style: .notch, virtual: true)
-        let virtual = SurfaceLayout.make(for: notchless(1440, 900))
         let real = SurfaceLayout.make(for: notched(1512, 982))
-        check(virtual.barSize == real.barSize && virtual.contentTopInset == real.contentTopInset,
-              "Virtual and physical notch must be the same size, so every MacBook looks alike")
+
+        // Built-in displays without a notch (M1 Air, 13"/M2 13" Pro, iMac 24"): nothing
+        // drawn; the menu-bar icon and an invisible top-edge zone stand in. Default
+        // and scaled point sizes, plus a hidden (auto-hide) menu bar.
+        for (n, d) in [("M1 Air", notchless(1440, 900)), ("M1 Air more space", notchless(1680, 1050)),
+                       ("M1 Air larger text", notchless(1280, 800)), ("13in Pro", notchless(1440, 900)),
+                       ("iMac 24", notchless(2240, 1260)), ("iMac 24 more space", notchless(2560, 1440)),
+                       ("M1 Air menu bar hidden", notchless(1440, 900, menuBar: 0))] {
+            checkLayout(n, d, style: .menuBar)
+            let l = SurfaceLayout.make(for: d)
+            check(l.notchSize == .zero && l.contentTopInset == 16, "\(n): no notch inset")
+            check(l.barFrame.maxY <= d.frame.maxY - 24, "\(n): the undrawn seed sits under the menu bar")
+            check(l.maskedCorners.contains(.layerMaxXMaxYCorner), "\(n): card rounds all four corners")
+            check(l.hoverDwell > HoverIntent.dwell, "\(n): a longer dwell, since menus share the edge")
+            check(l.windowLevel == .floating, "\(n): not above the menu bar")
+        }
+        check(SurfaceLayout.make(for: notched(1512, 982)).hoverDwell == HoverIntent.dwell, "Notch keeps its dwell")
+
         check(real.notchSize == CGSize(width: 185, height: 32), "Reads the physical notch")
         check(real.barFrame.width == 185 + 2 * SurfaceLayout.wing, "Bar wraps the notch")
         check(real.barFrame.height == 32, "Bar covers the full notch height")
+        check(SurfaceLayout.make(for: notched(1512, 982, top: 34)).barFrame.height == 34, "Reads a taller notch")
 
-        // Implausible reports fall back to the standard notch rather than a bad one.
-        var odd = notched(1512, 982)
+        // A camera housing with implausible side areas is still a notch: standard
+        // width, its real height.
+        var odd = notched(1512, 982, top: 34)
         odd.auxLeftWidth = 0; odd.auxRightWidth = 0   // width would be the whole screen
-        check(SurfaceLayout.make(for: odd).notchSize == SurfaceLayout.referenceNotch, "Odd notch width falls back")
-        check(SurfaceLayout.make(for: odd).isVirtualNotch, "…and is treated as virtual")
+        let oddLayout = SurfaceLayout.make(for: odd)
+        check(oddLayout.style == .notch, "Odd notch stays a notch")
+        check(oddLayout.notchSize == CGSize(width: SurfaceLayout.referenceNotch.width, height: 34), "Odd notch width falls back")
+
+        // The debug override puts any style on any display (how the menu-bar style is
+        // tried on a notched MacBook).
+        checkLayout("MBP 14 forced menu bar", notched(1512, 982), style: .menuBar, forcing: .menuBar)
+        checkLayout("M1 Air forced notch", notchless(1440, 900), style: .notch, forcing: .notch)
+        checkLayout("MBP 16 forced floating", notched(1728, 1117), style: .floating, forcing: .floating)
+        check(SurfaceLayout.Style(rawValue: "menuBar") == .menuBar && SurfaceLayout.Style(rawValue: "virtual") == nil,
+              "Override values are the style names")
+
+        // First-run tip names the right place.
+        check(real.firstRunTip.contains("notch"), "Notch tip names the notch")
+        let air = SurfaceLayout.make(for: notchless(1440, 900))
+        check(!air.firstRunTip.contains("notch") && air.firstRunTip.contains("menu bar"), "Menu-bar tip never mentions a notch")
 
         // Monitors: floating, no notch.
         for (n, m) in [("1080p", monitor(1920, 1080)), ("1440p", monitor(2560, 1440)),
@@ -116,7 +149,8 @@ struct DisplayGeometryChecks {
         check(SurfaceLayout.make(for: monitor(500, 700)).expandedWidth <= 500, "Narrow display clamp")
 
         hoverChecks()
-        print("PASS: display geometry — 8 notched MacBooks, 3 notchless MacBooks, 7 monitor placements, target selection, hover intent")
+        statusChecks()
+        print("PASS: display geometry — 8 notched MacBooks, 7 notchless built-in displays, 7 monitor placements, overrides, target selection, hover intent, menu-bar status")
     }
 
     /// The notch's hover zone: most of the notch, never its bottom strip, and the top edge.
@@ -151,6 +185,37 @@ struct DisplayGeometryChecks {
         // Strictly bigger usable target than the old zone over the part that matters.
         let oldTop = CGRect(x: bar.minX - 8, y: bar.minY - 6, width: bar.width + 16, height: bar.height + 6)
         check(zone.width > oldTop.width, "\(name): wider than the old zone")
+    }
+
+    /// The invisible top-edge zone: hit by a push against the top-centre, never by
+    /// hovering a menu at the menu bar's middle or anything under it.
+    static func edgeZoneChecks(_ name: String, _ l: SurfaceLayout, _ d: DisplayMetrics) {
+        let zone = l.hoverZone, top = d.frame.maxY, midX = d.frame.midX
+        check(zone.contains(CGPoint(x: midX, y: top)), "\(name): pointer pinned to the top edge opens")
+        check(zone.contains(CGPoint(x: midX - 100, y: top)) && zone.contains(CGPoint(x: midX + 100, y: top)),
+              "\(name): the whole top-centre edge opens")
+        check(zone.contains(CGPoint(x: midX, y: top - 3)), "\(name): just under the edge opens")
+        check(!zone.contains(CGPoint(x: midX, y: top - 12)), "\(name): a menu hovered at the menu bar's middle does not")
+        check(!zone.contains(CGPoint(x: midX, y: top - 30)), "\(name): nothing under the menu bar opens")
+        check(!zone.contains(CGPoint(x: midX - 160, y: top)) && !zone.contains(CGPoint(x: midX + 160, y: top)),
+              "\(name): the edge away from the centre does not")
+        check(zone.maxY > top, "\(name): the zone reaches past the screen's top edge")
+        check(abs(zone.midX - midX) <= 1, "\(name): zone centred on the display")
+    }
+
+    static func statusChecks() {
+        // Same precedence as the collapsed bar: working, then due today, then not set up.
+        check(MenuBarStatus(working: false, dueToday: 0, setupSetAside: false).mark == .none, "Idle: plain icon")
+        check(MenuBarStatus(working: false, dueToday: 0, setupSetAside: false).title.isEmpty, "Idle: no text")
+        check(MenuBarStatus(working: true, dueToday: 3, setupSetAside: true).mark == .working, "Working wins")
+        check(MenuBarStatus(working: true, dueToday: 3, setupSetAside: false).title.isEmpty, "Working shows no count")
+        check(MenuBarStatus(working: false, dueToday: 3, setupSetAside: false).title == "3", "Due count shows")
+        check(MenuBarStatus(working: false, dueToday: 3, setupSetAside: true).title == "!", "Not set up hides the count, like the bar")
+        check(MenuBarStatus(working: false, dueToday: 0, setupSetAside: true).mark == .notSetUp, "Not set up")
+        check(MenuBarStatus(working: false, dueToday: 1, setupSetAside: false).accessibilityLabel == "Wisp, 1 thing is due today",
+              "Singular label")
+        check(MenuBarStatus(working: false, dueToday: 2, setupSetAside: false).accessibilityLabel == "Wisp, 2 things are due today",
+              "Plural label")
     }
 
     static func hoverChecks() {

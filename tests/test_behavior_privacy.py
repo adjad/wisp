@@ -31,6 +31,9 @@ def _env(monkeypatch, tmp_path):
     config._user_overlay.cache_clear()
     config.models_config.cache_clear()
     br.set_runtime(None)
+    # These suites exercise automatic routine actions; the new-install trial that
+    # only offers them is covered by tests/test_behavior_auto_trial.py.
+    monkeypatch.setattr(br.BehaviorRuntime, "auto_actions_held", lambda self, store, now: False)
     monkeypatch.setattr(br, "_last_age_out", None)
     yield
     br.set_runtime(None)

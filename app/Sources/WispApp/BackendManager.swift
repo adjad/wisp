@@ -2,6 +2,12 @@ import AppKit
 import Foundation
 import CryptoKit
 
+extension Notification.Name {
+    /// The backend this app launched exited before it ever answered. userInfo
+    /// "reason": a plain sentence with the exit status and the log's last line.
+    static let wispBackendStartFailed = Notification.Name("wisp.backendStartFailed")
+}
+
 /// Recovery reservations are synchronous: one monitor tick consumes the pending
 /// launch before any health check or credential read can suspend the manager.
 struct BackendRecoveryState {
@@ -81,7 +87,7 @@ final class BackendManager {
                 guard let self else { return }
                 let answered = await self.isHealthy(timeout: 4)
                 misses = answered ? 0 : misses + 1
-                if answered { self.everReachable = true }
+                if answered { self.everReachable = true; self.unprovenLaunch = nil }
                 if answered || misses >= 3, self.lastReachable != answered {
                     self.lastReachable = answered
                     self.onReachabilityChange(answered)
@@ -115,6 +121,9 @@ final class BackendManager {
         }
     }
     private var process: Process?
+    /// The pid of a child launched but not yet seen answering. If it exits while
+    /// still here, the start failed and the notch is told why at once.
+    private var unprovenLaunch: Int32?
     private var recoveryAlertShown = false
     /// Set when a program that is not this manager's own backend holds the backend
     /// port (seen at app startup, or answering /mode with no live child of ours). The
@@ -138,6 +147,9 @@ final class BackendManager {
         guard !portConflict else { return }
         startMonitor()
         guard !starting, enforceCredentialState() else { return }
+        // A child that exited (a crash, a failed start) is not a running backend:
+        // forget it so Retry launches a fresh one instead of doing nothing.
+        process = Self.liveChild(process)
         starting = true
         defer { starting = false }
         let lifecycle = self.lifecycle
@@ -220,7 +232,14 @@ final class BackendManager {
                 _ = enforceCredentialState()
                 return
             }
+            proc.terminationHandler = { [weak self] ended in
+                let pid = ended.processIdentifier, status = ended.terminationStatus
+                Task { @MainActor [weak self] in
+                    self?.launchEnded(pid: pid, status: status, logURL: logURL, after: logStartOffset)
+                }
+            }
             try proc.run()
+            unprovenLaunch = proc.processIdentifier
             // Record exactly which process this is before anything can judge the port.
             // Without that record Wisp could never recognise its own child, so it stops.
             guard recordLaunchReceipt(pid: proc.processIdentifier, root: root, nonce: launchNonce) else {
@@ -240,7 +259,10 @@ final class BackendManager {
             process = proc
             credentialState.didLaunch(generation: snapshot.generation)
             let healthy = await waitUntilHealthy(timeout: 20, process: proc)
-            if healthy { refreshLaunchReceipt(pid: proc.processIdentifier) }
+            if healthy {
+                refreshLaunchReceipt(pid: proc.processIdentifier)
+                if unprovenLaunch == proc.processIdentifier { unprovenLaunch = nil }
+            }
             if healthy, let configDigest, proc.isRunning, enforceCredentialState() {
                 do {
                     try Self.publishRuntimeReceipt(generation: snapshot.generation, pid: proc.processIdentifier,
@@ -251,7 +273,11 @@ final class BackendManager {
                 }
             }
             if !healthy {
-                if !proc.isRunning { process = nil }
+                if !proc.isRunning {
+                    process = nil
+                    launchEnded(pid: proc.processIdentifier, status: proc.terminationStatus,
+                                logURL: logURL, after: logStartOffset)
+                }
                 if let text = Self.logText(at: logURL, after: logStartOffset),
                    let diagnostic = Self.assistantStoreRecoveryDiagnostic(in: text) {
                     await presentRecoveryDiagnostic(diagnostic)
@@ -297,6 +323,44 @@ final class BackendManager {
         return store.refreshExecutablePath(pid: pid, start: begun, executablePath: current)
     }
 
+    /// A launched child exited. Before it ever answered, that is a failed start:
+    /// record why and tell the notch (once per launch), so it shows the cause
+    /// with Retry instead of a long "Starting Wisp…".
+    private func launchEnded(pid: Int32, status: Int32, logURL: URL, after offset: UInt64) {
+        guard unprovenLaunch == pid else { return }
+        unprovenLaunch = nil
+        if process?.processIdentifier == pid, process?.isRunning != true { process = nil }
+        let reason = Self.startFailureReason(status: status,
+                                             logTail: Self.logText(at: logURL, after: offset).flatMap(Self.lastLogLine))
+        NotificationCenter.default.post(name: .wispBackendStartFailed, object: nil, userInfo: ["reason": reason])
+    }
+
+    /// The child to keep: nil for one that has exited.
+    nonisolated static func liveChild(_ process: Process?) -> Process? {
+        process?.isRunning == true ? process : nil
+    }
+
+    /// The last non-empty line of a log segment, trimmed to one readable line.
+    nonisolated static func lastLogLine(_ text: String) -> String? {
+        guard let line = text.split(whereSeparator: \.isNewline)
+            .map({ $0.trimmingCharacters(in: .whitespaces) }).last(where: { !$0.isEmpty }) else { return nil }
+        return line.count > 160 ? String(line.prefix(159)) + "…" : line
+    }
+
+    /// service/wisp_reset.REFUSED_EXIT: the backend refused to start because a
+    /// /resetwisp is unfinished. Its log line is longer than lastLogLine keeps, so the
+    /// way out is said here in full.
+    nonisolated static let resetUnfinishedStatus: Int32 = 75
+    nonisolated static let resetUnfinishedReason = "Wisp couldn't finish its reset. Retry; if it keeps failing, "
+        + "delete ~/.moe/.reset-pending (Wisp then starts with what wasn't deleted)."
+
+    nonisolated static func startFailureReason(status: Int32, logTail: String?) -> String {
+        if status == resetUnfinishedStatus { return resetUnfinishedReason }
+        var reason = "Wisp's service stopped while starting (exit status \(status))."
+        if let logTail, !logTail.isEmpty { reason += " Last log line: " + logTail }
+        return reason
+    }
+
     /// Something that is not our backend answers on the port: start nothing, signal
     /// nothing, and report it once. Main-actor isolated, so the flag needs no lock.
     private func reportPortConflict() {
@@ -332,6 +396,7 @@ final class BackendManager {
 
     private func detachForStop() -> Process? {
         lifecycle = UUID()
+        unprovenLaunch = nil  // a stop on purpose is not a failed start
         monitor?.cancel()
         monitor = nil
         credentialState = BackendRecoveryState()

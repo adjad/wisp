@@ -240,7 +240,16 @@ class ShellBoundary(unittest.TestCase):
         for mode in ("confirmed", "full-access", "grant"):
             with self.subTest(mode=mode):
                 marker = self.root / f"{mode}.marker"
-                cmd = f"echo fixture; {self.marker_command(marker)}"
+                # A grant is scoped to the first word, so it only ever covers a
+                # single plain program (policy.shell_grant_problem).
+                # CI's Simulation QA sandbox may exec only a fixed list of
+                # programs (build-support/pipeline.py); /bin/mv is on it, touch isn't.
+                if mode == "grant":
+                    staged = self.root / "grant.staged"
+                    staged.write_text("fixture-only")
+                    cmd = shlex.join(["/bin/mv", str(staged), str(marker)])
+                else:
+                    cmd = f"echo fixture; {self.marker_command(marker)}"
                 policy.set_read_only(mode == "grant")
                 policy.set_full_access(mode == "full-access")
                 with patch.object(grants, "check", return_value="allow" if mode == "grant" else None):
@@ -253,6 +262,16 @@ class ShellBoundary(unittest.TestCase):
                 self.assertTrue(run.call_args.kwargs["shell"])
                 self.assertEqual(run.call_args.args[0], cmd)
                 self.assertEqual(marker.read_text(), "fixture-only")
+
+    def test_a_grant_never_covers_a_compound_or_interpreter_command(self):
+        policy.set_read_only(True)
+        policy.set_full_access(False)
+        marker = self.root / "never.marker"
+        for cmd in (f"echo fixture; {self.marker_command(marker)}",
+                    self.marker_command(marker), "ls && touch x", "FOO=1 touch x"):
+            with self.subTest(cmd=cmd), patch.object(grants, "check", return_value="allow"):
+                self.assertIs(self.decision(cmd).tier, policy.Tier.DENY)
+                self.assertFalse(grants.is_grantable("run_shell", {"cmd": cmd}))
 
     def test_explicit_denial_still_precedes_execution(self):
         for full_access in (False, True):

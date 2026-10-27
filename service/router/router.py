@@ -320,6 +320,11 @@ _NT_CLAUSE_SPLIT_RE = re.compile(r"[;,]|\b(?:and|then|also|plus)\b", re.I)
 _NT_MAX_CHARS = 300
 
 
+def _remote_parity() -> bool:
+    from service.inference.remote_policy import remote_parity
+    return remote_parity()
+
+
 def _strip_non_word(text: str) -> str:
     """Strip leading and trailing non-word characters in linear time (the obvious
     anchored-alternation regex backtracks quadratically on a long punctuation run)."""
@@ -1219,6 +1224,82 @@ _SEARCH_COVERAGE_DOMAINS = [
     ("notes", re.compile(r"\bnotes?\b", re.I)),
     ("browser", re.compile(r"\bbrows(?:er|ing)|history\b", re.I)),
 ]
+
+# A new user's questions about Wisp itself: who it is, what it can do, whether
+# their data is private, how to use it. Each is the WHOLE prompt (optional
+# greeting and trailing punctuation), never a clause inside a request, and goes
+# router-direct to wisp_capabilities(topic=...), whose answer is written and
+# live-state checked in service/wisp_about.py. Before this, "who are you" and
+# "is my data private" fell to the ambiguous route and a model improvised an
+# answer (or tried tools) while it was often still loading on a first launch.
+_SELF_LEAD = r"^\s*(?:(?:hey|hi|hello|ok|okay|so|wisp)[,!\s]+)*"
+_SELF_END = r"\s*(?:,?\s*wisp)?\s*[?.!]*\s*$"
+_SELF_IDENTITY_RE = re.compile(
+    _SELF_LEAD + r"(?:who\s+(?:are\s+you|is\s+wisp)|what\s+are\s+you|what(?:'?s|\s+is)\s+wisp|"
+    r"what(?:'?s|\s+is)\s+your\s+name|tell\s+me\s+(?:a\s+(?:little\s+)?bit\s+)?about\s+yourself|"
+    r"introduce\s+yourself|are\s+you\s+(?:an?\s+)?(?:ai|bot|robot|chatbot|chatgpt|siri|human|person))"
+    + _SELF_END, re.I)
+_SELF_OVERVIEW_RE = re.compile(
+    _SELF_LEAD + r"(?:what\s+(?:else\s+)?(?:can|could)\s+(?:you|wisp)\s+(?:do|help\s+(?:me\s+)?with)"
+    r"(?:\s+for\s+me)?|what\s+(?:do|does)\s+(?:you|wisp)\s+do|"
+    r"what\s+are\s+you\s+(?:able\s+to\s+do|good\s+(?:at|for)|for))" + _SELF_END, re.I)
+_SELF_PRIVACY_RE = re.compile(
+    _SELF_LEAD + r"(?:(?:is|are)\s+(?:my\s+)?(?:data|info|information|stuff|files|emails?|messages?|chats?)"
+    r"\s+(?:private|safe|secure|kept\s+local|local|on\s+my\s+mac)|"
+    # Not "is it/this private?": mid-conversation that is about the thing just
+    # discussed (a document, a link), not about Wisp.
+    r"(?:is|are)\s+(?:wisp|you|this\s+app)\s+(?:private|safe|secure|local)|"
+    r"how\s+(?:private|safe|secure)\s+(?:is\s+(?:my\s+data|wisp|this\s+app)|are\s+you)|"
+    r"where\s+(?:does|do|is|are)\s+my\s+(?:data|info|information|emails?|messages?)"
+    r"\s+(?:go|goes|stored|kept|sent|saved)|"
+    r"(?:do|does|will)\s+(?:you|wisp)\s+(?:send|share|upload|sell|store|keep|see|read)\s+my\s+"
+    r"(?:data|info|information|emails?|messages?|texts?|files)(?:\s+(?:to|in)\s+the\s+cloud|\s+online"
+    r"|\s+anywhere)?|"
+    r"(?:does|do)\s+(?:my\s+data|anything|wisp|you)\s+(?:leave|go\s+off)\s+(?:my|this)\s+mac|"
+    r"what\s+(?:data|information|info)\s+do\s+you\s+(?:collect|store|keep|see|have|send)|"
+    r"(?:what\s+about\s+)?privacy)" + _SELF_END, re.I)
+# How-to verbs and Wisp's own features, for "how do I <verb> <feature> in Wisp".
+_SELF_FEATURE_VERB = (r"(?:set\s+up|setup|connect|disconnect|link|turn\s+(?:on|off)|switch\s+(?:on|off)|"
+                      r"enable|disable|change|edit|reset|open|find|use|see|view|show|hide|pin|unpin|"
+                      r"add|remove|erase|clear|delete|grant|allow|update|"
+                      r"(?:log|sign)\s*(?:in|out)(?:\s*to|\s+of)?|give|send|leave|get)")
+_SELF_FEATURE = (r"(?:notch|brief|day(?:\s+tab)?|ask(?:\s+tab)?|settings?|tone|name|memory|memories|"
+                 r"about\s+you|profile|google(?:\s+account)?|gmail|shortcuts?|hotkey|keyboard\s+shortcut|"
+                 r"notifications?|sources?|permissions?|access|model|cloud(?:\s+model)?|"
+                 r"research(?:\s+mode)?|debug\s+mode|chats?|chat\s+history|history|"
+                 r"getting\s+to\s+know\s+you|menu\s+bar\s+icon|feedback|help|account)")
+_SELF_HOWTO_RE = re.compile(
+    _SELF_LEAD + r"(?:help|help\s+me\s+get\s+started|getting\s+started|"
+    r"how\s+(?:do|can|should)\s+i\s+(?:use|get\s+started\s+with|start\s+using|set\s+up|work\s+with|"
+    r"talk\s+to|open|launch|find|summon)\s+(?:you|wisp|this\s+app)|"
+    r"how\s+(?:do|can)\s+i\s+get\s+started|how\s+(?:does|do)\s+(?:wisp|you)\s+work|"
+    r"how\s+(?:do|can)\s+i\s+(?:connect|link|add|set\s+up)\s+(?:my\s+)?(?:google|gmail|google\s+calendar)"
+    r"(?:\s+account)?(?:\s+(?:to|with)\s+(?:you|wisp))?|"
+    # The catch-all needs Wisp itself as the object ("quit wisp", "open the
+    # brief tab"), or a set-up verb on one of Wisp's own features "in Wisp"
+    # ("change the tone in Wisp"). A trailing ", Wisp" is only an address:
+    # "how do I reply to Sam, Wisp?" is a request about Sam, and "how do I
+    # write a cover letter in Wisp" is a task to do, not a feature to explain.
+    # Help, feedback and signing in are about Wisp even with a preposition:
+    # "how can I get help with Wisp", "give feedback on Wisp", "log in to Wisp".
+    r"how\s+(?:do|can)\s+i\s+(?:get\s+(?:some\s+)?help\s+(?:with|using|on|for)|"
+    r"(?:give|send|leave|share)\s+(?:some\s+)?feedback\s+(?:on|about|for|to)|"
+    r"(?:log|sign)\s*(?:in|on)(?:\s*to)?|(?:log|sign)\s+out\s+of)\s+(?:wisp|this\s+app)|"
+    r"how\s+(?:do|can)\s+i\s+(?:(?!(?:in|with|on|to|from|using|for|via)\s)[a-z']+\s+){1,3}?"
+    r"(?:wisp|this\s+app|the\s+notch|"
+    r"the\s+(?:brief|day|ask)\s+tab|(?:wisp'?s|your)\s+(?:settings|shortcuts?|hotkey|notch|panel|memory))|"
+    r"how\s+(?:do|can)\s+i\s+" + _SELF_FEATURE_VERB + r"\s+(?:(?:the|my|a|an)\s+)?"
+    + _SELF_FEATURE + r"\s+(?:in|on|for)\s+wisp)" + _SELF_END, re.I)
+
+
+def _self_question_topic(t: str) -> str:
+    """'identity', 'overview', 'privacy' or 'howto' for a question about Wisp
+    itself, else ''. Never matches a request with work in it."""
+    for topic, pattern in (("identity", _SELF_IDENTITY_RE), ("overview", _SELF_OVERVIEW_RE),
+                           ("privacy", _SELF_PRIVACY_RE), ("howto", _SELF_HOWTO_RE)):
+        if pattern.match(t):
+            return topic
+    return ""
 
 _LOW_POWER_CONDITIONAL_RE = re.compile(
     r"\bif\b[^.?!]{0,80}\bbattery\b[^.?!]{0,40}\bbelow\s+(\d{1,3})\s*%"
@@ -4591,7 +4672,9 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         # is exactly the composite question it exists to answer in one shot
         # instead of four, which also means four fewer decode-dominated steps
         # (see [[moe-decode-dominates-latency]]) when the model reaches for it.
-        subset += [*_ALL_SOURCES, "daily_brief"]
+        # get_my_day_plan is the Brief's own ranked plan for today, the answer
+        # to "what should I do today" in one read.
+        subset += [*_ALL_SOURCES, "daily_brief", "get_my_day_plan"]
         domains.append("todo" if _TODO_RE.search(t) else "planning")
         multi = True   # see RouteDecision.multi_round — all four sources are required
         # …and once all four HAVE answered, the requirement is met and the
@@ -5328,6 +5411,10 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         source = next((key for key, pat in _SEARCH_COVERAGE_DOMAINS if pat.search(t)), "")
         return _mk_direct([("search_coverage", {"source": source} if source else {})],
                           "capability question -> search_coverage (router-direct)")
+    if topic := _self_question_topic(t):
+        return _mk_direct([("wisp_capabilities", {"query": t, "topic": topic})],
+                          f"question about Wisp ({topic}) -> wisp_capabilities (router-direct)",
+                          light=False)
     if _CAPABILITY_INVENTORY_RE.search(t):
         return _mk_direct([("wisp_capabilities", {"query": t})],
                           "capability inventory -> wisp_capabilities (router-direct)",
@@ -8292,7 +8379,7 @@ async def route(text: str, *,
     literal = knowledge_envelope(text) is not None or _scheduled_send_review(text) is not None
     allow_profile_context = allow_profile_context and not test_mode and not literal
     allow_skill_context = (allow_skill_context and not test_mode and not literal
-                           and remote_only_profile() is None)
+                           and (remote_only_profile() is None or _remote_parity()))
     # Behavior-learning questions are claimed here, ahead of _route_impl (whose
     # body is pinned), only while behavior learning is on.
     behavior = _assistant_read_claim(text)

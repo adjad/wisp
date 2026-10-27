@@ -10,6 +10,7 @@ import asyncio
 import json
 import math
 import re
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -84,7 +85,7 @@ async def _ensure_engine() -> None:
         async with asyncio.timeout(150):
             await ensure_omlx()
     except Exception:
-        raise DownloadError("The built-in engine could not start. Choose Start engine to try again.") from None
+        raise DownloadError("Wisp's built-in engine didn't start. Try again in a moment.") from None
 
 
 @asynccontextmanager
@@ -197,6 +198,101 @@ async def start_engine(request: Request):
         raise HTTPException(503, str(exc)) from None
 
 
+# Models whose profile reached the running engine after their download finished.
+# Only a push the engine accepted lands here; a failed one is tried again.
+_profiles_pushed: set[str] = set()
+_pushing: set[str] = set()
+_push_failed_at: dict[str, float] = {}
+# The setup UI polls every few seconds; a failed push waits this long between tries.
+_PUSH_RETRY_S = 30.0
+# The backend's own watch over a profiled model's download, so its profile does
+# not depend on a setup window being open when the download finishes.
+_WATCH_EVERY_S = 10.0
+_WATCH_FOR_S = 6 * 3600.0
+_watch: asyncio.Task | None = None
+
+
+def _awaiting_profile(tasks) -> bool:
+    """A catalog download whose model has a profile the engine hasn't taken yet:
+    still downloading, or finished and not pushed."""
+    for _, _, task in tasks:
+        model = catalog.by_id(task["model"])
+        if model is None or not model.engine_profile or model.id in _profiles_pushed:
+            continue
+        if task["state"] in _ACTIVE or task["state"] == "completed":
+            return True
+    return False
+
+
+async def _push_profiles(tasks, *, now=time.monotonic) -> None:
+    """Hand a just-downloaded model its catalog profile without an engine restart.
+
+    The engine read model_settings.json when it started, before this model
+    existed. A model counts as pushed only once the engine accepted the PUT;
+    until then it is tried again every _PUSH_RETRY_S, and the file still holds
+    the profile (seeded in prepare()) for the engine's next start.
+    """
+    from . import profiles
+    layout = getattr(runtime._manager, "layout", None)
+    if layout is None:
+        return
+    path = layout.base_path / "model_settings.json"
+    record = layout.data_dir / "seeded_profiles.json"
+    for _, _, task in tasks:
+        model = catalog.by_id(task["model"])
+        if task["state"] != "completed" or model is None or not model.engine_profile \
+                or model.id in _profiles_pushed or model.id in _pushing:
+            continue
+        failed_at = _push_failed_at.get(model.id)
+        if failed_at is not None and now() - failed_at < _PUSH_RETRY_S:
+            continue
+        _pushing.add(model.id)
+        try:
+            profiles.seed(path, record, [model], force=[model.id])
+            entry = profiles.entry_for(path, model.id) or dict(model.engine_profile)
+            try:
+                schema = await _call("GET", "/openapi.json")
+                allowed = set(schema["components"]["schemas"]["ModelSettingsRequest"]["properties"])
+            except (DownloadError, KeyError, TypeError):
+                allowed = None
+            await _call("PUT", f"/admin/api/models/{model.id}/settings", profiles.push_body(entry, allowed))
+            # The PUT rewrites the entry from its schema; put back keys it dropped.
+            profiles.seed(path, record, [model], force=[model.id])
+            _profiles_pushed.add(model.id)
+            _push_failed_at.pop(model.id, None)
+        except (DownloadError, OSError):
+            _push_failed_at[model.id] = now()
+        finally:
+            _pushing.discard(model.id)
+
+
+async def _watch_loop() -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _WATCH_FOR_S
+    while loop.time() < deadline:
+        await asyncio.sleep(_WATCH_EVERY_S)
+        engine = runtime._manager
+        if engine is None or not engine.running() or not engine.verified:
+            return  # A stopped engine reads the seeded file when it starts again.
+        try:
+            tasks = await _inventory()
+        except DownloadError:
+            continue
+        await _push_profiles(tasks)
+        if not _awaiting_profile(tasks):
+            return
+
+
+def _watch_downloads(tasks) -> None:
+    """Watch a profiled model's download from the backend until its profile is
+    in the engine. Before, only the setup UI's poll pushed it, so closing the
+    window mid-download could leave the model on the engine's defaults."""
+    global _watch
+    if not _awaiting_profile(tasks) or (_watch is not None and not _watch.done()):
+        return
+    _watch = asyncio.get_running_loop().create_task(_watch_loop())
+
+
 @router.get("/downloads")
 async def download_status(request: Request):
     _require_bundled()
@@ -205,7 +301,10 @@ async def download_status(request: Request):
     if engine is None or not engine.running() or not engine.verified:
         return {"tasks": []}
     try:
-        return _display(await _inventory())
+        tasks = await _inventory()
+        await _push_profiles(tasks)
+        _watch_downloads(tasks)
+        return _display(tasks)
     except DownloadError as exc:
         raise HTTPException(503, str(exc)) from None
 
@@ -226,7 +325,9 @@ async def download_model(request: Request):
                     await _call("POST", f"/admin/api/hf/retry/{previous[0]}", {})
                 else:
                     await _call("POST", "/admin/api/hf/download", {"repo_id": _catalogue()[model]})
-                return _display(await _inventory())
+                tasks = await _inventory()
+                _watch_downloads(tasks)
+                return _display(tasks)
     except TimeoutError:
         raise HTTPException(504, "The engine took too long. Check again to see whether the download started.") from None
     except DownloadError as exc:

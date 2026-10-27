@@ -27,28 +27,38 @@ import Compression
 //     schema drift in a way a hardcoded field path would not be.
 final class NotesDBReader {
     private let noteLimit = 500   // matches NotesReader's AppleScript `lim`
+    private let path: String
 
-    private func storePath() -> String? {
-        let p = (NSHomeDirectory() as NSString)
+    /// Why the last readNotes() returned nil, for NotesReader's diagnostics.
+    /// `kind` is the reason_kind the Brief keys its button on ("" for none).
+    private(set) var lastFailure: (kind: String, reason: String)?
+
+    // An explicit path lets checks use fixtures, never the person's Notes.
+    init(storePath: String? = nil) {
+        path = storePath ?? (NSHomeDirectory() as NSString)
             .appendingPathComponent("Library/Group Containers/group.com.apple.notes/NoteStore.sqlite")
-        return FileManager.default.fileExists(atPath: p) ? p : nil
     }
 
     /// Same FS/RS-delimited raw format as NotesReader's AppleScript path
     /// ("epochSecs FS name FS folder FS plaintext RS"), so the backend's
     /// existing parser needs no changes regardless of which reader produced
-    /// a given sync. Returns nil only when the store itself couldn't be
-    /// opened (no FDA, or Notes not set up).
+    /// a given sync. Returns nil, with lastFailure set, when the store can't
+    /// be opened or its tables aren't the ones this reader knows; a store it
+    /// can't read is never reported as an empty one.
     func readNotes() -> String? {
-        guard let path = storePath() else { return nil }
+        lastFailure = nil
         var db: OpaquePointer?
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             sqlite3_close(db)
+            lastFailure = Self.failure(openErrno: Self.openErrno(path))
             return nil
         }
         defer { sqlite3_close(db) }
 
-        guard let noteEnt = entityID(db, name: "ICNote") else { return "" }
+        guard let noteEnt = entityID(db, name: "ICNote") else {
+            lastFailure = Self.unreadable(path)
+            return nil
+        }
 
         let sql = """
         SELECT n.ZTITLE1, f.ZTITLE2, n.ZMODIFICATIONDATE1, d.ZDATA
@@ -61,7 +71,10 @@ final class NotesDBReader {
         LIMIT \(noteLimit)
         """
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return "" }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            lastFailure = Self.unreadable(path)
+            return nil
+        }
         defer { sqlite3_finalize(stmt) }
 
         let FS = "\u{01}", RS = "\u{02}"
@@ -88,6 +101,40 @@ final class NotesDBReader {
             out += epoch.description + FS + title + FS + folder + FS + body + RS
         }
         return out
+    }
+
+    /// Why the store wouldn't open, from the error itself.
+    ///
+    /// - IMPORTANT: Full Disk Access only when macOS refused the file (EPERM,
+    ///   its privacy denial), as in MessagesReadFailure and MailDBReader. A
+    ///   missing, locked or changed store keeps a plain reason, so nobody is
+    ///   sent to a setting that won't help.
+    static func failure(openErrno: Int32) -> (kind: String, reason: String) {
+        switch openErrno {
+        case EPERM:
+            return ("full_disk_access", "Wisp reads Notes while Notes is open. Open Notes, or give Wisp "
+                    + "Full Disk Access to read it when Notes is closed.")
+        case ENOENT:
+            return ("", "Wisp didn't find saved notes on this Mac. Open Notes, and Wisp will read it from there.")
+        default:
+            return ("", "Notes' saved data couldn't be read just now. Open Notes, and Wisp will read it from there.")
+        }
+    }
+
+    /// The store opened but its tables can't be read: still EPERM if macOS
+    /// refuses the file itself, otherwise a store this reader doesn't know.
+    private static func unreadable(_ path: String) -> (kind: String, reason: String) {
+        let code = openErrno(path)
+        if code == EPERM { return failure(openErrno: code) }
+        return ("", "Notes' saved data is in a form Wisp can't read. Open Notes, and Wisp will read it from there.")
+    }
+
+    /// SQLite's own errno after a failed open isn't reliable, so the file is
+    /// opened once more read-only: that errno is the real reason (0 if it opens).
+    static func openErrno(_ path: String) -> Int32 {
+        let fd = open(path, O_RDONLY)
+        if fd >= 0 { close(fd); return 0 }
+        return errno
     }
 
     private func entityID(_ db: OpaquePointer?, name: String) -> Int64? {

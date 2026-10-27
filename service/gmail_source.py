@@ -7,12 +7,43 @@ API with the read-only scope, and feeds the SAME three caches the Swift
 MailReader fills (`_headers`, `_history`, `_raw_emails`) through
 `email_tools.cache_external_emails`, so every downstream tool is unchanged.
 
-Setup is user-owned: Wisp cannot ship a Google OAuth client (the Gmail scopes
-are restricted), so the user creates a Desktop-type client in their own Google
-Cloud project and gives Wisp its id/secret once (`/assistant/gmail/connect`
-or scripts/gmail_connect.py). Consent happens in the browser over a loopback
-redirect with PKCE. Only `gmail.readonly` is ever requested — nothing here can
-send, delete, or modify mail — and data only flows Google -> this Mac.
+Which OAuth client signs in (`resolve_client`): the user's own Desktop-type
+client, saved from Settings ▸ Google (or the Workspace setup), comes first.
+Otherwise the release build's built-in client is used: a Testing-mode app the
+project owner controls, which only Google accounts on its tester list can use.
+The build writes it from WISP_GOOGLE_OAUTH_CLIENT into the bundle as
+BUILTIN_CLIENT_PATH (gitignored, never in the public repo); source checkouts
+and builds without it have none. Like the user's own client, its secret is
+kept only where token calls need it (gmail.json, 0600, and the Workspace
+server's per-account credential files); status reports only its source.
+Consent happens in the browser over a loopback redirect with PKCE. Only
+read-only scopes are requested (`gmail.readonly`, and optionally
+`calendar.readonly`): nothing here can send, delete, or modify mail or events,
+and data only flows Google -> this Mac.
+
+A Testing-mode app's refresh tokens for restricted scopes expire after 7 days;
+the refresh then returns invalid_grant. The account is marked "sign-in
+expired" (persisted `auth_expired`), status says so, and one durable
+`google_signin_expired` event per expiry lets the app post one notification.
+A reconnect (a new sign-in with that account as login_hint) clears it.
+
+What is fetched, per connected account, in the background (`run`):
+- headers of the newest HEADERS_LIMIT inbox messages, every HEADERS_EVERY s;
+- header history back HISTORY_DAYS, every HISTORY_EVERY s;
+- full bodies of the newest RAW_LIMIT messages, every RAW_EVERY s (15 min,
+  the cadence MailReader.swift uses for Mail.app), and once right after a
+  sign-in. The proactive engine reads these bodies to find what people asked;
+  they live in the same expiring raw-body cache as Mail.app's.
+
+Consent also asks for `calendar.readonly` (google_calendar_source.py reads the
+next week of events into the same calendar store EventKit fills). Google lets
+the user untick it, and older tokens predate it, so the scopes Google actually
+granted are recorded per account and Calendar is fetched only when granted;
+mail never depends on it.
+
+Disconnecting an account also erases everything Wisp derived from it: its
+mail caches, its Google Calendar events, the mail overviews written from the
+combined inbox, and its proactive cards/to-dos (`erase_account_data`).
 
 The refresh token lives in ~/.moe/gmail.json (0600), same trust model as the
 other personal caches under ~/.moe.
@@ -21,8 +52,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import html
+import inspect
 import json
 import os
 import re
@@ -36,6 +69,7 @@ from dataclasses import asdict, dataclass, field, replace
 from contextvars import ContextVar
 from email.header import decode_header, make_header
 from email.utils import parseaddr
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -44,21 +78,49 @@ from service.paths import MOE_DIR
 from service.publication_authority import Authority, Witness, mutating, revocation
 
 SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+# Requested together at consent, with the read-only Workspace scopes
+# (google_workspace.WORKSPACE_SCOPES, see _consent_scopes): one sign-in per
+# account serves Brief's sync and the Workspace tools. Only SCOPE is required.
+CONSENT_SCOPES = (SCOPE, CALENDAR_SCOPE)
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 CONFIG_PATH = MOE_DIR / "gmail.json"
+# Written by build-support/pipeline.py into the packaged backend; gitignored.
+BUILTIN_CLIENT_PATH = Path(__file__).with_name("google_oauth_client.json")
+
+# User-facing copy for the Testing-mode realities of the built-in client.
+UNVERIFIED_NOTICE = "Google will warn that Wisp isn't verified yet. Choose Continue."
+# access_denied comes back both for a cancel and for an account that isn't on
+# a Testing-mode app's tester list; only Wisp's built-in app has such a list
+# the user can't see, so only its sign-ins mention it.
+CANCELLED_OR_NOT_TESTER = "Sign-in was cancelled, or this Google account isn't on Wisp's tester list yet."
+CANCELLED = "Sign-in was cancelled."
+SIGNIN_EXPIRED = "Google sign-in expired. Reconnect in Settings ▸ Google."
 
 HEADERS_LIMIT = 200          # per account, same depth as MailReader
 RAW_LIMIT = 50
+# Plus every message from the past week (up to WEEK_RAW_LIMIT), so the Brief reads
+# a whole week of a newly linked inbox, not only its newest 50.
+WEEK_RAW_DAYS = 7
+WEEK_RAW_LIMIT = 150
 HISTORY_LIMIT = 2000         # ~2y cap; first walk is the only expensive one
 HISTORY_DAYS = 730
 BODY_CAP = 20000
 FETCH_CONCURRENCY = 4        # metadata get = 5 quota units; the cap is 250/s
 
 HEADERS_EVERY = 300
+# The user's own sent mail (headers only), so a thread they answered from
+# Gmail, Mail or a phone reads as answered (service/proactive/handled.py).
+SENT_LIMIT = 200
+SENT_DAYS = 8
+SENT_EVERY = 120
 HISTORY_EVERY = 1800
+# Recent bodies (RAW_LIMIT) on the same 15-minute cadence MailReader.swift uses
+# for Mail.app, so the background proactive engine can read what people asked.
+RAW_EVERY = 900
 
 _FS = "\x01"
 _RS = "\x02"
@@ -66,6 +128,8 @@ _RS = "\x02"
 _meta: dict[tuple[str, str], dict] = {}
 _last: dict[str, dict[str, float]] = {}
 _errors: dict[str, str] = {}
+# account -> the user's sent messages: {ts, to, subject, message_id, in_reply_to}.
+_sent: dict[str, list[dict]] = {}
 _access: dict[str, dict] = {}
 _epochs: dict[str, int] = {}
 _locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -74,6 +138,7 @@ _pending_flow: dict | None = None
 _flow_generation = 0
 _authorization: dict = {"state": "idle", "generation": 0, "error": ""}
 _behavior_history_sources: weakref.WeakSet = weakref.WeakSet()
+_background: set = set()   # strong refs so fire-and-forget tasks are not collected
 _history_config_lock = threading.RLock()
 
 
@@ -135,6 +200,56 @@ def _save_config(cfg: dict) -> None:
         _observe_history_config(cfg)
 
 
+def builtin_client() -> tuple[str, str]:
+    """(client_id, client_secret) of the client the build shipped, or ("", "").
+
+    Never logged, never returned by a route: callers that report it say only
+    that it exists (`resolve_client`'s source)."""
+    try:
+        data = json.loads(BUILTIN_CLIENT_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — absent or unreadable means "no built-in client"
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    client_id, secret = data.get("client_id"), data.get("client_secret")
+    if not (isinstance(client_id, str) and isinstance(secret, str)
+            and client_id.strip() and secret.strip()):
+        return "", ""
+    return client_id.strip(), secret.strip()
+
+
+def resolve_client(cfg: dict | None = None, client_id: str = "",
+                   client_secret: str = "") -> tuple[str, str, str]:
+    """(client_id, client_secret, source) for the next sign-in.
+
+    source is "user" (an id given now, the one saved in gmail.json, or the
+    Workspace setup's), "builtin" (the shipped client) or "none". The user's
+    own client always wins over the built-in one.
+    """
+    cfg = load_config() if cfg is None else cfg
+    try:
+        from service import google_workspace
+        saved_id, saved_secret = google_workspace.saved_credentials()
+    except Exception:  # noqa: BLE001 — Workspace setup unreadable: ignore it
+        saved_id, saved_secret = "", ""
+    shipped_id, shipped_secret = builtin_client()
+    if shipped_id and saved_id == shipped_id:
+        saved_id, saved_secret = "", ""   # the Workspace server was set up with the built-in client
+    client_id = str(client_id or "").strip()
+    client_secret = str(client_secret or "").strip()
+    chosen = client_id or str(cfg.get("client_id") or "") or saved_id
+    if chosen:
+        secret = (client_secret or
+                  (str(cfg.get("client_secret") or "") if chosen == cfg.get("client_id") else "") or
+                  (saved_secret if chosen == saved_id else ""))
+        if shipped_id and chosen == shipped_id:
+            return shipped_id, shipped_secret, "builtin"
+        return chosen, secret, "user"
+    if shipped_id:
+        return shipped_id, shipped_secret, "builtin"
+    return "", "", "none"
+
+
 def connected_accounts(cfg: dict | None = None) -> dict[str, dict]:
     cfg = load_config() if cfg is None else cfg
     accounts = cfg.get("accounts")
@@ -150,22 +265,184 @@ def is_connected() -> bool:
     return bool(connected_accounts())
 
 
+def granted_scopes(account: str, item: dict | None = None) -> set[str]:
+    """Scopes Google granted this account at consent.
+
+    A token saved before Calendar was requested has no record: it was granted
+    exactly the Gmail read scope, which is what it keeps doing.
+    """
+    item = connected_accounts().get(account.lower()) if item is None else item
+    scopes = (item or {}).get("scopes")
+    if not isinstance(scopes, list):
+        return {SCOPE} if item else set()
+    return {str(scope) for scope in scopes}
+
+
+def has_calendar(account: str, item: dict | None = None) -> bool:
+    return CALENDAR_SCOPE in granted_scopes(account, item)
+
+
+@contextlib.contextmanager
+def bound_account(account: str):
+    """Run Google API calls as `account`, with the same disconnect fencing the
+    Gmail fetches use: `still_connected()` turns False the moment the account
+    is disconnected or reconnected, and `access_token()` refuses after that."""
+    account = account.lower()
+    cfg = connected_accounts().get(account)
+    if cfg is None:
+        raise GmailError("That Google account is not connected")
+    token = _context.set((account, dict(cfg), _epochs.get(account, 0)))
+    try:
+        yield
+    finally:
+        _context.reset(token)
+
+
+def still_connected() -> bool:
+    return _still_connected()
+
+
+async def access_token(http: httpx.AsyncClient) -> str:
+    return await _access_token(http)
+
+
 def status() -> dict:
     from service.tools import email_tools as E
     cfg = load_config()
     accounts = connected_accounts(cfg)
     sources = {row["account"]: row for row in E.email_source_details() if row["source"] == "gmail"}
-    rows = [{"email": email, "last_headers_sync": sources.get(email, {}).get("last_success"),
-             "fresh": sources.get(email, {}).get("fresh", False),
-             "last_error": _errors.get(email) or sources.get(email, {}).get("error", ""),
-             "mail_account_id": item.get("mail_account_id", "")}
-            for email, item in accounts.items()]
+    from service import google_calendar_source as C
+    from service import google_workspace as W
+    workspace = W.status()
+    rows = []
+    for email, item in accounts.items():
+        expired = bool(item.get("auth_expired"))
+        error = (SIGNIN_EXPIRED if expired else
+                 _errors.get(email) or sources.get(email, {}).get("error", ""))
+        granted = granted_scopes(email, item)
+        row = {"email": email, "workspace": bool(item.get("workspace")),
+               "workspace_full": W.has_full_scopes(email, item),
+               "workspace_requested": bool(item.get("workspace_requested")),
+               "workspace_declined": [scope for scope in W.WORKSPACE_SCOPES if scope not in granted],
+               "last_headers_sync": sources.get(email, {}).get("last_success"),
+               "fresh": sources.get(email, {}).get("fresh", False) and not expired,
+               "last_error": error,
+               "expired": expired, "expired_at": item.get("auth_expired") or None,
+               "client_source": "builtin" if item.get("client_source") == "builtin" else "user",
+               "mail_account_id": item.get("mail_account_id", ""),
+               "calendar": has_calendar(email, item), **C.account_status(email)}
+        rows.append({**row, **account_state(row, workspace), "note": account_note(row)})
     first = rows[0] if rows else {}
+    _, _, source = resolve_client(cfg)
     return {"connected": bool(rows), "email": first.get("email", ""), "accounts": rows,
+            # client_id is only ever the user's own client; the built-in one is
+            # reported by its source alone, and no secret is ever returned.
             "client_id": cfg.get("client_id", ""), "has_secret": bool(cfg.get("client_secret")),
+            "client_source": source, "builtin_client": bool(builtin_client()[0]),
+            # Workspace server trouble, once for the section (only with accounts).
+            "workspace_note": workspace_note(workspace) if rows else {"message": "", "detail": ""},
+            "consent_notice": UNVERIFIED_NOTICE if source == "builtin" else "",
             "last_headers_sync": first.get("last_headers_sync"), "last_error": first.get("last_error", ""),
             "authorizing": _pending_flow is not None, "authorization": dict(_authorization),
-            "mail_accounts": E.native_email_accounts()}
+            # Accounts whose next sign-in also asks for the Workspace scopes.
+            "workspace_consent": [r["email"] for r in rows if r["workspace"] and not r["workspace_full"]],
+            "mail_accounts": E.native_email_accounts(), "workspace": workspace}
+
+
+# The one status line per account. Brief's sync (mail, calendar) and the
+# Workspace server are plumbing behind one sign-in, so their problems merge
+# into one state and one plain sentence. `detail` keeps the raw reason for
+# Advanced; an account on the user's own OAuth client (a developer) sees it
+# as the message itself.
+_SETTING_UP = "New sign-in is waiting for its first refresh"
+
+
+def _plain_mail_error(reason: str) -> str:
+    low = reason.lower()
+    if "read access is missing" in low:
+        return "Mail access wasn't granted. Reconnect and allow Gmail."
+    if "couldn't" in low or "could not be reached" in low or "timed out" in low or "offline" in low:
+        return "Google couldn't be reached. Wisp will try again."
+    return "Mail isn't syncing right now. Wisp will try again."
+
+
+def _plain_calendar_error(reason: str) -> str:
+    low = reason.lower()
+    if "google calendar api" in low or "cloud project" in low:
+        return "Calendar isn't available for this account yet."
+    if "wasn't granted" in low or "allow calendar" in low:
+        return "Calendar wasn't shared. Reconnect and allow Calendar."
+    if "timed out" in low:
+        return "Google Calendar couldn't be reached. Wisp will try again."
+    return "Calendar isn't syncing right now. Wisp will try again."
+
+
+def _workspace_problem(workspace: dict) -> tuple[str, str]:
+    """(plain message, raw detail) when the Workspace server can't serve the
+    Google tools, else ("", "")."""
+    workspace = workspace if isinstance(workspace, dict) else {}
+    prepare = workspace.get("prepare") if isinstance(workspace.get("prepare"), dict) else {}
+    if prepare.get("state") == "preparing":
+        return "", ""
+    if not workspace.get("uvx", True):
+        return ("Google tools need the uv helper. Install it with: brew install uv",
+                "uvx was not found on this Mac")
+    if prepare.get("state") == "failed":
+        return ("Google tools couldn't be set up. Check that this Mac is online, then choose Update settings.",
+                str(prepare.get("detail") or ""))
+    if not workspace.get("configured"):
+        return ("Google tools aren't set up yet. Choose Update settings.",
+                "The Workspace server has no entry in mcp.json")
+    if workspace.get("error"):
+        return "Google tools aren't running right now.", str(workspace["error"])
+    return "", ""
+
+
+def workspace_note(workspace: dict) -> dict:
+    """The one section-level note about the Workspace server, or empty
+    strings: {"message": plain sentence, "detail": raw reason}."""
+    plain, detail = _workspace_problem(workspace)
+    return {"message": plain, "detail": detail}
+
+
+def account_note(row: dict) -> str:
+    """A secondary line for an account that declined some optional Workspace
+    scopes at a consent that asked for them, else "". Settings shows it once
+    (the user can dismiss it); it never changes the account's state."""
+    if row.get("workspace") and row.get("workspace_requested") and row.get("workspace_declined"):
+        return "Some Google tools (Drive, Docs, Chat…) weren't shared. Reconnect to add them."
+    return ""
+
+
+def account_state(row: dict, workspace: dict | None = None) -> dict:
+    """{state, message, detail} for one account row of status().
+
+    state: connected | expired | needs_reconnect | attention. Precedence:
+    expired, then the first problem of mail (required), then calendar, then
+    needs_reconnect for a sign-in that never asked for the Workspace scopes
+    (one from before every consent did, or an account switched off). Workspace
+    scopes the user declined at a consent that asked for them are optional:
+    they are a note (account_note), never a state. `workspace` is accepted for
+    callers but never changes the state."""
+    developer = row.get("client_source") == "user"
+    def attention(plain: str, detail: str) -> dict:
+        return {"state": "attention", "message": detail if developer and detail else plain, "detail": detail}
+    if row.get("expired"):
+        return {"state": "expired", "message": "Sign-in expired. Reconnect to keep this account up to date.",
+                "detail": SIGNIN_EXPIRED}
+    mail = str(row.get("last_error") or "")
+    if mail and mail != _SETTING_UP:
+        return attention(_plain_mail_error(mail), mail)
+    calendar = str(row.get("calendar_error") or "")
+    if calendar:
+        return attention(_plain_calendar_error(calendar), calendar)
+    if not row.get("workspace") or (not row.get("workspace_full") and not row.get("workspace_requested")):
+        return {"state": "needs_reconnect", "message": "Reconnect to finish setup.",
+                "detail": "This sign-in predates the Google Workspace scopes"}
+    # Workspace server trouble is one section-level note (status()
+    # "workspace_note"), never a per-account state: an account whose mail and
+    # calendar work is connected.
+    return {"state": "connected", "message": "Connected", "detail": ""}
 
 
 def _current() -> tuple[str, dict, int]:
@@ -194,10 +471,17 @@ async def _access_token(http: httpx.AsyncClient) -> str:
     response = await http.post(TOKEN_URL, data={
         "client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
         "refresh_token": cfg.get("refresh_token", ""), "grant_type": "refresh_token"})
-    body = response.json() if response.content else {}
+    try:
+        body = response.json() if response.content else {}
+    except ValueError:
+        body = {}
+    body = body if isinstance(body, dict) else {}
     if response.status_code != 200 or "access_token" not in body:
-        raise GmailError("Google sign-in expired or was revoked; reconnect this account in Settings ▸ Google"
-                         if body.get("error") == "invalid_grant" else "Google token refresh failed")
+        if body.get("error") == "invalid_grant":
+            # Testing-mode tokens for restricted scopes end after 7 days.
+            _mark_expired(email, cfg)
+            raise GmailError("Google sign-in expired; reconnect this account in Settings ▸ Google")
+        raise GmailError("Google token refresh failed")
     if body.get("scope") and SCOPE not in str(body["scope"]).split():
         raise GmailError("Gmail read access is missing; reconnect this account in Settings ▸ Google")
     if not _still_connected():
@@ -208,6 +492,43 @@ async def _access_token(http: httpx.AsyncClient) -> str:
 
 class GmailError(RuntimeError):
     pass
+
+
+def _mark_expired(email: str, snapshot: dict) -> None:
+    """Record that this sign-in expired (invalid_grant) and announce it once.
+
+    Only the exact sign-in that failed is marked: a disconnect or a newer
+    sign-in in between leaves the account alone. An account already marked
+    is not announced again; a reconnect writes a fresh record without it."""
+    try:
+        with revocation():
+            cfg = load_config()
+            accounts = connected_accounts(cfg)
+            item = accounts.get(email)
+            if (not item or item.get("auth_expired")
+                    or item.get("refresh_token") != snapshot.get("refresh_token")):
+                return
+            stamp = int(time.time())
+            accounts[email] = {**item, "auth_expired": stamp}
+            _save_config({"client_id": cfg.get("client_id", ""),
+                          "client_secret": cfg.get("client_secret", ""), "accounts": accounts})
+    except Exception as exc:  # noqa: BLE001 — the refresh error is still reported
+        print(f"[gmail] could not record the expired sign-in: {type(exc).__name__}", flush=True)
+        return
+    _announce_expired(email, stamp)
+
+
+def _announce_expired(email: str, stamp: int) -> None:
+    """One durable event per expiry; the app posts one notification for it
+    (OverlayModel handles `google_signin_expired`)."""
+    try:
+        from service.assistant.hub import hub
+        hub.publish_sync({"type": "google_signin_expired", "account": email,
+                          "expired_at": stamp, "title": "Google sign-in expired",
+                          "body": "Reconnect in Settings ▸ Google."},
+                         dedupe_key=f"google-signin-expired:{email}:{stamp}")
+    except Exception as exc:  # noqa: BLE001 — Settings still shows Reconnect
+        print(f"[gmail] expired sign-in notice failed: {type(exc).__name__}", flush=True)
 
 
 async def _get(http: httpx.AsyncClient, path: str, params: dict | list | None = None) -> dict:
@@ -262,6 +583,7 @@ def parse_metadata(message: dict) -> dict:
             "to": _clean(_decode(_header(payload, "To"))),
             "subject": _clean(_decode(_header(payload, "Subject"))),
             "message_id": _clean(_header(payload, "Message-ID")),
+            "in_reply_to": _clean(_header(payload, "In-Reply-To")),
             "unread": "UNREAD" in (message.get("labelIds") or [])}
 
 
@@ -313,11 +635,12 @@ def raw_record(message: dict, account: str) -> str:
 
 # --- syncing ------------------------------------------------------------------
 
-async def _list_ids(http, limit: int, *, query: str = "", unread: bool = False) -> list[str]:
+async def _list_ids(http, limit: int, *, query: str = "", unread: bool = False,
+                    label: str = "INBOX") -> list[str]:
     ids: list[str] = []
     page = ""
     while len(ids) < limit:
-        params: list[tuple[str, str]] = [("labelIds", "INBOX"),
+        params: list[tuple[str, str]] = [("labelIds", label),
                                          ("maxResults", str(min(500, limit - len(ids))))]
         if unread:
             params.append(("labelIds", "UNREAD"))
@@ -343,10 +666,39 @@ async def _ensure_meta(http, ids: list[str]) -> None:
             data = await _get(http, f"messages/{message_id}", [
                 ("format", "metadata"), ("metadataHeaders", "From"),
                 ("metadataHeaders", "To"), ("metadataHeaders", "Subject"),
-                ("metadataHeaders", "Message-ID")])
+                ("metadataHeaders", "Message-ID"), ("metadataHeaders", "In-Reply-To")])
             _meta[(account, message_id)] = parse_metadata(data)
 
     await asyncio.gather(*(one(i) for i in missing))
+
+
+async def tab_message_ids(days: int, tabs: tuple[str, ...] = ("promotions", "social", "forums"),
+                          limit: int = 2000) -> set[str] | None:
+    """RFC Message-IDs of inbox mail Gmail filed under `tabs` in the last `days`, across
+    every connected account. None when no account is connected or any read failed:
+    unknown, never an empty set that would read as "nothing to exclude"."""
+    accounts = connected_accounts()
+    if not accounts:
+        return None
+    query = f"newer_than:{int(days)}d {{" + " ".join(f"category:{t}" for t in tabs) + "}"
+    found: set[str] = set()
+    for account, cfg in accounts.items():
+        token = _context.set((account, dict(cfg), _epochs.get(account, 0)))
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                ids = await _list_ids(http, limit, query=query)
+                if len(ids) >= limit:
+                    return None   # more than we listed: a partial set would let the rest through
+                await _ensure_meta(http, ids)
+                for i in ids:
+                    mid = _meta.get((account, i), {}).get("message_id", "").strip()
+                    if mid:   # Mail's index keeps the angle brackets; match its form
+                        found.add(mid if mid.startswith("<") else f"<{mid}>")
+        except Exception:  # noqa: BLE001 — a partial answer would wrongly include promotions
+            return None
+        finally:
+            _context.reset(token)
+    return found
 
 
 def _lines(ids: list[str], unread_ids: set[str], account: str) -> str:
@@ -368,9 +720,29 @@ async def _sync_headers(http, account: str) -> None:
     _last.setdefault(account, {})["headers"] = time.time()
 
 
+async def _sync_sent(http, account: str) -> None:
+    """The last week of the user's own sent mail, headers only, kept in memory."""
+    ids = await _list_ids(http, SENT_LIMIT, query=f"newer_than:{SENT_DAYS}d", label="SENT")
+    await _ensure_meta(http, ids)
+    if not _still_connected():
+        return
+    _sent[account] = [{k: _meta[(account, i)].get(k, "") for k in ("ts", "to", "subject", "message_id", "in_reply_to")}
+                      for i in ids if (account, i) in _meta]
+    _last.setdefault(account, {})["sent"] = time.time()
+
+
+def sent_rows() -> list[dict]:
+    """Every connected account's recent sent mail, each row naming its account."""
+    accounts = connected_accounts()
+    return [{**row, "account": account} for account, rows in list(_sent.items()) if account in accounts
+            for row in rows]
+
+
 async def _sync_raw(http, account: str) -> None:
     from service.tools import email_tools
-    ids = await _list_ids(http, RAW_LIMIT)
+    newest = await _list_ids(http, RAW_LIMIT)
+    week = await _list_ids(http, WEEK_RAW_LIMIT, query=f"newer_than:{WEEK_RAW_DAYS}d")
+    ids = list(dict.fromkeys(newest + week))
     gate = asyncio.Semaphore(FETCH_CONCURRENCY)
 
     async def one(message_id: str) -> dict:
@@ -414,7 +786,7 @@ async def _sync_account(account: str, parts: tuple[str, ...]) -> bool:
         try:
             async with httpx.AsyncClient(timeout=10) as http:
                 for part in parts:
-                    await {"headers": _sync_headers, "raw": _sync_raw,
+                    await {"headers": _sync_headers, "raw": _sync_raw, "sent": _sync_sent,
                            "history": _sync_history}[part](http, account)
             if not _still_connected():
                 return False
@@ -487,9 +859,16 @@ async def run() -> None:
                 pass
         now = time.time()
         await asyncio.gather(*(update(account, part) for account in accounts
-                               for part, every in (("headers", HEADERS_EVERY), ("history", HISTORY_EVERY))
+                               for part, every in (("headers", HEADERS_EVERY), ("history", HISTORY_EVERY),
+                                                   ("raw", RAW_EVERY),
+                                                   ("sent", SENT_EVERY))
                                if now - _last.get(account, {}).get(part, 0) >= every))
-        # Body content is fetched only for explicit body requests, not in the background.
+        # Google Calendar for accounts that granted it (every CALENDAR_EVERY).
+        from service import google_calendar_source as C
+        try:
+            await C.refresh_due(accounts)
+        except Exception as exc:  # noqa: BLE001 — the mail loop must keep running
+            print(f"[google_calendar] refresh failed: {type(exc).__name__}", flush=True)
         await asyncio.sleep(60)
 
 
@@ -497,13 +876,19 @@ async def run() -> None:
 
 async def begin_authorization(client_id: str, client_secret: str = "",
                               timeout: float = 300.0, mail_account_id: str = "", *,
-                              include_receipt: bool = False) -> str | dict:
-    """Start the loopback listener and return the Google consent URL."""
+                              include_receipt: bool = False, client_source: str = "user",
+                              login_hint: str = "") -> str | dict:
+    """Start the loopback listener and return the Google consent URL.
+
+    `client_source` "builtin" signs in with the shipped client (it is not
+    saved as the user's own); `login_hint` names the account a Reconnect is
+    for."""
     global _pending_flow, _flow_generation
     _withdraw_history_configuration()
     _flow_generation += 1
     generation = _flow_generation
-    _authorization.update(state="authorizing", generation=generation, error="", email="")
+    _authorization.update(state="authorizing", generation=generation, error="", email="",
+                          phase="", phase_email="", analyze="")
     if _pending_flow:
         _pending_flow["server"].close()
         _pending_flow = None
@@ -523,14 +908,18 @@ async def begin_authorization(client_id: str, client_secret: str = "",
                 return writer.close()  # Unrelated/stale callbacks cannot consume the active flow.
             if query.get("code"):
                 email = await _finish(client_id, client_secret, query["code"][0], verifier, redirect,
-                                      generation=generation, mail_account_id=mail_account_id)
+                                      generation=generation, mail_account_id=mail_account_id,
+                                      client_source=client_source)
                 if generation != _flow_generation:
                     return writer.close()
                 _authorization.update(state="connected", email=email, error="")
                 _flow_generation += 1
-                message = "Gmail connected. You can close this tab and return to Wisp."
+                message = "Google connected. You can close this tab and return to Wisp."
             elif query:
-                message = "Google sign-in was declined or cancelled. Your existing accounts were kept."
+                if query.get("error", [""])[0] == "access_denied":
+                    message = CANCELLED_OR_NOT_TESTER if client_source == "builtin" else CANCELLED
+                else:
+                    message = "Google sign-in was declined or cancelled. Your existing accounts were kept."
                 _authorization.update(state="failed", error=message)
                 _flow_generation += 1
             else:
@@ -567,22 +956,30 @@ async def begin_authorization(client_id: str, client_secret: str = "",
             await asyncio.wait_for(done.wait(), timeout)
         except asyncio.TimeoutError:
             if generation == _flow_generation:
-                _authorization.update(state="failed", error="Google sign-in timed out. Try again.")
+                # Google may block a non-tester before redirecting back at all.
+                _authorization.update(state="failed", error=(
+                    "Google sign-in timed out. If Google blocked access, this Google account "
+                    "may not be on Wisp's tester list yet." if client_source == "builtin"
+                    else "Google sign-in timed out. Try again."))
                 _flow_generation += 1
         server.close()
         if _pending_flow and _pending_flow["server"] is server:
             _pending_flow = None
 
     asyncio.create_task(expire())
-    url = AUTH_URL + "?" + urlencode({
+    query = {
         "client_id": client_id, "redirect_uri": redirect, "response_type": "code",
-        "scope": SCOPE, "code_challenge": challenge, "code_challenge_method": "S256",
-        "state": state, "access_type": "offline", "prompt": "consent"})
+        "scope": " ".join(_consent_scopes()),
+        "code_challenge": challenge, "code_challenge_method": "S256",
+        "state": state, "access_type": "offline", "prompt": "consent"}
+    if login_hint:
+        query["login_hint"] = login_hint      # Reconnect: the account this sign-in is for
+    url = AUTH_URL + "?" + urlencode(query)
     return {"auth_url": url, "generation": generation} if include_receipt else url
 
 
 async def _finish(client_id, client_secret, code, verifier, redirect, *,
-                  generation: int, mail_account_id: str = "") -> str | None:
+                  generation: int, mail_account_id: str = "", client_source: str = "user") -> str | None:
     if generation != _flow_generation:
         return None
     async with httpx.AsyncClient(timeout=30) as http:
@@ -599,7 +996,8 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
                     if "secret" in str(why).lower() or body.get("error") == "invalid_request"
                     and not client_secret else "")
             raise GmailError(f"token exchange failed: {why}{hint}")
-        if SCOPE not in str(body.get("scope", "")).split():
+        granted = sorted(set(str(body.get("scope", "")).split()))
+        if SCOPE not in granted:
             raise GmailError("Gmail read access wasn't granted — on Google's consent screen, "
                              "tick the box to view your email messages, then try again")
         profile = await http.get(f"{API}/profile",
@@ -623,26 +1021,212 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         _epochs[email] = _epochs.get(email, 0) + 1
         _access.pop(email, None)
         _last.pop(email, None)
+        _sent.pop(email, None)
+        _errors.pop(email, None)       # e.g. the expired sign-in this replaces
+        # Every sign-in serves the Workspace tools too: its refresh token is
+        # copied for the Workspace server (sync_credentials below). An older
+        # account switched off is switched on again by its reconnect.
+        workspace = True
+        builtin = client_source == "builtin"
         accounts[email] = {"client_id": client_id, "client_secret": client_secret,
-                           "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id}
-        _save_config({"client_id": client_id, "client_secret": client_secret, "accounts": accounts})
+                           "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id,
+                           "scopes": granted, "workspace": workspace,
+                           # This consent asked for the Workspace scopes; any
+                           # missing from `granted` were declined, not unasked.
+                           "workspace_requested": True,
+                           **({"client_source": "builtin"} if builtin else {})}
+        # The built-in client is never saved as the user's own: the top-level
+        # client stays whatever the user configured (possibly none).
+        _save_config({"client_id": cfg.get("client_id", "") if builtin else client_id,
+                      "client_secret": cfg.get("client_secret", "") if builtin else client_secret,
+                      "accounts": accounts})
+        try:
+            from service import google_workspace
+            google_workspace.sync_credentials(accounts, refresh=(email,))
+        except Exception as exc:  # noqa: BLE001 — Brief still works without the tools
+            print(f"[google_workspace] credential sync failed: {type(exc).__name__}", flush=True)
         from service.tools import email_tools as E
         E.configure_external_accounts(accounts)
         E.external_email_error(email, "headers", "New sign-in is waiting for its first refresh")
-    # Header-only first connection; bodies remain on demand.
-    asyncio.create_task(sync(("headers",)))
+    if CALENDAR_SCOPE not in granted:
+        # A reconnect that unticked Calendar: the events read before must go.
+        try:
+            from service import google_calendar_source as C
+            C.erase_if_present(email)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[google_calendar] scope-drop erase failed: {type(exc).__name__}", flush=True)
+    _authorization.update(phase="reading", phase_email=email, analyze="")
+    _spawn(_ensure_workspace(client_id, client_secret, email, client_source))
+    _spawn(_after_connect(email))
     return email
 
 
-async def disconnect(account: str = "") -> None:
-    """Invalidate before awaiting revocation; a late fetch cannot restore access."""
+async def _ensure_workspace(client_id: str, client_secret: str, email: str,
+                            client_source: str = "user") -> str:
+    """Set the Workspace server up with this sign-in's client the first time
+    an account connects: there is no separate enable step. An existing setup
+    is left alone (it may be the user's own, with a chosen tool tier).
+    Returns enabled | existing | failed."""
+    try:
+        from service import google_workspace
+        if google_workspace.status().get("configured"):
+            return "existing"
+        result = await google_workspace.enable(client_id, client_secret, email,
+                                               client_source="builtin" if client_source == "builtin" else "user")
+    except Exception as exc:  # noqa: BLE001 — Brief still works; status shows the problem
+        print(f"[google_workspace] automatic setup failed: {type(exc).__name__}", flush=True)
+        return "failed"
+    if not result.get("ok"):
+        print("[google_workspace] automatic setup did not complete", flush=True)
+        return "failed"
+    return "enabled"
+
+
+def reconnect_client(account: str) -> tuple[str, str, str] | None:
+    """(client_id, client_secret, source) to sign a connected account in
+    again with, or None when it isn't connected. A built-in sign-in uses the
+    client this build ships."""
+    item = connected_accounts().get(account.strip().lower())
+    if item is None:
+        return None
+    if item.get("client_source") == "builtin":
+        shipped_id, shipped_secret = builtin_client()
+        if shipped_id:
+            return shipped_id, shipped_secret, "builtin"
+        return resolve_client()
+    return item.get("client_id", ""), item.get("client_secret", ""), "user"
+
+
+def _consent_scopes() -> tuple[str, ...]:
+    """Every sign-in asks for Gmail (required) and Calendar plus the
+    read-only Workspace scopes, in one consent. Writes (sending, editing
+    files) stay with the Workspace server's own on-demand sign-in, and each
+    of those tools still asks before it runs (service.mcp._category_for)."""
+    from service import google_workspace
+    return CONSENT_SCOPES + google_workspace.WORKSPACE_SCOPES
+
+
+def _workspace_consent() -> list[str]:
+    """Accounts with Workspace tools switched on whose sign-in still lacks the
+    Workspace scopes: a sign-in from before every consent asked for them.
+    Their row says "Reconnect to finish setup"."""
+    try:
+        from service import google_workspace
+        return sorted(email for email, item in connected_accounts().items()
+                      if item.get("workspace") and not google_workspace.has_full_scopes(email, item))
+    except Exception:  # noqa: BLE001 — unknown: the narrow consent
+        return []
+
+
+def set_workspace(account: str, enabled: bool) -> dict:
+    """Switch one connected account's Workspace tools on or off. On, for an
+    account whose sign-in lacks the Workspace scopes, the answer says to
+    reconnect: Google grants them only at the next sign-in."""
+    from service import google_workspace
+    account = account.strip().lower()
+    with revocation():
+        cfg = load_config()
+        accounts = connected_accounts(cfg)
+        if account not in accounts:
+            return {"ok": False, "error": "That Google account isn't connected"}
+        accounts[account] = {**accounts[account], "workspace": bool(enabled)}
+        _save_config({"client_id": cfg.get("client_id", ""),
+                      "client_secret": cfg.get("client_secret", ""), "accounts": accounts})
+    google_workspace.sync_credentials(accounts)
+    if enabled and not google_workspace.has_full_scopes(account, accounts[account]):
+        return {"ok": True, "reconnect": True,
+                "message": "Reconnect this account to grant read-only Drive, Docs, Sheets, Slides, "
+                           "Chat, Tasks and Contacts access."}
+    return {"ok": True}
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.ensure_future(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    return task
+
+
+def _set_phase(email: str, phase: str, **extra) -> None:
+    """Progress for the sign-in the UI is watching; a newer sign-in or a
+    disconnect clears phase_email, so a late step never overwrites it."""
+    if _authorization.get("phase_email") == email:
+        _authorization.update(phase=phase, **extra)
+
+
+async def _after_connect(email: str) -> None:
+    """First refresh of a new sign-in, then one proactive analyze for it.
+
+    Phases (status()["authorization"]["phase"]): reading -> analyzing -> ready.
+    Each step is bounded and independent: a slow body fetch or a Calendar API
+    that isn't enabled never keeps the account's headers or to-dos from coming.
+    """
+    from service import google_calendar_source as C
+    for part, limit in (("headers", 30.0), ("raw", 45.0)):
+        try:
+            await asyncio.wait_for(_sync_account(email, (part,)), limit)
+        except asyncio.TimeoutError:
+            pass
+        if email not in connected_accounts():
+            return
+    if has_calendar(email):
+        try:
+            await asyncio.wait_for(C.refresh_account(email), 30.0)
+        except asyncio.TimeoutError:
+            C.record_error(email, "Google Calendar timed out; it will retry in a few minutes")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[google_calendar] first refresh failed: {type(exc).__name__}", flush=True)
+    if email not in connected_accounts():
+        return
+    _set_phase(email, "analyzing")
+    # A fresh start: whatever an earlier sign-in of this account left in the
+    # Brief goes first, then every account is judged again from scratch.
+    try:
+        from service.proactive.store import erase_account as reset_brief
+        reset_brief(email)
+    except Exception as exc:  # noqa: BLE001 — a stale card is better than no analyze
+        print(f"[gmail] proactive reset failed: {type(exc).__name__}", flush=True)
+    outcome = request_proactive_analyze(email)
+    _set_phase(email, "ready", analyze=outcome)
+
+
+def request_proactive_analyze(account: str) -> str:
+    """Ask the proactive engine to build this account's cards and to-dos now.
+
+    Calls `service.proactive.cycle.request_analyze(account=account)` (W1's
+    engine; the same work as POST /assistant/proactive/analyze {account}). It is
+    imported lazily so this module works without the engine. A coroutine
+    result is scheduled, never awaited here: progress is the engine's own
+    `workspace.proactive.progress`. Returns requested | unavailable | failed.
+    """
+    try:
+        from service.proactive.cycle import request_analyze
+    except Exception as exc:  # noqa: BLE001 — engine absent in this build
+        print(f"[gmail] proactive engine unavailable ({type(exc).__name__}); "
+              "no analyze for the new account", flush=True)
+        return "unavailable"
+    try:
+        result = request_analyze(account=account)
+        if inspect.isawaitable(result):
+            _spawn(result)
+        return "requested"
+    except Exception as exc:  # noqa: BLE001
+        print(f"[gmail] proactive analyze request failed: {type(exc).__name__}", flush=True)
+        return "failed"
+
+
+async def disconnect(account: str = "") -> dict:
+    """Disconnect & erase. Invalidate before awaiting revocation; a late fetch
+    cannot restore access. Every removed account's derived data is erased
+    (`erase_account_data`) before its token is revoked with Google."""
     global _pending_flow, _flow_generation
     with revocation():
         invalidate_behavior_history("disconnected")
         _withdraw_history_configuration()
         from service.tools import email_tools as E
         _flow_generation += 1
-        _authorization.update(state="cancelled", generation=_flow_generation, error="Sign-in cancelled by disconnect", email="")
+        _authorization.update(state="cancelled", generation=_flow_generation, error="Sign-in cancelled by disconnect",
+                              email="", phase="", phase_email="", analyze="")
         if _pending_flow:
             _pending_flow["server"].close()
             _pending_flow = None
@@ -654,11 +1238,15 @@ async def disconnect(account: str = "") -> None:
             _epochs[email] = _epochs.get(email, 0) + 1
             _access.pop(email, None)
             _last.pop(email, None)
+            _sent.pop(email, None)
             _errors.pop(email, None)
             for key in list(_meta):
                 if key[0] == email:
                     _meta.pop(key, None)
-        if accounts:
+        if accounts or cfg.get("client_id"):
+            # The user's own OAuth client stays after the last account goes, so
+            # "Connect Google" in the notch still works after an erase. It holds
+            # no account data and no token.
             _save_config({"client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
                           "accounts": accounts})
         else:
@@ -666,12 +1254,81 @@ async def disconnect(account: str = "") -> None:
                 CONFIG_PATH.unlink(missing_ok=True)
                 _observe_history_config({})
         E.configure_external_accounts(accounts)
-    for item in removed.values():
+    erased = {email: erase_account_data(email) for email in removed}
+    # Revocation is best effort: the local disconnect already succeeded. Each
+    # account says whether Google confirmed it ("revoked"), refused the token
+    # ("rejected", e.g. already revoked) or could not be reached ("offline").
+    revoked: dict[str, str] = {}
+    for email, item in removed.items():
         try:
             async with httpx.AsyncClient(timeout=5) as http:
-                await http.post("https://oauth2.googleapis.com/revoke", data={"token": item["refresh_token"]})
+                answer = await http.post("https://oauth2.googleapis.com/revoke",
+                                         data={"token": item["refresh_token"]})
+            revoked[email] = "revoked" if answer.status_code == 200 else "rejected"
         except Exception:
-            pass  # Local disconnect already succeeded.
+            revoked[email] = "offline"
+    complete = all(value == "erased" or value.startswith("erased ")
+                   for parts in erased.values() for value in parts.values())
+    return {"removed": sorted(removed), "erased": erased, "complete": complete, "revoked": revoked}
+
+
+def erase_account_data(account: str) -> dict:
+    """Delete everything Wisp derived from one Google account. Synchronous and
+    local; each part is attempted even if another fails, and the result says
+    which succeeded, so "Disconnect & erase" can be verified.
+
+    - mail: the account's provider headers/history/bodies leave every composed
+      email cache (in memory and ~/.moe/cache) once it is out of the configured
+      accounts; this re-asserts that and re-persists.
+    - calendar: its Google Calendar rows (google_calendar_source.erase).
+    - mail_overviews: the mail gist and inbox summary (mail_gists), which were
+      written from the combined inbox and may describe this account's mail.
+    - proactive: `service.proactive.store.erase_account(account)` (W1's
+      engine), lazily imported; "unavailable" when the engine is absent.
+    """
+    account = account.strip().lower()
+    result: dict[str, str] = {}
+    from service.tools import email_tools as E
+    try:
+        remaining = {email: item for email, item in connected_accounts().items() if email != account}
+        E.configure_external_accounts(remaining)
+        E._persist_composed_sources()
+        result["mail"] = "erased"
+    except Exception as exc:  # noqa: BLE001
+        result["mail"] = f"failed: {type(exc).__name__}"
+    for key in list(_meta):
+        if key[0] == account:
+            _meta.pop(key, None)
+    _sent.pop(account, None)
+    try:
+        from service import google_workspace
+        google_workspace.credentials_path(account).unlink(missing_ok=True)
+        result["workspace"] = "erased"
+    except Exception as exc:  # noqa: BLE001
+        result["workspace"] = f"failed: {type(exc).__name__}"
+    try:
+        from service import google_calendar_source as C
+        result["calendar"] = f"erased {C.erase(account)}"
+    except Exception as exc:  # noqa: BLE001
+        result["calendar"] = f"failed: {type(exc).__name__}"
+    try:
+        from service.assistant import mail_gists
+        mail_gists.invalidate(("summary", "inbox"))
+        result["mail_overviews"] = "erased"
+    except Exception as exc:  # noqa: BLE001
+        result["mail_overviews"] = f"failed: {type(exc).__name__}"
+    try:
+        from service.proactive.store import erase_account
+    except Exception:  # noqa: BLE001 — engine absent in this build
+        result["proactive"] = "unavailable"
+    else:
+        try:
+            erase_account(account)
+            result["proactive"] = "erased"
+        except Exception as exc:  # noqa: BLE001
+            result["proactive"] = f"failed: {type(exc).__name__}"
+    print(f"[gmail] erased Google account data: {result}", flush=True)
+    return result
 
 
 # --- Explicit public history binding (disabled unless trusted callers bind it) --

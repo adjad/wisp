@@ -1,362 +1,203 @@
-# Wisp — a private, local-first assistant for macOS
+# Wisp
 
-A privacy-first AI assistant with local and explicitly configured remote inference.
-A Swift menu-bar app talks to a bundled Python (FastAPI) agent service. The default
-path uses **oMLX** on the same Mac; optional OpenAI-compatible providers can handle
-selected generation roles. Other local apps (Ollama, LM Studio, llama.cpp, MTPLX) can also
-run the tool loop once they pass Wisp's tool-calling test; Wisp's native tools, private
-stores, embeddings, and reranking stay on Wisp's own managed components.
+**A private assistant that lives in your Mac's notch, keeps track of what needs you, and does the
+busywork. Its AI runs on your Mac, so your mail, texts and calendar never go to a cloud.**
 
-The app targets Apple silicon running macOS 14 or newer. Its bundled oMLX engine
-requires macOS 26.2 or newer; older systems need a separately compatible engine or
-an explicitly configured [remote-only server](docs/REMOTE_INFERENCE.md).
+[Download Wisp](https://github.com/adjad/wisp/releases) · [What's new in 0.5.0-rc2](docs/releases/0.5.0-rc2.md) · Apple silicon, macOS 26.2+
 
-## Status
+## The problem
 
-Wisp runs as a menu-bar app that launches its own bundled backend and ships as a
-sealed, ad-hoc-signed ZIP from [GitHub Releases](https://github.com/adjad/wisp/releases).
-It routes across a primary generation model, a small embedding model, and an optional
-reranker; drives the Mac through a broad tool-calling agent loop; reads
-Mail/Messages/Notes/Calendar; remembers things; answers questions about the current
-screen; and runs multi-source cited web research.
+Your day is spread across Mail, Messages, Calendar, Reminders and Notes, and none of them talk to
+each other. The text you meant to answer, the deadline buried in the third paragraph of an email,
+the lease that renews in three weeks, the meeting that moved: keeping track of all of it is your
+job, and things slip.
 
-Common multi-step requests — reminders, replies, scheduled sends — no longer rely
-on free-form tool selection at all: a **typed task engine** compiles them into a
-plan that application code resolves and executes.
+The assistants that could help either can't see that information (Siri can set a timer, but it
+can't tell you who's waiting on you) or want it uploaded to a cloud model. Your inbox and your
+texts are some of the most private things you have.
 
-## What it does
+## What Wisp does
 
-**Chat overlay — ⌥Space.** A top-centre panel that looks the same on every
-MacBook and adapts to monitors. On a MacBook it hangs from the notch: collapsed
-it is a small black bar wrapped around the camera housing, and hovering it opens
-the panel. Every MacBook gets the same 185 × 32 pt notch — the real one where
-there is one, and a matching virtual one on the M1 Air and 13" Pro, which have
-none. On an external monitor no notch is drawn: a small capsule sits under the
-menu bar and opens into a rounded floating card. Hover opens it only after a
-brief dwell, never while a mouse button is held (so dragging a file past the
-notch doesn't trigger it), and never again under a pointer that simply stayed
-put after you closed it. Layout follows the displays live, so plugging in a
-monitor or changing resolution re-fits it. Streaming replies, markdown, session
-history, per-action confirmation prompts.
+Wisp reads those apps on your Mac, works out what needs you, and gets it ready, using an AI model
+that runs on the Mac itself.
 
-**Smart Search — ⌘⇧F.** Ask a question about whatever document is on screen and
-get a grounded answer. Four tiers stream out as they land, each independently
-failable: **T0** literal matches (~1 ms), **T1** BM25 lexical, **T2** semantic
-(embeddings, fused with T1 via RRF), **T3** a synthesized answer with citations.
-Deliberately not ⌘F — Carbon would claim that system-wide and break native find
-everywhere. Never swaps the resident chat model.
+- **Brief: what needs you today.** Open the notch and see who's waiting on a reply, with the reply
+  already drafted. It also shows deadlines and bills found in your mail and today's to-dos from
+  every source. Send the draft, add the reminder or dismiss it, right from the card.
+- **Day: the rest of today, hour by hour.** Meetings, reminders and the open time in between, in
+  one timeline.
+- **Ask: type or say anything.** Try "Any texts I need to answer?", "Move my 3pm to tomorrow",
+  "Remind me at 5 to call Mom" or "What makes the sky blue?". Wisp looks through your mail,
+  messages, calendar and notes, searches the web when it needs to, and can act on your Mac. It drafts
+  and sends mail and texts, adds events and reminders, opens apps and changes settings like Do
+  Not Disturb.
+- **Found in your mail.** While you're away from the Mac, Wisp works through the last 90 days of your
+  mail and finds dates you might forget: a renewal, a bill, an appointment, a promise you made in
+  an email. Only the important ones reach your Brief.
+- **Smart Search (⌘⇧F).** Ask a question about the document on your screen and get the answer,
+  with the passage it came from.
+- **Research.** For bigger questions, Wisp searches the web in several rounds and writes a report
+  that cites the exact passage behind every claim.
 
-**Research mode.** Toggle **Research** in the chat header, enter a question, and
-Wisp opens an editable plan in a separate report window. The orchestrator runs an
-iterative, multi-round search loop — it keeps searching only the subquestions
-that still lack independent-source coverage, checks sources for topical
-relevance before fetching, and stops once coverage is met, two rounds add
-nothing new, or the depth's budget runs out. Fetching prefers a source's own
-official API where one exists (Wikipedia's Action API, the Internet Archive)
-over scraping HTML, with a Wayback Machine fallback when a live page is
-unreachable. Evidence is atomic, exact-quote, and host-validated — the model
-never invents a citation — and conflicting claims across sources surface as a
-"Disagreements" section rather than being silently resolved. The live view
-shows searches, accepted/failed sources with a quality class, pause/cancel, and
-steering. The finished report's citation drawer shows the exact passage behind
-each claim and exports to Downloads. A Research Library keeps finished reports
-in the main app. Search queries and page requests go to the public web;
-planning, evidence, and synthesis remain local.
+It gets to know you, too. Tell it your name, your goals and how you like to be talked to (gentle
+by default), and your Brief and answers fit you.
 
-**Operating the Mac.** The agent loop drives 168 built-in tools across these areas:
+## Private by design
 
-| Area | Examples |
+- **The AI runs on your Mac.** Wisp downloads its model once (Gemma 4 E4B, about 5.5 GB) and runs it
+  with an engine built into the app. Your mail, calendar, messages and notes are read on the Mac
+  and stored there, in `~/.moe`.
+- **Very little leaves.** The search terms of a question that needs the web, requests to Google if
+  you connect it, and the one-time model download. Nothing goes to a cloud model unless you set one
+  up yourself.
+- **It asks before it acts.** Nothing is sent, and no event changes, until you approve it. Every
+  action Wisp takes is logged in `~/.moe/audit.jsonl`.
+- **You can start over.** `/resetwisp` deletes everything Wisp has stored and revokes the access
+  you gave it.
+
+## Get started
+
+### What you need
+
+| | |
 | --- | --- |
-| Shell & files | `run_shell`, `read_file`, `write_file`, `list_dir`, `delete_path`, `find_files`, `organize_files`, `move_path` |
-| Apps & system | `open_app`, `quit_app`, `set_volume`, `set_wifi`, `lock_screen`, `get_battery_status`, `clipboard_read/write`, `window_control` |
-| Calendar & reminders | `get_upcoming`, `get_past_events`, `add_calendar_event`, `find_free_time`, `add_reminder` |
-| Mail, Messages, Notes | `summarize_emails`, `send_email`, `triage_inbox`, `summarize_messages`, `send_message`, `search_notes` |
-| Contacts | `lookup_contact`, `list_contacts`, `manage_contacts` |
-| Web & research | `web_search`, `web_fetch`, `http_request`, `wikipedia_summary` |
-| Memory | `remember`, `recall`, `forget` |
-| Codex | `get_codex_updates` — running, finished, failed, and possibly stalled local tasks |
-| Media | `spotify`, `music`, `play_podcast`, `text_to_speech`, `transcribe_audio` |
-| Everyday utilities | `get_weather`, `convert_currency`, `track_package`, `get_directions`, `calculate`, and dozens more |
-| Authoring | `create_tool` |
+| Mac | Apple silicon (M1 or later) |
+| macOS | 26.2 or newer for Wisp's built-in engine. On macOS 14–26.1 you need another engine, such as oMLX, Ollama or LM Studio ([details](docs/technical-overview.md#using-another-local-inference-app)). |
+| Memory | 16 GB minimum, 24 GB recommended |
+| Disk | About 8 GB free for the first download |
 
-Because a long tool list measurably degrades selection, each request sees a
-narrowed subset rather than all 168 — built from the request's read *and* write
-intent, so a "summarize this and send it" request keeps the sending tool. An
-ambiguous route retrieves its menu by lexical shortlist (a cross-encoder
-reranker is available for comparison but is not the default: the lexical top-20
-scored 40/40 at ~4.4 ms against the reranker's 39/40 at ~1.08 s).
+### Install
 
-**Typed task engine** (`service/tasks/`). For the task shapes that have to be
-right every time, the model interprets language and application code decides
-everything else. A request compiles into a typed plan; the **engine** resolves
-its slots — dates, recipients, source references, reply targets — against real
-records between compile and execute, and the executor only runs a plan whose
-slots are all grounded. Missing information becomes a specific question instead
-of a guess, and an outbound plan carries its exact recipient, account, and
-scheduled time through corrections. `service/workflows/` is the same idea for
-longer multi-turn flows, held in a persistent state machine that runs *before*
-ordinary routing.
+Wisp isn't notarized by Apple yet, so macOS blocks the first open. You only allow it once:
 
-**Assistant layer.** The Swift app syncs Calendar, Mail, Messages, and Notes into
-the backend (TCC permissions are per-process, and only the signed app bundle can
-get a coherent "Wisp" prompt). A background scheduler runs lead-time rules over a
-commitments store and pushes reminders over SSE; there's a daily brief on a
-configurable schedule that separates human mail from automated senders, and an
-outbox that holds outbound mail/messages for approval before anything is sent.
-Delivery is durable: a queued send records a receipt, reconciles against the
-native app's own result, and recovers orphaned work after a backend restart
-rather than claiming a send that never landed. Scheduled sends freeze their
-approved time at approval.
+1. Download the ZIP from [Releases](https://github.com/adjad/wisp/releases), unzip it, and drag
+   **Wisp.app** into **Applications**.
+2. Open Wisp. When macOS says it can't verify the app, click **Done**.
+3. Open **System Settings ▸ Privacy & Security**, scroll to the bottom, and click **Open Anyway**
+   next to the message about Wisp. Confirm with your password or Touch ID.
 
-Sync is background work, not a composer lock. If a tool or summary is still waiting
-for fresh source data, new prompts are queued in order and sent automatically after
-the active turn closes. Attachments stay bound to the prompt they were submitted
-with, and the composer shows the queue count.
+On macOS 14 and earlier, Control-click **Wisp.app** and choose **Open** instead. If macOS still
+refuses, run `xattr -dr com.apple.quarantine /Applications/Wisp.app` in Terminal. Updating from an
+earlier build? Quit the old Wisp first.
 
-**Memory.** Server-side conversation sessions persisted to SQLite, with a
-token-budgeted context builder that keeps a fixed working set (and summarizes)
-so a long chat can't blow the memory budget. Alongside it: a fact store
-(`remember` / `recall`, pinnable) fed by a conservative background capture pass
-that only records attributable, complete user statements; entity tracking; and a
-bounded **connections** investigator that proposes links between local records,
-each backed by an exact excerpt and marked for review — an email's sender field
-is treated as an observation, not proof of identity. A shared identity block
-states who the user *is* in every second-person prompt, so "your post got 439
-likes" in a group chat isn't misattributed to the user.
+### First run
 
-**Skills & MCP.** Skills are installable folders (`~/.moe/skills/<name>/SKILL.md`)
-that contribute trigger-matched instructions and shell/script-backed tools —
-new capabilities without code changes, running through the normal policy engine.
-Wisp bundles two multi-turn conversational workflows: `@interview-me` for
-clarifying intent one question at a time, and `@idea-refine` for exploring and
-converging on a focused concept. They can also activate from their natural
-trigger phrases and remain active until completed or stopped.
-MCP covers the other half: any server configured in `~/.moe/mcp.json` (Notion,
-Linear, GitHub, Postgres…) contributes its tools to the same loop.
+A single setup window walks you through five steps, and you can skip any of them and come back from
+the menu-bar icon (**Finish Setup...**):
 
-**Safety.** Every tool declares a category; `service/config/policy.yaml` decides
-allow / confirm / deny. `read_only` makes Wisp inspect-only — including through
-shell, where view-only strings cannot write — `full_access` auto-runs everything,
-and a safety floor blocks catastrophic commands (`rm -rf /`, `sudo`, disk wipes)
-even then, so a prompt-injected model can't nuke the machine. Irreversible
-deletes (recursive, wildcard) always show the exact command for approval in every
-mode and cannot be pre-approved. Per-tool grants and a `~/.moe/audit.jsonl` log
-sit alongside it. Research mode is the same story applied to hostile web content:
-it gets search/fetch/read only, never shell/mail/message/calendar/file-write, and
-text found on a page is stored as data, never promoted to an instruction. Public
-web requests are classified and their consent and effect boundaries frozen at the
-request root, so a follow-up can't quietly widen what was authorized.
+1. **The model.** Wisp downloads its model while you carry on. That takes about 10 minutes on a
+   fast connection. If you already run oMLX, Wisp uses it instead and spends up to 30 seconds
+   looking for it.
+2. **Permissions.** Each is optional, and macOS asks only when you click **Allow** on that row:
 
-**When things go wrong.** A failed request explains itself in plain language — a
-stopped engine, a memory limit, an over-long conversation each get their own
-sentence and, where one exists, a next step; the raw error goes to the debug
-export instead of the headline. Debug Mode captures tool-internal model calls
-(source plus inner request and response), not just the final output.
+   | Permission | What it's for |
+   | --- | --- |
+   | Calendar, Reminders | Planning your day; adding or moving events and reminders when you ask |
+   | Mail and Notes | Reading them while those apps are open (Wisp opens them briefly to ask, then closes them) |
+   | Full Disk Access | Reading Messages, and Mail and Notes while those apps are closed |
+   | Messages | Sending the texts you approve |
+   | Contacts, Notifications | Names instead of numbers; reminder alerts |
 
-## Install the app
+3. **Google** (optional). Gmail and Google Calendar in your Brief and Day, plus Drive and Docs in Ask.
+4. **About you** (optional). What to call you, your goals, and how you like replies.
+5. **A short tour.** Your first Brief is waiting when you finish.
 
-1. Download the latest macOS ZIP from [GitHub Releases](https://github.com/adjad/wisp/releases).
-2. Extract it and move `Wisp.app` to `/Applications`.
-3. Open Wisp (see **First launch** below).
-4. Let Wisp's **setup guide** walk you through the engine and model choices. Compatible
-   Macs can use the included private oMLX engine. If oMLX is already installed, Wisp
-   preserves that choice; older systems need an engine build compatible with their OS
-   or the separate remote-only configuration. The guide opens by itself the first time
-   Wisp can't answer yet, and any time from the menu-bar icon (right-click →
-   **Set Up Inference…**) or **Settings → Models → Setup guide…**.
-5. Grant only the macOS permissions needed for the features you use, such as Calendar,
-   Contacts, Automation, Notifications, or Full Disk Access for local stores.
+### Run Wisp
 
-The release contains `Wisp.app`, its backend, Python runtimes, and a private copy of
-oMLX. Model weights are separate. The bundled engine has its own settings and model
-directory and does not change an installed oMLX app's settings.
+Open **Wisp** from Applications or Spotlight. It starts its own engine and model, and then lives
+in the notch and the menu bar, so there's nothing else to launch. Closing its windows doesn't quit
+it; to stop it, choose **Quit Wisp** from the menu-bar icon. After you quit, open it the same way
+to start it again. The first start after a restart takes a little longer while the model loads.
 
-### First launch
+## Everyday use
 
-The public build is ad-hoc signed, not notarized, so macOS Gatekeeper blocks the first
-open. Control-click `Wisp.app` and choose **Open**, or go to **System Settings → Privacy
-& Security → Open Anyway**. If macOS still refuses, clear the quarantine flag once:
-`xattr -dr com.apple.quarantine /Applications/Wisp.app`.
+- **Open it.** Hover over the notch. On a Mac without a notch, click the menu-bar icon or push the
+  pointer against the top-centre of the screen.
+- **Shortcuts.** **⌥Space** opens Ask, **⌥⇧Space** asks by voice, **⌘⇧F** starts Smart Search and **⌘,**
+  opens Settings.
+- **Slash commands.** Type `/` in Ask to see them, including `/today`, `/about` (tell Wisp about
+  you), `/report` (report a problem) and `/resetwisp`.
+- **Voice and accessibility.** Answers to spoken questions are read aloud. Wisp follows Reduce
+  Motion, Increase Contrast and VoiceOver, and **Settings ▸ Voice & accessibility** sets the text
+  size.
 
-Wisp's built-in engine needs macOS 26.2 or newer, and oMLX 0.7+ needs macOS 26. On an
-older Mac the setup guide says so and points to Ollama, LM Studio, llama.cpp (Wisp tests
-that the model can call tools) or the remote-only mode. Wisp asks for notifications,
-Calendar and Reminders at first launch. macOS asks for Screen Recording and Accessibility
-the first time a feature uses them. Full Disk Access (for Messages, Mail and Notes) can't
-be requested by an app: right-click the menu-bar icon → **Grant More Access…** asks for
-the rest and opens its Settings pane.
+### Connect Google (optional)
 
-### The setup guide
+Open **Settings ▸ Google** and click **Connect Google account**. Access is read-only: Wisp can't
+send, edit or delete anything in Google. For now:
+- your account has to be on the developer's tester list;
+- Google shows an "unverified app" warning (choose **Continue**);
+- the sign-in expires every 7 days, and Wisp tells you when it does.
 
-It checks this Mac and shows one page with what to do next:
+**Disconnect & erase** removes the account and everything Wisp read from it. Building without the
+built-in sign-in? See [docs/google-cloud-setup.md](docs/google-cloud-setup.md).
 
-1. **Engine** — is the selected engine answering, and can this Mac run the included
-   engine? The guide explains compatibility and can start the selected engine.
-2. **Model** — lists the models oMLX has, marks the best fit for this Mac's memory,
-   and applies your choice to chat, tools, coding, and reasoning in one click. If the
-   model Wisp is set to use isn't installed, it says so.
-3. **Smart Search** — whether the small embedding model that powers ⌘⇧F is installed.
-4. **Other local apps** — detects Ollama, LM Studio, llama.cpp and other
-   OpenAI-compatible apps on `127.0.0.1` and connects one for chat and reasoning.
-5. **Try it** — explicitly sends a test message through the model you picked.
-   “Ready to test” means the engine and model were discovered; “Test passed” requires
-   a complete visible reply. Neither model files nor a successful download prove that
-   the model can load within the engine's current memory limit.
+### Quit, uninstall and reset
 
-For catalog entries with a verified public repository, the bundled engine supports
-downloads with progress, cancellation and explicit retry. External engines have a
-manual download path. The optional merged Mellum build downloads from
-[`Neo-Arid/Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e`](https://huggingface.co/Neo-Arid/Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e);
-an existing local folder in the engine's model directory works too (**Check again**,
-then **Use this model**).
+- **Quit.** Use the menu-bar icon and choose **Quit Wisp**. Quitting also frees the model's memory.
+- **Start over.** Type `/resetwisp` in full in the notch and confirm. Wisp disconnects Google,
+  deletes its memories, chats, caches and settings, resets its permissions, and reopens to setup.
+  The downloaded model stays, and nothing in your own Mail, Calendar, Notes, Reminders or Messages
+  is touched.
+- **Uninstall.**
+  1. Disconnect Google first (**Settings ▸ Google ▸ Disconnect & erase**).
+  2. Quit Wisp, then drag **Wisp.app** to the Bin.
+  3. To remove everything, also delete `~/.moe` (it holds the 5.5 GB model) and run
+     `defaults delete com.wisp.assistant` and `tccutil reset All com.wisp.assistant`.
 
-### Which model for which Mac
+### Report a problem
 
-Fresh text roles use **`Ling-3.0-tiny-oQ4e`** as a conservative fallback. Guided
-setup recommends the Ling build below for this Mac's memory. Existing role
-overrides and working models are preserved. Mellum remains an optional choice,
-marked validation pending. The guide ranks memory fit separately from test status:
+Choose **Report a Problem...** from the menu-bar icon (or type `/report`). Wisp builds a report you
+save yourself; nothing is uploaded. Attach it to an
+[issue](https://github.com/adjad/wisp/issues). Logs are in `$TMPDIR/moe-backend.log` and
+`~/.moe/engine/engine.log`.
 
-| Memory | Recommended | Download | Notes |
-| --- | --- | --- | --- |
-| 24 GB or more | `Ling-3.0-tiny-oQ6e` | 6.6 GB from Hugging Face | Public 6-bit build recommended by guided setup. |
-| 16 GB | `Ling-3.0-tiny-oQ5e`, else `Ling-3.0-tiny-oQ4e` | oQ4e 4.6 GB | Sized to leave room for your other apps. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). No public oQ5e build was found; use it if you already have one. |
-| Under 16 GB | `Ling-3.0-tiny-oQ4e` | 4.6 GB | The smallest build that keeps tool selection reliable. Untested on Macs this small: expect it to be tight, and close heavy apps. |
+## For developers
 
-Ling sizes are the published files' sizes on Hugging Face
-(`mlx-works/Ling-3.0-tiny-oQ6e`, `mlx-works/Ling-3.0-tiny-oQ4e`). For Smart Search, also
-install `mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ` (0.35 GB). Any other model oMLX
-serves can be selected, but it is marked untested. Memory-fit rankings are estimates,
-not load guarantees. Wisp preserves the engine's existing memory limits and profile;
-a refused load requires an explicit retry after freeing memory or selecting a smaller model.
+Wisp is a Swift menu-bar app, a bundled Python (FastAPI) agent service, and a private copy of the
+oMLX model engine.
 
-### Using another local inference app
+### Run Wisp from source
 
-| App | Default port | What Wisp uses it for |
-| --- | --- | --- |
-| oMLX | 8000 | Everything, including tool use and Smart Search |
-| Ollama | 11434 | Chat and reasoning |
-| LM Studio | 1234 | Chat and reasoning |
-| llama.cpp (`llama-server`) | 8080 | Chat and reasoning |
-| [MTPLX](https://github.com/youssofal/MTPLX) | 8000 | Chat and reasoning — but 8000 is oMLX's port and Wisp refuses it, so start MTPLX on another port |
-| Any OpenAI-compatible app | your choice | Chat and reasoning |
+You need Apple silicon, macOS 14 or newer, Python 3.9+ and Apple's Command Line Tools
+(`xcode-select --install`).
 
-Another app connects on `127.0.0.1` only, with no credentials, on a port other than
-8000 or 8765. Wisp keeps **tool use on oMLX** until another engine has been shown to call
-tools reliably, so a connected app answers reasoning requests but cannot send mail or
-touch files. The connection is tested with a real streamed reply before it is saved. Reasoning
-prompts are sent to that app, and Wisp cannot verify which program owns a port or what it does
-with them, so connect only one you trust. Cloud providers are configured separately; see
-[docs/inference-providers.md](docs/inference-providers.md).
+1. **Set up Python** (once):
 
-## Run from source
+   ```bash
+   python3 -m venv .venv
+   .venv/bin/pip install -r requirements-dev.txt
+   ```
 
-```bash
-# oMLX must be running (its menu-bar app auto-starts the server on :8000)
-./scripts/run.sh                      # Wisp backend on :8765
-```
+2. **Start a model server.** Run [oMLX](https://github.com/jundot/omlx) with a model loaded; its
+   menu-bar app serves on `127.0.0.1:8000`. Gemma 4 E4B (`gemma-4-E4B-it-oQ4e-mtp`) is the default.
+3. **Run the backend** with auto-reload on `:8765`:
 
-Build a verified local candidate:
+   ```bash
+   ./scripts/run.sh
+   ```
 
-```bash
-./scripts/wisp-build all --strict-toolchain --output dist/candidate
-```
+   Try it from another terminal:
 
-The candidate directory contains a ZIP with `Wisp.app` plus checksums, provenance,
-release notes, and Simulation QA evidence. Development source changes do not alter an
-installed app until a new candidate is packaged and installed.
+   ```bash
+   curl -sN localhost:8765/agent -H 'Content-Type: application/json' -d '{"prompt":"what is on my calendar today?"}'
+   ```
 
-Hitting the API directly:
+4. **Build and open the app.** This writes a ZIP to `dist/<version>-<build>-<commit>-preview/`.
+   Unzip it and open `Wisp.app`.
 
-```bash
-curl -sN localhost:8765/agent -H 'Content-Type: application/json' \
-  -d '{"prompt":"what is on my screen?"}'
-```
+   ```bash
+   ./scripts/wisp-build preview
+   ```
 
-`/agent` routes the request and streams SSE events: `session`, `routed`, `delta`,
-`text`, `tool_call`, `confirm`, `tool_result`, `done`, `error`. `/chat` is the
-plain-completion path (pass a `role` or a `model`, optional `stream`).
+   The app starts and manages its own backend on `:8765`, so stop `scripts/run.sh` first. Only one
+   Wisp can own that port.
 
-## Build and release
+A release candidate is `./scripts/wisp-build all --strict-toolchain --output dist/candidate`. It
+runs the full test gate and Simulation QA as well; see [docs/build-release.md](docs/build-release.md).
 
-`build-support/` produces an **ad-hoc sealed local candidate**: the Swift app,
-tracked backend source and resources, and a relocatable Python runtime installed
-from a hash-pinned lockfile. The build never installs or launches Wisp, verifies
-the sealed artifact, and keeps signing QA isolated from simulation. oMLX and its
-models stay separately installed runtime prerequisites. Ad-hoc sealing carries no
-team identity and is **not** notarization. See [docs/build-release.md](docs/build-release.md)
-and the non-mutating release gate in [docs/SIMULATION_QA.md](docs/SIMULATION_QA.md).
-
-## Model roster and inference providers
-
-The router emits a **role**; `service/config/models.yaml` resolves it to an oMLX
-model id. `~/.moe/config.yaml` overlays that at runtime (Settings writes here).
-
-| Role | Model | Why |
-| --- | --- | --- |
-| `fast`, `router`, `coding`, `reasoning`, `agent`, `general` | `Ling-3.0-tiny-oQ4e` | one resident model for every text/tool role — no swap, no cold load, no routing decision that hinges on which model a request lands on |
-| `research` | defaults to `coding`'s model unless overridden | Wisp Research's plan/query/extraction/synthesis calls; independently settable in Settings |
-| `embedding` | `Qwen3-Embedding-0.6B-4bit-DWQ` | Smart Search's T2 retrieval tier; small enough (320 MB) to co-fit with the chat model, so search never evicts it |
-| `reranker` | `Qwen3-Reranker-0.6B-mlx-6bit` | optional cross-encoder for tool retrieval; not the default, and it evicts the embedder before use so all three never sit resident together |
-
-Generation roles can instead point to an explicitly configured OpenAI-compatible
-endpoint. Wisp keeps embeddings and reranking local, bounds remote responses, and
-does not expose arbitrary provider administration routes. Provider credentials belong
-in the protected credential store, never YAML or debug exports. See
-[docs/inference-providers.md](docs/inference-providers.md).
-
-Quantization matters more than it looks: there is a hard reliability cliff below
-4 bits. Measured over 10 reps on a 16-tool ambiguous menu — oQ3e 5/10, oQ3.5e
-6/10, **oQ4e 10/10**, oQ5e 10/10, oQ6e 10/10. Below 4 bits the model picks the
-wrong tool about half the time and answers confidently, which is silent.
-
-Image attachments require a selected model and endpoint that support image input.
-Idle local models auto-unload after a configurable timeout (default 5 minutes).
-
-## Layout
-
-- `service/` — FastAPI agent service.
-  - `router/` MoE routing (keyword tiers → LLM fallback; decides `needs_tools`)
-  - `agent/` tool loop + interactive approver · `tools/` the tool registry
-  - `tasks/` typed task engine (compiler, engine, planner, executor, references)
-  - `workflows/` persistent multi-turn workflow state machine
-  - `memory/` sessions, context budgeting, facts, capture, connections, identity
-  - `assistant/` commitments, scheduler, reminders, brief, outbox, delivery, recovery
-  - `research/` Wisp Research: orchestrator, evidence store, web fetcher, ranking
-  - `search/` Smart Search (chunker, lexical, embedder, engine, synth)
-  - `safety/` policy, grants, audit · `skills/` · `mcp/` · `inference/` oMLX client
-  - `setup/` guided-setup logic: hardware tiers, model catalog, engine detection, checklist
-  - `errors.py` plain-language error translation · `debug_capture.py` Debug Mode
-  - `codex_monitor.py` read-only watch on local Codex tasks
-- `app/` — Swift menu-bar frontend (overlay, search panel, research windows,
-  settings, OS readers, outbound sender).
-- `mini/` and `infra/mac-mini/` — disabled-by-default remote inference and proactive-node infrastructure for a future private Mac mini deployment.
-- `build-support/` — the sealed-candidate build pipeline and lockfiles.
-- `scripts/` — run, packaging, evaluation, and icon helpers.
-- `docs/` — see [docs/README.md](docs/README.md).
-
-## State on disk
-
-Wisp-owned state is stored under `~/.moe/`:
-`config.yaml` (role overlay), `sessions.db`, `facts.db`, `assistant.db`,
-`research.db` + `research_cache/`, `cache/` (Mail/Messages/Notes snapshots),
-`skills/`, `mcp.json`, `grants.json`, `audit.jsonl`, plus small state files for
-the brief, delivery receipts, and the Codex monitor.
-
-Wisp also keeps a read-only eye on local Codex tasks. Ask "catch me up on
-Codex," "which Codex tasks are still running?", or "does any Codex task need
-me?" for an on-demand overview. While Wisp is open, it quietly polls the local
-Codex task index and sends a macOS notification only when a task finishes,
-fails, or has had no recorded activity for 15 minutes. The first poll is a
-baseline, so launching Wisp does not produce a burst of old notifications.
-
-## Docs
-
-[docs/README.md](docs/README.md) indexes everything. The usual entry points:
-
-- [docs/WISP_OVERVIEW.md](docs/WISP_OVERVIEW.md) — long-form system reference.
-- [docs/ASSISTANT_ARCHITECTURE.md](docs/ASSISTANT_ARCHITECTURE.md) — the assistant layer's design.
-- [docs/TYPED_TASK_ENGINE_PLAN.md](docs/TYPED_TASK_ENGINE_PLAN.md) — the typed task engine.
-- [docs/SMART_SEARCH_DESIGN.md](docs/SMART_SEARCH_DESIGN.md) — the four-tier search.
-- [docs/RESEARCH_TOOL_PLAN.md](docs/RESEARCH_TOOL_PLAN.md) — Research mode's design and status.
-- [CHANGELOG.md](CHANGELOG.md) — what shipped.
+- [docs/technical-overview.md](docs/technical-overview.md): how it works (tools, assistant layer,
+  memory, safety, models, layout, state on disk).
+- [docs/WISP_OVERVIEW.md](docs/WISP_OVERVIEW.md): the long-form system reference.
+- [docs/README.md](docs/README.md): every other document.
+- [CHANGELOG.md](CHANGELOG.md): what shipped.

@@ -205,7 +205,7 @@ async def run() -> None:
         # model work, and a send the user scheduled for 6pm should go at 6pm
         # whether or not they happen to be typing.
         try:
-            _start_daily_brief()
+            _start_daily_brief() or _start_day_one_recompose()
         except Exception:  # noqa: BLE001 — never break the loop
             pass
         try:
@@ -241,6 +241,24 @@ async def run() -> None:
             from service.assistant import mail_gists
             mail_gists.schedule_tick()
         except Exception:  # noqa: BLE001 — a missing gist falls back to a plain sentence
+            pass
+        # The proactive engine (service/proactive/cycle.py): triage, judge and
+        # prepare "Before you ask" cards on the resident model, single-flight,
+        # only while nobody is waiting, never alongside a gist call. About
+        # hourly, at the first tick the Mac has sat idle 5 min, it regenerates
+        # the whole Brief (cards, then every gist): cycle.idle_refresh.
+        try:
+            from service.proactive import cycle as proactive_cycle
+            proactive_cycle.schedule_tick()
+        except Exception:  # noqa: BLE001 — the Brief keeps its last cards
+            pass
+        # Mail memory (service/mail_memory): walks 90 days of mail one email per tick,
+        # only while nobody is waiting, for long-term reminders; the Brief shows the
+        # important ones (importance.py).
+        try:
+            from service.mail_memory import runner as mail_memory
+            mail_memory.schedule_tick()
+        except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
         # The chief-of-staff loop (service/assistant/checkin.py): carry
         # unfinished tasks onto today each morning, and in the evening ask how
@@ -423,10 +441,33 @@ def _slot_delivered(day: date, part: str) -> bool:
     return _brief_date() == day or (completed is not None and completed >= iso)
 
 
+# Written once, by the app, when first-run onboarding reaches its last step:
+# the permissions were answered or skipped and About you was done or skipped.
+ONBOARDING_ANSWERED_KEY = "install:onboarding_answered_at"
+# On the first launch day, once onboarding is answered, the morning run does not
+# wait for its hour: the person should see a Brief now. Not in the small hours,
+# though: a Brief at 2am about "today" would describe a day that has not begun.
+EARLY_FIRST_BRIEF_HOUR = 5
+
+
+def _onboarding_answered() -> bool:
+    return assistant_store.completion(ONBOARDING_ANSWERED_KEY) is not None
+
+
+def _early_first_brief_due(now: datetime) -> bool:
+    """Whether the first launch day's morning run is due ahead of its hour."""
+    if not _onboarding_answered() or now.hour < EARLY_FIRST_BRIEF_HOUR:
+        return False
+    first = assistant_store.first_launch_at()
+    return first is not None and datetime.fromtimestamp(first).date() == now.date()
+
+
 def _pending_slot(now: datetime) -> tuple[date, str] | None:
     """The run to start now, if any: due, not yet delivered, retries left."""
     from service.config import get_daily_summary_times
     part = _due_slot(now, get_daily_summary_times())
+    if part is None and _early_first_brief_due(now):
+        part = "morning"   # at its own hour this is already delivered: no second Brief
     if part is None or _slot_delivered(now.date(), part):
         return None
     if _brief_attempts.get((now.date(), part), 0) >= _MAX_BRIEF_ATTEMPTS:
@@ -438,6 +479,54 @@ _brief_task: asyncio.Task | None = None
 # How often a running brief checks whether the user started a turn. Short,
 # because the brief's longest step is a source wait of up to 20 seconds.
 _YIELD_POLL_S = 0.5
+
+# A new install's first minutes are onboarding: macOS permission prompts are
+# still being answered. A Daily Summary composed then says "Calendar couldn't be
+# read" about access the user is about to grant, and it would count as the
+# day's summary. For this long after first launch, a run waits while a daily
+# source is unavailable only because its permission was never answered.
+FIRST_LAUNCH_GRACE_S = 15 * 60
+# The first launch day's latest summary, and what it could not read (JSON).
+_DAY_ONE_KEY = "daily_brief:day_one"
+# The revision name (and key suffix) of a day-one rebuild.
+_REBUILD = "rebuilt"
+
+
+def _calendar_or_reminders_never_answered(source: str) -> bool:
+    raw = _sync_status.get(source) or {}
+    diagnostics = raw.get("diagnostics") or {}
+    if raw.get("available") or not raw.get("last_sync") or diagnostics.get("authorized") is not False:
+        return False
+    if source == "calendar":
+        # EKAuthorizationStatus: 0 = not determined; anything else is an answer.
+        status = diagnostics.get("status")
+        return status is None or status == 0
+    # The app words an explicit Reminders denial this way (RemindersWriter.Access).
+    return not str(diagnostics.get("reason") or "").startswith("Reminders access is turned off")
+
+
+def _never_answered_sources() -> list[str]:
+    """Daily sources unavailable because a permission was never granted or answered."""
+    out = [source for source in ("calendar", "reminders") if _calendar_or_reminders_never_answered(source)]
+    try:
+        from service.tools.imessage_tools import messages_sync_state, messages_unavailable_kind
+        # Full Disk Access has no prompt to deny; on a new install it was never granted.
+        if messages_sync_state() == "unavailable" and messages_unavailable_kind() == "full_disk_access":
+            out.append("messages")
+    except Exception:  # noqa: BLE001 — an unreadable state never holds the summary back
+        pass
+    return out
+
+
+def _awaiting_first_permission(now_ts: float) -> bool:
+    first = assistant_store.first_launch_at()
+    if first is None or not 0 <= now_ts - first < FIRST_LAUNCH_GRACE_S:
+        return False
+    if _onboarding_answered():
+        # They went through the permissions step, so a source still never
+        # answered was skipped on purpose. The day-one rebuild picks it up later.
+        return False
+    return bool(_never_answered_sources())
 
 
 def _start_daily_brief() -> asyncio.Task | None:
@@ -454,21 +543,102 @@ def _start_daily_brief() -> asyncio.Task | None:
     slot = _pending_slot(datetime.now())
     if slot is None:
         return None
+    if _awaiting_first_permission(time.time()):
+        return None   # not an attempt: the run is still due once the grace ends
     _brief_task = asyncio.get_running_loop().create_task(_run_daily_brief(*slot))
     return _brief_task
 
 
-async def _run_daily_brief(day: date, part: str) -> None:
+def _day_one_record() -> dict | None:
+    raw = assistant_store.completion(_DAY_ONE_KEY)
+    try:
+        record = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _know_you_completed_at() -> float | None:
+    try:
+        from service.memory import profile
+        completed = profile.load().get("completed_at")
+    except Exception:  # noqa: BLE001 — no profile is simply "not completed"
+        return None
+    return float(completed) if isinstance(completed, (int, float)) and math.isfinite(completed) else None
+
+
+def _record_day_one_brief(day: date, part: str, revision: str | None) -> None:
+    """Remember the first launch day's summary, so it can be rebuilt once when a
+    missing source arrives or Getting to know you finishes."""
+    first = assistant_store.first_launch_at()
+    if first is None or datetime.fromtimestamp(first).date() != day:
+        return
+    if revision:
+        record = _day_one_record()
+        if record is not None and record.get("day") == day.isoformat() and record.get("part") == part:
+            record["rebuilt"] = True
+            assistant_store.record_completion(_DAY_ONE_KEY, json.dumps(record, sort_keys=True))
+        return
+    from service.assistant.sync_status import summary_snapshot
+    gaps = [source["id"] for source in summary_snapshot()["sources"] if source["state"] != "ready"]
+    record = {"day": day.isoformat(), "part": part, "gaps": gaps, "at": time.time(), "rebuilt": False}
+    assistant_store.record_completion(_DAY_ONE_KEY, json.dumps(record, sort_keys=True))
+
+
+def _pending_recompose(now: datetime) -> tuple[date, str, str] | None:
+    """The first launch day's one rebuild of a run, if it is due now.
+
+    Each run is rebuilt at most once, for whichever comes first: a source it
+    could not read is now ready, or Getting to know you was completed after it.
+    Every rebuild is another "summary ready" moment, so there is never a second."""
+    record = _day_one_record()
+    if record is None or record.get("day") != now.date().isoformat() or record.get("rebuilt"):
+        return None   # day one only, once; later days get their own summaries
+    day, part = now.date(), record.get("part")
+    if part not in {"morning", "evening"} or _pending_slot(now) is not None:
+        return None   # a newer run is due and will read everything fresh
+    if _brief_attempts.get((day, f"{part}:{_REBUILD}"), 0) >= _MAX_BRIEF_ATTEMPTS:
+        return None
+    completed = _know_you_completed_at()
+    if completed is not None and completed > float(record.get("at") or 0):
+        return day, part, _REBUILD
+    gaps = record.get("gaps") or []
+    if gaps:
+        from service.assistant.sync_status import summary_snapshot
+        snapshot = summary_snapshot()
+        states = {source["id"]: source["state"] for source in snapshot["sources"]}
+        if not snapshot["syncing"] and any(states.get(source) == "ready" for source in gaps):
+            return day, part, _REBUILD
+    return None
+
+
+def _start_day_one_recompose() -> asyncio.Task | None:
+    """Rebuild the day-one summary once, under the same rules as a scheduled run."""
+    global _brief_task
+    if _brief_task is not None and not _brief_task.done():
+        return None
+    if idle.foreground_busy() or not hub.has_subscribers:
+        return None
+    pending = _pending_recompose(datetime.now())
+    if pending is None:
+        return None
+    _brief_task = asyncio.get_running_loop().create_task(_run_daily_brief(*pending))
+    return _brief_task
+
+
+async def _run_daily_brief(day: date, part: str, revision: str | None = None) -> None:
     """One Daily Summary run. It stands down as soon as the user starts a turn.
 
     Standing down is not a failed attempt: the run is still due, and the next
     idle tick starts it again. Only a run that finished without a brief (the
-    sources were still syncing) uses up one of the slot's retries."""
+    sources were still syncing) uses up one of the slot's retries. `revision`
+    names a day-one rebuild, which has its own key and retries."""
     from service import diagnostics
     from service.assistant.brief import run_scheduled_brief
     with diagnostics.span("daily_brief"):
         run = asyncio.ensure_future(
-            run_scheduled_brief(part, day=day.isoformat(), abort=idle.foreground_busy))
+            run_scheduled_brief(part, day=day.isoformat(), abort=idle.foreground_busy,
+                                **({"revision": revision} if revision else {})))
         yielded = False
         try:
             while not run.done():
@@ -489,6 +659,11 @@ async def _run_daily_brief(day: date, part: str) -> None:
         finally:
             if not run.done():
                 run.cancel()
+    if delivered is True:
+        try:
+            _record_day_one_brief(day, part, revision)
+        except Exception:  # noqa: BLE001 — bookkeeping never undoes a delivered summary
+            pass
     if delivered is False:
-        key = (day, part)
+        key = (day, f"{part}:{revision}" if revision else part)
         _brief_attempts[key] = _brief_attempts.get(key, 0) + 1

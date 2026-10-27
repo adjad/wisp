@@ -135,10 +135,18 @@ final class OverlayPanel: NSPanel {
 
     // MARK: - Frames
 
-    /// The collapsed bar and its window: on a MacBook it covers the notch
-    /// (real or virtual) plus a hairline of overhang; on a monitor it is a
-    /// small capsule under the menu bar.
+    /// The collapsed bar and its window: on a notched MacBook it covers the
+    /// notch plus a hairline of overhang; on a monitor it is a small capsule
+    /// under the menu bar; on a notchless built-in display it is an undrawn
+    /// seed under the menu bar that the card grows out of.
     private func barFrame() -> NSRect? { layout.barFrame }
+
+    /// A collapsed bar that draws nothing (.menuBar) must not take clicks from
+    /// the menu bar under it; hover is detected from the pointer position, and
+    /// the menu-bar icon and ⌥Space open it. Everything else takes the mouse.
+    private func passMouseThrough(collapsed: Bool) {
+        ignoresMouseEvents = collapsed && !layout.barIsVisible
+    }
 
     /// The frame for the given state. Collapsed → the bar. Expanded → the
     /// layout's width (must match the SwiftUI content's `.frame(width:)`, which
@@ -159,6 +167,7 @@ final class OverlayPanel: NSPanel {
         let l = layout
         level = l.windowLevel
         revealMask?.maskedCorners = l.maskedCorners
+        passMouseThrough(collapsed: isCompact())
         guard isVisible else { return }
         cancelReveal()
         if isCompact() {
@@ -226,6 +235,7 @@ final class OverlayPanel: NSPanel {
         layoutIfNeeded()
         if let f = barFrame() { setFrame(f, display: true) }
         fillMask()
+        passMouseThrough(collapsed: isCompact())
         alphaValue = 1
         orderFrontRegardless()
     }
@@ -295,6 +305,7 @@ final class OverlayPanel: NSPanel {
         cancelReveal()
         if opening {
             guard let full = frame(compact: false) else { completion(); return }
+            passMouseThrough(collapsed: false)
             setFrame(full, display: true)
             if revealsWithoutKey {
                 // Nobody asked for this open: show it, but leave the keyboard
@@ -367,5 +378,6 @@ final class OverlayPanel: NSPanel {
         cancelReveal()
         if let f = barFrame() { setFrame(f, display: true) }
         fillMask()
+        passMouseThrough(collapsed: true)
     }
 }

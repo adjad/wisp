@@ -23,8 +23,10 @@ _LABELS = {"calendar": "Calendar", "reminders": "Reminders",
 # How long a native source (Calendar, Reminders) may stay "syncing" before it is
 # reported as unavailable. A real first read takes seconds. A wait that outlasts
 # this is not a sync in progress: macOS has not been given an answer to the
-# permission prompt, or the app is not reporting at all.
-SYNC_STALL_S = 90.0
+# permission prompt, or the app is not reporting at all. Longer than the
+# readers' own prompt wait (RemindersWriter Access.promptGrace, 120 s), so a
+# reader's posted reason, which names the setting, arrives before this guess.
+SYNC_STALL_S = 125.0
 
 
 def _stalled_reason(source: str, raw: dict) -> str:
@@ -47,8 +49,18 @@ def _scheduled_source(source: str) -> dict:
             state = "syncing"
     else:
         state = "ready" if raw.get("available") else "unavailable"
+    kind = ""
+    if state == "unavailable" and raw.get("last_sync"):
+        # What the person can do about it, in the same words as the Brief and
+        # Day (today.source_access): access turned off, or a prompt nobody
+        # answered, never "turn Wisp on" for a pane that doesn't list Wisp yet.
+        from service.assistant.today import source_access
+        access = source_access(source, raw, now=time.time(), started_at=scheduler.STARTED_AT,
+                               stall=SYNC_STALL_S)
+        if access["blocked"] and access["blocked"] != "app_not_reporting":
+            reason, kind = access["reason"], access["blocked"]
     return {"id": source, "label": _LABELS[source], "state": state,
-            "count": int(raw.get("count") or 0), "reason": reason}
+            "count": int(raw.get("count") or 0), "reason": reason, "reason_kind": kind}
 
 
 def source_status(source: str) -> dict:
@@ -59,6 +71,10 @@ def source_status(source: str) -> dict:
         return {"id": source, "label": _LABELS[source],
                 "state": email.email_sync_state(), "count": 0,
                 "reason": email._email_reason,
+                # The MailReader's reason_kind. "mail_not_configured" comes with
+                # a ready state (the script ran; there is no account to read),
+                # so a reader of this row checks it even when state is ready.
+                "reason_kind": email.email_reason_kind(),
                 "read_source": email._email_read_source,
                 "warning": email.email_freshness_warning(),
                 "accounts": email.email_source_details(),
@@ -76,9 +92,10 @@ def source_status(source: str) -> dict:
                 "reason": messages_unavailable_reason() if unavailable else "",
                 "reason_kind": messages_unavailable_kind() if unavailable else ""}
     if source == "notes":
-        from service.tools.notes_tools import notes_sync_state
+        from service.tools.notes_tools import notes_sync_state, notes_unavailable
+        reason, kind = notes_unavailable()
         return {"id": source, "label": _LABELS[source],
-                "state": notes_sync_state(), "count": 0, "reason": ""}
+                "state": notes_sync_state(), "count": 0, "reason": reason, "reason_kind": kind}
     if source == "browser_history":
         from service.tools.browser_history_tools import browser_history_sync_state
         return {"id": source, "label": _LABELS[source],

@@ -2,15 +2,25 @@ import SwiftUI
 import AppKit
 
 /// Memory → About you: what the user told Wisp about themselves in Getting to
-/// know you, editable in place. It is the same profile (`/profile`) the notch
-/// flow writes and the one every local prompt, the brief and Today read, so a
-/// change here is in effect at once. Erasing it removes the file.
+/// know you, and what Wisp now does with it, editable in place. It is the same
+/// profile (`/profile`) the notch flow writes and the one every local prompt and
+/// the brief read, so a change here is in effect at once. Erase removes every
+/// answer and keeps only the decision, so the questions aren't offered again
+/// on their own.
+///
+/// Nothing is shown, and nothing can be saved, until the profile has been read
+/// once: a failed read must never look like an empty profile, or Save would
+/// write empty answers over the real ones. Save sends only what changed.
 @MainActor
 final class AboutYouModel: ObservableObject {
     @Published var profile = UserProfile()
     @Published var status = ProfileStatus()
     @Published var preview: [String] = []
     @Published var loaded = false
+    /// The first read failed. The form stays hidden behind Retry.
+    @Published var loadFailed = false
+    /// The profile as last read or saved: Save sends only what differs from it.
+    private var stored = UserProfile()
     @Published var busy = false
     @Published var error = ""
     @Published var savedAt: Date?
@@ -25,15 +35,42 @@ final class AboutYouModel: ObservableObject {
     private let client = WispClient()
 
     func load() async {
-        if let envelope = await client.profile() { apply(envelope) }
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        loadFailed = false
+        guard let envelope = await client.profile() else {
+            // Keep whatever was shown; only a first read that fails hides the form.
+            if !loaded { loadFailed = true }
+            return
+        }
+        apply(envelope)
+        error = ""
         loaded = true
     }
 
+    /// Whether Save has anything to send.
+    var hasChanges: Bool {
+        var draft = profile
+        draft.goals += pending(goalDraft, in: draft.goals)
+        draft.struggles += pending(struggleDraft, in: draft.struggles)
+        return !draft.changes(since: stored).isEmpty
+            || !personName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func pending(_ draft: String, in list: [String]) -> [String] {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty || list.contains(text) ? [] : [text]
+    }
+
     func save() async {
+        guard loaded, !busy else { return }
         addGoal(); addStruggle(); addPerson()
+        let patch = profile.changes(since: stored)
+        guard !patch.isEmpty else { return }
         busy = true
         defer { busy = false }
-        let result = await client.patchProfile(profile.fullPatch)
+        let result = await client.patchProfile(patch)
         if let envelope = result.envelope {
             apply(envelope)
             error = ""
@@ -58,6 +95,7 @@ final class AboutYouModel: ObservableObject {
 
     private func apply(_ envelope: ProfileEnvelope) {
         profile = envelope.profile
+        stored = envelope.profile
         status = envelope.status
         preview = envelope.preview
     }
@@ -93,7 +131,14 @@ struct AboutYouView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 intro
-                if model.loaded {
+                if model.loadFailed {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Wisp's service didn't answer, so your answers can't be shown yet. Nothing has changed.")
+                            .font(.system(size: 13)).foregroundStyle(ChatTheme.text2)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Try again") { Task { await model.load() } }.disabled(model.busy)
+                    }
+                } else if model.loaded {
                     if model.status.hasContent { inEffect }
                     section("What to call you") {
                         textField($model.profile.name, placeholder: "Your first name, or a nickname").frame(maxWidth: 320)
@@ -103,16 +148,16 @@ struct AboutYouView: View {
                     }
                     section("What you're working toward", detail: "Up to five. One is kept in view each morning, taking turns.") {
                         stringList($model.profile.goals, draft: $model.goalDraft,
-                                   placeholder: KnowYouStep.goals.placeholder, add: model.addGoal)
+                                   placeholder: "Add a goal in your own words", add: model.addGoal)
                     }
-                    section("What tends to get in your way", detail: "Not asked up front; Wisp learns it from the evening check-ins. Mentioned only when a day shows the pattern, once and gently.") {
+                    section("What tends to get in your way", detail: "In your own words. When a day shows the pattern, your brief mentions it once, gently, with a small next step.") {
                         stringList($model.profile.struggles, draft: $model.struggleDraft,
                                    placeholder: "Add one in your own words", add: model.addStruggle)
                     }
-                    section("People who matter to you", detail: "Their mail and texts rise to the top of Needs you. This never changes what Wisp alerts you about.") {
+                    section("People who matter to you", detail: "When they show up on your calendar or in your mail and texts, your morning brief points it out. This never changes what Wisp alerts you about.") {
                         peopleList
                     }
-                    section("How you like to be talked to") {
+                    section("How you like to be talked to", detail: "Gentle, with full answers, is how Wisp talks unless you choose otherwise.") {
                         HStack(spacing: 18) {
                             Picker("Tone", selection: $model.profile.tone) {
                                 ForEach(KnowYouChips.tones, id: \.value) { Text($0.label).tag($0.value) }
@@ -143,21 +188,25 @@ struct AboutYouView: View {
             Button("Erase", role: .destructive) { Task { await model.erase() } }
             Button("Keep", role: .cancel) {}
         } message: {
-            Text("Your brief, replies and Today go back to knowing only what your sources show. Saved memories and learned routines are not touched.")
+            Text("Your brief and replies go back to knowing only what your sources show, and Wisp won't offer the questions again on its own. Facts and Routines are not touched.")
         }
     }
 
     private var intro: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("What you told Wisp about yourself. It shapes your brief, your replies and what rises to the top of Today, on this Mac only.")
+            Text("What you told Wisp about yourself, and how Wisp uses it. It shapes your replies and your morning brief. Change anything below, or erase it all.")
                 .font(.system(size: 13)).foregroundStyle(ChatTheme.text2)
                 .fixedSize(horizontal: false, vertical: true)
+            if model.loaded {
+                Label(model.status.whereItLives, systemImage: model.status.localOnly ? "lock.fill" : "cloud")
+                    .font(.system(size: 11.5)).foregroundStyle(ChatTheme.text3)
+            }
             if model.loaded && model.status.stale, let days = model.status.daysSinceUpdate {
                 Label("It's been \(days) days since you changed this. Still true?", systemImage: "clock")
                     .font(.system(size: 12)).foregroundStyle(ChatTheme.amber)
             }
             if model.loaded && !model.status.hasContent {
-                Text("Nothing here yet. Answer the questions in the notch, or fill in whatever you like below.")
+                Text("Nothing here yet. Answer the three questions in the notch, or fill in whatever you like below.")
                     .font(.system(size: 12.5)).foregroundStyle(ChatTheme.text3)
             }
         }
@@ -165,7 +214,7 @@ struct AboutYouView: View {
 
     private var inEffect: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("In effect now").font(.system(size: 11, weight: .semibold)).foregroundStyle(ChatTheme.text3).textCase(.uppercase)
+            Text("What Wisp does with this").font(.system(size: 11, weight: .semibold)).foregroundStyle(ChatTheme.text3).textCase(.uppercase)
             ForEach(Array(model.preview.enumerated()), id: \.offset) { _, line in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(ChatTheme.teal)
@@ -185,7 +234,7 @@ struct AboutYouView: View {
             HStack(spacing: 12) {
                 Button("Save changes") { Task { await model.save() } }
                     .keyboardShortcut("s", modifiers: .command)
-                    .disabled(model.busy)
+                    .disabled(model.busy || !model.loaded || !model.hasChanges)
                 Button("Revisit the questions in the notch") { WispRouter.shared.open(.knowYou) }
                     .disabled(model.busy)
                 Spacer()
@@ -198,6 +247,9 @@ struct AboutYouView: View {
                 Text("Saved " + savedAt.formatted(date: .omitted, time: .shortened) + ". In effect for your next reply and brief.")
                     .font(.system(size: 12)).foregroundStyle(ChatTheme.text3)
             }
+            Text("Things you asked Wisp to remember are under Facts. Habits Wisp noticed on its own are under Routines.")
+                .font(.system(size: 11.5)).foregroundStyle(ChatTheme.text3)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

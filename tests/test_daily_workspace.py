@@ -708,7 +708,7 @@ def test_today_and_direct_workspace_share_calendar_admission(cached_sources, mon
                ("work", "reminders", "native:work", "Synthetic work", at(17), "reminder", "active"))
     today = today_api.snapshot(DAY, ZONE, debug=True)
     direct = daily.workspace(store, DAY, ZONE, now=NOW)
-    assert today["workspace"] == direct
+    assert {k: v for k, v in today["workspace"].items() if k != "proactive"} == direct
     ready = case in {"current", "persisted_current"}
     assert direct["proposed_plan"]["sources"]["calendar"]["ready"] is ready
     assert next(s["ready"] for s in direct["source_coverage"] if s["source"] == "calendar") is ready
@@ -975,7 +975,7 @@ def test_actual_calendar_route_persists_admission_through_today_workspace_and_em
         supplied = actual.today_snapshot(DAY, ZONE)
         today = today_api.snapshot(DAY, ZONE, debug=True)
         direct = daily.workspace(actual, DAY, ZONE, now=NOW)
-        assert today["workspace"] == direct
+        assert {k: v for k, v in today["workspace"].items() if k != "proactive"} == direct
         assert direct["proposed_plan"]["sources"]["calendar"]["ready"] is ready
         assert bool([b for b in direct["proposed_plan"]["blocks"] if b["kind"] == "suggestion"]) is ready
         assert api.email_contents(DAY, ZONE, NOW)["ready"] is ready

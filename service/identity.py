@@ -46,6 +46,16 @@ def mode() -> str:
 # The app passes each backend it launches a random nonce and records it in its launch
 # receipt. Echoing it lets the app tell its own launch from another process.
 LAUNCH_NONCE_ENV = "WISP_LAUNCH_NONCE"
+# Never passed to anything this backend runs (a shell command, a skill script, an
+# MCP server): the nonce marks only the backend the app launched, and it gates
+# /resetwisp's restart pass in service/main.py.
+NEVER_INHERITED = frozenset({LAUNCH_NONCE_ENV})
+
+
+def child_environment(base: dict[str, str] | None = None) -> dict[str, str]:
+    """``base`` (this process's environment by default) without NEVER_INHERITED."""
+    source = os.environ if base is None else base
+    return {k: v for k, v in source.items() if k not in NEVER_INHERITED}
 
 
 def payload() -> dict:

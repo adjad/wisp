@@ -347,15 +347,15 @@ struct ChatWelcome: View {
 
 struct ChatEmptyState: View {
     let ask: (String) -> Void
-    private let suggestions = ["Catch me up on today", "What's on my calendar this week?", "Summarize my unread mail",
-                               "Draft a reply to my last email", "Find a file on my Mac", "/corpus smoke"]
+    private let suggestions = AskStarters.chatWindow
     var body: some View {
         VStack(spacing: 18) {
             Spacer(minLength: 24)
             ChatOrb(size: 76)
             Text("What are we working on?")
                 .font(.system(size: 34, weight: .regular, design: .serif)).foregroundStyle(ChatTheme.text)
-            Text("Everything stays on this Mac.").font(.system(size: 14)).foregroundStyle(ChatTheme.text2)
+            Text("Wisp's AI runs on this Mac. Web lookups, and any cloud model you turn on, go online.")
+                .font(.system(size: 14)).foregroundStyle(ChatTheme.text2).multilineTextAlignment(.center)
             ChatFlowLayout(spacing: 8) {
                 ForEach(suggestions, id: \.self) { s in
                     Button { ask(s) } label: {
@@ -459,6 +459,7 @@ struct ChatThread: View {
                         ChatMessageRow(store: store, conversation: conversation, message: message)
                             .id(message.id)
                     }
+                    if offersTryAnother { tryAnotherRow }
                     Color.clear.frame(height: 1).id("bottom")
                 }
                 .frame(maxWidth: 740)
@@ -478,6 +479,34 @@ struct ChatThread: View {
             .onChange(of: conversation.messages.last?.approval) { _, _ in follow(proxy) }
             .onChange(of: conversation.messages.last?.draft) { _, _ in follow(proxy) }
         }
+    }
+
+    /// Starters not yet asked in this chat, from its user messages.
+    private var remainingStarters: [String] {
+        AskStarters.remaining(AskStarters.chatWindow,
+                              askedTexts: conversation.messages.filter { $0.role == .user }.map(\.text))
+    }
+
+    /// Only once the last reply has finished, with nothing awaiting approval or a draft.
+    private var offersTryAnother: Bool {
+        guard !conversation.busy, !conversation.loading, let last = conversation.messages.last,
+              last.role == .assistant, !last.isLive, last.approval == nil, last.draft == nil
+        else { return false }
+        return !remainingStarters.isEmpty
+    }
+
+    private var tryAnotherRow: some View {
+        ChatFlowLayout(spacing: 8) {
+            ForEach(remainingStarters, id: \.self) { s in
+                Button { store.submit(s) } label: {
+                    Text(s).font(.system(size: 12.5)).foregroundStyle(ChatTheme.text2)
+                        .padding(.horizontal, 12).padding(.vertical, 5)
+                        .background(Capsule().fill(ChatTheme.glass))
+                        .overlay(Capsule().stroke(ChatTheme.line2, lineWidth: 1))
+                }.buttonStyle(.plain).focusable(false)
+            }
+        }
+        .accessibilityLabel("Try another")
     }
 
     private func follow(_ proxy: ScrollViewProxy) {
@@ -949,7 +978,7 @@ struct ChatComposer: View {
                     .background(RoundedRectangle(cornerRadius: 9).fill(ChatTheme.glass))
                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(ChatTheme.line, lineWidth: 1))
                 }
-                TextField("Message Wisp · /corpus smoke to run the test set", text: $text, axis: .vertical)
+                TextField("Message Wisp", text: $text, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .foregroundStyle(ChatTheme.text)

@@ -40,8 +40,91 @@ _EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 
 _OUTBOUND_PREVIEW_TOOLS = {
     "send_message", "draft_message", "send_email", "draft_email", "reply_to_email",
-    "schedule_send",
+    "schedule_send", "forward_email",
 }
+# Not outbound text, but the card must still show what will run or change:
+# the command or script itself, and the file a write or move touches.
+_ACTION_PREVIEW_TOOLS = {"run_shell", "run_applescript", "write_file", "move_path",
+                         "open_app", "web_fetch", "http_request"}
+# The same limit policy.CARD_TEXT_LIMIT holds commands to: a command or script
+# that needs a card and is longer than this is refused before any card, so
+# these never show a clipped command. File contents and notes are clipped.
+_PREVIEW_CHARS = 4000
+
+
+_ODD_SPACE = re.compile(r"[\u00a0\u1680\u2000-\u200b\u202f\u205f\u3000\ufeff]")
+
+
+def _tidy_preview(text: str) -> str:
+    """Collapse padding that could push the real line out of sight in the card's
+    220pt box: odd Unicode spaces, long runs of spaces or tabs (indentation is
+    kept up to 8), and runs of blank lines (kept to one)."""
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\u2028\u2029\x0b\x0c]", "\n", _ODD_SPACE.sub(" ", text))
+    lines = []
+    for line in text.split("\n"):
+        body = line.lstrip(" \t")
+        indent = min(len(line) - len(body), 8)
+        lines.append(" " * indent + re.sub(r"[ \t]{2,}", " ", body).rstrip())
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip("\n")
+
+
+def _clip_preview(text: str) -> str:
+    text = _tidy_preview(text)
+    if len(text) <= _PREVIEW_CHARS:
+        return text
+    return text[:_PREVIEW_CHARS] + f"\n…[{len(text) - _PREVIEW_CHARS} more characters not shown]"
+
+
+def _path_kind(raw: object) -> str:
+    """"folder", "file", "missing" or "unknown" for a path on this Mac."""
+    from pathlib import Path
+    try:
+        p = Path(str(raw or "")).expanduser()
+        return "folder" if p.is_dir() else "file" if p.exists() else "missing"
+    except (OSError, ValueError):
+        return "unknown"
+
+
+def _script_files_preview(args: dict) -> str:
+    """The text of every script file the command runs (a card for `sh x.sh`
+    would otherwise show nothing of what x.sh does)."""
+    from service.safety.policy import executed_script_files, read_script_file
+    parts = []
+    for raw in executed_script_files(args):
+        text, problem = read_script_file(raw)
+        parts.append(f"\n\nRuns {raw}:\n" + (_clip_preview(text) if text is not None
+                                               else f"({problem})"))
+    return "".join(parts)
+
+
+def _action_preview(tool: str, args: dict) -> str:
+    if tool == "run_shell":
+        return ("Command:\n" + _clip_preview(str(args.get("cmd") or "").strip() or "(empty)")
+                + _script_files_preview(args))
+    if tool == "run_applescript":
+        return ("AppleScript:\n" + _clip_preview(str(args.get("script") or "").strip() or "(empty)")
+                + _script_files_preview(args))
+    if tool == "open_app":
+        name = str(args.get("name") or "").strip() or "(no app given)"
+        target = str(args.get("target") or "").strip()
+        return f"Open: {name}" + (f"\nWith: {_clip_preview(target)}" if target else "")
+    if tool in ("web_fetch", "http_request"):
+        method = str(args.get("method") or "GET").upper() if tool == "http_request" else "GET"
+        return f"{method}: {_clip_preview(str(args.get('url') or '(no address given)'))}"
+    if tool == "write_file":
+        path = str(args.get("path") or "").strip() or "(no path given)"
+        state = {"file": "replaces the existing file", "missing": "creates a new file",
+                 "folder": "this is a folder", "unknown": "could not check"}[_path_kind(path)]
+        content = str(args.get("content") or "")
+        return (f"File: {path} ({state})\n\n"
+                + (_clip_preview(content) if content else "(empty file)"))
+    source = str(args.get("source") or "").strip() or "(no source given)"
+    destination = str(args.get("destination") or "").strip() or "(no destination given)"
+    labels = {"file": "a file", "folder": "a folder", "missing": "nothing there",
+              "unknown": "could not check"}
+    return (f"Move: {source} ({labels[_path_kind(source)]})\n"
+            f"To: {destination} ({labels[_path_kind(destination)]})")
 
 
 # Frozen retrieval documents from before the prompt-only latency change.
@@ -113,8 +196,15 @@ def confirm_preview(tool: str, args: dict) -> str | None:
     block in the card, just never populated for these tools. Same mechanism,
     a second use site.
     """
+    if tool in _ACTION_PREVIEW_TOOLS:
+        return _action_preview(tool, args)
     if tool not in _OUTBOUND_PREVIEW_TOOLS:
         return None
+    if tool == "forward_email":
+        to = str(args.get("to", "")).strip() or "(no recipient given)"
+        note = str(args.get("note", "")).strip()
+        return (f"Forward message {args.get('message_id', '?')}\nTo: {to}"
+                + (f"\n\nNote:\n{_clip_preview(note)}" if note else "\n\n(no note)"))
     if tool in ("send_message", "draft_message"):
         to = str(args.get("to", "")).strip() or "(no recipient given)"
         text = str(args.get("text", "")).strip() or "(empty)"

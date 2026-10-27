@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 import CoreFoundation
 
@@ -580,8 +581,29 @@ final class MailReader {
     // picks it up. Bundle ID, not app name, since Mail's display name can be
     // localized.
     private func isMailRunning() -> Bool {
+        mailAppOpen() && Self.automationDecided("com.apple.mail")
+    }
+
+    private func mailAppOpen() -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.mail" }
     }
+
+    /// Whether macOS has an answer about Wisp scripting this app. A scripted
+    /// read while it has none makes macOS ask, and Wisp never asks on its own
+    /// (Permissions.swift): until the person clicks Allow in setup, the read
+    /// goes to the on-disk copy as if the app were closed. Never asks (`false`).
+    static func automationDecided(_ bundleID: String) -> Bool {
+        var target = AEAddressDesc()
+        let created = bundleID.withCString { pointer in
+            AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
+        }
+        guard created == noErr else { return false }
+        defer { AEDisposeDesc(&target) }
+        let status = AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
+                                                           AEEventID(typeWildCard), false)
+        return status != OSStatus(errAEEventWouldRequireUserConsent)
+    }
+
 
     /// Run a script, returning its string result, or nil (with the error code)
     /// when it failed. Every scan below goes through this so a failure is
@@ -761,7 +783,8 @@ final class MailReader {
         // the inbox twice (see claimScan).
         guard claimScan(.headers) else { return }
         // Suspend daily-email eligibility before any native account/header read.
-        beginIdentityCapture(retrySuperseded: true) { [weak self] capture in
+        beginIdentityCapture(retrySuperseded: true, lane: "headers",
+                             retry: { [weak self] in self?.sync() }) { [weak self] capture in
             guard let self else { return }
             guard let capture else {
                 // Do not observe account changes without first fencing delivery.
@@ -806,8 +829,11 @@ final class MailReader {
                                   readSource: "local_index", history: history,
                                   historyGeneration: generation)
                     } else {
-                        self.postDiagnostic(available: false,
-                                            reason: "Mail isn't open and its on-disk index isn't readable (Full Disk Access?)")
+                        let failure = Permissions.unaskedAutomation(
+                            app: "Mail", appRunning: self.mailAppOpen(),
+                            automationDecided: Self.automationDecided("com.apple.mail"),
+                            failure: self.dbReader.closedReadFailure())
+                        self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
                     }
                     return
                 }
@@ -853,7 +879,7 @@ final class MailReader {
                     // Mail on the next one (same race as syncHistory's batch loop).
                     guard self.isMailRunning() else {
                         self.postDiagnostic(available: false,
-                                            reason: "Mail closed during the header scan; refresh after reopening it")
+                                            reason: "Mail was closed while Wisp was reading it. Wisp reads it again once Mail is open.")
                         return
                     }
                     let (text, code) = self.run(self.headerScript(account: target,
@@ -877,10 +903,8 @@ final class MailReader {
                 // flowing, and claiming otherwise would send the user to a
                 // permission screen that isn't the problem.
                 guard anySucceeded else {
-                    let reason = lastFailureCode == -1743
-                        ? "Mail Automation access isn't granted"
-                        : "couldn't reach Mail (is it running?)"
-                    self.postDiagnostic(available: false, reason: reason)
+                    let failure = Self.scriptFailure(code: lastFailureCode)
+                    self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
                     return
                 }
                 // Ran fine — permission is OK even if the inbox scan was empty.
@@ -891,7 +915,11 @@ final class MailReader {
         }
     }
 
+    /// `retry` re-runs the scan when the backend isn't listening yet (a cold
+    /// launch or a backend restart), on scheduleBackendRetry's short schedule,
+    /// instead of leaving Email empty until the next 5- or 15-minute tick.
     private func beginIdentityCapture(retrySuperseded: Bool = false, deadline: Date? = nil,
+                                      lane: String = "", retry: (() -> Void)? = nil,
                                       completion: @escaping ((String, Int)?) -> Void) {
         // A server-issued generation fences delayed terminal results and binds
         // freshness to when the native scan was requested, including failures.
@@ -903,6 +931,10 @@ final class MailReader {
         begin.httpMethod = "POST"
         begin.timeoutInterval = min(8, remaining)
         URLSession.shared.dataTask(with: begin) { [weak self] data, response, error in
+            if let self, let retry {
+                if error == nil { self.backendReached(lane) }
+                else if Self.backendUnreachable(error) { self.scheduleBackendRetry(lane, retry) }
+            }
             guard let self, error == nil, deadline.timeIntervalSinceNow > 0,
                   let data, let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                   let capture = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -959,7 +991,7 @@ final class MailReader {
         // Same coalescing as sync(): the raw body scan is the more expensive of
         // the two, and `sync_emails_now` asks for both.
         guard claimScan(.raw) else { return }
-        beginIdentityCapture { [weak self] capture in
+        beginIdentityCapture(lane: "raw", retry: { [weak self] in self?.syncRaw() }) { [weak self] capture in
             guard let self else { return }
             guard let capture else {
                 self.releaseScan(.raw)
@@ -1250,9 +1282,13 @@ final class MailReader {
 
     private func postEmptyAccounts(readSource: String) {
         markHeadersCompleted()
+        let endpoint = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
         historyState.publishEmptyInventory {
-            MailHistoryTransport.postEmptyAccounts(
-                to: WispClient.baseURL.appendingPathComponent("assistant/sync/emails"), readSource: readSource)
+            // Zero accounts is a complete, empty read, not a failure. It is
+            // still something the person can act on, so the same update says so.
+            MailHistoryTransport.postEmptyAccounts(to: endpoint, readSource: readSource,
+                                                   reason: Self.notConfiguredReason,
+                                                   reasonKind: "mail_not_configured")
         }
     }
 
@@ -1307,7 +1343,10 @@ final class MailReader {
     // on EVERY sync — including empty or failed ones that carry no headers — so
     // the backend's "no data" message reflects real state instead of always
     // implying permission is missing.
-    private func postDiagnostic(available: Bool, reason: String) {
+    //
+    // `kind` is the reason_kind the Brief keys its button on: "full_disk_access",
+    // "mail_automation" or "mail_not_configured", or "" when no setting helps.
+    private func postDiagnostic(available: Bool, reason: String, kind: String = "") {
         // Unavailable is terminal too — the history walk must not wait on a read
         // that already reported it can't happen.
         markHeadersCompleted()
@@ -1315,9 +1354,76 @@ final class MailReader {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "diagnostics": ["available": available, "reason": reason],
-        ])
+        var diagnostics: [String: Any] = ["available": available, "reason": reason]
+        if !kind.isEmpty { diagnostics["reason_kind"] = kind }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["diagnostics": diagnostics])
         URLSession.shared.dataTask(with: req).resume()
+    }
+
+    private static let notConfiguredReason =
+        "Mail has no accounts set up yet. Add one in Mail, and Wisp will read it from there."
+
+    /// Why every account's AppleScript read failed, from its error number.
+    /// -1743 is macOS refusing Automation; -1712 is Mail not answering in time.
+    private static func scriptFailure(code: Int) -> (kind: String, reason: String) {
+        switch code {
+        case -1743:
+            return ("mail_automation",
+                    "Wisp isn't allowed to read Mail yet. Turn on Mail for Wisp in System Settings > "
+                        + "Privacy & Security > Automation.")
+        case -1712:
+            return ("", "Mail was too slow to answer. Wisp will try again in a few minutes.")
+        default:
+            return ("", "Mail didn't answer. Wisp will try again in a few minutes.")
+        }
+    }
+
+    // MARK: - Backend start-up retry
+
+    // When the backend isn't listening yet, a scan's first request fails and the
+    // scan is dropped. These re-run it on a short schedule, about five minutes
+    // in all, one pending retry per lane; the regular timers take over after.
+    // Same schedule and rules as NativeBackendRetry (MessagesReader.swift),
+    // kept here so the spliced native Mail flow checks compile on their own.
+    private static let backendRetryDelays: [TimeInterval] = [3, 8, 20, 60, 60, 60, 60]
+    private let backendRetryLock = NSLock()
+    private var backendRetryAttempts: [String: Int] = [:]
+    private var backendRetryPending: Set<String> = []
+
+    /// Only "nothing is listening" failures are retried. An HTTP error, a
+    /// cancelled request or a timeout is an answer, not the backend's absence.
+    /// The next completed begin resets the lane (backendReached), so a later
+    /// backend restart gets the full schedule again.
+    private static func backendUnreachable(_ error: Error?) -> Bool {
+        guard let error = error as? URLError else { return false }
+        // A timeout is not on the list: something accepted the connection
+        // and was slow, which a re-read can't help and could pile onto.
+        return [.cannotConnectToHost, .networkConnectionLost,
+                .cannotFindHost, .notConnectedToInternet, .dnsLookupFailed].contains(error.code)
+    }
+
+    private func scheduleBackendRetry(_ lane: String, _ action: @escaping () -> Void) {
+        backendRetryLock.lock()
+        let attempt = backendRetryAttempts[lane] ?? 0
+        guard !backendRetryPending.contains(lane), attempt < Self.backendRetryDelays.count else {
+            backendRetryLock.unlock()
+            return
+        }
+        backendRetryPending.insert(lane)
+        backendRetryAttempts[lane] = attempt + 1
+        backendRetryLock.unlock()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.backendRetryDelays[attempt]) { [weak self] in
+            guard let self else { return }
+            self.backendRetryLock.lock()
+            self.backendRetryPending.remove(lane)
+            self.backendRetryLock.unlock()
+            action()
+        }
+    }
+
+    private func backendReached(_ lane: String) {
+        backendRetryLock.lock()
+        backendRetryAttempts[lane] = 0
+        backendRetryLock.unlock()
     }
 }
