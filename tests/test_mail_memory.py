@@ -7,6 +7,7 @@ import asyncio
 import base64
 import os
 import stat
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -834,3 +835,119 @@ def test_rescued_html_keeps_breaks_and_drops_closed_inner_tags():
     assert extract.parse_raw(head + b"<head><style>.a{}</style>Pay by Friday", 0).body == "Pay by Friday"
     # A normally closed <script> is still dropped.
     assert extract.parse_raw(head + b"<p>Pay</p><script>evil()</script>", 0).body == "Pay"
+
+
+# --- failures are visible: meta, one WARNING per reason, the endpoint --------------------
+
+@pytest.fixture
+def failing(ticking, monkeypatch, caplog):
+    monkeypatch.setattr(runner, "_warned", None)
+    monkeypatch.setattr(runner, "_next_at", 0.0)
+    caplog.set_level("DEBUG", logger="wisp.mail_memory")
+    return ticking
+
+
+def _warnings(caplog):
+    return [r for r in caplog.records if r.name == "wisp.mail_memory" and r.levelname == "WARNING"]
+
+
+def _index_fails(monkeypatch, reason):
+    async def index(days):
+        raise bridge.BridgeError(reason)
+    monkeypatch.setattr(runner, "read_index", index)
+
+
+async def test_a_failed_index_read_is_recorded_and_warned_once(failing, monkeypatch, caplog):
+    st = failing
+    _index_fails(monkeypatch, "no_mail_index")
+    await runner._run()
+    health = st.health()
+    assert health["last_error"] == "no_mail_index" and health["last_error_at"] and health["last_ok_at"] is None
+    warned = _warnings(caplog)
+    assert len(warned) == 1 and "no_mail_index" in warned[0].getMessage()
+    assert runner._next_at - time.time() > runner.FAILURE_GAP_S - 5      # still backs off
+    await runner._run()                                                  # the same reason again
+    assert len(_warnings(caplog)) == 1                                   # no repeat warning
+    assert [r for r in caplog.records if r.levelname == "INFO" and "no_mail_index" in r.getMessage()]
+
+
+async def test_a_different_reason_warns_again(failing, monkeypatch, caplog):
+    _index_fails(monkeypatch, "no_mail_index")
+    await runner._run()
+    _index_fails(monkeypatch, "index_unreadable")
+    await runner._run()
+    assert [r.getMessage() for r in _warnings(caplog)] == [
+        "mail memory: read failed (no_mail_index)", "mail memory: read failed (index_unreadable)"]
+    assert failing.health()["last_error"] == "index_unreadable"
+
+
+def test_the_same_reason_warns_again_after_an_hour(failing, caplog):
+    runner.note_failure("index_timeout", now=1000.0)
+    runner.note_failure("index_timeout", now=1000.0 + runner.WARN_REPEAT_S - 1)
+    assert len(_warnings(caplog)) == 1
+    runner.note_failure("index_timeout", now=1000.0 + runner.WARN_REPEAT_S)
+    assert len(_warnings(caplog)) == 2
+
+
+async def test_a_good_index_read_clears_the_error(failing, monkeypatch, caplog):
+    st = failing
+    _index_fails(monkeypatch, "no_mail_index")
+    await runner._run()
+    assert st.health()["last_error"] == "no_mail_index"
+
+    async def index(days):
+        return [_row(5)], False
+    monkeypatch.setattr(runner, "read_index", index)
+    await runner._run()
+    health = st.health()
+    assert health["last_error"] is None and health["last_error_at"] is None and health["last_ok_at"]
+    _index_fails(monkeypatch, "no_mail_index")
+    st.set_meta("last_index", "0")
+    await runner._run()
+    assert len(_warnings(caplog)) == 2           # recovered, so the next failure is news again
+
+
+async def test_an_unreadable_index_on_a_body_read_is_recorded(failing, monkeypatch, caplog):
+    st = failing
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5)], extract.tier, now=1)
+
+    async def body(rowid):
+        return None, "index_unreadable"
+    monkeypatch.setattr(runner, "read_body", body)
+    assert await runner.tick(now=NOW + 1) == runner.FAILURE_GAP_S
+    assert st.health()["last_error"] == "index_unreadable"
+    assert len(_warnings(caplog)) == 1
+
+    async def good(rowid):
+        return None, "not_on_disk"                # the app answered; only this email is gone
+    monkeypatch.setattr(runner, "read_body", good)
+    await runner.tick(now=NOW + 2)
+    assert st.health()["last_error"] is None
+
+
+async def test_an_unexpected_error_is_recorded_by_type_only(failing, monkeypatch, caplog):
+    async def index(days):
+        raise KeyError("Invoice from dana@example.com")
+    monkeypatch.setattr(runner, "read_index", index)
+    await runner._run()
+    assert failing.health()["last_error"] == "unexpected:KeyError"
+    assert "dana@example.com" not in str(failing.health())
+
+
+async def test_failure_records_carry_a_reason_code_never_mail_text(failing, monkeypatch, caplog):
+    secret = "Re: Invoice for dana@example.com"
+    _index_fails(monkeypatch, secret)               # a reason string from the app is untrusted
+    await runner._run()
+    assert failing.health()["last_error"] == "other"
+    assert secret not in str(failing.health())
+    assert all(secret not in r.getMessage() and "dana@" not in r.getMessage() for r in caplog.records)
+
+
+def test_the_endpoint_shows_the_last_error(client):
+    assert client.get("/assistant/mail_memory").json()["health"] == {
+        "last_error": None, "last_error_at": None, "last_ok_at": None}
+    runner.note_failure("no_mail_index", now=1234.0)
+    got = client.get("/assistant/mail_memory").json()
+    assert got["health"]["last_error"] == "no_mail_index" and got["health"]["last_error_at"] == 1234.0
+    assert got["mode"] == "live" and "queue" in got["stats"] and "last_index" in got["stats"]

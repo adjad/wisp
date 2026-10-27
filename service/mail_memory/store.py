@@ -261,6 +261,13 @@ class Store:
         return {"queue": queue, "items": items, "suspicious": suspicious, "why": why,
                 "last_index": self.meta("last_index"), "last_tick": self.meta("last_tick")}
 
+    def health(self) -> dict:
+        """Why reading Mail last failed (a reason code and when), or None. Never mail text."""
+        error = self.meta("last_error")
+        at, ok = self.meta("last_error_at"), self.meta("last_ok_at")
+        return {"last_error": error or None, "last_error_at": float(at) if error and at else None,
+                "last_ok_at": float(ok) if ok else None}
+
 
 _store: Store | None = None
 
