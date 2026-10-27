@@ -672,6 +672,35 @@ async def _ensure_meta(http, ids: list[str]) -> None:
     await asyncio.gather(*(one(i) for i in missing))
 
 
+async def tab_message_ids(days: int, tabs: tuple[str, ...] = ("promotions", "social", "forums"),
+                          limit: int = 2000) -> set[str] | None:
+    """RFC Message-IDs of inbox mail Gmail filed under `tabs` in the last `days`, across
+    every connected account. None when no account is connected or any read failed:
+    unknown, never an empty set that would read as "nothing to exclude"."""
+    accounts = connected_accounts()
+    if not accounts:
+        return None
+    query = f"newer_than:{int(days)}d {{" + " ".join(f"category:{t}" for t in tabs) + "}"
+    found: set[str] = set()
+    for account, cfg in accounts.items():
+        token = _context.set((account, dict(cfg), _epochs.get(account, 0)))
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                ids = await _list_ids(http, limit, query=query)
+                if len(ids) >= limit:
+                    return None   # more than we listed: a partial set would let the rest through
+                await _ensure_meta(http, ids)
+                for i in ids:
+                    mid = _meta.get((account, i), {}).get("message_id", "").strip()
+                    if mid:   # Mail's index keeps the angle brackets; match its form
+                        found.add(mid if mid.startswith("<") else f"<{mid}>")
+        except Exception:  # noqa: BLE001 — a partial answer would wrongly include promotions
+            return None
+        finally:
+            _context.reset(token)
+    return found
+
+
 def _lines(ids: list[str], unread_ids: set[str], account: str) -> str:
     rows = [header_line(_meta[(account, i)], account, i in unread_ids)
             for i in ids if (account, i) in _meta]

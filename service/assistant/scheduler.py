@@ -252,6 +252,14 @@ async def run() -> None:
             proactive_cycle.schedule_tick()
         except Exception:  # noqa: BLE001 — the Brief keeps its last cards
             pass
+        # Mail memory (service/mail_memory): walks 90 days of mail one email per tick,
+        # only while nobody is waiting, for long-term reminders; the Brief shows the
+        # important ones (importance.py).
+        try:
+            from service.mail_memory import runner as mail_memory
+            mail_memory.schedule_tick()
+        except Exception:  # noqa: BLE001 — never break the scheduler loop
+            pass
         # The chief-of-staff loop (service/assistant/checkin.py): carry
         # unfinished tasks onto today each morning, and in the evening ask how
         # the day went, once, when the app is listening. No model, no sends.
