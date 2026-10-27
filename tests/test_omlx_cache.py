@@ -16,19 +16,19 @@ def _settings(tmp_path, size):
 
 
 def test_cap_lowers_large_and_auto_values(tmp_path):
-    for before in ("80GB", "auto", None, "4.5GB"):
+    for before in ("80GB", "auto", None, "4.5GB", "4GB"):
         p = _settings(tmp_path, before)
         assert oc.ensure_cap(p) is True
         data = json.loads(p.read_text())
-        assert data["cache"]["ssd_cache_max_size"] == "4GB"
+        assert data["cache"]["ssd_cache_max_size"] == "2GB"
         assert data["cache"]["enabled"] is True and data["auth"]["api_key"] == "k"
         assert stat.S_IMODE(p.stat().st_mode) == 0o600
 
 
 def test_cap_keeps_smaller_user_value_and_survives_bad_file(tmp_path):
-    p = _settings(tmp_path, "2GB")
+    p = _settings(tmp_path, "1GB")
     assert oc.ensure_cap(p) is False
-    assert json.loads(p.read_text())["cache"]["ssd_cache_max_size"] == "2GB"
+    assert json.loads(p.read_text())["cache"]["ssd_cache_max_size"] == "1GB"
     p.write_text("not json")
     assert oc.ensure_cap(p) is False
     assert oc.ensure_cap(tmp_path / "missing.json") is False
