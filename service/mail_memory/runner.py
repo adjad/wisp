@@ -6,7 +6,9 @@ index and files costs nothing. Three levels (docs/plans/2026-10-26-email-digest-
 - busy:    a user's turn is in flight, a generation is running, the model was
            used by something else in the last 2 minutes, the fast model isn't
            resident, or the Mac is in Low Power Mode / on battery under 30%.
-           Nothing runs.
+           No email is read and no model call runs. Mail's index is still read
+           when it's due (it costs no model time), so the queue fills, and a
+           missing permission shows, as soon as Wisp starts.
 - between: otherwise. One call per tick, at least 90 s apart.
 - away:    no keyboard or mouse for 10+ minutes, on power or battery over 50%.
            Calls run back to back, 5 s apart.
@@ -310,16 +312,14 @@ async def tick(*, now: float | None = None) -> float:
     power = await asyncio.to_thread(_cached, "power", _power)
     hid = await asyncio.to_thread(_cached, "hid", _hid_idle_s)
     lvl = level(_model_key(), hid_idle_s=hid, power=power)
-    if lvl == "busy":
-        return BUSY_GAP_S
-    gap = AWAY_GAP_S if lvl == "away" else BETWEEN_GAP_S
-    # Read no mail the model can't take: a body read now would only be read again.
-    why_not = await _stand_down()
-    if why_not == "remote_only":
-        return FAILURE_GAP_S
-    if why_not is not None:
-        return BUSY_GAP_S
+    gap = {"busy": BUSY_GAP_S, "away": AWAY_GAP_S}.get(lvl, BETWEEN_GAP_S)
+    from service.inference.remote_policy import remote_only_profile
+    if remote_only_profile() is not None:
+        return FAILURE_GAP_S                      # the walk stands down entirely
 
+    # The index first: it costs no model time, so a busy or absent model never holds
+    # it up (2026-10-27: a morning of use with Brief and proactive work kept the old
+    # order from reading even the index, so nothing queued and nothing failed).
     last_index = float(st.meta("last_index") or 0)
     if now - last_index >= INDEX_EVERY_S:
         rows, capped = await read_index(WINDOW_DAYS)
@@ -330,6 +330,15 @@ async def tick(*, now: float | None = None) -> float:
         note_ok(now=now)
         log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
         return gap
+
+    if lvl == "busy":
+        return BUSY_GAP_S
+    # Read no mail the model can't take: a body read now would only be read again.
+    why_not = await _stand_down()
+    if why_not == "remote_only":
+        return FAILURE_GAP_S
+    if why_not is not None:
+        return BUSY_GAP_S
 
     st.expire(today.isoformat())
     row = st.next_pending(now)

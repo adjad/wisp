@@ -451,6 +451,8 @@ def ticking(tmp_path, monkeypatch, quiet):
     async def ready():
         return None
     monkeypatch.setattr(runner, "_stand_down", ready)
+    from service.inference import remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)   # never the live config
 
     async def no_gmail():
         return frozenset()
@@ -603,7 +605,8 @@ async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypa
                                                  (False, [], "BUSY_GAP_S"),
                                                  (False, ["fast-model", "other"], "BUSY_GAP_S")])
 async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, remote, loaded, gap):
-    """A remote-only profile or a model that isn't resident: no index read, no body read."""
+    """A remote-only profile: no index read, no body read. A model that isn't resident:
+    the index is still read (it costs no model time), but no email."""
     st = ticking
     monkeypatch.setattr(runner, "_stand_down", _REAL_STAND_DOWN)
     monkeypatch.setattr(runner, "_model_key", lambda: "fast-model")
@@ -628,12 +631,50 @@ async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, re
     async def never(*a):
         raise AssertionError("read mail the model can't take")
 
-    monkeypatch.setattr(runner, "read_index", never)
+    indexed = []
+
+    async def index(days):
+        indexed.append(days)
+        return [], False
+
+    monkeypatch.setattr(runner, "read_index", never if remote else index)
     monkeypatch.setattr(runner, "read_body", never)
-    assert await runner.tick(now=NOW + 1) == getattr(runner, gap)
+    first = await runner.tick(now=NOW + 1)
+    if remote:
+        assert first == runner.FAILURE_GAP_S
+    else:
+        assert indexed == [runner.WINDOW_DAYS] and st.meta("last_index")
     st.set_meta("last_index", str(NOW))
     st.upsert_index([_row(5)], extract.tier, now=1)
     assert await runner.tick(now=NOW + 2) == getattr(runner, gap)
+    assert st.message("<m5@x>")["attempts"] == 0
+
+
+@pytest.mark.parametrize("busy_by", ["turn", "recent_use", "low_battery"])
+async def test_a_busy_model_never_holds_up_the_index(ticking, monkeypatch, quiet, busy_by):
+    """2026-10-27: Brief and proactive work kept the model in use all morning, and the
+    index waited with it, so nothing queued. The index now goes first; email waits."""
+    st = ticking
+    if busy_by == "turn":
+        monkeypatch.setattr(quiet, "foreground_busy", lambda: True)
+    elif busy_by == "recent_use":
+        monkeypatch.setattr(quiet, "last_used", lambda key: time.monotonic())
+    else:
+        monkeypatch.setattr(runner, "_power", lambda: (False, 20, False))
+    assert runner.level("m") == "busy"
+
+    async def index(days):
+        return [_row(5)], False
+
+    async def never(*a):
+        raise AssertionError("read an email while the model was busy")
+
+    monkeypatch.setattr(runner, "read_index", index)
+    monkeypatch.setattr(runner, "read_body", never)
+    monkeypatch.setattr(runner, "_reply", never)
+    assert await runner.tick(now=NOW + 1) == runner.BUSY_GAP_S
+    assert st.stats()["queue"] == {"pending": 1} and st.meta("last_index")
+    assert await runner.tick(now=NOW + 2) == runner.BUSY_GAP_S          # due no more: email waits
     assert st.message("<m5@x>")["attempts"] == 0
 
 
