@@ -7,6 +7,16 @@ All notable changes to Wisp are documented here.
 ### Changed
 - **Versions renumbered down by 1.0.** Wisp is not yet a finished product, so every release is now 0.x (1.4.0 became 0.4.0, 1.3.3 became 0.3.3, and so on). Release tags and GitHub releases were renamed to match, and the old v0.1.0 is now v0.0.0-initial. The next release is 0.5.0.
 
+## [0.5.0-rc2] - Unreleased
+
+Second release candidate for testers; it builds on rc1. See [docs/releases/0.5.0-rc2.md](docs/releases/0.5.0-rc2.md) for the release notes.
+
+### Added
+- TODO: list what rc2 adds.
+
+### Changed
+- TODO: list what rc2 changes.
+
 ## [0.5.0-rc1] - 2026-10-26
 
 First release candidate for testers; see [docs/releases/0.5.0-rc1.md](docs/releases/0.5.0-rc1.md) for the release notes. It is ad-hoc signed, not notarized: on macOS 15 and later the first open is blocked and must be allowed under System Settings ▸ Privacy & Security ▸ **Open Anyway**. Apple silicon only; the built-in engine needs macOS 26.2 or newer; 16 GB of memory is the minimum and 24 GB is recommended.

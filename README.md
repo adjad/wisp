@@ -6,7 +6,7 @@ and messages stay there.
 
 A Swift menu-bar app talks to a bundled Python (FastAPI) agent service and a private copy of the
 oMLX model engine. This is the **0.5.0 release candidate** for testers; see
-[docs/releases/0.5.0-rc1.md](docs/releases/0.5.0-rc1.md) for what is new and what is still rough.
+[docs/releases/0.5.0-rc2.md](docs/releases/0.5.0-rc2.md) for what is new and what is still rough.
 
 ## Install Wisp (read this first)
 
