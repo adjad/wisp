@@ -7,6 +7,39 @@ All notable changes to Wisp are documented here.
 ### Changed
 - **Versions renumbered down by 1.0.** Wisp is not yet a finished product, so every release is now 0.x (1.4.0 became 0.4.0, 1.3.3 became 0.3.3, and so on). Release tags and GitHub releases were renamed to match, and the old v0.1.0 is now v0.0.0-initial. The next release is 0.5.0.
 
+## [0.5.0-rc3] - Unreleased
+
+Third release candidate for testers; it builds on rc2. See [docs/releases/0.5.0-rc3.md](docs/releases/0.5.0-rc3.md) for the release notes.
+
+### Changed
+- **A shorter menu-bar menu.** Right-clicking the menu-bar icon now shows Open Wisp Window, Settings…, Report a Problem… and Quit Wisp, plus **Finish Setup…** only while setup isn't finished. The other items moved:
+  - change the model or engine in **Settings → Models**;
+  - **Permissions…** and **More Access…** (Screen Recording, Accessibility, Full Disk Access; it was Grant More Access…) are in **Settings → Privacy & Access**;
+  - **Export Chat Debug Log…** is in **Settings → General**;
+  - Getting to know you is `/about`, or Memory → About you.
+
+  Messages that named a removed item now point to its new place.
+- **Brief cards stay put.** A shown card stays until it is handled, dismissed, answered or past due, and new cards are added after it, instead of every cycle re-ranking from scratch. A card whose source drops out of one read is kept for 2 hours. An ask is keyed by the conversation and the time of its latest incoming message, so only a new message makes a new card. An unchanged Brief is re-checked against the clock without another model call.
+- **Mail suggestions read Mail's list of emails without waiting for the model.** The 6-hourly index refresh no longer waits for a quiet model; reading each email and the model call still do. Low Power Mode or a battery under 30% still holds everything off.
+
+### Fixed
+- **Allow on Reminders and Calendar no longer does nothing.**
+  - While one permission question was up, every other Allow button was disabled; now only the row being asked is.
+  - The click reads macOS's answer first. Undecided asks; denied or restricted opens that row's privacy page.
+  - The ask's error is logged, and a request macOS left unanswered says to quit and reopen Wisp.
+- **Mail & Notes and Messages keep their answer across launches.** The last definite Automation answer is saved, so a closed app (macOS error -600) no longer reads "Not set" after a relaunch. A denial (-1743) always replaces it, and a grant macOS dropped (-1744 after Allowed) says macOS forgot the answer. `/resetwisp` clears the saved answers.
+- **A dismissed Brief card or cleared Needs-you item never comes back without something new.**
+  - A dismissal no longer depends on a content hash that changed as old lines aged out.
+  - A cycle no longer writes back a card dismissed while it ran.
+  - A cleared to-do or thread also removes that conversation's card.
+  - A "texts from X" Needs-you row keeps its id as texts age out.
+  - Items cleared in an earlier build stay cleared.
+- **Impossible clock times are refused.** "at 28", "25:30" or "13pm" no longer crash the date resolver (used by mail suggestions, reminders from messages, proactive suggestions and event capture), and "13pm" is no longer read as 1 pm.
+- **One bad email can't stall mail suggestions.** An email whose processing fails is retried once, then set aside, and the queue moves on.
+- **A failed Mail read is no longer silent.** It is logged as a warning, at most once an hour while the same reason repeats, and shown as `health` in the mail-suggestions status. **Settings → Privacy & Access → Mail suggestions** shows the reason in plain words ("Couldn't read Mail: … Turn on Full Disk Access …") until a read works again. Logs and Settings carry only short reason codes and exception type names, never email text.
+- **Email summaries list each email once.** A combined digest no longer repeats the per-account ones, and an email present in both Gmail and Mail is shown once.
+- **`/resetwisp` stops background work before erasing.** It also stops mail suggestions, the Brief's mail and text gists, the attention runner, the proactive cycle and the daily-plan email, so none can write files back, or send, after the erase.
+
 ## [0.5.0-rc2] - Unreleased
 
 Second release candidate for testers; it builds on rc1. See [docs/releases/0.5.0-rc2.md](docs/releases/0.5.0-rc2.md) for the release notes.
