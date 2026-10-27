@@ -153,21 +153,38 @@ enum WispResetChecks {
         check(WispReset.refusal(corpusBusy: false, replying: true) != nil, "not while Wisp is answering")
         check(WispReset.refusal(corpusBusy: false, replying: false) == nil, "otherwise the card opens")
 
+        // No answer: the marker on disk tells a committed reset from one that never started.
+        let committed = R.afterNoAnswer(markerOnDisk: true)
+        check(committed.kind == .committed && committed.relaunches && !committed.detail.contains("Nothing was reset"),
+              "a marker on disk means the reset committed: Wisp restarts to finish it")
+        let neverStarted = R.afterNoAnswer(markerOnDisk: false)
+        check(neverStarted.kind == .refused && !neverStarted.relaunches
+              && neverStarted.detail.contains("no reset started"), "no marker means no reset started")
+
         // The marker the service writes, and the notice the relaunch shows.
         typealias M = WispReset.Marker
-        check(M.parse(Data(#"{"version":1,"phase":"erased","problems":["Couldn't reach Google."]}"#.utf8))
-              == M(phase: "erased", problems: ["Couldn't reach Google."]), "an erased marker")
-        for odd in [nil, Data(), Data("{".utf8), Data(#"{"phase":"done"}"#.utf8)] as [Data?] {
-            check(!M.parse(odd).serviceDone, "an unreadable marker means the reset isn't finished")
+        check(M.parse(Data(#"{"version":1,"id":"ab12","phase":"erased","problems":["Couldn't reach Google."]}"#.utf8))
+              == M(id: "ab12", phase: "erased", problems: ["Couldn't reach Google."]), "an erased marker")
+        check(M.parse(Data(#"{"version":1,"id":"ab12","phase":"first-pass"}"#.utf8))?.serviceDone == false,
+              "the route's first pass is not done: only the restart pass writes erased")
+        for junk in [Data(), Data("{".utf8), Data(#"{"phase":"erased","id":"a"}"#.utf8),
+                     Data(#"{"version":2,"phase":"erased","id":"a"}"#.utf8),
+                     Data(#"{"version":1,"phase":"done","id":"a"}"#.utf8),
+                     Data(#"{"version":1,"phase":"erased","id":"../a"}"#.utf8),
+                     Data(#"{"version":1,"phase":"erased"}"#.utf8)] {
+            check(M.parse(junk) == nil, "junk is not a marker: \(String(decoding: junk, as: UTF8.self))")
         }
-        check(WispReset.launchNotice(marker: M(phase: "erased", problems: []), appProblems: []) == nil,
+        check(WispReset.launchNotice(marker: M(id: "a", phase: "erased", problems: []), appProblems: []) == nil,
               "a clean reset says nothing")
-        check(WispReset.launchNotice(marker: M(phase: "erased", problems: ["A."]), appProblems: ["B."])
+        check(WispReset.launchNotice(marker: M(id: "a", phase: "erased", problems: ["A."]), appProblems: ["B."])
               == "Wisp was reset, but: A. B.", "problems from both parts are said once")
-        check(WispReset.launchNotice(marker: M(phase: "started", problems: []), appProblems: [])?
+        check(WispReset.launchNotice(marker: M(id: "a", phase: "first-pass", problems: []), appProblems: [])?
               .contains("tries again at the next launch") == true, "an unfinished reset says it will finish")
         check(WispReset.markerURL(home: "/Users/someone").path == "/Users/someone/.moe/.reset-pending",
               "the marker lives in ~/.moe")
+        check(WispReset.appDoneURL(home: "/Users/someone").path == "/Users/someone/.moe/.reset-pending.app",
+              "the app's record sits beside it (wisp_reset.APP_DONE)")
+        markerFiles()
 
         // Wisp's own app files outside ~/.moe, and only for Wisp's own bundle.
         check(WispReset.appFiles(home: "/Users/someone", bundleID: WispReset.bundleID) == [
@@ -179,6 +196,41 @@ enum WispResetChecks {
               "never another bundle's files")
         check(WispReset.route == "assistant/reset_wisp" && WispReset.confirmPhrase == "reset wisp",
               "the route and phrase match service/wisp_reset.py")
+    }
+
+    /// The marker and the app's record read from real files: only a regular file
+    /// this user owns counts; a link, a folder or junk is ignored.
+    static func markerFiles() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-reset-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let marker = dir.appendingPathComponent(".reset-pending").path
+        check(WispReset.readMarker(marker) == .absent, "no marker")
+        try? Data(#"{"version":1,"id":"c0ffee","phase":"first-pass","problems":[]}"#.utf8)
+            .write(to: URL(fileURLWithPath: marker))
+        check(WispReset.readMarker(marker) == .valid(WispReset.Marker(id: "c0ffee", phase: "first-pass", problems: [])),
+              "a marker Wisp wrote")
+        try? Data("junk".utf8).write(to: URL(fileURLWithPath: marker))
+        if case .invalid = WispReset.readMarker(marker) {} else { check(false, "junk content is ignored") }
+        try? FileManager.default.removeItem(atPath: marker)
+        let target = dir.appendingPathComponent("elsewhere.json").path
+        try? Data(#"{"version":1,"id":"c0ffee","phase":"erased"}"#.utf8).write(to: URL(fileURLWithPath: target))
+        try? FileManager.default.createSymbolicLink(atPath: marker, withDestinationPath: target)
+        if case .invalid = WispReset.readMarker(marker) {} else { check(false, "a link is ignored") }
+        WispReset.removeOwnedFile(marker)
+        check(FileManager.default.fileExists(atPath: target), "removing never follows a link")
+        try? FileManager.default.removeItem(atPath: marker)
+        try? FileManager.default.createDirectory(atPath: marker, withIntermediateDirectories: false)
+        if case .invalid = WispReset.readMarker(marker) {} else { check(false, "a folder is ignored") }
+        try? FileManager.default.removeItem(atPath: marker)
+
+        // The app part runs once per marker: its record holds the marker's id.
+        let record = dir.appendingPathComponent(".reset-pending.app").path
+        check(WispReset.readAppDone(record) == nil, "no record yet")
+        WispReset.writeAppDone(WispReset.AppDone(id: "c0ffee", problems: ["P."]), to: record)
+        check(WispReset.readAppDone(record) == WispReset.AppDone(id: "c0ffee", problems: ["P."]), "the record")
+        WispReset.removeOwnedFile(record)
+        check(!FileManager.default.fileExists(atPath: record), "the record is removed")
     }
 
     static func source(_ path: String) -> String {
@@ -219,15 +271,26 @@ enum WispResetChecks {
         let delegate = source("app/Sources/WispApp/AppDelegate.swift")
         check(!delegate.contains("tccutil") && !delegate.contains("clearDefaults"),
               "the delegate resets nothing itself; the marker-guarded launch step does")
-        check(delegate.contains("let resetPending = FileManager.default.fileExists(atPath: WispReset.markerURL().path)")
-              && delegate.contains("resetProblems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)"),
-              "a launch with the marker runs the app's part before reading settings")
+        check(delegate.contains("case .valid(let marker):\n            resetPending = true\n"
+                                + "            if WispReset.readAppDone()?.id != marker.id {\n"
+                                + "                let problems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)\n"
+                                + "                WispReset.writeAppDone(WispReset.AppDone(id: marker.id, problems: problems))"),
+              "a launch with a valid marker runs the app's part once per marker, before reading settings")
+        check(delegate.contains("if model.debugMode { model.debugMode = false }"),
+              "a reset never keeps Debug Mode on (the model read it before the defaults were cleared)")
+        check(delegate.contains("case .invalid(let reason):") && delegate.contains("WispReset.ignoredMarkerReportedKey"),
+              "an invalid marker is ignored and reported once")
         let launchStart = delegate.components(separatedBy: "    private func launch() {")[1]
         check(launchStart.range(of: "WispResetLaunch.run")!.lowerBound
               < launchStart.range(of: "FirstRunSetup.shouldShow")!.lowerBound,
               "the defaults are cleared before setup decides whether to show")
-        check(delegate.contains("if marker.serviceDone {\n                    try? FileManager.default.removeItem(at: url)"),
-              "the marker is removed last, only once the service's part is done")
+        check(delegate.contains("case .valid(let marker) where marker.serviceDone:\n"
+                                + "                    let appProblems = WispReset.readAppDone()?.problems ?? []\n"
+                                + "                    WispReset.removeOwnedFile(WispReset.appDoneURL().path)\n"
+                                + "                    WispReset.removeOwnedFile(WispReset.markerURL().path)"),
+              "the marker is removed last, only once the restart pass says erased")
+        check(delegate.contains("reply = .afterNoAnswer(markerOnDisk: true)"),
+              "no answer: the marker on disk decides what Wisp says")
         check(delegate.contains("guard reply.relaunches else { return reply.detail }"),
               "only a committed reset quits and relaunches")
         check(delegate.contains("return await self.performWispReset()")

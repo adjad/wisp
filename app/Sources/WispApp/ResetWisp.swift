@@ -136,6 +136,16 @@ enum WispReset {
         static let unknownDetail = "Wisp didn't confirm the reset, so it may have started. Quit and reopen "
             + "Wisp: a reset that started finishes then."
 
+        /// No answer at all: the marker on disk tells a committed reset from one that
+        /// never started (the service writes it before anything destructive).
+        static func afterNoAnswer(markerOnDisk: Bool) -> ServiceReply {
+            markerOnDisk
+                ? ServiceReply(kind: .committed, detail: "The reset started but Wisp didn't confirm it; "
+                               + "Wisp restarts to finish it.")
+                : ServiceReply(kind: .refused, detail: "Wisp's service didn't answer and no reset started. "
+                               + "Nothing was reset.")
+        }
+
         static func parse(status: Int?, body: [String: Any]?) -> ServiceReply {
             guard let status else { return ServiceReply(kind: .unknown, detail: unknownDetail) }
             let detail = body?["detail"] as? String ?? ""
@@ -156,19 +166,94 @@ enum WispReset {
 
     /// The marker's contents, as the service wrote them (wisp_reset.write_marker).
     struct Marker: Equatable {
-        /// "started" until the service's part is done, then "erased".
+        let id: String
+        /// "started", then "first-pass" after the route; only the service's restart
+        /// pass (wisp_reset.resume_pending) writes "erased".
         let phase: String
         let problems: [String]
         var serviceDone: Bool { phase == "erased" }
 
-        /// Unreadable or odd still means a reset started.
-        static func parse(_ data: Data?) -> Marker {
-            guard let data, let doc = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let phase = doc["phase"] as? String, ["started", "erased"].contains(phase) else {
-                return Marker(phase: "started", problems: [])
+        /// Nil unless it is a marker Wisp wrote: version 1, a known phase, an id.
+        static func parse(_ data: Data) -> Marker? {
+            guard let doc = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  doc["version"] as? Int == 1,
+                  let phase = doc["phase"] as? String, ["started", "first-pass", "erased"].contains(phase),
+                  let id = doc["id"] as? String, !id.isEmpty, id.count <= 64,
+                  id.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) && $0.isASCII }) else {
+                return nil
             }
-            return Marker(phase: phase, problems: (doc["problems"] as? [Any] ?? []).compactMap { $0 as? String })
+            return Marker(id: id, phase: phase,
+                          problems: (doc["problems"] as? [Any] ?? []).compactMap { $0 as? String })
         }
+    }
+
+    /// A file in Wisp's home read the way the service reads it: only a regular file
+    /// this user owns, never through a link.
+    enum OwnedFile: Equatable {
+        case absent
+        case odd(String)
+        case data(Data)
+    }
+
+    static func readOwnedFile(_ path: String) -> OwnedFile {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return errno == ENOENT ? .absent : .odd("unreadable") }
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid() else {
+            return .odd("not a regular file owned by this user")
+        }
+        let fd = open(path, O_RDONLY | O_NOFOLLOW)
+        guard fd >= 0 else { return .odd("unreadable") }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        guard let data = try? handle.read(upToCount: 65536) else { return .odd("unreadable") }
+        return .data(data)
+    }
+
+    enum MarkerState: Equatable {
+        case absent
+        /// Not a marker Wisp wrote (a link, a folder, someone else's file, junk):
+        /// ignored, never acted on, and reported once.
+        case invalid(String)
+        case valid(Marker)
+    }
+
+    static func readMarker(_ path: String = markerURL().path) -> MarkerState {
+        switch readOwnedFile(path) {
+        case .absent: return .absent
+        case .odd(let reason): return .invalid(reason)
+        case .data(let data):
+            guard let marker = Marker.parse(data) else { return .invalid("not a Wisp reset marker") }
+            return .valid(marker)
+        }
+    }
+
+    /// This app's record that it ran its part for one marker (wisp_reset.APP_DONE):
+    /// the marker's id and what didn't work. The part runs once per marker.
+    static func appDoneURL(home: String = NSHomeDirectory()) -> URL {
+        URL(fileURLWithPath: home).appendingPathComponent(".moe").appendingPathComponent(markerName + ".app")
+    }
+
+    struct AppDone: Equatable {
+        let id: String
+        let problems: [String]
+    }
+
+    static func readAppDone(_ path: String = appDoneURL().path) -> AppDone? {
+        guard case .data(let data) = readOwnedFile(path),
+              let doc = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let id = doc["id"] as? String else { return nil }
+        return AppDone(id: id, problems: (doc["problems"] as? [Any] ?? []).compactMap { $0 as? String })
+    }
+
+    static func writeAppDone(_ done: AppDone, to path: String = appDoneURL().path) {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["id": done.id, "problems": done.problems]) else {
+            return
+        }
+        try? data.write(to: URL(fileURLWithPath: path), options: [.atomic])
+    }
+
+    /// Deletes a file only when it is a regular file this user owns.
+    static func removeOwnedFile(_ path: String) {
+        if case .data = readOwnedFile(path) { unlink(path) }
     }
 
     /// The notice the relaunched Wisp shows once, or nil when all went well.
@@ -180,6 +265,10 @@ enum WispReset {
         }
         return problems.isEmpty ? nil : "Wisp was reset, but: " + problems.joined(separator: " ")
     }
+
+    static let ignoredMarkerNotice = "Wisp found a reset marker it didn't write (~/.moe/.reset-pending) and ignored it."
+    /// Set once an ignored marker was reported, so it is said only once.
+    static let ignoredMarkerReportedKey = "wisp.reset.ignoredMarkerReported"
 
     /// Wisp's own app files outside ~/.moe that a reset removes: its URL cache and
     /// cookies, and the battery graph. Only for Wisp's own bundle id.

@@ -165,11 +165,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func launch() {
         launched = true
-        // A committed /resetwisp (its marker is on disk): this app's part runs before
-        // any setting is read, so this launch is a first run (WispReset).
-        let resetPending = FileManager.default.fileExists(atPath: WispReset.markerURL().path)
-        if resetPending {
-            resetProblems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)
+        // A committed /resetwisp (its marker is on disk): this app's part runs once
+        // per marker, before any setting is read, so this launch is a first run.
+        var resetPending = false
+        var ignoredResetMarker = false
+        switch WispReset.readMarker() {
+        case .valid(let marker):
+            resetPending = true
+            if WispReset.readAppDone()?.id != marker.id {
+                let problems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)
+                WispReset.writeAppDone(WispReset.AppDone(id: marker.id, problems: problems))
+                // The model read Debug Mode before the defaults were cleared.
+                if model.debugMode { model.debugMode = false }
+            }
+        case .invalid(let reason):
+            NSLog("%@", "Wisp reset: ignored a reset marker (\(reason))")
+            ignoredResetMarker = !UserDefaults.standard.bool(forKey: WispReset.ignoredMarkerReportedKey)
+            UserDefaults.standard.set(true, forKey: WispReset.ignoredMarkerReportedKey)
+        case .absent:
+            break
         }
         // Whoever was shutting down is gone now.
         UserDefaults.standard.removeObject(forKey: Self.shuttingDownPIDKey)
@@ -383,31 +397,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the Dock icon, the menu bar, or a hand-off from the notch.
         if firstRun { openFirstRunSetup() } else { showNotchTipOnce() }
         if resetPending { finishPendingReset() }
+        if ignoredResetMarker { model.showTransientNotice(WispReset.ignoredMarkerNotice, duration: 15) }
     }
 
-    /// What this app's part of a reset couldn't do, for the notice.
-    private var resetProblems: [String] = []
-
-    /// The last step of a reset: once the service says its part is done (it erases
-    /// at start, before any store opens), remove the marker and say what didn't
-    /// work, if anything. A service that couldn't finish leaves the marker, and
-    /// the next launch runs the reset's last steps again.
+    /// The last step of a reset: once the service's restart pass says "erased" (it
+    /// runs in the backend this launch started, before any store opens), remove the
+    /// app's record and then the marker, and say what didn't work, if anything. A
+    /// restart pass that didn't finish leaves the marker; the next launch waits again
+    /// (the service gives up after a few attempts and lists what it left).
     private func finishPendingReset() {
         Task { [weak self] in
-            let url = WispReset.markerURL()
             for _ in 0..<90 {
-                let marker = WispReset.Marker.parse(try? Data(contentsOf: url))
-                if marker.serviceDone {
-                    try? FileManager.default.removeItem(at: url)
-                    if let notice = WispReset.launchNotice(marker: marker, appProblems: self?.resetProblems ?? []) {
+                switch WispReset.readMarker() {
+                case .valid(let marker) where marker.serviceDone:
+                    let appProblems = WispReset.readAppDone()?.problems ?? []
+                    WispReset.removeOwnedFile(WispReset.appDoneURL().path)
+                    WispReset.removeOwnedFile(WispReset.markerURL().path)
+                    if let notice = WispReset.launchNotice(marker: marker, appProblems: appProblems) {
                         self?.model.showTransientNotice(notice, duration: 15)
                     }
                     return
+                case .valid:
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                case .absent, .invalid:
+                    return
                 }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
-            let marker = WispReset.Marker.parse(try? Data(contentsOf: url))
-            if let notice = WispReset.launchNotice(marker: marker, appProblems: self?.resetProblems ?? []) {
+            if case .valid(let marker) = WispReset.readMarker(),
+               let notice = WispReset.launchNotice(marker: marker, appProblems: WispReset.readAppDone()?.problems ?? []) {
                 self?.model.showTransientNotice(notice, duration: 15)
             }
         }
@@ -1580,7 +1597,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // stops its schedulers and syncs.
         todayModel.stopBackgroundRefresh()
         let (status, body) = await client.resetWisp()
-        let reply = WispReset.ServiceReply.parse(status: status, body: body)
+        var reply = WispReset.ServiceReply.parse(status: status, body: body)
+        if reply.kind == .unknown {
+            // No answer: the marker on disk says whether the reset committed.
+            if case .valid = WispReset.readMarker() {
+                reply = .afterNoAnswer(markerOnDisk: true)
+            } else {
+                reply = .afterNoAnswer(markerOnDisk: false)
+            }
+        }
         guard reply.relaunches else { return reply.detail }
         NSLog("%@", "Wisp reset: service committed (\(reply.kind == .erased ? "erased" : "unfinished")); relaunching")
         noteTerminating()

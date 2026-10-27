@@ -16,13 +16,19 @@ Wisp button. The app then calls POST /assistant/reset_wisp, which:
    engine and the plumbing that lets the engine start), and trims config.yaml
    to the keys that pick the engine and the model (trimmed_config).
 
-The app then stops the engine and this service and relaunches. The next
-service start, before any store opens, sees MARKER and erases again (catching
-anything written after the first pass) together with the bundled engine's
-prompt cache, now that the engine is stopped. The relaunched app sees MARKER,
-finishes its own part (Keychain provider keys, its defaults domain, its privacy
-grants, notifications, its caches) and removes MARKER last, once the service
-says its part is done. macOS accounts (System Settings ▸ Internet Accounts,
+The route ends with MARKER at phase "first-pass": it never claims the reset is
+done. The app then stops the engine and this service and relaunches. The
+backend the app launches (service/main.py, only with WISP_LAUNCH_NONCE) runs
+resume_pending before any other import: with no live service and the engine
+stopped, it erases the whole home once more (the restart pass, which catches
+anything written after the first pass) together with the engine's prompt cache,
+and only then writes phase "erased". Later starts retry only the names that
+pass could not delete, at most MAX_ATTEMPTS times in all, and then write
+"erased" with the leftovers as problems: a reset never loops, and never touches
+data created after the restart pass. The relaunched app runs its own part
+once per marker (Keychain provider keys, its defaults domain, its privacy
+grants, notifications, its caches; APP_DONE records it) and removes MARKER last,
+once it reads "erased". macOS accounts (System Settings ▸ Internet Accounts,
 Mail, Calendar, Notes, Messages) are never touched: deleting a "connection"
 means removing Wisp's access and every copy Wisp holds.
 
@@ -41,7 +47,10 @@ import json
 import os
 import shutil
 import stat
+import secrets
+import socket
 import struct
+import sys
 import threading
 import time
 from pathlib import Path
@@ -59,8 +68,13 @@ CONFIRM_PHRASE = "reset wisp"
 # including files a later version adds, so no state outlives a reset by being new.
 # Written before the first destructive step, removed by the app last.
 MARKER = ".reset-pending"
+# The app's own record that it ran its part for one marker (holds the marker's id).
+APP_DONE = ".reset-pending.app"
+# Service starts that may work on one reset before it is declared done with leftovers.
+MAX_ATTEMPTS = 3
 KEEP_ENTRIES = frozenset({
     MARKER,                            # an unfinished reset: the next start finishes it
+    APP_DONE,                          # the app ran its part for this marker
     "engine",                          # bundled engine: models/, base/ (its settings + key), home/
     "config.yaml",                     # trimmed to CONFIG_KEEP (engine mode + model choice)
     "provisioning",                    # keychain helper + reviewed endpoint bindings for the engine key
@@ -201,7 +215,8 @@ def _rewrite_config(home: Path) -> str:
     return "trimmed"
 
 
-def erase_home(home: Path, user_home: Path, *, engine_caches: bool = False) -> dict:
+def erase_home(home: Path, user_home: Path, *, engine_caches: bool = False,
+               only: set[str] | None = None) -> dict:
     """Delete every entry of Wisp's home outside KEEP_ENTRIES, trim config.yaml
     and drop the engine's log (and, with ``engine_caches``, its prompt cache and
     logs: only while the engine is stopped). Never follows a link out of the
@@ -211,6 +226,10 @@ def erase_home(home: Path, user_home: Path, *, engine_caches: bool = False) -> d
     ``kept`` and ``failed``. A SQLite database is deleted only after its
     -wal/-shm/-journal files are, so a fresh database can never pick up an old
     write-ahead log on the next launch.
+
+    ``only`` limits it to those names (top-level names, ``engine/...`` and
+    ``config.yaml``): a retry of what an earlier pass could not delete, which
+    never touches anything created since.
     """
     root = checked_home(home, user_home)
     device = root.lstat().st_dev
@@ -221,7 +240,7 @@ def erase_home(home: Path, user_home: Path, *, engine_caches: bool = False) -> d
     order = sorted(entries, key=lambda n: (_sidecar_owner(n, entries) is None, n))
     blocked: set[str] = set()
     for name in order:
-        if name in KEEP_ENTRIES:
+        if name in KEEP_ENTRIES or (only is not None and name not in only):
             continue
         owner = _sidecar_owner(name, entries)
         if owner is None and name in blocked:
@@ -243,6 +262,8 @@ def erase_home(home: Path, user_home: Path, *, engine_caches: bool = False) -> d
         engine_info = None
     if engine_info is not None and stat.S_ISDIR(engine_info.st_mode) and engine_info.st_dev == device:
         doomed = sorted(ENGINE_DELETE) + (list(ENGINE_CACHES) if engine_caches else [])
+        if only is not None:
+            doomed = [name for name in doomed if f"engine/{name}" in only]
         for name in doomed:
             target = engine / name
             try:
@@ -257,9 +278,9 @@ def erase_home(home: Path, user_home: Path, *, engine_caches: bool = False) -> d
             except OSError:
                 failed.append(f"engine/{name}")
     try:
-        config = _rewrite_config(root)
-        if config == "removed":
-            removed.append("config.yaml")
+        if only is None or "config.yaml" in only:
+            if _rewrite_config(root) == "removed":
+                removed.append("config.yaml")
     except Exception:  # noqa: BLE001 — reported, never fatal to the rest of the reset
         failed.append("config.yaml")
     kept = sorted(name for name in os.listdir(root) if name in KEEP_ENTRIES)
@@ -349,12 +370,23 @@ def _fsync_dir(folder: Path) -> None:
         os.close(fd)
 
 
-def write_marker(home: Path, phase: str, problems: list[str]) -> None:
-    """Atomically write MARKER (fsynced, and its folder too). ``phase`` is
-    "started" until the service's part is done, then "erased". ``problems`` are
-    short sentences for the person, never personal data."""
-    body = json.dumps({"version": 1, "phase": phase, "problems": problems[:20],
-                       "at": int(time.time())}).encode()
+def _log(message: str) -> None:
+    """A short line for the backend's log: stderr only, never personal data."""
+    print(f"[reset] {message}", file=sys.stderr, flush=True)
+
+
+PHASES = ("started", "first-pass", "erased")
+
+
+def new_marker() -> dict:
+    """The marker the route writes before anything destructive."""
+    return {"version": 1, "id": secrets.token_hex(16), "phase": "started", "attempts": 0,
+            "full_pass": False, "pending": [], "engine_cache": False, "problems": [], "at": int(time.time())}
+
+
+def write_marker(home: Path, doc: dict) -> None:
+    """Atomically write MARKER (fsynced, and its folder too)."""
+    body = json.dumps({**doc, "problems": list(doc.get("problems", []))[:20]}, sort_keys=True).encode()
     temp = home / (MARKER + ".tmp")
     with contextlib.suppress(FileNotFoundError):
         temp.unlink()
@@ -368,25 +400,39 @@ def write_marker(home: Path, phase: str, problems: list[str]) -> None:
     _fsync_dir(home)
 
 
+class InvalidMarker(dict):
+    """A MARKER that is not one Wisp wrote: ignored (never acted on) and reported."""
+
+
 def read_marker(home: Path) -> dict | None:
-    """MARKER's contents; None when there is none. An unreadable or odd marker
-    still means a reset started: it reads as phase "started"."""
+    """MARKER's contents, None when there is none, or an InvalidMarker when it
+    is not a regular file this user owns or not valid marker JSON. An invalid
+    marker never counts as a reset."""
+    path = Path(home) / MARKER
     try:
-        fd = os.open(Path(home) / MARKER, os.O_RDONLY | os.O_NOFOLLOW)
+        info = path.lstat()
     except FileNotFoundError:
         return None
     except OSError:
-        return {"version": 1, "phase": "started", "problems": []}
-    with os.fdopen(fd, "rb") as source:
-        raw = source.read(65536)
+        return InvalidMarker(reason="unreadable")
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        return InvalidMarker(reason="not a regular file owned by this user")
     try:
-        doc = json.loads(raw)
-    except ValueError:
-        doc = None
-    if not isinstance(doc, dict) or doc.get("phase") not in ("started", "erased"):
-        return {"version": 1, "phase": "started", "problems": []}
-    problems = doc.get("problems")
-    doc["problems"] = [p for p in problems if isinstance(p, str)] if isinstance(problems, list) else []
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as source:
+            doc = json.loads(source.read(65536))
+    except (OSError, ValueError):
+        return InvalidMarker(reason="not valid JSON")
+    checks = isinstance(doc, dict) and doc.get("version") == 1 and doc.get("phase") in PHASES
+    if checks:
+        doc = {**new_marker(), **doc}
+        checks = (isinstance(doc["id"], str) and 0 < len(doc["id"]) <= 64 and doc["id"].isalnum()
+                  and type(doc["attempts"]) is int and doc["attempts"] >= 0
+                  and type(doc["full_pass"]) is bool and type(doc["engine_cache"]) is bool
+                  and isinstance(doc["pending"], list) and all(isinstance(n, str) for n in doc["pending"])
+                  and isinstance(doc["problems"], list) and all(isinstance(n, str) for n in doc["problems"]))
+    if not checks:
+        return InvalidMarker(reason="not a Wisp reset marker")
     return doc
 
 
@@ -407,6 +453,32 @@ def _engine_running(home: Path) -> bool:
     return True
 
 
+def _service_live(port: int = 8765) -> bool:
+    """Whether a Wisp service already answers on its port (an old backend still
+    stopping): the restart pass waits for the next start instead of racing it."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+def _google_still_connected(home: Path) -> bool:
+    """gmail.json still lists a signed-in account: its tokens were never revoked."""
+    try:
+        fd = os.open(home / "gmail.json", os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as source:
+            doc = json.loads(source.read(1 << 20))
+    except (OSError, ValueError):
+        return False
+    accounts = doc.get("accounts") if isinstance(doc, dict) else None
+    return isinstance(accounts, dict) and any(isinstance(v, dict) and v.get("refresh_token")
+                                              for v in accounts.values())
+
+
+GOOGLE_NOT_REVOKED = "Google access was not revoked; remove Wisp at myaccount.google.com/permissions."
+
+
 @contextlib.contextmanager
 def _exclusive(home: Path):
     """One erase of a home at a time, across processes (flock on the folder)."""
@@ -419,39 +491,78 @@ def _exclusive(home: Path):
 
 
 def resume_pending(home: Path | None = None, user_home: Path | None = None) -> dict | None:
-    """At service start, before any store opens: finish a committed reset.
+    """The restart pass: run by the backend the app launched, before any other
+    import (service/main.py), so no store is open.
 
-    Without MARKER this does nothing (one lstat). With it, erase the home again
-    (whatever the first pass missed, or everything when the reset was cut short),
-    the bundled engine's prompt cache too when the engine is stopped, and mark the
-    service's part done ("erased") only when nothing failed; otherwise MARKER stays
-    "started" and the next start tries again. Never raises: a start that can't
-    finish the reset still starts."""
+    Without MARKER, or with one at "erased", this does nothing. An invalid marker
+    is ignored and reported. With a live service on the port it waits for the
+    next start. Otherwise, the first time it erases the whole home (whatever the
+    route's pass missed or never reached, and the engine's prompt cache when the
+    engine is stopped); later starts retry only the names that pass could not
+    delete. It writes "erased" once nothing is left, or after MAX_ATTEMPTS
+    starts with the leftovers listed as problems. Never raises: the service
+    still starts. Returns the marker it wrote, or None."""
     if home is None:
         from service.paths import MOE_DIR
         home = MOE_DIR
-    home = Path(home)
+    home, user_home = Path(home), Path.home() if user_home is None else Path(user_home)
     try:
-        if not stat.S_ISREG((home / MARKER).lstat().st_mode):
+        marker = read_marker(home)
+        if marker is None or (not isinstance(marker, InvalidMarker) and marker["phase"] == "erased"):
             return None
-    except OSError:
-        return None
-    try:
-        root = checked_home(home, Path.home() if user_home is None else user_home)
-        marker = read_marker(root) or {"problems": []}
-        with _exclusive(root):
-            sweep = erase_home(root, Path.home() if user_home is None else user_home,
-                               engine_caches=not _engine_running(root))
-        problems = [p for p in marker["problems"] if not p.startswith("Couldn't delete: ")]
-        if sweep["failed"]:
-            problems.append("Couldn't delete: " + ", ".join(sweep["failed"]))
-        write_marker(root, "started" if sweep["failed"] else "erased", problems)
-        print(f"[reset] resumed: removed {len(sweep['removed'])} entries, "
-              f"{len(sweep['failed'])} failed", flush=True)
-        return sweep
+        if isinstance(marker, InvalidMarker):
+            _log(f"ignored a reset marker: {marker['reason']}")
+            return None
+        if _service_live():
+            _log("a Wisp service is still running; the reset finishes at the next start")
+            return None
+        root = checked_home(home, user_home)
     except Exception as exc:  # noqa: BLE001 — the service must still start
-        print(f"[reset] could not resume the reset: {type(exc).__name__}", flush=True)
+        _log(f"could not check the reset marker: {type(exc).__name__}")
         return None
+    with _exclusive(root):
+        marker = read_marker(root)
+        if marker is None or isinstance(marker, InvalidMarker) or marker["phase"] == "erased":
+            return None
+        doc = dict(marker)
+        doc["attempts"] += 1
+        problems = [p for p in doc["problems"] if not p.startswith("Couldn't delete: ")]
+        try:
+            if _google_still_connected(root) and GOOGLE_NOT_REVOKED not in problems:
+                problems.append(GOOGLE_NOT_REVOKED)
+            engine_stopped = not _engine_running(root)
+            if doc["full_pass"]:
+                only = set(doc["pending"])
+                if not doc["engine_cache"]:
+                    only |= {f"engine/{name}" for name in ENGINE_CACHES}
+                sweep = erase_home(root, user_home, engine_caches=engine_stopped, only=only)
+            else:
+                sweep = erase_home(root, user_home, engine_caches=engine_stopped)
+            doc["full_pass"] = True
+            doc["pending"] = sweep["failed"]
+            doc["engine_cache"] = doc["engine_cache"] or (
+                engine_stopped and not any(n.startswith("engine/base/") for n in sweep["failed"]))
+            _log(f"restart pass {doc['attempts']}: removed {len(sweep['removed'])}, "
+                 f"{len(sweep['failed'])} left")
+        except Exception as exc:  # noqa: BLE001 — counted; it can't loop past MAX_ATTEMPTS
+            _log(f"restart pass {doc['attempts']} failed: {type(exc).__name__}")
+        finished = doc["full_pass"] and not doc["pending"] and doc["engine_cache"]
+        if finished or doc["attempts"] >= MAX_ATTEMPTS:
+            if not doc["full_pass"]:
+                problems.append("Wisp couldn't finish deleting its data.")
+            if doc["pending"]:
+                problems.append("Couldn't delete: " + ", ".join(doc["pending"]))
+            if doc["full_pass"] and not doc["engine_cache"]:
+                problems.append("The engine's prompt cache was kept because the engine was still running.")
+            doc["phase"] = "erased"
+        else:
+            doc["phase"] = "first-pass" if doc["full_pass"] else "started"
+        doc["problems"] = problems
+        try:
+            write_marker(root, doc)
+        except OSError as exc:
+            _log(f"could not record the restart pass: {type(exc).__name__}")
+        return doc
 
 
 # --------------------------------------------------------------------------
@@ -598,8 +709,9 @@ async def reset_wisp(request: Request) -> dict[str, Any]:
             raise HTTPException(409, "A reset is already running.")
         state.running = True
     # Nothing destructive before the marker is on disk; after it, the reset is committed.
+    marker = new_marker()
     try:
-        write_marker(home, "started", [])
+        write_marker(home, marker)
     except OSError:
         with state.lock:
             state.running = False
@@ -619,22 +731,24 @@ async def reset_wisp(request: Request) -> dict[str, Any]:
             problems.append({"part": "files", "detail": f"{done}, but its files were not deleted "
                                                         f"({type(exc).__name__}). Quit and reopen Wisp to finish."})
             with contextlib.suppress(OSError):
-                write_marker(home, "started", [p["detail"] for p in problems])
-            print(f"[reset] erase failed: {type(exc).__name__}", flush=True)
+                # Still "started": the restart pass erases the whole home.
+                write_marker(home, {**marker, "problems": [p["detail"] for p in problems if p["part"] != "files"]})
+            _log(f"erase failed: {type(exc).__name__}")
             return _reply(erased=False, accounts=accounts, problems=problems,
                           detail=problems[-1]["detail"])
         if sweep["failed"]:
             problems.append({"part": "files", "detail": "Couldn't delete: " + ", ".join(sweep["failed"])})
-        texts = [p["detail"] for p in problems]
         with contextlib.suppress(OSError):
-            # Still "started" when files remain: the next start erases them.
-            write_marker(home, "started" if sweep["failed"] else "erased", texts)
+            # Never "erased" here: only the restart pass, with this service and the
+            # engine stopped, may say that (resume_pending).
+            write_marker(home, {**marker, "phase": "first-pass",
+                                "problems": [p["detail"] for p in problems if p["part"] != "files"]})
         state.erased = not sweep["failed"]
     finally:
         with state.lock:
             state.running = False
     # Console record only: counts and Wisp's own file names, never personal data.
-    print(f"[reset] removed {len(sweep['removed'])} entries, kept {len(sweep['kept'])}, "
-          f"google accounts {accounts}, problems {[p['part'] for p in problems]}", flush=True)
+    _log(f"removed {len(sweep['removed'])} entries, kept {len(sweep['kept'])}, "
+         f"google accounts {accounts}, problems {[p['part'] for p in problems]}")
     return _reply(erased=state.erased, accounts=accounts, problems=problems,
                   removed=len(sweep["removed"]), kept=sweep["kept"])

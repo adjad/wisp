@@ -22,6 +22,8 @@ from fastapi.testclient import TestClient
 
 from service import wisp_reset as R
 
+REAL_ERASE = R.erase_home
+
 # Every kind of state Wisp keeps in its home, as top-level names.
 DELETED = {
     # caches: mail, messages, notes, calendar/reminders sync, contacts, brief
@@ -72,6 +74,19 @@ CONFIG = {
 def _write(path: Path, text: str = "x") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
+
+
+@pytest.fixture(autouse=True)
+def no_live_service(monkeypatch):
+    """Never probe the real service port from a test: no service is running."""
+    monkeypatch.setattr(R, "_service_live", lambda port=8765: False)
+
+
+def _marker(home, **fields):
+    """Write a marker the way the route does, with any fields changed."""
+    doc = {**R.new_marker(), **fields}
+    R.write_marker(home, doc)
+    return doc
 
 
 @pytest.fixture
@@ -143,8 +158,8 @@ def test_config_keeps_only_the_engine_and_model_choice(world):
 
 
 def test_the_keep_list_is_explicit():
-    assert R.KEEP_ENTRIES == frozenset(KEPT | {R.MARKER})
-    assert R.MARKER == ".reset-pending"
+    assert R.KEEP_ENTRIES == frozenset(KEPT | {R.MARKER, R.APP_DONE})
+    assert R.MARKER == ".reset-pending" and R.APP_DONE == ".reset-pending.app" and R.MAX_ATTEMPTS == 3
     assert R.ENGINE_DELETE == frozenset({"engine.log"})
     assert R.ENGINE_CACHES == ("base/cache", "base/logs")
     assert R.trimmed_config(None) == {} and R.trimmed_config(["x"]) == {}
@@ -346,9 +361,10 @@ def test_the_app_flow_seals_commits_stops_disconnects_then_erases(world, monkeyp
     assert data["google_accounts"] == 2 and [p["part"] for p in data["problems"]] == ["google_revoke"]
     assert set(data["kept"]) == KEPT | {R.MARKER}
     assert {p.name for p in world["home"].iterdir()} == KEPT | {R.MARKER}
-    # The service's part is done; the relaunched app removes the marker last.
-    assert R.read_marker(world["home"]) | {"at": 0} == {
-        "version": 1, "phase": "erased", "at": 0, "problems": ["Couldn't reach Google to revoke 1 sign-in."]}
+    # The route never says "erased": only the restart pass may (F1).
+    marker = R.read_marker(world["home"])
+    assert marker["phase"] == "first-pass" and marker["full_pass"] is False and marker["attempts"] == 0
+    assert marker["problems"] == ["Couldn't reach Google to revoke 1 sign-in."]
     assert R.state.erased and not R.state.running
     # Sealed: "are you up" and the engine stop get through; everything else hears
     # the distinct "Wisp was reset.", and so does a second reset.
@@ -387,7 +403,7 @@ def test_a_failed_erase_is_reported_and_never_claimed_finished(world, monkeypatc
 def test_the_marker_is_written_before_anything_destructive_and_a_failure_to_write_refuses(world, monkeypatch):
     app, order = _flow(world, monkeypatch)
 
-    def no_disk(home, phase, problems):
+    def no_disk(home, doc):
         raise OSError("read-only")
 
     monkeypatch.setattr(R, "write_marker", no_disk)
@@ -433,29 +449,124 @@ def test_background_that_will_not_stop_is_reported(monkeypatch):
 # An interrupted reset is finished by the next service start
 # --------------------------------------------------------------------------
 
-def test_the_next_start_finishes_a_committed_reset(world):
+def test_the_route_then_the_restart_pass_reach_erased_only_after_resume(world, monkeypatch):
+    """F1: the route ends at "first-pass"; the app waits; only the restart pass,
+    with the old service gone and the engine stopped, writes "erased"."""
+    app, order = _flow(world, monkeypatch)
+    assert _post(app, {"confirm": R.CONFIRM_PHRASE}).json()["committed"] is True
     home, user = world["home"], world["user"]
-    R.write_marker(home, "started", ["Couldn't reach Google to revoke 1 sign-in."])
-    result = R.resume_pending(home, user)
-    assert result is not None and result["failed"] == []
+    assert R.read_marker(home)["phase"] == "first-pass"
+    monkeypatch.setattr(R, "erase_home", REAL_ERASE)     # the next start is a fresh process
+    # A late writer after the route's pass (the old service's shutdown) and the
+    # engine's cache, which the running engine kept, are both still there.
+    _write(home / "sessions.db", "written while the old service stopped")
+    assert (home / "engine" / "base" / "cache" / "kv-0001.safetensors").exists()
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "erased" and doc["attempts"] == 1 and doc["full_pass"] and doc["engine_cache"]
     assert {p.name for p in home.iterdir()} == KEPT | {R.MARKER}
+    assert not (home / "engine" / "base" / "cache").exists() and not (home / "engine" / "base" / "logs").exists()
     assert (home / MODEL).read_text() == "weights"
-    # The engine is stopped, so its prompt cache and logs go too.
-    assert not (home / "engine" / "base" / "cache").exists()
-    assert not (home / "engine" / "base" / "logs").exists()
-    assert (home / "engine" / "base" / "settings.json").exists()
-    marker = R.read_marker(home)
-    assert marker["phase"] == "erased" and marker["problems"] == ["Couldn't reach Google to revoke 1 sign-in."]
+    assert doc["problems"] == ["Couldn't reach Google to revoke 1 sign-in."]
+    # Done: later starts leave everything alone.
+    _write(home / "sessions.db", "a new chat after the reset")
+    assert R.resume_pending(home, user) is None
+    assert (home / "sessions.db").read_text() == "a new chat after the reset"
+
+
+def test_the_next_start_finishes_a_reset_cut_short(world):
+    home, user = world["home"], world["user"]
+    _marker(home, problems=["Couldn't reach Google to revoke 1 sign-in."])     # still "started"
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "erased"
+    assert {p.name for p in home.iterdir()} == KEPT | {R.MARKER}
     assert (world["outside"] / "precious.txt").read_text() == "not Wisp's"
 
 
 def test_a_running_engine_keeps_its_cache_until_it_stops(world):
     home, user = world["home"], world["user"]
     (home / "engine" / "engine.pid").write_text(str(os.getpid()))
-    R.write_marker(home, "started", [])
-    R.resume_pending(home, user)
+    _marker(home, phase="first-pass")
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "first-pass" and doc["full_pass"] and not doc["engine_cache"]
     assert (home / "engine" / "base" / "cache" / "kv-0001.safetensors").exists()
     assert not (home / "assistant.db").exists()
+    (home / "engine" / "engine.pid").unlink()
+    _write(home / "assistant.db", "a chat after the restart pass")
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "erased" and doc["engine_cache"] and doc["attempts"] == 2
+    assert not (home / "engine" / "base" / "cache").exists()
+    # Only the cache was retried: data created after the restart pass survives.
+    assert (home / "assistant.db").read_text() == "a chat after the restart pass"
+
+
+def test_a_stuck_entry_ends_after_three_attempts_and_spares_new_data(world, monkeypatch):
+    """F2: retries cover only what the restart pass couldn't delete, at most
+    MAX_ATTEMPTS starts, and then the reset is declared done with leftovers."""
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+    real_remove = R._remove
+    tried = []
+
+    def remove(path, device=None):
+        if path.name == "diagnostics":
+            tried.append(path.name)
+            raise PermissionError("a 0500 folder")
+        real_remove(path, device)
+
+    monkeypatch.setattr(R, "_remove", remove)
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "first-pass" and doc["pending"] == ["diagnostics"] and doc["attempts"] == 1
+    # The person starts using Wisp again: new chats and a new Google sign-in.
+    _write(home / "sessions.db", "new chat")
+    _write(home / "gmail.json", json.dumps({"accounts": {"me@example.com": {"refresh_token": "new"}}}))
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "first-pass" and doc["attempts"] == 2
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "erased" and doc["attempts"] == 3
+    assert doc["problems"][-1] == "Couldn't delete: diagnostics"
+    assert tried == ["diagnostics"] * 3
+    assert (home / "sessions.db").read_text() == "new chat"
+    assert json.loads((home / "gmail.json").read_text())["accounts"]
+    # And it stays done: a fourth start does nothing.
+    assert R.resume_pending(home, user) is None and tried == ["diagnostics"] * 3
+
+
+def test_a_restart_pass_that_keeps_failing_still_ends(world, monkeypatch):
+    home, user = world["home"], world["user"]
+    _marker(home)
+
+    def broken(*a, **k):
+        raise OSError("disk said no")
+
+    monkeypatch.setattr(R, "erase_home", broken)
+    phases = [R.resume_pending(home, user)["phase"] for _ in range(3)]
+    assert phases == ["started", "started", "erased"]
+    assert "Wisp couldn't finish deleting its data." in R.read_marker(home)["problems"]
+    assert R.resume_pending(home, user) is None
+
+
+def test_unrevoked_google_access_is_reported(world):
+    home, user = world["home"], world["user"]
+    (home / "gmail.json").write_text(json.dumps({"client_id": "x", "accounts": {"me@example.com": {
+        "refresh_token": "still here"}}}))
+    _marker(home)
+    doc = R.resume_pending(home, user)
+    assert R.GOOGLE_NOT_REVOKED in doc["problems"] and not (home / "gmail.json").exists()
+
+
+def test_signed_out_google_is_not_reported(world):
+    home, user = world["home"], world["user"]
+    (home / "gmail.json").write_text(json.dumps({"client_id": "own client", "accounts": {}}))
+    _marker(home, phase="first-pass")
+    assert R.GOOGLE_NOT_REVOKED not in R.resume_pending(home, user)["problems"]
+
+
+def test_a_live_service_postpones_the_restart_pass(world, monkeypatch):
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+    monkeypatch.setattr(R, "_service_live", lambda port=8765: True)
+    assert R.resume_pending(home, user) is None
+    assert R.read_marker(home)["attempts"] == 0 and (home / "sessions.db").exists()
 
 
 def test_without_a_marker_the_start_touches_nothing(world):
@@ -464,61 +575,77 @@ def test_without_a_marker_the_start_touches_nothing(world):
     assert sorted(p.name for p in world["home"].iterdir()) == before
 
 
-def test_a_resume_that_fails_stays_pending(world, monkeypatch):
-    home, user = world["home"], world["user"]
-    R.write_marker(home, "started", [])
-    real_remove = R._remove
-
-    def remove(path, device=None):
-        if path.name == "sessions.db":
-            raise PermissionError("held")
-        real_remove(path, device)
-
-    monkeypatch.setattr(R, "_remove", remove)
-    R.resume_pending(home, user)
-    marker = R.read_marker(home)
-    assert marker["phase"] == "started" and marker["problems"] == ["Couldn't delete: sessions.db"]
-    monkeypatch.setattr(R, "_remove", real_remove)
-    R.resume_pending(home, user)
-    assert R.read_marker(home)["phase"] == "erased"
-    assert R.read_marker(home)["problems"] == []
-
-
 def test_a_marker_outside_wisps_home_never_erases(tmp_path, world):
     sandbox = tmp_path / "sandbox"
     _write(sandbox / "assistant.db")
-    R.write_marker(sandbox, "started", [])
+    _marker(sandbox)
     assert R.resume_pending(sandbox, world["user"]) is None
     assert (sandbox / "assistant.db").exists()
 
 
-def test_importing_the_service_finishes_the_reset_before_any_store_opens(world):
-    """The hook in service/__init__.py runs on the first import of anything in the
-    service, in a fresh interpreter, before any store module is imported."""
+@pytest.mark.parametrize("content", ["", "not json", json.dumps({"phase": "started"}),
+                                     json.dumps({"version": 2, "phase": "started", "id": "a"}),
+                                     json.dumps({"version": 1, "phase": "done", "id": "a"}),
+                                     json.dumps({"version": 1, "phase": "started", "id": "../x"}),
+                                     json.dumps({"version": 1, "phase": "started", "id": "a", "attempts": "1"})])
+def test_junk_markers_are_ignored(world, content):
+    """N2: junk or empty content is ignored and reported, never treated as a reset."""
     home, user = world["home"], world["user"]
-    R.write_marker(home, "started", [])
-    root = Path(__file__).resolve().parents[1]
-    probe = ("import sys, service; "
-             "print(sorted(m for m in sys.modules if m.startswith('service.assistant') or m == 'service.memory'))")
-    env = {"HOME": str(user), "WISP_HOME": str(home), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
-    done = subprocess.run([sys.executable, "-c", probe], cwd=root, env=env, capture_output=True, text=True,
-                          timeout=120)
-    assert done.returncode == 0, done.stderr
-    assert done.stdout.strip().splitlines()[-1] == "[]", "no store module was imported first"
-    assert {p.name for p in home.iterdir()} == KEPT | {R.MARKER}
-    assert R.read_marker(home)["phase"] == "erased"
+    (home / R.MARKER).write_text(content)
+    assert isinstance(R.read_marker(home), R.InvalidMarker)
+    before = sorted(p.name for p in home.iterdir())
+    assert R.resume_pending(home, user) is None
+    assert sorted(p.name for p in home.iterdir()) == before
 
 
-def test_odd_markers_read_as_unfinished(world):
-    home = world["home"]
-    (home / R.MARKER).write_text("not json")
-    assert R.read_marker(home)["phase"] == "started"
-    (home / R.MARKER).write_text(json.dumps({"phase": "done"}))
-    assert R.read_marker(home)["phase"] == "started"
+def test_a_marker_someone_else_owns_or_a_link_is_ignored(world, monkeypatch):
+    home, user = world["home"], world["user"]
+    _marker(home)
+    real_uid = os.getuid()
+    monkeypatch.setattr(R.os, "getuid", lambda: real_uid + 1)
+    assert R.read_marker(home)["reason"] == "not a regular file owned by this user"
+    assert R.resume_pending(home, user) is None and (home / "sessions.db").exists()
+    monkeypatch.undo()
+    monkeypatch.setattr(R, "_service_live", lambda port=8765: False)
     (home / R.MARKER).unlink()
     (home / R.MARKER).symlink_to(world["outside"] / "precious.txt")
-    assert R.read_marker(home)["phase"] == "started"
+    assert isinstance(R.read_marker(home), R.InvalidMarker)
+    assert R.resume_pending(home, user) is None and (home / "sessions.db").exists()
     assert (world["outside"] / "precious.txt").read_text() == "not Wisp's"
+
+
+def test_importing_the_service_with_a_marker_does_nothing(world):
+    """N1: only the backend the app launched runs the restart pass; importing the
+    service (a script, a tool, a test) with the real HOME never erases."""
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+    root = Path(__file__).resolve().parents[1]
+    env = {"HOME": str(user), "WISP_HOME": str(home), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
+    done = subprocess.run([sys.executable, "-c", "import service, service.paths, service.wisp_reset"],
+                          cwd=root, env=env, capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr
+    assert (home / "sessions.db").exists() and R.read_marker(home)["phase"] == "first-pass"
+    assert (root / "service" / "__init__.py").read_text() == ""
+
+
+def test_the_restart_pass_runs_first_in_main_and_only_for_the_launched_backend():
+    """service/main.py calls resume_pending before any other import, guarded by
+    the app's launch nonce."""
+    source = (Path(__file__).resolve().parents[1] / "service" / "main.py").read_text()
+    body = source.split('"""', 2)[2]
+    first = [line for line in body.splitlines() if line.strip() and not line.lstrip().startswith("#")][:5]
+    assert first == ["from __future__ import annotations",
+                     "import os as _reset_os",
+                     'if _reset_os.environ.get("WISP_LAUNCH_NONCE"):',
+                     "    from service.wisp_reset import resume_pending as _resume_pending",
+                     "    _resume_pending()"]
+
+
+def test_reset_logs_go_to_stderr_only(world, capsys):
+    _marker(world["home"])
+    R.resume_pending(world["home"], world["user"])
+    out = capsys.readouterr()
+    assert out.out == "" and "[reset] restart pass 1" in out.err
 
 
 def test_a_refused_home_deletes_nothing(world, monkeypatch, tmp_path):

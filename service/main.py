@@ -14,6 +14,14 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 """
 from __future__ import annotations
 
+# /resetwisp's restart pass, before any other import opens a store or database.
+# Only in the backend the app launched (it passes WISP_LAUNCH_NONCE): a script or
+# tool importing the service with the real HOME never erases anything.
+import os as _reset_os
+if _reset_os.environ.get("WISP_LAUNCH_NONCE"):
+    from service.wisp_reset import resume_pending as _resume_pending
+    _resume_pending()
+
 from service.assistant.verified_reminders import expected_date_fields
 
 import asyncio
