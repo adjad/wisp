@@ -586,6 +586,41 @@ async def test_reply_stands_down_for_remote_only_and_a_busy_model(monkeypatch, q
     assert await runner._reply([{"role": "user", "content": "x"}]) is None
 
 
+@pytest.mark.parametrize("where", ["validate", "judge"])
+async def test_an_email_whose_dates_cannot_be_resolved_is_retired(ticking, monkeypatch, where):
+    """A model date phrase like "Pick up at 28" made the resolver raise ValueError,
+    which escaped tick() and left the email pending forever. Now it fails like any
+    other email: retried once, then retired, and the queue moves on."""
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5, mid="<lease-1@harbor.example>", ts=2.0), _row(6, ts=1.0)], extract.tier, now=1)
+
+    async def body(rowid):
+        return RAW, ""
+
+    async def reply(msgs):
+        return '{"items": [{"what": "Pick up", "date_phrase": "at 28", "evidence": "Pick up at 28", "suspicious": false}]}'
+
+    def boom(*a, **k):
+        raise ValueError("hour must be in 0..23")
+
+    monkeypatch.setattr(runner, "read_body", body)
+    monkeypatch.setattr(runner, "_reply", reply)
+    monkeypatch.setattr(extract if where == "validate" else runner.importance,
+                        "validate" if where == "validate" else "judge", boom)
+    if where == "judge":
+        monkeypatch.setattr(extract, "validate", lambda items, email, **k: ([dict(items[0])], {}))
+    key = st.message("<lease-1@harbor.example>")["key"]
+    now = NOW + 1
+    for _ in range(store_mod.MAX_ATTEMPTS):
+        assert await runner.tick(now=now) == runner.BETWEEN_GAP_S
+        now += store_mod.RETRY_S + 1
+    row = st.message("<lease-1@harbor.example>")
+    assert row["key"] == key and row["state"] == "failed" and row["note"] == "validate:ValueError"
+    nxt = st.next_pending(now)
+    assert nxt is not None and nxt["key"] == st.message("<m6@x>")["key"]   # the queue moves on
+
+
 async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypatch, quiet):
     st = ticking
     st.set_meta("last_index", str(NOW))

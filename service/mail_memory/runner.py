@@ -396,11 +396,17 @@ async def tick(*, now: float | None = None) -> float:
     if items is None:
         st.fail(row["key"], "bad_json", now)
         return gap
-    kept, dropped = extract.validate(items, email, tz=tz, today=today)
-    why: dict[str, int] = {}
-    for it in kept:
-        it["important"], it["why"] = importance.judge(it, row)
-        why[it["why"]] = why.get(it["why"], 0) + 1
+    try:
+        kept, dropped = extract.validate(items, email, tz=tz, today=today)
+        why: dict[str, int] = {}
+        for it in kept:
+            it["important"], it["why"] = importance.judge(it, row)
+            why[it["why"]] = why.get(it["why"], 0) + 1
+    except Exception as exc:  # noqa: BLE001 — e.g. a date phrase the resolver can't take
+        # This email's problem only: retire it like any other failure, so it can't
+        # hold the queue (it used to escape tick() and be retried forever).
+        st.fail(row["key"], f"validate:{type(exc).__name__}", now)
+        return gap
     added = st.add_items(row["key"], kept, extract.EXTRACTOR, now)
     st.finish(row["key"], "done", f"model={len(items)} kept={len(kept)} added={added}", email.message_id)
     st.set_meta("last_tick", str(now))
