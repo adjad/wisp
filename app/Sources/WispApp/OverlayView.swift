@@ -224,6 +224,7 @@ struct OverlayView: View {
     // The Ask field (Research's prompt on that tab), its command list and the rule under it.
     @ViewBuilder private var promptArea: some View {
         inputRow.padding(.top, 10)
+        VoiceStatusLine(voice: model.voice)
         if !model.commandSuggestions.isEmpty {
             commandList.padding(.top, 8)
         }
@@ -276,6 +277,10 @@ struct OverlayView: View {
         HStack(spacing: 6) {
             if model.tab == .ask && (!model.turns.isEmpty || model.showingCorpus) {
                 ctrl("square.and.pencil", "New chat (⌘N)", { model.newChat() })
+            }
+            // Brief and Day: ask about your day out loud; it opens Ask and listens.
+            if model.tab != .ask && model.tab != .research {
+                ctrl("mic", "Ask about your day by voice (⌥⇧Space)", { model.toggleVoice() })
             }
             ctrl("gearshape", model.showingQuickSettings ? "Close quick settings" : "Quick settings",
                  active: model.showingQuickSettings, { model.showingQuickSettings.toggle() })
@@ -427,7 +432,8 @@ struct OverlayView: View {
 
     private var inputRow: some View {
         HStack(spacing: 10) {
-            TextField(model.researchMode ? "What would you like to research?" : "Ask anything…",
+            TextField(model.voice.isActive ? model.voice.placeholder
+                      : model.researchMode ? "What would you like to research?" : "Ask anything…",
                       text: $model.input, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 19))
@@ -463,6 +469,9 @@ struct OverlayView: View {
                 }
                 .buttonStyle(.plain).help("Attach an image (Debug Mode: Wisp can't look at images yet)")
                 .accessibilityLabel("Attach an image")
+            }
+            if !model.researchMode {
+                VoiceMicButton(voice: model.voice, speaker: model.speaker, action: model.toggleVoice)
             }
             Button(action: { model.submit() }) {
                 Image(systemName: "arrow.up.circle.fill")

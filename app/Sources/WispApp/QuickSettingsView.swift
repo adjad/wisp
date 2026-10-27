@@ -21,6 +21,7 @@ struct QuickSettingsView: View {
     @State var picking: BriefSlot?
     /// Decides whether the Google row shows at all (new users only).
     @StateObject private var google = NotchGoogleModel()
+    @AppStorage(VoiceReplyMode.defaultsKey) private var voiceRepliesRaw = VoiceReplyMode.afterVoice.rawValue
 
     enum BriefSlot { case morning, evening }
 
@@ -53,6 +54,7 @@ struct QuickSettingsView: View {
                 // (NotchGoogleVisibility).
                 group("Google") { NotchConnectGoogle(model: google) }
             }
+            group("Voice & accessibility") { voiceRepliesRow }
             group("Advanced") {
                 row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
                     Text("Model, timing and tools under each reply")
@@ -89,6 +91,28 @@ struct QuickSettingsView: View {
     }
 
     // MARK: Rows
+
+    /// When Wisp says its answer out loud (VoiceReplyMode). Three chips, not a
+    /// menu: the panel is non-activating, so no popup.
+    private var voiceRepliesRow: some View {
+        row("Read answers aloud",
+            help: "Wisp speaks its answer with your Mac's voice (System Settings › Accessibility › Spoken Content). Ask by voice with the mic or ⌥⇧Space.") {
+            Text(voiceReplies == .afterVoice ? "When you ask by voice (⌥⇧Space)" : voiceReplies == .always ? "Every answer" : "Never")
+        } control: {
+            HStack(spacing: 6) {
+                ForEach([VoiceReplyMode.afterVoice, .always, .off], id: \.self) { mode in
+                    pillButton(mode == .afterVoice ? "Voice" : mode.title, primary: voiceReplies == mode) {
+                        voiceRepliesRaw = mode.rawValue
+                        if mode == .off { model.speaker.stop() }
+                    }
+                    .accessibilityLabel(mode.title)
+                    .accessibilityAddTraits(voiceReplies == mode ? [.isButton, .isSelected] : .isButton)
+                }
+            }
+        }
+    }
+
+    private var voiceReplies: VoiceReplyMode { VoiceReplyMode(rawValue: voiceRepliesRaw) ?? .afterVoice }
 
     private var fullAccessRow: some View {
         let line = QuickSettingsText.fullAccess(on: settings.fullAccess, pending: settings.fullAccessPending)

@@ -687,6 +687,30 @@ final class WispClient {
     }
 
     // GET /mode -> current safety mode flags.
+    enum TranscriptResult { case success(String), failure(String) }
+
+    /// POST /voice/transcribe: the words in a spoken WAV clip, heard by the Ask
+    /// model on this Mac. A failure carries the service's own plain sentence.
+    func transcribe(wav: Data) async -> TranscriptResult {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("voice/transcribe"))
+        req.httpMethod = "POST"
+        // A cold model load plus the wait for a busy model, with room to spare.
+        req.timeoutInterval = 60
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["audio": wav.base64EncodedString()])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse else {
+            return .failure("Wisp's service isn't answering. Try again in a moment.")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if http.statusCode == 200, let text = object?["text"] as? String {
+            return .success(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if http.statusCode == 404 { return .failure("This copy of Wisp's service can't take voice yet. Restart Wisp.") }
+        if let detail = object?["detail"] as? String, !detail.isEmpty { return .failure(detail) }
+        return .failure("Wisp couldn't make out that recording. Try again, or type your question.")
+    }
+
     /// The service's Full access flag (GET /mode), or nil when it can't be read.
     /// An unreadable flag is unknown, never "off": Wisp may still be acting
     /// without asking.
