@@ -100,7 +100,7 @@ the menu-bar icon (**Finish Setup...**):
 
 3. **Google** (optional). Gmail and Google Calendar in your Brief and Day, plus Drive and Docs in Ask.
 4. **About you** (optional). What to call you, your goals, and how you like replies.
-5. **A short tour.** Your first Brief is waiting when you finish.
+5. **A short tour.** Your first Brief starts when you finish.
 
 ### Run Wisp
 

@@ -445,6 +445,52 @@ def test_background_that_will_not_stop_is_reported(monkeypatch):
     assert any(p["part"] == "background" and "didn't stop in time" in p["detail"] for p in problems)
 
 
+def test_an_in_flight_gist_cannot_write_its_cache_back_after_the_erase(monkeypatch, tmp_path):
+    """The scheduler's children are stopped with it: a gist mid-call never saves."""
+    from types import SimpleNamespace
+    from service.assistant import behavior_runtime, mail_gists
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(mail_gists, "_PATH", cache / "mail_gists.json")
+    monkeypatch.setattr(mail_gists, "_cache", {})
+    monkeypatch.setattr(behavior_runtime, "stop_for_reset", lambda: None)
+
+    async def gist_call():
+        await asyncio.sleep(0.3)                 # the model is still answering
+        mail_gists._save()
+
+    async def go():
+        monkeypatch.setattr(mail_gists, "_task", asyncio.create_task(gist_call()))
+        await asyncio.sleep(0)
+        app = SimpleNamespace(state=SimpleNamespace(wisp_background_tasks=[], wisp_bridge_link=None))
+        problems = []
+        await R._stop_background(app, problems)
+        assert mail_gists._task.cancelled()
+        await asyncio.sleep(0.5)                 # longer than the call had left
+        return problems
+
+    loop = asyncio.new_event_loop()
+    try:
+        problems = loop.run_until_complete(go())
+    finally:
+        loop.close()
+    assert not any(p["part"] == "background" for p in problems)
+    assert not cache.exists()
+
+
+def test_the_reset_knows_every_scheduler_child():
+    """Every child whose schedule_tick the scheduler calls is stopped by the reset."""
+    import importlib
+    import re
+    source = (Path(R.__file__).parent / "assistant" / "scheduler.py").read_text()
+    called = set(re.findall(r"from (service\.[\w.]+) import schedule_tick", source))
+    called |= {f"{package}.{module}" for package, module in
+               re.findall(r"from (service[\w.]*) import (\w+)(?: as \w+)?\n\s+\w+\.schedule_tick\(\)", source)}
+    known = {name for name, _attr in R._CHILD_TASKS}
+    assert called and called <= known, called - known
+    for name, attr in R._CHILD_TASKS:
+        assert hasattr(importlib.import_module(name), attr), name
+
+
 # --------------------------------------------------------------------------
 # An interrupted reset is finished by the next service start
 # --------------------------------------------------------------------------
