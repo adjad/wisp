@@ -650,7 +650,7 @@ async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, re
     assert st.message("<m5@x>")["attempts"] == 0
 
 
-@pytest.mark.parametrize("busy_by", ["turn", "recent_use", "low_battery"])
+@pytest.mark.parametrize("busy_by", ["turn", "recent_use"])
 async def test_a_busy_model_never_holds_up_the_index(ticking, monkeypatch, quiet, busy_by):
     """2026-10-27: Brief and proactive work kept the model in use all morning, and the
     index waited with it, so nothing queued. The index now goes first; email waits."""
@@ -659,8 +659,6 @@ async def test_a_busy_model_never_holds_up_the_index(ticking, monkeypatch, quiet
         monkeypatch.setattr(quiet, "foreground_busy", lambda: True)
     elif busy_by == "recent_use":
         monkeypatch.setattr(quiet, "last_used", lambda key: time.monotonic())
-    else:
-        monkeypatch.setattr(runner, "_power", lambda: (False, 20, False))
     assert runner.level("m") == "busy"
 
     async def index(days):
@@ -676,6 +674,22 @@ async def test_a_busy_model_never_holds_up_the_index(ticking, monkeypatch, quiet
     assert st.stats()["queue"] == {"pending": 1} and st.meta("last_index")
     assert await runner.tick(now=NOW + 2) == runner.BUSY_GAP_S          # due no more: email waits
     assert st.message("<m5@x>")["attempts"] == 0
+
+
+@pytest.mark.parametrize("power", [(False, 20, False), (True, None, True)])
+async def test_low_power_skips_even_the_index(ticking, monkeypatch, power):
+    """Low Power Mode or battery under 30%: nothing runs, the index (and its Gmail
+    tab lookup) included."""
+    monkeypatch.setattr(runner, "_power", lambda: power)
+
+    async def never(*a):
+        raise AssertionError("ran while saving power")
+
+    monkeypatch.setattr(runner, "read_index", never)
+    monkeypatch.setattr(runner, "_gmail_excluded", never)
+    monkeypatch.setattr(runner, "read_body", never)
+    assert await runner.tick(now=NOW + 1) == runner.BUSY_GAP_S
+    assert not ticking.meta("last_index")
 
 
 async def test_stand_down_says_why(monkeypatch, quiet):

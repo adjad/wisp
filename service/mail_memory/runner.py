@@ -8,7 +8,8 @@ index and files costs nothing. Three levels (docs/plans/2026-10-26-email-digest-
            resident, or the Mac is in Low Power Mode / on battery under 30%.
            No email is read and no model call runs. Mail's index is still read
            when it's due (it costs no model time), so the queue fills, and a
-           missing permission shows, as soon as Wisp starts.
+           missing permission shows, as soon as Wisp starts; only Low Power Mode
+           or battery under 30% skips that too.
 - between: otherwise. One call per tick, at least 90 s apart.
 - away:    no keyboard or mouse for 10+ minutes, on power or battery over 50%.
            Calls run back to back, 5 s apart.
@@ -321,8 +322,10 @@ async def tick(*, now: float | None = None) -> float:
     # The index first: it costs no model time, so a busy or absent model never holds
     # it up (2026-10-27: a morning of use with Brief and proactive work kept the old
     # order from reading even the index, so nothing queued and nothing failed).
+    on_ac, pct, low = power
+    saving = low or (not on_ac and pct is not None and pct < 30)
     last_index = float(st.meta("last_index") or 0)
-    if now - last_index >= INDEX_EVERY_S:
+    if not saving and now - last_index >= INDEX_EVERY_S:
         rows, capped = await read_index(WINDOW_DAYS)
         excluded = await _gmail_excluded()
         merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
