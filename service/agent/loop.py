@@ -173,6 +173,12 @@ SYSTEM = (
     "NOT fall back to a number from memory. A confidently wrong live price/score "
     "is worse than 'I couldn't reach it right now.' Only state a live figure you "
     "actually got back from web_search/web_fetch this turn.\n"
+    "  That rule is for LIVE data only (weather, prices, scores, news, a "
+    "specific webpage). Stable general knowledge — science, history, "
+    "definitions, how things work, e.g. 'what makes the sky blue' — is answered "
+    "from your own knowledge, without web_search; and if web_search is "
+    "unavailable or fails for such a question, you still answer it from what you "
+    "know.\n"
     "- To write, fix, or refactor code, write it yourself and save it with "
     "`write_file` — do not just describe the code in your reply and stop there.\n"
     "- For anything about the user's calendar, schedule, deadlines, assignments, "
@@ -521,18 +527,24 @@ SYSTEM = (
     # word) and a "read their calendar first for open-ended personal
     # questions" rule (V3 then searched each item again instead of answering,
     # 0/6). That behaviour is taught by the V4 dataset instead.
-    "- YOUR VOICE: be energetic, upbeat and genuinely engaged — sound like a "
-    "lively, curious friend who is excited to help, not a voice assistant "
-    "reading out a result. Even a quick hello or small talk gets real warmth "
-    "and a spark of enthusiasm, never a flat one-liner.\n"
-    "- Give full, vivid answers: concrete specifics, examples and a bit of "
-    "personality. Do NOT trim an answer down just to keep it short — say what "
-    "is worth saying.\n"
-    "- Use markdown where it helps: **bold** the key details, bullet lists for "
-    "several items, and an emoji or two where it adds warmth (not on every "
-    "line).\n"
-    "- Energy never replaces accuracy: every rule above still applies, and you "
-    "never invent facts, results or actions to make an answer livelier."
+    # The voice itself changed from energetic to gentle on 2026-10-26 at the
+    # user's request; the placement above is unchanged.
+    "- YOUR VOICE: be gentle, calm and kind — sound like a thoughtful friend "
+    "who is glad to help, not a voice assistant reading out a result. Even a "
+    "quick hello or small talk gets a warm, unhurried reply, never a flat "
+    "one-liner. Lead with what is going well or already handled before what "
+    "isn't; never scold.\n"
+    "- Give full answers: concrete specifics and examples. Do NOT trim an "
+    "answer down just to keep it short — say what is worth saying.\n"
+    "- Keep every answer organized and easy to scan: open with the direct "
+    "answer in a sentence or two, then the detail. Use short paragraphs, never "
+    "a wall of text; a bullet or numbered list for several items or steps (one "
+    "idea per bullet); **bold** for the key facts; and a short heading only "
+    "when the answer has clearly separate parts.\n"
+    "- Use emoji sparingly — at most one, only where it truly fits; none is "
+    "fine. Don't stack exclamation marks.\n"
+    "- Gentleness never replaces accuracy: every rule above still applies, and "
+    "you never invent facts, results or actions."
 )
 
 
@@ -648,6 +660,8 @@ _EMPTY_MESSAGE = (
 # Model-only Ask fallbacks (see run_agent's ask_quality). The guard message is
 # the second prefill-guard refusal of one turn with nothing gathered yet.
 _ASK_WEB_TOOLS = frozenset({"web_search", "web_fetch", "wikipedia_summary"})
+# Web lookups whose not-offered rejection must leave general knowledge answerable.
+_WEB_LOOKUP_TOOLS = frozenset({"web_search", "web_fetch", "http_request", "wikipedia_summary"})
 # A direct writing answer that dodged: a refusal, or only a question back.
 _ASK_WRITE_DODGE = re.compile(
     r"^\s*(?:sorry|i\s+(?:can(?:'|’)?t|cannot|am unable|'m unable|’m unable|don(?:'|’)t have))\b"
@@ -4307,9 +4321,22 @@ async def run_agent(
                     audit("reject_premature", tool=name, args=args)
                     failed_tools.add(name)
                 else:
-                    result = (f"({name} is not available for this request — do NOT say you "
-                              "performed this action. Tell the user this specific action "
-                              "isn't available right now.)")
+                    if name in _WEB_LOOKUP_TOOLS:
+                        # A web lookup the route did not offer is no reason to
+                        # refuse a question the model can answer itself: told
+                        # only "isn't available", it applied the live-data rule
+                        # to "what makes the sky blue" and declined.
+                        result = (f"({name} is not available for this request. If the "
+                                  "question is stable general knowledge — science, history, "
+                                  "definitions, how things work — answer it now from your own "
+                                  "knowledge; that is correct and expected. Only if it needs "
+                                  "live data (weather, prices, scores, news, a specific "
+                                  "webpage) tell the user you can't look that up right now. "
+                                  "Do NOT say you searched.)")
+                    else:
+                        result = (f"({name} is not available for this request — do NOT say you "
+                                  "performed this action. Tell the user this specific action "
+                                  "isn't available right now.)")
                     audit("reject_unoffered", tool=name, args=args)
                     # Keep thinking for the rest of the turn: the model reached
                     # for something it wasn't given and now has to find another

@@ -181,7 +181,14 @@ def test_setup_resumes_at_its_step_after_a_quit():
     app = _sources()["AppDelegate.swift"]
     setup = _sources()["FirstRunSetupView.swift"]
     # Every step change is saved, and the window opens at the saved step.
-    assert "stepChanged: { step in UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey) }" in app
+    assert "stepChanged: { [weak self] step in" in app
+    assert "UserDefaults.standard.set(step.rawValue, forKey: FirstRunSetup.stepKey)" in app
+    # The last step lets the service compose the first Brief, only while setup is unfinished.
+    hook = app[app.index("stepChanged: { [weak self] step in"):]
+    hook = hook[:hook.index("askKeyRegistered:")]
+    assert "if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {" in hook
+    assert "client.onboardingBriefReady()" in hook
+    assert hook.index("FirstRunSetup.stepKey") < hook.index("onboardingBriefReady")
     assert "initialStep: OnboardingStep.restored(defaults.object(forKey: FirstRunSetup.stepKey) as? Int)" in app
     on_step = setup[setup.index(".onChange(of: step)"):]
     assert "stepChanged(next)" in _body(on_step, ".onChange(of: step)")
@@ -216,16 +223,27 @@ def test_messages_has_its_own_permission_row():
     assert rows == [("calendar", "Calendar"), ("reminders", "Reminders"), ("mail", "Mail & Notes"),
                     ("messages", "Messages"), ("fullDiskAccess", "Full Disk Access"),
                     ("notifications", "Notifications")], rows
-    assert ('detail: "Sends the texts you approve in Ask. Opens Messages in the background to ask.")' in step)
+    assert ('detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")' in step)
+    mail = step[step.index("permissionRow(.mail"):step.index("permissionRow(.messages")]
+    assert "Opens Mail and Notes for a moment to ask, then closes them." in mail
     assert 'nonisolated static let automationTargets = ["com.apple.mail", "com.apple.Notes"]' in setup
     assert 'nonisolated static let messagesAutomationTargets = ["com.apple.MobileSMS"]' in setup
     request = _body(setup, "func request(_ item: Item) async")
     messages = request[request.index("case .messages:"):request.index("case .fullDiskAccess:")]
     assert "Self.messagesAutomationTargets" in messages and "Self.automationTargets" not in messages
     assert "launchHidden(id)" in messages and "messagesAutomationState(ask: true)" in messages
+    assert "Self.quitAfterAsking(launched)" in messages
+    assert "Self.quitAfterAsking(launched)" in request[request.index("case .mail:"):request.index("case .messages:")]
     refresh = _body(setup, "func refresh() async")
-    assert "next[.messages] = await Self.messagesAutomationState(ask: false)" in refresh
-    assert "next[.mail] = await Self.automationState(ask: false)" in refresh
+    assert "let messages = await Self.messagesAutomationState(ask: false)" in refresh
+    assert "let mail = await Self.automationState(ask: false)" in refresh
+    assert "next[.messages] = Self.keepingAnswer(messages, answered: answered[.messages])" in refresh
+    assert "next[.mail] = Self.keepingAnswer(mail, answered: answered[.mail])" in refresh
+    # Only a target Wisp started itself is closed again, politely.
+    launch = _body(setup, "private static func launchHidden(_ bundleID: String) async -> NSRunningApplication?")
+    assert "runningApplications.contains" in launch and "config.addsToRecentItems = false" in launch
+    quit = _body(setup, "private static func quitAfterAsking(_ launched: [NSRunningApplication])")
+    assert "app.terminate()" in quit and "forceTerminate" not in setup
     # No System Events or Accessibility in setup: those stay asked at use.
     assert "com.apple.systemevents" not in setup.lower()
     assert "AXIsProcessTrustedWithOptions" not in setup

@@ -433,10 +433,33 @@ def _slot_delivered(day: date, part: str) -> bool:
     return _brief_date() == day or (completed is not None and completed >= iso)
 
 
+# Written once, by the app, when first-run onboarding reaches its last step:
+# the permissions were answered or skipped and About you was done or skipped.
+ONBOARDING_ANSWERED_KEY = "install:onboarding_answered_at"
+# On the first launch day, once onboarding is answered, the morning run does not
+# wait for its hour: the person should see a Brief now. Not in the small hours,
+# though: a Brief at 2am about "today" would describe a day that has not begun.
+EARLY_FIRST_BRIEF_HOUR = 5
+
+
+def _onboarding_answered() -> bool:
+    return assistant_store.completion(ONBOARDING_ANSWERED_KEY) is not None
+
+
+def _early_first_brief_due(now: datetime) -> bool:
+    """Whether the first launch day's morning run is due ahead of its hour."""
+    if not _onboarding_answered() or now.hour < EARLY_FIRST_BRIEF_HOUR:
+        return False
+    first = assistant_store.first_launch_at()
+    return first is not None and datetime.fromtimestamp(first).date() == now.date()
+
+
 def _pending_slot(now: datetime) -> tuple[date, str] | None:
     """The run to start now, if any: due, not yet delivered, retries left."""
     from service.config import get_daily_summary_times
     part = _due_slot(now, get_daily_summary_times())
+    if part is None and _early_first_brief_due(now):
+        part = "morning"   # at its own hour this is already delivered: no second Brief
     if part is None or _slot_delivered(now.date(), part):
         return None
     if _brief_attempts.get((now.date(), part), 0) >= _MAX_BRIEF_ATTEMPTS:
@@ -490,6 +513,10 @@ def _never_answered_sources() -> list[str]:
 def _awaiting_first_permission(now_ts: float) -> bool:
     first = assistant_store.first_launch_at()
     if first is None or not 0 <= now_ts - first < FIRST_LAUNCH_GRACE_S:
+        return False
+    if _onboarding_answered():
+        # They went through the permissions step, so a source still never
+        # answered was skipped on purpose. The day-one rebuild picks it up later.
         return False
     return bool(_never_answered_sources())
 

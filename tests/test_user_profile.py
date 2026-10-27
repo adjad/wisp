@@ -30,7 +30,7 @@ SAMPLE = {
     "struggles": ["Overcommitting to too much", "Letting email pile up"],
     "people": [{"name": "Mom", "relation": "mother", "note": "calls on Sundays"},
                {"name": "Sam Lee", "relation": "co-founder", "note": ""}],
-    "tone": "gentle",
+    "tone": "warm",
     "detail": "short",
     "boundaries": "Don't bring up my weight.",
     "notes": "I think out loud.",
@@ -91,7 +91,7 @@ def test_cleaning_dedupes_and_trims():
         {"name": " Mom ", "relation": None}, {"name": "mom"}, {"name": ""}]})
     assert out["goals"] == ["Ship it"]
     assert out["people"] == [{"name": "Mom", "relation": "", "note": ""}]
-    assert P.validate({"tone": ""}) == {"tone": "warm"}
+    assert P.validate({"tone": ""}) == {"tone": "gentle"}
 
 
 def test_corrupt_file_reads_as_empty_and_partial_bounds_keep_valid_fields():
@@ -180,6 +180,25 @@ def test_odd_version_reads_as_version_one_instead_of_failing(version):
     assert loaded["name"] == "Adi" and loaded["detail"] == "thorough"
 
 
+def test_version_two_warm_reads_as_the_default_tone():
+    # The version-2 flow saved its preselected "warm" with every answer.
+    P.PROFILE_PATH.write_text(json.dumps({"version": 2, "name": "Adi", "tone": "warm"}))
+    loaded = P.load()
+    assert loaded["tone"] == "gentle"
+    assert P.filled_fields(loaded) == ["name"]
+    assert "Be warm" not in P.profile_block(loaded)
+    # A choice made under the current version stays.
+    P.PROFILE_PATH.write_text(json.dumps({"version": P.VERSION, "name": "Adi", "tone": "warm"}))
+    kept = P.load()
+    assert kept["tone"] == "warm" and "tone" in P.filled_fields(kept)
+    assert "Be warm and energetic" in P.profile_block(kept)
+    # Gentle is the default and adds nothing to the prompt.
+    assert "Speak gently" not in P.profile_block(P.empty() | {"name": "Adi"})
+    # Other version-2 tones were picked, so they stay.
+    P.PROFILE_PATH.write_text(json.dumps({"version": 2, "name": "Adi", "tone": "direct"}))
+    assert P.load()["tone"] == "direct"
+
+
 def test_a_world_readable_version_one_file_is_tightened_on_first_read():
     P.PROFILE_PATH.write_text(json.dumps({"version": 1, "name": "Adi"}))
     P.PROFILE_PATH.chmod(0o644)
@@ -236,12 +255,12 @@ def test_offer_logic():
 
 def test_status_filled_ignores_defaults():
     assert P.status(P.empty())["has_content"] is False
-    assert P.filled_fields(P.empty() | P.validate({"tone": "warm", "detail": "thorough"})) == []
+    assert P.filled_fields(P.empty() | P.validate({"tone": "gentle", "detail": "thorough"})) == []
 
 
 @pytest.mark.parametrize("patch,field,rule", [
     ({"tone": "direct"}, "tone", "straight to the point"),
-    ({"tone": "gentle"}, "tone", "Speak gently"),
+    ({"tone": "warm"}, "tone", "Be warm and energetic"),
     ({"detail": "short"}, "detail", "Keep replies short"),
 ])
 def test_nondefault_style_alone_is_applied_and_can_be_erased(patch, field, rule, client):
@@ -267,7 +286,7 @@ def test_prompt_block_is_empty_without_content_and_complete_with_it():
     assert block.startswith("\n\n")
     for needle in ("Call them Adi", "Ship Wisp 1.5", "Run a half marathon",
                    "Overcommitting to too much", "Mom (mother) — calls on Sundays",
-                   "Sam Lee (co-founder)", "Speak gently", "Keep replies short",
+                   "Sam Lee (co-founder)", "Be warm and energetic", "Keep replies short",
                    "Don't bring up my weight", "I think out loud"):
         assert needle in block, needle
     # The rules that keep it kind and keep it from becoming a VIP list.
@@ -380,7 +399,7 @@ def test_preview_names_real_behaviour():
     assert "When Mom and Sam Lee show up on your calendar or in your mail and texts, your morning brief points it out" in joined
     assert "Needs you" not in joined, "the notch's Needs you does not rank by the profile"
     assert "never changes what I alert you about" in joined
-    assert "talk to you gently" in joined
+    assert "talk to you with upbeat energy" in joined
     assert P.preview(P.empty())[-1].startswith("You haven't told me anything yet")
 
 
