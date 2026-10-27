@@ -30,8 +30,8 @@ class ModelMemoryLimitError(ModelLoadError):
         )
 
 
-SETUP_NEEDED_MESSAGE = ("Wisp's model isn't downloaded yet. To finish setup, right-click "
-                        "the Wisp icon in the menu bar and choose Finish Setup…")
+SETUP_NEEDED_MESSAGE = ("Wisp's model isn't downloaded yet. To finish setup, open Wisp's "
+                        "Settings → Models and choose Setup guide…")
 
 
 class ModelNotDownloadedError(ModelLoadError):
@@ -46,7 +46,7 @@ class ModelNotDownloadedError(ModelLoadError):
             message = SETUP_NEEDED_MESSAGE
         else:
             message = (f"Wisp's model is still downloading ({int(progress)}% done). "
-                       "Ask again when it finishes. To watch it, right-click the "
-                       "Wisp icon in the menu bar and choose Finish Setup…")
+                       "Ask again when it finishes. To watch it, open Wisp's "
+                       "Settings → Models and choose Setup guide…")
         super().__init__(message)
         self.progress = progress

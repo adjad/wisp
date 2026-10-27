@@ -6,7 +6,6 @@ All notable changes to Wisp are documented here.
 
 ### Changed
 - **Versions renumbered down by 1.0.** Wisp is not yet a finished product, so every release is now 0.x (1.4.0 became 0.4.0, 1.3.3 became 0.3.3, and so on). Release tags and GitHub releases were renamed to match, and the old v0.1.0 is now v0.0.0-initial. The next release is 0.5.0.
-- **A shorter menu-bar menu.** Right-clicking the menu-bar icon now shows Open Wisp Window, Settings…, Report a Problem… and Quit Wisp, plus **Finish Setup…** only while setup isn't finished. The other items moved: change the model or engine in **Settings → Models**; **Permissions…** and **More Access…** (Screen Recording, Accessibility, Full Disk Access; it was Grant More Access…) are in **Settings → Privacy & Access**; **Export Chat Debug Log…** is in **Settings → General**; and Getting to know you is `/about` or Memory → About you.
 
 ## [0.5.0-rc2] - Unreleased
 
