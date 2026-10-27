@@ -193,6 +193,18 @@ async def _reply(msgs: list[dict]) -> str | None:
 
 # --- the tick -----------------------------------------------------------------------
 
+async def _gmail_excluded() -> frozenset:
+    """Message-IDs Gmail filed under Promotions, Social or Forums, for connected Gmail
+    accounts. Unknown (not connected, or a read failed) leaves Mail's own categories
+    and the header guess to decide."""
+    try:
+        from service import gmail_source
+        found = await gmail_source.tab_message_ids(WINDOW_DAYS)
+    except Exception:  # noqa: BLE001
+        found = None
+    return frozenset(found or ())
+
+
 def _model_key() -> str:
     from service.assistant.brief import _c
     from service.config import role_to_model
@@ -223,9 +235,10 @@ async def tick(*, now: float | None = None) -> float:
     last_index = float(st.meta("last_index") or 0)
     if now - last_index >= INDEX_EVERY_S:
         rows, capped = await read_index(WINDOW_DAYS)
-        merged = st.upsert_index(rows, extract.tier, now)
+        excluded = await _gmail_excluded()
+        merged = st.upsert_index(rows, lambda r: extract.tier(r, excluded), now)
         st.set_meta("last_index", str(now))
-        log.info("mail memory index: %s capped=%s", merged, capped)
+        log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
         return gap
 
     st.expire(today.isoformat())

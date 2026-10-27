@@ -45,16 +45,40 @@ _TRANSACTIONAL = re.compile(
     r"subscription|membership|school|class|exam|interview)\b", re.I)
 
 
-def tier(row: dict) -> int | None:
-    """Queue order, lower first; None = no model call. Sent mail first (the user's
-    own promises), then person-to-person, then transactional bulk."""
+# Mail's on-device categories (Envelope Index message_global_data.model_category), checked
+# against this Mac's mail on 2026-10-26: every person-to-person email was 0, receipts 1,
+# newsletters and notifications 2, sales and offers 3.
+PRIMARY, TRANSACTIONS, UPDATES, PROMOTIONS = 0, 1, 2, 3
+_PROMOTIONAL = re.compile(
+    r"\b(?:sale|deals?|offer|promo(?:tion)?(?: code)?|discount|coupon|save \d+|\d+% off|"
+    r"shop now|new arrivals|limited time|free shipping|black friday|cyber monday)\b", re.I)
+
+
+def tier(row: dict, gmail_excluded: set[str] | frozenset = frozenset()) -> int | None:
+    """Queue order, lower first; None = never read. The user's rule (2026-10-26): only
+    Primary, Transactions and Updates, never Promotions, and the same for Gmail (no
+    Promotions, Social or Forums tabs). Spam, trash and archived mail never reach
+    here: the index lists Inbox and Sent only.
+
+    Sent mail first (the user's own promises), then Primary, Transactions, Updates.
+    Mail's own category decides when it recorded one; otherwise a header guess."""
     if row.get("box") == "sent":
         return 1
+    if row.get("rfc_message_id") and row["rfc_message_id"] in gmail_excluded:
+        return None
+    category = row.get("category", -1)
+    if category == PROMOTIONS:
+        return None
+    if category in (PRIMARY, TRANSACTIONS, UPDATES):
+        return 2 + category
+    headers = f"{row.get('subject', '')} {row.get('sender', '')}"
     if not row.get("bulk"):
         return 2
-    if _TRANSACTIONAL.search(f"{row.get('subject', '')} {row.get('sender', '')}"):
+    if _TRANSACTIONAL.search(headers):
         return 3
-    return None
+    if _PROMOTIONAL.search(headers):
+        return None
+    return 4
 
 
 @dataclass(frozen=True)

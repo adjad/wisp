@@ -35,7 +35,8 @@ _SCHEMA = (
          bulk INTEGER NOT NULL DEFAULT 0, tier INTEGER NOT NULL,
          state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
          next_at REAL NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '',
-         rfc_message_id TEXT NOT NULL DEFAULT '', updated REAL NOT NULL)""",
+         rfc_message_id TEXT NOT NULL DEFAULT '', category INTEGER NOT NULL DEFAULT -1,
+         updated REAL NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS messages_work ON messages(state, tier, ts)",
     """CREATE TABLE IF NOT EXISTS items(
          id INTEGER PRIMARY KEY, key TEXT NOT NULL, what TEXT NOT NULL, date_phrase TEXT NOT NULL,
@@ -46,6 +47,15 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS items_open ON items(state, due)",
     "CREATE TABLE IF NOT EXISTS meta(name TEXT PRIMARY KEY, value TEXT NOT NULL)",
 )
+
+
+def _key(row: dict) -> str:
+    """The RFC Message-ID when known; else Mail's own id; else the ROWID."""
+    if row.get("rfc_message_id"):
+        return row["rfc_message_id"]
+    if row.get("message_id"):
+        return f"mail:{row['message_id']}"
+    return f"row:{row['rowid']}"
 
 
 class Store:
@@ -86,14 +96,14 @@ class Store:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 for row in rows:
-                    key = row["message_id"] or f"row:{row['rowid']}"
+                    key = _key(row)
                     have = self._db.execute("SELECT state FROM messages WHERE key=?", (key,)).fetchone()
                     if have:
                         self._db.execute(
                             "UPDATE messages SET rowid=?, box=?, subject=?, sender=?, sender_name=?, "
-                            "bulk=?, updated=? WHERE key=?",
+                            "bulk=?, category=?, updated=? WHERE key=?",
                             (row["rowid"], row["box"], row["subject"], row["sender"], row["sender_name"],
-                             int(row["bulk"]), now, key))
+                             int(row["bulk"]), row.get("category", -1), now, key))
                         continue
                     tier = tier_of(row)
                     state = "pending" if tier is not None else "skipped"
@@ -101,11 +111,13 @@ class Store:
                     skipped += tier is None
                     self._db.execute(
                         "INSERT INTO messages(key,rowid,account,box,ts,sent_ts,conversation_id,subject,sender,"
-                        "sender_name,bulk,tier,state,note,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "sender_name,bulk,tier,state,note,rfc_message_id,category,updated) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (key, row["rowid"], row["account"], row["box"], row["ts"], row["sent_ts"],
                          row["conversation_id"], row["subject"], row["sender"], row["sender_name"],
                          int(row["bulk"]), 99 if tier is None else tier, state,
-                         "" if tier is not None else "prefilter", now))
+                         "" if tier is not None else "prefilter", row.get("rfc_message_id", ""),
+                         row.get("category", -1), now))
                 self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")

@@ -148,6 +148,14 @@ final class MailMemoryReader {
         let conversation = exists(db, table: "messages", column: "conversation_id") ? "IFNULL(m.conversation_id, 0)" : "0"
         let sent = exists(db, table: "messages", column: "date_sent") ? "IFNULL(m.date_sent, 0)" : "0"
         let labelMembers = labels ? "UNION SELECT l.message_id, box.kind FROM labels l JOIN box ON l.mailbox_id = box.id" : ""
+        // Mail's on-device categories (macOS 15+): 0 Primary, 1 Transactions, 2 Updates,
+        // 3 Promotions; -1 when Mail doesn't record them. The RFC Message-ID lives here too.
+        let global = exists(db, table: "message_global_data", column: "model_category")
+            && exists(db, table: "messages", column: "global_message_id")
+        let hasHeader = global && exists(db, table: "message_global_data", column: "message_id_header")
+        let category = global ? "IFNULL(g.model_category, -1)" : "-1"
+        let rfcID = hasHeader ? "IFNULL(g.message_id_header, '')" : "''"
+        let globalJoin = global ? "LEFT JOIN message_global_data g ON g.ROWID = m.global_message_id" : ""
         let sql = """
         WITH box AS (
           SELECT ROWID id, CASE WHEN url LIKE '%Sent%' THEN 'sent' ELSE 'inbox' END kind
@@ -156,10 +164,12 @@ final class MailMemoryReader {
           SELECT m.ROWID mid, box.kind kind FROM messages m JOIN box ON m.mailbox = box.id
           \(labelMembers))
         SELECT m.ROWID, mb.url, MAX(member.kind), m.date_received, \(sent), \(messageID),
-               \(conversation), IFNULL(s.subject, ''), IFNULL(a.address, ''), IFNULL(a.comment, ''), \(bulk)
+               \(conversation), IFNULL(s.subject, ''), IFNULL(a.address, ''), IFNULL(a.comment, ''), \(bulk),
+               \(category), \(rfcID)
         FROM member
         JOIN messages m ON m.ROWID = member.mid
         JOIN mailboxes mb ON m.mailbox = mb.ROWID
+        \(globalJoin)
         LEFT JOIN subjects s ON m.subject = s.ROWID
         LEFT JOIN addresses a ON m.sender = a.ROWID
         WHERE IFNULL(m.deleted, 0) = 0 AND m.date_received > \(since)
@@ -188,6 +198,8 @@ final class MailMemoryReader {
                 "sender": text(stmt, 8),
                 "sender_name": text(stmt, 9),
                 "bulk": sqlite3_column_int(stmt, 10) != 0,
+                "category": Int(sqlite3_column_int(stmt, 11)),
+                "rfc_message_id": text(stmt, 12),
             ])
         }
         guard step == SQLITE_DONE else { return nil }

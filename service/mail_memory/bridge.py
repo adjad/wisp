@@ -50,6 +50,11 @@ def deliver(reply: dict) -> bool:
     return True
 
 
+def _category(value) -> int:
+    """Mail's category (0 Primary, 1 Transactions, 2 Updates, 3 Promotions), -1 unknown."""
+    return value if type(value) is int and 0 <= value <= 3 else -1
+
+
 def _rows(reply: dict) -> list[dict]:
     out = []
     for r in reply.get("rows") or []:
@@ -66,7 +71,9 @@ def _rows(reply: dict) -> list[dict]:
                     "sent_ts": float(r.get("sent_ts") or 0), "message_id": str(r.get("message_id") or "")[:300],
                     "conversation_id": int(r.get("conversation_id") or 0),
                     "subject": str(r.get("subject") or "")[:300], "sender": str(r.get("sender") or "")[:200],
-                    "sender_name": str(r.get("sender_name") or "")[:200], "bulk": r.get("bulk") is True})
+                    "sender_name": str(r.get("sender_name") or "")[:200], "bulk": r.get("bulk") is True,
+                    "category": _category(r.get("category")),
+                    "rfc_message_id": str(r.get("rfc_message_id") or "")[:300]})
     return out
 
 

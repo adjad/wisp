@@ -80,7 +80,21 @@ def test_tier():
     assert extract.tier({"box": "sent", "bulk": True}) == 1
     assert extract.tier({"box": "inbox", "bulk": False}) == 2
     assert extract.tier({"box": "inbox", "bulk": True, "subject": "Your property tax bill"}) == 3
-    assert extract.tier({"box": "inbox", "bulk": True, "subject": "10 fall hikes you'll love"}) is None
+    assert extract.tier({"box": "inbox", "bulk": True, "subject": "10 fall hikes you'll love"}) == 4
+    assert extract.tier({"box": "inbox", "bulk": True, "subject": "Fall sale: 30% off"}) is None
+
+
+def test_tier_follows_mail_and_gmail_categories():
+    # Mail's own category decides: Primary, Transactions, Updates in that order; Promotions never.
+    assert [extract.tier({"box": "inbox", "category": c, "bulk": True}) for c in (0, 1, 2, 3)] == [2, 3, 4, None]
+    # A Promotions category wins over a transactional-looking subject.
+    assert extract.tier({"box": "inbox", "category": 3, "subject": "Your order shipped"}) is None
+    # Gmail's Promotions, Social and Forums tabs are dropped even when Mail called it Primary.
+    gmail = frozenset({"<p@shop.example>"})
+    assert extract.tier({"box": "inbox", "category": 0, "rfc_message_id": "<p@shop.example>"}, gmail) is None
+    assert extract.tier({"box": "inbox", "category": 0, "rfc_message_id": "<q@x>"}, gmail) == 2
+    # The user's own sent mail is always read.
+    assert extract.tier({"box": "sent", "category": 3, "rfc_message_id": "<p@shop.example>"}, gmail) == 1
 
 
 def test_validate_keeps_only_verbatim_items():
@@ -124,11 +138,60 @@ def test_prompt_says_who_wrote_it_and_wraps_untrusted():
     assert "Today is 2026-10-26" in inbox[0]["content"]
 
 
+
+async def test_gmail_tab_ids_cover_every_account_or_none(monkeypatch):
+    from service import gmail_source as G
+    monkeypatch.setattr(G, "connected_accounts", lambda: {"a@x": {}, "b@x": {}})
+    queries = []
+
+    async def list_ids(http, limit, *, query=""):
+        queries.append(query)
+        return ["1", "2"]
+
+    async def ensure_meta(http, ids):
+        account = G._context.get()[0]
+        for i in ids:
+            G._meta[(account, i)] = {"message_id": f"{account}-{i}@x" if i == "1" else f"<{account}-{i}@x>"}
+
+    monkeypatch.setattr(G, "_list_ids", list_ids)
+    monkeypatch.setattr(G, "_ensure_meta", ensure_meta)
+    monkeypatch.setattr(G, "_meta", {})
+    got = await G.tab_message_ids(90)
+    assert got == {"<a@x-1@x>", "<a@x-2@x>", "<b@x-1@x>", "<b@x-2@x>"}
+    assert queries[0] == "newer_than:90d {category:promotions category:social category:forums}"
+
+    async def broken(http, ids):
+        raise RuntimeError("quota")
+    monkeypatch.setattr(G, "_ensure_meta", broken)
+    assert await G.tab_message_ids(90) is None             # partial would let promotions through
+    monkeypatch.setattr(G, "connected_accounts", lambda: {})
+    assert await G.tab_message_ids(90) is None
+
+
+async def test_gmail_exclusion_failure_falls_back_to_mail_categories(monkeypatch):
+    from service import gmail_source as G
+
+    async def boom(days):
+        raise RuntimeError("offline")
+    monkeypatch.setattr(G, "tab_message_ids", boom)
+    assert await runner._gmail_excluded() == frozenset()
+
 # --- store ------------------------------------------------------------------------
 
-def _row(rowid, *, box="inbox", bulk=False, mid=None, ts=1_790_000_000.0, subject="Hello"):
-    return {"rowid": rowid, "account": "A", "box": box, "ts": ts, "sent_ts": ts, "message_id": mid or f"<m{rowid}@x>",
-            "conversation_id": 1, "subject": subject, "sender": "s@x.example", "sender_name": "S", "bulk": bulk}
+def _row(rowid, *, box="inbox", bulk=False, mid=None, ts=1_790_000_000.0, subject="Hello", category=-1, rfc=None):
+    mid = mid or f"<m{rowid}@x>"
+    return {"rowid": rowid, "account": "A", "box": box, "ts": ts, "sent_ts": ts, "message_id": mid,
+            "conversation_id": 1, "subject": subject, "sender": "s@x.example", "sender_name": "S", "bulk": bulk,
+            "category": category, "rfc_message_id": mid if rfc is None else rfc}
+
+
+def test_store_keys_by_rfc_message_id_and_keeps_category(tmp_path):
+    st = Store(tmp_path / "k.db")
+    st.upsert_index([_row(1, rfc="<a@x>", category=2), _row(2, mid="12", rfc="")], extract.tier, now=1)
+    assert st.message("<a@x>")["category"] == 2 and st.message("<a@x>")["tier"] == 4
+    assert st.message("mail:12")["rowid"] == 2
+    st.upsert_index([_row(1, rfc="<a@x>", category=3)], extract.tier, now=2)
+    assert st.message("<a@x>")["category"] == 3                # refreshed; state is not re-decided
 
 
 def test_store_file_is_private(tmp_path):
@@ -223,6 +286,13 @@ async def test_bridge_index_rows_are_sanitized(fake_hub):
     assert [r["rowid"] for r in rows] == [1] and capped is False
 
 
+async def test_bridge_category_is_sanitized(fake_hub):
+    fake_hub.answer = lambda e: {"request_id": e["request_id"], "kind": "index", "ok": True, "rows": [
+        _row(1, category=2), _row(2, category=7), _row(3, category="0"), _row(4, category=True)]}
+    rows, _ = await bridge.read_index(90)
+    assert [r["category"] for r in rows] == [2, -1, -1, -1]
+
+
 async def test_bridge_needs_the_app(fake_hub):
     fake_hub.has_subscribers = False
     with pytest.raises(bridge.BridgeError, match="app_not_connected"):
@@ -280,6 +350,10 @@ def ticking(tmp_path, monkeypatch, quiet):
     monkeypatch.setattr(runner, "_hid_idle_s", lambda: 5.0)
     monkeypatch.setattr(runner, "_power", lambda: (True, 90, False))
     monkeypatch.setattr(runner, "_probe", {})
+
+    async def no_gmail():
+        return frozenset()
+    monkeypatch.setattr(runner, "_gmail_excluded", no_gmail)
     from service.memory import identity
     monkeypatch.setattr(identity, "identity_prompt_block", lambda **_: "The user is Sam.")
     from service.mail_memory import dates
