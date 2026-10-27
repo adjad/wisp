@@ -286,3 +286,13 @@ def test_an_early_close_clears_a_stale_resume_mark():
     tail = closed[closed.index("else if FirstRunSetup.resumesAtNextLaunch(ending)"):]
     early = _body(tail, "} else")
     assert "defaults.removeObject(forKey: FirstRunSetup.resumeKey)" in early
+
+
+def test_a_pending_question_disables_only_its_own_row():
+    """2026-10-27: "clicking Allow on Reminders does nothing". The Mail & Notes check waits
+    until it is answered, and one shared lock disabled every other Allow button meanwhile."""
+    setup = _sources()["FirstRunSetupView.swift"]
+    assert "var asking: Set<Item>" in setup
+    assert "guard !asking.contains(item)" in setup
+    assert ".disabled(permissions.asking.contains(item))" in setup
+    assert "asking != nil" not in setup and "asking == nil" not in setup
