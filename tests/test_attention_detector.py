@@ -71,6 +71,20 @@ def test_explicit_meridiem_and_24_hour_are_trusted():
     assert r("lunch today at noon").start == at(21, 12)
 
 
+@pytest.mark.parametrize("text", ["Pick up at 28", "Doors open 28:00", "see you at 25:30",
+                                  "meet at 9:75", "call at 13pm", "Friday at 28"])
+def test_an_impossible_clock_is_refused_not_crashed_on(text):
+    """The parser flags these invalid_time but keeps hour 28; time(28, 0) used to raise
+    out of resolve() and, in mail memory, block the queue on that email for good."""
+    got = r(text)
+    assert got.start is None and got.blocked == "invalid_time" and not got.has_clock
+
+
+def test_a_valid_bare_hour_still_resolves():
+    got = r("due at 9")                          # 9:00 now: 9am is not upcoming, so 9pm
+    assert got.start == at(21, 21) and got.blocked is None
+
+
 def test_weekdays_resolve_to_the_nearest_upcoming_day():
     assert r("Let's meet Thursday at 2pm").start == at(24, 14)
     exam = r("Exam is Friday")

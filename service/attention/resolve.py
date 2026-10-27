@@ -231,6 +231,10 @@ def _resolve(text: str, arrival: datetime, tz: str, source_id: str) -> Resolved:
 
     tentative = any(_TENTATIVE.search(f.context_span.quote) for f in facts)
     clocks = [f for f in facts if f.start.hour is not None]
+    if any("invalid_time" in f.start.uncertainties for f in clocks):
+        # "at 28", "25:30", "9:75", "13pm": the parser flags the clock but keeps its
+        # numbers. Reading one would crash on time() or guess a time nobody said.
+        return Resolved(None, None, False, quote, tentative=tentative, blocked="invalid_time")
     if len({(f.start.hour, f.start.minute, f.start.timezone) for f in clocks}) > 1:
         return Resolved(None, None, False, quote, tentative=tentative, blocked="conflicting_times")
     source = _source_zone(clocks[0], tz) if clocks else None
