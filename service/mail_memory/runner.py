@@ -157,16 +157,14 @@ def _model_free(key: str) -> bool:
     return not idle.foreground_busy() and idle.in_flight(key) == 0
 
 
-async def _reply(msgs: list[dict]) -> str | None:
-    """The fast model's reply, or None to stand down (a remote-only profile, not
-    resident, something else resident, a turn started, or another call on the
-    model). Mirrors mail_gists._resident_reply."""
-    global _last_own_end
+async def _stand_down() -> str | None:
+    """Why the fast model can't take a call now, or None when it can: a remote-only
+    profile, the model not resident, something else resident, or the model busy."""
     from service.inference.remote_policy import remote_only_profile
     if remote_only_profile() is not None:
-        return None
+        return "remote_only"
     from service.assistant.brief import _c
-    from service.config import role_to_model, thinking_kwargs
+    from service.config import role_to_model
     model = role_to_model("fast")
     client = _c()
     loaded = set(await client.loaded_models())
@@ -174,9 +172,25 @@ async def _reply(msgs: list[dict]) -> str | None:
         warm = set(client.keep_warm())
     except Exception:  # noqa: BLE001
         warm = set()
-    key = _model_key()
-    if model not in loaded or loaded - warm - {model} or not _model_free(key):
+    if model not in loaded or loaded - warm - {model}:
+        return "not_resident"
+    if not _model_free(_model_key()):
+        return "busy"
+    return None
+
+
+async def _reply(msgs: list[dict]) -> str | None:
+    """The fast model's reply, or None to stand down (a remote-only profile, not
+    resident, something else resident, a turn started, or another call on the
+    model). Mirrors mail_gists._resident_reply."""
+    global _last_own_end
+    if await _stand_down() is not None:
         return None
+    from service.assistant.brief import _c
+    from service.config import role_to_model, thinking_kwargs
+    model = role_to_model("fast")
+    client = _c()
+    key = _model_key()
     # Sampling is left to the engine's profile for this model: the 2026-10-26 bench
     # measured these prompts at the production profile, not at temperature 0.
     request = asyncio.ensure_future(client.chat(model, msgs, max_tokens=MAX_TOKENS,
@@ -246,6 +260,12 @@ async def tick(*, now: float | None = None) -> float:
     if lvl == "busy":
         return BUSY_GAP_S
     gap = AWAY_GAP_S if lvl == "away" else BETWEEN_GAP_S
+    # Read no mail the model can't take: a body read now would only be read again.
+    why_not = await _stand_down()
+    if why_not == "remote_only":
+        return FAILURE_GAP_S
+    if why_not is not None:
+        return BUSY_GAP_S
 
     last_index = float(st.meta("last_index") or 0)
     if now - last_index >= INDEX_EVERY_S:
@@ -332,8 +352,15 @@ async def _run() -> None:
 
 
 def _other_background_work() -> bool:
-    """The Brief's gists or the proactive engine has a model task going. They hold
-    each other off the same way; mail memory waits for both."""
+    """The Brief, its gists or the proactive engine has a model task going. They hold
+    each other off the same way; mail memory waits for all of them."""
+    try:
+        from service.assistant import scheduler
+        brief = scheduler._brief_task
+        if brief is not None and not brief.done():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from service.assistant import mail_gists
         if mail_gists._task is not None and not mail_gists._task.done():

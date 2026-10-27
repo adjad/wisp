@@ -17,6 +17,8 @@ from service.mail_memory import store as store_mod
 from service.mail_memory.dates import resolve_due
 from service.mail_memory.store import Store
 
+_REAL_STAND_DOWN = runner._stand_down
+
 ROOT = Path(__file__).resolve().parents[1]
 TZ = "America/Los_Angeles"
 NOW = datetime(2026, 10, 26, 18, tzinfo=timezone.utc).timestamp()
@@ -445,6 +447,10 @@ def ticking(tmp_path, monkeypatch, quiet):
     monkeypatch.setattr(runner, "_power", lambda: (True, 90, False))
     monkeypatch.setattr(runner, "_probe", {})
 
+    async def ready():
+        return None
+    monkeypatch.setattr(runner, "_stand_down", ready)
+
     async def no_gmail():
         return frozenset()
     monkeypatch.setattr(runner, "_gmail_excluded", no_gmail)
@@ -591,6 +597,57 @@ async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypa
     monkeypatch.setattr(quiet, "foreground_busy", lambda: True)
     assert await runner.tick(now=NOW + 2) == runner.BUSY_GAP_S
 
+
+@pytest.mark.parametrize("remote, loaded, gap", [(True, ["fast-model"], "FAILURE_GAP_S"),
+                                                 (False, [], "BUSY_GAP_S"),
+                                                 (False, ["fast-model", "other"], "BUSY_GAP_S")])
+async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, remote, loaded, gap):
+    """A remote-only profile or a model that isn't resident: no index read, no body read."""
+    st = ticking
+    monkeypatch.setattr(runner, "_stand_down", _REAL_STAND_DOWN)
+    monkeypatch.setattr(runner, "_model_key", lambda: "fast-model")
+    from service.inference import remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile", (lambda: object()) if remote else (lambda: None))
+
+    class Client:
+        async def loaded_models(self):
+            return loaded
+
+        def keep_warm(self):
+            return []
+
+        def activity_key(self, model):
+            return model
+
+    from service.assistant import brief
+    from service import config
+    monkeypatch.setattr(brief, "_c", lambda: Client())
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast-model")
+
+    async def never(*a):
+        raise AssertionError("read mail the model can't take")
+
+    monkeypatch.setattr(runner, "read_index", never)
+    monkeypatch.setattr(runner, "read_body", never)
+    assert await runner.tick(now=NOW + 1) == getattr(runner, gap)
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5)], extract.tier, now=1)
+    assert await runner.tick(now=NOW + 2) == getattr(runner, gap)
+    assert st.message("<m5@x>")["attempts"] == 0
+
+
+def test_schedule_waits_for_a_running_brief(monkeypatch, quiet):
+    from service.assistant import mail_gists, scheduler
+
+    class Running:
+        def done(self):
+            return False
+
+    monkeypatch.setattr(mail_gists, "_task", None)
+    monkeypatch.setattr(scheduler, "_brief_task", Running())
+    assert runner._other_background_work()
+    monkeypatch.setattr(scheduler, "_brief_task", None)
+    assert not runner._other_background_work()
 
 
 def test_schedule_waits_for_other_background_model_work(monkeypatch, quiet):
