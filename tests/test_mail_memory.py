@@ -824,3 +824,13 @@ def test_a_late_gmail_tab_list_still_retires_pending_mail(tmp_path):
     st.upsert_index([_row(1, rfc="<promo@shop>"), _row(2, rfc="<friend@x>")], extract.tier, now=1)
     assert st.exclude({"<promo@shop>", "<gone@x>"}) == 1
     assert st.message("<promo@shop>")["state"] == "skipped" and st.message("<friend@x>")["state"] == "pending"
+
+
+def test_rescued_html_keeps_breaks_and_drops_closed_inner_tags():
+    head = b"From: a@x\r\nSubject: s\r\nContent-Type: text/html\r\n\r\n"
+    # Breaks inside an unclosed <noscript> survive, so adjacent lines don't merge.
+    assert extract.parse_raw(head + b"<body><noscript>Enable JS<p>Pay by Friday", 0).body == "Enable JS\nPay by Friday"
+    # A closed <style> inside an unclosed <head> stays hidden; the head's own text is kept.
+    assert extract.parse_raw(head + b"<head><style>.a{}</style>Pay by Friday", 0).body == "Pay by Friday"
+    # A normally closed <script> is still dropped.
+    assert extract.parse_raw(head + b"<p>Pay</p><script>evil()</script>", 0).body == "Pay"

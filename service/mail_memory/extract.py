@@ -121,36 +121,38 @@ class _Text(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.out: list[str] = []
-        self.skip = 0
-        self.held: list[str] = []      # text inside a skipped tag, kept if it never closes
+        # One buffer per open skipped tag: text kept only if that tag never closes.
+        self.held: list[list[str]] = []
+
+    def _emit(self, text: str) -> None:
+        (self.held[-1] if self.held else self.out).append(text)
 
     def handle_starttag(self, tag, attrs):
-        if tag == "body" and self.skip:
-            self.skip, self.held = 0, []   # a head left open ends where the body starts
+        if tag == "body" and self.held:
+            self.held = []                 # a head left open ends where the body starts
         elif tag in self._SKIP:
-            self.skip += 1
+            self.held.append([])
         elif tag in self._BREAK:
-            self.out.append("\n")
+            self._emit("\n")
         elif tag in self._SPACE:
-            self.out.append(" ")
+            self._emit(" ")
 
     def handle_endtag(self, tag):
         if tag in self._SKIP:
-            self.skip = max(0, self.skip - 1)
-            if not self.skip:
-                self.held = []
+            if self.held:
+                self.held.pop()            # closed: its text was never visible
         elif tag in self._BREAK:
-            self.out.append("\n")
+            self._emit("\n")
         elif tag in self._SPACE:
-            self.out.append(" ")
+            self._emit(" ")
 
     def handle_data(self, data):
-        (self.held if self.skip else self.out).append(data)
+        self._emit(data)
 
     def text(self) -> str:
         # An unclosed <style> or <noscript> would otherwise swallow the rest of the
         # email; keep its text, as the old regex did (audit of 494a4bf3).
-        return "".join(self.out + (self.held if self.skip else []))
+        return "".join(self.out + [t for level in self.held for t in level])
 
 
 def _html_text(markup: str) -> str:
