@@ -404,6 +404,36 @@ def test_the_clear_and_dismiss_routes_make_the_ask_permanent(store, client):
     assert [t["who"] for t in after["threads"]] == ["Sam Lee"]
 
 
+def test_unchecking_a_to_do_keeps_an_ask_that_was_also_dismissed_as_a_card(store):
+    model = Counting()
+    run(store, model, items_for(), force=True)
+    sam_card = next(c for c in cards(store) if c["sources"][0]["who"] == "Sam Lee")
+    sam = next(t for t in store.state()["todos"] if t["who"] == "Sam Lee")
+    store.set_todo_done(sam, True)
+    store.dismiss_card(sam_card)
+    store = reopen(store)
+    store.set_todo_done(sam, False)
+    # The hash has moved since, so only the ask can keep the card away.
+    run(store, model, items_for(rows=sam_rows(SAM_BODY + " Also bring the poster.")), force=True)
+    assert "Sam Lee" not in who(store)
+
+
+def test_a_reply_card_is_dropped_when_the_fresh_read_can_no_longer_reply(store):
+    model = Counting()
+    run(store, model, items_for(), force=True)
+    assert "Sam Lee" in who(store)
+
+    def unsendable(ref):                  # Mail can't send now: the card could only open it
+        return {"ok": True, "can_send": False, "open_url": "message://x", "open_label": "Open in Mail"}
+
+    asyncio.run(cycle.run_cycle(
+        now=NOW, tz=TZ, force=True, reply_fn=model, abort=lambda: False,
+        collect=lambda n, z: list(items_for()), schedule_fn=lambda n, z: SCHEDULE, store=store,
+        resolve=lambda item: None, linked={JUDGE}, own=ME, allowed=set(), freeze=unsendable))
+    sam = [c for c in cards(store) if c["sources"][0]["who"] == "Sam Lee"]
+    assert all(c["action"]["method"] not in ("email_reply", "text_reply") for c in sam)
+
+
 def test_unchecking_a_to_do_that_was_done_brings_it_back(store):
     model = Counting()
     run(store, model, items_for(), force=True)

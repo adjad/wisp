@@ -125,6 +125,12 @@ def carry(previous: list[dict], fresh: list[dict], *, items: dict[str, dict], wi
         if new is not None and ref not in used:
             used.add(ref)
             new_method = (new.get("action") or {}).get("method")
+            if method in _REPLY_METHODS and new_method not in _REPLY_METHODS:
+                # The fresh read can no longer reply (mail not sendable now): the
+                # old reply card would promise what Wisp can't do. Dropped; the
+                # fresh card stands in as a new one.
+                used.discard(ref)
+                continue
             if new_method == method or (new_method in _REPLY_METHODS and method not in _REPLY_METHODS):
                 # Fresh words and times, the identity the user already saw.
                 kept.append({**new, "id": old["id"], "seen_at": now})

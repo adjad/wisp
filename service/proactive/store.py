@@ -143,6 +143,8 @@ class ProactiveStore:
                 return float(v.get("at") or 0) if isinstance(v, dict) else float(v or 0)
             for key in ("dismissed", "fired", "suppressed", "done", "unknown", "unknown_threads"):
                 data[key] = {k: v for k, v in data[key].items() if now - stamp(v) < _KEEP_S}
+            if isinstance(data.get("held_asks"), dict):
+                data["held_asks"] = {k: v for k, v in data["held_asks"].items() if now - stamp(v) < _KEEP_S}
             # Auto-add fingerprints outlive every source window many times over.
             data["auto_added"] = {k: v for k, v in self.auto_added().items() if now - stamp(v) < _AUTO_KEEP_S}
             self._write("decisions.json")
@@ -173,6 +175,16 @@ class ProactiveStore:
         a dismissed or fired card, a done to-do. An item built only from these
         never comes back."""
         return set(self.decisions()["suppressed"])
+
+    @staticmethod
+    def _hold_asks(data: dict, asks, now: float) -> None:
+        """Asks handled through a card (dismissed or fired): un-checking the
+        to-do for the same ask must not bring them back."""
+        if not isinstance(data.get("held_asks"), dict):
+            data["held_asks"] = {}
+        for ask in asks or []:
+            if isinstance(ask, str) and ask:
+                data["held_asks"][ask] = now
 
     def _suppress(self, fingerprints, now: float) -> None:
         data = self.decisions()
@@ -215,6 +227,7 @@ class ProactiveStore:
             data["dismissed"][card["id"]] = now
             self._suppress(card.get("fingerprints"), now)
             self._suppress(card.get("asks"), now)       # the ask itself, not only the content hash it had
+            self._hold_asks(data, card.get("asks"), now)
             self._write("decisions.json")
         self.remove_card(card["id"])
 
@@ -227,6 +240,7 @@ class ProactiveStore:
                                          "status": result.get("status", "succeeded")}
             self._suppress(card.get("fingerprints"), now)
             self._suppress(card.get("asks"), now)
+            self._hold_asks(data, card.get("asks"), now)
             if card.get("todo_id") and (card.get("action") or {}).get("method") == "block_time":
                 # Time is held for it; the work itself isn't done.
                 data.setdefault("added_to_day", {})[card["todo_id"]] = {"at": now,
@@ -248,8 +262,13 @@ class ProactiveStore:
                 self._suppress(todo.get("asks"), now)
             else:
                 data["done"].pop(todo["id"], None)
-                for fp in [*(todo.get("fingerprints") or []), *(todo.get("asks") or [])]:
+                for fp in todo.get("fingerprints") or []:
                     data["suppressed"].pop(fp, None)
+                # An ask also dismissed or fired through its card stays handled.
+                held = data.get("held_asks") if isinstance(data.get("held_asks"), dict) else {}
+                for ask in todo.get("asks") or []:
+                    if ask not in held:
+                        data["suppressed"].pop(ask, None)
             self._write("decisions.json")
 
     def done_todos(self, now: float | None = None) -> dict[str, dict]:
