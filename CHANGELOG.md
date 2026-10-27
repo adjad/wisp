@@ -17,6 +17,9 @@ Second release candidate for testers; it builds on rc1. See [docs/releases/0.5.0
 ### Changed
 - TODO: list what rc2 changes.
 
+### Fixed
+- Reopening setup from **Permissions…** after finishing it, with your own oMLX off, now shows **Try again** after 10 seconds and says your oMLX isn't running, instead of "Connecting…" forever. Wisp still starts your oMLX by itself only during an unfinished first run.
+
 ## [0.5.0-rc1] - 2026-10-26
 
 First release candidate for testers; see [docs/releases/0.5.0-rc1.md](docs/releases/0.5.0-rc1.md) for the release notes. It is ad-hoc signed, not notarized: on macOS 15 and later the first open is blocked and must be allowed under System Settings ▸ Privacy & Security ▸ **Open Anyway**. Apple silicon only; the built-in engine needs macOS 26.2 or newer; 16 GB of memory is the minimum and 24 GB is recommended.
