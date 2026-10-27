@@ -196,6 +196,15 @@ enum ChatQADriver {
             await settle(0.8)
             await shoot(name)
         }
+        // The Wisp window's minimum size (WispWindowController sets 820×560): the
+        // Models pane's widest rows still fit beside the sidebar.
+        let fullFrame = window.frame
+        window.setContentSize(NSSize(width: 820, height: 560))
+        defaults.set("models", forKey: SettingsView.paneKey)
+        defaults.set("assignments", forKey: SettingsView.modelsPaneKey)
+        await settle(0.8)
+        await shoot("11-settings-models-min")
+        window.setFrame(fullFrame, display: true)
         for (key, value) in keptPanes {
             if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
         }
