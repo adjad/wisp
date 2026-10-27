@@ -71,6 +71,13 @@ def run(coro):
     return asyncio.run(coro)
 
 
+@pytest.fixture(autouse=True)
+def foreground_reset():
+    # A handoff scheduled on a loop that asyncio.run already closed never fires.
+    yield
+    idle._foreground_turns = 0
+
+
 def test_wav_is_measured_and_only_16_bit_pcm_is_taken():
     assert V.wav_seconds(wav(2.0)) == pytest.approx(2.0)
     assert V.wav_seconds(wav(1.0, rate=48_000)) == pytest.approx(1.0)
@@ -195,3 +202,66 @@ def test_endpoint_maps_failures_to_plain_messages(checkpoint):
             assert "Traceback" not in caught.value.detail and "500" not in caught.value.detail
     with patch.object(V, "transcribe", ok):
         assert run(main.voice_transcribe({"audio": "x"})) == {"text": "What's on my day?"}
+
+
+def test_transcription_is_a_foreground_turn(checkpoint):
+    """Background model work stands down while the person waits on their words."""
+    client = StubClient(checkpoint())
+    seen = []
+    original = client.chat
+
+    async def chat(model, messages, **kwargs):
+        seen.append(idle.foreground_busy())
+        return await original(model, messages, **kwargs)
+    client.chat = chat
+
+    async def scenario():
+        with patch.object(V, "_HANDOFF_S", 0.05):
+            assert not idle.foreground_busy()
+            assert await V.transcribe(b64(wav(1.0)), client=client, model=MODEL)
+            # Held a moment longer, until the Ask turn it starts takes over.
+            assert idle.foreground_busy()
+            await asyncio.sleep(0.15)
+            assert not idle.foreground_busy()
+    run(scenario())
+    assert seen == [True]
+
+
+def test_a_background_call_in_flight_yields_to_the_transcript(checkpoint):
+    """mail_gists-style work cancels its call once a foreground turn starts."""
+    client = StubClient(checkpoint())
+    key = client.activity_key(MODEL)
+
+    async def background():
+        idle.begin(key)
+        try:
+            while not idle.foreground_busy():
+                await asyncio.sleep(0.01)      # a long call, cancelled on foreground
+        finally:
+            idle.end(key)
+
+    async def scenario():
+        job = asyncio.create_task(background())
+        await asyncio.sleep(0.05)
+        started = asyncio.get_running_loop().time()
+        text = await V.transcribe(b64(wav(1.0)), client=client, model=MODEL)
+        await job
+        return text, asyncio.get_running_loop().time() - started
+    text, waited = run(scenario())
+    assert text and waited < 1.0
+
+
+@pytest.mark.parametrize("reply,model_type", [("[silence]", "vlm"), ("words", "llm")])
+def test_the_gate_closes_at_once_when_nothing_is_handed_on(checkpoint, reply, model_type):
+    client = StubClient(checkpoint(), reply=reply, model_type=model_type)
+
+    async def scenario():
+        try:
+            await V.transcribe(b64(wav(1.0)), client=client, model=MODEL)
+        except V.VoiceUnavailable:
+            pass
+        return idle.foreground_busy()
+    assert run(scenario()) is False
+    with pytest.raises(ValueError):          # a bad clip never opens it
+        run(V.transcribe("", client=client, model=MODEL))
+    assert not idle.foreground_busy()

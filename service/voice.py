@@ -17,6 +17,13 @@ Rules:
   "transcript" (it never heard anything) and Ask would then send that as the
   person's question. The engine's own status row must call it a VLM, and its
   checkpoint must declare `audio_config` and carry audio-tower weights.
+- IMPORTANT: a foreground turn. The person is waiting with the mic just
+  closed, so transcription holds `idle.begin_foreground()` from before the
+  wait until the Ask turn it starts can take over: background model work
+  (mail gists, briefs) skips its next tick and cancels a call already in
+  flight, instead of making the question wait up to that job's own timeout.
+  The gate stays up `_HANDOFF_S` after a transcript, so no background tick
+  lands between the words coming back and the app sending them to /agent.
 - IMPORTANT: never concurrent with another call on the same model. Waits until
   nothing is in flight on it, bounded by the same deadline as the call.
 - Thinking OFF and temperature 0: a transcript is not an answer. The prompt
@@ -44,6 +51,8 @@ _MAX_BYTES = int(MAX_SECONDS * 16_000 * 2) + 4096   # 16 kHz mono 16-bit, plus h
 _TIMEOUT_S = 25.0
 _IDLE_POLL_S = 0.1
 _MAX_TOKENS = 240
+# The app sends the transcript to /agent at once; /agent then holds the gate itself.
+_HANDOFF_S = 3.0
 
 _PROMPT = ("Transcribe this audio clip verbatim, in the language spoken. "
            "Write down exactly the words the speaker says, with normal punctuation. "
@@ -175,8 +184,25 @@ async def transcribe(audio_b64: str, *, client=None, model: str | None = None) -
     Raises ValueError for a clip that isn't one, VoiceUnavailable when the Ask
     model can't hear, TimeoutError when the model stayed busy.
     """
-    from service import debug_capture
     data = decode_clip(audio_b64)
+    idle.begin_foreground()
+    handoff = False
+    try:
+        text = await _transcribe(data, client, model)
+        handoff = bool(text)
+        return text
+    finally:
+        if handoff:
+            try:
+                asyncio.get_running_loop().call_later(_HANDOFF_S, idle.end_foreground)
+            except RuntimeError:  # no loop to hand off on: close the gate now
+                idle.end_foreground()
+        else:
+            idle.end_foreground()
+
+
+async def _transcribe(data: bytes, client, model: str | None) -> str:
+    from service import debug_capture
     if client is None or model is None:
         client, model = _resolve()
     await _require_audio(client, model)
