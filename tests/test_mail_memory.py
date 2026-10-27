@@ -51,6 +51,14 @@ def test_two_dates_or_none_never_resolve(phrase):
     assert resolve_due(phrase, _sent("2026-09-01"), TZ, month_first_order=True).day is None
 
 
+@pytest.mark.parametrize("phrase", ["Pick up at 28", "Doors open 28:00", "November 19 at 25:30"])
+def test_an_impossible_clock_is_no_due_date_not_a_crash(phrase):
+    # A real model reply on real mail (2026-10-27) crashed tick() here and left that
+    # email at the head of the queue for good.
+    got = resolve_due(phrase, _sent("2026-09-01"), TZ, month_first_order=True)
+    assert got.day is None and got.reason == "invalid_time"
+
+
 def test_day_first_locale():
     assert resolve_due("3/10", _sent("2026-08-20"), TZ, month_first_order=False).day == date(2026, 10, 3)
 
