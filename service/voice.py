@@ -31,6 +31,13 @@ Rules:
   is exactly what the model is otherwise trained to answer.
 - Bounded input: 16-bit PCM WAV only, at most `MAX_SECONDS`. Gemma 4's audio
   encoder takes 30 s; the app stops recording at 30 s.
+- Wisp keeps no copy: the clip lives in this request only. Best effort at the
+  engine too: the request carries `X-oMLX-Cache-Store: off`, which oMLX 0.7.3+
+  honors by keeping the prompt out of its prefix cache (the SSD tier would
+  otherwise write the prompt's KV to disk). The bundled oMLX 0.7.0 has no such
+  header, and oMLX's memory-requeue path ignores it, so there the engine may
+  cache the prompt's KV on this Mac like any other Ask prompt. Never claim
+  more than "Wisp keeps no recording and never sends it off the Mac".
 - The transcript is the person's own words, so it is treated exactly like typed
   text once it reaches Ask; nothing here acts on it.
 """
@@ -63,8 +70,11 @@ _PROMPT = ("Transcribe this audio clip verbatim, in the language spoken. "
 _NO_SPEECH = {"", "[silence]", "(silence)", "[no speech]", "(no speech)", "[inaudible]",
               "(inaudible)", "no speech", "silence"}
 
-# model path -> has an audio encoder (a checkpoint's weights do not change under it).
-_audio_capable: dict[str, bool] = {}
+# Checkpoint fingerprint -> it has an audio encoder. Only a yes is kept, keyed
+# on the files' size and mtime, so a checkpoint re-quantized in place is read
+# again and one still downloading is not refused for good.
+_audio_capable: dict[tuple, bool] = {}
+_NO_CACHE_STORE = {"X-oMLX-Cache-Store": "off"}
 
 
 class VoiceUnavailable(Exception):
@@ -80,6 +90,8 @@ def wav_seconds(data: bytes) -> float:
         chunk, size = data[offset:offset + 4], struct.unpack("<I", data[offset + 4:offset + 8])[0]
         body = offset + 8
         if chunk == b"fmt " and size >= 16:
+            if len(data) < body + 16:
+                raise ValueError("WAV format chunk is cut short")
             fmt = struct.unpack("<HHIIHH", data[body:body + 16])
         elif chunk == b"data":
             if fmt is None:
@@ -111,13 +123,25 @@ def decode_clip(audio_b64: str) -> bytes:
     return data
 
 
+def _fingerprint(root: Path) -> tuple:
+    parts = [str(root)]
+    for name in ("config.json", "model.safetensors.index.json", "model.safetensors"):
+        try:
+            info = (root / name).stat()
+            parts += [name, info.st_size, info.st_mtime_ns]
+        except OSError:
+            continue
+    return tuple(parts)
+
+
 def checkpoint_has_audio(model_path: str) -> bool:
     """True when the checkpoint at `model_path` declares and carries an audio encoder."""
-    if model_path in _audio_capable:
-        return _audio_capable[model_path]
+    root = Path(model_path)
+    key = _fingerprint(root)
+    if _audio_capable.get(key):
+        return True
     found = False
     try:
-        root = Path(model_path)
         config = json.loads((root / "config.json").read_text())
         if isinstance(config, dict) and config.get("audio_config"):
             index = root / "model.safetensors.index.json"
@@ -126,15 +150,19 @@ def checkpoint_has_audio(model_path: str) -> bool:
             else:
                 names = _safetensors_names(root / "model.safetensors")
             found = any(_is_audio_weight(n) for n in names)
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, struct.error):
         found = False
-    _audio_capable[model_path] = found
+    if found:
+        _audio_capable[key] = True
     return found
 
 
 def _safetensors_names(path: Path) -> list[str]:
     with path.open("rb") as f:
-        size = struct.unpack("<Q", f.read(8))[0]
+        head = f.read(8)
+        if len(head) < 8:
+            raise ValueError("safetensors file is cut short")
+        size = struct.unpack("<Q", head)[0]
         if size > 64 * 1024 * 1024:
             raise ValueError("safetensors header is too large")
         return list(json.loads(f.read(size)))
@@ -166,7 +194,7 @@ async def _require_audio(client, model: str) -> None:
     row = next((m for m in status.get("models") or [] if m.get("id") == model), None)
     path = (row or {}).get("model_path")
     if (not row or (row.get("model_type") != "vlm" and row.get("engine_type") != "vlm")
-            or not isinstance(path, str) or not checkpoint_has_audio(path)):
+            or not isinstance(path, str) or not await asyncio.to_thread(checkpoint_has_audio, path)):
         raise VoiceUnavailable(f"{model} can't hear audio. Voice needs a model with ears, like Gemma 4 E4B.")
 
 
@@ -220,6 +248,7 @@ async def _transcribe(data: bytes, client, model: str | None) -> str:
     # to a local Gemma-class model, and a transcript must never wait on a think block.
     response = await asyncio.wait_for(
         client.chat(model, request, temperature=0, max_tokens=_MAX_TOKENS,
+                    engine_headers=_NO_CACHE_STORE,
                     chat_template_kwargs={"enable_thinking": False}),
         timeout=max(0.5, deadline - time.monotonic()))
     debug_capture.record("model_call", model=model,

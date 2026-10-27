@@ -109,8 +109,13 @@ final class VoiceInput: ObservableObject {
         recorder.onLevel = { [weak self] level in
             Task { @MainActor in if self?.state == .listening { self?.level = level } }
         }
-        recorder.onOutcome = { [weak self] outcome in
-            Task { @MainActor in self?.ended(outcome, from: recorder) }
+        // Weak: the recorder keeps this closure, and holding the recorder here
+        // would keep it, its engine and the clip alive for the life of the app.
+        recorder.onOutcome = { [weak self, weak recorder] outcome in
+            Task { @MainActor in
+                guard let self, let recorder else { return }
+                self.ended(outcome, from: recorder)
+            }
         }
         do {
             try recorder.start()
@@ -130,7 +135,9 @@ final class VoiceInput: ObservableObject {
         case .noSpeech:
             self.recorder = nil
             recorder.stop()
-            fail("Didn't hear anything. Tap the mic and try again.")
+            fail(recorder.deviceChanged
+                 ? "Your microphone changed. Tap the mic and ask again."
+                 : "Didn't hear anything. Tap the mic and try again.")
         case .finished, .limit:
             finish()
         }
@@ -184,6 +191,11 @@ final class VoiceRecorder: @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var running = false
     private var reported = false
+    private var configurationObserver: NSObjectProtocol?
+    private var changed = false
+
+    /// The input device changed before anything was said (AirPods connecting).
+    var deviceChanged: Bool { lock.withLock { changed && !endpointer.heardSpeech } }
     private let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: Double(WAVFile.sampleRate),
                                        channels: 1, interleaved: true)!
 
@@ -203,14 +215,34 @@ final class VoiceRecorder: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.receive(buffer)
         }
+        // Headphones connecting or the input device changing stops the engine,
+        // and no more audio arrives: end the question with what was heard.
+        // Watched before start, so a change in the first moment isn't missed.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
+            self?.interrupted()
+        }
+        lock.withLock { running = true }
         engine.prepare()
         do {
             try engine.start()
         } catch {
+            lock.withLock { running = false }
             input.removeTap(onBus: 0)
+            if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+            configurationObserver = nil
             throw Failure(message: "Wisp couldn't start the microphone.")
         }
-        lock.withLock { running = true }
+    }
+
+    private func interrupted() {
+        let report: (VoiceEndpointer.Outcome, (VoiceEndpointer.Outcome) -> Void)? = lock.withLock {
+            guard running, !reported else { return nil }
+            reported = true
+            changed = true
+            return (endpointer.heardSpeech ? .finished : .noSpeech, onOutcome)
+        }
+        if let (outcome, send) = report { send(outcome) }
     }
 
     /// Stops the microphone; the clip as a WAV, nil when nothing was recorded.
@@ -225,7 +257,20 @@ final class VoiceRecorder: @unchecked Sendable {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
         }
-        let clip = lock.withLock { pcm }
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
+        // The clip leaves here as the WAV; nothing of it stays in the recorder.
+        let clip = lock.withLock { () -> Data in
+            let taken = pcm
+            pcm = Data()
+            return taken
+        }
+        lock.withLock {
+            onLevel = { _ in }
+            onOutcome = { _ in }
+        }
         return clip.isEmpty ? nil : WAVFile.encode(pcm: clip)
     }
 
@@ -247,17 +292,18 @@ final class VoiceRecorder: @unchecked Sendable {
         let chunk = UnsafeBufferPointer(start: samples, count: count)
         let level = VoiceEndpointer.level(chunk)
         let seconds = Double(count) / target.sampleRate
-        let outcome: VoiceEndpointer.Outcome? = lock.withLock {
+        // The callbacks are read under the lock: stop() clears them from another thread.
+        let step: (VoiceEndpointer.Outcome, (Float) -> Void, (VoiceEndpointer.Outcome) -> Void)? = lock.withLock {
             guard running, !reported else { return nil }
             pcm.append(UnsafeBufferPointer(start: UnsafeRawPointer(samples).assumingMemoryBound(to: UInt8.self),
                                            count: count * 2))
             let outcome = endpointer.feed(level: level, seconds: seconds)
             if outcome != .listening { reported = true }
-            return outcome
+            return (outcome, onLevel, onOutcome)
         }
-        guard let outcome else { return }
-        onLevel(VoiceEndpointer.meter(level))
-        if outcome != .listening { onOutcome(outcome) }
+        guard let (outcome, sendLevel, sendOutcome) = step else { return }
+        sendLevel(VoiceEndpointer.meter(level))
+        if outcome != .listening { sendOutcome(outcome) }
     }
 }
 

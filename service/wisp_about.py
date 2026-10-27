@@ -663,7 +663,7 @@ _HOWTO = (
      "**Ask by voice**: press **⌥⇧Space** from any app, or click the mic in Ask (or in Brief and "
      "Day to ask about your day). Wisp sends your question when you pause and reads the answer "
      "aloud; choose when in Settings (the gear) → **Read answers aloud**. Your voice is turned "
-     "into text by my model on this Mac and is never saved or sent anywhere. It needs a model "
+     "into text by my model on this Mac; I keep no recording and it never leaves your Mac. It needs a model "
      "that can hear, like Gemma 4 E4B."),
     (r"ask|talk|chat|use|question|type",
      "**Ask**: type your question and press Return. Type **/** to see shortcuts. "

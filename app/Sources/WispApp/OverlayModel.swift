@@ -618,8 +618,9 @@ final class OverlayModel: ObservableObject {
     /// person to finish and send.
     func askByVoice(_ text: String) {
         let typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard typed.isEmpty else {
-            input = typed + " " + text
+        // Voice asks, never researches: anywhere but Ask the words wait in the box.
+        guard typed.isEmpty, tab == .ask else {
+            input = typed.isEmpty ? text : typed + " " + text
             return
         }
         input = text
