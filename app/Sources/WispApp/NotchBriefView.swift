@@ -89,6 +89,7 @@ struct NotchBriefView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .clipped()
                 if !brief.suggestions.isEmpty { suggestionsRow(brief.suggestions) }
+                MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
                 HStack(spacing: 8) {
                     NotchChrome.chip("Ask about this", icon: "bubble.left", help: "Continue from this in Ask") {
                         // Continue the brief's saved chat only when that brief is the
