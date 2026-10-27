@@ -87,7 +87,8 @@ class MCPServer:
 
         args = [str(a) for a in (self.config.get("args") or [])]
         env = {**_inherited_env(self.config), **{str(k): str(v)
-                                                 for k, v in (self.config.get("env") or {}).items()}}
+                                                 for k, v in (self.config.get("env") or {}).items()
+                                                 if str(k) not in _NEVER_INHERITED}}
         try:
             self.proc = await asyncio.create_subprocess_exec(
                 resolved, *args,
@@ -320,16 +321,22 @@ class MCPManager:
         }
 
 
+_NEVER_INHERITED = frozenset({"WISP_LAUNCH_NONCE"})
+
+
 def _inherited_env(config: dict | None) -> dict[str, str]:
     """This process's environment for a server, without the variables whose
     names start with one of the server's `env_clear_prefixes` (a list of
     non-empty strings; anything else clears nothing). The server's own `env`
     is applied after this, so it can set what it needs. Wisp's Google
-    Workspace entry clears UV_* so the user's uv settings never steer it."""
+    Workspace entry clears UV_* so the user's uv settings never steer it.
+    WISP_LAUNCH_NONCE never reaches a server: it marks only the backend the app
+    launched (it gates /resetwisp's restart pass in service/main.py)."""
     prefixes = (config or {}).get("env_clear_prefixes")
     if not isinstance(prefixes, list) or not all(isinstance(p, str) and p for p in prefixes):
         prefixes = []
-    return {k: v for k, v in os.environ.items() if not any(k.startswith(p) for p in prefixes)}
+    return {k: v for k, v in os.environ.items()
+            if k not in _NEVER_INHERITED and not any(k.startswith(p) for p in prefixes)}
 
 
 def _trusted_read_only(config: dict | None) -> frozenset[str]:

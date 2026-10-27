@@ -14,6 +14,15 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 """
 from __future__ import annotations
 
+# /resetwisp's restart pass, before any other import opens a store or database.
+# Only in the backend the app launched (it passes WISP_LAUNCH_NONCE): a script or
+# tool importing the service with the real HOME never erases anything. While a
+# reset is unrecorded or unfinished this exits instead of starting the service.
+import os as _reset_os
+if _reset_os.environ.get("WISP_LAUNCH_NONCE"):
+    from service.wisp_reset import resume_or_exit as _resume_or_exit
+    _resume_or_exit()
+
 from service.assistant.verified_reminders import expected_date_fields
 
 import asyncio
@@ -424,6 +433,8 @@ async def lifespan(app: FastAPI):
             started_tasks.append(asyncio.create_task(gmail_source.run()))
             from service.memory.api import worker as memory_worker
             started_tasks.append(asyncio.create_task(memory_worker.run(client)))
+    # /resetwisp stops these before it deletes anything (service/wisp_reset.py).
+    app.state.wisp_background_tasks = started_tasks
     recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
@@ -433,6 +444,7 @@ async def lifespan(app: FastAPI):
         bridge_link = browser_bridge_host.start_from_environment(assistant_store)
     except Exception:  # noqa: BLE001 — an optional bridge never blocks startup
         pass
+    app.state.wisp_bridge_link = bridge_link    # /resetwisp stops it too
     try:
         yield
     finally:
@@ -456,6 +468,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Wisp", lifespan=lifespan)
 from service.config.quarantine import RecoveryMiddleware
 app.add_middleware(RecoveryMiddleware)
+from service.wisp_reset import ResetGate, router as wisp_reset_router
+app.add_middleware(ResetGate)           # /resetwisp: refuse everything else once deleting starts
+app.include_router(wisp_reset_router)
 from service.local_http import LocalOriginGuard
 app.add_middleware(LocalOriginGuard)    # web pages: loopback Host, same-origin changes only
 from service.memory.api import router as memory_router

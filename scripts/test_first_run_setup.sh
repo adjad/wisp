@@ -20,5 +20,6 @@ swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx14.0"
     -module-cache-path "$scratch/module-cache" \
     "${sources[@]}" \
     "$project_root/tests/FirstRunSetupChecks.swift" \
+    "$project_root/tests/WispResetChecks.swift" \
     -lsqlite3 -o "$scratch/first-run-checks"
 "$scratch/first-run-checks"
