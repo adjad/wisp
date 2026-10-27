@@ -53,7 +53,7 @@ Rules:
 - The summary stays compact, like `summarize_emails`: a few short sentences,
   who wrote and what changed. A reply that is an input line (or starts with the
   `From <sender>:` form) is dropped for `mail_prose`, which also covers private
-  mail ("John Morada canceled “Office Hours” (3 emails).").
+  mail ("Jordan Lee canceled “Office Hours” (3 emails).").
 """
 from __future__ import annotations
 

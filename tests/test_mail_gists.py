@@ -570,11 +570,11 @@ def test_the_summary_request_goes_only_to_the_local_fast_model(monkeypatch, mode
     import inspect
     from service.inference import remote_policy
     client = use(monkeypatch, FakeClient(["fast"], content="John canceled office hours. The rest is quiet."))
-    assert asyncio.run(G._resident_reply("sys", "mail", lambda: False)) is not None and client.requests[0][0] == "fast"
+    assert asyncio.run(G._resident_reply("sys", "mail", lambda: False, local_only=True)) is not None and client.requests[0][0] == "fast"
     # remote-only profile on: stand down before any request, even with a "local" client object
     remote = use(monkeypatch, FakeClient(["fast"]))
     monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
-    assert asyncio.run(G._resident_reply("sys", "mail", lambda: False)) is None and remote.requests == []
+    assert asyncio.run(G._resident_reply("sys", "mail", lambda: False, local_only=True)) is None and remote.requests == []
     monkeypatch.undo()
     # a non-loopback engine
     far = FakeClient(["fast"])
@@ -583,12 +583,27 @@ def test_the_summary_request_goes_only_to_the_local_fast_model(monkeypatch, mode
     import service.config as config
     monkeypatch.setattr(brief, "_c", lambda: far)
     monkeypatch.setattr(config, "role_to_model", lambda role: "fast")
-    assert asyncio.run(G._resident_reply("sys", "mail", lambda: False)) is None and far.requests == []
-    # the module has no other way to reach a model: no HTTP or cloud imports, no client of its own
+    assert asyncio.run(G._resident_reply("sys", "mail", lambda: False, local_only=True)) is None and far.requests == []
+    # only the summary asks for local-only: refresh() passes it for kind "summary"
+    seen = []
+
+    async def spy(system, material, abort, **kw):
+        seen.append(kw.get("local_only"))
+        return None
+
+    monkeypatch.setattr(G, "_resident_reply", spy)
+    monkeypatch.setattr(G, "summary_lines", lambda rows: ["- From Ann: Lunch"])
+    monkeypatch.setattr(G, "recent_mail", lambda now: [row(1, "Lunch")])
+    monkeypatch.setattr(G, "recent_texts", lambda now: [])
+    monkeypatch.setattr(G, "_PATH", Path(os.environ["TMPDIR"]) / "g.json")
+    monkeypatch.setattr(G, "_cache", {})
+    asyncio.run(G.refresh(NOW, abort=lambda: False))
+    assert seen == [True]
+    # the module has no other way to reach a model: no cloud imports, no client of its own (httpx only names unreachable-engine errors)
     import ast
     tree = ast.parse(inspect.getsource(G))
     imported = {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | \
                {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
-    assert not [m for m in imported if any(w in m for w in ("httpx", "requests", "urllib", "cloud", "omlx_client", "delegat"))], imported
+    assert not [m for m in imported if any(w in m for w in ("requests", "urllib", "cloud", "omlx_client", "delegat"))], imported
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     assert not names & {"OMLXClient", "cloud_super_model_target", "cloud_provider_settings", "chat_cloud"}
