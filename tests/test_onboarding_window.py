@@ -237,10 +237,12 @@ def test_messages_has_its_own_permission_row():
     assert "Self.quitAfterAsking(launched)" in messages
     assert "Self.quitAfterAsking(launched)" in request[request.index("case .mail:"):request.index("case .messages:")]
     refresh = _body(setup, "func refresh() async")
-    assert "let messages = await Self.messagesAutomationState(ask: false)" in refresh
-    assert "let mail = await Self.automationState(ask: false)" in refresh
-    assert "next[.messages] = Self.keepingAnswer(messages, answered: answered[.messages])" in refresh
-    assert "next[.mail] = Self.keepingAnswer(mail, answered: answered[.mail])" in refresh
+    # The last definite answer is remembered in UserDefaults (never in memory only):
+    # a closed Mail, Notes or Messages reads "can't say", not "permission removed".
+    assert "next[.messages] = await Self.messagesAutomationState(ask: false)" in refresh
+    assert "next[.mail] = await Self.automationState(ask: false)" in refresh
+    assert "private var answered" not in setup and "keepingAnswer" not in setup
+    assert "defaults.set(answer.rawValue, forKey: automationKey(item))" in setup
     # Only a target Wisp started itself is closed again, politely.
     launch = _body(setup, "private static func launchHidden(_ bundleID: String) async -> NSRunningApplication?")
     assert "runningApplications.contains" in launch and "config.addsToRecentItems = false" in launch
