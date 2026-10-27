@@ -476,6 +476,8 @@ final class FirstRunPermissions: ObservableObject {
 
     @Published private(set) var states: [Item: State] = [:]
     @Published private(set) var asking: Item?
+    /// Calendar or Reminders asked, and macOS recorded no answer (see eventKitUnanswered).
+    @Published private(set) var unanswered: [Item: Bool] = [:]
     /// What the person answered the last time Wisp asked, kept for Mail & Notes and
     /// Messages. Wisp closes the apps it opened to ask, and macOS reads a closed app
     /// as "not asked yet", so without this the row would flip back to Not set.
@@ -569,10 +571,26 @@ final class FirstRunPermissions: ObservableObject {
         // person clicked into during the download (the RemindersWriter pattern).
         NSApp.activate(ignoringOtherApps: true)
         switch item {
-        case .calendar:
-            _ = try? await EKEventStore().requestFullAccessToEvents()
-        case .reminders:
-            _ = try? await EKEventStore().requestFullAccessToReminders()
+        case .calendar, .reminders:
+            // The prompt stays in this method (test_onboarding_window): only a click reaches it.
+            let entity: EKEntityType = item == .calendar ? .event : .reminder
+            let before = EKEventStore.authorizationStatus(for: entity)
+            switch Self.eventKitClick(before) {
+            case .alreadyAllowed:
+                unanswered[item] = nil
+            case .openSettings:
+                unanswered[item] = nil
+                Permissions.openSettingsPane(FirstRunSetupView.settingsPane(item))
+            case .ask:
+                let store = eventStore(entity)
+                do {
+                    _ = item == .calendar ? try await store.requestFullAccessToEvents()
+                                          : try await store.requestFullAccessToReminders()
+                } catch {
+                    NSLog("Wisp: macOS did not answer the \(item.rawValue) request: \(error.localizedDescription)")
+                }
+                unanswered[item] = Self.eventKitUnanswered(before: before, after: EKEventStore.authorizationStatus(for: entity))
+            }
         case .contacts:
             _ = try? await CNContactStore().requestAccess(for: .contacts)
         case .notifications:
@@ -608,6 +626,50 @@ final class FirstRunPermissions: ObservableObject {
             Permissions.openFullDiskAccessPane()
         }
         await refresh()
+    }
+
+    /// What a click on the Calendar or Reminders button does, from macOS's answer
+    /// right now. macOS asks once: after a Don't Allow it never shows the question
+    /// again, so a second request would look like a button that does nothing.
+    enum EventKitClick: Equatable { case ask, openSettings, alreadyAllowed }
+
+    static func eventKitClick(_ status: EKAuthorizationStatus) -> EventKitClick {
+        switch status {
+        case .notDetermined: return .ask
+        case .fullAccess: return .alreadyAllowed
+        default: return .openSettings   // denied, restricted, or write-only (Wisp needs full access)
+        }
+    }
+
+    /// An ask that left macOS with no answer recorded: its question never showed
+    /// (or was dismissed without a choice), so Wisp is still absent from the list.
+    static func eventKitUnanswered(before: EKAuthorizationStatus, after: EKAuthorizationStatus) -> Bool {
+        before == .notDetermined && after == .notDetermined
+    }
+
+    /// The Calendar or Reminders row's sentence: what it is for, or, once macOS
+    /// has turned it down or never answered, what to do next.
+    static func eventKitDetail(_ item: Item, base: String, state: State, unanswered: Bool) -> String {
+        let page = item == .reminders ? "Reminders" : "Calendars"
+        switch state {
+        case .notAllowed:
+            return "Wisp is off in System Settings. Click Open System Settings, then switch Wisp on under "
+                + "Privacy & Security > \(page)."
+        case .notAsked where unanswered:
+            return "macOS didn't show its question. Quit and reopen Wisp, then click Allow again."
+        default:
+            return base
+        }
+    }
+
+    /// One store per kind, kept for the life of the window: the request is
+    /// answered against it, so it is not dropped while macOS is asking.
+    private var eventStores: [EKEntityType: EKEventStore] = [:]
+
+    private func eventStore(_ entity: EKEntityType) -> EKEventStore {
+        let store = eventStores[entity] ?? EKEventStore()
+        eventStores[entity] = store
+        return store
     }
 
     /// Calendar and Reminders are two permissions with two Settings pages, so two
@@ -1343,9 +1405,13 @@ struct FirstRunSetupView: View {
                               subtitle: "Each one is optional, and nothing is asked until you click its button. "
                                   + "Wisp reads these to help; it asks before sending or changing anything.")
             permissionRow(.calendar, icon: "calendar", title: "Calendar",
-                          detail: "Your meetings and events, for your day plan.")
+                          detail: FirstRunPermissions.eventKitDetail(
+                              .calendar, base: "Your meetings and events, for your day plan.",
+                              state: permissions.state(.calendar), unanswered: permissions.unanswered[.calendar] == true))
             permissionRow(.reminders, icon: "checklist", title: "Reminders",
-                          detail: "What's due, and the reminders Wisp sets for you.")
+                          detail: FirstRunPermissions.eventKitDetail(
+                              .reminders, base: "What's due, and the reminders Wisp sets for you.",
+                              state: permissions.state(.reminders), unanswered: permissions.unanswered[.reminders] == true))
             permissionRow(.mail, icon: "envelope", title: "Mail & Notes",
                           detail: "Emails that need a reply, and your notes, while those apps are open. "
                               + "Opens Mail and Notes for a moment to ask, then closes them.")
