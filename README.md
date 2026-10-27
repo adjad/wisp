@@ -49,7 +49,11 @@ skipped and finished later from the menu-bar icon (**Finish Setup...**).
    more on a slow one. The engine that runs it is already inside Wisp, so there is nothing else to
    install. The first start of the engine can take a few minutes. You can keep going through the
    other steps while it downloads, and Wisp sends a notification when it is ready. When the download
-   finishes, Wisp checks that the model really answers.
+   finishes, Wisp checks that the model really answers. **Already use oMLX?** Wisp uses the oMLX
+   you have instead of downloading again: it starts oMLX once by itself, shows "Connecting to your
+   oMLX…" until it answers, and switches to a Wisp model oMLX already serves. If oMLX doesn't
+   answer within about 10 seconds, the step offers **Try again**. Wisp never looks through your
+   folders to find models.
 2. **Permissions.** Each one is optional. Wisp never asks for one by itself: macOS asks only after you click **Allow** on that row. To allow one later, right-click the menu-bar icon, choose **Permissions…**, and click **Allow**. To take one away, use System Settings:
 
    | Permission | Why Wisp asks |
@@ -58,6 +62,7 @@ skipped and finished later from the menu-bar icon (**Finish Setup...**).
    | Reminders | To show what is due, and to add or complete reminders when you ask. |
    | Mail and Notes (Automation) | To read your mail and notes while those apps are open. Wisp opens them in the background to ask. |
    | Full Disk Access | To read Messages, and Mail and Notes when those apps are closed. macOS can't prompt for this one, so Wisp opens the right page of System Settings and you switch **Wisp** on. macOS may offer to reopen Wisp, and setup picks up where you left off. |
+   | Messages (Automation) | So the first message you send from Ask doesn't stop on a macOS prompt. |
    | Contacts | To show names instead of phone numbers. |
    | Notifications | For reminder alerts and "Wisp is ready". |
 
@@ -67,6 +72,8 @@ skipped and finished later from the menu-bar icon (**Finish Setup...**).
 4. **About you.** Three optional questions: what to call you, your goals, how you like replies.
 5. **How to use it.** A short tour of the notch and the shortcuts, with a few questions to try.
 
+Setup is finished only when you click **Done**. If you quit or close the window part-way, or macOS
+quits and reopens Wisp after Full Disk Access, the next launch reopens setup at the step you left.
 If you leave before the model is ready, Wisp keeps a small cue on the notch and tells you when it
 can answer.
 
@@ -78,7 +85,8 @@ can answer.
   under the menu bar.
 - **Three tabs: Ask, Brief and Day.** **Ask** is the conversation. **Brief** is a short summary of
   what needs you today, from your mail, texts, calendar and reminders. **Day** lays the rest of today
-  out hour by hour.
+  out hour by hour. An empty Ask suggests a few questions to try. Once you have used some,
+  **Try another** offers the ones you haven't asked in this chat.
 - **Shortcuts.** **⌥Space** opens Ask from anywhere. **⌘⇧F** searches the document on
   screen (Smart Search). **⌘,** opens Settings. If another app already uses one of these, the
   setup tour says so, and the top of the screen always works.
