@@ -475,7 +475,11 @@ final class FirstRunPermissions: ObservableObject {
     enum State: Equatable { case checking, notAsked, allowed, notAllowed, notOnThisMac }
 
     @Published private(set) var states: [Item: State] = [:]
-    @Published private(set) var asking: Item?
+    /// Rows with a question up right now. Per row, not one lock: the Mail & Notes check
+    /// waits until the person answers, and its prompt can sit behind Mail (opened hidden
+    /// to ask), so a single lock left every other Allow button, Reminders included,
+    /// doing nothing until then.
+    @Published private(set) var asking: Set<Item> = []
     /// Calendar or Reminders asked, and macOS recorded no answer (see eventKitUnanswered).
     @Published private(set) var unanswered: [Item: Bool] = [:]
     /// Mail & Notes or Messages whose grant macOS has dropped since it was last
@@ -562,9 +566,9 @@ final class FirstRunPermissions: ObservableObject {
     }
 
     func request(_ item: Item) async {
-        guard asking == nil else { return }
-        asking = item
-        defer { asking = nil }
+        guard !asking.contains(item) else { return }
+        asking.insert(item)
+        defer { asking.remove(item) }
         // A prompt for an app that isn't frontmost can open behind whatever the
         // person clicked into during the download (the RemindersWriter pattern).
         NSApp.activate(ignoringOtherApps: true)
@@ -1540,12 +1544,12 @@ struct FirstRunSetupView: View {
                     .accessibilityLabel("Open System Settings for \(title)")
                 case .notAsked:
                     Text(label).font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
-                    Button(permissions.asking == item ? "Asking…"
+                    Button(permissions.asking.contains(item) ? "Asking…"
                            : item == .fullDiskAccess ? "Open System Settings" : "Allow") {
                         Task { await permissions.request(item) }
                     }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
-                    .disabled(permissions.asking != nil)
+                    .disabled(permissions.asking.contains(item))
                     .accessibilityLabel(item == .fullDiskAccess ? "Open System Settings for \(title)" : "Allow \(title)")
                 }
             }
