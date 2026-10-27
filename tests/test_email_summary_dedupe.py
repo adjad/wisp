@@ -191,6 +191,73 @@ class SummaryDedupe(unittest.TestCase):
         self.assertEqual(digests(out), 1)
         self.assertEqual(out.count("Your statement"), 1)
 
+    # --------------------------------------------- repair round: M1 / M2
+
+    def parse(self, line, snapshot="recent"):
+        return E._parse_header_records(line, snapshot=snapshot)[0]
+
+    def test_incomplete_account_less_scan_is_not_dropped(self):
+        self.two_accounts()
+        # An unlinked Mail account with nothing today, whose scan skipped headers.
+        self.native(
+            mail_row("Google", "uuid-google", NOW - 9, "Paula", "paula@pay.test", "Your statement", 1),
+            mail_row("iCloud", "uuid-icloud", NOW - 90000, "Bo", "bo@friend.test", "Old note", 3),
+            FS.join(["C2", "iCloud", "uuid-icloud", "5", "2", "0"]))
+        # Mail verified fresh, so the only caveat left is the scan coverage itself.
+        self.enterContext(patch.multiple(E, _email_read_source="mail_app", _email_available=True,
+                                         _native_headers_at=time.time(), _native_history_at=time.time()))
+        out = asyncio.run(E.summarize_emails(day="today"))
+        head = out.split("## " + ME, 1)[0]
+        self.assertIn("## Your accounts", head)
+        self.assertIn("skipped 2 malformed headers", head)
+        self.assertEqual(digests(out), 2)
+
+    def test_plain_empty_bodies_are_the_only_ones_dropped(self):
+        for text in ("No emails found for Tuesday, October 27.",
+                     "No emails in Tuesday (Tue Oct 27, 12:00 AM to Wed Oct 28, 12:00 AM). Scanned 0 matching "
+                     "headers; represented 0 messages; truncated 0 messages.",
+                     "No unread email found in your recent inbox."):
+            self.assertTrue(E._is_plain_empty(text), text)
+        for text in ("No parseable emails in the available recent header cache; total coverage is unknown.",
+                     "No unread email found in the available recent cache; total coverage is unknown.",
+                     "No matching headers in the available cache for today. Recent header scan did not "
+                     "complete for iCloud; requested mail may be outside the cache.",
+                     "No emails found for today.\n\nRead-status filter: 3 cached message(s) lack read status "
+                     "and are excluded; their unread state is unknown.",
+                     "\U0001F4EC **Inbox digest \u2014 today**\n1 email"):
+            self.assertFalse(E._is_plain_empty(text), text)
+
+    def test_same_reader_kind_never_counts_as_a_linked_duplicate(self):
+        shown = (self.parse(mail_row(ME, ME, NOW, "Sec", "alerts@bank.test", "Your verification code", 1)),)
+        other = [self.parse(mail_row("iCloud", "uuid-icloud", NOW + 60, "Sec", "alerts@bank.test",
+                                     "Your verification code", 2))]
+        excluded = frozenset({E._account_group(ME, ME)})
+        self.assertEqual(len(E._drop_linked_duplicates(other, excluded, shown)), 1)
+
+    def test_a_different_reader_copy_is_dropped_once_per_shown_row(self):
+        shown = (self.parse(gmail_row(ME, NOW, "Sec", "alerts@bank.test", "Your verification code",
+                                      "c1@bank.test", "g1")),)
+        copies = [self.parse(mail_row("Google", "uuid-google", NOW + 5, "Sec", "alerts@bank.test",
+                                      "Your verification code", i)) for i in (1, 2)]
+        excluded = frozenset({E._account_group(ME, ME)})
+        # One shown message accounts for one copy; the second is a different email.
+        self.assertEqual(len(E._drop_linked_duplicates(copies, excluded, shown)), 1)
+        # A copy of something the linked section did NOT show is never dropped.
+        self.assertEqual(len(E._drop_linked_duplicates(copies, excluded, ())), 2)
+
+    def test_unread_summary_keeps_the_unread_copy_when_the_linked_copy_is_read(self):
+        self.link(ME, SCHOOL)
+        E.cache_external_emails(account=ME, headers=gmail_row(
+            ME, NOW - 10, "Paula", "paula@pay.test", "Your statement", "p1@pay.test", "g1", unread=False))
+        E.cache_external_emails(account=SCHOOL, headers=gmail_row(
+            SCHOOL, NOW - 30, "Prof Ada", "ada@school.test", "Exam reminder", "m1@school.test", "g3"))
+        self.native(mail_row("Google", "uuid-google", NOW - 9, "Paula", "paula@pay.test",
+                             "Your statement", 1, unread=True))
+        out = asyncio.run(E.summarize_emails(day="today", unread=True))
+        # The linked section hides its (read) copy, so the unread one must show somewhere.
+        self.assertEqual(out.count("Your statement"), 1)
+        self.assertIn("Your accounts", out)
+
 
 if __name__ == "__main__":
     unittest.main()
