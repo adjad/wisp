@@ -92,6 +92,7 @@ struct NotchBriefView: View {
                                           events: restOfToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
                                           coverage: Self.coverage(plan))
+                    MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
                     HStack {
                         askChip(plan)
                         Spacer()
@@ -190,6 +191,7 @@ struct NotchBriefView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .clipped()
         if !brief.suggestions.isEmpty { suggestionsRow(brief.suggestions) }
+        MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
         footerChips(plan)
         if !brief.summary.isEmpty { goalLines(brief.summary) }
     }

@@ -122,6 +122,7 @@ PROFILE_TESTS = {
         "tests/test_brief_needs_you.py",
         "tests/test_day_timeline_event_fields.py",
         "tests/test_mail_gists.py",
+        "tests/test_mail_memory.py",
         "tests/test_behavior_gmail_history.py",
         "tests/test_behavior_availability.py",
     },
@@ -408,6 +409,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_brief_summary_contract.py",
     # Mail gists with a fake model and an isolated cache; nothing is read or sent.
     "tests/test_mail_gists.py",
+    # Mail memory with a stand-in app, model and hub, a temporary store and stubbed idle/power
+    # probes; no Mail, no model, no subprocess, nothing is added to Reminders.
+    "tests/test_mail_memory.py",
     # The kept Daily Summary with an isolated file and a stand-in hub; nothing is composed, read or sent.
     "tests/test_brief_latest.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
@@ -630,6 +634,8 @@ _NATIVE_PASSED = re.compile(
 _LEGACY_PROMPTS_VALIDATED = re.compile(r"\bok:\s*(?P<passed>\d+)\s+prompts validated\b")
 _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
+    "native/mail-memory-contract": "native/mail-memory-compile",
+    "native/mail-memory-brief-contract": "native/mail-memory-brief-compile",
     "native/mail-history-contract": "native/mail-history-compile",
     "native/privacy-sync-contract": "native/privacy-sync-compile",
     "native/source-sync-label-contract": "native/source-sync-label-compile",
@@ -914,6 +920,8 @@ def _dependencies() -> dict[str, str]:
 def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     module_cache = str(build_dir / "module-cache")
     mail_db = str(build_dir / "mail-db-regression")
+    mail_memory = str(build_dir / "mail-memory-regression")
+    mail_memory_brief = str(build_dir / "mail-memory-brief")
     mail_history = str(build_dir / "mail-history")
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
@@ -977,6 +985,24 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/mail-db-contract", [mail_db]),
+        (
+            "native/mail-memory-compile",
+            [
+                TRUSTED_SWIFTC, "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailMemoryReader.swift",
+                "tests/MailMemoryReaderRegression.swift", "-lsqlite3", "-o", mail_memory,
+            ],
+        ),
+        ("native/mail-memory-contract", [mail_memory]),
+        (
+            "native/mail-memory-brief-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailMemory.swift",
+                "tests/MailMemoryChecks.swift", "-o", mail_memory_brief,
+            ],
+        ),
+        ("native/mail-memory-brief-contract", [mail_memory_brief]),
         (
             "native/mail-history-compile",
             [

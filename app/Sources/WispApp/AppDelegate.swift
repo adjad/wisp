@@ -105,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var calendarReader: CalendarReader?
     private var remindersWriter: RemindersWriter?
     private var mailReader: MailReader?
+    private var mailMemoryReader: MailMemoryReader?
     private var messagesReader: MessagesReader?
     private var notesReader: NotesReader?
     private var contactsReader: ContactsReader?
@@ -1310,6 +1311,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if sources.contains("notes") { self.notesReader?.sync() }
             if sources.contains("browser_history") { self.browserHistoryReader?.sync() }
         }
+        model.onMailMemoryRead = { [weak self] payload in
+            self?.mailMemoryReader?.handle(payload) ?? false
+        }
         model.startAssistant()
         Notifications.onOpenToday = { [weak self] in self?.openTodayInNotch() }
         Notifications.onOpenAsk = { [weak self] in self?.openAssistant() }
@@ -1470,6 +1474,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !nativeSourceReadersStarted else { return }
         nativeSourceReadersStarted = true
         // These never make macOS ask: a missing Full Disk Access is only a failed read.
+        mailMemoryReader = MailMemoryReader(send: MailMemoryReader.poster(
+            to: WispClient.baseURL.appendingPathComponent("assistant/sync/mail_memory")))
         messagesReader = MessagesReader()
         browserHistoryReader = BrowserHistoryReader()
         activityReader = ActivityReader()
