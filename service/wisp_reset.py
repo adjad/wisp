@@ -971,12 +971,31 @@ def _cancel_requests() -> None:
             task.cancel()
 
 
+# Each scheduler child that starts its own task, and the global that holds it.
+_CHILD_TASKS = (("service.assistant.mail_gists", "_task"), ("service.assistant.attention_runner", "_task"),
+                ("service.assistant.day_plan_email", "_schedule_task"), ("service.proactive.cycle", "_task"),
+                ("service.mail_memory.runner", "_task"))
+
+
+def _child_tasks() -> list:
+    """The task each scheduler child keeps. Only modules already imported can have one."""
+    found = []
+    for name, attr in _CHILD_TASKS:
+        task = getattr(sys.modules.get(name), attr, None)
+        if isinstance(task, asyncio.Task):
+            found.append(task)
+    return found
+
+
 async def _stop_background(app, problems: list[dict]) -> None:
     from service.assistant import scheduler
     tasks = [t for t in getattr(app.state, "wisp_background_tasks", ()) or () if not t.done()]
     # The scheduler's own runs: a Daily Summary (or its day-one recompose) and a behavior tick.
     tasks += [t for t in (getattr(scheduler, "_brief_task", None), getattr(scheduler, "_behavior_task", None))
               if t is not None and not t.done()]
+    # And the work it starts on its ticks. An in-flight gist or mail memory call would
+    # otherwise write its cache back after the erase below, and a day-plan email send.
+    tasks += [t for t in _child_tasks() if not t.done()]
     for task in tasks:
         task.cancel()
     if tasks:
