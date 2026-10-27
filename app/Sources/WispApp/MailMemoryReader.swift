@@ -98,10 +98,12 @@ final class MailMemoryReader {
         guard let path = MailMemoryReader.envelopeIndexPath(mailRoot) else {
             return ["ok": false, "error": "no_mail_index"]
         }
-        guard let (member, _) = try? MailMemoryReader.indexRows(dbPath: path, since: 0, only: request.rowid),
-              !member.isEmpty else {
-            return ["ok": false, "error": "not_in_inbox_or_sent"]
+        // An index that can't be read right now (busy, access revoked) is not an answer:
+        // the backend retries later instead of skipping the email for good.
+        guard let (member, _) = try? MailMemoryReader.indexRows(dbPath: path, since: 0, only: request.rowid) else {
+            return ["ok": false, "error": "index_unreadable"]
         }
+        guard !member.isEmpty else { return ["ok": false, "error": "not_in_inbox_or_sent"] }
         // A rowid missing from the map, or a cached path that no longer reads, rebuilds
         // the map once (at most one rebuild per `rebuildInterval`) and retries.
         var rebuilt = false
