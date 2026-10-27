@@ -21,6 +21,18 @@ struct MailMemorySection: View {
             .onReceive(NotificationCenter.default.publisher(for: .wispAssistantChanged)) { _ in
                 Task { await memory.refresh(); onResize() }
             }
+            .onChange(of: memory.confirmation) { _, text in
+                if let text { Self.announce(text) }
+            }
+            .onChange(of: memory.failures) { old, new in
+                for (id, text) in new where old[id] != text { Self.announce(text) }
+            }
+    }
+
+    /// Says a result aloud to VoiceOver, since these lines appear without focus moving.
+    private static func announce(_ text: String) {
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
     }
 
     @ViewBuilder private var content: some View {
@@ -51,7 +63,7 @@ struct MailMemorySection: View {
                 .accessibilityLabel("Suggested reminder: \(item.what), \(item.dueLabel()). \(item.detail)")
                 Spacer(minLength: 8)
                 if memory.answering == item.id {
-                    ProgressView().controlSize(.small)
+                    ProgressView().controlSize(.small).accessibilityLabel("Adding")
                 } else {
                     NotchChrome.small("Add") { Task { await memory.accept(item); onResize() } }
                         .disabled(busy)
@@ -72,6 +84,48 @@ struct MailMemorySection: View {
                 Text(failure).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+}
+
+/// Settings → Privacy & Access: whether mail suggestions run, and whether the Brief shows them.
+struct MailMemorySettingsRow: View {
+    @ObservedObject var memory: MailMemoryModel = MailMemoryCards.model
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Mail suggestions").font(.system(size: 14, weight: .medium))
+            Picker("Mail suggestions", selection: Binding(
+                get: { memory.mode },
+                set: { value in Task { await memory.setMode(value) } })) {
+                Text("Show important").tag("live")
+                Text("Record only").tag("shadow")
+                Text("Off").tag("off")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(!memory.known || memory.modeChanging)
+            .accessibilityLabel("Mail suggestions")
+            Text(caption).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Reads your Sent mail and Mail's Primary, Transactions and Updates from the last "
+                 + "90 days, on this Mac, while you're idle. Never spam, trash, archive or promotions.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let status = memory.modeStatus {
+                Text(status).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .task { await memory.refresh() }
+    }
+
+    private var caption: String {
+        guard memory.known else { return "Checking…" }
+        switch memory.mode {
+        case "live": return "Finds dates and deadlines in older mail and shows the important ones on the Brief, "
+            + "where Add puts them in Reminders."
+        case "shadow": return "Finds them but shows nothing, so you can check what it would suggest first."
+        default: return "Off. Wisp doesn't read your mail for suggestions."
         }
     }
 }

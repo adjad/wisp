@@ -1757,6 +1757,10 @@ struct SettingsView: View {
 
                         Divider()
 
+                        MailMemorySettingsRow()
+
+                        Divider()
+
                         if loader.behaviorEnabled != nil {
                             Toggle(isOn: Binding(
                                 get: { loader.behaviorEnabled == true },

@@ -18,9 +18,9 @@ final class MailMemoryReader {
     static let maxDays = 200
     static let maxIndexRows = 6000
     static let maxBodyBytes = 262_144
-    private static let emlxIndexTTL: TimeInterval = 600
 
     private let mailRoot: String
+    private let rebuildInterval: TimeInterval
     private let work = DispatchQueue(label: "wisp.mail-memory", qos: .utility)
     private let send: ([String: Any]) -> Void
     private var emlx: [Int64: (path: String, partial: Bool)] = [:]
@@ -28,8 +28,10 @@ final class MailMemoryReader {
 
     /// `send` delivers each reply; the app passes `MailMemoryReader.poster(to:)`.
     init(mailRoot: String = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Mail"),
+         rebuildInterval: TimeInterval = 30,
          send: @escaping ([String: Any]) -> Void) {
         self.mailRoot = mailRoot
+        self.rebuildInterval = rebuildInterval
         self.send = send
     }
 
@@ -82,32 +84,78 @@ final class MailMemoryReader {
                 return ["ok": false, "error": "no_mail_index"]
             }
             let since = Date().timeIntervalSince1970 - Double(request.days) * 86400
-            guard let (rows, capped) = MailMemoryReader.indexRows(dbPath: path, since: since) else {
-                return ["ok": false, "error": "unreadable"]
+            do {
+                let (rows, capped) = try MailMemoryReader.indexRows(dbPath: path, since: since)
+                return ["ok": true, "rows": rows, "capped": capped]
+            } catch let failure as IndexFailure {
+                return ["ok": false, "error": failure.rawValue]
+            } catch {
+                return ["ok": false, "error": IndexFailure.unreadable.rawValue]
             }
-            return ["ok": true, "rows": rows, "capped": capped]
         }
-        if emlx[request.rowid] == nil, emlxBuiltAt.map({ Date().timeIntervalSince($0) > MailMemoryReader.emlxIndexTTL }) ?? true {
-            emlx = MailMemoryReader.emlxFiles(mailRoot)
-            emlxBuiltAt = Date()
+        // A rowid missing from the map, or a cached path that no longer reads, rebuilds
+        // the map once (at most one rebuild per `rebuildInterval`) and retries.
+        var rebuilt = false
+        if emlx[request.rowid] == nil { rebuilt = rebuildEmlx() }
+        guard var file = emlx[request.rowid] else { return ["ok": false, "error": "not_on_disk"] }
+        var read = MailMemoryReader.message(at: file.path)
+        if read == nil, !rebuilt, rebuildEmlx() {
+            guard let fresh = emlx[request.rowid] else { return ["ok": false, "error": "not_on_disk"] }
+            file = fresh
+            read = MailMemoryReader.message(at: file.path)
         }
-        guard let file = emlx[request.rowid] else { return ["ok": false, "error": "not_on_disk"] }
-        guard let (data, truncated) = MailMemoryReader.message(at: file.path) else {
-            return ["ok": false, "error": "unreadable"]
-        }
+        guard let (data, truncated) = read else { return ["ok": false, "error": "unreadable"] }
         return ["ok": true, "rowid": request.rowid, "partial": file.partial, "truncated": truncated,
                 "raw_b64": data.base64EncodedString()]
     }
 
+    /// Rebuilds the .emlx map unless it was built within `rebuildInterval`. True when it did.
+    private func rebuildEmlx() -> Bool {
+        if let built = emlxBuiltAt, Date().timeIntervalSince(built) < rebuildInterval { return false }
+        emlx = MailMemoryReader.emlxFiles(mailRoot)
+        emlxBuiltAt = Date()
+        return true
+    }
+
+    /// Why an index read failed. The raw value is the `error` the backend sees.
+    enum IndexFailure: String, Error {
+        case unreadable
+        case unsupportedSchema = "unsupported_schema"
+    }
+
     // MARK: - Envelope Index
 
-    static func envelopeIndexPath(_ mailRoot: String) -> String? {
+    /// The newest `V*` folder that has an Envelope Index (V10 is newer than V9).
+    /// The index and the .emlx map must come from this same folder: ROWIDs are per database.
+    static func versionDirectory(_ mailRoot: String) -> String? {
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: mailRoot) else { return nil }
-        for e in entries.sorted().reversed() where e.hasPrefix("V") {
-            let candidate = "\(mailRoot)/\(e)/MailData/Envelope Index"
-            if FileManager.default.fileExists(atPath: candidate) { return candidate }
+        let versions = entries.compactMap { e -> (Int, String)? in
+            guard e.hasPrefix("V"), let n = Int(e.dropFirst()) else { return nil }
+            return (n, e)
+        }
+        for (_, e) in versions.sorted(by: { $0.0 > $1.0 }) {
+            if FileManager.default.fileExists(atPath: "\(mailRoot)/\(e)/MailData/Envelope Index") {
+                return "\(mailRoot)/\(e)"
+            }
         }
         return nil
+    }
+
+    static func envelopeIndexPath(_ mailRoot: String) -> String? {
+        versionDirectory(mailRoot).map { "\($0)/MailData/Envelope Index" }
+    }
+
+    /// True for a real Sent mailbox: the last path component is "Sent Messages", "Sent",
+    /// "Sent Mail" or "Sent Items" (so "[Gmail]/Sent Mail" counts), never a name that merely
+    /// contains "sent" like Consent or Presentations. The URL may be percent-encoded.
+    static func isSentMailbox(url: String) -> Bool {
+        let decoded = url.removingPercentEncoding ?? url
+        guard let scheme = decoded.range(of: "://") else { return false }
+        let rest = decoded[scheme.upperBound...]
+        guard let slash = rest.firstIndex(of: "/") else { return false }
+        let name = rest[rest.index(after: slash)...].split(separator: "/", omittingEmptySubsequences: true).last
+        guard let name else { return false }
+        return ["sent messages", "sent", "sent mail", "sent items"].contains(name.lowercased())
     }
 
     private static func exists(_ db: OpaquePointer?, table: String, column: String? = nil) -> Bool {
@@ -130,16 +178,28 @@ final class MailMemoryReader {
     /// Inbox and Sent messages received since `since`, newest first. A Gmail-over-IMAP
     /// account stores its mail in All Mail and marks Inbox/Sent with `labels` rows, so
     /// membership is the mailbox OR a label. A message in both counts as sent.
-    static func indexRows(dbPath: String, since: Double) -> ([[String: Any]], Bool)? {
+    /// Optional columns are probed and fall back to 0 or ''. Missing core tables throw
+    /// `.unsupportedSchema`, anything else unreadable throws `.unreadable`.
+    static func indexRows(dbPath: String, since: Double) throws -> ([[String: Any]], Bool) {
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             sqlite3_close(db)
-            return nil
+            throw IndexFailure.unreadable
         }
         defer { sqlite3_close(db) }
         sqlite3_busy_timeout(db, 2000)
-        guard exists(db, table: "messages", column: "date_received") else { return nil }
-        let labels = exists(db, table: "labels", column: "mailbox_id")
+        var probe: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master", -1, &probe, nil) == SQLITE_OK,
+              sqlite3_step(probe) == SQLITE_ROW else {
+            sqlite3_finalize(probe)
+            throw IndexFailure.unreadable
+        }
+        sqlite3_finalize(probe)
+        guard exists(db, table: "messages", column: "date_received"),
+              exists(db, table: "messages", column: "mailbox"),
+              exists(db, table: "mailboxes") else { throw IndexFailure.unsupportedSchema }
+        let labels = exists(db, table: "labels", column: "mailbox_id") && exists(db, table: "labels", column: "message_id")
+        let hasURL = exists(db, table: "mailboxes", column: "url")
         let bulkColumns: [String] = ["list_id_hash", "unsubscribe_type", "automated_conversation"]
         let bulkParts = bulkColumns.filter { exists(db, table: "messages", column: $0) }
             .map { (column: String) in "IFNULL(m.\(column), 0) != 0" }
@@ -147,6 +207,32 @@ final class MailMemoryReader {
         let messageID = exists(db, table: "messages", column: "message_id") ? "m.message_id" : "''"
         let conversation = exists(db, table: "messages", column: "conversation_id") ? "IFNULL(m.conversation_id, 0)" : "0"
         let sent = exists(db, table: "messages", column: "date_sent") ? "IFNULL(m.date_sent, 0)" : "0"
+        let notDeleted = exists(db, table: "messages", column: "deleted") ? "IFNULL(m.deleted, 0) = 0" : "1"
+        let hasSubject = exists(db, table: "messages", column: "subject") && exists(db, table: "subjects", column: "subject")
+        let subject = hasSubject ? "IFNULL(s.subject, '')" : "''"
+        let subjectJoin = hasSubject ? "LEFT JOIN subjects s ON m.subject = s.ROWID" : ""
+        let hasSender = exists(db, table: "messages", column: "sender")
+        let hasAddress = hasSender && exists(db, table: "addresses", column: "address")
+        let address = hasAddress ? "IFNULL(a.address, '')" : "''"
+        let comment = hasAddress && exists(db, table: "addresses", column: "comment") ? "IFNULL(a.comment, '')" : "''"
+        let addressJoin = hasAddress ? "LEFT JOIN addresses a ON m.sender = a.ROWID" : ""
+        let mailboxURL = hasURL ? "IFNULL(mb.url, '')" : "''"
+        // Sent mailboxes are classified in Swift (isSentMailbox), not by a SQL substring match.
+        var sentIDs: [Int64] = []
+        if hasURL {
+            var list: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT ROWID, url FROM mailboxes", -1, &list, nil) == SQLITE_OK else {
+                throw IndexFailure.unreadable
+            }
+            while sqlite3_step(list) == SQLITE_ROW {
+                if isSentMailbox(url: text(list, 1)) { sentIDs.append(sqlite3_column_int64(list, 0)) }
+            }
+            sqlite3_finalize(list)
+        }
+        let sentList = sentIDs.isEmpty ? "-1" : sentIDs.map(String.init).joined(separator: ",")
+        let boxes = hasURL
+            ? "SELECT ROWID id, CASE WHEN ROWID IN (\(sentList)) THEN 'sent' ELSE 'inbox' END kind FROM mailboxes WHERE url LIKE '%/INBOX' OR ROWID IN (\(sentList))"
+            : "SELECT ROWID id, 'inbox' kind FROM mailboxes WHERE 0"
         let labelMembers = labels ? "UNION SELECT l.message_id, box.kind FROM labels l JOIN box ON l.mailbox_id = box.id" : ""
         // Mail's on-device categories (macOS 15+): 0 Primary, 1 Transactions, 2 Updates,
         // 3 Promotions; -1 when Mail doesn't record them. The RFC Message-ID lives here too.
@@ -157,28 +243,26 @@ final class MailMemoryReader {
         let rfcID = hasHeader ? "IFNULL(g.message_id_header, '')" : "''"
         let globalJoin = global ? "LEFT JOIN message_global_data g ON g.ROWID = m.global_message_id" : ""
         let sql = """
-        WITH box AS (
-          SELECT ROWID id, CASE WHEN url LIKE '%Sent%' THEN 'sent' ELSE 'inbox' END kind
-          FROM mailboxes WHERE url LIKE '%/INBOX' OR url LIKE '%Sent%'),
+        WITH box AS (\(boxes)),
         member AS (
           SELECT m.ROWID mid, box.kind kind FROM messages m JOIN box ON m.mailbox = box.id
           \(labelMembers))
-        SELECT m.ROWID, mb.url, MAX(member.kind), m.date_received, \(sent), \(messageID),
-               \(conversation), IFNULL(s.subject, ''), IFNULL(a.address, ''), IFNULL(a.comment, ''), \(bulk),
+        SELECT m.ROWID, \(mailboxURL), MAX(member.kind), m.date_received, \(sent), \(messageID),
+               \(conversation), \(subject), \(address), \(comment), \(bulk),
                \(category), \(rfcID)
         FROM member
         JOIN messages m ON m.ROWID = member.mid
         JOIN mailboxes mb ON m.mailbox = mb.ROWID
         \(globalJoin)
-        LEFT JOIN subjects s ON m.subject = s.ROWID
-        LEFT JOIN addresses a ON m.sender = a.ROWID
-        WHERE IFNULL(m.deleted, 0) = 0 AND m.date_received > \(since)
+        \(subjectJoin)
+        \(addressJoin)
+        WHERE \(notDeleted) AND m.date_received > \(since)
         GROUP BY m.ROWID
         ORDER BY m.date_received DESC
         LIMIT \(maxIndexRows + 1)
         """
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw IndexFailure.unreadable }
         defer { sqlite3_finalize(stmt) }
         var rows: [[String: Any]] = []
         var step = sqlite3_step(stmt)
@@ -202,7 +286,7 @@ final class MailMemoryReader {
                 "rfc_message_id": text(stmt, 12),
             ])
         }
-        guard step == SQLITE_DONE else { return nil }
+        guard step == SQLITE_DONE else { throw IndexFailure.unreadable }
         return (rows, false)
     }
 
@@ -210,20 +294,18 @@ final class MailMemoryReader {
 
     /// ROWID → file for every message Mail keeps on disk. A `.partial.emlx` had its
     /// attachments stripped; a full file wins when both exist.
+    /// Only the `V*` folder whose Envelope Index is read, so rowids can't collide across versions.
     static func emlxFiles(_ mailRoot: String) -> [Int64: (path: String, partial: Bool)] {
         var out: [Int64: (path: String, partial: Bool)] = [:]
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: mailRoot) else { return out }
-        for version in entries where version.hasPrefix("V") {
-            let base = "\(mailRoot)/\(version)"
-            guard let walker = FileManager.default.enumerator(atPath: base) else { continue }
-            while let rel = walker.nextObject() as? String {
-                guard rel.hasSuffix(".emlx"), rel.contains("/Messages/") else { continue }
-                let name = (rel as NSString).lastPathComponent
-                guard let id = Int64(name.prefix { $0.isNumber }), id > 0 else { continue }
-                let partial = name.hasSuffix(".partial.emlx")
-                if let have = out[id], !have.partial { continue }
-                out[id] = ("\(base)/\(rel)", partial)
-            }
+        guard let base = versionDirectory(mailRoot),
+              let walker = FileManager.default.enumerator(atPath: base) else { return out }
+        while let rel = walker.nextObject() as? String {
+            guard rel.hasSuffix(".emlx"), rel.contains("/Messages/") else { continue }
+            let name = (rel as NSString).lastPathComponent
+            guard let id = Int64(name.prefix { $0.isNumber }), id > 0 else { continue }
+            let partial = name.hasSuffix(".partial.emlx")
+            if let have = out[id], !have.partial { continue }
+            out[id] = ("\(base)/\(rel)", partial)
         }
         return out
     }

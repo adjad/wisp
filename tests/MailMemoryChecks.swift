@@ -43,6 +43,13 @@ enum MailMemoryChecks {
         let mine = MailSuggestion.parse(["mode": "live", "suggestions": [row(7, "Q4 forecast", from: "you")]])!.items[0]
         check(mine.detail.hasPrefix("From your email"), "own sent mail")
         check(item.mailURL?.absoluteString == "message://%3Clease-1@harbor.example%3E", "message link: \(item.mailURL?.absoluteString ?? "nil")")
+        let unicode = MailSuggestion(id: 10, what: "x", due: "2027-01-01", precision: "day", quote: "", from: "", subject: "",
+                                     messageID: "<café-1@exämple.example>")
+        check(unicode.mailURL?.absoluteString == "message://%3Ccaf%C3%A9-1@ex%C3%A4mple.example%3E",
+              "a non-ASCII Message-ID is percent-encoded: \(unicode.mailURL?.absoluteString ?? "nil")")
+        let odd = MailSuggestion(id: 11, what: "x", due: "2027-01-01", precision: "day", quote: "", from: "", subject: "",
+                                 messageID: "<a/b?c#d+e=f$g@h.example>")
+        check(odd.mailURL?.absoluteString == "message://%3Ca%2Fb%3Fc%23d+e=f$g@h.example%3E", "reserved characters: \(odd.mailURL?.absoluteString ?? "nil")")
         let noID = MailSuggestion(id: 9, what: "x", due: "2027-01-01", precision: "day", quote: "", from: "", subject: "", messageID: "")
         check(noID.mailURL == nil, "no Message-ID, no link")
 
@@ -82,6 +89,41 @@ enum MailMemoryChecks {
         replies = [(200, ["ok": true, "decision": "dismissed"]), (200, ["mode": "live", "suggestions": []])]
         await model.dismiss(model.suggestions[0])
         check(model.suggestions.isEmpty && model.failures.isEmpty && model.answering == nil, "dismissed")
+
+        // A confirmation is said once: a refresh more than 8 seconds later clears it.
+        var clockNow = Date(timeIntervalSince1970: 1_000_000)
+        let timed = MailMemoryModel(baseURL: URL(string: "http://127.0.0.1:1/")!, transport: transport, clock: { clockNow })
+        replies = [(200, ["mode": "live", "suggestions": [row(1, "Give notice"), row(2, "Pay tax")]])]
+        await timed.refresh()
+        replies = [(200, ["ok": true, "decision": "accepted"]),
+                   (200, ["mode": "live", "suggestions": [row(2, "Pay tax")]])]
+        await timed.accept(timed.suggestions[0])
+        check(timed.confirmation == "Added “Give notice” to Reminders.", "confirmation survives its own refresh")
+        clockNow += 5
+        replies = [(200, ["mode": "live", "suggestions": [row(2, "Pay tax")]])]
+        await timed.refresh()
+        check(timed.confirmation != nil, "a refresh within 8 seconds keeps the confirmation")
+        clockNow += 4
+        replies = [(200, ["mode": "live", "suggestions": [row(2, "Pay tax")]])]
+        await timed.refresh()
+        check(timed.confirmation == nil, "a refresh after 8 seconds clears the confirmation")
+
+        // The Settings switch.
+        let fresh = MailMemoryModel(baseURL: URL(string: "http://127.0.0.1:1/")!, transport: transport)
+        check(!fresh.known, "nothing known before the service answers")
+        replies = [(200, ["ok": true, "mode": "shadow"]), (200, ["mode": "shadow", "suggestions": []])]
+        await model.setMode("shadow")
+        let put = requests[requests.count - 2]
+        check(put.httpMethod == "PUT" && put.url?.path == "/assistant/mail_memory/settings"
+              && ((try? JSONSerialization.jsonObject(with: put.httpBody ?? Data())) as? [String: String]) == ["mode": "shadow"],
+              "mode request")
+        check(model.mode == "shadow" && model.known && model.modeStatus == nil, "mode changed")
+        let sent = requests.count
+        await model.setMode("everything")
+        check(requests.count == sent, "an unknown mode is never sent")
+        replies = [(409, ["detail": "x"])]
+        await model.setMode("live")
+        check(model.mode == "shadow" && model.modeStatus == "Couldn't change it. Try again.", "a refused change keeps the mode")
 
         if failures > 0 { print("\(failures) failure(s)"); exit(1) }
         print("MailMemory: \(total) checks passed")

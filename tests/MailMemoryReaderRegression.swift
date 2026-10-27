@@ -23,6 +23,31 @@ enum MailMemoryReaderRegression {
         }
     }
 
+    /// Collects a reader's replies so a test can wait for one.
+    final class Replies {
+        let sem = DispatchSemaphore(value: 0)
+        var last: [String: Any] = [:]
+        func ask(_ reader: MailMemoryReader, _ request: [String: Any]) -> [String: Any] {
+            last = [:]
+            _ = reader.handle(request)
+            _ = sem.wait(timeout: .now() + 5)
+            return last
+        }
+    }
+
+    static func makeReader(_ root: String, rebuildInterval: TimeInterval = 30) -> (MailMemoryReader, Replies) {
+        let replies = Replies()
+        let reader = MailMemoryReader(mailRoot: root, rebuildInterval: rebuildInterval) { reply in
+            replies.last = reply
+            replies.sem.signal()
+        }
+        return (reader, replies)
+    }
+
+    static func body(_ pair: (MailMemoryReader, Replies), _ id: String, _ rowid: Int) -> [String: Any] {
+        pair.1.ask(pair.0, ["type": "mail_memory_read", "request_id": id, "kind": "body", "rowid": rowid])
+    }
+
     static func emlx(_ path: String, _ message: String) throws {
         let bytes = Data(message.utf8)
         var file = Data("\(bytes.count)\n".utf8)
@@ -55,7 +80,8 @@ enum MailMemoryReaderRegression {
         INSERT INTO message_global_data VALUES (1, 0, '<lease-1@harbor.example>'), (2, 3, '<sale@shop.example>');
         INSERT INTO mailboxes VALUES (1, 'imap://GMAIL-UUID/%5BGmail%5D/All%20Mail'),
           (2, 'imap://GMAIL-UUID/INBOX'), (3, 'imap://GMAIL-UUID/%5BGmail%5D/Sent%20Mail'),
-          (4, 'imap://ICLOUD-UUID/INBOX'), (5, 'imap://ICLOUD-UUID/Sent%20Messages'), (6, 'imap://ICLOUD-UUID/Junk');
+          (4, 'imap://ICLOUD-UUID/INBOX'), (5, 'imap://ICLOUD-UUID/Sent%20Messages'), (6, 'imap://ICLOUD-UUID/Junk'),
+          (7, 'imap://ICLOUD-UUID/Consent'), (8, 'imap://ICLOUD-UUID/Presentations');
         INSERT INTO subjects VALUES (1, 'Lease renewal'), (2, 'Re: thesis'), (3, 'Sale!'), (4, 'Old'), (5, 'Spam');
         INSERT INTO addresses VALUES (1, 'leasing@harbor.example', 'Harbor'), (2, 'me@example.com', 'Me');
         -- Gmail: real mail in All Mail, Inbox/Sent by label.
@@ -71,8 +97,14 @@ enum MailMemoryReaderRegression {
         INSERT INTO messages VALUES (21, '<e@x>', 1, 4, \(old), \(old), 4, 0, 9, 0, 0, 0, NULL);
         INSERT INTO messages VALUES (22, '<f@x>', 1, 4, \(now), \(now - 300), 4, 1, 9, 0, 0, 0, NULL);
         INSERT INTO messages VALUES (23, '<g@x>', 1, 5, \(now), \(now - 400), 6, 0, 9, 0, 0, 0, NULL);
+        -- Folders that merely contain "sent": not Inbox, not Sent, so excluded.
+        INSERT INTO messages VALUES (24, '<h@x>', 1, 1, \(now), \(now - 500), 7, 0, 9, 0, 0, 0, NULL);
+        INSERT INTO messages VALUES (25, '<i@x>', 1, 1, \(now), \(now - 600), 8, 0, 9, 0, 0, 0, NULL);
         """)
         sqlite3_close(db)
+        // An older V9 with its own Envelope Index: V10 is newer even though "V9" sorts after "V10".
+        try FileManager.default.createDirectory(atPath: "\(root)/V9/MailData", withIntermediateDirectories: true)
+        try Data().write(to: URL(fileURLWithPath: "\(root)/V9/MailData/Envelope Index"))
 
         // Requests: strict shapes only.
         check(MailMemoryReader.request(["type": "mail_memory_read", "request_id": "abcdefghijklmnop",
@@ -91,9 +123,10 @@ enum MailMemoryReaderRegression {
 
         // Index rows.
         guard let path = MailMemoryReader.envelopeIndexPath(root),
-              let (rows, capped) = MailMemoryReader.indexRows(dbPath: path, since: now - 90 * 86400) else {
+              let (rows, capped) = try? MailMemoryReader.indexRows(dbPath: path, since: now - 90 * 86400) else {
             print("FAIL: index unreadable"); exit(1)
         }
+        check(path == "\(root)/V10/MailData/Envelope Index", "newest V folder by number: \(path)")
         let byID = Dictionary(uniqueKeysWithValues: rows.map { (($0["rowid"] as? Int64) ?? -1, $0) })
         check(Set(byID.keys) == [10, 11, 20], "inbox+sent in window only: \(byID.keys.sorted())")
         check(!capped, "not capped")
@@ -110,14 +143,28 @@ enum MailMemoryReaderRegression {
         check(byID[11]?["category"] as? Int == -1 && byID[11]?["rfc_message_id"] as? String == "",
               "no recorded category: -1")
 
+        // Sent detection: real Sent mailboxes only.
+        let sentURLs = ["imap://A/Sent%20Messages", "imap://A/Sent", "imap://A/Sent%20Mail", "imap://A/Sent%20Items",
+                        "imap://A/%5BGmail%5D/Sent%20Mail", "imap://A/[Gmail]/Sent Mail", "imap://A/INBOX/Sent",
+                        "ews://A/Sent%20Items/", "imap://A/sent"]
+        for u in sentURLs { check(MailMemoryReader.isSentMailbox(url: u), "sent: \(u)") }
+        let otherURLs = ["imap://A/Consent", "imap://A/Presentations", "imap://A/Absent", "imap://A/Sentinel",
+                         "imap://A/Sent%20Messages/Archive", "imap://A/INBOX", "imap://Sent", "", "imap://A/Resent"]
+        for u in otherURLs { check(!MailMemoryReader.isSentMailbox(url: u), "not sent: \(u)") }
+
         // .emlx files: full wins over partial; the count line bounds the message.
         let box = "\(root)/V10/GMAIL-UUID/[Gmail].mbox/All Mail.mbox/STORE/Data/0/Messages"
         try emlx("\(box)/10.emlx", "Subject: Lease\r\n\r\nNotice due July 2, 2027.")
         try emlx("\(box)/10.partial.emlx", "Subject: Lease\r\n\r\npartial")
         try emlx("\(box)/11.partial.emlx", "Subject: thesis\r\n\r\nHappy to review.")
         try Data("not mail".utf8).write(to: URL(fileURLWithPath: "\(box)/notes.txt"))
+        // The older V9 folder has its own rowids: 10 (a different message) and 55. Neither may leak in.
+        let oldBox = "\(root)/V9/GMAIL-UUID/[Gmail].mbox/All Mail.mbox/STORE/Data/0/Messages"
+        try emlx("\(oldBox)/10.emlx", "Subject: Other\r\n\r\nfrom V9")
+        try emlx("\(oldBox)/55.emlx", "Subject: Other\r\n\r\nfrom V9 too")
         let files = MailMemoryReader.emlxFiles(root)
         check(Set(files.keys) == [10, 11], "emlx map: \(files.keys.sorted())")
+        check(files.values.allSatisfy { $0.path.hasPrefix("\(root)/V10/") }, "emlx map only from the indexed V folder")
         check(files[10]?.partial == false && files[11]?.partial == true, "full beats partial")
         if let (bytes, truncated) = MailMemoryReader.message(at: files[10]!.path) {
             let text = String(decoding: bytes, as: UTF8.self)
@@ -142,6 +189,70 @@ enum MailMemoryReaderRegression {
                   && raw.map { String(decoding: $0, as: UTF8.self).contains("July 2, 2027") } == true, "body reply")
             check(replies[1]["ok"] as? Bool == false && replies[1]["error"] as? String == "not_on_disk", "missing body reply")
         }
+
+        // A stale cache: a moved file and a new file both rebuild the map once and retry.
+        let stale = makeReader(root, rebuildInterval: 0)
+        check(body(stale, "stalecache-000001", 11)["ok"] as? Bool == true, "partial body read")
+        let moved = "\(root)/V10/GMAIL-UUID/[Gmail].mbox/Moved.mbox/STORE/Data/0/Messages"
+        try FileManager.default.createDirectory(atPath: moved, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(atPath: "\(box)/11.partial.emlx", toPath: "\(moved)/11.partial.emlx")
+        check(body(stale, "stalecache-000002", 11)["ok"] as? Bool == true, "a moved file is found after a rebuild")
+        try emlx("\(box)/12.emlx", "Subject: New\r\n\r\nArrived later.")
+        check(body(stale, "stalecache-000003", 12)["ok"] as? Bool == true, "a new file is found after a rebuild")
+        let limited = makeReader(root, rebuildInterval: 3600)
+        check(body(limited, "stalecache-000004", 10)["ok"] as? Bool == true, "limited reader reads")
+        try emlx("\(box)/13.emlx", "Subject: Newer\r\n\r\nToo soon.")
+        check(body(limited, "stalecache-000005", 13)["error"] as? String == "not_on_disk", "rebuilds are rate limited")
+
+        // Schema tolerance: optional columns fall back; missing core tables are unsupported_schema.
+        func makeDB(_ name: String, _ sql: String) -> String {
+            let file = "\(root)/\(name).db"
+            var handle: OpaquePointer?
+            guard sqlite3_open(file, &handle) == SQLITE_OK else { exit(2) }
+            exec(handle, sql)
+            sqlite3_close(handle)
+            return file
+        }
+        let bare = makeDB("bare", """
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, date_received REAL, mailbox INTEGER);
+        INSERT INTO mailboxes VALUES (1, 'imap://X/INBOX');
+        INSERT INTO messages VALUES (1, \(now - 60), 1);
+        """)
+        if let (bareRows, _) = try? MailMemoryReader.indexRows(dbPath: bare, since: now - 86400) {
+            check(bareRows.count == 1 && bareRows[0]["box"] as? String == "inbox" && bareRows[0]["subject"] as? String == ""
+                  && bareRows[0]["sender"] as? String == "" && bareRows[0]["account"] as? String == "X",
+                  "no deleted/subjects/addresses: rows still come back")
+        } else { check(false, "bare schema returns rows") }
+        let noComment = makeDB("nocomment", """
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT);
+        CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, date_received REAL, mailbox INTEGER, sender INTEGER);
+        INSERT INTO mailboxes VALUES (1, 'imap://X/Sent%20Messages');
+        INSERT INTO addresses VALUES (1, 'me@example.com');
+        INSERT INTO messages VALUES (1, \(now - 60), 1, 1);
+        """)
+        if let (r, _) = try? MailMemoryReader.indexRows(dbPath: noComment, since: now - 86400) {
+            check(r.count == 1 && r[0]["box"] as? String == "sent" && r[0]["sender"] as? String == "me@example.com"
+                  && r[0]["sender_name"] as? String == "", "no comment column")
+        } else { check(false, "no-comment schema returns rows") }
+        let noMailboxes = makeDB("nomailboxes", """
+        CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, date_received REAL, mailbox INTEGER);
+        """)
+        do { _ = try MailMemoryReader.indexRows(dbPath: noMailboxes, since: 0); check(false, "missing mailboxes throws") }
+        catch { check((error as? MailMemoryReader.IndexFailure) == .unsupportedSchema, "missing mailboxes: unsupported_schema") }
+        let junk = "\(root)/junk.db"
+        try Data("this is not a database at all, just text".utf8).write(to: URL(fileURLWithPath: junk))
+        do { _ = try MailMemoryReader.indexRows(dbPath: junk, since: 0); check(false, "junk file throws") }
+        catch { check((error as? MailMemoryReader.IndexFailure) == .unreadable, "not a database: unreadable") }
+        let unsupportedRoot = "\(root)/unsupported"
+        try FileManager.default.createDirectory(atPath: "\(unsupportedRoot)/V10/MailData", withIntermediateDirectories: true)
+        try FileManager.default.copyItem(atPath: noMailboxes, toPath: "\(unsupportedRoot)/V10/MailData/Envelope Index")
+        let unsupported = makeReader(unsupportedRoot)
+        let indexReply = unsupported.1.ask(unsupported.0, ["type": "mail_memory_read", "request_id": "unsupported-00001",
+                                                          "kind": "index", "days": 30])
+        check(indexReply["ok"] as? Bool == false && indexReply["error"] as? String == "unsupported_schema",
+              "the reply names unsupported_schema: \(indexReply)")
 
         if failures > 0 { print("\(failures) failure(s)"); exit(1) }
         print("MailMemoryReader: \(total) checks passed")

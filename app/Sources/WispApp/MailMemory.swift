@@ -62,11 +62,14 @@ struct MailSuggestion: Identifiable, Equatable {
         return subject.isEmpty ? source : "\(source) · “\(subject)”"
     }
 
+    /// ASCII letters, digits and `@.-_+=$` pass through; everything else is percent-encoded.
+    private static let linkSafe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@.-_+=$")
+
     /// Mail's own link to this message, or nil when its Message-ID isn't known.
     var mailURL: URL? {
         let bare = messageID.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
         guard !bare.isEmpty, !bare.contains(" "),
-              let encoded = bare.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "@.-_")))
+              let encoded = bare.addingPercentEncoding(withAllowedCharacters: MailSuggestion.linkSafe)
         else { return nil }
         return URL(string: "message://%3C\(encoded)%3E")
     }
@@ -83,22 +86,39 @@ struct MailSuggestion: Identifiable, Equatable {
 final class MailMemoryModel: ObservableObject {
     @Published private(set) var suggestions: [MailSuggestion] = []
     @Published private(set) var mode = "shadow"
+    /// True once the service has answered, so Settings can tell "off" from "not loaded".
+    @Published private(set) var known = false
+    @Published private(set) var modeChanging = false
+    @Published private(set) var modeStatus: String?
     @Published private(set) var answering: Int?
     @Published private(set) var failures: [Int: String] = [:]
     /// What the last Add did, said once under the list ("Added to Reminders.").
     @Published private(set) var confirmation: String?
 
+    /// A confirmation older than this is gone by the next refresh.
+    static let confirmationLifetime: TimeInterval = 8
+
     private let transport: (URLRequest) async throws -> (Data, URLResponse)
     private let baseURL: URL
+    private let clock: () -> Date
+    private var confirmedAt: Date?
 
     init(baseURL: URL,
-         transport: @escaping (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }) {
+         transport: @escaping (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) },
+         clock: @escaping () -> Date = { Date() }) {
         self.baseURL = baseURL
         self.transport = transport
+        self.clock = clock
     }
 
-    /// A failed read keeps what was shown.
+    private func confirm(_ text: String?) {
+        confirmation = text
+        confirmedAt = text == nil ? nil : clock()
+    }
+
+    /// A failed read keeps what was shown. A confirmation older than eight seconds is dropped.
     func refresh() async {
+        if let at = confirmedAt, clock().timeIntervalSince(at) > Self.confirmationLifetime { confirm(nil) }
         var request = URLRequest(url: baseURL.appendingPathComponent("assistant/mail_memory"))
         request.timeoutInterval = 15
         guard let (data, response) = try? await transport(request),
@@ -106,8 +126,35 @@ final class MailMemoryModel: ObservableObject {
               let parsed = MailSuggestion.parse((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])
         else { return }
         mode = parsed.mode
+        known = true
         suggestions = parsed.mode == "live" ? parsed.items : []
         failures = failures.filter { id, _ in suggestions.contains { $0.id == id } }
+    }
+
+    static let modes = ["live", "shadow", "off"]
+
+    /// Settings' switch: "live" shows important suggestions, "shadow" records only, "off" stops.
+    func setMode(_ value: String) async {
+        guard !modeChanging, Self.modes.contains(value) else { return }
+        modeChanging = true
+        modeStatus = nil
+        defer { modeChanging = false }
+        var request = URLRequest(url: baseURL.appendingPathComponent("assistant/mail_memory/settings"))
+        request.httpMethod = "PUT"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["mode": value])
+        guard let (data, response) = try? await transport(request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["mode"] as? String == value
+        else {
+            modeStatus = "Couldn't change it. Try again."
+            return
+        }
+        mode = value
+        known = true
+        if value != "live" { suggestions = [] }
+        await refresh()
     }
 
     func accept(_ item: MailSuggestion) async { await answer(item, action: "accept") }
@@ -117,7 +164,7 @@ final class MailMemoryModel: ObservableObject {
         guard answering == nil else { return }
         answering = item.id
         failures[item.id] = nil
-        confirmation = nil
+        confirm(nil)
         defer { answering = nil }
         var request = URLRequest(url: baseURL.appendingPathComponent("assistant/mail_memory/\(action)"))
         request.httpMethod = "POST"
@@ -130,9 +177,9 @@ final class MailMemoryModel: ObservableObject {
             let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             if status == 200 {
                 if action == "accept" {
-                    confirmation = body?["decision"] as? String == "already_on_file"
+                    confirm(body?["decision"] as? String == "already_on_file"
                         ? "“\(item.what)” is already in Reminders or Calendar."
-                        : "Added “\(item.what)” to Reminders."
+                        : "Added “\(item.what)” to Reminders.")
                 }
                 suggestions.removeAll { $0.id == item.id }
                 await refresh()
