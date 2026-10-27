@@ -592,6 +592,19 @@ async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypa
     assert await runner.tick(now=NOW + 2) == runner.BUSY_GAP_S
 
 
+
+def test_schedule_waits_for_other_background_model_work(monkeypatch, quiet):
+    from service.assistant import mail_gists
+
+    class Running:
+        def done(self):
+            return False
+
+    monkeypatch.setattr(mail_gists, "_task", Running())
+    assert runner._other_background_work()
+    monkeypatch.setattr(mail_gists, "_task", None)
+    assert not runner._other_background_work()
+
 # --- endpoints ----------------------------------------------------------------------
 
 @pytest.fixture

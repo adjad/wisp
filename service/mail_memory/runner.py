@@ -326,12 +326,28 @@ async def _run() -> None:
     _next_at = time.time() + gap
 
 
+def _other_background_work() -> bool:
+    """The Brief's gists or the proactive engine has a model task going. They hold
+    each other off the same way; mail memory waits for both."""
+    try:
+        from service.assistant import mail_gists
+        if mail_gists._task is not None and not mail_gists._task.done():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from service.proactive import cycle
+        return bool(cycle.running())
+    except Exception:  # noqa: BLE001 — not in every build
+        return False
+
+
 def schedule_tick() -> None:
     """Called from the assistant scheduler every 30 s; starts at most one tick."""
     global _task
     if _task is not None and not _task.done():
         return
-    if time.time() < _next_at or mode() == "off" or idle.foreground_busy():
+    if time.time() < _next_at or mode() == "off" or idle.foreground_busy() or _other_background_work():
         return
     from service.assistant.hub import hub
     if not hub.has_subscribers:
