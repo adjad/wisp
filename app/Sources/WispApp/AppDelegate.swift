@@ -172,7 +172,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch WispReset.readMarker() {
         case .valid(let marker):
             resetPending = true
-            if WispReset.readAppDone()?.id != marker.id {
+            // Never once the service says "erased": a crash between removing the marker
+            // and the app's record, or a marker that won't delete, must not wipe the
+            // settings of a Wisp already set up again.
+            if !marker.serviceDone && WispReset.readAppDone()?.id != marker.id {
                 let problems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)
                 WispReset.writeAppDone(WispReset.AppDone(id: marker.id, problems: problems))
                 // The model read Debug Mode before the defaults were cleared.
@@ -411,11 +414,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch WispReset.readMarker() {
                 case .valid(let marker) where marker.serviceDone:
                     let appProblems = WispReset.readAppDone()?.problems ?? []
-                    WispReset.removeOwnedFile(WispReset.appDoneURL().path)
-                    WispReset.removeOwnedFile(WispReset.markerURL().path)
-                    if let notice = WispReset.launchNotice(marker: marker, appProblems: appProblems) {
-                        self?.model.showTransientNotice(notice, duration: 15)
+                    // The marker first: while it says "erased" the app's part never runs
+                    // again, so its record may go after it (or stay, if the marker won't).
+                    let markerGone = WispReset.removeOwnedFile(WispReset.markerURL().path)
+                    if markerGone, !WispReset.removeOwnedFile(WispReset.appDoneURL().path) {
+                        NSLog("%@", "Wisp reset: couldn't remove the app's reset record")
                     }
+                    if !markerGone { NSLog("%@", "Wisp reset: couldn't remove the reset marker") }
+                    let notice = WispReset.launchNotice(marker: marker, appProblems: appProblems)
+                    let text = markerGone ? notice : [notice, WispReset.markerStuckNotice].compactMap { $0 }
+                        .joined(separator: " ")
+                    if let text { self?.model.showTransientNotice(text, duration: 15) }
                     return
                 case .valid:
                     try? await Task.sleep(nanoseconds: 2_000_000_000)

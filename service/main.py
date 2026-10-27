@@ -16,11 +16,12 @@ from __future__ import annotations
 
 # /resetwisp's restart pass, before any other import opens a store or database.
 # Only in the backend the app launched (it passes WISP_LAUNCH_NONCE): a script or
-# tool importing the service with the real HOME never erases anything.
+# tool importing the service with the real HOME never erases anything. While a
+# reset is unrecorded or unfinished this exits instead of starting the service.
 import os as _reset_os
 if _reset_os.environ.get("WISP_LAUNCH_NONCE"):
-    from service.wisp_reset import resume_pending as _resume_pending
-    _resume_pending()
+    from service.wisp_reset import resume_or_exit as _resume_or_exit
+    _resume_or_exit()
 
 from service.assistant.verified_reminders import expected_date_fields
 

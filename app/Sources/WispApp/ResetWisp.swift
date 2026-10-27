@@ -244,17 +244,33 @@ enum WispReset {
         return AppDone(id: id, problems: (doc["problems"] as? [Any] ?? []).compactMap { $0 as? String })
     }
 
-    static func writeAppDone(_ done: AppDone, to path: String = appDoneURL().path) {
-        guard let data = try? JSONSerialization.data(withJSONObject: ["id": done.id, "problems": done.problems]) else {
-            return
+    /// False (and logged) when the record couldn't be written: the app's part then
+    /// runs again at the next launch, until the service's restart pass says "erased".
+    @discardableResult
+    static func writeAppDone(_ done: AppDone, to path: String = appDoneURL().path) -> Bool {
+        do {
+            let data = try JSONSerialization.data(withJSONObject: ["id": done.id, "problems": done.problems])
+            try data.write(to: URL(fileURLWithPath: path), options: [.atomic])
+            return true
+        } catch {
+            NSLog("%@", "Wisp reset: couldn't record the app's part (\((error as NSError).domain) \((error as NSError).code))")
+            return false
         }
-        try? data.write(to: URL(fileURLWithPath: path), options: [.atomic])
     }
 
-    /// Deletes a file only when it is a regular file this user owns.
-    static func removeOwnedFile(_ path: String) {
-        if case .data = readOwnedFile(path) { unlink(path) }
+    /// Deletes a file only when it is a regular file this user owns. True when it
+    /// is gone (or was never there); false when it is still there.
+    @discardableResult
+    static func removeOwnedFile(_ path: String) -> Bool {
+        switch readOwnedFile(path) {
+        case .absent: return true
+        case .odd: return false
+        case .data: return unlink(path) == 0 || errno == ENOENT
+        }
     }
+
+    static let markerStuckNotice = "Wisp couldn't remove its reset marker (~/.moe/.reset-pending); "
+        + "delete it to stop this message."
 
     /// The notice the relaunched Wisp shows once, or nil when all went well.
     static func launchNotice(marker: Marker, appProblems: [String]) -> String? {

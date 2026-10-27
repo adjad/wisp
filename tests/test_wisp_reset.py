@@ -482,14 +482,17 @@ def test_the_next_start_finishes_a_reset_cut_short(world):
     assert (world["outside"] / "precious.txt").read_text() == "not Wisp's"
 
 
-def test_a_running_engine_keeps_its_cache_until_it_stops(world):
+def test_a_running_engine_keeps_its_cache_until_it_stops(world, monkeypatch):
     home, user = world["home"], world["user"]
     (home / "engine" / "engine.pid").write_text(str(os.getpid()))
+    engine_command = f"python -m omlx.cli serve --base-path {home / 'engine' / 'base'}"
+    monkeypatch.setattr(R, "_command_of", lambda pid: engine_command)
     _marker(home, phase="first-pass")
     doc = R.resume_pending(home, user)
     assert doc["phase"] == "first-pass" and doc["full_pass"] and not doc["engine_cache"]
     assert (home / "engine" / "base" / "cache" / "kv-0001.safetensors").exists()
     assert not (home / "assistant.db").exists()
+    assert R.unfinished_reason(home) is None, "the whole-home pass is done: the service may start"
     (home / "engine" / "engine.pid").unlink()
     _write(home / "assistant.db", "a chat after the restart pass")
     doc = R.resume_pending(home, user)
@@ -508,14 +511,17 @@ def test_a_stuck_entry_ends_after_three_attempts_and_spares_new_data(world, monk
     tried = []
 
     def remove(path, device=None):
-        if path.name == "diagnostics":
-            tried.append(path.name)
+        if path.name.endswith("diagnostics"):
+            tried.append(R.display_name(path.name))
             raise PermissionError("a 0500 folder")
         real_remove(path, device)
 
     monkeypatch.setattr(R, "_remove", remove)
     doc = R.resume_pending(home, user)
-    assert doc["phase"] == "first-pass" and doc["pending"] == ["diagnostics"] and doc["attempts"] == 1
+    trash = R.TRASH_PREFIX + doc["id"] + "-diagnostics"
+    assert doc["phase"] == "first-pass" and doc["pending"] == [trash] and doc["attempts"] == 1
+    assert (home / trash).is_dir() and not (home / "diagnostics").exists()
+    assert R.unfinished_reason(home) is None
     # The person starts using Wisp again: new chats and a new Google sign-in.
     _write(home / "sessions.db", "new chat")
     _write(home / "gmail.json", json.dumps({"accounts": {"me@example.com": {"refresh_token": "new"}}}))
@@ -539,10 +545,15 @@ def test_a_restart_pass_that_keeps_failing_still_ends(world, monkeypatch):
         raise OSError("disk said no")
 
     monkeypatch.setattr(R, "erase_home", broken)
-    phases = [R.resume_pending(home, user)["phase"] for _ in range(3)]
+    phases = []
+    for _ in range(3):
+        phases.append(R.resume_pending(home, user)["phase"])
+        if phases[-1] != "erased":
+            # The whole-home pass never completed: the service must not start on it.
+            assert R.unfinished_reason(home) == "Wisp's data is not fully deleted yet"
     assert phases == ["started", "started", "erased"]
     assert "Wisp couldn't finish deleting its data." in R.read_marker(home)["problems"]
-    assert R.resume_pending(home, user) is None
+    assert R.resume_pending(home, user) is None and R.unfinished_reason(home) is None
 
 
 def test_unrevoked_google_access_is_reported(world):
@@ -561,11 +572,15 @@ def test_signed_out_google_is_not_reported(world):
     assert R.GOOGLE_NOT_REVOKED not in R.resume_pending(home, user)["problems"]
 
 
-def test_a_live_service_postpones_the_restart_pass(world, monkeypatch):
+def test_a_live_service_postpones_the_restart_pass_and_the_start(world, monkeypatch):
     home, user = world["home"], world["user"]
     _marker(home, phase="first-pass")
     monkeypatch.setattr(R, "_service_live", lambda port=8765: True)
-    assert R.resume_pending(home, user) is None
+    with pytest.raises(R.ResetIncomplete, match="still answers on port 8765"):
+        R.resume_pending(home, user)
+    with pytest.raises(SystemExit) as refused:
+        R.resume_or_exit(home, user)
+    assert refused.value.code == R.REFUSED_EXIT
     assert R.read_marker(home)["attempts"] == 0 and (home / "sessions.db").exists()
 
 
@@ -579,8 +594,11 @@ def test_a_marker_outside_wisps_home_never_erases(tmp_path, world):
     sandbox = tmp_path / "sandbox"
     _write(sandbox / "assistant.db")
     _marker(sandbox)
-    assert R.resume_pending(sandbox, world["user"]) is None
-    assert (sandbox / "assistant.db").exists()
+    with pytest.raises(R.ResetIncomplete, match="a reset never erases"):
+        R.resume_pending(sandbox, world["user"])
+    with pytest.raises(SystemExit):
+        R.resume_or_exit(sandbox, world["user"])
+    assert (sandbox / "assistant.db").exists() and R.read_marker(sandbox)["attempts"] == 0
 
 
 @pytest.mark.parametrize("content", ["", "not json", json.dumps({"phase": "started"}),
@@ -637,8 +655,8 @@ def test_the_restart_pass_runs_first_in_main_and_only_for_the_launched_backend()
     assert first == ["from __future__ import annotations",
                      "import os as _reset_os",
                      'if _reset_os.environ.get("WISP_LAUNCH_NONCE"):',
-                     "    from service.wisp_reset import resume_pending as _resume_pending",
-                     "    _resume_pending()"]
+                     "    from service.wisp_reset import resume_or_exit as _resume_or_exit",
+                     "    _resume_or_exit()"]
 
 
 def test_reset_logs_go_to_stderr_only(world, capsys):
@@ -685,3 +703,249 @@ def test_the_model_and_agent_cannot_reach_it():
     reply = TestClient(service.main.app).post(R.ROUTE, json={"confirm": R.CONFIRM_PHRASE})
     assert reply.status_code == 403 and reply.json()["detail"] == "Only the Wisp app can reset Wisp."
     assert any(m.cls is R.ResetGate for m in service.main.app.user_middleware)
+
+
+# --------------------------------------------------------------------------
+# B1: a restart pass is recorded before it runs; the service never starts on an
+# unrecorded or unfinished pass
+# --------------------------------------------------------------------------
+
+def _counting_erase(monkeypatch):
+    erases = []
+    real = R.erase_home
+
+    def erase(*a, **k):
+        erases.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(R, "erase_home", erase)
+    return erases
+
+
+def _start(home, user):
+    """One backend start, as service/main.py runs it: True when the service starts."""
+    try:
+        R.resume_or_exit(home, user)
+    except SystemExit as exc:
+        assert exc.code == R.REFUSED_EXIT
+        return False
+    return True
+
+
+def test_a_marker_that_cannot_be_written_erases_nothing_and_refuses_every_start(world, monkeypatch, capsys):
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+    erases = _counting_erase(monkeypatch)
+
+    def no_disk(home, doc):
+        raise PermissionError("the marker is locked")
+
+    monkeypatch.setattr(R, "write_marker", no_disk)
+    for start in range(5):
+        assert _start(home, user) is False
+        _write(home / f"would-be-user-data-{start}.json")     # never written: nothing started
+    assert erases == [] and (home / "sessions.db").exists()
+    assert R.read_marker(home)["attempts"] == 0
+    err = capsys.readouterr().err
+    assert "Wisp's service is not starting" in err and "so it deleted nothing" in err
+
+
+def test_an_immutable_marker_on_disk_erases_nothing(world, monkeypatch):
+    """The auditor's probe: `chflags uchg` on the marker, five starts."""
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+    erases = _counting_erase(monkeypatch)
+    import stat as st
+    path = home / R.MARKER
+    try:
+        os.chflags(path, st.UF_IMMUTABLE)
+    except OSError:
+        pytest.skip("chflags is not available here")
+    try:
+        results = [_start(home, user) for _ in range(5)]
+    finally:
+        os.chflags(path, 0)
+    assert results == [False] * 5 and erases == []
+    assert (home / "sessions.db").exists() and not (home / (R.MARKER + ".tmp")).exists()
+
+
+def test_a_pass_whose_result_cannot_be_recorded_refuses_the_start_and_stays_bounded(world, monkeypatch):
+    """The pass is counted before it runs; if its result can't be written the
+    service doesn't start, so nothing it would write can be erased later."""
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+    erases = _counting_erase(monkeypatch)
+    real_write = R.write_marker
+
+    def write(home, doc):
+        if not doc["in_progress"]:
+            raise OSError("disk full")
+        real_write(home, doc)
+
+    monkeypatch.setattr(R, "write_marker", write)
+    results = [_start(home, user) for _ in range(6)]
+    assert not any(results)
+    assert len(erases) <= R.MAX_ATTEMPTS
+    marker = R.read_marker(home)
+    assert marker["attempts"] == R.MAX_ATTEMPTS and marker["in_progress"] is True
+
+
+def test_a_pass_killed_mid_erase_is_never_followed_by_a_service_start(world, monkeypatch):
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+
+    def killed(*a, **k):
+        raise KeyboardInterrupt      # the process dies inside the pass
+
+    monkeypatch.setattr(R, "erase_home", killed)
+    with pytest.raises(KeyboardInterrupt):
+        R.resume_pending(home, user)
+    marker = R.read_marker(home)
+    assert marker["in_progress"] is True and marker["attempts"] == 1
+    assert R.unfinished_reason(home) == "the last restart pass was not recorded as finished"
+    monkeypatch.setattr(R, "erase_home", REAL_ERASE)
+    # The next start finishes it (no service ran in between) and then may start.
+    assert _start(home, user) is True
+    marker = R.read_marker(home)
+    assert marker["phase"] == "erased" and marker["attempts"] == 2 and not marker["in_progress"]
+
+
+def test_the_backend_refuses_to_start_on_an_unrecorded_pass(world):
+    """service/main.py itself exits before importing anything else."""
+    home, user = world["home"], world["user"]
+    _marker(home, phase="started", attempts=1, in_progress=True)
+    root = Path(__file__).resolve().parents[1]
+    env = {"HOME": str(user), "WISP_HOME": str(home), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1",
+           "WISP_LAUNCH_NONCE": "test-nonce"}
+    # Never probe the real service port, and no recorded pass may run: the marker
+    # can't be written (as in the chflags probe), so the start is refused untouched.
+    script = ("from service import wisp_reset as R\n"
+              "R._service_live = lambda port=8765: False\n"
+              "def no_disk(home, doc): raise PermissionError('locked')\n"
+              "R.write_marker = no_disk\n"
+              "import service.main\n"
+              "print('STARTED')\n")
+    done = subprocess.run([sys.executable, "-c", script], cwd=root, env=env, capture_output=True, text=True,
+                          timeout=120)
+    assert done.returncode == R.REFUSED_EXIT, done.stderr[-2000:]
+    assert "STARTED" not in done.stdout and "Wisp's service is not starting" in done.stderr
+    assert (home / "sessions.db").exists() and R.read_marker(home)["attempts"] == 1
+
+
+# --------------------------------------------------------------------------
+# B2: what the restart pass can't delete goes to the trash; only the trash is retried
+# --------------------------------------------------------------------------
+
+def test_a_stuck_folder_is_retried_as_trash_and_new_data_in_its_name_survives(world):
+    """The auditor's probe: chats/stuck at 0500; the fresh service writes chats/after1.json."""
+    home, user = world["home"], world["user"]
+    _write(home / "chats" / "old.json", "old chat")
+    _write(home / "chats" / "stuck" / "inner.txt", "old")
+    os.chmod(home / "chats" / "stuck", 0o500)
+    _marker(home, phase="first-pass")
+    try:
+        doc = R.resume_pending(home, user)
+        trash = R.TRASH_PREFIX + doc["id"] + "-chats"
+        assert doc["pending"] == [trash] and doc["phase"] == "first-pass"
+        assert not (home / "chats").exists() and not (home / trash / "old.json").exists()
+        assert R.unfinished_reason(home) is None, "the fresh service may start"
+        for n in (1, 2):
+            _write(home / "chats" / f"after{n}.json", "USER DATA")
+            _write(home / "assistant.db", f"NEW DB {n}")
+            doc = R.resume_pending(home, user)
+        assert doc["phase"] == "erased" and doc["attempts"] == R.MAX_ATTEMPTS
+        assert doc["problems"][-1] == "Couldn't delete: chats"
+        assert sorted(p.name for p in (home / "chats").iterdir()) == ["after1.json", "after2.json"]
+        assert (home / "assistant.db").read_text() == "NEW DB 2"
+    finally:
+        for folder in home.glob(R.TRASH_PREFIX + "*/stuck"):
+            os.chmod(folder, 0o700)
+
+
+def test_an_entry_that_cannot_even_be_renamed_is_reported_at_once_and_never_retried(world, monkeypatch):
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+    real_remove, real_rename = R._remove, os.rename
+    tried = []
+
+    def remove(path, device=None):
+        if path.name == "diagnostics":
+            tried.append("delete")
+            raise PermissionError("no")
+        real_remove(path, device)
+
+    def rename(src, dst):
+        if Path(src).name == "diagnostics":
+            tried.append("rename")
+            raise PermissionError("no")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(R, "_remove", remove)
+    monkeypatch.setattr(R.os, "rename", rename)
+    doc = R.resume_pending(home, user)
+    assert doc["pending"] == [] and doc["phase"] == "erased" and doc["attempts"] == 1
+    assert "Couldn't delete: diagnostics" in doc["problems"] and tried == ["delete", "rename"]
+
+
+def test_a_stuck_database_moves_to_the_trash_with_its_write_ahead_log(world, monkeypatch):
+    """A fresh assistant.db can never pick up the old WAL: the pair moves together."""
+    home, user = world["home"], world["user"]
+    _marker(home, phase="first-pass")
+    real_remove = R._remove
+
+    def remove(path, device=None):
+        if path.name == "assistant.db-wal":
+            raise PermissionError("no")
+        real_remove(path, device)
+
+    monkeypatch.setattr(R, "_remove", remove)
+    doc = R.resume_pending(home, user)
+    prefix = R.TRASH_PREFIX + doc["id"] + "-"
+    assert doc["pending"] == [prefix + "assistant.db", prefix + "assistant.db-wal"]
+    assert not (home / "assistant.db").exists() and not (home / "assistant.db-wal").exists()
+    assert (home / (prefix + "assistant.db")).exists() and (home / (prefix + "assistant.db-wal")).exists()
+    monkeypatch.setattr(R, "_remove", real_remove)
+    _write(home / "assistant.db", "fresh")
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "erased" and doc["pending"] == [] and doc["problems"] == []
+    assert (home / "assistant.db").read_text() == "fresh"
+
+
+def test_a_marker_whose_pending_names_are_not_its_trash_is_ignored(world):
+    home, user = world["home"], world["user"]
+    doc = _marker(home, phase="first-pass", full_pass=True)
+    for pending in (["chats"], ["../outside"], [R.TRASH_PREFIX + "someoneelse-chats"],
+                    ["cache/" + R.TRASH_PREFIX + doc["id"] + "-x"]):
+        R.write_marker(home, {**doc, "pending": pending})
+        assert isinstance(R.read_marker(home), R.InvalidMarker), pending
+        assert R.resume_pending(home, user) is None and (home / "cache").exists()
+    assert R.trash_path_ok("engine/base/" + R.TRASH_PREFIX + doc["id"] + "-cache", doc["id"])
+    assert R.display_name("engine/base/" + R.TRASH_PREFIX + doc["id"] + "-cache") == "engine/base/cache"
+
+
+# --------------------------------------------------------------------------
+# N-c, N-d
+# --------------------------------------------------------------------------
+
+def test_mcp_servers_never_inherit_the_launch_nonce(monkeypatch):
+    from service import mcp
+    monkeypatch.setenv("WISP_LAUNCH_NONCE", "secret-nonce")
+    monkeypatch.setenv("SOMETHING_ELSE", "kept")
+    env = mcp._inherited_env({})
+    assert "WISP_LAUNCH_NONCE" not in env and env["SOMETHING_ELSE"] == "kept"
+    assert "WISP_LAUNCH_NONCE" not in mcp._inherited_env({"env_clear_prefixes": ["UV_"]})
+    source = (Path(__file__).resolve().parents[1] / "service" / "mcp" / "__init__.py").read_text()
+    assert "if str(k) not in _NEVER_INHERITED" in source, "a server's own env can't set it either"
+
+
+def test_a_recycled_engine_pid_does_not_keep_the_cache(world, monkeypatch):
+    home = world["home"]
+    (home / "engine" / "engine.pid").write_text(str(os.getpid()))
+    monkeypatch.setattr(R, "_command_of", lambda pid: "/usr/bin/some-other-program --flag")
+    assert R._engine_running(home) is False
+    monkeypatch.setattr(R, "_command_of", lambda pid: None)
+    assert R._engine_running(home) is True, "unreadable: keep the cache rather than delete it under the engine"
+    monkeypatch.setattr(R, "_command_of", lambda pid: f"python serve --base-path {home / 'engine' / 'base'}")
+    assert R._engine_running(home) is True
+    monkeypatch.setattr(R, "_command_of", lambda pid: f"python serve --base-path {home / 'engine' / 'base2'}")
+    assert R._engine_running(home) is False

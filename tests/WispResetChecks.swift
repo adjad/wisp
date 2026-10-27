@@ -217,7 +217,7 @@ enum WispResetChecks {
         try? Data(#"{"version":1,"id":"c0ffee","phase":"erased"}"#.utf8).write(to: URL(fileURLWithPath: target))
         try? FileManager.default.createSymbolicLink(atPath: marker, withDestinationPath: target)
         if case .invalid = WispReset.readMarker(marker) {} else { check(false, "a link is ignored") }
-        WispReset.removeOwnedFile(marker)
+        check(WispReset.removeOwnedFile(marker) == false, "a link is not removed, and says so")
         check(FileManager.default.fileExists(atPath: target), "removing never follows a link")
         try? FileManager.default.removeItem(atPath: marker)
         try? FileManager.default.createDirectory(atPath: marker, withIntermediateDirectories: false)
@@ -227,10 +227,15 @@ enum WispResetChecks {
         // The app part runs once per marker: its record holds the marker's id.
         let record = dir.appendingPathComponent(".reset-pending.app").path
         check(WispReset.readAppDone(record) == nil, "no record yet")
-        WispReset.writeAppDone(WispReset.AppDone(id: "c0ffee", problems: ["P."]), to: record)
+        check(WispReset.writeAppDone(WispReset.AppDone(id: "c0ffee", problems: ["P."]), to: record),
+              "the record is written")
         check(WispReset.readAppDone(record) == WispReset.AppDone(id: "c0ffee", problems: ["P."]), "the record")
-        WispReset.removeOwnedFile(record)
+        check(WispReset.removeOwnedFile(record), "removing reports success")
         check(!FileManager.default.fileExists(atPath: record), "the record is removed")
+        check(WispReset.removeOwnedFile(record), "an absent file counts as removed")
+        check(!WispReset.writeAppDone(WispReset.AppDone(id: "c0ffee", problems: []),
+                                      to: dir.appendingPathComponent("missing/folder/record").path),
+              "a record that can't be written says so")
     }
 
     static func source(_ path: String) -> String {
@@ -271,8 +276,8 @@ enum WispResetChecks {
         let delegate = source("app/Sources/WispApp/AppDelegate.swift")
         check(!delegate.contains("tccutil") && !delegate.contains("clearDefaults"),
               "the delegate resets nothing itself; the marker-guarded launch step does")
-        check(delegate.contains("case .valid(let marker):\n            resetPending = true\n"
-                                + "            if WispReset.readAppDone()?.id != marker.id {\n"
+        check(delegate.contains("case .valid(let marker):\n            resetPending = true\n")
+              && delegate.contains("            if !marker.serviceDone && WispReset.readAppDone()?.id != marker.id {\n"
                                 + "                let problems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)\n"
                                 + "                WispReset.writeAppDone(WispReset.AppDone(id: marker.id, problems: problems))"),
               "a launch with a valid marker runs the app's part once per marker, before reading settings")
@@ -285,10 +290,14 @@ enum WispResetChecks {
               < launchStart.range(of: "FirstRunSetup.shouldShow")!.lowerBound,
               "the defaults are cleared before setup decides whether to show")
         check(delegate.contains("case .valid(let marker) where marker.serviceDone:\n"
-                                + "                    let appProblems = WispReset.readAppDone()?.problems ?? []\n"
-                                + "                    WispReset.removeOwnedFile(WispReset.appDoneURL().path)\n"
-                                + "                    WispReset.removeOwnedFile(WispReset.markerURL().path)"),
-              "the marker is removed last, only once the restart pass says erased")
+                                + "                    let appProblems = WispReset.readAppDone()?.problems ?? []\n"),
+              "the marker is removed only once the restart pass says erased")
+        let finish = delegate.components(separatedBy: "case .valid(let marker) where marker.serviceDone:")[1]
+        check(finish.contains("let markerGone = WispReset.removeOwnedFile(WispReset.markerURL().path)\n"
+                              + "                    if markerGone, !WispReset.removeOwnedFile(WispReset.appDoneURL().path) {"),
+              "the marker goes first; the app's record only after it is gone")
+        check(finish.contains("WispReset.markerStuckNotice"), "a marker that won't delete is said")
+        check(!card.contains("try? data.write(to: URL(fileURLWithPath: path)"), "a failed record write is logged")
         check(delegate.contains("reply = .afterNoAnswer(markerOnDisk: true)"),
               "no answer: the marker on disk decides what Wisp says")
         check(delegate.contains("guard reply.relaunches else { return reply.detail }"),

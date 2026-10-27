@@ -18,17 +18,24 @@ Wisp button. The app then calls POST /assistant/reset_wisp, which:
 
 The route ends with MARKER at phase "first-pass": it never claims the reset is
 done. The app then stops the engine and this service and relaunches. The
-backend the app launches (service/main.py, only with WISP_LAUNCH_NONCE) runs
-resume_pending before any other import: with no live service and the engine
-stopped, it erases the whole home once more (the restart pass, which catches
-anything written after the first pass) together with the engine's prompt cache,
-and only then writes phase "erased". Later starts retry only the names that
-pass could not delete, at most MAX_ATTEMPTS times in all, and then write
-"erased" with the leftovers as problems: a reset never loops, and never touches
-data created after the restart pass. The relaunched app runs its own part
-once per marker (Keychain provider keys, its defaults domain, its privacy
-grants, notifications, its caches; APP_DONE records it) and removes MARKER last,
-once it reads "erased". macOS accounts (System Settings ▸ Internet Accounts,
+backend the app launches (service/main.py, only with WISP_LAUNCH_NONCE) calls
+resume_or_exit before any other import. Each restart pass is recorded in MARKER
+(attempts + 1, in_progress) BEFORE it deletes anything, so no pass runs that
+the marker does not count, and at most MAX_ATTEMPTS ever run. With no live
+service and the engine stopped, the first restart pass erases the whole home
+once more (anything written after the route's pass) together with the engine's
+prompt cache. An entry it cannot delete is renamed in place to TRASH_PREFIX
+<id>-<name> (a rename in the same folder works even when the contents can't be
+deleted), and later starts retry only those trash entries, so they can never
+delete what a fresh service writes under the original name; an entry that
+can't even be renamed is reported at once and never retried. The pass writes
+"erased" once nothing is left, or after MAX_ATTEMPTS starts with the leftovers
+listed as problems. The service refuses to start (SystemExit) whenever a pass
+could not be recorded or the whole-home pass has not completed: it never
+creates data that a later pass would erase. The relaunched app runs its own
+part once per marker (Keychain provider keys, its defaults domain, its privacy
+grants, notifications, its caches; APP_DONE records it), never once MARKER says
+"erased", and removes MARKER once it reads "erased". macOS accounts (System Settings ▸ Internet Accounts,
 Mail, Calendar, Notes, Messages) are never touched: deleting a "connection"
 means removing Wisp's access and every copy Wisp holds.
 
@@ -70,8 +77,13 @@ CONFIRM_PHRASE = "reset wisp"
 MARKER = ".reset-pending"
 # The app's own record that it ran its part for one marker (holds the marker's id).
 APP_DONE = ".reset-pending.app"
-# Service starts that may work on one reset before it is declared done with leftovers.
+# Restart passes one reset may run before it is declared done with leftovers.
 MAX_ATTEMPTS = 3
+# An entry the restart pass could not delete is renamed to TRASH_PREFIX<marker id>-<name>
+# in its own folder; only these are ever retried.
+TRASH_PREFIX = ".reset-trash-"
+# The backend's exit status when it refuses to start under an unrecorded or unfinished reset.
+REFUSED_EXIT = 75
 KEEP_ENTRIES = frozenset({
     MARKER,                            # an unfinished reset: the next start finishes it
     APP_DONE,                          # the app ran its part for this marker
@@ -215,76 +227,169 @@ def _rewrite_config(home: Path) -> str:
     return "trimmed"
 
 
+def _trash_name(trash_id: str, name: str) -> str:
+    return f"{TRASH_PREFIX}{trash_id}-{name}"
+
+
+def display_name(path: str) -> str:
+    """A trash path as the entry it was ("chats", "engine/base/cache")."""
+    folder, _, name = path.rpartition("/")
+    while name.startswith(TRASH_PREFIX) and "-" in name[len(TRASH_PREFIX):]:
+        name = name[len(TRASH_PREFIX):].split("-", 1)[1]
+    return f"{folder}/{name}" if folder else name
+
+
+def _real_folder(path: Path, device: int) -> bool:
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISDIR(info.st_mode) and info.st_dev == device
+
+
+def _delete_or_trash(folder: Path, name: str, device: int, trash_id: str | None, *,
+                     skip_delete: bool = False) -> tuple[str, str]:
+    """Delete ``folder/name``; when that fails and ``trash_id`` is given, rename
+    it to its trash name in the same folder. Returns (outcome, name) with outcome
+    "removed", "trashed" (name is then the trash name), or "failed"."""
+    target = folder / name
+    if not skip_delete:
+        try:
+            _remove(target, device)
+            return "removed", name
+        except FileNotFoundError:
+            return "removed", name
+        except OSError:
+            pass
+    if trash_id is None:
+        return "failed", name
+    if name.startswith(_trash_name(trash_id, "")):
+        return "trashed", name          # already this reset's trash (an interrupted pass)
+    trash = _trash_name(trash_id, name)
+    try:
+        if os.path.lexists(folder / trash):
+            return "failed", name
+        os.rename(target, folder / trash)   # never follows a link: renames the entry itself
+        return "trashed", trash
+    except FileNotFoundError:
+        return "removed", name
+    except OSError:
+        return "failed", name
+
+
+def _erase_names(folder: Path, names: list[str], device: int, trash_id: str | None,
+                 prefix: str, out: dict) -> None:
+    """Delete these entries of one folder, SQLite sidecars before their database
+    (a database whose sidecar stays is never deleted before it: with ``trash_id``
+    it is moved to the trash beside it, so the pair keeps its names)."""
+    entries = set(names)
+    order = sorted(entries, key=lambda n: (_sidecar_owner(n, entries) is None, n))
+    blocked: set[str] = set()
+    for name in order:
+        owner = _sidecar_owner(name, entries)
+        outcome, kept_as = _delete_or_trash(folder, name, device, trash_id,
+                                            skip_delete=owner is None and name in blocked)
+        if outcome == "removed":
+            out["removed"].append(prefix + name)
+            continue
+        if owner is not None:
+            blocked.add(owner)
+        out["failed"].append(prefix + name)
+        if outcome == "trashed":
+            out["trashed"].append(prefix + kept_as)
+        else:
+            out["stuck"].append(prefix + name)
+
+
+def _erase_engine(root: Path, device: int, doomed: list[str], trash_id: str | None, out: dict) -> None:
+    """Delete these paths inside engine/ (``engine.log``, ``base/cache``...)."""
+    engine = root / "engine"
+    if not _real_folder(engine, device):
+        return
+    for rel in doomed:
+        folder_rel, _, name = rel.rpartition("/")
+        folder = engine / folder_rel if folder_rel else engine
+        # Never through a link: base/ itself must be a real folder of this disk.
+        if not _real_folder(folder, device) or not os.path.lexists(folder / name):
+            continue
+        _erase_names(folder, [name], device, trash_id, "engine/" + (folder_rel + "/" if folder_rel else ""), out)
+
+
+def erase_engine_caches(home: Path, user_home: Path, trash_id: str) -> dict:
+    """Only the engine's prompt cache and logs (the engine was running at the
+    first restart pass and has stopped since): nothing else in the home."""
+    root = checked_home(home, user_home)
+    out: dict[str, list[str]] = {"removed": [], "failed": [], "trashed": [], "stuck": []}
+    _erase_engine(root, root.lstat().st_dev, list(ENGINE_CACHES), trash_id, out)
+    return out
+
+
 def erase_home(home: Path, user_home: Path, *, engine_caches: bool = False,
-               only: set[str] | None = None) -> dict:
+               trash_id: str | None = None) -> dict:
     """Delete every entry of Wisp's home outside KEEP_ENTRIES, trim config.yaml
     and drop the engine's log (and, with ``engine_caches``, its prompt cache and
     logs: only while the engine is stopped). Never follows a link out of the
     home and never enters another file system mounted inside it.
 
     Returns names only (Wisp's own file names, never contents): ``removed``,
-    ``kept`` and ``failed``. A SQLite database is deleted only after its
-    -wal/-shm/-journal files are, so a fresh database can never pick up an old
-    write-ahead log on the next launch.
-
-    ``only`` limits it to those names (top-level names, ``engine/...`` and
-    ``config.yaml``): a retry of what an earlier pass could not delete, which
-    never touches anything created since.
+    ``kept`` and ``failed`` (everything not deleted). With ``trash_id`` (the
+    restart pass), each entry that could not be deleted is renamed to its trash
+    name in its own folder: ``trashed`` lists those paths (the only ones a later
+    pass retries) and ``stuck`` the entries that could not even be moved. A
+    SQLite database is deleted only after its -wal/-shm/-journal files are, so a
+    fresh database can never pick up an old write-ahead log on the next launch.
     """
     root = checked_home(home, user_home)
     device = root.lstat().st_dev
-    removed: list[str] = []
-    failed: list[str] = []
-    entries = {entry.name for entry in os.scandir(root)}
-    # Sidecars first, then the rest; a database waits for its sidecars.
-    order = sorted(entries, key=lambda n: (_sidecar_owner(n, entries) is None, n))
-    blocked: set[str] = set()
-    for name in order:
-        if name in KEEP_ENTRIES or (only is not None and name not in only):
-            continue
-        owner = _sidecar_owner(name, entries)
-        if owner is None and name in blocked:
-            failed.append(name)
-            continue
-        try:
-            _remove(root / name, device)
-            removed.append(name)
-        except FileNotFoundError:
-            removed.append(name)
-        except OSError:
-            failed.append(name)
-            if owner is not None:
-                blocked.add(owner)
-    engine = root / "engine"
+    out: dict[str, list[str]] = {"removed": [], "failed": [], "trashed": [], "stuck": []}
+    names = [entry.name for entry in os.scandir(root) if entry.name not in KEEP_ENTRIES]
+    _erase_names(root, names, device, trash_id, "", out)
+    _erase_engine(root, device, sorted(ENGINE_DELETE) + (list(ENGINE_CACHES) if engine_caches else []),
+                  trash_id, out)
     try:
-        engine_info = engine.lstat()
-    except FileNotFoundError:
-        engine_info = None
-    if engine_info is not None and stat.S_ISDIR(engine_info.st_mode) and engine_info.st_dev == device:
-        doomed = sorted(ENGINE_DELETE) + (list(ENGINE_CACHES) if engine_caches else [])
-        if only is not None:
-            doomed = [name for name in doomed if f"engine/{name}" in only]
-        for name in doomed:
-            target = engine / name
-            try:
-                # Never through a link: base/ itself must be a real folder of this disk.
-                parent = target.parent.lstat()
-                if not stat.S_ISDIR(parent.st_mode) or parent.st_dev != device:
-                    continue
-                _remove(target, device)
-                removed.append(f"engine/{name}")
-            except FileNotFoundError:
-                pass
-            except OSError:
-                failed.append(f"engine/{name}")
-    try:
-        if only is None or "config.yaml" in only:
-            if _rewrite_config(root) == "removed":
-                removed.append("config.yaml")
+        if _rewrite_config(root) == "removed":
+            out["removed"].append("config.yaml")
     except Exception:  # noqa: BLE001 — reported, never fatal to the rest of the reset
-        failed.append("config.yaml")
+        out["failed"].append("config.yaml")
+        out["stuck"].append("config.yaml")     # never retried: a later trim would drop new settings
     kept = sorted(name for name in os.listdir(root) if name in KEEP_ENTRIES)
-    return {"removed": sorted(removed), "failed": sorted(set(failed)), "kept": kept}
+    return {"removed": sorted(out["removed"]), "failed": sorted(set(out["failed"])), "kept": kept,
+            "trashed": sorted(out["trashed"]), "stuck": sorted(set(out["stuck"]))}
+
+
+def trash_path_ok(path: str, trash_id: str) -> bool:
+    """Whether ``path`` is one of this reset's trash entries: top level, in
+    engine/ or in engine/base/, and nothing else."""
+    if not isinstance(path, str):
+        return False
+    folder, _, name = path.rpartition("/")
+    return (folder in ("", "engine", "engine/base") and name.startswith(_trash_name(trash_id, ""))
+            and len(name) > len(_trash_name(trash_id, "")) and "/" not in name and name not in (".", ".."))
+
+
+def retry_trash(home: Path, user_home: Path, paths: list[str], trash_id: str) -> dict:
+    """Delete this reset's trash entries again (and nothing else): what a fresh
+    service writes under the original names is never touched. Returns
+    ``removed`` and ``pending`` (trash paths still there)."""
+    root = checked_home(home, user_home)
+    device = root.lstat().st_dev
+    out: dict[str, list[str]] = {"removed": [], "failed": [], "trashed": [], "stuck": []}
+    by_folder: dict[str, list[str]] = {}
+    for path in paths:
+        if trash_path_ok(path, trash_id):
+            folder, _, name = path.rpartition("/")
+            by_folder.setdefault(folder, []).append(name)
+    for folder_rel, names in sorted(by_folder.items()):
+        folder = root
+        ok = True
+        for part in folder_rel.split("/") if folder_rel else []:
+            folder = folder / part
+            ok = ok and _real_folder(folder, device)
+        if not ok:
+            out["failed"] += [f"{folder_rel}/{n}" for n in names]
+            continue
+        _erase_names(folder, names, device, None, f"{folder_rel}/" if folder_rel else "", out)
+    return {"removed": sorted(out["removed"]), "pending": sorted(set(out["failed"]))}
 
 
 def leftover_entries(home: Path) -> list[str]:
@@ -381,7 +486,8 @@ PHASES = ("started", "first-pass", "erased")
 def new_marker() -> dict:
     """The marker the route writes before anything destructive."""
     return {"version": 1, "id": secrets.token_hex(16), "phase": "started", "attempts": 0,
-            "full_pass": False, "pending": [], "engine_cache": False, "problems": [], "at": int(time.time())}
+            "in_progress": False, "full_pass": False, "pending": [], "engine_cache": False, "problems": [],
+            "at": int(time.time())}
 
 
 def write_marker(home: Path, doc: dict) -> None:
@@ -392,11 +498,16 @@ def write_marker(home: Path, doc: dict) -> None:
         temp.unlink()
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        os.write(fd, body)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(temp, home / MARKER)
+        try:
+            os.write(fd, body)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(temp, home / MARKER)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temp.unlink()
+        raise
     _fsync_dir(home)
 
 
@@ -429,15 +540,32 @@ def read_marker(home: Path) -> dict | None:
         checks = (isinstance(doc["id"], str) and 0 < len(doc["id"]) <= 64 and doc["id"].isalnum()
                   and type(doc["attempts"]) is int and doc["attempts"] >= 0
                   and type(doc["full_pass"]) is bool and type(doc["engine_cache"]) is bool
-                  and isinstance(doc["pending"], list) and all(isinstance(n, str) for n in doc["pending"])
+                  and type(doc["in_progress"]) is bool
+                  and isinstance(doc["pending"], list) and all(trash_path_ok(n, doc["id"]) for n in doc["pending"])
                   and isinstance(doc["problems"], list) and all(isinstance(n, str) for n in doc["problems"]))
     if not checks:
         return InvalidMarker(reason="not a Wisp reset marker")
     return doc
 
 
+def _command_of(pid: int) -> str | None:
+    """A process's command line, or None when it can't be read."""
+    import subprocess
+    try:
+        done = subprocess.run(["/bin/ps", "-ww", "-p", str(pid), "-o", "command="],
+                              capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() if done.returncode in (0, 1) else None
+
+
 def _engine_running(home: Path) -> bool:
-    """Whether the bundled engine recorded in engine/engine.pid is still alive."""
+    """Whether the bundled engine recorded in engine/engine.pid is still alive.
+
+    A live pid counts only while it is still that engine (its command ends with
+    this home's ``--base-path``, as engine.manager.reap_orphan checks), so a
+    recycled pid doesn't keep the prompt cache forever. A command that can't be
+    read counts as the engine: the cache is kept rather than deleted under it."""
     try:
         pid = int((home / "engine" / "engine.pid").read_text().strip())
     except (OSError, ValueError):
@@ -449,8 +577,16 @@ def _engine_running(home: Path) -> bool:
     except ProcessLookupError:
         return False
     except OSError:
+        pass
+    command = _command_of(pid)
+    if command is None:
         return True
-    return True
+    if not command:
+        return False                 # gone between the two checks
+    bases = {str(Path(home) / "engine" / "base")}
+    with contextlib.suppress(OSError):
+        bases.add(str((Path(home) / "engine" / "base").resolve()))
+    return any(command.endswith(f"--base-path {base}") for base in bases)
 
 
 def _service_live(port: int = 8765) -> bool:
@@ -490,79 +626,141 @@ def _exclusive(home: Path):
         os.close(fd)
 
 
+class ResetIncomplete(Exception):
+    """The restart pass could not run or could not be recorded: the service must
+    not start, because anything it wrote could be erased by a later pass."""
+
+
 def resume_pending(home: Path | None = None, user_home: Path | None = None) -> dict | None:
     """The restart pass: run by the backend the app launched, before any other
-    import (service/main.py), so no store is open.
+    import (service/main.py via resume_or_exit), so no store is open.
 
     Without MARKER, or with one at "erased", this does nothing. An invalid marker
-    is ignored and reported. With a live service on the port it waits for the
-    next start. Otherwise, the first time it erases the whole home (whatever the
-    route's pass missed or never reached, and the engine's prompt cache when the
-    engine is stopped); later starts retry only the names that pass could not
-    delete. It writes "erased" once nothing is left, or after MAX_ATTEMPTS
-    starts with the leftovers listed as problems. Never raises: the service
-    still starts. Returns the marker it wrote, or None."""
+    is ignored and reported. Otherwise the pass is first recorded (attempts + 1,
+    in_progress) and only then run: the first one erases the whole home (what
+    the route's pass missed or never reached, and the engine's prompt cache when
+    the engine is stopped), moving what it can't delete to the trash; later ones
+    delete only that trash. It writes "erased" once nothing is left, or after
+    MAX_ATTEMPTS passes with the leftovers listed as problems.
+
+    Raises ResetIncomplete when the pass can't run here (an older service still
+    answers on the port, the marker is outside Wisp's home) or can't be
+    recorded (before the pass: nothing is deleted). Returns the marker written."""
     if home is None:
         from service.paths import MOE_DIR
         home = MOE_DIR
     home, user_home = Path(home), Path.home() if user_home is None else Path(user_home)
-    try:
-        marker = read_marker(home)
-        if marker is None or (not isinstance(marker, InvalidMarker) and marker["phase"] == "erased"):
-            return None
-        if isinstance(marker, InvalidMarker):
-            _log(f"ignored a reset marker: {marker['reason']}")
-            return None
-        if _service_live():
-            _log("a Wisp service is still running; the reset finishes at the next start")
-            return None
-        root = checked_home(home, user_home)
-    except Exception as exc:  # noqa: BLE001 — the service must still start
-        _log(f"could not check the reset marker: {type(exc).__name__}")
+    marker = read_marker(home)
+    if marker is None or (not isinstance(marker, InvalidMarker) and marker["phase"] == "erased"):
         return None
+    if isinstance(marker, InvalidMarker):
+        _log(f"ignored a reset marker: {marker['reason']}")
+        return None
+    if _service_live():
+        raise ResetIncomplete("an earlier Wisp service still answers on port 8765")
+    try:
+        root = checked_home(home, user_home)
+    except ResetRefused as exc:
+        raise ResetIncomplete(f"the reset marker is in a folder a reset never erases ({exc})") from None
     with _exclusive(root):
         marker = read_marker(root)
         if marker is None or isinstance(marker, InvalidMarker) or marker["phase"] == "erased":
             return None
         doc = dict(marker)
-        doc["attempts"] += 1
-        problems = [p for p in doc["problems"] if not p.startswith("Couldn't delete: ")]
-        try:
-            if _google_still_connected(root) and GOOGLE_NOT_REVOKED not in problems:
-                problems.append(GOOGLE_NOT_REVOKED)
-            engine_stopped = not _engine_running(root)
-            if doc["full_pass"]:
-                only = set(doc["pending"])
-                if not doc["engine_cache"]:
-                    only |= {f"engine/{name}" for name in ENGINE_CACHES}
-                sweep = erase_home(root, user_home, engine_caches=engine_stopped, only=only)
-            else:
-                sweep = erase_home(root, user_home, engine_caches=engine_stopped)
-            doc["full_pass"] = True
-            doc["pending"] = sweep["failed"]
-            doc["engine_cache"] = doc["engine_cache"] or (
-                engine_stopped and not any(n.startswith("engine/base/") for n in sweep["failed"]))
-            _log(f"restart pass {doc['attempts']}: removed {len(sweep['removed'])}, "
-                 f"{len(sweep['failed'])} left")
-        except Exception as exc:  # noqa: BLE001 — counted; it can't loop past MAX_ATTEMPTS
-            _log(f"restart pass {doc['attempts']} failed: {type(exc).__name__}")
+        problems = list(doc["problems"])
+
+        def note(line: str) -> None:
+            if line not in problems:
+                problems.append(line)
+
+        if doc["attempts"] < MAX_ATTEMPTS:
+            # Recorded before anything is deleted: a pass the marker doesn't count never runs.
+            doc["attempts"] += 1
+            doc["in_progress"] = True
+            try:
+                write_marker(root, doc)
+            except OSError as exc:
+                raise ResetIncomplete(f"Wisp couldn't record the restart pass ({type(exc).__name__}), "
+                                      "so it deleted nothing") from None
+            try:
+                if _google_still_connected(root):
+                    note(GOOGLE_NOT_REVOKED)
+                engine_stopped = not _engine_running(root)
+                if doc["full_pass"]:
+                    sweep = retry_trash(root, user_home, doc["pending"], doc["id"])
+                    doc["pending"] = sweep["pending"]
+                    if not doc["engine_cache"] and engine_stopped:
+                        # The engine was running at the first pass; its cache is only a cache.
+                        cache = erase_engine_caches(root, user_home, doc["id"])
+                        doc["pending"] = sorted(set(doc["pending"]) | set(cache["trashed"]))
+                        if cache["stuck"]:
+                            note("Couldn't delete: " + ", ".join(cache["stuck"]))
+                        doc["engine_cache"] = True
+                else:
+                    sweep = erase_home(root, user_home, engine_caches=engine_stopped, trash_id=doc["id"])
+                    doc["full_pass"] = True
+                    doc["pending"] = sweep["trashed"]
+                    doc["engine_cache"] = engine_stopped
+                    if sweep["stuck"]:
+                        note("Couldn't delete: " + ", ".join(sweep["stuck"]))
+                _log(f"restart pass {doc['attempts']}: removed {len(sweep['removed'])}, "
+                     f"{len(doc['pending'])} left")
+            except Exception as exc:  # noqa: BLE001 — counted; it can't run past MAX_ATTEMPTS
+                _log(f"restart pass {doc['attempts']} failed: {type(exc).__name__}")
+            doc["in_progress"] = False
         finished = doc["full_pass"] and not doc["pending"] and doc["engine_cache"]
         if finished or doc["attempts"] >= MAX_ATTEMPTS:
             if not doc["full_pass"]:
-                problems.append("Wisp couldn't finish deleting its data.")
+                note("Wisp couldn't finish deleting its data.")
             if doc["pending"]:
-                problems.append("Couldn't delete: " + ", ".join(doc["pending"]))
+                note("Couldn't delete: " + ", ".join(sorted({display_name(n) for n in doc["pending"]})))
             if doc["full_pass"] and not doc["engine_cache"]:
-                problems.append("The engine's prompt cache was kept because the engine was still running.")
+                note("The engine's prompt cache was kept because the engine was still running.")
             doc["phase"] = "erased"
+            doc["in_progress"] = False
         else:
             doc["phase"] = "first-pass" if doc["full_pass"] else "started"
         doc["problems"] = problems
         try:
             write_marker(root, doc)
         except OSError as exc:
-            _log(f"could not record the restart pass: {type(exc).__name__}")
+            raise ResetIncomplete(f"Wisp couldn't record the restart pass ({type(exc).__name__})") from None
         return doc
+
+
+def unfinished_reason(home: Path | None = None) -> str | None:
+    """Why the service must not start under the marker on disk, or None. It may
+    start once the reset is "erased", or once the whole-home pass is recorded as
+    complete (a later start only retries the trash, never anything new)."""
+    if home is None:
+        from service.paths import MOE_DIR
+        home = MOE_DIR
+    marker = read_marker(Path(home))
+    if marker is None or isinstance(marker, InvalidMarker) or marker["phase"] == "erased":
+        return None
+    if marker["in_progress"]:
+        return "the last restart pass was not recorded as finished"
+    if not marker["full_pass"]:
+        return "Wisp's data is not fully deleted yet"
+    return None
+
+
+def resume_or_exit(home: Path | None = None, user_home: Path | None = None) -> None:
+    """service/main.py's first call in the backend the app launched: run the
+    restart pass, then refuse to start (SystemExit, reason on stderr) while the
+    reset is unrecorded or unfinished, so the service never writes data a later
+    pass would erase. Each refusal costs at most one recorded pass."""
+    try:
+        resume_pending(home, user_home)
+        reason = unfinished_reason(home)
+    except ResetIncomplete as exc:
+        reason = str(exc)
+    except Exception as exc:  # noqa: BLE001 — unknown state: never start on it
+        reason = f"the restart pass failed ({type(exc).__name__})"
+    if reason:
+        _log(f"Wisp's service is not starting: a reset is unfinished ({reason}). Quit and reopen Wisp "
+             "to try again; if this keeps happening, delete ~/.moe/.reset-pending.")
+        raise SystemExit(REFUSED_EXIT)
 
 
 # --------------------------------------------------------------------------
