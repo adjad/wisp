@@ -51,6 +51,7 @@ import ctypes
 import errno
 import fcntl
 import json
+import math
 import os
 import shutil
 import stat
@@ -569,7 +570,7 @@ def read_marker(home: Path) -> dict | None:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as source:
             doc = parse_marker_json(source.read(65536))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return InvalidMarker(reason="not valid JSON")
     return marker_from_json(doc)
 
@@ -585,21 +586,78 @@ def _no_duplicates(pairs: list) -> dict:
     return dict(pairs)
 
 
+# Objects and arrays inside each other (the outer one counts 1); the app's StrictJSON.maxDepth.
+MAX_JSON_DEPTH = 512
+# Digits in an integer; the app's StrictJSON.maxIntegerDigits.
+MAX_INTEGER_DIGITS = 19
+
+
 def _has_lone_surrogate(value: Any) -> bool:
-    if isinstance(value, str):
-        return any(0xD800 <= ord(c) <= 0xDFFF for c in value)
-    if isinstance(value, dict):
-        return any(_has_lone_surrogate(k) or _has_lone_surrogate(v) for k, v in value.items())
-    if isinstance(value, list):
-        return any(_has_lone_surrogate(v) for v in value)
+    """Iterative: no recursion however deep the document is."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if any(0xD800 <= ord(c) <= 0xDFFF for c in item):
+                return True
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
     return False
+
+
+def _nesting_depth_ok(text: str) -> bool:
+    """Whether objects and arrays nest at most MAX_JSON_DEPTH deep, counted
+    without parsing (json.loads recurses once per level)."""
+    depth, in_string, escaped = 0, False, False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif char in "]}":
+            depth -= 1
+    return True
+
+
+def _int_capped(token: str) -> int:
+    if sum(c.isdigit() for c in token) > MAX_INTEGER_DIGITS:
+        raise ValueError("integer too long")
+    return int(token)
+
+
+def _finite_float(token: str) -> float:
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("number out of range")
+    return value
 
 
 def parse_marker_json(data: bytes) -> Any:
     """Strict JSON, read exactly as the app reads it (ResetWisp.swift
-    StrictJSON): UTF-8 only, and NaN and Infinity, a key twice in one object, a
-    lone surrogate escape and a byte-order mark are all refused."""
-    doc = json.loads(data.decode("utf-8"), parse_constant=_no_constant, object_pairs_hook=_no_duplicates)
+    StrictJSON): UTF-8 only; NaN and Infinity, a number that isn't finite, an
+    integer of more than MAX_INTEGER_DIGITS digits, a key twice in one object, a
+    lone surrogate escape, a byte-order mark and nesting deeper than
+    MAX_JSON_DEPTH are all refused (ValueError)."""
+    text = data.decode("utf-8")
+    if not _nesting_depth_ok(text):
+        raise ValueError("nested too deep")
+    try:
+        doc = json.loads(text, parse_constant=_no_constant, object_pairs_hook=_no_duplicates,
+                         parse_int=_int_capped, parse_float=_finite_float)
+    except RecursionError:
+        raise ValueError("nested too deep") from None
     if _has_lone_surrogate(doc):
         raise ValueError("lone surrogate")
     return doc
@@ -795,6 +853,10 @@ def resume_pending(home: Path | None = None, user_home: Path | None = None) -> d
             doc["in_progress"] = False
         finished = doc["full_pass"] and not doc["pending"] and doc["engine_cache"]
         if finished or doc["attempts"] >= MAX_ATTEMPTS:
+            # Engine trash a killed pass moved but never recorded is said too, never dropped.
+            with contextlib.suppress(OSError):
+                unrecorded = ["engine/" + p for p in _engine_trash(root, root.lstat().st_dev, doc["id"])]
+                doc["pending"] = sorted(set(doc["pending"]) | set(unrecorded))
             if not doc["full_pass"]:
                 note("Wisp couldn't finish deleting its data.")
             for line in cant_delete_lines(display_name(n) for n in doc["pending"]):

@@ -318,8 +318,9 @@ enum WispResetChecks {
                                 + "                markerID: marker.id, record: WispReset.readAppDone(),\n"
                                 + "                defaultsID: UserDefaults.standard.string(forKey: WispReset.appPartDoneKey)) {\n"
                                 + "                let problems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)\n"
-                                + "                UserDefaults.standard.set(marker.id, forKey: WispReset.appPartDoneKey)\n"
+                                + "                // The problems first: once the done id is there the part never runs again.\n"
                                 + "                UserDefaults.standard.set(problems, forKey: WispReset.appPartProblemsKey)\n"
+                                + "                UserDefaults.standard.set(marker.id, forKey: WispReset.appPartDoneKey)\n"
                                 + "                WispReset.writeAppDone(WispReset.AppDone(id: marker.id, problems: problems))"),
               "a launch with a valid marker runs the app's part once per marker, before reading settings")
         check(delegate.contains("if model.debugMode { model.debugMode = false }"),

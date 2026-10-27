@@ -1109,3 +1109,38 @@ def test_the_marker_json_rules_match_the_app():
         R.parse_marker_json(b'\xef\xbb\xbf{"version": 1, "id": "a", "phase": "erased"}')
     source = (Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp" / "ResetWisp.swift").read_text()
     assert f"static let maxAttempts = {R.MAX_ATTEMPTS}" in source
+
+
+@pytest.mark.parametrize("depth", [600, 1_000, 10_000, 32_000])
+def test_a_deeply_nested_marker_file_is_ignored_not_a_crash(world, depth):
+    """The service reads it at every start: refused cleanly, never RecursionError."""
+    home, user = world["home"], world["user"]
+    text = '{"version": 1, "id": "c0ffee12", "phase": "first-pass", "later": ' + "[" * depth + "]" * depth + "}"
+    (home / R.MARKER).write_text(text)
+    assert isinstance(R.read_marker(home), R.InvalidMarker)
+    assert R.resume_pending(home, user) is None and (home / "sessions.db").exists()
+
+
+def test_a_deep_document_never_recurses_in_the_surrogate_walk():
+    deep = []
+    for _ in range(50_000):
+        deep = [deep]
+    assert R._has_lone_surrogate(deep) is False
+    assert R._has_lone_surrogate([[["ok", "\ud800"]]]) is True
+
+
+def test_the_depth_and_number_limits_match_the_app():
+    source = (Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp" / "ResetWisp.swift").read_text()
+    assert f"static let maxDepth = {R.MAX_JSON_DEPTH}" in source
+    assert f"static let maxIntegerDigits = {R.MAX_INTEGER_DIGITS}" in source
+
+
+def test_unrecorded_engine_trash_is_reported_at_the_attempt_limit(world):
+    home, user = world["home"], world["user"]
+    doc = _marker(home, phase="first-pass", attempts=R.MAX_ATTEMPTS, full_pass=True, engine_cache=True,
+                  in_progress=True)
+    _write(home / "engine" / "base" / (R.TRASH_PREFIX + doc["id"] + "-cache") / "kv", "prompt-derived")
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "erased"
+    assert doc["pending"] == ["engine/base/" + R.TRASH_PREFIX + doc["id"] + "-cache"]
+    assert "Couldn't delete: engine/base/cache" in doc["problems"]

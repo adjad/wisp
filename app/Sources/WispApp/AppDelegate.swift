@@ -179,8 +179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 markerID: marker.id, record: WispReset.readAppDone(),
                 defaultsID: UserDefaults.standard.string(forKey: WispReset.appPartDoneKey)) {
                 let problems = WispResetLaunch.run(bundleID: Bundle.main.bundleIdentifier)
-                UserDefaults.standard.set(marker.id, forKey: WispReset.appPartDoneKey)
+                // The problems first: once the done id is there the part never runs again.
                 UserDefaults.standard.set(problems, forKey: WispReset.appPartProblemsKey)
+                UserDefaults.standard.set(marker.id, forKey: WispReset.appPartDoneKey)
                 WispReset.writeAppDone(WispReset.AppDone(id: marker.id, problems: problems))
                 // The model read Debug Mode before the defaults were cleared.
                 if model.debugMode { model.debugMode = false }

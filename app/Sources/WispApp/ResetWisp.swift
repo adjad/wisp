@@ -533,11 +533,19 @@ struct ResetWispCard: View {
 /// bytes before JSONSerialization (which allows what the service refuses): UTF-8
 /// only, no key twice in one object, no lone surrogate escape. Literals are only
 /// numbers, true, false and null characters, so NaN, Infinity or a byte-order mark
-/// fail here as they do in the service.
+/// fail here as they do in the service. Like the service it also refuses nesting
+/// deeper than maxDepth (the scan recurses once per level: a marker nested tens of
+/// thousands deep must be refused, never crash the launch that reads it), a number
+/// that isn't finite as a double, and an integer of more than maxIntegerDigits digits.
 enum StrictJSON {
+    /// wisp_reset.MAX_JSON_DEPTH: objects and arrays inside each other, the outer one counting 1.
+    static let maxDepth = 512
+    /// wisp_reset.MAX_INTEGER_DIGITS.
+    static let maxIntegerDigits = 19
+
     static func acceptable(_ data: Data) -> Bool {
         var scanner = Scan(bytes: Array(data))
-        guard scanner.value() else { return false }
+        guard scanner.value(depth: 0) else { return false }
         scanner.space()
         return scanner.index == scanner.bytes.count
     }
@@ -554,19 +562,37 @@ enum StrictJSON {
             while index < bytes.count, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[index]) { index += 1 }
         }
 
-        mutating func value() -> Bool {
+        mutating func value(depth: Int) -> Bool {
             space()
             guard index < bytes.count else { return false }
-            if at("{") { return object() }
-            if at("[") { return array() }
+            if at("{") || at("[") {
+                // Checked before going one level deeper: the recursion stays bounded.
+                guard depth < StrictJSON.maxDepth else { return false }
+                return at("{") ? object(depth: depth + 1) : array(depth: depth + 1)
+            }
             if at("\"") { return string() != nil }
             let start = index
             let literal = Set("0123456789+-.eEtrufalsn".utf8)
             while index < bytes.count, literal.contains(bytes[index]) { index += 1 }
-            return index > start
+            guard index > start else { return false }
+            return Self.literalOK(Array(bytes[start..<index]))
         }
 
-        mutating func object() -> Bool {
+        /// true, false, null, or a number the service reads the same way.
+        static func literalOK(_ token: [UInt8]) -> Bool {
+            let text = String(decoding: token, as: UTF8.self)
+            if ["true", "false", "null"].contains(text) { return true }
+            guard let first = token.first, first == UInt8(ascii: "-") || (0x30...0x39).contains(first) else {
+                return false      // JSONSerialization judges the rest of the syntax
+            }
+            if !token.contains(where: { [UInt8(ascii: "."), UInt8(ascii: "e"), UInt8(ascii: "E")].contains($0) }) {
+                return token.filter({ (0x30...0x39).contains($0) }).count <= StrictJSON.maxIntegerDigits
+            }
+            guard let number = Double(text) else { return false }
+            return number.isFinite
+        }
+
+        mutating func object(depth: Int) -> Bool {
             index += 1
             var keys = Set<[UInt16]>()
             space()
@@ -577,7 +603,7 @@ enum StrictJSON {
                 space()
                 guard at(":") else { return false }
                 index += 1
-                guard value() else { return false }
+                guard value(depth: depth) else { return false }
                 space()
                 if at(",") { index += 1; continue }
                 if at("}") { index += 1; return true }
@@ -585,12 +611,12 @@ enum StrictJSON {
             }
         }
 
-        mutating func array() -> Bool {
+        mutating func array(depth: Int) -> Bool {
             index += 1
             space()
             if at("]") { index += 1; return true }
             while true {
-                guard value() else { return false }
+                guard value(depth: depth) else { return false }
                 space()
                 if at(",") { index += 1; continue }
                 if at("]") { index += 1; return true }
