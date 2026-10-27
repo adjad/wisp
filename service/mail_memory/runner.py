@@ -252,6 +252,7 @@ async def tick(*, now: float | None = None) -> float:
         rows, capped = await read_index(WINDOW_DAYS)
         excluded = await _gmail_excluded()
         merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
+        merged["gmail_tab"] = await asyncio.to_thread(st.exclude, excluded) if excluded else 0
         st.set_meta("last_index", str(now))
         log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
         return gap
@@ -268,6 +269,8 @@ async def tick(*, now: float | None = None) -> float:
         st.fail(row["key"], str(exc), now)         # this email's read timed out
         return gap
     if raw is None:
+        if why in ("index_unreadable", "no_mail_index"):
+            return FAILURE_GAP_S                  # Mail's index, not this email: try later
         if why in ("not_on_disk", "not_in_inbox_or_sent"):
             # Gone from disk, or moved to Trash, Archive or Junk since the index: never read.
             st.finish(row["key"], "skipped", why)

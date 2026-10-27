@@ -150,6 +150,20 @@ class Store:
                 raise
         return added, skipped
 
+    def exclude(self, rfc_ids, note: str = "gmail_tab") -> int:
+        """Retire pending messages by RFC Message-ID (Gmail's Promotions, Social and
+        Forums tabs), so a tab list that arrives after the first index still counts."""
+        ids = sorted(set(rfc_ids))
+        done = 0
+        with self._lock:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                done += self._db.execute(
+                    f"UPDATE messages SET state='skipped', note=?, updated=? WHERE state='pending' "
+                    f"AND rfc_message_id IN ({','.join('?' * len(chunk))})",
+                    (note, time.time(), *chunk)).rowcount
+        return done
+
     def next_pending(self, now: float | None = None) -> dict | None:
         now = time.time() if now is None else now
         row = self._db.execute(

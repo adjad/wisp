@@ -212,6 +212,16 @@ enum MailMemoryReaderRegression {
                   "rowid \(rowid) refused")
         }
 
+        // An index that can't be read is retried later, never reported as "not in Inbox".
+        let broken = "\(root)/broken"
+        let brokenBox = "\(broken)/V10/X/INBOX.mbox/Messages"
+        try FileManager.default.createDirectory(atPath: brokenBox, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: "\(broken)/V10/MailData", withIntermediateDirectories: true)
+        try Data("not a database".utf8).write(to: URL(fileURLWithPath: "\(broken)/V10/MailData/Envelope Index"))
+        try emlx("\(brokenBox)/10.emlx", "Subject: x\r\n\r\ny")
+        check(body(makeReader(broken), "brokenindex-00001", 10)["error"] as? String == "index_unreadable",
+              "an unreadable index is retried, not skipped")
+
         // Schema tolerance: optional columns fall back; missing core tables are unsupported_schema.
         func makeDB(_ name: String, _ sql: String) -> String {
             let file = "\(root)/\(name).db"
