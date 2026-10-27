@@ -230,6 +230,8 @@ final class GoogleAccountModel: ObservableObject {
 
 struct GoogleSettingsPane: View {
     @StateObject private var model = GoogleAccountModel()
+    /// Black and white in a standalone Settings, the Wisp window's colours there.
+    @Environment(\.themePalette) private var palette
     @State private var advanced = false
     @State private var ownClient = false
     /// Account notes the user chose "Not now" for (UserDefaults, per account).
@@ -250,7 +252,7 @@ struct GoogleSettingsPane: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Button(model.authorizing ? "Waiting for Google…" : "Connect Google account") { model.connect() }
-                    .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    .buttonStyle(.borderedProminent).tint(palette.accent)
                     .disabled(model.authorizing || !model.canConnect)
                 if !model.consentNotice.isEmpty {
                     Text(model.consentNotice).font(.caption).foregroundStyle(.secondary)
@@ -325,7 +327,7 @@ struct GoogleSettingsPane: View {
             // The Workspace server that serves Ask's Google tools.
             HStack(spacing: 8) {
                 Image(systemName: model.wsRunning ? "checkmark.circle.fill" : "circle.dashed")
-                    .foregroundStyle(model.wsRunning ? Color.green : Theme.textMuted)
+                    .foregroundStyle(model.wsRunning ? Color.green : palette.textMuted)
                 Text(model.wsRunning ? "Running — \(model.wsTools) Google tools"
                      : model.wsPreparing ? "Setting up Google tools…"
                      : model.wsConfigured ? "Google tools configured but not running"

@@ -192,7 +192,7 @@ final class OverlayModel: ObservableObject {
     /// Quick settings' Model memory row: what the engine has resident, nil when unknown.
     @Published private(set) var modelMemory: ModelMemory?
     // First-run setup at the top of Ask. Its readiness lives on the app's one
-    // SetupGuideModel, which the setup window shares.
+    // SetupGuideModel, which Settings › Models › Setup shares.
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
     // Whether Wisp's own service answers (BackendManager's reachability watch).
     // False shows "Wisp service isn't running" with Retry instead of a green dot.

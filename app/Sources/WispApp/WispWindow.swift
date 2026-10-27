@@ -13,6 +13,12 @@ final class WispWindowController {
     private static let previousAutosaveName = "WispChatWindow"
 
     private var window: NSWindow?
+    private var closeObserver: NSObjectProtocol?
+    /// Between the window's willClose and its next showing.
+    private var closing = false
+    /// Called as the window closes (AppDelegate: Settings › Models › Setup stops
+    /// being a host of the setup guide).
+    var onClose: @MainActor () -> Void = {}
     let store: ChatStore
     let navigation = WispWindowNavigation()
     private let launchers: ChatLaunchers
@@ -22,8 +28,17 @@ final class WispWindowController {
         self.launchers = launchers
     }
 
-    /// Open the window onto the chat list, or onto a new chat when there is none selected.
+    /// On screen or in the Dock, and not closing.
+    var isOpen: Bool {
+        guard let window, !closing else { return false }
+        return window.isVisible || window.isMiniaturized
+    }
+
+    /// Open the window onto the chat list, or onto a new chat when there is none
+    /// selected. A window already open comes forward as it is: the Dock or ⌘1
+    /// never moves someone off Settings, Today or a chat they were in.
     func show() {
+        guard !isOpen else { present(); return }
         navigation.section = .chats
         present()
         if store.selected == nil { store.newChat() }
@@ -55,6 +70,13 @@ final class WispWindowController {
         NotificationCenter.default.post(name: TodayWindow.didShowNotification, object: nil, userInfo: ["tab": tab])
     }
 
+    /// Open the window's Settings section, on the pane it was left on (or the one
+    /// AppDelegate just wrote to SettingsView.paneKey).
+    func showSettings() {
+        navigation.section = .settings
+        present()
+    }
+
     /// Open the window's Research section: saved research jobs.
     func showResearch() {
         // Already on Research: a job may have finished or been saved since.
@@ -80,7 +102,16 @@ final class WispWindowController {
             Self.carryOverSavedFrame()
             win.setFrameAutosaveName(Self.autosaveName)
             window = win
+            closeObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: win, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.closing = true
+                    self?.onClose()
+                }
+            }
         }
+        closing = false
         NSApp.activate(ignoringOtherApps: true)
         if window?.isMiniaturized == true { window?.deminiaturize(nil) }
         window?.makeKeyAndOrderFront(nil)
@@ -98,10 +129,10 @@ final class WispWindowController {
 }
 
 /// What the Wisp window's main column shows: chats, the full planner, the
-/// merged Memory, or saved research.
+/// merged Memory, saved research, or Settings.
 @MainActor
 final class WispWindowNavigation: ObservableObject {
-    enum Section: Equatable { case chats, today, memory, research }
+    enum Section: Equatable { case chats, today, memory, research, settings }
     /// The planner's tab when the Today section opens.
     var todayTab = 1
     @Published var section: Section = .chats
@@ -116,4 +147,12 @@ final class WispWindowNavigation: ObservableObject {
     /// The app's one day plan, shared with the notch's Brief and Day tabs. Without one
     /// (the QA harness) the Today section is empty.
     var today: TodayModel?
+    /// The app's one settings loader, shared with the notch's quick settings, and
+    /// its one setup model, for Settings › Models › Setup. Without a loader the
+    /// Settings section is empty; without a setup model it has no Setup subpane.
+    var settings: SettingsLoader?
+    var setup: SetupGuideModel?
+    /// Settings › Models › Setup is standing in for the first-run window, which is
+    /// hidden until it is left (AppDelegate.openSetupGuide).
+    @Published var setupStandsInForWelcome = false
 }

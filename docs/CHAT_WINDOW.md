@@ -50,9 +50,9 @@ asked for. Both talk to the same service and the same saved chats.
   is closed, so Wisp switches to the model by itself when it arrives. Later
   shrinks the card to a line, which shows the download's progress, until Wisp is
   ready. Smart Search, other local apps, an external oMLX's downloads and models
-  with no public download continue in the setup window. On a Mac whose memory no
-  downloadable model fits, the card says so and offers the setup window's other
-  routes instead of a download.
+  with no public download continue in the full guide, Settings › Models › Setup
+  in the Wisp window. On a Mac whose memory no downloadable model fits, the card
+  says so and offers the guide's other routes instead of a download.
 - **Report a problem** unfolds under the reply (or under the Day tab), with a
   preview of exactly what is saved. Nothing is uploaded.
 - The panel is a borderless, non-activating `NSPanel` at status-bar level, so
@@ -61,8 +61,9 @@ asked for. Both talk to the same service and the same saved chats.
 ## The Wisp window
 
 - Sidebar: New chat (⌘N), search over chat titles (⌘K), Today, Research,
-  Memory, Search everything, and every saved chat grouped Today / Yesterday /
-  Previous 7 days / Earlier.
+  Memory, Settings, and every saved chat grouped Today / Yesterday / Previous 7
+  days / Earlier. Smart Search (⇧⌘F) has no row: it reads the app in front,
+  which from here would be Wisp itself.
 - Thread: your messages, then Wisp's. Tool calls are listed above the answer
   (collapsed once finished). Answers render through `MarkdownView`.
 - Approvals: the same confirmation card as the notch (Deny / Always allow /
@@ -80,14 +81,24 @@ asked for. Both talk to the same service and the same saved chats.
 - **Research**: your 30 most recent research jobs and every pinned one. Opening
   a job shows it in the notch without starting a new search; New research opens
   the notch's research prompt.
+- **Settings** (⌘,, the menu bar's Settings…, the sidebar, the footer gear and
+  the notch's All settings): General, Models, Google, Activity and Privacy &
+  Access as one segmented row. Models › Setup is the full setup guide (engine,
+  model and downloads, Smart Search, other local apps, the test) with Check
+  again; Setup guide…, the engine settings and the notch card's ⤢ open it there.
+  While it stands in for the first-run window, that window is hidden and comes
+  back, at its step, when Setup is left (Back to Welcome, another pane or
+  section, or closing the window). It replaces the main column, so Settings and
+  a chat can't sit side by side.
 - Appearance: follows the Mac. Dark is the aurora; light is a pale daylight blue.
 - It opens from the Dock icon (or opening Wisp again while it runs), the menu
   bar's Open Wisp Window, Window ▸ Wisp Window (⌘1), the notch's ⤢ or ⌘O (on
-  whatever the tab shows), and every route below. Closing it leaves Wisp running
-  in the notch and menu bar; ⌘Q stops it.
+  whatever the tab shows), and every route below. A window already open comes
+  forward on the section it shows; only a closed one opens on Chats. Closing it
+  leaves Wisp running in the notch and menu bar; ⌘Q stops it.
 
-Settings and the full setup guide are still their own windows, opened only on
-request.
+Apart from the first-run window on a new Mac, the Wisp window is Wisp's only
+window.
 
 ## How it fits together
 
@@ -119,14 +130,16 @@ so the notch collapsing or a tab being rebuilt can't drop a change in flight:
 
 - `TodayModel`: the notch's Brief and Day tabs and the planner window show the
   same day. It loads while Brief or Day is on screen, never at launch or on hover.
-- `SettingsLoader`: quick settings, the Settings window and the window's Full
-  access pill share one source. Full access is a `Bool?`: nil is "unconfirmed",
+- `SettingsLoader`: quick settings, the window's Settings and its Full access
+  pill share one source. Full access is a `Bool?`: nil is "unconfirmed",
   never "off". A change shows only once the service confirms it, and a lost reply
   is followed by a re-read.
-- `SetupGuideModel`: the setup card and the setup window. Each host calls
-  `show(in:)` and `hide(from:)` (counted); the first starts the status poll, the
-  last stops it and drops the test result. The window's host is its window
-  object. Settings posts `wispInferenceConfigurationChanged` after writing a
+- `SetupGuideModel`: the setup card, the first-run window and Settings ›
+  Models › Setup. Each host calls `show(in:)` and `hide(from:)` (counted); the
+  first starts the status poll, the last stops it and drops the test result.
+  Settings' host ("settings") is AppDelegate's `settingsSetupShown`: the window
+  open on Settings › Models › Setup, read from the window and the stored panes,
+  never from SwiftUI's onAppear. Settings posts `wispInferenceConfigurationChanged` after writing a
   role's model (`POST /config`), a provider or the engine mode, which also drops
   the test result. A card set aside with Later leaves only when it sees Wisp
   ready, so its "!" can outlast readiness until Ask is next opened.
@@ -140,21 +153,22 @@ so the notch collapsing or a tab being rebuilt can't drop a change in flight:
   `OverlayModel.pickingFile` set. Turning off planner-detail capture closes a
   Today report holding those details.
 - `WispWindowNavigation`: the window's section (chats, Today, Memory,
-  Research), the planner's and Memory's tabs, the Routines model (it lives as
+  Research, Settings), the planner's and Memory's tabs, the Routines model (it lives as
   long as the window, so a consent write in flight reports its outcome), the
   research library and the shared `TodayModel`. `TodayWindow` remains only as a
   standalone host for the mounted planner checks.
 
 `MarkdownView` reads its colors from `\.markdownPalette`; the default is the
-notch's monochrome look.
+notch's monochrome look. Settings and the setup guide read theirs from
+`\.themePalette` (`Theme.swift`): `ThemePalette.notch` by default, and
+`ThemePalette.wispWindow` (`ChatTheme`'s colors, following the Mac's appearance)
+in the Wisp window.
 
 ## Known limits
 
 - A reloaded chat shows which tools an answer used but not their results or
   timing; the service keeps only the tool names. Live answers show everything.
 - There is no per-message model picker: the router chooses the model.
-- Settings and the setup guide are separate windows rather than sections of
-  the Wisp window.
 
 ## Testing
 

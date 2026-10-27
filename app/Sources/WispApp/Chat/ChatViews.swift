@@ -1,8 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// What the sidebar's shortcuts open. These are the app's existing windows;
-/// the Chat window launches them rather than reimplementing them.
+/// What the sidebar's shortcuts open, through WispRouter (AppDelegate), which
+/// lands each on its section of this window or in the notch.
 struct ChatLaunchers {
     var today: () -> Void = {}
     var research: () -> Void = {}
@@ -12,7 +12,6 @@ struct ChatLaunchers {
     var newResearch: () -> Void = {}
     var memory: () -> Void = {}
     var settings: () -> Void = {}
-    var searchEverything: () -> Void = {}
 }
 
 // MARK: - Root
@@ -44,6 +43,12 @@ struct ChatRootView: View {
             case .research:
                 if let library = navigation.researchLibrary {
                     ResearchHomeView(library: library, launchers: launchers, sidebarVisible: $sidebarVisible)
+                }
+            case .settings:
+                if let loader = navigation.settings {
+                    SettingsHomeView(loader: loader, setup: navigation.setup,
+                                     setupStandsInForWelcome: navigation.setupStandsInForWelcome,
+                                     sidebarVisible: $sidebarVisible)
                 }
             }
             if store.showInspector && navigation.section == .chats {
@@ -129,7 +134,10 @@ struct ChatSidebar: View {
                            action: launchers.research)
                 ChatNavRow(symbol: "brain", title: "Memory", selected: navigation.section == .memory,
                            action: launchers.memory)
-                ChatNavRow(symbol: "sparkle.magnifyingglass", title: "Search everything", hint: "⇧⌘F", action: launchers.searchEverything)
+                // Smart Search (⇧⌘F) reads the app in front, which from here is Wisp
+                // itself, so it has no row: ⌘K searches chats.
+                ChatNavRow(symbol: "gearshape", title: "Settings", selected: navigation.section == .settings,
+                           action: launchers.settings)
             }
             .padding(.horizontal, 8)
 

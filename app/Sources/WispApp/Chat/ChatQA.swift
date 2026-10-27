@@ -102,23 +102,25 @@ enum ChatQADriver {
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
         let store = ChatStore(backend: FixtureChatBackend())
+        let navigation = WispWindowNavigation()
         let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 1180, height: 760),
                               styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.contentView = NSHostingView(rootView: ChatRootView(store: store, launchers: ChatLaunchers(),
-                                                                navigation: WispWindowNavigation()))
+                                                                navigation: navigation))
         window.makeKeyAndOrderFront(nil)
         app.activate(ignoringOtherApps: true)
         Task { @MainActor in
-            await drive(store: store, window: window, outDir: outDir)
+            await drive(store: store, navigation: navigation, window: window, outDir: outDir)
             app.terminate(nil)
         }
         app.run()
     }
 
-    private static func drive(store: ChatStore, window: NSWindow, outDir: URL) async {
+    private static func drive(store: ChatStore, navigation: WispWindowNavigation, window: NSWindow,
+                              outDir: URL) async {
         func settle(_ seconds: Double = 0.6) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9)) }
         func shoot(_ name: String) async {
             for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
@@ -175,6 +177,28 @@ enum ChatQADriver {
         store.send("Draft a reply to Priya")
         await settle(1.2)
         await shoot("7-draft")
+
+        // Settings as a section of the window: General, Privacy & Access, and the
+        // setup guide as Settings › Models › Setup. Nothing reaches Wisp's service:
+        // this loader is never refreshed and the guide's requests are all refused.
+        let defaults = UserDefaults.standard
+        let keptPanes = [SettingsView.paneKey, SettingsView.modelsPaneKey].map { ($0, defaults.string(forKey: $0)) }
+        let settings = SettingsLoader()
+        settings.qaShow(fullAccess: false, briefTimes: nil)
+        navigation.settings = settings
+        navigation.setup = NotchQASetup.model(NotchQASetup.status())
+        navigation.section = .settings
+        for (name, pane, subpane) in [("8-settings-general", "general", "assignments"),
+                                      ("9-settings-privacy", "privacy", "assignments"),
+                                      ("10-settings-setup", "models", "setup")] {
+            defaults.set(pane, forKey: SettingsView.paneKey)
+            defaults.set(subpane, forKey: SettingsView.modelsPaneKey)
+            await settle(0.8)
+            await shoot(name)
+        }
+        for (key, value) in keptPanes {
+            if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+        }
         print("Chat QA wrote screenshots to \(outDir.path)")
     }
 }
