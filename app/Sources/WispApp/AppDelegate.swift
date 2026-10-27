@@ -61,7 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var setupWindow: NSWindow?
     // The onboarding window: model, permissions, Google, Getting to know you, how
     // to use. Opens by itself only on a Mac that has never run Wisp
-    // (FirstRunSetup.shouldShow); Permissions… in the menu opens it at that step.
+    // (FirstRunSetup.shouldShow); Settings › Privacy's Permissions… opens it at that step.
     private var firstRunWindow: NSWindow?
     private var firstRunCloseObserver: NSObjectProtocol?
     private var firstRunFinishing = false
@@ -373,6 +373,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.openFirstRunSetup(at: .permissions) }
         }
+        // Settings › Privacy's More Access… and Settings › General's chat debug log.
+        NotificationCenter.default.addObserver(
+            forName: .wispGrantMoreAccess, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.grantMoreAccess() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .wispExportDebugLog, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.exportDebugLog() }
+        }
         // Remember which Wisp window was used last, so the Dock brings back that one.
         NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
@@ -634,7 +645,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 answered = true
                 let canAnswer = FirstRunSetup.canAnswer(ready: ready,
                                                         remoteOnly: object["remote_only"] as? Bool == true)
-                self.setupMenuItem?.title = canAnswer ? "Model & Engine…" : "Finish Setup…"
+                self.setupCanAnswer = canAnswer
                 let cue = FirstRunSetup.setupCue(self.model.setupCard, canAnswer: canAnswer,
                                                  firstRunWindowUp: self.firstRunWindow != nil)
                 if cue != self.model.setupCard { self.model.setupCard = cue }
@@ -709,14 +720,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // The menu's setup item says where setup is: "Finish Setup…" until Wisp can
-    // answer, then "Model & Engine…" (the same place, for changing them later).
+    // The menu's "Finish Setup…" is there only while setup is (FirstRunSetup.menuOffersSetup).
+    // Changing the model or engine later is Settings › Models.
     private var setupMenuItem: NSMenuItem?
+    /// The last /setup/status answer of the readiness watch; nil until one arrives.
+    private var setupCanAnswer: Bool?
 
     @objc private func openSetupFromMenu() { bringSetupForward() }
-
-    /// The onboarding window's Permissions step, any time: each row asks only when clicked.
-    @objc private func openPermissionsFromMenu() { openFirstRunSetup(at: .permissions) }
 
     /// Opening the window at launch used to be how Wisp said "I'm running". Now
     /// that it starts in the notch, open the notch once and say where Wisp lives,
@@ -890,22 +900,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMenu() {
         let menu = NSMenu()
-        // Keep the menu-bar menu focused on app configuration and diagnostics.
-        // Primary workflows live in Wisp's panel, where they have context and
-        // progress UI instead of duplicating five shortcuts here.
+        // Kept short: the window, Settings, and setup while it is unfinished.
+        // Everything else has a home in Settings: model and engine in Models,
+        // Permissions… and More Access… in Privacy, the chat debug log in
+        // General. Getting to know you is /about or Memory › About you.
         menu.addItem(withTitle: "Open Wisp Window", action: #selector(openChat), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        setupMenuItem = menu.addItem(withTitle: "Model & Engine…", action: #selector(openSetupFromMenu), keyEquivalent: "")
-        menu.addItem(withTitle: "Permissions…", action: #selector(openPermissionsFromMenu), keyEquivalent: "")
-        menu.addItem(withTitle: "Tell Wisp About You…", action: #selector(tellWispAboutYou), keyEquivalent: "")
-        menu.addItem(withTitle: "Grant More Access…", action: #selector(grantMoreAccess), keyEquivalent: "")
+        setupMenuItem = menu.addItem(withTitle: "Finish Setup…", action: #selector(openSetupFromMenu), keyEquivalent: "")
+        setupMenuItem?.isHidden = true
         menu.addItem(.separator())
-        // Debug Mode is in the notch's quick settings ("Reply details").
-        // Export works any time there's a conversation, whether or not
-        // it is on: debug metadata is tracked for every turn unconditionally (see
-        // OverlayModel.applyDebugFields).
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
-        menu.addItem(withTitle: "Export Chat Debug Log…", action: #selector(exportDebugLog), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Wisp", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }
@@ -930,6 +934,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggle() {
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let menu = rightClickMenu {
+            setupMenuItem?.isHidden = !FirstRunSetup.menuOffersSetup(
+                canAnswer: setupCanAnswer, card: model.setupCard, firstRunWindowUp: firstRunWindow != nil,
+                unfinished: FirstRunSetup.isUnfinished { UserDefaults.standard.bool(forKey: $0) })
             statusItem.menu = menu
             statusItem.button?.performClick(nil)
             statusItem.menu = nil
@@ -1561,17 +1568,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // Writes the full conversation (every turn's model, route decision,
-    // timing, tok/s, tool calls, and any errors) to ~/Downloads as JSON + a
-    // readable .txt companion, then reveals them in Finder. No-ops with a
-    // brief alert if there's no conversation yet.
     /// Opens the report inline in the notch, under the last reply.
     @objc private func reportProblem() {
         model.reportCurrentProblem()
         openAssistant()
     }
 
-    @objc private func exportDebugLog() {
+    // Settings › General's Export Chat Debug Log…: writes the notch's conversation
+    // (every turn's model, route decision, timing, tok/s, tool calls, and any
+    // errors) to ~/Downloads as JSON + a readable .txt companion, then reveals
+    // them in Finder. No-ops with a brief alert if there's no conversation yet.
+    // Debug metadata is tracked for every turn whether or not Debug Mode is on
+    // (see OverlayModel.applyDebugFields).
+    private func exportDebugLog() {
         guard let url = model.exportDebugLog() else {
             let alert = NSAlert()
             alert.messageText = "Nothing to export yet"
@@ -1878,16 +1887,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The permissions first launch defers (Screen Recording, Accessibility,
-    /// Full Disk Access), asked for when the person chooses to: only what is
-    /// still off, each with its reason, and one system surface per click.
-    @objc private func grantMoreAccess() {
+    /// Settings › Privacy's More Access…: the permissions first launch defers
+    /// (Screen Recording, Accessibility, Full Disk Access), asked for when the
+    /// person chooses to: only what is still off, each with its reason, and one
+    /// system surface per click.
+    private func grantMoreAccess() {
         let missing = Permissions.missingExtras()
         let alert = NSAlert()
         if let next = missing.first {
             alert.messageText = "Give Wisp more access"
             alert.informativeText = missing.map { "• \($0.title), \($0.reason)." }.joined(separator: "\n")
-                + (missing.count > 1 ? "\n\nOne at a time: choose Grant More Access again for the next." : "")
+                + (missing.count > 1 ? "\n\nOne at a time: choose More Access… again for the next." : "")
             alert.addButton(withTitle: next == .fullDiskAccess ? "Open Full Disk Access…" : "Allow \(next.title)…")
             alert.addButton(withTitle: "Not Now")
         } else {
@@ -1899,14 +1909,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if alert.runModal() == .alertFirstButtonReturn, let next = missing.first { Permissions.request(next) }
     }
 
-    /// Getting to know you, from the menu bar. Choosing it
-    /// ends Wisp's own offers for this session.
-    @objc private func tellWispAboutYou() {
-        knowYouChosen = true
-        openAssistant()
-        model.startKnowYou()
-    }
-
+    /// Getting to know you chosen through WispRoute.knowYou: it ends Wisp's own
+    /// offers for this session.
     private var knowYouChosen = false
     /// Set from GET /profile: once About you is complete, panel closes stop asking.
     private var knowYouProfileComplete = false

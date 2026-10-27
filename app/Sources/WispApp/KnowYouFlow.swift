@@ -403,7 +403,7 @@ struct ProfileEnvelope: Equatable {
 /// What the notch says after the flow ends without Done: Not now, or the
 /// service couldn't take the answer.
 enum KnowYouNotice {
-    static let notNow = "No problem. Whenever you like, type /about, or choose Tell Wisp About You… from the menu bar icon."
+    static let notNow = "No problem. Whenever you like, type /about, or open About you in the Wisp window's Memory."
     static let notNowUnsaved = "No problem. Wisp's service didn't answer, so I may ask again later. Type /about any time."
     static func thanks(name: String) -> String {
         name.isEmpty ? "Thank you. I'll put this to work." : "Thank you, \(name). I'll put this to work."

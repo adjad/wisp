@@ -3,6 +3,11 @@ import CryptoKit
 import Security
 import SwiftUI
 
+extension Notification.Name {
+    /// Settings › General's Export Chat Debug Log…: AppDelegate writes the notch's conversation.
+    static let wispExportDebugLog = Notification.Name("WispExportDebugLog")
+}
+
 private enum CloudCredentialError: LocalizedError {
     case invalidKey
     case storage
@@ -1849,6 +1854,29 @@ struct SettingsView: View {
                                 }
                             }
                         }
+
+                        Divider()
+
+                        // What macOS lets Wisp read and do. Each button asks only
+                        // when clicked, one row or one system surface at a time.
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("macOS permissions")
+                                .font(.system(size: 14, weight: .medium))
+                            Text("Permissions… shows what Wisp reads, such as Calendar, Mail and Messages, each "
+                                 + "with its own Allow. More Access… asks for Screen Recording, Accessibility and "
+                                 + "Full Disk Access, one at a time.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            HStack {
+                                Button("Permissions…") {
+                                    NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
+                                }
+                                Button("More Access…") {
+                                    NotificationCenter.default.post(name: .wispGrantMoreAccess, object: nil)
+                                }
+                            }
+                        }
                     }
                 }
                 }
@@ -1900,6 +1928,24 @@ struct SettingsView: View {
                         }
                         .toggleStyle(.switch)
                         .tint(Theme.accent)
+
+                        Divider()
+
+                        HStack(alignment: .center) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Chat debug log")
+                                    .font(.system(size: 14, weight: .medium))
+                                Text("Saves the notch's conversation to Downloads, with each turn's "
+                                     + "model, route, timing, tool calls and errors.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            Button("Export Chat Debug Log…") {
+                                NotificationCenter.default.post(name: .wispExportDebugLog, object: nil)
+                            }
+                        }
                     }
                 }
                 }

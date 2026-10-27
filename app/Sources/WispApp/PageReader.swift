@@ -245,7 +245,7 @@ enum PageReader {
     private static func captureWindow(pid: pid_t) -> CGImage? {
         // Capturing another app's window without Screen Recording makes macOS ask,
         // and Wisp never asks on its own (Permissions.swift): without it, no OCR
-        // fallback. Grant More Access… turns it on.
+        // fallback. Settings › Privacy's More Access… turns it on.
         guard CGPreflightScreenCaptureAccess() else { return nil }
         let infoList = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)

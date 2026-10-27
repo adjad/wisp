@@ -26,7 +26,7 @@ class ModelMemoryLimitError(ModelLoadError):
         super().__init__(
             "Wisp's model couldn't load in the memory this Mac has free right now. "
             "Quit some apps, then try again. If it keeps happening, choose a smaller "
-            "model: right-click the Wisp icon in the menu bar and choose Model & Engine…"
+            "model in Wisp's Settings → Models."
         )
 
 

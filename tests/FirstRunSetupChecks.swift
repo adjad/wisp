@@ -160,6 +160,17 @@ struct FirstRunSetupChecks {
         check(FirstRunSetup.setupCue(.open, canAnswer: true, firstRunWindowUp: false) == .open, "Ready: an open card waits for Done")
         check(FirstRunSetup.setupCue(.hidden, canAnswer: true, firstRunWindowUp: false) == .hidden, "Ready: nothing to show")
 
+        // The menu bar icon's Finish Setup…: only while setup is under way.
+        func menuSetup(_ canAnswer: Bool?, _ card: NotchSetupCard, window: Bool = false, unfinished: Bool = false) -> Bool {
+            FirstRunSetup.menuOffersSetup(canAnswer: canAnswer, card: card, firstRunWindowUp: window, unfinished: unfinished)
+        }
+        check(menuSetup(false, .hidden), "Wisp can't answer: Finish Setup… shows")
+        check(menuSetup(nil, .later) && menuSetup(true, .open), "A setup cue or an open card: it shows")
+        check(menuSetup(nil, .hidden, window: true) && menuSetup(true, .hidden, unfinished: true),
+              "The first-run window is up, or was left unfinished: it shows")
+        check(!menuSetup(true, .hidden), "Set up: it hides (Settings › Models changes the model)")
+        check(!menuSetup(nil, .hidden), "Before the service first answers: nothing shown by itself")
+
         // Permission rows: their state in a word, and Contacts only once it helps.
         check(FirstRunPermissions.label(.calendar, .notAsked) == "Not set"
               && FirstRunPermissions.label(.calendar, .allowed) == "Allowed"

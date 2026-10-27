@@ -79,7 +79,8 @@ followed by letters, digits, underscores, or hyphens, up to 64 characters.
 ## Other local apps, including tools
 
 Settings > Models > Local (or the setup guide's Other local apps step, opened from
-**Finish Setup...** / **Model & Engine...** in the menu-bar icon's menu) connects one
+**Settings > Models > Setup guide...**, or **Finish Setup...** in the menu-bar icon's menu
+while setup is unfinished) connects one
 app on a numeric `127.0.0.1` port other than 8000 and 8765. Choose what it is for:
 
 | Workload | What it does | Needs |

@@ -145,6 +145,16 @@ enum FirstRunSetup {
         return !firstRunWindowUp && current == .hidden ? .later : current
     }
 
+    /// Whether the menu bar icon's menu shows Finish Setup…: while setup is under
+    /// way (the first-run window is up or was left unfinished, the notch carries a
+    /// setup card or cue, or the service says Wisp can't answer yet). Once set up,
+    /// the model and engine are changed in Settings › Models instead. `canAnswer`
+    /// is nil until the service has answered once, which shows nothing by itself.
+    static func menuOffersSetup(canAnswer: Bool?, card: NotchSetupCard, firstRunWindowUp: Bool,
+                                unfinished: Bool) -> Bool {
+        firstRunWindowUp || unfinished || card != .hidden || canAnswer == false
+    }
+
     /// No Wisp notification while the setup window is on screen, even with
     /// System Settings or the browser in front of it: "Wisp is ready" is said
     /// only once the window was closed, finished or minimized.
@@ -163,7 +173,7 @@ enum FirstRunSetup {
 /// it is due (GET /profile status.offer: never finished, no recent Later, at most
 /// twice); this decides whether now is a moment to show it. Someone set up by
 /// the onboarding window answered (or skipped) it there, so the notch never
-/// offers it to them; the menu bar's Tell Wisp About You… and /about remain.
+/// offers it to them; /about and Memory › About you remain.
 enum KnowYouOffer {
     struct Moment: Equatable {
         var firstRunWindowUp = false
@@ -1048,7 +1058,7 @@ struct FirstRunSetupView: View {
                         go(step.next)
                     }
                     .buttonStyle(FirstRunButtonStyle())
-                    .help("Nothing more is saved. Tell Wisp About You… in the menu bar icon asks these any time.")
+                    .help("Nothing more is saved. Type /about in Ask to answer these any time.")
                 }
             case .tour:
                 Button("Back") { go(step.previous) }.buttonStyle(FirstRunButtonStyle())
@@ -1356,7 +1366,7 @@ struct FirstRunSetupView: View {
             contactsRow
             permissionRow(.notifications, icon: "bell", title: "Notifications",
                           detail: "Alerts for reminders you set, and when Wisp is ready.")
-            Text("Skipped one? Right-click Wisp's menu bar icon and choose Permissions… any time. Screen reading and "
+            Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. Screen reading and "
                  + "Accessibility are asked for later, from the feature that needs them.")
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 8)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1543,13 +1553,13 @@ struct FirstRunSetupView: View {
         switch style {
         case .notch:
             return "Hover or click the notch at the top centre of your screen. Wisp's icon is in the menu bar too: "
-                + "click it to open Wisp, right-click it for Settings and Permissions."
+                + "click it to open Wisp, right-click it for Settings."
         case .menuBar:
             return "Push the pointer against the top centre of your screen, or click Wisp's icon in the menu bar. "
-                + "Right-click the icon for Settings and Permissions."
+                + "Right-click the icon for Settings."
         case .floating:
             return "Hover the small bar at the top centre of your screen, or click Wisp's icon in the menu bar. "
-                + "Right-click the icon for Settings and Permissions."
+                + "Right-click the icon for Settings."
         }
     }
 

@@ -237,9 +237,10 @@ def test_specific_howto_answers_only_that_step():
     assert full.startswith("**Getting started with Wisp**") and "⌥Space" in full
 
 
-def test_howto_permissions_points_at_the_permissions_menu_item():
+def test_howto_permissions_points_at_the_settings_permissions_buttons():
     text = wisp_about.howto("How do I give Wisp calendar access?")
-    assert "Permissions…" in text and "Allow" in text and "Grant More Access…" in text
+    assert "Settings → Privacy & Access" in text and "Permissions…" in text and "Allow" in text
+    assert "More Access…" in text and "menu bar" not in text
 
 
 # Audit 32649065: "runs on this Mac" and "never changes your calendar" are said
