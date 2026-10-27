@@ -259,6 +259,11 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_expiry.py",
     "tests/test_behavior_auto_trial.py",
     "tests/test_brief_day_one.py",
+    # rc2: the first Brief once onboarding is answered (scheduler slots with a stubbed store
+    # and clock, and the marker endpoint through TestClient); nothing is composed or sent.
+    "tests/test_brief_onboarding.py",
+    # rc2: an unoffered web lookup on a general-knowledge question, with a scripted model.
+    "tests/test_general_knowledge_unoffered_web.py",
     # rc1 Ask backend: reply-needed reads stay read-only, the capability welcome, Gmail-only identity.
     "tests/test_router_reply_needed_reads.py",
     "tests/test_capability_welcome.py",
