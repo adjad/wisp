@@ -4,6 +4,9 @@ Start with the root [README](../README.md) for what Wisp is and how to run it.
 
 ## System reference
 
+- [technical-overview.md](technical-overview.md) — how Wisp is built, in one
+  page: tools, assistant layer, memory, safety, models and engines, running
+  from source, layout and state on disk (moved here from the root README).
 - [WISP_OVERVIEW.md](WISP_OVERVIEW.md) — the long-form system reference: every
   subsystem, what's broken, and how it got that way.
 - [ASSISTANT_ARCHITECTURE.md](ASSISTANT_ARCHITECTURE.md) — the assistant layer
